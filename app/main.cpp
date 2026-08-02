@@ -770,6 +770,14 @@ int main(int argc, char** argv) {
         _hc.ecologyShot      = o.ecologyShot;      _hc.ecologyShotPath  = o.ecologyShotPath;
         _hc.crowdShot        = o.crowdShot;        _hc.crowdShotPath    = o.crowdShotPath;
         _hc.complexShot      = o.complexShot;      _hc.complexShotDir   = o.complexShotDir;
+        // THE A/B SWITCHES HAVE TO BE SET BEFORE THE DISPATCH. These were only
+        // assigned further down, in the block feeding the DEFAULT host — i.e.
+        // after dispatchScreenshotHosts() had already returned. Every screenshot
+        // host therefore saw noTaa/noRefl as false no matter what was on the
+        // command line, and `--norefl --screenshot-car` silently captured with
+        // reflections still ON. (They are assigned again below; harmless.)
+        _hc.noTaa            = o.noTaa;
+        _hc.noRefl           = o.noRefl;
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;

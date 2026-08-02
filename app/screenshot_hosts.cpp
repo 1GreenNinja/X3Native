@@ -1668,10 +1668,18 @@ int dispatchScreenshotHosts(HostContext& hc) {
         { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
         { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
         {
+            // --norefl HAS TO REACH HERE. main.cpp pushes an OFF ReflectionParams
+            // for --norefl at startup, but this block then overwrote it
+            // unconditionally, so `--norefl --screenshot-car` still captured with
+            // reflections ON — i.e. the one rig that shows CLEARCOAT CAR PAINT had
+            // no A/B at all. Honouring hc.noRefl here is what makes the off-side of
+            // the clearcoat comparison capturable.
             x3::rhi::IRenderDevice::ReflectionParams rf{};
-            rf.ssr = true; rf.rtFallback = true; rf.fullRes = true; rf.intensity = 1.0f;
+            const bool on = !hc.noRefl;
+            rf.ssr = on; rf.rtFallback = on; rf.fullRes = on; rf.intensity = 1.0f;
             device->setReflectionParams(rf);
-            x3::logInfo(std::string("--screenshot-car: reflections ON; rayTracingSupported=") +
+            x3::logInfo(std::string("--screenshot-car: reflections ") + (on ? "ON" : "OFF (--norefl)") +
+                        "; rayTracingSupported=" +
                         (device->rayTracingSupported() ? "YES" : "NO"));
         }
         device->setShadowBounds(carX, carY, carZ, 40.0f);
