@@ -639,6 +639,7 @@ struct CliOptions {
     // hills looking toward the sun so the lit rolling terrain + cast shadows +
     // sky read clearly, settle a few frames, and capture a PNG. Default path when
     // omitted: G:\X3Native-wt-terrain\terrain.png.
+    bool        csmShot = false;    std::string csmShotDir = "docs/screenshots/csm";
     bool        terrainShot = false;
     std::string terrainShotPath = "G:/X3Native-wt-terrain/terrain.png";
     // City vantage mode (--screenshot-city [path.png]) — W8-3: builds the city

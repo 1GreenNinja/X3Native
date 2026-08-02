@@ -129,6 +129,9 @@ struct HostContext {
     bool        nightskyShot = false;   std::string nightskyShotPath;
     bool        cutsceneShot = false;   std::string cutsceneShotPath;
     bool        terrainShot = false;    std::string terrainShotPath;
+    // Lane 3 CSM proof suite (--screenshot-csm <dir>): A/B pillar rows at 3
+    // distances, a camera-pan sequence, and a cascade-boundary framing.
+    bool        csmShot = false;        std::string csmShotDir;
     bool        oceanShot = false;      std::string oceanShotPath;
     bool        oceanBaseShot = false;  std::string oceanBaseShotPath;   // W3-4 undersea base
     bool        cityShot = false;       std::string cityShotPath;        // W8-3 city vantage

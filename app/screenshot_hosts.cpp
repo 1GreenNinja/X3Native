@@ -8,6 +8,7 @@
 #include <GLFW/glfw3native.h>
 
 #include "engine/core/x3_log.h"
+#include "engine/core/IConsole.h"   // Lane 3: --screenshot-csm drives the r_csm cvar
 #include "engine/core/x3_boot.h"
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -24,6 +25,8 @@
 #include "monster.h"
 #include "anim.h"
 #include "terrain.h"
+#include "app_run.h"        // applyRtaoCVarsForTest: pushes r_csm to the device
+#include "engine/rhi/Csm.h" // kNumCascades (perf receipt line)
 #include "ocean_base.h"        // W3-4: --screenshot-oceanbase undersea vantage
 #include "city.h"              // W8-3: --screenshot-city district vantage
 #include "cutscene.h"
@@ -96,6 +99,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool nightskyShot = hc.nightskyShot;    const std::string& nightskyShotPath = hc.nightskyShotPath;
     const bool cutsceneShot = hc.cutsceneShot;    const std::string& cutsceneShotPath = hc.cutsceneShotPath;
     const bool terrainShot = hc.terrainShot;      const std::string& terrainShotPath = hc.terrainShotPath;
+    const bool csmShot = hc.csmShot;              const std::string& csmShotDir = hc.csmShotDir;
     const bool oceanShot = hc.oceanShot;          const std::string& oceanShotPath = hc.oceanShotPath;
     const bool oceanBaseShot = hc.oceanBaseShot;  const std::string& oceanBaseShotPath = hc.oceanBaseShotPath;
     const bool cityShot = hc.cityShot;            const std::string& cityShotPath = hc.cityShotPath;
@@ -1848,6 +1852,205 @@ int dispatchScreenshotHosts(HostContext& hc) {
     // entirely through the public render API + a local Jolt world (so the terrain
     // collision path is exercised too) — no game/audio stack. EFLZ Level 1 is an
     // enclosed interior; this is how to SEE + verify the outdoor terrain.
+    // ---- Lane 3: CASCADED SHADOW MAPS proof suite (--screenshot-csm <dir>) ----
+    // Clean-room, original work; composes the engine's own TerrainStreamer + the
+    // r_csm cvar. No id Tech / RBDOOM source consulted.
+    //
+    // The legacy sun cast from ONE 45 m camera-locked ortho box, so shadows
+    // simply stopped ~45 m out. To make that visible (and to make the fix
+    // visible) this host plants a row of PILLARS at 12 / 30 / 55 / 95 / 160 /
+    // 230 m from a fixed camera on real streamed terrain, then captures:
+    //   ab_<tag>_csm0/1.png   the same framing with r_csm 0 vs 1 at 3 vantages
+    //   pan_csm1_<i>.png      a camera-PAN sequence from one spot (the money shot
+    //                         for texel snapping: edges must not crawl)
+    //   boundary_csm1.png     a cascade-boundary framing (blend band, not a line)
+    //   boundary_csm1_noblend.png   the same with r_csm_blend 0, for comparison
+    if (csmShot) {
+        x3::logInfo("--screenshot-csm: cascaded shadow map proof suite -> " + csmShotDir);
+
+        // A local console with the REAL cvar defaults registered, so the r_csm
+        // A/B below flips exactly the cvar a player would type — and every other
+        // render cvar keeps its shipped default instead of parsing as 0.
+        std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
+        x3::apphost::registerViewmodelCVarsForTest(*console);
+
+        std::unique_ptr<x3::jobs::IJobSystem> tjobs(x3::jobs::createJobSystem());
+        tjobs->init(0);
+        std::unique_ptr<x3::phys::IPhysicsWorld> tphys(x3::phys::createPhysicsWorld());
+        tphys->init();
+        x3::game::Scene tscene;
+        x3::game::TerrainStreamer streamer;
+        const x3::game::TerrainConfig& tcfg = x3::game::worldTerrainConfig();
+
+        // A LOW afternoon sun (~27 deg elevation). The engine default
+        // normalize(0.4, 1, 0.3) is ~63 deg up, so a 12 m pillar casts only a 6 m
+        // shadow — far too short to read at 200 m. Lowering it stretches shadows
+        // to ~24 m, so the RANGE of the shadowed region is what the image shows.
+        // The shadow pass reads this same m_sky.sunDir, so lighting, the sky disk
+        // and the cascades all stay consistent.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.62f; sp.sunDir[1] = 0.40f; sp.sunDir[2] = 0.47f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+        device->setCameraFar(15000.0f);
+        device->setAmbient(0.30f, 0.32f, 0.38f);
+
+        const float fx = 0.0f, fz = 0.0f;
+        streamer.init(tscene, *device, *tphys, tjobs.get(), tcfg, fx, fz, /*radius=*/10);
+        streamer.setUploadBudget(64);
+        {
+            x3::game::HorizonRingDesc hr{};
+            hr.centerX = 0.0f; hr.centerZ = 0.0f;
+            hr.rInner = 300.0f; hr.rOuter = 13000.0f;
+            hr.rings = 140; hr.segments = 160; hr.yBias = -3.0f;
+            x3::game::addTerrainHorizonRing(tscene, *device, streamer.groundTexture(), hr);
+        }
+
+        // Let the terrain settle so heightAt() is truthful before seating pillars.
+        const float dt = 1.0f / 60.0f;
+        for (int i = 0; i < 90; ++i) {
+            glfwPollEvents(); tphys->step(dt);
+            streamer.update(tscene, *device, *tphys, fx, fz);
+        }
+
+        // ---- The rulers: pillars marching away from the camera ---------------
+        // Placed along +Z (the camera looks that way), each seated on the terrain.
+        // Tall and thin, so the CAST SHADOW is the readable feature.
+        // Unit pillar; each instance is SCALED so it subtends a similar angle at
+        // its distance and its shadow stays readable all the way out. Unscaled,
+        // the 235 m pillar is a few pixels tall.
+        x3::prims::PrimMesh box = x3::prims::makeBox(1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+        x3::rhi::MeshHandle pillarMesh = device->createMesh(
+            box.verts.data(), (uint32_t)box.verts.size(),
+            box.index.data(), (uint32_t)box.index.size());
+        auto pillarTexels = x3::prims::makeCheckerRGBA(64, 8, 225, 220, 210, 160, 156, 148);
+        x3::rhi::TextureHandle pillarTex = device->createTexture(pillarTexels.data(), 64, 64, true);
+
+        // A RULER of pillars marching away from the camera. 45 m — the legacy
+        // cascade's half-extent — falls between the 4th and 5th station, so in the
+        // r_csm 0 shot every pillar past the 4th casts NOTHING.
+        const float kPillarZ[] = { 15.0f, 26.0f, 38.0f, 52.0f, 72.0f, 100.0f,
+                                   135.0f, 180.0f, 235.0f };
+        const float camX = 0.0f, camZ = 0.0f;
+        for (float pz : kPillarZ) {
+            const float sc = 1.0f + pz * 0.020f;          // grow with distance
+            const float hy = 5.0f * sc;                   // half-height
+            for (int side = -1; side <= 1; side += 2) {
+                const float px = camX + (float)side * (5.0f + pz * 0.10f);
+                const float py = streamer.heightAt(px, camZ + pz);
+                x3::game::Entity e{};
+                e.mesh = pillarMesh; e.tex = pillarTex;
+                // Column-major: scale on the diagonal, translation in column 3.
+                e.transform[0]  = 1.1f * sc; e.transform[5] = hy; e.transform[10] = 1.1f * sc;
+                e.transform[12] = px; e.transform[13] = py + hy; e.transform[14] = camZ + pz;
+                tscene.add(e);
+            }
+        }
+        x3::logInfo("--screenshot-csm: planted 18 pillars at 15..235 m (legacy cutoff sits at 45 m)");
+
+        // ELEVATED vantage looking down the row: at eye level the ground plane is
+        // edge-on and distant shadows collapse to a few pixels. From ~34 m up the
+        // ground from ~20 m to ~250 m fills the frame — exactly the range the
+        // legacy single cascade could not cover.
+        const float camY = streamer.heightAt(camX, camZ) + 34.0f;
+        const float kYawPlusZ = 1.5708f;   // +Z (CONVENTIONS yaw: 0 = +X)
+
+        // One capture: set the cvars, settle N frames, arm on the last, write.
+        auto shot = [&](const std::string& file, int csmOn, float blend,
+                        float camx, float camy, float camz,
+                        float yaw, float pitch, float fov, int frames) -> bool {
+            console->set("r_csm", csmOn ? "1" : "0");
+            console->set("r_csm_blend", std::to_string(blend));
+            const std::string path = csmShotDir + "/" + file;
+            for (int i = 0; i < frames; ++i) {
+                glfwPollEvents(); tphys->step(dt);
+                streamer.update(tscene, *device, *tphys, fx, fz);
+                // The cvar sync hub — without this r_csm never reaches the device.
+                x3::apphost::applyRtaoCVarsForTest(*console, *device);
+                device->setCamera(camx, camy, camz, yaw, pitch, fov);
+                if (i == frames - 1) device->armCapture(path.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) tscene.render(*device, frame);
+                device->endFrame(frame);
+            }
+            const bool ok = device->captureFrame(path.c_str());
+            if (ok) x3::logInfo("--screenshot-csm: wrote " + path);
+            else    x3::logError("--screenshot-csm: capture FAILED for " + path);
+            return ok;
+        };
+
+        // Mean GPU frame time at a given cascade setting (warmup frames dropped).
+        auto measure = [&](int csmOn, int frames, int warmup) -> double {
+            console->set("r_csm", csmOn ? "1" : "0");
+            double sum = 0.0; int n = 0;
+            for (int i = 0; i < frames; ++i) {
+                glfwPollEvents(); tphys->step(dt);
+                streamer.update(tscene, *device, *tphys, fx, fz);
+                x3::apphost::applyRtaoCVarsForTest(*console, *device);
+                device->setCamera(camX, camY, camZ, kYawPlusZ, -0.38f, 70.0f);
+                auto frame = device->beginFrame();
+                if (frame.valid) tscene.render(*device, frame);
+                device->endFrame(frame);
+                if (i >= warmup) { sum += device->stats().gpuFrameMs; ++n; }
+            }
+            return (n > 0) ? sum / (double)n : 0.0;
+        };
+
+        // ---- (a) A/B at three framings, r_csm 0 vs 1 -------------------------
+        struct Vantage { const char* tag; float pitch; float fov; };
+        const Vantage kV[] = {
+            { "near", -0.62f, 70.0f },   // steep: the 15-52 m stations fill the frame
+            { "mid",  -0.38f, 70.0f },   // the legacy 45 m cutoff crosses the frame
+            { "far",  -0.22f, 60.0f },   // shallow: out to the 235 m station
+        };
+        for (const Vantage& v : kV) {
+            shot(std::string("ab_") + v.tag + "_csm0.png", 0, 0.12f,
+                 camX, camY, camZ, kYawPlusZ, v.pitch, v.fov, 24);
+            shot(std::string("ab_") + v.tag + "_csm1.png", 1, 0.12f,
+                 camX, camY, camZ, kYawPlusZ, v.pitch, v.fov, 24);
+        }
+
+        // ---- (b) CAMERA PAN, r_csm 1 — the texel-snapping money shot ---------
+        // Same spot, yaw swept in small steps. With an unsnapped origin (or a
+        // rotation-dependent extent) shadow edges crawl and shimmer frame to
+        // frame; with both fixes the edges hold still against the terrain.
+        for (int i = 0; i < 6; ++i) {
+            const float yaw = kYawPlusZ - 0.10f + (float)i * 0.04f;
+            char nm[64]; std::snprintf(nm, sizeof(nm), "pan_csm1_%d.png", i);
+            shot(nm, 1, 0.12f, camX, camY, camZ, yaw, -0.45f, 70.0f, 14);
+        }
+
+        // ---- (c) CASCADE BOUNDARY: blend band vs a hard line ------------------
+        // A shallow, high framing so the cascade-0/1 split (~17 m) and 1/2 (~40 m)
+        // both cross the frame. The no-blend variant is the control.
+        shot("boundary_csm1.png",         1, 0.35f, camX, camY, camZ, kYawPlusZ, -0.34f, 70.0f, 24);
+        shot("boundary_csm1_noblend.png", 1, 0.0f,  camX, camY, camZ, kYawPlusZ, -0.34f, 70.0f, 24);
+
+        // ---- Perf: N cascades vs the single cascade ---------------------------
+        console->set("r_csm_blend", "0.12");
+        const double ms0 = measure(0, 140, 60);
+        const double ms1 = measure(1, 140, 60);
+        char perf[256];
+        std::snprintf(perf, sizeof(perf),
+            "--screenshot-csm: GPU frame time  r_csm 0 (1 cascade) = %.3f ms | "
+            "r_csm 1 (%d cascades) = %.3f ms | delta = %+.3f ms (%+.1f%%)",
+            ms0, (int)x3::csm::kNumCascades, ms1, ms1 - ms0,
+            (ms0 > 0.0) ? (ms1 - ms0) / ms0 * 100.0 : 0.0);
+        x3::logInfo(perf);
+        {
+            const x3::rhi::RenderStats st = device->stats();
+            x3::logInfo("--screenshot-csm: draws = " + std::to_string(st.drawCalls) +
+                        ", resident terrain tiles = " + std::to_string(streamer.residentCount()));
+        }
+
+        console->set("r_csm", "0");
+        tphys->shutdown();
+        tjobs->shutdown();
+        return 0;
+    }
+
     if (terrainShot) {
         x3::logInfo("--screenshot-terrain: rendering STREAMED terrain world to " + terrainShotPath);
 

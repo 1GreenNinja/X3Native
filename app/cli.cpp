@@ -16,6 +16,14 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         // every `else if` nests a block; the chain is at the compiler's limit).
         if (a == "--test-ddgi") { o.smoketest = true; o.testDdgi = true; continue; }
         if (a == "--ddgi") { o.ddgiForce = true; continue; }
+        // Lane 3: cascaded-shadow-map proof suite (A/B at 3 distances, a camera
+        // pan proving edges do not swim, and a cascade-boundary framing).
+        // Declared OUTSIDE the big else-if chain: MSVC C1061 nesting limit.
+        if (a == "--screenshot-csm") {
+            o.csmShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.csmShotDir = argv[++i];
+            continue;
+        }
         if (a == "--screenshot-ddgi") {
             o.ddgiShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.ddgiShotDir = argv[++i];
