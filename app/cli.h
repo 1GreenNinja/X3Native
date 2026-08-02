@@ -230,6 +230,12 @@ struct CliOptions {
     // (L2 rec, L3-L6 themed floors, L7 hydroponics, the stairwell, the L7 hall).
     bool        complexShot = false;
     std::string complexShotDir = "docs/screenshots/complex";
+    // --screenshot-tunnel <dir>: the TERRAIN-CORRIDOR TUNNEL proof set (`--world
+    // tunnel`). Headless stills — the approach, inside the bore, and the far
+    // mouth — so the corridor-depression technique can be judged BY EYE.
+    // Implies --world tunnel + headless.
+    bool        tunnelShot = false;
+    std::string tunnelShotDir = "docs/screenshots/tunnel";
 
     // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
     // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp

@@ -770,6 +770,7 @@ int main(int argc, char** argv) {
         _hc.ecologyShot      = o.ecologyShot;      _hc.ecologyShotPath  = o.ecologyShotPath;
         _hc.crowdShot        = o.crowdShot;        _hc.crowdShotPath    = o.crowdShotPath;
         _hc.complexShot      = o.complexShot;      _hc.complexShotDir   = o.complexShotDir;
+        _hc.tunnelShot       = o.tunnelShot;       _hc.tunnelShotDir    = o.tunnelShotDir;
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;

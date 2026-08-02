@@ -245,6 +245,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.complexShot = true; o.worldMode = "complex"; o.screenshot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.complexShotDir = argv[++i];
         }
+        else if (a == "--screenshot-tunnel") {                                    // terrain-corridor tunnel proof set
+            o.tunnelShot = true; o.worldMode = "tunnel"; o.screenshot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.tunnelShotDir = argv[++i];
+        }
         else if (a == "--test-clubnpcs") o.testClubNpcs = true;
         else if (a == "--test-jukebox") o.testJukebox = true;
         else if (a == "--test-listen") o.testListen = true;

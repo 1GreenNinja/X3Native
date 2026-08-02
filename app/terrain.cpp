@@ -184,13 +184,31 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
     // field), so LOD-decimation error at tile borders can exceed the old depth —
     // drop the skirt further there.
     const float skirtDepth = cfg.heightScale * 0.25f + (cfg.worldFeatures ? 40.0f : 0.0f) + 1.0f;
+    // ...EXCEPT inside a registered CORRIDOR. A skirt is a curtain hanging off
+    // the tile border to hide LOD cracks when you look at the border from
+    // OUTSIDE the ground; it is invisible because the neighbouring tile stands
+    // in front of it. A corridor deep enough to walk or drive through puts the
+    // camera UNDER the surface, and a ~55 m curtain then hangs straight across
+    // the bore every 32 m — a solid wall of terrain in the middle of the
+    // tunnel. Inside the corridor the field is a smooth flat-floored channel,
+    // so the LOD error there is centimetres and a short skirt is ample.
+    // Evaluated from the segment MIDPOINT, which is identical from either side
+    // of a shared seam, so the two tiles still agree bit-for-bit (the
+    // --test-terraincorridor C3 seam check).
+    const bool anyCorridor = (terrainCorridorCount() > 0);
     auto addSkirtEdge = [&](uint32_t i0, uint32_t j0, uint32_t i1, uint32_t j1) {
         const uint32_t topA = j0 * vpe + i0;
         const uint32_t topB = j1 * vpe + i1;
         const x3::rhi::MeshVertex& va = outVerts[topA];
         const x3::rhi::MeshVertex& vb = outVerts[topB];
+        float depth = skirtDepth;
+        if (anyCorridor) {
+            const float mx = (va.pos[0] + vb.pos[0]) * 0.5f;
+            const float mz = (va.pos[2] + vb.pos[2]) * 0.5f;
+            if (terrainCorridorDelta(mx, mz) < -0.25f) depth = std::min(depth, 2.5f);
+        }
         x3::rhi::MeshVertex la = va, lb = vb;
-        la.pos[1] -= skirtDepth; lb.pos[1] -= skirtDepth;
+        la.pos[1] -= depth; lb.pos[1] -= depth;
         float ex = vb.pos[0] - va.pos[0], ez = vb.pos[2] - va.pos[2];
         float nx = -ez, nz = ex;
         float inv = 1.0f / std::max(1e-5f, std::sqrt(nx * nx + nz * nz));
