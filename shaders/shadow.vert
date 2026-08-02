@@ -42,13 +42,24 @@ layout(std430, set = 0, binding = 2) readonly buffer VisibleIdx {
     uint idx[];
 } visBuf;
 
-// Camera UBO carries both the camera viewProj and the sun's lightViewProj; the
-// shadow pass only reads lightViewProj. Same struct as mesh.vert/mesh.frag so a
-// single per-frame UBO feeds every stage.
+// Camera UBO carries both the camera viewProj and the sun's lightViewProj. The
+// shadow pass no longer reads either (see the push constant below), but the
+// block stays so this shader remains layout-compatible with set 0 as declared by
+// mesh.vert/mesh.frag — one per-frame UBO feeds every stage.
 layout(set = 0, binding = 1) uniform Camera {
     mat4 viewProj;
     mat4 lightViewProj;
 } cam;
+
+// CASCADED SHADOW MAPS: the light matrix of the cascade CURRENTLY being
+// rasterized, pushed once per cascade by recordShadowPassBody. A push constant
+// rather than a UBO array because the per-frame Camera UBO's std140 layout is
+// mirrored in ~20 GLSL files and widening it would touch every one of them.
+// With r_csm 0 exactly ONE cascade is drawn and the pushed matrix IS the legacy
+// cam.lightViewProj, so the rasterized depth is unchanged.
+layout(push_constant) uniform CascadePush {
+    mat4 lightViewProj;
+} pc;
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;   // unused; kept so the VBO layout matches
@@ -57,5 +68,5 @@ layout(location = 2) in vec2 inUV;       // unused
 void main() {
     ObjectData o = objBuf.objects[visBuf.idx[gl_InstanceIndex]];
     vec4 worldPos = o.model * vec4(inPos, 1.0);
-    gl_Position = cam.lightViewProj * worldPos;
+    gl_Position = pc.lightViewProj * worldPos;
 }

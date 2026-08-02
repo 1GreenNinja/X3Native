@@ -45,6 +45,14 @@ layout(set = 0, binding = 1) uniform Camera {
     mat4 lightViewProj;
 } cam;
 
+// CASCADED SHADOW MAPS: the light matrix of the cascade currently being
+// rasterized (see shaders/shadow.vert for why this is a push constant). The
+// cutout pipeline layout declares the SAME range at the same offset/stage so
+// recordShadowPassBody can re-push it when it swaps between the two pipelines.
+layout(push_constant) uniform CascadePush {
+    mat4 lightViewProj;
+} pc;
+
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;   // unused; kept so the VBO layout matches
 layout(location = 2) in vec2 inUV;
@@ -56,7 +64,7 @@ layout(location = 2) flat out float vAlphaFactor;
 void main() {
     ObjectData o = objBuf.objects[visBuf.idx[gl_InstanceIndex]];
     vec4 worldPos = o.model * vec4(inPos, 1.0);
-    gl_Position   = cam.lightViewProj * worldPos;
+    gl_Position   = pc.lightViewProj * worldPos;
     vUV           = inUV;
     vTexIndex     = o.texIndex;
     vAlphaFactor  = o.baseColorFactor.a;

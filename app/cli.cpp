@@ -195,6 +195,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
                 o.shotChatter = (int)std::strtol(argv[++i], nullptr, 10);
         }
         else if (a == "--test-vehparts") o.testVehParts = true;
+        else if (a == "--test-csm") o.testCsm = true;   // Lane 3: cascaded shadow maps (no GPU needed)
         else if (a == "--test-ecology") o.testEcology = true;
         else if (a == "--test-crowd") o.testCrowd = true;
         else if (a == "--test-npclife") o.testNpcLife = true;

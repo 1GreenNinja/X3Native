@@ -161,6 +161,7 @@ add_executable(X3Engine WIN32
     world_cars.cpp
     street_lights.cpp
     vehparts.cpp
+    csm_test.cpp
     perfshop.cpp
     ecology.cpp
     fish.cpp

@@ -13,6 +13,7 @@ add_library(x3core STATIC
     rhi/vk/vk_passes.cpp
     rhi/vk/vk_graph.cpp
     rhi/RenderGraph.cpp
+    rhi/Csm.cpp
     rhi/GpuCull.cpp
     rhi/ClusterLights.cpp
     rhi/Visibility.cpp
@@ -93,6 +94,13 @@ endif()
 
 # Repo root on the include path so consumers use the namespaced prefix,
 # e.g. #include "engine/rhi/IRenderDevice.h"
+# GLM depth convention, GLOBALLY. Vulkan clip space is Z in [0,1]; glm defaults
+# to OpenGL's [-1,1]. This used to be #defined only inside
+# engine/rhi/vk/VulkanRenderDevice_internal.h, which meant any OTHER translation
+# unit that included glm (engine/rhi/Csm.cpp, app/csm_test.cpp) silently built
+# projection matrices in the WRONG convention. Making it a PUBLIC compile
+# definition guarantees every TU in the engine AND the app agrees.
+target_compile_definitions(x3core PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE GLM_FORCE_RADIANS)
 target_include_directories(x3core PUBLIC ${CMAKE_SOURCE_DIR})
 
 # cgltf + stb live only inside ModelLoader.cpp (Pimpl) and miniaudio lives only

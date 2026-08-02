@@ -32,7 +32,7 @@ void VulkanRenderDevice::recordGlassPassBody(VkCommandBuffer cmd) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassPipeline);
         // The 4 shared mesh sets + the glass-only set 4 (scene-copy + GlassControl)
         // + the IBL set at 5 (prefiltered env + BRDF LUT — glass env reflection).
-        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet,
+        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet[m_frameIdx],
                                     m_meshAoSet[m_frameIdx], m_glassSet[m_frameIdx],
                                     m_iblMeshSet };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassLayout,
@@ -782,18 +782,90 @@ glm::mat4 VulkanRenderDevice::computeLightViewProj() const {
         const glm::vec3 sunDir = glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
         // Default: ~45 m box following the camera (Level1). Override (setShadowBounds): a fixed
         // box on a scene AABB so large scenes (showroom) fall inside the shadow map.
-        const glm::vec3 center = m_shadowOverride ? m_shadowCenter : m_camPos;
+        //
+        // r_shadowforward (the cheap interim + A/B reference for CSM): slide the
+        // camera-following box FORWARD along the view axis so the shadowed region
+        // leads the car instead of being centred on it. A host-PINNED box
+        // (setShadowBounds) is left exactly where the scene put it. The branch is
+        // skipped entirely at 0, so the historical centre is bit-for-bit intact.
+        glm::vec3 followCenter = m_camPos;
+        if (m_shadowForward != 0.0f) {
+            const glm::vec3 fwd = m_camHasBasis ? m_camFwd
+                                : glm::vec3(std::cos(m_camPitch) * std::cos(m_camYaw),
+                                            std::sin(m_camPitch),
+                                            std::cos(m_camPitch) * std::sin(m_camYaw));
+            followCenter += glm::normalize(fwd) * m_shadowForward;
+        }
+        const glm::vec3 center = m_shadowOverride ? m_shadowCenter : followCenter;
         const float     ortho  = m_shadowOverride ? m_shadowOrtho : kShadowOrtho;
         const float     dHalf  = m_shadowOverride ? m_shadowDepthHalf : kShadowDepthHalf;
-        const glm::vec3 eye = center + sunDir * dHalf;
-        // Up vector not parallel to sunDir.
-        const glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
-        glm::vec3 upPick = (std::abs(glm::dot(sunDir, up)) > 0.99f) ? glm::vec3(0,0,1) : up;
-        glm::mat4 view = glm::lookAt(eye, center, upPick);
-        // Ortho with Vulkan's [0,1] Z (GLM_FORCE_DEPTH_ZERO_TO_ONE), reverse-Y clip.
-        glm::mat4 proj = glm::ortho(-ortho, ortho, -ortho, ortho, 0.0f, 2.0f * dHalf);
-        proj[1][1] *= -1.0f;
-        return proj * view;
+        // The matrix build itself lives in engine/rhi/Csm.cpp (moved VERBATIM), so
+        // the renderer and --test-csm exercise the SAME code and the test can
+        // assert it still matches the historical expression bit-for-bit.
+        return csm::legacyOrthoViewProj(center, sunDir, ortho, dHalf);
+    }
+
+// ---- CASCADED SHADOW MAPS (r_csm; Lane 3) ---------------------------------
+// Fit this frame's cascades and publish them to the shader. Returns the number
+// of cascades to rasterize, or 0 for "run the legacy single-cascade path".
+//
+// The heavy lifting (splits, bounding spheres, texel snapping, per-cascade bias)
+// lives in engine/rhi/Csm.h — Vulkan-free, so --test-csm asserts on exactly the
+// numbers this function feeds the GPU, with no device involved.
+uint32_t VulkanRenderDevice::prepareCsmCascades() {
+        const uint32_t frame = m_frameIdx;
+        // A host that pinned the box with setShadowBounds() has hand-tuned its
+        // scene around a fixed ortho extent (the showroom does this). Cascades
+        // would silently retarget that box, so CSM stands down and the pinned box
+        // wins — the documented setShadowBounds contract, preserved.
+        const bool active = m_csmEnabled && !m_shadowOverride;
+
+        m_csm = csm::Result{};
+        m_csmCascadesThisFrame = 0;
+
+        // ctrl.x == 0 tells mesh.frag/glass.frag to take the LEGACY branch:
+        // cam.lightViewProj against array layer 0, with the historical bias math.
+        CsmUBO u{};
+        for (uint32_t i = 0; i < kCsmCascades; ++i) u.viewProj[i] = glm::mat4(1.0f);
+        u.ctrl = glm::vec4(0.0f);
+
+        if (active) {
+            csm::Params p{};
+            p.camPos = m_camPos;
+            p.camFwd = m_camHasBasis ? m_camFwd
+                     : glm::vec3(std::cos(m_camPitch) * std::cos(m_camYaw),
+                                 std::sin(m_camPitch),
+                                 std::cos(m_camPitch) * std::sin(m_camYaw));
+            p.camUp  = m_camHasBasis ? m_camUp : glm::vec3(0.0f, 1.0f, 0.0f);
+            p.fovYDeg = m_camFov;
+            p.aspect  = (float)m_extent.width / (float)std::max(1u, m_extent.height);
+            p.zNear   = csm::kCascadeNear;
+            // Never fit past the camera's own far plane — cascades beyond it would
+            // shadow geometry that is never drawn.
+            p.zFar    = std::min(m_csmDistance, m_camFar);
+            p.sunDir  = glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
+            p.lambda  = m_csmLambda;
+            p.shadowDim = kShadowDim;
+            p.count   = (int)kCsmCascades;
+
+            m_csm = csm::compute(p);
+            m_csmCascadesThisFrame = (uint32_t)m_csm.count;
+
+            for (int i = 0; i < m_csm.count; ++i) {
+                u.viewProj[i]  = m_csm.c[i].viewProj;
+                u.depthBias[i]  = m_csm.c[i].depthBias;
+                u.normalBias[i] = m_csm.c[i].normalBias;
+            }
+            // Unused lanes get cascade 0's matrix rather than identity: if a
+            // rounding edge ever selects them, they sample something sane.
+            for (uint32_t i = m_csmCascadesThisFrame; i < kCsmCascades; ++i)
+                u.viewProj[i] = m_csm.c[0].viewProj;
+            u.splitFar = m_csm.splitFar;
+            u.ctrl = glm::vec4((float)m_csm.count, m_csmBlend, 0.0f, 0.0f);
+        }
+
+        if (m_csmUboMapped[frame]) std::memcpy(m_csmUboMapped[frame], &u, sizeof(CsmUBO));
+        return m_csmCascadesThisFrame;
     }
 
 void VulkanRenderDevice::recordMainPassBody(VkCommandBuffer cmd) {
@@ -1650,6 +1722,10 @@ void VulkanRenderDevice::prepareFrameData() {
 
         m_lightViewProj = computeLightViewProj();
         ubo.lightViewProj = m_lightViewProj;
+        // CSM: fit + publish this frame's cascades (0 = the legacy path stays in
+        // charge). Must run AFTER m_lightViewProj so the legacy matrix is the one
+        // cascade 0 falls back to when CSM is off.
+        prepareCsmCascades();
         // Forward point lights: a constant hemispheric-ish ambient lift in the rgb,
         // the active light count in w, then the cached light rows. Static lights are
         // set once via setPointLights(); we re-upload the cached copy each frame.
@@ -2055,53 +2131,96 @@ void VulkanRenderDevice::prepareFrameData() {
         }
     }
 
+// Rasterize the sun's depth map(s). The graph does NOT drive dynamic rendering
+// for this pass (usesDynamicRendering = false) because CSM needs ONE
+// begin/endRendering per cascade — each attaching a different array layer. The
+// graph still owns every barrier and has already put the whole image in
+// DEPTH_ATTACHMENT_OPTIMAL before we are called.
+//
+// r_csm 0 runs this loop exactly once, into layer 0, with the legacy matrix and
+// the legacy VkRenderingInfo — identical GPU work to the pre-cascade renderer.
 void VulkanRenderDevice::recordShadowPassBody(VkCommandBuffer cmd) {
         if (!m_shadowPipeline) return;
         auto& fr = m_frames[m_frameIdx];
 
+        const uint32_t cascades = (m_csmCascadesThisFrame > 0) ? m_csmCascadesThisFrame : 1u;
+
         VkViewport vp{ 0.0f, 0.0f, (float)kShadowDim, (float)kShadowDim, 0.0f, 1.0f };
         VkRect2D scis{ {0,0}, { kShadowDim, kShadowDim } };
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        vkCmdSetScissor(cmd, 0, 1, &scis);
 
-        if (m_frameCmdCount > 0) {
-            // Alpha-CUTOUT groups (foliage/people billboards, texIndex bit31): the
-            // plain pipeline has no fragment stage, so a fir billboard casts its FULL
-            // QUAD as a shadow (hard black rectangles on snow). The cutout pipeline
-            // discards exactly like mesh.frag. Opt-in per host (setShadowCutout) —
-            // OFF leaves every other world's shadow map bit-for-bit unchanged.
-            const bool cutoutAware = m_shadowCutout && (m_shadowCutoutPipeline != VK_NULL_HANDLE);
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline);
-            // set 0 = object SSBO + camera UBO (shadow.vert reads lightViewProj).
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
-                                    0, 1, &fr.objSet, 0, nullptr);
-            bool cutoutBound = false;
-            for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
-                const bool wantCutout = cutoutAware && (m_drawMeshCutout[i] != 0);
-                if (wantCutout != cutoutBound) {
-                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        wantCutout ? m_shadowCutoutPipeline : m_shadowPipeline);
-                    if (wantCutout) {
-                        // set 0 = objSet (layout-compatible), set 1 = bindless textures.
-                        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_shadowCutoutLayout, 0, 1, &fr.objSet, 0, nullptr);
-                        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_shadowCutoutLayout, 1, 1, &m_bindlessSet, 0, nullptr);
-                    } else {
-                        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_shadowLayout, 0, 1, &fr.objSet, 0, nullptr);
+        for (uint32_t c = 0; c < cascades; ++c) {
+            // Attach THIS cascade's array layer as the depth target.
+            VkRenderingAttachmentInfo att{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+            att.imageView   = m_shadowLayerView[c];
+            att.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            att.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            att.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+            att.clearValue.depthStencil = { 1.0f, 0 };
+            VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+            ri.renderArea = { {0,0}, { kShadowDim, kShadowDim } };
+            ri.layerCount = 1;
+            ri.colorAttachmentCount = 0;
+            ri.pDepthAttachment = &att;
+            vkCmdBeginRendering(cmd, &ri);
+
+            vkCmdSetViewport(cmd, 0, 1, &vp);
+            vkCmdSetScissor(cmd, 0, 1, &scis);
+
+            if (m_frameCmdCount > 0) {
+                // The cascade's light matrix travels as a push constant, so the
+                // shared per-frame camera UBO (whose std140 layout ~20 shaders
+                // mirror) never has to grow an array. With CSM off this IS
+                // m_lightViewProj, so shadow.vert transforms by the same numbers
+                // it used to read from the UBO.
+                const glm::mat4 lvp = (m_csmCascadesThisFrame > 0) ? m_csm.c[c].viewProj
+                                                                   : m_lightViewProj;
+                // Alpha-CUTOUT groups (foliage/people billboards, texIndex bit31): the
+                // plain pipeline has no fragment stage, so a fir billboard casts its FULL
+                // QUAD as a shadow (hard black rectangles on snow). The cutout pipeline
+                // discards exactly like mesh.frag. Opt-in per host (setShadowCutout) —
+                // OFF leaves every other world's shadow map bit-for-bit unchanged.
+                const bool cutoutAware = m_shadowCutout && (m_shadowCutoutPipeline != VK_NULL_HANDLE);
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline);
+                // set 0 = object SSBO + camera UBO (shadow.vert reads the model rows).
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
+                                        0, 1, &fr.objSet, 0, nullptr);
+                vkCmdPushConstants(cmd, m_shadowLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                                   0, sizeof(glm::mat4), &lvp);
+                bool cutoutBound = false;
+                for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
+                    const bool wantCutout = cutoutAware && (m_drawMeshCutout[i] != 0);
+                    if (wantCutout != cutoutBound) {
+                        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            wantCutout ? m_shadowCutoutPipeline : m_shadowPipeline);
+                        if (wantCutout) {
+                            // set 0 = objSet (layout-compatible), set 1 = bindless textures.
+                            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_shadowCutoutLayout, 0, 1, &fr.objSet, 0, nullptr);
+                            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_shadowCutoutLayout, 1, 1, &m_bindlessSet, 0, nullptr);
+                        } else {
+                            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_shadowLayout, 0, 1, &fr.objSet, 0, nullptr);
+                        }
+                        // Both layouts declare the SAME push range at offset 0, but
+                        // swapping pipeline layouts invalidates pushed values, so
+                        // re-push against whichever layout is now bound.
+                        vkCmdPushConstants(cmd,
+                            wantCutout ? m_shadowCutoutLayout : m_shadowLayout,
+                            VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &lvp);
+                        cutoutBound = wantCutout;
                     }
-                    cutoutBound = wantCutout;
+                    const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+                    VkDeviceSize off = 0;
+                    VkBuffer vb = mh.drawVbo(m_frameIdx); // fix 2: per-frame dynamic vbo
+                    vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+                    vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+                    vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                        (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                        sizeof(VkDrawIndexedIndirectCommand));
                 }
-                const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
-                VkDeviceSize off = 0;
-                VkBuffer vb = mh.drawVbo(m_frameIdx); // fix 2: per-frame dynamic vbo
-                vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
-                vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
-                vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
-                    (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
-                    sizeof(VkDrawIndexedIndirectCommand));
             }
+            vkCmdEndRendering(cmd);
         }
     }
 
@@ -2193,7 +2312,7 @@ void VulkanRenderDevice::recordMeshDraws(VkCommandBuffer cmd) {
         // the IBL objects exist (they're cleared to neutral at init + rebaked on sky
         // change); mesh.frag gates the IBL math on the SSAO-ctrl ibl.x valid flag, so
         // an un-baked / failed env safely falls back to the flat ambient term.
-        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet };
+        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet[m_frameIdx], m_meshAoSet[m_frameIdx], m_iblMeshSet };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshLayout,
                                 0, 5, sets, 0, nullptr);
         for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
@@ -2343,7 +2462,7 @@ void VulkanRenderDevice::bakeProbeSceneIntoEnv(VkCommandBuffer cmd) {
         VkDependencyInfo ddi{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; ddi.imageMemoryBarrierCount = 1; ddi.pImageMemoryBarriers = &db;
         vkCmdPipelineBarrier2(cmd, &ddi);
 
-        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet };
+        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet[m_frameIdx], m_meshAoSet[m_frameIdx], m_iblMeshSet };
         for (int f = 0; f < 6; ++f) {
             glm::vec3 fwd, right, up; iblFaceBasis(f, fwd, right, up);
             glm::mat4 view = glm::lookAt(m_iblProbePos, m_iblProbePos + fwd, up);

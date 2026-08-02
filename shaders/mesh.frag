@@ -77,7 +77,22 @@ layout(set = 1, binding = 1) uniform Camera {
 
 // Hardware-compare shadow sampler (depth texture + VK_COMPARE_OP_LESS_OR_EQUAL).
 // texture(...) returns the PCF-filtered "fragment is lit" fraction in [0,1].
-layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
+// CSM (Lane 3): a 2D ARRAY, one layer per cascade. Layer 0 IS the legacy
+// cascade, so with r_csm 0 this samples exactly the texels the single-map
+// renderer wrote. Consumed by inc/mesh_shadows.glsl.
+layout(set = 2, binding = 0) uniform sampler2DArrayShadow shadowMap;
+
+// CASCADED SHADOW MAPS control block. Mirrors CsmUBO in
+// engine/rhi/vk/VulkanRenderDevice_internal.h EXACTLY - keep them in sync.
+// ctrl.x == 0 means "no cascades this frame" -> sampleShadow takes its legacy
+// branch. glass.frag declares this identically (it shares the descriptor set).
+layout(set = 2, binding = 1) uniform Csm {
+    mat4 viewProj[4];   // world -> cascade i's shadow clip
+    vec4 splitFar;      // lane i = cascade i's far VIEW depth (meters)
+    vec4 depthBias;     // lane i = constant bias, light-clip depth units
+    vec4 normalBias;    // lane i = world-space normal offset (meters)
+    vec4 ctrl;          // x = active cascade count (0 = legacy), y = blend-band fraction
+} csm;
 
 // Screen-space ambient occlusion (set3): the blurred half-res AO texture (R8,
 // 1 = unoccluded, 0 = occluded), sampled at the fragment's screen UV. AO darkens
@@ -249,7 +264,7 @@ void main() {
     if (ssao.caustics.x > 0.5)
         sunRad *= causticMod(vWorldPos);
     float ndl    = max(dot(N, kSunDir), 0.0);
-    float shadow = sampleShadow(vWorldPos, ndl);
+    float shadow = sampleShadow(vWorldPos, N, ndl);
 #ifdef RT_SHADOWS
     // RT soft shadows (r_rtshadows): per-pixel seed (per-frame rotated when TAA
     // is on — rtsh1.x is then a running frame counter; pinned 0 with TAA off so

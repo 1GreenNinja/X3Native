@@ -1136,11 +1136,16 @@ bool VulkanRenderDevice::createGraphics() {
     }
 
 bool VulkanRenderDevice::createShadowImage() {
+        // CSM (Lane 3): the map is a 2D ARRAY of kCsmCascades layers. Layer 0 is
+        // the legacy cascade — with r_csm 0 ONLY layer 0 is rendered and ONLY
+        // layer 0 is sampled, so the image is bit-identical to the pre-cascade
+        // renderer. The extra layers cost VRAM only (2048^2 * 4 B * 4 = 64 MB),
+        // never time, when CSM is off.
         VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
         ici.imageType = VK_IMAGE_TYPE_2D;
         ici.format = m_shadowFormat;
         ici.extent = { kShadowDim, kShadowDim, 1 };
-        ici.mipLevels = 1; ici.arrayLayers = 1;
+        ici.mipLevels = 1; ici.arrayLayers = kCsmCascades;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
         ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -1151,11 +1156,22 @@ bool VulkanRenderDevice::createShadowImage() {
         if (x3vmaCreateImage(&ici, &aci, &m_shadowImg, &m_shadowAlloc, nullptr) != VK_SUCCESS) {
             logError("[rhi] shadow image create failed"); return false;
         }
+        // SAMPLING view: the whole array (sampler2DArrayShadow in mesh/glass.frag).
         VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-        vci.image = m_shadowImg; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = m_shadowFormat;
-        vci.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        vci.image = m_shadowImg; vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY; vci.format = m_shadowFormat;
+        vci.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, kCsmCascades };
         if (vkCreateImageView(m_dev.device, &vci, nullptr, &m_shadowView) != VK_SUCCESS) {
             logError("[rhi] shadow view create failed"); return false;
+        }
+        // Per-cascade RENDER views: dynamic rendering attaches ONE layer per
+        // cascade pass, so each layer needs its own single-layer 2D view.
+        for (uint32_t i = 0; i < kCsmCascades; ++i) {
+            VkImageViewCreateInfo lv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            lv.image = m_shadowImg; lv.viewType = VK_IMAGE_VIEW_TYPE_2D; lv.format = m_shadowFormat;
+            lv.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, i, 1 };
+            if (vkCreateImageView(m_dev.device, &lv, nullptr, &m_shadowLayerView[i]) != VK_SUCCESS) {
+                logError("[rhi] shadow layer view create failed"); return false;
+            }
         }
 
         // Compare-enabled sampler: hardware PCF. LESS_OR_EQUAL means texture()
@@ -1175,39 +1191,74 @@ bool VulkanRenderDevice::createShadowImage() {
             logError("[rhi] shadow sampler create failed"); return false;
         }
 
-        // Set-2 layout: a single combined-image-sampler (sampler2DShadow) in frag.
-        VkDescriptorSetLayoutBinding b{};
-        b.binding = 0; b.descriptorCount = 1;
-        b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // Set-2 layout: binding 0 = the shadow array sampler (sampler2DArrayShadow),
+        // binding 1 = the per-frame CSM UBO (cascade matrices, splits, biases).
+        // The UBO is per-frame-in-flight, so set 2 becomes an ARRAY of sets and the
+        // binding site picks m_shadowSet[m_frameIdx].
+        VkDescriptorSetLayoutBinding b[2]{};
+        b[0].binding = 0; b[0].descriptorCount = 1;
+        b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        b[1].binding = 1; b[1].descriptorCount = 1;
+        b[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        slci.bindingCount = 1; slci.pBindings = &b;
+        slci.bindingCount = 2; slci.pBindings = b;
         if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_shadowSetLayout) != VK_SUCCESS) {
             logError("[rhi] shadow set layout failed"); return false;
         }
-        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+        VkDescriptorPoolSize ps[2] = {
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
+        };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+        pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
         if (x3CreateDescriptorPool(&pci, nullptr, &m_shadowDescPool) != VK_SUCCESS) {
             logError("[rhi] shadow desc pool failed"); return false;
         }
-        VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-        dsai.descriptorPool = m_shadowDescPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_shadowSetLayout;
-        if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_shadowSet) != VK_SUCCESS) {
-            logError("[rhi] shadow set alloc failed"); return false;
+        for (uint32_t f = 0; f < kFramesInFlight; ++f) {
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_shadowDescPool; dsai.descriptorSetCount = 1;
+            dsai.pSetLayouts = &m_shadowSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_shadowSet[f]) != VK_SUCCESS) {
+                logError("[rhi] shadow set alloc failed"); return false;
+            }
+            // Persistent-mapped CSM UBO (tiny: 4 mat4 + 4 vec4).
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(CsmUBO);
+            bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            VmaAllocationCreateInfo bac{};
+            bac.usage = VMA_MEMORY_USAGE_AUTO;
+            bac.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo ai{};
+            if (x3vmaCreateBuffer(&bci, &bac, &m_csmUbo[f], &m_csmUboAlloc[f], &ai) != VK_SUCCESS) {
+                logError("[rhi] csm ubo create failed"); return false;
+            }
+            m_csmUboMapped[f] = ai.pMappedData;
+            // Zero it so a frame sampled before the first prepareFrameData sees
+            // ctrl.x == 0 (the legacy single-cascade branch), never garbage.
+            if (m_csmUboMapped[f]) std::memset(m_csmUboMapped[f], 0, sizeof(CsmUBO));
+
+            // The shadow map's sampled layout is DEPTH_READ_ONLY_OPTIMAL (it's never
+            // a color/general image); write the descriptor once with that layout. The
+            // per-frame barrier leaves the image in exactly this layout before the
+            // main pass samples it.
+            VkDescriptorImageInfo dii{};
+            dii.sampler = m_shadowSampler;
+            dii.imageView = m_shadowView;
+            dii.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+            VkDescriptorBufferInfo dbi{ m_csmUbo[f], 0, sizeof(CsmUBO) };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_shadowSet[f]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &dii;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[1].dstSet = m_shadowSet[f]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &dbi;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
         }
-        // The shadow map's sampled layout is DEPTH_READ_ONLY_OPTIMAL (it's never a
-        // color/general image); write the descriptor once with that layout. The
-        // per-frame barrier leaves the image in exactly this layout before the
-        // main pass samples it.
-        VkDescriptorImageInfo dii{};
-        dii.sampler = m_shadowSampler;
-        dii.imageView = m_shadowView;
-        dii.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-        w.dstSet = m_shadowSet; w.dstBinding = 0; w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &dii;
-        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
         return true;
     }
 
@@ -1262,8 +1313,17 @@ bool VulkanRenderDevice::createShadowPipeline() {
         ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
 
         // set 0 = the object SSBO + camera UBO (shadow.vert reads both).
+        // CSM: a 64-byte push constant carries the CURRENT CASCADE's light
+        // viewProj, so the same pass body can be replayed once per cascade
+        // without touching the per-frame UBO (which the mesh/glass/planet shaders
+        // all share and whose std140 layout is mirrored in ~20 GLSL files). 64 B
+        // is inside the 128 B every Vulkan implementation guarantees. With
+        // r_csm 0 the pushed matrix IS the legacy computeLightViewProj() result,
+        // so the rasterized depth is unchanged.
+        VkPushConstantRange pcr{ VK_SHADER_STAGE_VERTEX_BIT, 0, (uint32_t)sizeof(glm::mat4) };
         VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         plci.setLayoutCount = 1; plci.pSetLayouts = &m_objSetLayout;
+        plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
         if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_shadowLayout) != VK_SUCCESS) {
             logError("[rhi] shadow pipeline layout failed"); vkDestroyShaderModule(m_dev.device, vs, nullptr); return false;
         }
@@ -1298,6 +1358,10 @@ bool VulkanRenderDevice::createShadowPipeline() {
             VkDescriptorSetLayout cutSets[2] = { m_objSetLayout, m_bindlessLayout };
             VkPipelineLayoutCreateInfo cplci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
             cplci.setLayoutCount = 2; cplci.pSetLayouts = cutSets;
+            // Same per-cascade matrix push constant as the plain shadow layout, at
+            // the same offset/stage — so recordShadowPassBody can push ONCE per
+            // cascade even when it swaps between the two pipelines mid-cascade.
+            cplci.pushConstantRangeCount = 1; cplci.pPushConstantRanges = &pcr;
             if (vkCreatePipelineLayout(m_dev.device, &cplci, nullptr, &m_shadowCutoutLayout) == VK_SUCCESS) {
                 VkShaderModule cvs = loadShaderModule("shaders\\shadow_cutout.vert.spv");
                 VkShaderModule cfs = loadShaderModule("shaders\\depth_cutout.frag.spv");
@@ -1372,6 +1436,11 @@ void VulkanRenderDevice::destroyGraphics() {
         if (m_shadowSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_shadowSetLayout, nullptr); m_shadowSetLayout = VK_NULL_HANDLE; }
         if (m_shadowSampler)   { vkDestroySampler(m_dev.device, m_shadowSampler, nullptr); m_shadowSampler = VK_NULL_HANDLE; }
         if (m_shadowView)      { vkDestroyImageView(m_dev.device, m_shadowView, nullptr); m_shadowView = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kCsmCascades; ++i)
+            if (m_shadowLayerView[i]) { vkDestroyImageView(m_dev.device, m_shadowLayerView[i], nullptr); m_shadowLayerView[i] = VK_NULL_HANDLE; }
+        for (uint32_t f = 0; f < kFramesInFlight; ++f)
+            if (m_csmUbo[f]) { vmaDestroyBuffer(m_alloc, m_csmUbo[f], m_csmUboAlloc[f]);
+                               m_csmUbo[f] = VK_NULL_HANDLE; m_csmUboAlloc[f] = nullptr; m_csmUboMapped[f] = nullptr; }
         if (m_shadowImg)       { vmaDestroyImage(m_alloc, m_shadowImg, m_shadowAlloc); m_shadowImg = VK_NULL_HANDLE; m_shadowAlloc = nullptr; }
 
         if (m_meshPipeline)  vkDestroyPipeline(m_dev.device, m_meshPipeline, nullptr);

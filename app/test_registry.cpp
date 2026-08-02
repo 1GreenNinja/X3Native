@@ -119,6 +119,7 @@
 #include "save.h"
 #include "dialog.h"
 #include "vehparts.h"
+#include "csm_test.h"
 #include "ecology.h"
 #include "crowd.h"
 #include "npc_life.h"   // --test-npclife (LIVING CITY daily-life system)
@@ -1026,6 +1027,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "
                     "(catalog parse + composition math + REAL Jolt physics deltas + dyno pop thresholds)...");
         return x3::game::vehparts::runVehPartsSelfTest() ? 0 : 1;
+    }
+    if (tf.testCsm) {
+        x3::logInfo("running CASCADED SHADOW MAPS self-test "
+                    "(practical splits + frustum-slice containment + texel-snap stability + "
+                    "rotation invariance + bit-exact r_csm 0 + NEGATIVE CONTROL)...");
+        return x3::game::runCsmSelfTest() ? 0 : 1;
     }
     if (tf.testEcology) {
         x3::logInfo("running AMBIENT ECOLOGY self-test "

@@ -638,6 +638,27 @@ void VulkanRenderDevice::setShadowCutout(bool enable) {
         m_shadowCutout = enable;
     }
 
+// CSM knobs (r_csm / r_csm_lambda / r_csm_dist / r_csm_blend / r_shadowforward).
+// Clamped defensively here: the cvar sync hub re-pushes this EVERY frame from
+// strings a user can type into the console, so a nonsense value must degrade to
+// something sane rather than produce a degenerate ortho box.
+void VulkanRenderDevice::setCsmParams(const CsmParams& p) {
+        m_csmEnabled = p.enabled;
+        // lambda outside [0,1] is meaningless in the practical-split blend.
+        m_csmLambda   = (p.lambda   < 0.0f) ? 0.0f : (p.lambda > 1.0f ? 1.0f : p.lambda);
+        // A shadow distance under the legacy 45 m would be a regression; the upper
+        // bound keeps the far cascade's texels from growing beyond ~0.5 m.
+        m_csmDistance = (p.distance < 45.0f) ? 45.0f : (p.distance > 2000.0f ? 2000.0f : p.distance);
+        // Blend band: 0 = hard cascade edges, 0.5 = half a slice of cross-fade.
+        m_csmBlend    = (p.blend    < 0.0f) ? 0.0f : (p.blend > 0.5f ? 0.5f : p.blend);
+        // Forward bias is signed on purpose (negative pulls the box behind the
+        // camera) but bounded by the legacy half-extent, so it can never slide the
+        // box clear of the camera and leave the near field unshadowed.
+        const float fwdMax = kShadowOrtho;
+        m_shadowForward = (p.forwardBias < -fwdMax) ? -fwdMax
+                        : (p.forwardBias >  fwdMax) ?  fwdMax : p.forwardBias;
+    }
+
 void VulkanRenderDevice::setIblProbe(bool enable) {
         if (m_iblProbeScene != enable) { m_iblProbeScene = enable; m_iblDirty = true; }
     }

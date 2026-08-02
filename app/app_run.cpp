@@ -609,6 +609,22 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // if process-start -> first interactive frame exceeds this. A cvar so weaker
     // machines can loosen the threshold without a rebuild.
     console.registerCVar("boot_budget_ms", "2000", "boot-to-interactive budget (ms) asserted by --test-boottime");
+    // ---- CASCADED SHADOW MAPS (Lane 3) ------------------------------------
+    // The legacy sun shadow is ONE 45 m ortho box locked to the camera, so sun
+    // shadows simply STOP ~45 m out. That is wrong in any open scene and a hard
+    // blocker for racing: at 200 km/h that boundary sweeps past the car in 0.8 s.
+    // r_csm 1 splits the frustum into Csm.h's kNumCascades slices and renders one
+    // shadow map per slice into a 2D array — each sized from a rotation-INVARIANT
+    // bounding sphere and snapped to the shadow texel grid so edges do not swim.
+    // r_csm 0 is the legacy single cascade, BIT-EXACT (md5/screenshot gates).
+    console.registerCVar("r_csm",        "0",     "cascaded shadow maps (0 = legacy single 45 m cascade, bit-exact)");
+    console.registerCVar("r_csm_lambda", "0.75",  "CSM practical-split blend: 0 = uniform slices, 1 = logarithmic");
+    console.registerCVar("r_csm_dist",   "250.0", "CSM shadow distance in meters (view depth the cascades cover)");
+    console.registerCVar("r_csm_blend",  "0.12",  "CSM cross-fade band between cascades, as a fraction of a slice (0 = hard edges)");
+    // The cheap interim + A/B reference: push the LEGACY single cascade forward
+    // along the camera axis so the shadowed region leads the car instead of being
+    // centred on it. Independent of r_csm. 0 = the historical camera-centred box.
+    console.registerCVar("r_shadowforward", "0.0", "slide the LEGACY single shadow cascade forward along the camera axis (meters); 0 = historical");
 }
 
 // ---- Unified visibility sync state (vis-unify) -----------------------------
@@ -810,6 +826,16 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     pace.floorMs      = console.getFloat("r_fpace_floor");
     pace.strictPso    = console.getInt("r_strictpso") != 0;
     device.setPacingParams(pace);
+    // CASCADED SHADOW MAPS (r_csm). enabled = false reproduces the legacy single
+    // 45 m cascade EXACTLY. forwardBias is independent of it — it slides that
+    // legacy box forward along the camera axis (the cheap racing interim).
+    x3::rhi::IRenderDevice::CsmParams csmp{};
+    csmp.enabled     = console.getInt("r_csm") != 0;
+    csmp.lambda      = console.getFloat("r_csm_lambda");
+    csmp.distance    = console.getFloat("r_csm_dist");
+    csmp.blend       = console.getFloat("r_csm_blend");
+    csmp.forwardBias = console.getFloat("r_shadowforward");
+    device.setCsmParams(csmp);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.

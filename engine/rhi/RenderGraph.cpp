@@ -19,9 +19,10 @@
 namespace x3::rhi {
 
 RgResource RenderGraph::importImage(const char* name, VkImage image,
-                                    const ResourceState& current) {
+                                    const ResourceState& current,
+                                    uint32_t arrayLayers) {
     RgResource h{ (uint32_t)m_resources.size() };
-    m_resources.push_back(Resource{ name, image, current });
+    m_resources.push_back(Resource{ name, image, current, arrayLayers ? arrayLayers : 1u });
     return h;
 }
 
@@ -115,7 +116,11 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
             b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             b.image = r.image;
-            b.subresourceRange = { use.aspect, 0, 1, 0, 1 };
+            // Span EVERY array layer of the resource (1 for all images here except
+            // the CSM shadow array, whose 4 cascade layers are all written by the
+            // shadow pass and all sampled by the main pass). Mip 0 only: no graph
+            // pass transitions a non-base mip.
+            b.subresourceRange = { use.aspect, 0, 1, 0, r.arrayLayers };
         }
 
         if (bcount > 0) {

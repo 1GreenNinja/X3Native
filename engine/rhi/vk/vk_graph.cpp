@@ -223,7 +223,9 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             ? m_graph.importImage("scene.depth", m_depthImg, m_depthState)
             : m_graph.importImage("scene.depth", m_depthImg,
                   ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
-        RgResource rgShadow = m_graph.importImage("shadow.map", m_shadowImg, m_shadowState);
+        // kCsmCascades array layers: the barrier must cover all of them, not just
+        // layer 0, or cascades 1..N-1 never leave UNDEFINED.
+        RgResource rgShadow = m_graph.importImage("shadow.map", m_shadowImg, m_shadowState, kCsmCascades);
 
         // HDR pipeline resources: the linear HDR scene target (main pass writes it,
         // bloom + composite read it) and the bloom mip chain. All imported UNDEFINED
@@ -471,15 +473,18 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         }
 
         // ---- Pass 1: shadow depth pass --------------------------------------
+        // CSM (Lane 3): the map is a kCsmCascades-layer 2D ARRAY and each cascade
+        // needs its own begin/endRendering against its own single-layer view, so
+        // this pass opts OUT of graph-driven dynamic rendering
+        // (usesDynamicRendering = false) and recordShadowPassBody drives the
+        // per-cascade loop itself. The graph still owns the barriers: the single
+        // ResourceUse below covers ALL layers of the image (aspect-wide, no
+        // per-layer subresource tracking), which is exactly right — every layer
+        // is written in this pass and every layer is read in the main pass.
+        //
+        // With r_csm 0 the loop runs ONCE into layer 0 with an identical
+        // VkRenderingInfo, so the recorded GPU work matches the pre-cascade path.
         {
-            m_shadowDepthAttach = VkRenderingAttachmentInfo{};
-            m_shadowDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            m_shadowDepthAttach.imageView = m_shadowView;
-            m_shadowDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-            m_shadowDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            m_shadowDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;  // sampled in main pass
-            m_shadowDepthAttach.clearValue.depthStencil = { 1.0f, 0 };
-
             RenderPassDesc shadowPass{};
             shadowPass.name = "shadow-depth";
             shadowPass.addUse(ResourceUse{
@@ -487,14 +492,7 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                 VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/true });
-            shadowPass.usesDynamicRendering = true;
-            m_shadowRenderInfo = VkRenderingInfo{};
-            m_shadowRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-            m_shadowRenderInfo.renderArea = { {0,0}, { kShadowDim, kShadowDim } };
-            m_shadowRenderInfo.layerCount = 1;
-            m_shadowRenderInfo.colorAttachmentCount = 0;
-            m_shadowRenderInfo.pDepthAttachment = &m_shadowDepthAttach;
-            shadowPass.renderInfo = m_shadowRenderInfo;
+            shadowPass.usesDynamicRendering = false;
             shadowPass.recordCtx = this;
             shadowPass.record = [](void* ctx, VkCommandBuffer c){
                 static_cast<VulkanRenderDevice*>(ctx)->recordShadowPassBody(c); };

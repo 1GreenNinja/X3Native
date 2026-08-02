@@ -5,6 +5,7 @@
 
 #include "../IRenderDevice.h"
 #include "../RenderGraph.h"
+#include "../Csm.h"               // cascaded-shadow-map fitting math (Vulkan-free, unit-tested)
 #include "../VulkanRT.h"          // hardware ray-tracing AS manager (ray-query path)
 #include "../../core/x3_log.h"
 #include "../../core/x3_boot.h"   // [boot] timeline marks (device-init sub-phases)
@@ -54,8 +55,16 @@
 #include <chrono>
 #include <mutex>   // m_uploadMu: parallel boot-time model preload (docs/BOOT_TIME.md)
 
+// Both are now PUBLIC compile definitions on the x3core target (see
+// engine/CMakeLists.txt) so EVERY translation unit agrees on the convention —
+// defining it only here meant any other TU that included glm first built
+// projections in OpenGL's [-1,1] Z. Kept (guarded) for standalone readers.
+#ifndef GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#endif
+#ifndef GLM_FORCE_RADIANS
 #define GLM_FORCE_RADIANS
+#endif
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -198,6 +207,7 @@ public:
 
     void setShadowBounds(float cx, float cy, float cz, float halfExtent) override;
     void setShadowCutout(bool enable) override;
+    void setCsmParams(const CsmParams& p) override;
 
     // Interior reflection probe: when ON, the IBL environment cube is baked from the
     // SCENE geometry (around the camera) instead of the analytic sky, so glossy metals
@@ -256,12 +266,20 @@ public:
 
     FrameContext beginFrame() override;
 
-    // Compute the sun's ortho viewProj for this frame. Single map (no CSM): an
-    // ortho box of half-extent kShadowOrtho centered on the camera position, with
-    // the light positioned kShadowDepthHalf back along the sun direction. The box
-    // follows the camera so the visible ~60 m level is always covered. Matches the
-    // sun L in mesh.frag: normalize(0.4, 1.0, 0.3).
+    // LEGACY single-cascade sun ortho viewProj (r_csm 0). An ortho box of
+    // half-extent kShadowOrtho centered on the camera position, with the light
+    // positioned kShadowDepthHalf back along the sun direction. The box follows
+    // the camera so the visible ~60 m level is always covered. Matches the sun L
+    // in mesh.frag: normalize(0.4, 1.0, 0.3). Also honours r_shadowforward, which
+    // slides the box forward along the camera axis (0 = historical, bit-exact).
     glm::mat4 computeLightViewProj() const;
+
+    // CSM (r_csm 1): fit kCsmCascades cascades to this frame's camera, write them
+    // into m_csm + the per-frame CSM UBO, and return the number of cascades that
+    // must be rasterized. Returns 0 when CSM is inactive (cvar off, or a host
+    // pinned the box with setShadowBounds) — the caller then runs the legacy
+    // single-cascade path into layer 0 exactly as before.
+    uint32_t prepareCsmCascades();
 
     // Record the BODY of the main color pass into `cmd` (the graph has already
     // begun dynamic rendering + emitted the swapchain/depth/shadow barriers). This
@@ -668,15 +686,33 @@ private:
     static constexpr uint32_t kMaxHudVerts = 24576;
 
     // ---- Directional shadow mapping (perf-stack E) ------------------------
-    // Square depth map resolution. 2048 is a good quality/cost balance for a
-    // single ~80 m cascade over a ~60 m level (4x the area of 1024 for one extra
-    // mip of crispness; still cheap on the A2000/1080 Ti).
+    // Square depth map resolution, PER CASCADE. 2048 is a good quality/cost
+    // balance (4x the area of 1024 for one extra mip of crispness; still cheap
+    // on the A2000/1080 Ti).
     static constexpr uint32_t kShadowDim = 2048;
-    // The sun's ortho half-extent (meters) centered on the camera, and the depth
-    // range along the sun direction. Sized to cover the level's working set; the
-    // box follows the camera so the visible area is always shadowed.
+    // LEGACY single-cascade box (r_csm 0): the sun's ortho half-extent (meters)
+    // centered on the camera, and the depth range along the sun direction. This
+    // covered a ~60 m level and is kept EXACTLY as-is so the r_csm 0 path stays
+    // bit-identical for the md5/screenshot gates.
     static constexpr float kShadowOrtho     = 45.0f;   // half-width/height
     static constexpr float kShadowDepthHalf = 80.0f;   // +/- along the sun dir
+    // CSM (r_csm 1): the shadow map becomes a 2D ARRAY of this many layers. The
+    // count lives in one place — engine/rhi/Csm.h — so retuning it resizes the
+    // image, the UBO array and the shader loop together.
+    static constexpr uint32_t kCsmCascades = (uint32_t)csm::kNumCascades;
+
+    // Per-frame CSM UBO (set 2, binding 1). Mirrored EXACTLY by the `Csm` block
+    // in shaders/mesh.frag and shaders/glass.frag. std140: mat4 and vec4 are both
+    // 16-byte aligned with no padding needed here.
+    struct CsmUBO {
+        glm::mat4 viewProj[kCsmCascades];  // world -> cascade i shadow clip
+        glm::vec4 splitFar;                // lane i = cascade i's far VIEW depth (m)
+        glm::vec4 depthBias;               // lane i = constant bias, light-clip depth units
+        glm::vec4 normalBias;              // lane i = world-space normal offset (m)
+        glm::vec4 ctrl;                    // x = active cascade count (0 => LEGACY path),
+                                           // y = blend-band fraction, z/w reserved
+    };
+    static_assert(sizeof(CsmUBO) == kCsmCascades * 64 + 64, "CsmUBO must match the GLSL Csm block");
 
     struct Frame {
         VkCommandPool pool = VK_NULL_HANDLE;
@@ -2863,14 +2899,39 @@ private:
     VkPipeline            m_shadowCutoutPipeline = VK_NULL_HANDLE;
     VkPipelineLayout      m_shadowCutoutLayout   = VK_NULL_HANDLE;  // set0 = objSet, set1 = bindless
     bool                  m_shadowCutout = false;
-    VkDescriptorSetLayout m_shadowSetLayout = VK_NULL_HANDLE;  // set2: sampler2DShadow
+    VkDescriptorSetLayout m_shadowSetLayout = VK_NULL_HANDLE;  // set2: b0 shadow array, b1 CSM UBO
     VkDescriptorPool      m_shadowDescPool = VK_NULL_HANDLE;
-    VkDescriptorSet       m_shadowSet      = VK_NULL_HANDLE;   // points at the map
+    VkDescriptorSet       m_shadowSet[kFramesInFlight]{};      // per-frame (b1 is per-frame data)
     glm::mat4             m_lightViewProj{ 1.0f };  // computed each frame
     bool                  m_shadowOverride = false;        // setShadowBounds: fixed shadow box
     glm::vec3             m_shadowCenter{ 0.0f };
     float                 m_shadowOrtho = kShadowOrtho;
     float                 m_shadowDepthHalf = kShadowDepthHalf;
+
+    // ---- CASCADED SHADOW MAPS (r_csm; Lane 3) -----------------------------
+    // Per-cascade single-layer render views into m_shadowImg (dynamic rendering
+    // attaches one layer per cascade pass) + the per-frame CSM UBO that mesh.frag
+    // and glass.frag read at set2/binding1.
+    VkImageView           m_shadowLayerView[kCsmCascades]{};
+    VkBuffer              m_csmUbo[kFramesInFlight]{};
+    VmaAllocation         m_csmUboAlloc[kFramesInFlight]{};
+    void*                 m_csmUboMapped[kFramesInFlight]{};
+    // Host-facing knobs (setCsmParams; driven by r_csm / r_csm_lambda / r_csm_dist
+    // / r_shadowforward). enabled=false reproduces the legacy single cascade
+    // EXACTLY — same matrix, same layer, same shader branch.
+    bool                  m_csmEnabled = false;
+    float                 m_csmLambda  = csm::kDefaultLambda;
+    float                 m_csmDistance = csm::kDefaultShadowDistance;
+    float                 m_csmBlend   = 0.12f;   // cross-fade band as a fraction of each slice
+    // Cheap interim / A-B reference (r_shadowforward, meters): push the LEGACY
+    // single-cascade ortho box forward along the camera forward vector so the
+    // shadowed region leads the car instead of being centred on it. 0 = the
+    // historical camera-centred box, bit-for-bit.
+    float                 m_shadowForward = 0.0f;
+    // This frame's fitted cascades (filled in prepareFrameData, consumed by
+    // recordShadowPassBody). count == 0 means the legacy path ran.
+    csm::Result           m_csm{};
+    uint32_t              m_csmCascadesThisFrame = 0;
     uint32_t              m_curImageIndex  = 0;
 
     // ---- Render graph (perf-stack B) --------------------------------------

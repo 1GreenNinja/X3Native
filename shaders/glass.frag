@@ -50,7 +50,17 @@ layout(set = 1, binding = 1) uniform Camera {
     vec4 clusterSlice;              // x = sliceScale, y = sliceBias, z = froxel count, w = reserved
 } cam;
 
-layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
+// CSM (Lane 3): set 2 is SHARED with mesh.frag, so these two declarations must
+// match it exactly - binding 0 is a 2D shadow ARRAY (one layer per cascade,
+// layer 0 = the legacy cascade), binding 1 is the per-frame CSM control block.
+layout(set = 2, binding = 0) uniform sampler2DArrayShadow shadowMap;
+layout(set = 2, binding = 1) uniform Csm {
+    mat4 viewProj[4];
+    vec4 splitFar;
+    vec4 depthBias;
+    vec4 normalBias;
+    vec4 ctrl;          // x = active cascade count (0 = legacy), y = blend-band fraction
+} csm;
 
 layout(set = 3, binding = 0) uniform sampler2D ssaoTex;
 // Same UBO the opaque path reads (m_meshAoSet binding 1) — glass declares the
@@ -245,7 +255,7 @@ void main() {
     vec3 kSunDir = normalize(cam.sunDir.xyz);      // per-scene sun (Camera UBO tail)
     float specRough = mix(0.06, 0.6, roughness);   // polished -> sharp, frosted -> broad
     float ndl = max(dot(N, kSunDir), 0.0);
-    float shadow = sampleShadow(vWorldPos, ndl);
+    float shadow = sampleShadow(vWorldPos, N, ndl);
     vec3 lighting = kSunColor * (0.75 * ndl * shadow);
     vec3 specSum = specLight(N, V, kSunDir, kSunColor, specRough) * shadow;
 

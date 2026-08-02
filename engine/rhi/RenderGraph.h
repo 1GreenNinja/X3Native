@@ -145,8 +145,15 @@ public:
     // Import an external image with a KNOWN current state (e.g. the shadow map
     // persists DEPTH_READ_ONLY between frames; the swapchain image is UNDEFINED at
     // acquire). Returns a stable handle for this build. Cleared each beginFrame().
+    //
+    // `arrayLayers` must be the image's REAL layer count: the derived barriers
+    // transition [0, arrayLayers), and a layer left out of a transition is a layout
+    // mismatch the validation layer will flag (and real hardware may honour). It
+    // defaults to 1 because every image here except the CSM shadow array is a
+    // single layer.
     RgResource importImage(const char* name, VkImage image,
-                           const ResourceState& current);
+                           const ResourceState& current,
+                           uint32_t arrayLayers = 1);
 
     // ---- Per-frame build -------------------------------------------------
     // Reset the transient pass list + resource table for a new frame. Keeps the
@@ -185,6 +192,7 @@ private:
         const char*   name;
         VkImage       image;
         ResourceState state;
+        uint32_t      arrayLayers;   // barriers must span EVERY layer (CSM: 4)
     };
     std::vector<Resource>       m_resources;   // capacity persists across frames
     std::vector<RenderPassDesc> m_passes;      // capacity persists across frames

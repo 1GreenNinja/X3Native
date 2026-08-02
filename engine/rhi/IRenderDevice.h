@@ -233,6 +233,32 @@ public:
     // default: every existing world's shadow map stays bit-for-bit identical.
     virtual void setShadowCutout(bool enable) {}
 
+    // CASCADED SHADOW MAPS (r_csm). The legacy sun shadow is a SINGLE ~45 m
+    // ortho box locked to the camera, so sun shadows simply stop ~45 m out —
+    // wrong for any open scene and a hard blocker for racing (at 200 km/h that
+    // boundary sweeps past the car in 0.8 s). CSM splits the view frustum into
+    // `Csm.h`'s kNumCascades slices and renders one shadow map per slice into a
+    // 2D array, each fitted to a rotation-invariant bounding sphere and snapped
+    // to the shadow texel grid so edges do not swim.
+    //
+    // enabled = false reproduces the legacy single cascade EXACTLY (same matrix,
+    // same layer, same shader branch) so md5/screenshot gates stay bit-exact.
+    //
+    // `forwardBias` is independent of `enabled`: it slides the LEGACY box forward
+    // along the camera axis by that many meters — the cheap interim for racing
+    // and a useful A/B reference against real cascades. 0 = historical behaviour.
+    //
+    // NOTE: setShadowBounds() wins. A host that pins the box has explicitly
+    // tuned its scene, so CSM stands down and the pinned box is used unchanged.
+    struct CsmParams {
+        bool  enabled     = false;
+        float lambda      = 0.75f;   // practical-split blend: 0 = uniform, 1 = logarithmic
+        float distance    = 250.0f;  // meters of view depth the cascades cover
+        float blend       = 0.12f;   // cross-fade band width, as a fraction of a slice
+        float forwardBias = 0.0f;    // LEGACY-path forward push along the camera axis (m)
+    };
+    virtual void setCsmParams(const CsmParams&) {}
+
     // Enable/disable the interior reflection probe: bake the IBL environment from the
     // SCENE geometry (around the camera) instead of the analytic sky, so glossy metals
     // reflect the dim interior rather than the bright open sky. Non-pure (no-op default).
