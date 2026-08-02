@@ -151,6 +151,20 @@ struct RenderStats {
     // the mutation path paid (settles at 1 = boot); tlasCpuMs = CPU ms of the most
     // recent buildTlas. (tlasGrows/tlasCpuMsMax are not tracked by the shipped
     // double-buffer and stay 0 here — kept for HUD/diag layout stability.)
+    // ---- Clustered forward lighting (r_clusterlights). All zero when off. ----
+    // clusterOverflows is the one that MATTERS: a non-zero value means lights
+    // were dropped from a froxel's list and are visibly not lighting it. The old
+    // 64-light truncation was silent for a year; this one is not.
+    bool     clusterActive      = false;
+    uint32_t clusterLights      = 0;  // scene lights fed to the assignment
+    uint32_t clusterVisible     = 0;  // lights that reached >= 1 froxel
+    uint32_t clusterCulled      = 0;  // lights entirely outside the frustum (free)
+    uint32_t clusterAssignments = 0;  // (light, froxel) pairs written
+    uint32_t clusterOverflows   = 0;  // pairs DROPPED at the per-froxel cap
+    uint32_t clusterOverflowed  = 0;  // distinct froxels that hit the cap
+    uint32_t clusterMaxLoad     = 0;  // deepest froxel list this frame
+    float    clusterCpuMs       = 0.0f; // CPU ms spent assigning
+
     uint32_t tlasBuilds    = 0;   // real TLAS (re)builds since init
     uint32_t tlasSyncWaits = 0;   // CPU-blocking idles in the mutation path (-> 1, boot)
     uint32_t tlasGrows     = 0;   // (unused on the double-buffer base; always 0)
@@ -342,6 +356,21 @@ public:
     // baked environment keep an F0-tinted ambient response instead of going black.
     // 1.0 = default ON, 0.0 = off. Drives the live r_metalambient cvar.
     virtual void setMetalAmbient(float s) {}
+
+    // ---- CLUSTERED (froxel) FORWARD LIGHTING — r_clusterlights -------------
+    // OFF: the legacy path. Every fragment loops the fixed 64-entry point-light
+    //      UBO array in full, so the scene light cap is 64 and the per-pixel cost
+    //      is O(64) regardless of how many lights actually reach that pixel.
+    // ON:  the view frustum is diced into a froxel grid (16x9x24 by default; see
+    //      engine/rhi/ClusterLights.h) and each light is assigned to the froxels
+    //      its sphere of influence overlaps. A fragment iterates ONLY its own
+    //      froxel's list, out of a light set that can now hold kMaxSceneLights
+    //      (1024) instead of 64.
+    //
+    // The two paths are deliberately NOT unified: OFF must stay bit-for-bit the
+    // legacy render, because the repo's md5 / screenshot gates are pinned to it.
+    // Live — safe to toggle mid-frame-loop.
+    virtual void setClusterLights(bool enable) {}
 
     // IBL ambient intensity (mesh.frag ssao.ibl.y): scales the ENTIRE image-based
     // ambient term (diffuse irradiance + prefiltered specular) once a sky env is

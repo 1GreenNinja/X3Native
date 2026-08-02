@@ -426,7 +426,7 @@ bool VulkanRenderDevice::createGraphics() {
         // one set per frame pointing at that frame's persistent-mapped rings.
         // ====================================================================
         {
-            VkDescriptorSetLayoutBinding binds[3]{};
+            VkDescriptorSetLayoutBinding binds[5]{};
             binds[0].binding = 0; binds[0].descriptorCount = 1;
             binds[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             binds[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -441,14 +441,27 @@ bool VulkanRenderDevice::createGraphics() {
             binds[2].binding = 2; binds[2].descriptorCount = 1;
             binds[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             binds[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            // CLUSTERED FORWARD LIGHTING (r_clusterlights): binding 3 = the scene
+            // light array (up to kMaxSceneLights), binding 4 = the froxel light
+            // lists (per-froxel counts followed by fixed-stride index lists).
+            // FRAGMENT-only: mesh.frag + glass.frag read them via the shared
+            // shaders/inc/mesh_lighting.glsl iterator. Every other shader on this
+            // set simply never declares them (legal, and costs nothing).
+            binds[3].binding = 3; binds[3].descriptorCount = 1;
+            binds[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            binds[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            binds[4].binding = 4; binds[4].descriptorCount = 1;
+            binds[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            binds[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-            slci.bindingCount = 3; slci.pBindings = binds;
+            slci.bindingCount = 5; slci.pBindings = binds;
             if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_objSetLayout) != VK_SUCCESS) {
                 logError("[rhi] object set layout failed"); return false;
             }
 
             VkDescriptorPoolSize sizes[2]{};
-            sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; sizes[0].descriptorCount = 2 * kFramesInFlight;
+            // 4 storage buffers per frame: objects, visible-index, scene lights, froxel lists.
+            sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; sizes[0].descriptorCount = 4 * kFramesInFlight;
             sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; sizes[1].descriptorCount = kFramesInFlight;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
@@ -480,6 +493,31 @@ bool VulkanRenderDevice::createGraphics() {
                     logError("[rhi] camera UBO create failed"); return false;
                 }
                 fr.camMapped = cinfo.pMappedData;
+
+                // ---- CLUSTERED FORWARD LIGHTING rings (r_clusterlights) ------
+                // Scene light array (set 1, binding 3): kMaxSceneLights rows.
+                VkBufferCreateInfo lbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                lbci.size = (VkDeviceSize)kMaxSceneLights * sizeof(GpuPointLight);
+                lbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                VmaAllocationInfo linfo{};
+                if (x3vmaCreateBuffer(&lbci, &aci, &fr.lightBuf, &fr.lightAlloc, &linfo) != VK_SUCCESS) {
+                    logError("[rhi] cluster light SSBO create failed"); return false;
+                }
+                fr.lightMapped = linfo.pMappedData;
+
+                // Froxel lists (set 1, binding 4): [counts | fixed-stride lists].
+                VkBufferCreateInfo clbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                clbci.size = (VkDeviceSize)kClusterCount * (1u + kMaxLightsPerCluster) * sizeof(uint32_t);
+                clbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                VmaAllocationInfo clinfo{};
+                if (x3vmaCreateBuffer(&clbci, &aci, &fr.clusterBuf, &fr.clusterAlloc, &clinfo) != VK_SUCCESS) {
+                    logError("[rhi] cluster list SSBO create failed"); return false;
+                }
+                fr.clusterMapped = clinfo.pMappedData;
+                // Zero the counts so a frame that never runs the assignment (the
+                // very first frame, or any frame with r_clusterlights 0 followed by
+                // a toggle ON mid-flight) cannot read stale list lengths.
+                std::memset(fr.clusterMapped, 0, (size_t)clbci.size);
 
                 // Indirect-command buffer (one VkDrawIndexedIndirectCommand per
                 // distinct mesh; capped at kMaxTextures meshes which is plenty).
@@ -584,7 +622,9 @@ bool VulkanRenderDevice::createGraphics() {
                 VkDescriptorBufferInfo sbi{ fr.objBuf, 0, VK_WHOLE_SIZE };
                 VkDescriptorBufferInfo cbi{ fr.camBuf, 0, sizeof(FrameUBO) };
                 VkDescriptorBufferInfo vbi{ fr.visBuf, 0, VK_WHOLE_SIZE };
-                VkWriteDescriptorSet writes[3]{};
+                VkDescriptorBufferInfo lbi{ fr.lightBuf, 0, VK_WHOLE_SIZE };
+                VkDescriptorBufferInfo clbi{ fr.clusterBuf, 0, VK_WHOLE_SIZE };
+                VkWriteDescriptorSet writes[5]{};
                 writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[0].dstSet = fr.objSet; writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
                 writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[0].pBufferInfo = &sbi;
@@ -594,7 +634,13 @@ bool VulkanRenderDevice::createGraphics() {
                 writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[2].dstSet = fr.objSet; writes[2].dstBinding = 2; writes[2].descriptorCount = 1;
                 writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[2].pBufferInfo = &vbi;
-                vkUpdateDescriptorSets(m_dev.device, 3, writes, 0, nullptr);
+                writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[3].dstSet = fr.objSet; writes[3].dstBinding = 3; writes[3].descriptorCount = 1;
+                writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[3].pBufferInfo = &lbi;
+                writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[4].dstSet = fr.objSet; writes[4].dstBinding = 4; writes[4].descriptorCount = 1;
+                writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[4].pBufferInfo = &clbi;
+                vkUpdateDescriptorSets(m_dev.device, 5, writes, 0, nullptr);
             }
         }
 
@@ -1307,6 +1353,8 @@ void VulkanRenderDevice::destroyGraphics() {
             auto& fr = m_frames[i];
             if (fr.objBuf)      { vmaDestroyBuffer(m_alloc, fr.objBuf, fr.objAlloc); fr.objBuf = VK_NULL_HANDLE; fr.objAlloc = nullptr; fr.objMapped = nullptr; }
             if (fr.camBuf)      { vmaDestroyBuffer(m_alloc, fr.camBuf, fr.camAlloc); fr.camBuf = VK_NULL_HANDLE; fr.camAlloc = nullptr; fr.camMapped = nullptr; }
+            if (fr.lightBuf)    { vmaDestroyBuffer(m_alloc, fr.lightBuf, fr.lightAlloc); fr.lightBuf = VK_NULL_HANDLE; fr.lightAlloc = nullptr; fr.lightMapped = nullptr; }
+            if (fr.clusterBuf)  { vmaDestroyBuffer(m_alloc, fr.clusterBuf, fr.clusterAlloc); fr.clusterBuf = VK_NULL_HANDLE; fr.clusterAlloc = nullptr; fr.clusterMapped = nullptr; }
             if (fr.indirectBuf) { vmaDestroyBuffer(m_alloc, fr.indirectBuf, fr.indirectAlloc); fr.indirectBuf = VK_NULL_HANDLE; fr.indirectAlloc = nullptr; fr.indirectMapped = nullptr; }
         }
 

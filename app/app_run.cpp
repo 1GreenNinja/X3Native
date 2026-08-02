@@ -508,6 +508,17 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // environment keep an F0-tinted ambient response instead of rendering black.
     // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
     console.registerCVar("r_metalambient", "1", "metal ambient-specular floor (0 = off; metals keep an F0-tinted ambient in dark environments; live)");
+    // CLUSTERED (froxel) FORWARD LIGHTING. 0 = the LEGACY path: every fragment
+    // loops the fixed 64-entry point-light UBO array in full, so the scene cap is
+    // 64 lights and the per-pixel cost is O(64) no matter how many actually reach
+    // the pixel. 1 = dice the view frustum into a 16x9x24 froxel grid, assign each
+    // light to the froxels its sphere of influence overlaps, and have each
+    // fragment iterate ONLY its own froxel's list — which raises the scene cap to
+    // 1024 lights (Echo Harbor's neon night, a fully dressed tunnel, car underglow)
+    // AND makes the per-pixel cost proportional to the lights that actually reach
+    // that pixel. DEFAULT 0: r_clusterlights 0 is bit-for-bit the old render, which
+    // is what keeps every existing md5 / screenshot gate green. Live.
+    console.registerCVar("r_clusterlights", "0", "clustered froxel forward lighting (16x9x24 grid, up to 1024 lights); 0 = legacy 64-light loop (bit-exact)");
     // SSR / RT REFLECTIONS (STRIKE 3): a half-res compute pass marches each pixel's
     // reflection ray against the depth buffer and samples LAST frame's lit scene
     // (the TAA history image — reflections REQUIRE r_taa 1; with TAA off the whole
@@ -757,6 +768,9 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     device.setPostFX(px);
     // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
     device.setMetalAmbient(console.getFloat("r_metalambient"));
+    // Clustered froxel forward lighting (live). 0 keeps the legacy 64-light UBO
+    // loop, which is the bit-exact fallback every image gate is pinned to.
+    device.setClusterLights(console.getInt("r_clusterlights") != 0);
     // SSR / RT reflections (live). The device additionally gates on TAA being
     // active (the TAA history is the pass's color source) and tier-gates the
     // ray-query fallback on RT hardware support (Pascal = SSR-only automatically).

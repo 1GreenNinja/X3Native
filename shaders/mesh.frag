@@ -64,6 +64,15 @@ layout(set = 1, binding = 1) uniform Camera {
     PointLight lights[kMaxPointLights];
     vec4 camPos;                    // xyz = camera world position (PBR view vector)
     vec4 sunDir;                    // xyz = per-scene direction TOWARD the sun (lighting + shadows)
+    // ---- CLUSTERED FORWARD LIGHTING (r_clusterlights; see inc/mesh_lighting.glsl)
+    // APPENDED at the tail, so mesh.vert (which declares the block only as far as
+    // camPos) and glass.frag stay valid std140 PREFIXES of this same buffer.
+    // All four are ZERO when r_clusterlights is 0, and clusterCfg.x == 0 is what
+    // routes every light loop back to the legacy 64-entry UBO array above.
+    vec4 camFwd;                    // xyz = camera FORWARD (view basis), w = zNear
+    vec4 clusterCfg;                // x = clustered active (0/1), y = scene light count, zw = 1/screenW, 1/screenH
+    vec4 clusterGrid;               // x = grid X, y = grid Y, z = grid Z, w = max lights per froxel
+    vec4 clusterSlice;              // x = sliceScale, y = sliceBias, z = froxel count, w = reserved
 } cam;
 
 // Hardware-compare shadow sampler (depth texture + VK_COMPARE_OP_LESS_OR_EQUAL).
@@ -266,7 +275,11 @@ void main() {
         vec2 aoUV = gl_FragCoord.xy * ssao.ctrl.zw;   // pixel -> [0,1] screen UV
         ao = mix(1.0, texture(ssaoTex, aoUV).r, clamp(ssao.ctrl.y, 0.0, 1.0));
     }
-    int nLights = int(cam.ambientCount.w);
+    // How many lights this FRAGMENT must evaluate. Legacy (r_clusterlights 0):
+    // min(activeCount, 64) — the whole UBO array, exactly as before. Clustered:
+    // only the lights assigned to this fragment's froxel. Resolved once here and
+    // reused by every loop below (the froxel lookup is not repeated per loop).
+    int nLights = x3LightCount();
 
     // ---- DDGI probe-field irradiance (r_ddgi): sampled ONCE per fragment,
     // shared by both shading paths. Inactive (gate 0) -> exact zero weight and
@@ -307,15 +320,23 @@ void main() {
                                    cam.ambientCount.rgb, N.y * 0.5 + 0.5, vec4(0.0)), 1.0);
         return;
     }
+    // r_debugview 6: the CLUSTER OCCUPANCY heatmap — how many lights this
+    // fragment's froxel actually holds. Black = none, blue->green->red as the
+    // list fills, WHITE where the froxel is at the cap and lights are being
+    // dropped. Points straight at any overflow, in one frame, by eye.
+    if (ssao.rtsh1.w > 5.5 && ssao.rtsh1.w < 6.5) {
+        outColor = vec4(x3ClusterHeatmap(), 1.0);
+        return;
+    }
     if (ssao.rtsh1.w > 1.5 && ssao.rtsh1.w < 2.5) {
         vec3 dbg = vec3(0.0);
-        int  nl  = int(cam.ambientCount.w);
-        for (int i = 0; i < nl && i < kMaxPointLights; ++i) {
-            vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+        for (int i = 0; i < nLights; ++i) {
+            ClusterLight PL = x3Light(i);
+            vec3  toL  = PL.posRange.xyz - vWorldPos;
             float dist = length(toL);
             vec3  L    = toL / max(dist, 0.0001);
-            dbg += cam.lights[i].colorPad.rgb
-                 * (max(dot(N, L), 0.0) * pointAtten(dist, cam.lights[i].posRange.w));
+            dbg += PL.colorPad.rgb
+                 * (max(dot(N, L), 0.0) * pointAtten(dist, PL.posRange.w));
         }
         outColor = vec4(dbg, 1.0);
         return;
@@ -338,25 +359,26 @@ void main() {
         vec3  F0d = vec3(0.04);
         float NoVd = max(dot(N, Vd), 1e-4);
         vec3  lit  = brdf(N, Vd, NoVd, kSunDir, F0d, albedo.rgb, aD, kSunDiffuseW) * sunRad * shadow;
-        for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {
-            vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+        for (int i = 0; i < nLights; ++i) {
+            ClusterLight PL = x3Light(i);
+            vec3  toL  = PL.posRange.xyz - vWorldPos;
             float dist = length(toL);
             vec3  L    = toL / max(dist, 0.0001);
-            float atten = pointAtten(dist, cam.lights[i].posRange.w);
+            float atten = pointAtten(dist, PL.posRange.w);
 #ifdef RT_SHADOWS
             // POINT RT shadow (tier >= 2): the first K lights with a real
             // contribution here each get one source-jittered shadow ray;
             // negligible / over-budget lights keep the unshadowed behavior.
             float vis = 1.0;
             if (ssao.rtsh0.x >= 1.5 && rtshRaysLeft > 0 && dot(N, L) > 0.0
-                && atten * dot(cam.lights[i].colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
+                && atten * dot(PL.colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
                 --rtshRaysLeft;
                 vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshSeed);
             }
             atten *= vis;
 #endif
             lit += brdf(N, Vd, NoVd, L, F0d, albedo.rgb, aD, kPointDiffuseW)
-                 * cam.lights[i].colorPad.rgb * atten;
+                 * PL.colorPad.rgb * atten;
         }
         color = lit
               + iblAmbient(N, Vd, albedo.rgb, 0.0, kDielectricRough, F0d, ao, ambient, up, ddgiGI);
@@ -382,23 +404,24 @@ void main() {
         vec3  V        = normalize(cam.camPos.xyz - vWorldPos);
         float NoV      = max(dot(N, V), 1e-4);
         vec3  Lo = brdf(N, V, NoV, kSunDir, F0, diff, a, kSunDiffuseW) * sunRad * shadow;  // sun (shadowed)
-        for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {                    // point lights
-            vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+        for (int i = 0; i < nLights; ++i) {                                           // point lights
+            ClusterLight PL = x3Light(i);
+            vec3  toL  = PL.posRange.xyz - vWorldPos;
             float dist = length(toL);
             vec3  L    = toL / max(dist, 0.0001);
 #ifdef RT_SHADOWS
             // POINT RT shadow (tier >= 2): same first-K-significant policy as
             // the dielectric loop (one budget shared across both paths).
-            float atten = pointAtten(dist, cam.lights[i].posRange.w);
+            float atten = pointAtten(dist, PL.posRange.w);
             float vis = 1.0;
             if (ssao.rtsh0.x >= 1.5 && rtshRaysLeft > 0 && dot(N, L) > 0.0
-                && atten * dot(cam.lights[i].colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
+                && atten * dot(PL.colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
                 --rtshRaysLeft;
                 vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshSeed);
             }
-            Lo += brdf(N, V, NoV, L, F0, diff, a, kPointDiffuseW) * cam.lights[i].colorPad.rgb * (atten * vis);
+            Lo += brdf(N, V, NoV, L, F0, diff, a, kPointDiffuseW) * PL.colorPad.rgb * (atten * vis);
 #else
-            Lo += brdf(N, V, NoV, L, F0, diff, a, kPointDiffuseW) * cam.lights[i].colorPad.rgb * pointAtten(dist, cam.lights[i].posRange.w);
+            Lo += brdf(N, V, NoV, L, F0, diff, a, kPointDiffuseW) * PL.colorPad.rgb * pointAtten(dist, PL.posRange.w);
 #endif
         }
         // Image-based lighting: SPLIT-SUM diffuse irradiance + GGX-prefiltered specular
@@ -441,8 +464,9 @@ void main() {
                 ccLo += sunRad * shadow
                       * (D_GGX(NoH, aCc) * V_SmithGGX(NoVc, NoL, aCc) * Fd * NoL);
             }
-            for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {
-                vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+            for (int i = 0; i < nLights; ++i) {
+                ClusterLight PL = x3Light(i);
+                vec3  toL  = PL.posRange.xyz - vWorldPos;
                 float dist = length(toL);
                 vec3  L    = toL / max(dist, 0.0001);
                 float NoL2 = max(dot(Nc, L), 0.0);
@@ -450,7 +474,7 @@ void main() {
                 vec3 H = normalize(Vc + L);
                 float NoH = max(dot(Nc, H), 0.0), VoH = max(dot(Vc, H), 0.0);
                 float Fd  = 0.04 + 0.96 * pow(1.0 - VoH, 5.0);
-                ccLo += cam.lights[i].colorPad.rgb * pointAtten(dist, cam.lights[i].posRange.w)
+                ccLo += PL.colorPad.rgb * pointAtten(dist, PL.posRange.w)
                       * (D_GGX(NoH, aCc) * V_SmithGGX(NoVc, NoL2, aCc) * Fd * NoL2);
             }
         }

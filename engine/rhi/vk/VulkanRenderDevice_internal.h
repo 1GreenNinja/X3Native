@@ -62,6 +62,7 @@
 
 #include "../FrustumCull.h"   // CPU per-object frustum cull (r_frustumcull, D15 baseline)
 #include "../GpuCull.h"       // D15 GPU-driven culling (r_cullpath: Tier 0/1/2 + HZB)
+#include "../ClusterLights.h" // clustered forward lighting (r_clusterlights): froxel grid + assignment
 
 namespace x3::rhi {
 
@@ -184,6 +185,7 @@ public:
 
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override;
+    void setClusterLights(bool enable) override;
     void setIblIntensity(float s) override;
     void setIblSpecular(float s) override;
 
@@ -518,9 +520,16 @@ private:
     // 2D HUD vertex: position already in clip space (NDC), uv, rgba color.
     struct HudVertex { float pos[2]; float uv[2]; float color[4]; };
 
-    // Forward point-light cap. A bounded fragment-shader loop over this many
-    // lights is fine for a corridor (NOT clustered/tiled — that's a later perf
-    // item). 64 omni fills cover Level 1's ceiling fixtures with headroom.
+    // LEGACY forward point-light cap — the size of the FrameUBO's fixed light
+    // array, looped in full for every fragment. This is the path r_clusterlights 0
+    // still runs, and it MUST stay 64: the repo's md5 / screenshot gates are
+    // pinned to its exact output.
+    //
+    // The real cap is now kMaxSceneLights (1024, engine/rhi/ClusterLights.h) via
+    // the clustered path, which keeps the lights in an SSBO and has each fragment
+    // iterate only its own froxel's list. setPointLights() accepts up to that many;
+    // the FIRST 64 are what still land in this UBO array, so the legacy branch sees
+    // byte-for-byte the set it always saw.
     static constexpr uint32_t kMaxPointLights = 64;
 
     // One GPU point light row (matches the GLSL std140 PointLight in mesh.frag).
@@ -543,8 +552,19 @@ private:
         GpuPointLight lights[kMaxPointLights]; // offset 144
         glm::vec4 camPos;            // xyz = camera world position (PBR view vector); w unused
         glm::vec4 sunDir;            // xyz = per-scene direction TOWARD the sun (lighting + shadows)
+        // ---- CLUSTERED FORWARD LIGHTING tail (r_clusterlights) --------------
+        // APPENDED, never inserted: mesh.vert declares this block only as far as
+        // camPos and glass.frag as far as sunDir, and std140 makes a shorter
+        // declaration a valid PREFIX of the same buffer. Adding at the end keeps
+        // both of those valid without touching either shader's binding.
+        // All four are ZERO'd when the feature is off, and clusterCfg.x == 0 is
+        // what routes the shader's light loops back to the legacy array above.
+        glm::vec4 camFwd;            // xyz = camera FORWARD (view basis), w = zNear
+        glm::vec4 clusterCfg;        // x = active(0/1), y = scene light count, zw = 1/screenW, 1/screenH
+        glm::vec4 clusterGrid;       // x = gridX, y = gridY, z = gridZ, w = max lights per froxel
+        glm::vec4 clusterSlice;      // x = sliceScale, y = sliceBias, z = froxel count, w = reserved
     };
-    static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 32 + 32,
+    static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 32 + 32 + 64,
                   "FrameUBO must match the std140 layout in mesh.frag");
 
     // ---- Analytic sky UBO (open-world track, task A) -----------------------
@@ -672,6 +692,17 @@ private:
         VkBuffer      camBuf = VK_NULL_HANDLE;      VmaAllocation camAlloc = nullptr;  void* camMapped = nullptr;
         VkBuffer      indirectBuf = VK_NULL_HANDLE; VmaAllocation indirectAlloc = nullptr; void* indirectMapped = nullptr;
         VkDescriptorSet objSet = VK_NULL_HANDLE;
+        // ---- CLUSTERED FORWARD LIGHTING per-frame ring (r_clusterlights) ----
+        //   lightBuf   : GpuPointLight[kMaxSceneLights] (set 1, binding 3) — the
+        //                whole scene light set, not the legacy 64.
+        //   clusterBuf : uint32[kClusterCount * (1 + kMaxLightsPerCluster)]
+        //                (set 1, binding 4). Layout: per-froxel counts first, then
+        //                the fixed-stride index lists. ONE binding, no prefix sum.
+        // Both are allocated unconditionally (they are ~916 KB per frame slot) and
+        // are simply NEVER READ while r_clusterlights is 0 — the shader's legacy
+        // branch cannot reach them, so the fallback stays bit-exact.
+        VkBuffer      lightBuf = VK_NULL_HANDLE;    VmaAllocation lightAlloc = nullptr;   void* lightMapped = nullptr;
+        VkBuffer      clusterBuf = VK_NULL_HANDLE;  VmaAllocation clusterAlloc = nullptr; void* clusterMapped = nullptr;
         // Per-frame analytic-sky UBO (set 0 of the sky pipeline) + its descriptor.
         VkBuffer      skyBuf = VK_NULL_HANDLE;      VmaAllocation skyAlloc = nullptr;  void* skyMapped = nullptr;
         VkDescriptorSet skySet = VK_NULL_HANDLE;
@@ -3077,6 +3108,23 @@ private:
     uint32_t                m_lastCullExpected = 0;
     uint32_t                m_cullEquivFrames = 0;
     uint32_t                m_cullEquivMismatches = 0;
+    // ---- CLUSTERED FORWARD LIGHTING (r_clusterlights) ----------------------
+    // OFF by default: the legacy 64-light UBO loop stays the shipping path until
+    // a host opts in, so every existing md5 / screenshot gate keeps holding
+    // without touching a single world. setClusterLights() is the only writer.
+    bool                    m_clusterLights = false;
+    // CPU-SIDE STAGING for the assignment. The froxel lists live in a
+    // persistent-mapped HOST_ACCESS_SEQUENTIAL_WRITE (write-combined) buffer, and
+    // the assignment does a read-modify-write on every froxel's count. READING
+    // write-combined memory is uncached and un-prefetched, and it cost 5.0 ms for
+    // a 48-light frame (measured) — 8x the entire rest of the pass. Assign into
+    // ordinary cached memory here, then do ONE linear memcpy into the mapped
+    // buffer, which is exactly the access pattern write-combining is built for.
+    std::vector<uint32_t>   m_clusterCounts;           // kClusterCount
+    std::vector<uint32_t>   m_clusterIndices;          // kClusterCount * kMaxLightsPerCluster
+    ClusterBuildResult      m_clusterStats{};          // last frame's assignment counters
+    float                   m_clusterCpuMs = 0.0f;     // CPU ms spent assigning last frame
+    uint32_t                m_clusterOverflowLogged = 0; // rate-limiter for the overflow warning
     float                   m_metalAmbient = 1.0f; // metal ambient-spec floor strength (mesh.frag ibl.w; r_metalambient)
     float                   m_iblIntensity = 1.0f; // IBL ambient scale (mesh.frag ibl.y; SEAM 2 interior/exterior balance)
     float                   m_iblSpecular  = -1.0f; // ABSOLUTE env-specular scale (mesh.frag refl.z); <0 = unset -> shader falls back to m_iblIntensity (pre-R10 math exactly)

@@ -658,6 +658,15 @@ struct CliOptions {
     // asserts equal radiance (+ a negative control). See app/prim_light_test.cpp.
     bool        testPrimLight = false;
     std::string primLightShotPath = "shots/primlight_probe.png";
+    // --test-clusterlights [outdir]: CLUSTERED (froxel) FORWARD LIGHTING gate.
+    // Part A checks the froxel grid + light assignment (engine/rhi/ClusterLights)
+    // against an independent brute-force sweep of all 3456 froxels, including the
+    // overflow policy and a negative control. Part B renders the SAME rig with
+    // r_clusterlights 0 and 1 on the real device and asserts the two are
+    // BIT-IDENTICAL under 64 lights, then proves the >64 case only the clustered
+    // path can light. See app/cluster_light_test.cpp.
+    bool        testClusterLights = false;
+    std::string clusterLightsOutDir = "docs/screenshots/clustered-lights";
     // Ocean vantage mode (--screenshot-ocean [path.png]): build the procedural
     // terrain world + an animated ocean at sea level under the sky/sun, pose a
     // camera on the shore looking out across the water toward the sun so the lit

@@ -42,6 +42,12 @@ layout(set = 1, binding = 1) uniform Camera {
     PointLight lights[kMaxPointLights];
     vec4 camPos;                    // xyz = camera world position (unused here; g.camPos wins)
     vec4 sunDir;                    // xyz = per-scene direction TOWARD the sun (FrameUBO tail)
+    // CLUSTERED FORWARD LIGHTING tail — must mirror mesh.frag's Camera block
+    // exactly (same buffer). See shaders/inc/mesh_lighting.glsl.
+    vec4 camFwd;                    // xyz = camera FORWARD (view basis), w = zNear
+    vec4 clusterCfg;                // x = clustered active (0/1), y = scene light count, zw = 1/screenW, 1/screenH
+    vec4 clusterGrid;               // x = grid X, y = grid Y, z = grid Z, w = max lights per froxel
+    vec4 clusterSlice;              // x = sliceScale, y = sliceBias, z = froxel count, w = reserved
 } cam;
 
 layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
@@ -253,15 +259,20 @@ void main() {
     }
     lighting += ambient * mix(0.85, 1.25, up) * ao;
 
-    int n = int(cam.ambientCount.w);
-    for (int i = 0; i < n && i < kMaxPointLights; ++i) {
-        vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+    // Point lights via the SHARED iterator (inc/mesh_lighting.glsl): the legacy
+    // 64-entry UBO array when r_clusterlights is 0, this fragment's froxel list
+    // when it is 1 — so a glass pane in Echo Harbor's neon night now catches the
+    // same 1024-light set the opaque facade beside it does.
+    int n = x3LightCount();
+    for (int i = 0; i < n; ++i) {
+        ClusterLight PL = x3Light(i);
+        vec3  toL  = PL.posRange.xyz - vWorldPos;
         float dist = length(toL);
         vec3  L    = toL / max(dist, 0.0001);
         float pndl = max(dot(N, L), 0.0);
-        float att  = pointAtten(dist, cam.lights[i].posRange.w);
-        lighting  += cam.lights[i].colorPad.rgb * (pndl * att);
-        specSum   += specLight(N, V, L, cam.lights[i].colorPad.rgb, specRough) * att;
+        float att  = pointAtten(dist, PL.posRange.w);
+        lighting  += PL.colorPad.rgb * (pndl * att);
+        specSum   += specLight(N, V, L, PL.colorPad.rgb, specRough) * att;
     }
 
     // ---- M3-R: Schlick FRESNEL + REAL environment reflection --------------

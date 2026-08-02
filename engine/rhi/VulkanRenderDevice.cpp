@@ -646,8 +646,35 @@ void VulkanRenderDevice::setPointLights(const PointLight* lights, uint32_t count
         // Copy a clamped snapshot (we never retain the caller's pointer). The
         // cached set is re-uploaded into each frame's UBO by prepareFrameData, so
         // static lights only need one call. count==0 clears them.
-        const uint32_t n = std::min<uint32_t>(count, kMaxPointLights);
+        //
+        // THE CAP IS NOW kMaxSceneLights (1024), NOT 64. It used to be 64, and the
+        // truncation was silent — Level 1 pushed 332 ceiling fixtures and got 64,
+        // in build order, with no diagnostic (see the B4 note in app_run.cpp).
+        // prepareFrameData still copies only the FIRST 64 into the legacy UBO
+        // array, so r_clusterlights 0 sees byte-for-byte the set it always saw;
+        // the clustered path uploads all of them to the light SSBO instead.
+        const uint32_t n = std::min<uint32_t>(count, kMaxSceneLights);
+        if (count > kMaxSceneLights) {
+            logWarn("[light] setPointLights(" + std::to_string(count) + ") exceeds the " +
+                    std::to_string(kMaxSceneLights) + "-light scene cap; kept the first " +
+                    std::to_string(n) + " (raise kMaxSceneLights in engine/rhi/ClusterLights.h)");
+        }
         m_pointLights.assign(lights, lights + n);
+    }
+
+void VulkanRenderDevice::setClusterLights(bool enable) {
+        // Live toggle. The froxel lists are rebuilt from scratch every frame the
+        // feature is on, and the SSBO counts were zeroed at creation, so flipping
+        // this on mid-run can never read a stale list.
+        if (m_clusterLights != enable) {
+            m_clusterLights = enable;
+            m_clusterOverflowLogged = 0;
+            logInfo(std::string("[cluster] clustered forward lighting ") + (enable ? "ON" : "OFF") +
+                    (enable ? " (" + std::to_string(kClusterGridX) + "x" + std::to_string(kClusterGridY) +
+                              "x" + std::to_string(kClusterGridZ) + " froxels, up to " +
+                              std::to_string(kMaxSceneLights) + " lights)"
+                            : " -- legacy 64-light UBO loop (bit-exact fallback)"));
+        }
     }
 
 void VulkanRenderDevice::setSkyParams(const SkyParams& sp) {
@@ -1138,6 +1165,16 @@ void VulkanRenderDevice::endFrame(const FrameContext& fc) {
         m_building.tlasGrows     = 0;                 // not tracked by the double-buffer
         m_building.tlasCpuMs     = m_rt.tlasCpuMs();
         m_building.tlasCpuMsMax  = 0.0f;              // not tracked by the double-buffer
+        // ---- Clustered forward lighting (r_clusterlights) -------------------
+        m_building.clusterActive      = m_clusterLights;
+        m_building.clusterLights      = m_clusterStats.lightsConsidered;
+        m_building.clusterVisible     = m_clusterStats.lightsVisible;
+        m_building.clusterCulled      = m_clusterStats.lightsCulled;
+        m_building.clusterAssignments = m_clusterStats.assignments;
+        m_building.clusterOverflows   = m_clusterStats.overflows;
+        m_building.clusterOverflowed  = m_clusterStats.clustersOverflowed;
+        m_building.clusterMaxLoad     = m_clusterStats.maxClusterLoad;
+        m_building.clusterCpuMs       = m_clusterCpuMs;
         m_lastStats = m_building;
 
         // ZERO-STUTTER: record this frame in the pacing ring + spike log.

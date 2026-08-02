@@ -78,6 +78,7 @@ add_executable(X3Engine WIN32
     descent_slide.cpp
     basis_test.cpp
     prim_light_test.cpp
+    cluster_light_test.cpp
     world_hosts/host_descentslide.cpp
     world_hosts/host_shipwindows.cpp
     world_hosts/host_bodycontact.cpp

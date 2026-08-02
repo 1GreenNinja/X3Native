@@ -491,6 +491,14 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.testPrimLight = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.primLightShotPath = argv[++i];
         }
+        else if (a == "--test-clusterlights") {
+            // CLUSTERED (froxel) FORWARD LIGHTING: froxel assignment vs a
+            // brute-force reference + the overflow policy (CPU), then an
+            // r_clusterlights 0-vs-1 bit-identity A/B on the real device.
+            // Optional output DIR for the A/B captures.
+            o.testClusterLights = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.clusterLightsOutDir = argv[++i];
+        }
         else if (a == "--screenshot-destruct") {
             o.destructShot = true;
             // Optional output path arg (next token, if it isn't another flag).

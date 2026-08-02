@@ -37,6 +37,7 @@
 #include "asset_root.h"                    // portable assetRoot() (assets-LFS)
 #include "room_dressing.h"                 // recipeSurfaceSets() (boot prewarm, task #4)
 #include "prim_light_test.h"               // --test-primlight: ONE LIGHTING PATH (prim vs GLB radiance parity)
+#include "cluster_light_test.h"            // --test-clusterlights: froxel grid + r_clusterlights 0-vs-1 bit identity
 #include "surface_library.h"               // prewarmSurfaceSetsAsync (boot prewarm, task #4)
 #include "asset_manifest_check.h"          // fleet asset-store manifest boot check (Phase A)
 #include "audio_root.h"                    // portable resolveAudio() (D: mirror / G: packs)
@@ -524,7 +525,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -668,6 +669,18 @@ int main(int argc, char** argv) {
     // the contact sheet and exit before any host machinery spins up. ----
     if (o.testPrimLight) {
         const int rc = x3::game::runPrimLightTest(*device, o.primLightShotPath);
+        device.reset();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return rc;
+    }
+
+    // ---- --test-clusterlights: the CLUSTERED FORWARD LIGHTING gate. Same shape
+    // as --test-primlight (self-contained rig on the real device, no world
+    // build): CPU froxel-assignment checks against a brute-force reference, then
+    // an r_clusterlights 0-vs-1 bit-identity A/B render. ----
+    if (o.testClusterLights) {
+        const int rc = x3::game::runClusterLightTest(*device, o.clusterLightsOutDir);
         device.reset();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();

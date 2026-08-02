@@ -1666,6 +1666,96 @@ void VulkanRenderDevice::prepareFrameData() {
         // (SkyParams::sunLight; 1.0 by default == the old hardcoded kSunColor).
         ubo.sunDir = glm::vec4(glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2])),
                                std::max(m_sky.sunLight, 0.0f));
+
+        // ====================================================================
+        // CLUSTERED FORWARD LIGHTING (r_clusterlights) — build this frame's
+        // froxel light lists and upload them alongside the camera UBO.
+        //
+        // r_clusterlights 0 leaves the whole tail at ZERO, which is what makes
+        // the shader take the legacy 64-entry UBO loop. Nothing below runs, the
+        // SSBOs are not touched, and the render is bit-for-bit the old path.
+        // ====================================================================
+        ubo.camFwd       = glm::vec4(0.0f);
+        ubo.clusterCfg   = glm::vec4(0.0f);
+        ubo.clusterGrid  = glm::vec4(0.0f);
+        ubo.clusterSlice = glm::vec4(0.0f);
+        m_clusterStats = ClusterBuildResult{};
+        m_clusterCpuMs = 0.0f;   // NOT stale: a legacy frame must report 0, not last clustered frame's cost
+        if (m_clusterLights && fr.lightMapped && fr.clusterMapped && !m_pointLights.empty()) {
+            const auto t0 = std::chrono::high_resolution_clock::now();
+
+            // The SAME basis the viewProj above was built from — fwd/camUp are
+            // the locals used for glm::lookAt, and the near/far/fov are the
+            // arguments to glm::perspective. Reusing them (rather than
+            // re-deriving) is what keeps the CPU's froxel geometry and the
+            // shader's fragment->froxel lookup on the same frustum.
+            const float eye[3] = { m_camPos.x, m_camPos.y, m_camPos.z };
+            const float fw[3]  = { fwd.x, fwd.y, fwd.z };
+            const float up3[3] = { camUp.x, camUp.y, camUp.z };
+            const ClusterView cv = makeClusterView(eye, fw, up3, m_camFov, aspect,
+                                                   0.1f /* matches glm::perspective above */,
+                                                   m_camFar);
+
+            const uint32_t sceneLights = std::min<uint32_t>((uint32_t)m_pointLights.size(), kMaxSceneLights);
+
+            // Light rows -> the SSBO (the whole set, not the legacy 64).
+            auto* gl = static_cast<GpuPointLight*>(fr.lightMapped);
+            for (uint32_t i = 0; i < sceneLights; ++i) {
+                const PointLight& s = m_pointLights[i];
+                gl[i].posRange = glm::vec4(s.pos[0], s.pos[1], s.pos[2], s.range);
+                gl[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], 0.0f);
+            }
+
+            // Assign into CACHED staging (see m_clusterCounts), then copy out.
+            if (m_clusterCounts.size() != kClusterCount) {
+                m_clusterCounts.assign(kClusterCount, 0u);
+                m_clusterIndices.assign((size_t)kClusterCount * kMaxLightsPerCluster, 0u);
+            }
+            m_clusterStats = buildClusterLightLists(cv, m_pointLights.data(), sceneLights,
+                                                    m_clusterCounts.data(), m_clusterIndices.data());
+
+            // Publish to the GPU. Counts are always copied whole (13.5 KB); index
+            // rows are copied only for froxels that actually hold something, in
+            // CONTIGUOUS RUNS — a night city fills a small fraction of the 3456
+            // froxels, so this moves tens of KB, not the full 884 KB.
+            auto* dstCounts  = static_cast<uint32_t*>(fr.clusterMapped);
+            auto* dstIndices = dstCounts + kClusterCount;
+            std::memcpy(dstCounts, m_clusterCounts.data(), sizeof(uint32_t) * kClusterCount);
+            for (uint32_t c = 0; c < kClusterCount; ) {
+                if (m_clusterCounts[c] == 0) { ++c; continue; }
+                uint32_t e = c + 1;
+                while (e < kClusterCount && m_clusterCounts[e] != 0) ++e;
+                const size_t off = (size_t)c * kMaxLightsPerCluster;
+                std::memcpy(dstIndices + off, m_clusterIndices.data() + off,
+                            sizeof(uint32_t) * (size_t)(e - c) * kMaxLightsPerCluster);
+                c = e;
+            }
+
+            const auto t1 = std::chrono::high_resolution_clock::now();
+            m_clusterCpuMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
+
+            ubo.camFwd       = glm::vec4(cv.camFwd[0], cv.camFwd[1], cv.camFwd[2], cv.zNear);
+            ubo.clusterCfg   = glm::vec4(1.0f, (float)sceneLights,
+                                         1.0f / (float)std::max(1u, m_extent.width),
+                                         1.0f / (float)std::max(1u, m_extent.height));
+            ubo.clusterGrid  = glm::vec4((float)kClusterGridX, (float)kClusterGridY,
+                                         (float)kClusterGridZ, (float)kMaxLightsPerCluster);
+            ubo.clusterSlice = glm::vec4(cv.sliceScale, cv.sliceBias, (float)kClusterCount, 0.0f);
+
+            // OVERFLOW IS NEVER SILENT. The bug this whole feature replaces was a
+            // silent truncation (332 ceiling fixtures in, 64 out, not one word
+            // logged, Level 1 lit by an ambient wash for a year). Rate-limited so a
+            // genuinely over-dense scene does not spam, but it always says so.
+            if (m_clusterStats.overflows > 0 && (m_clusterOverflowLogged++ % 300u) == 0u) {
+                logWarn("[cluster] " + std::to_string(m_clusterStats.overflows) +
+                        " light->froxel assignment(s) DROPPED across " +
+                        std::to_string(m_clusterStats.clustersOverflowed) +
+                        " froxel(s) at the " + std::to_string(kMaxLightsPerCluster) +
+                        "-per-froxel cap (" + std::to_string(m_clusterStats.lightsVisible) +
+                        " visible lights). Lowest light index wins; raise "
+                        "kMaxLightsPerCluster or thin the scene. r_debugview 6 shows where.");
+            }
+        }
         std::memcpy(fr.camMapped, &ubo, sizeof(FrameUBO));
 
         // Analytic sky UBO (open-world track, task A): the camera's INVERSE viewProj
