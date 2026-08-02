@@ -25,6 +25,17 @@
 //     (proj[1][1] *= -1), exactly like computeLightViewProj().
 #pragma once
 
+// Vulkan clip space is Z in [0,1]; glm defaults to OpenGL's [-1,1]. The renderer
+// sets this in VulkanRenderDevice_internal.h, but this header is included by
+// translation units that do NOT pull that in (engine/rhi/Csm.cpp, app/csm_test.cpp),
+// and a cascade matrix built in the wrong convention silently produces depths
+// that never compare correctly. Define it HERE, before glm, so every consumer of
+// this header agrees. (It is deliberately NOT a global compile definition — see
+// the note in engine/CMakeLists.txt.)
+#ifndef GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#endif
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdint>

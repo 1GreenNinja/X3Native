@@ -94,13 +94,18 @@ endif()
 
 # Repo root on the include path so consumers use the namespaced prefix,
 # e.g. #include "engine/rhi/IRenderDevice.h"
-# GLM depth convention, GLOBALLY. Vulkan clip space is Z in [0,1]; glm defaults
-# to OpenGL's [-1,1]. This used to be #defined only inside
-# engine/rhi/vk/VulkanRenderDevice_internal.h, which meant any OTHER translation
-# unit that included glm (engine/rhi/Csm.cpp, app/csm_test.cpp) silently built
-# projection matrices in the WRONG convention. Making it a PUBLIC compile
-# definition guarantees every TU in the engine AND the app agrees.
-target_compile_definitions(x3core PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE GLM_FORCE_RADIANS)
+# NOTE (Lane 3, cascaded shadow maps): GLM_FORCE_DEPTH_ZERO_TO_ONE is *_NOT_*
+# defined globally here, deliberately. Vulkan clip space is Z in [0,1] and glm
+# defaults to OpenGL's [-1,1], but in this repo the macro is defined only inside
+# engine/rhi/vk/VulkanRenderDevice_internal.h — so every translation unit that
+# includes glm WITHOUT that header (app-side code, engine/rhi/GpuCull.cpp, ...)
+# builds glm projections in the OpenGL convention today. Promoting it to a PUBLIC
+# compile definition was tried and MEASURABLY CHANGES RENDERING: the canonlevel
+# reference capture moved on 39% of pixels (max channel delta 210). That is a
+# latent inconsistency worth fixing, but it is a rendering change that needs its
+# own A/B and sign-off, NOT a side effect of a shadow lane. Filed for follow-up.
+# Headers that need the Vulkan convention define it themselves before including
+# glm (see engine/rhi/Csm.h).
 target_include_directories(x3core PUBLIC ${CMAKE_SOURCE_DIR})
 
 # cgltf + stb live only inside ModelLoader.cpp (Pimpl) and miniaudio lives only
