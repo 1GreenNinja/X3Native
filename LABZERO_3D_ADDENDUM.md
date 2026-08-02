@@ -89,6 +89,14 @@ FOV 28 with smoothing; 60 fps on the 1060; G4 shot + G5 gif in
    entangled with canon-world state, ship P0 with a capsule + emissive rim
    material + blob shadow and file the model hookup as P1 line-item ZERO.
    Note the finding in this file.
+   > **FINDING (2026-08-01, A1000 guest session):** the animated Jake avatar
+   > EXISTS and IS standalone-hostable — `app/thirdperson.*` drives
+   > `Jake_22_actions.glb` (34-bone Mixamo rig, 22 clips) through the same
+   > skinning path as the monsters; `x3::game::Player` itself is camera-only
+   > (no model). NOT entangled — but all .glb assets are LFS-tracked and the
+   > fleet LFS endpoint (192.168.7.23) is unreachable from this guest box.
+   > P0 ships the contingency capsule; **P1 line-item ZERO = wire the Jake
+   > avatar via ThirdPerson on any fleet box with LFS access.**
 3. **Spline:** `labzero_rail.h` — array of nodes, Catmull-Rom position +
    tangent lookup by arc-length param `s`. P0 ships TWO nodes (a straight
    400 m run along terrain that visibly skirts mountains); curving comes free

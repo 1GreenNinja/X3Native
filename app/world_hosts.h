@@ -45,6 +45,7 @@ int hostWormholeTransit(HostContext& hc); // --world wormhole-transit (feast fol
 int hostTractor(HostContext& hc);         // --world tractor (feast fold: intro capital-ship capture beam)
 int hostEchotropolis(HostContext& hc); // --world echotropolis (Echo Harbor: island + city + day-night)
 int hostGallery  (HostContext& hc);   // --world gallery   (CHARACTER GALLERY: walkable cast + clip cycle)
+int hostLabZero3d(HostContext& hc);   // --world labzero3d (LAB ZERO P0 rail slice, LABZERO_3D_ADDENDUM)
 
 // Headless self-test for the gallery cast + clip-cycle (--test-gallery).
 bool runGallerySelfTest();
