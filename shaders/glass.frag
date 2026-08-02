@@ -106,31 +106,16 @@ const uint FLAG_GLASS = 2u;
 // matched the glass specular — the glint sat where no sun was.
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);
 
-// 3x3 PCF (identical to mesh.frag) — glass is still lit by the sun so it doesn't
-// read as a flat slab in the dark.
-float sampleShadow(vec3 worldPos, float ndl) {
-    vec4 lc = cam.lightViewProj * vec4(worldPos, 1.0);
-    vec3 proj = lc.xyz / lc.w;
-    vec2 uv = proj.xy * 0.5 + 0.5;
-    float curDepth = proj.z;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || curDepth > 1.0)
-        return 1.0;
-    float bias = clamp(0.0015 * tan(acos(clamp(ndl, 0.0, 1.0))), 0.0005, 0.004);
-    float refDepth = curDepth - bias;
-    vec2 texel = 1.0 / vec2(textureSize(shadowMap, 0));
-    float lit = 0.0;
-    for (int y = -1; y <= 1; ++y)
-        for (int x = -1; x <= 1; ++x)
-            lit += texture(shadowMap, vec3(uv + vec2(x, y) * texel, refDepth));
-    return lit / 9.0;
-}
+// 3x3 PCF — the SAME sampleShadow() mesh.frag uses, now literally the same text
+// (it was a hand-kept copy that had already drifted in comments only). glass.frag
+// never defines RT_SHADOWS, so the ray-query block inside this include compiles
+// away to nothing and the raster PCF is byte-for-byte what it always was.
+#include "inc/mesh_shadows.glsl"     // RT shadow rays + 3x3 PCF sampleShadow     [LANE 3]
 
-float pointAtten(float dist, float range) {
-    float t = dist / max(range, 0.0001);
-    float w = clamp(1.0 - t * t * t * t, 0.0, 1.0);
-    w *= w;
-    return w / (dist * dist + 1.0);
-}
+// Point-light attenuation + (from here on) the clustered light iteration — the
+// SAME module the opaque path uses, so glass can never drift from mesh.frag's
+// falloff curve or its cluster lookup again.
+#include "inc/mesh_lighting.glsl"    // point-light attenuation + the light loops  [LANE 2]
 
 // ---- M3: fresnel + specular shimmer helpers --------------------------------
 // Schlick fresnel: reflectance rises toward grazing angles. F0 ~ 0.04 (glass/

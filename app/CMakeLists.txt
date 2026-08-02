@@ -306,14 +306,29 @@ set(SHADER_SRCS_RT
     ${CMAKE_SOURCE_DIR}/shaders/audio_rays.comp)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
+# ---- Shader INCLUDE path (shaders/inc/*.glsl) --------------------------------
+# mesh.frag is a thin ORCHESTRATOR that #includes one file per concern (lighting /
+# shadows / reflections / material / ...) so parallel lanes can own a concern
+# without ever editing the same file. glslc resolves #include against -I.
+#
+# BIT-EXACTNESS NOTE: glslc's default (non -g) output embeds NO source filenames,
+# so hoisting a block verbatim into an -I include produces BYTE-IDENTICAL SPIR-V.
+# That is the gate the modularization was proved against — see docs/design/
+# MESH_FRAG_MODULES.md. It only holds while declaration ORDER is preserved, so
+# keep each #include exactly where its block used to sit.
+set(SHADER_INC ${CMAKE_SOURCE_DIR}/shaders)
+# Every include, listed so a plain glob-free build still reconfigures when one is
+# added. The per-output DEPFILE below is what makes EDITS to them rebuild.
+file(GLOB SHADER_INC_SRCS ${CMAKE_SOURCE_DIR}/shaders/inc/*.glsl)
 set(SPV_FILES "")
 foreach(s ${SHADER_SRCS})
     get_filename_component(fn ${s} NAME)
     set(out ${SPV_DIR}/${fn}.spv)
     add_custom_command(
         OUTPUT ${out}
-        COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${s} -o ${out}
+        COMMAND ${Vulkan_GLSLC_EXECUTABLE} -I${SHADER_INC} -MD -MF ${out}.d ${s} -o ${out}
         DEPENDS ${s}
+        DEPFILE ${out}.d
         COMMENT "glslc ${fn}"
         VERBATIM)
     list(APPEND SPV_FILES ${out})
@@ -354,8 +369,10 @@ list(APPEND SPV_FILES ${SPV_DIR}/refl.comp.spv ${SPV_DIR}/refl_rt.comp.spv)
 add_custom_command(
     OUTPUT ${SPV_DIR}/mesh_rt.frag.spv
     COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.4 -DRT_SHADOWS=1
+            -I${SHADER_INC} -MD -MF ${SPV_DIR}/mesh_rt.frag.spv.d
             -fshader-stage=frag ${CMAKE_SOURCE_DIR}/shaders/mesh.frag -o ${SPV_DIR}/mesh_rt.frag.spv
     DEPENDS ${CMAKE_SOURCE_DIR}/shaders/mesh.frag
+    DEPFILE ${SPV_DIR}/mesh_rt.frag.spv.d
     COMMENT "glslc mesh.frag (ray-query soft shadows) -> mesh_rt.frag.spv"
     VERBATIM)
 list(APPEND SPV_FILES ${SPV_DIR}/mesh_rt.frag.spv)
