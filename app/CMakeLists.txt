@@ -33,6 +33,10 @@ add_executable(X3Engine WIN32
     world_hosts/host_surface_start.cpp
     world_hosts/host_rifthub.cpp
     world_hosts/host_gallery.cpp
+    # LABZERO_3D_ADDENDUM P0 — the rail-camera side-scroller host + the sim drop
+    # it will consume in P1 (labzero_tests.cpp carries --test-labzero today).
+    world_hosts/host_labzero3d.cpp
+    labzero/labzero_tests.cpp
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp

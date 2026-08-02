@@ -173,6 +173,7 @@ struct CliOptions {
     // once (the descent-gate flag). Headless. Additive flag.
     bool        testClone = false;
     bool        testGallery = false;      // --test-gallery (character-gallery cast + clip cycle)
+    bool        testLabzero = false;      // --test-labzero (Lab Zero sim suite: feel/aim/jetpack)
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
     // --test-loading (loading-screen pass, Task #49): asserts progress is monotonic

@@ -339,6 +339,7 @@ int main(int argc, char** argv) {
         _tf.testPackSpiders = o.testPackSpiders;
         _tf.testClone = o.testClone;
         _tf.testGallery = o.testGallery;
+        _tf.testLabzero = o.testLabzero;
         _tf.testSpireMid = o.testSpireMid;
         _tf.testNexus = o.testNexus;
         _tf.testSpireTop = o.testSpireTop;

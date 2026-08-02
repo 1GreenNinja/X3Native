@@ -45,6 +45,7 @@ int hostWormholeTransit(HostContext& hc); // --world wormhole-transit (feast fol
 int hostTractor(HostContext& hc);         // --world tractor (feast fold: intro capital-ship capture beam)
 int hostEchotropolis(HostContext& hc); // --world echotropolis (Echo Harbor: island + city + day-night)
 int hostGallery  (HostContext& hc);   // --world gallery   (CHARACTER GALLERY: walkable cast + clip cycle)
+int hostLabZero3D(HostContext& hc);   // --world labzero3d (LABZERO_3D_ADDENDUM P0: rail-camera side-scroller)
 
 // Headless self-test for the gallery cast + clip-cycle (--test-gallery).
 bool runGallerySelfTest();
@@ -92,3 +93,13 @@ bool runSurfaceHandoffSelfTest();
 bool runIntroCockpitSelfTest();
 
 }} // namespace x3::apphost
+
+// --test-labzero: the Lab Zero SIM self-test suite (app/labzero/labzero_tests.cpp,
+// LABZERO_PORT_RFC SS-T). A pure state-machine suite — no window, no Vulkan, no
+// physics — covering determinism, jump apex, coyote window, jump buffer, ground
+// contract, fire cooldown, contact damage, aim (+-90 + cardinal magnetism) and
+// jetpack flight. Declared at global scope because labzero_tests.cpp is the
+// upstream drop from the EscapeLabZero repo and defines it there (repo
+// convention, see app/labzero/INTEGRATION_SNIPPETS.md); keeping the declaration
+// matched to the definition is what lets the drop be re-synced verbatim.
+bool runLabZeroSimSelfTest();

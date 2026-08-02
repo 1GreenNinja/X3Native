@@ -127,6 +127,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-packspiders") o.testPackSpiders = true;
         else if (a == "--test-clone") o.testClone = true;
         else if (a == "--test-gallery") o.testGallery = true;
+        else if (a == "--test-labzero") o.testLabzero = true;
         // (chain break — restart the if/else-if ladder so MSVC stays under the
         // C1061 block-nesting limit; flags are exact == matches, all unique, so a
         // matched arg simply falls through the second ladder without re-matching)

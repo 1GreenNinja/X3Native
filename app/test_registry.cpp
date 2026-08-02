@@ -748,6 +748,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running CHARACTER GALLERY (--world gallery) cast + clip-cycle self-test...");
         return x3::apphost::runGallerySelfTest() ? 0 : 1;
     }
+    if (tf.testLabzero) {
+        x3::logInfo("running LAB ZERO sim self-test (determinism, jump apex, coyote, "
+                    "jump buffer, ground contract, cooldown, contact damage, aim, jetpack)...");
+        return runLabZeroSimSelfTest() ? 0 : 1;
+    }
     if (tf.testSpireMid) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "
                     "encounter-content self-test...");

@@ -80,6 +80,7 @@ struct TestFlags {
     bool testPackSpiders = false;    // --test-packspiders (pack-harvest arachnids: Lab Skitterer / Venom Brood)
     bool testClone = false;          // --test-clone (THE CLONE: Act-1 finale 3-phase boss + neural collar)
     bool testGallery = false;        // --test-gallery (character-gallery cast + clip cycle)
+    bool testLabzero = false;        // --test-labzero (Lab Zero sim: feel / aim / jetpack suite)
     bool testSpireTop = false, testTimeline = false, testDroneHack = false, testSubLevels = false;
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;
