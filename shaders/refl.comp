@@ -59,10 +59,35 @@ layout(set = 0, binding = 3) uniform Refl {
 } ub;
 #ifdef REFL_RT
 layout(set = 0, binding = 4) uniform accelerationStructureEXT tlas;
+// PER-OBJECT MATERIAL for RT hits. The TLAS instanceCustomIndex carries the hit
+// object's row in the SAME per-frame 160-byte std430 ObjectData buffer the mesh
+// pass and ddgi_rays.comp already read, so a ray-query hit CAN recover the real
+// albedo/emissive. The "no material access in the ray-query tier" limitation
+// this shader used to document applies to PER-TRIANGLE data (uv / interpolated
+// normal / texture fetch), NOT to per-OBJECT factors. Layout must match
+// ObjectData in ddgi_rays.comp byte-for-byte.
+struct ObjectData {
+    mat4 model;
+    vec4 baseColorFactor;
+    vec4 emissive;        // rgb = linear emissive color, a = strength
+    uint texIndex;
+    uint flags;           // bit0 = TERRAIN, bit1 = GLASS
+    uint terrainPack1;
+    uint terrainPack2;
+    uint normalTexIndex;
+    uint mrTexIndex;
+    uint emissiveTexIndex;
+    uint detailPacked;
+    vec4 glassParams;
+    vec4 glassTint;
+};
+layout(std430, set = 0, binding = 5) readonly buffer Objects {
+    ObjectData objects[];
+} objBuf;
 #endif
 
 const vec3  kSunColor       = vec3(1.0, 0.97, 0.92); // matches mesh.frag's sun tint
-const float kFallbackAlbedo = 0.40;                  // RT flat-shade albedo guess (documented approx)
+const float kFallbackAlbedo = 0.40;                  // last-resort albedo (no object row)
 
 // Reconstruct world position from screen UV + NDC depth (same convention as
 // rtao.comp: NDC xy in [-1,1], depth already [0,1], proj Y-flip baked in).
@@ -239,10 +264,34 @@ void main() {
                 outColor = prev.rgb;
                 outConf  = 0.65 * backFade;
             } else {
-                // DOCUMENTED APPROXIMATION: no material access in the ray-query
-                // tier -> flat-shade the hit (constant albedo * (ambient + dim
-                // sun)). Low confidence so the IBL blend + TAA soften it.
-                outColor = kFallbackAlbedo * (ub.ambient.rgb + kSunColor * 0.18);
+                // PER-OBJECT MATERIAL (was: a single flat constant for every
+                // off-screen hit, which made all such reflections the same grey
+                // smudge regardless of what was actually there). The TLAS
+                // instanceCustomIndex indexes the per-frame ObjectData rows, so
+                // recover the hit object's REAL albedo + emissive — the same
+                // path ddgi_rays.comp uses.
+                //
+                // Still an approximation, and deliberately so: per-OBJECT
+                // factors only, no per-triangle uv/normal/texture fetch (that
+                // genuinely needs an SBT tier we don't have). Geometric normal
+                // is unavailable here too, so the sun term uses a conservative
+                // half-lambert against the RAY direction rather than a true
+                // N.L — it cannot produce a hard terminator, only a plausible
+                // directional lift. Confidence stays low so the IBL blend + TAA
+                // keep any error soft.
+                uint objIdx = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+                vec3 albedo   = vec3(kFallbackAlbedo);
+                vec3 emissive = vec3(0.0);
+                if (objIdx < objBuf.objects.length()) {
+                    ObjectData od = objBuf.objects[objIdx];
+                    albedo   = clamp(od.baseColorFactor.rgb, 0.0, 1.0);
+                    emissive = max(od.emissive.rgb * od.emissive.a, 0.0);
+                }
+                // Half-lambert on -R (surfaces facing back toward the ray get
+                // more sun) — bounded [0.5,1] so it never darkens below the
+                // ambient-only result the previous constant produced.
+                float sunWrap = 0.5 + 0.5 * max(dot(-R, ub.sunDir.xyz), 0.0);
+                outColor = albedo * (ub.ambient.rgb + kSunColor * (0.18 * sunWrap)) + emissive;
                 outConf  = 0.45 * backFade;
             }
         }

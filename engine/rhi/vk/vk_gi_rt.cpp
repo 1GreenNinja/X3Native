@@ -985,9 +985,12 @@ bool VulkanRenderDevice::ensureReflReady() {
 
 bool VulkanRenderDevice::createRefl() {
         // ---- Set layouts: 0 = depth sampler, 1 = output storage image, 2 = prev
-        // scene (TAA history) sampler, 3 = Refl UBO; the RT variant adds 4 = TLAS.
+        // scene (TAA history) sampler, 3 = Refl UBO; the RT variant adds
+        // 4 = TLAS and 5 = the per-frame object SSBO (so an RT hit can read the
+        // hit object's real albedo/emissive via instanceCustomIndex, exactly as
+        // the DDGI ray pass does — replacing refl.comp's old flat-constant fill).
         {
-            VkDescriptorSetLayoutBinding b[5]{};
+            VkDescriptorSetLayoutBinding b[6]{};
             b[0].binding = 0; b[0].descriptorCount = 1;
             b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1007,7 +1010,11 @@ bool VulkanRenderDevice::createRefl() {
                 b[4].binding = 4; b[4].descriptorCount = 1;
                 b[4].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
                 b[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-                ci.bindingCount = 5;
+                // 5 = per-frame object SSBO (ObjectData rows) for RT-hit material.
+                b[5].binding = 5; b[5].descriptorCount = 1;
+                b[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                b[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+                ci.bindingCount = 6;
                 if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_reflSetLayoutRt) != VK_SUCCESS) return false;
             }
         }
@@ -1015,7 +1022,7 @@ bool VulkanRenderDevice::createRefl() {
         {
             const uint32_t nFrames = kFramesInFlight;
             const uint32_t nVariants = m_rtSupported ? 2u : 1u;
-            VkDescriptorPoolSize sizes[4]{};
+            VkDescriptorPoolSize sizes[5]{};
             uint32_t nSizes = 3;
             sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             sizes[0].descriptorCount = nFrames * nVariants * 2;   // depth + prevScene
@@ -1026,7 +1033,10 @@ bool VulkanRenderDevice::createRefl() {
             if (m_rtSupported) {
                 sizes[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
                 sizes[3].descriptorCount = nFrames;
-                nSizes = 4;
+                // + the per-frame object SSBO on the RT variant (binding 5).
+                sizes[4].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                sizes[4].descriptorCount = nFrames;
+                nSizes = 5;
             }
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = nFrames * nVariants; pci.poolSizeCount = nSizes; pci.pPoolSizes = sizes;
@@ -1118,6 +1128,10 @@ void VulkanRenderDevice::writeReflDescriptors() {
                                             m_taaHistView ? m_taaHistView : m_reflView,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             VkDescriptorBufferInfo ubo{ m_reflUboBuf[i], 0, sizeof(ReflUBO) };
+            // Per-frame object SSBO — RT variant only (binding 5). Lets an RT
+            // reflection hit read the hit object's real albedo/emissive via the
+            // TLAS instanceCustomIndex (same rows the DDGI ray pass reads).
+            VkDescriptorBufferInfo objInfo{ m_frames[i].objBuf, 0, VK_WHOLE_SIZE };
             VkDescriptorSet targets[2] = { m_reflSet[i], m_reflSetRt[i] };
             for (int s = 0; s < 2; ++s) {
                 if (!targets[s]) continue;
@@ -1131,6 +1145,15 @@ void VulkanRenderDevice::writeReflDescriptors() {
                 w[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[3].dstSet = targets[s]; w[3].dstBinding = 3; w[3].descriptorCount = 1;
                 w[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[3].pBufferInfo = &ubo;
                 vkUpdateDescriptorSets(m_dev.device, 4, w, 0, nullptr);
+                // RT variant (s == 1) additionally binds the object SSBO at 5.
+                // (Binding 4, the TLAS, is filled by rewriteRtaoTlas() once a
+                // TLAS exists — it may not yet on the first frame.)
+                if (s == 1 && m_frames[i].objBuf) {
+                    VkWriteDescriptorSet wo{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+                    wo.dstSet = targets[s]; wo.dstBinding = 5; wo.descriptorCount = 1;
+                    wo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; wo.pBufferInfo = &objInfo;
+                    vkUpdateDescriptorSets(m_dev.device, 1, &wo, 0, nullptr);
+                }
             }
         }
         // The TLAS (RT sets, binding 4) may already exist (e.g. RT AO enabled
