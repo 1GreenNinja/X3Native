@@ -4,6 +4,7 @@
 // §2.2/§2.3/§3.2/§3.3/§4.3/§4.4 and re-implemented here from first principles.
 #include "tunnel_corridor.h"
 #include "mesh_prims.h"
+#include "asset_root.h"        // assetRoot() — the surface_library mount point
 
 #include "engine/core/x3_log.h"
 
@@ -264,7 +265,7 @@ void emitPortalFace(MeshBuf& mb, const float origin[3], const float right[3],
 
 // Upload one buffer as a Scene entity (+ optional static collision).
 struct Material {
-    x3::rhi::TextureHandle alb, mr;
+    x3::rhi::TextureHandle alb, mr, nrm;
     float tint[4] = { 1, 1, 1, 1 };
     float emissive[4] = { 0, 0, 0, 0 };
 };
@@ -508,6 +509,43 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     const x3::rhi::TextureHandle roughMR     = solid1(0, 235, 0, false);   // rough 0.92, metal 0
     const x3::rhi::TextureHandle wallMR      = solid1(0, 205, 0, false);   // rough 0.80, metal 0
 
+    // ---- REAL ART. The two checkers above are the BARE-CHECKOUT FALLBACK and
+    // nothing more; when assets/surface_library is present the concrete is
+    // dressed from authored PBR sets (albedo + normal + mr) instead.
+    //
+    //   BORE LINING -> cv_shotcrete_break. A road bore is lined with SHOTCRETE
+    //     — sprayed concrete straight onto the excavated face — so this is the
+    //     literally-correct material, not a lookalike. It is also the only
+    //     concrete-family set in the library that ships a REAL multi-channel mr
+    //     map (589 KB of actual roughness variation; sr_concrete_01,
+    //     sr_concrete_a, cc_porous_cement and both mw_concrete_panels sets all
+    //     ship an 8x8 constant), which matters here because the bore is the one
+    //     surface the player is inside for 300 m under six point lights. And its
+    //     value sits well under the placeholder's near-white 188/183/175, which
+    //     is what was blowing the interior out to a white tube.
+    //
+    //   PORTAL HEADWALLS -> mw_concrete_panels_a. A headwall is CAST IN
+    //     FORMWORK, and this set carries the signature of exactly that: panel
+    //     joints and form-tie holes on a ~2.5 m grid. Deliberately a DIFFERENT
+    //     set from the bore, because the portal is a different pour from the
+    //     lining and reading them as one continuous material is what made the
+    //     old checker slab look pasted on.
+    //
+    //   Neither is sr_concrete_01 — that set is already the terrain splat's ROCK
+    //     layer (terrain.cpp makeGroundTexture), so using it here would make the
+    //     concrete and the rock cutting the same surface and erase the portal.
+    //
+    //   NOT WIRED, and honestly: the ROAD. There is no asphalt set in the
+    //     library (sr_rubberfloor is studded rubber matting, cc_porous_cement is
+    //     a pale cement), so the ribbon keeps its procedural low-contrast dark
+    //     checker rather than being dressed in something that is not asphalt.
+    m_surf.mount(x3::game::assetRoot() + "/surface_library");
+    const SurfaceSet& boreSet   = m_surf.get(device, "cv_shotcrete_break");
+    const SurfaceSet& portalSet = m_surf.get(device, "mw_concrete_panels_a");
+    if (!boreSet.ok || !portalSet.ok)
+        x3::logWarn("tunnel corridor: surface_library set(s) unavailable — "
+                    "falling back to the procedural checker concrete");
+
     auto upload = [&](MeshBuf& mb, const Material& mat, bool collide) {
         if (mb.empty()) return;
         fixWinding(mb);
@@ -515,8 +553,9 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         e.mesh = device.createMesh(mb.v.data(), (uint32_t)mb.v.size(),
                                    mb.i.data(), (uint32_t)mb.i.size());
         if (e.mesh.valid()) m_meshes.push_back(e.mesh);
-        e.tex   = mat.alb;
-        e.mrTex = mat.mr;
+        e.tex       = mat.alb;
+        e.mrTex     = mat.mr;
+        e.normalTex = mat.nrm;
         for (int k = 0; k < 4; ++k) { e.baseColor[k] = mat.tint[k]; e.emissive[k] = mat.emissive[k]; }
         e.tag = (uint32_t)Tag::Static;
         if (collide) {
@@ -637,9 +676,18 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         if (bf.back().s < s1 - 0.01f) bf.push_back(frameAt(s1));
 
         MeshBuf shell;
-        emitSweep(shell, bf, right, inner, -1.0f, 0.14f);   // drivable bore surface
-        emitSweep(shell, bf, right, outer, +1.0f, 0.14f);   // buried outer skin
-        Material sm; sm.alb = concreteTex; sm.mr = wallMR;
+        // TEXEL DENSITY. 0.14 (one tile per 7.1 m) was set for the procedural
+        // checker, where tile size is arbitrary. On a real 2K shotcrete albedo it
+        // is wrong by about 2x: the set's largest crack spans half the tile, so at
+        // 7.1 m it draws a 3.5 m fissure and the bore reads as a collapsed cavern
+        // rather than a lined tunnel. 0.30 (one tile per 3.3 m) puts that same
+        // crack at ~1.6 m — shotcrete crazing at the scale a driver would see it.
+        const float kBoreUV = boreSet.ok ? 0.30f : 0.14f;
+        emitSweep(shell, bf, right, inner, -1.0f, kBoreUV);   // drivable bore surface
+        emitSweep(shell, bf, right, outer, +1.0f, kBoreUV);   // buried outer skin
+        Material sm;
+        if (boreSet.ok) { sm.alb = boreSet.albedo; sm.mr = boreSet.mr; sm.nrm = boreSet.normal; }
+        else            { sm.alb = concreteTex;    sm.mr = wallMR; }
         upload(shell, sm, /*collide*/true);
 
         // ---- Portal headwalls. The corridor's depth step leaves a real earth
@@ -699,8 +747,18 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     portals.quad(a, b, c, d, n, 0, 1, 0, 1);
                 }
             }
-            Material pm; pm.alb = concreteTex; pm.mr = wallMR;
-            pm.tint[0] = 0.86f; pm.tint[1] = 0.86f; pm.tint[2] = 0.84f;
+            Material pm;
+            if (portalSet.ok) {
+                pm.alb = portalSet.albedo; pm.mr = portalSet.mr; pm.nrm = portalSet.normal;
+                // valueTint() is the library's own reflectance-band correction
+                // (surface_library.h): a set already in band returns exactly 1.0,
+                // so a correctly-authored headwall is untouched.
+                const float v = portalSet.valueTint();
+                pm.tint[0] = pm.tint[1] = pm.tint[2] = v;
+            } else {
+                pm.alb = concreteTex; pm.mr = wallMR;
+                pm.tint[0] = 0.86f; pm.tint[1] = 0.86f; pm.tint[2] = 0.84f;
+            }
             upload(portals, pm, /*collide*/true);
         }
 
@@ -783,6 +841,7 @@ void TunnelCorridorWorld::shutdown(x3::rhi::IRenderDevice& device, x3::phys::IPh
     m_meshes.clear();
     for (auto t : m_textures) device.destroyTexture(t);
     m_textures.clear();
+    m_surf.destroyAll(device);   // the library owns the bore/portal set textures
     m_lights.clear();
 }
 

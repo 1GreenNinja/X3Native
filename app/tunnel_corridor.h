@@ -46,6 +46,7 @@
 
 #include "scene.h"
 #include "terrain.h"
+#include "surface_library.h"   // real PBR bore-lining / portal sets (albedo+normal+mr)
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -167,6 +168,12 @@ private:
     std::vector<x3::rhi::TextureHandle> m_textures;
     std::vector<x3::phys::BodyId>       m_bodies;
     std::vector<x3::rhi::PointLight>    m_lights;
+    // REAL ART. The bore lining and the portal headwalls are dressed from
+    // assets/surface_library sets (albedo + normal + mr), not the procedural
+    // checkers this demo booted on — see build() for which sets and why. The
+    // LIBRARY owns those textures; m_textures holds only the ones this class
+    // created itself, so shutdown() has to release both.
+    SurfaceLibrary                      m_surf;
     uint32_t m_entities = 0;
 };
 
