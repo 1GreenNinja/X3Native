@@ -1873,6 +1873,12 @@ int dispatchScreenshotHosts(HostContext& hc) {
         // render cvar keeps its shipped default instead of parsing as 0.
         std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
         x3::apphost::registerViewmodelCVarsForTest(*console);
+        // A flat apron viewed at a grazing angle is exactly the case where SSAO,
+        // SSGI and TAA all leave banding. None of them are under test here and all
+        // of them muddy a shadow-RANGE read, so this rig runs with them off.
+        console->set("r_ssao", "0");
+        console->set("r_ssgi", "0");
+        console->set("r_taa",  "0");
 
         std::unique_ptr<x3::jobs::IJobSystem> tjobs(x3::jobs::createJobSystem());
         tjobs->init(0);
@@ -1892,28 +1898,26 @@ int dispatchScreenshotHosts(HostContext& hc) {
         sp.enabled = true;
         sp.sunDir[0] = 0.62f; sp.sunDir[1] = 0.40f; sp.sunDir[2] = 0.47f;
         sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
-        sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+        // NO haze. The analytic sky's haze term is applied in DEPTH BANDS, and on
+        // a flat apron viewed at a grazing angle those bands read as evenly spaced
+        // dark stripes that look exactly like shadows — they are present with sun
+        // shadowing forcibly disabled, which is how this was caught. A shadow-range
+        // measurement needs a frame where a dark pixel can only be a shadow.
+        sp.sunIntensity = 1.0f; sp.haze = 0.0f; sp.exposure = 1.0f;
         device->setSkyParams(sp);
         device->setCameraFar(15000.0f);
         device->setAmbient(0.30f, 0.32f, 0.38f);
 
-        const float fx = 0.0f, fz = 0.0f;
-        streamer.init(tscene, *device, *tphys, tjobs.get(), tcfg, fx, fz, /*radius=*/10);
-        streamer.setUploadBudget(64);
-        {
-            x3::game::HorizonRingDesc hr{};
-            hr.centerX = 0.0f; hr.centerZ = 0.0f;
-            hr.rInner = 300.0f; hr.rOuter = 13000.0f;
-            hr.rings = 140; hr.segments = 160; hr.yBias = -3.0f;
-            x3::game::addTerrainHorizonRing(tscene, *device, streamer.groundTexture(), hr);
-        }
-
-        // Let the terrain settle so heightAt() is truthful before seating pillars.
+        // ---- DELIBERATELY A CONTROLLED RIG, NOT A DRESSED WORLD ---------------
+        // This host originally ran on the streamed terrain with a horizon ring.
+        // That scene has tens of metres of relief plus 140 concentric ring bands,
+        // and BOTH read as large dark shapes on the ground that are visually
+        // indistinguishable from shadows — verified the hard way: with sun
+        // shadowing forcibly disabled the "shadows" in those captures were still
+        // there, byte-identical. A shadow-RANGE measurement needs a receiver where
+        // a dark pixel can only mean a shadow, so the scene here is exactly: an
+        // analytic sky, one flat apron, and the pillar ruler. Nothing else.
         const float dt = 1.0f / 60.0f;
-        for (int i = 0; i < 90; ++i) {
-            glfwPollEvents(); tphys->step(dt);
-            streamer.update(tscene, *device, *tphys, fx, fz);
-        }
 
         // ---- The rulers: pillars marching away from the camera ---------------
         // Placed along +Z (the camera looks that way), each seated on the terrain.
@@ -1925,37 +1929,86 @@ int dispatchScreenshotHosts(HostContext& hc) {
         x3::rhi::MeshHandle pillarMesh = device->createMesh(
             box.verts.data(), (uint32_t)box.verts.size(),
             box.index.data(), (uint32_t)box.index.size());
-        auto pillarTexels = x3::prims::makeCheckerRGBA(64, 8, 225, 220, 210, 160, 156, 148);
+        auto pillarTexels = x3::prims::makeCheckerRGBA(64, 8, 228, 224, 214, 206, 202, 194);
         x3::rhi::TextureHandle pillarTex = device->createTexture(pillarTexels.data(), 64, 64, true);
 
-        // A RULER of pillars marching away from the camera. 45 m — the legacy
-        // cascade's half-extent — falls between the 4th and 5th station, so in the
-        // r_csm 0 shot every pillar past the 4th casts NOTHING.
-        const float kPillarZ[] = { 15.0f, 26.0f, 38.0f, 52.0f, 72.0f, 100.0f,
+        // ---- WHY THE VIEW POINTS WHERE IT DOES (this matters for honesty) ----
+        // The legacy box is 2*45 m in LIGHT space, i.e. in the plane PERPENDICULAR
+        // to the sun. Its footprint on the GROUND is therefore ~90 m across the sun
+        // azimuth but stretched ALONG it (by 1/sin(elevation), capped by the +-80 m
+        // depth range). Aim the camera down-sun and even the legacy box reaches
+        // ~140 m, which flatters it. Aiming ACROSS the sun azimuth is where the
+        // 45 m radius actually bites — the honest framing, and also the racing case.
+        //
+        // The camera also stays LOW (8 m). The legacy box is centred on the CAMERA
+        // in 3D, so a high camera lifts it off the ground entirely and the A/B
+        // becomes a rigged "no shadows at all" comparison. 8 m is a chase-cam
+        // height: the box genuinely covers a ~45 m radius of ground around it.
+        const float sunAzX = 0.62f, sunAzZ = 0.47f;                   // sun XZ heading
+        const float azLen  = std::sqrt(sunAzX * sunAzX + sunAzZ * sunAzZ);
+        const float sunUX  = sunAzX / azLen,  sunUZ = sunAzZ / azLen;  // unit sun azimuth
+        const float viewX  = -sunUZ,          viewZ = sunUX;           // perpendicular to it
+        const float kYawView = std::atan2(viewZ, viewX);               // yaw: 0 = +X
+
+        // A RULER of pillars marching away along the view axis, but OFFSET ~26 m
+        // to one side (up-sun) so they never occlude the ground the camera is
+        // looking at. Each pillar's shadow is cast DOWN-sun, i.e. across the view
+        // centreline, so every shadow lands in clear view at a known distance.
+        // 45 m — the legacy cascade's half-extent — falls between the 4th and 5th
+        // station, so with r_csm 0 the stations past the 4th cast NOTHING.
+        const float kPillarD[] = { 15.0f, 26.0f, 38.0f, 52.0f, 72.0f, 100.0f,
                                    135.0f, 180.0f, 235.0f };
         const float camX = 0.0f, camZ = 0.0f;
-        for (float pz : kPillarZ) {
-            const float sc = 1.0f + pz * 0.020f;          // grow with distance
-            const float hy = 5.0f * sc;                   // half-height
-            for (int side = -1; side <= 1; side += 2) {
-                const float px = camX + (float)side * (5.0f + pz * 0.10f);
-                const float py = streamer.heightAt(px, camZ + pz);
-                x3::game::Entity e{};
-                e.mesh = pillarMesh; e.tex = pillarTex;
-                // Column-major: scale on the diagonal, translation in column 3.
-                e.transform[0]  = 1.1f * sc; e.transform[5] = hy; e.transform[10] = 1.1f * sc;
-                e.transform[12] = px; e.transform[13] = py + hy; e.transform[14] = camZ + pz;
-                tscene.add(e);
-            }
+        const float groundY = 0.0f;
+        // The apron IS the ground: y = 0, so a dark pixel can only be a shadow.
+        const float kSideOffset = 26.0f;
+        for (float pd : kPillarD) {
+            // Mild growth only (keeps the far pillars visible without letting the
+            // near ones fill the frame and hide the very shadows we are judging).
+            const float sc = 1.0f + pd * 0.006f;
+            const float hw = 1.6f * sc;                  // half-width
+            const float hy = 7.0f * sc;                  // half-height
+            const float px = camX + viewX * pd + sunUX * kSideOffset;
+            const float pz = camZ + viewZ * pd + sunUZ * kSideOffset;
+            const float py = groundY + 0.40f;                // stand on the apron
+            x3::game::Entity e{};
+            e.mesh = pillarMesh; e.tex = pillarTex;
+            // Column-major: scale on the diagonal, translation in column 3.
+            e.transform[0]  = hw; e.transform[5] = hy; e.transform[10] = hw;
+            e.transform[12] = px; e.transform[13] = py + hy; e.transform[14] = pz;
+            tscene.add(e);
         }
-        x3::logInfo("--screenshot-csm: planted 18 pillars at 15..235 m (legacy cutoff sits at 45 m)");
+        // ---- A FLAT RECEIVING APRON ------------------------------------------
+        // The streamed terrain has relief, so at 8 m eye height the ground past
+        // ~120 m is neither flat nor continuous — a missing far shadow would be
+        // indistinguishable from missing ground. This 300 m apron, laid a few cm
+        // proud of the terrain, guarantees an unambiguous shadow-RECEIVING surface
+        // across the whole 15..235 m ruler. It is test-rig geometry; the only
+        // thing it changes is what the shadows land ON.
+        {
+            x3::prims::PrimMesh ap = x3::prims::makeBox(300.0f, 0.4f, 300.0f, 0.0f, 0.0f, 0.0f, 0.02f);
+            x3::rhi::MeshHandle apMesh = device->createMesh(
+                ap.verts.data(), (uint32_t)ap.verts.size(),
+                ap.index.data(), (uint32_t)ap.index.size());
+            // FLAT, UNIFORM colour on purpose. A checker here reads as evenly
+            // spaced dark bands and is indistinguishable from shadows at a glance
+            // — it fooled this lane for an hour. The apron must contribute NO
+            // value variation, so the only dark thing in frame is a shadow.
+            auto apTexels = x3::prims::makeCheckerRGBA(64, 32, 128, 140, 106, 128, 140, 106);
+            x3::rhi::TextureHandle apTex = device->createTexture(apTexels.data(), 64, 64, true);
+            x3::game::Entity a{};
+            a.mesh = apMesh; a.tex = apTex;
+            a.transform[12] = camX + viewX * 110.0f;
+            a.transform[13] = groundY;
+            a.transform[14] = camZ + viewZ * 110.0f;
+            tscene.add(a);
+        }
 
-        // ELEVATED vantage looking down the row: at eye level the ground plane is
-        // edge-on and distant shadows collapse to a few pixels. From ~34 m up the
-        // ground from ~20 m to ~250 m fills the frame — exactly the range the
-        // legacy single cascade could not cover.
-        const float camY = streamer.heightAt(camX, camZ) + 34.0f;
-        const float kYawPlusZ = 1.5708f;   // +Z (CONVENTIONS yaw: 0 = +X)
+        x3::logInfo("--screenshot-csm: planted 9 pillars at 15..235 m ACROSS the sun azimuth "
+                    "(the legacy 45 m cutoff is tightest on this axis) on a 300 m flat apron");
+
+        const float camY = groundY + 0.40f + 8.0f;
+        const float kYawPlusZ = kYawView;
 
         // One capture: set the cvars, settle N frames, arm on the last, write.
         auto shot = [&](const std::string& file, int csmOn, float blend,
@@ -1965,8 +2018,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
             console->set("r_csm_blend", std::to_string(blend));
             const std::string path = csmShotDir + "/" + file;
             for (int i = 0; i < frames; ++i) {
-                glfwPollEvents(); tphys->step(dt);
-                streamer.update(tscene, *device, *tphys, fx, fz);
+                glfwPollEvents();
                 // The cvar sync hub — without this r_csm never reaches the device.
                 x3::apphost::applyRtaoCVarsForTest(*console, *device);
                 device->setCamera(camx, camy, camz, yaw, pitch, fov);
@@ -1986,10 +2038,9 @@ int dispatchScreenshotHosts(HostContext& hc) {
             console->set("r_csm", csmOn ? "1" : "0");
             double sum = 0.0; int n = 0;
             for (int i = 0; i < frames; ++i) {
-                glfwPollEvents(); tphys->step(dt);
-                streamer.update(tscene, *device, *tphys, fx, fz);
+                glfwPollEvents();
                 x3::apphost::applyRtaoCVarsForTest(*console, *device);
-                device->setCamera(camX, camY, camZ, kYawPlusZ, -0.38f, 70.0f);
+                device->setCamera(camX, camY, camZ, kYawPlusZ, -0.15f, 70.0f);
                 auto frame = device->beginFrame();
                 if (frame.valid) tscene.render(*device, frame);
                 device->endFrame(frame);
@@ -2001,9 +2052,9 @@ int dispatchScreenshotHosts(HostContext& hc) {
         // ---- (a) A/B at three framings, r_csm 0 vs 1 -------------------------
         struct Vantage { const char* tag; float pitch; float fov; };
         const Vantage kV[] = {
-            { "near", -0.62f, 70.0f },   // steep: the 15-52 m stations fill the frame
-            { "mid",  -0.38f, 70.0f },   // the legacy 45 m cutoff crosses the frame
-            { "far",  -0.22f, 60.0f },   // shallow: out to the 235 m station
+            { "near", -0.30f, 70.0f },   // the 15-52 m stations fill the frame
+            { "mid",  -0.15f, 70.0f },   // the legacy 45 m cutoff crosses the frame
+            { "far",  -0.075f, 45.0f },  // narrow FOV, out to the 235 m station
         };
         for (const Vantage& v : kV) {
             shot(std::string("ab_") + v.tag + "_csm0.png", 0, 0.12f,
@@ -2012,6 +2063,15 @@ int dispatchScreenshotHosts(HostContext& hc) {
                  camX, camY, camZ, kYawPlusZ, v.pitch, v.fov, 24);
         }
 
+        // ---- (a2) THE RANGE SHOT — a telephoto framing of the disputed band ----
+        // At 8 m eye height the ground from 60 m to 250 m subtends only ~6 deg, so
+        // a 70 deg lens buries it in a few dozen scanlines and the A/B looks like
+        // nothing changed. A 10 deg lens puts EXACTLY the band the legacy 45 m box
+        // cannot reach across the whole frame. This is the honest money shot for
+        // "shadows persist well past 45 m".
+        shot("ab_range_csm0.png", 0, 0.12f, camX, camY, camZ, kYawPlusZ, -0.082f, 10.0f, 24);
+        shot("ab_range_csm1.png", 1, 0.12f, camX, camY, camZ, kYawPlusZ, -0.082f, 10.0f, 24);
+
         // ---- (b) CAMERA PAN, r_csm 1 — the texel-snapping money shot ---------
         // Same spot, yaw swept in small steps. With an unsnapped origin (or a
         // rotation-dependent extent) shadow edges crawl and shimmer frame to
@@ -2019,14 +2079,30 @@ int dispatchScreenshotHosts(HostContext& hc) {
         for (int i = 0; i < 6; ++i) {
             const float yaw = kYawPlusZ - 0.10f + (float)i * 0.04f;
             char nm[64]; std::snprintf(nm, sizeof(nm), "pan_csm1_%d.png", i);
-            shot(nm, 1, 0.12f, camX, camY, camZ, yaw, -0.45f, 70.0f, 14);
+            shot(nm, 1, 0.12f, camX, camY, camZ, yaw, -0.22f, 70.0f, 14);
         }
 
         // ---- (c) CASCADE BOUNDARY: blend band vs a hard line ------------------
         // A shallow, high framing so the cascade-0/1 split (~17 m) and 1/2 (~40 m)
         // both cross the frame. The no-blend variant is the control.
-        shot("boundary_csm1.png",         1, 0.35f, camX, camY, camZ, kYawPlusZ, -0.34f, 70.0f, 24);
-        shot("boundary_csm1_noblend.png", 1, 0.0f,  camX, camY, camZ, kYawPlusZ, -0.34f, 70.0f, 24);
+        shot("boundary_csm1.png",         1, 0.35f, camX, camY, camZ, kYawPlusZ, -0.13f, 70.0f, 24);
+        shot("boundary_csm1_noblend.png", 1, 0.0f,  camX, camY, camZ, kYawPlusZ, -0.13f, 70.0f, 24);
+
+        // ---- (c2) CASCADE DEBUG: which cascade is each pixel in? --------------
+        // Steps shadow visibility per cascade, so the split rings are visible.
+        // This is the diagnostic that answers "is the far cascade even selected".
+        console->set("r_csm_debug", "1");
+        shot("cascades_debug.png", 1, 0.0f, camX, camY, camZ, kYawPlusZ, -0.15f, 70.0f, 24);
+        shot("legacy_footprint_debug.png", 0, 0.0f, camX, camY, camZ, kYawPlusZ, -0.075f, 45.0f, 24);
+        shot("legacy_footprint_range_debug.png", 0, 0.0f, camX, camY, camZ, kYawPlusZ, -0.082f, 10.0f, 24);
+        console->set("r_csm_debug", "0");
+
+        // ---- (d) The r_shadowforward INTERIM, as an A/B reference -------------
+        // Slides the LEGACY box forward along the camera axis. It does not add
+        // range, it MOVES the range — useful for a car, useless for a wide view.
+        console->set("r_shadowforward", "30");
+        shot("interim_forward30_csm0.png", 0, 0.12f, camX, camY, camZ, kYawPlusZ, -0.15f, 70.0f, 24);
+        console->set("r_shadowforward", "0");
 
         // ---- Perf: N cascades vs the single cascade ---------------------------
         console->set("r_csm_blend", "0.12");
@@ -2041,8 +2117,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
         x3::logInfo(perf);
         {
             const x3::rhi::RenderStats st = device->stats();
-            x3::logInfo("--screenshot-csm: draws = " + std::to_string(st.drawCalls) +
-                        ", resident terrain tiles = " + std::to_string(streamer.residentCount()));
+            x3::logInfo("--screenshot-csm: draws = " + std::to_string(st.drawCalls));
         }
 
         console->set("r_csm", "0");

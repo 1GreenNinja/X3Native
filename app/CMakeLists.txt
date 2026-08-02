@@ -378,10 +378,24 @@ add_custom_command(
     COMMENT "glslc mesh.frag (ray-query soft shadows) -> mesh_rt.frag.spv"
     VERBATIM)
 list(APPEND SPV_FILES ${SPV_DIR}/mesh_rt.frag.spv)
-add_custom_target(x3shaders DEPENDS ${SPV_FILES})
+# Copy compiled .spv next to the exe so runtime loads <exedir>/shaders/*.spv.
+#
+# BUILD BUG THIS FIXES (Lane 3): the copy used to be a POST_BUILD on X3Engine.
+# POST_BUILD only runs when the TARGET is relinked, so editing ONLY a shader
+# recompiled the .spv into ${SPV_DIR} and then never copied it — the exe kept
+# loading the previous SPIR-V. Shader-only iterations silently did nothing, and
+# the trap is invisible because a build that also touches any .cpp relinks and
+# copies, so it works "most of the time". Hanging the copy off x3shaders (which
+# X3Engine already depends on) makes it run whenever a .spv is regenerated.
+add_custom_target(x3shaders
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/bin/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${SPV_DIR} ${CMAKE_BINARY_DIR}/bin/shaders
+    DEPENDS ${SPV_FILES}
+    COMMENT "copy compiled SPIR-V -> bin/shaders")
 add_dependencies(X3Engine x3shaders)
 
-# Copy compiled .spv next to the exe so runtime loads <exedir>/shaders/*.spv
+# Belt and braces for multi-config generators, where the exe may not live in
+# ${CMAKE_BINARY_DIR}/bin: relink-time copy as well (cheap, idempotent).
 add_custom_command(TARGET X3Engine POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:X3Engine>/shaders
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${SPV_DIR} $<TARGET_FILE_DIR:X3Engine>/shaders)

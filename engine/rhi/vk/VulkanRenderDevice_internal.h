@@ -2923,6 +2923,7 @@ private:
     float                 m_csmLambda  = csm::kDefaultLambda;
     float                 m_csmDistance = csm::kDefaultShadowDistance;
     float                 m_csmBlend   = 0.12f;   // cross-fade band as a fraction of each slice
+    bool                  m_csmDebug   = false;  // r_csm_debug: step visibility per cascade
     // Cheap interim / A-B reference (r_shadowforward, meters): push the LEGACY
     // single-cascade ortho box forward along the camera forward vector so the
     // shadowed region leads the car instead of being centred on it. 0 = the

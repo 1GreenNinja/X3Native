@@ -140,7 +140,9 @@ float sampleShadow(vec3 worldPos, vec3 N, float ndl) {
         vec2 uv = proj.xy * 0.5 + 0.5;
         float curDepth = proj.z;
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || curDepth > 1.0)
-            return 1.0;
+            // r_csm_debug paints everything OUTSIDE the single box black, which is
+            // the only way to see on screen where today's shadows stop.
+            return (csm.ctrl.z > 0.5) ? 0.0 : 1.0;
         float bias = clamp(0.0015 * tan(acos(clamp(ndl, 0.0, 1.0))), 0.0005, 0.004);
         float refDepth = curDepth - bias;
         vec2 texel = 1.0 / vec2(textureSize(shadowMap, 0).xy);
@@ -173,6 +175,11 @@ float sampleShadow(vec3 worldPos, vec3 N, float ndl) {
     float bias   = csm.depthBias[layer] * (1.0 + 2.0 * slope);
 
     float lit = csmPcf(layer, offPos, bias);
+
+    // r_csm_debug: step the visibility per cascade so the SELECTED cascade is
+    // readable straight off a screenshot (0 = off; kept because "which cascade
+    // is this pixel in" is the first question every CSM bug asks).
+    if (csm.ctrl.z > 0.5) return lit * (1.0 - 0.28 * float(layer));
 
     // BLEND BAND: near the outer edge of this cascade, cross-fade into the next.
     // Without it the resolution change lands as a hard line across the ground.

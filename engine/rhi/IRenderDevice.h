@@ -256,6 +256,7 @@ public:
         float distance    = 250.0f;  // meters of view depth the cascades cover
         float blend       = 0.12f;   // cross-fade band width, as a fraction of a slice
         float forwardBias = 0.0f;    // LEGACY-path forward push along the camera axis (m)
+        bool  debug       = false;   // step visibility per cascade so bands are visible
     };
     virtual void setCsmParams(const CsmParams&) {}
 

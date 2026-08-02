@@ -827,7 +827,10 @@ uint32_t VulkanRenderDevice::prepareCsmCascades() {
         // cam.lightViewProj against array layer 0, with the historical bias math.
         CsmUBO u{};
         for (uint32_t i = 0; i < kCsmCascades; ++i) u.viewProj[i] = glm::mat4(1.0f);
-        u.ctrl = glm::vec4(0.0f);
+        // ctrl.z (r_csm_debug) is published on BOTH paths: on the legacy path it
+        // paints the single box's ground footprint, which is the only way to SEE
+        // where today's shadows actually stop.
+        u.ctrl = glm::vec4(0.0f, 0.0f, m_csmDebug ? 1.0f : 0.0f, 0.0f);
 
         if (active) {
             csm::Params p{};
@@ -861,10 +864,51 @@ uint32_t VulkanRenderDevice::prepareCsmCascades() {
             for (uint32_t i = m_csmCascadesThisFrame; i < kCsmCascades; ++i)
                 u.viewProj[i] = m_csm.c[0].viewProj;
             u.splitFar = m_csm.splitFar;
-            u.ctrl = glm::vec4((float)m_csm.count, m_csmBlend, 0.0f, 0.0f);
+            u.ctrl = glm::vec4((float)m_csm.count, m_csmBlend, m_csmDebug ? 1.0f : 0.0f, 0.0f);
         }
 
         if (m_csmUboMapped[frame]) std::memcpy(m_csmUboMapped[frame], &u, sizeof(CsmUBO));
+
+        // ONE receipt line whenever the resolved CSM state changes (off <-> on, or
+        // the cascade count moves). Cheap, and it is the only way to tell from a
+        // headless log whether the cvar actually reached the device or a host had
+        // pinned the box with setShadowBounds().
+        {
+            static int sLastState = -1;
+            const int state = active ? (int)m_csmCascadesThisFrame : 0;
+            if (state != sLastState) {
+                sLastState = state;
+                char b[320];
+                if (state == 0) {
+                    // Probe: where does a ground point 100 m ahead of the camera
+                    // land in the legacy shadow map? uv outside [0,1] == unshadowed.
+                    const glm::vec3 pf = m_camHasBasis ? m_camFwd
+                        : glm::vec3(std::cos(m_camPitch) * std::cos(m_camYaw),
+                                    std::sin(m_camPitch),
+                                    std::cos(m_camPitch) * std::sin(m_camYaw));
+                    const glm::vec3 flat = glm::normalize(glm::vec3(pf.x, 0.0f, pf.z));
+                    const glm::vec4 lc = m_lightViewProj *
+                        glm::vec4(m_camPos + flat * 100.0f - glm::vec3(0.0f, 8.0f, 0.0f), 1.0f);
+                    const glm::vec3 pr = glm::vec3(lc) / lc.w;
+                    std::snprintf(b, sizeof(b),
+                        "[csm] OFF -> legacy single cascade (ortho half-extent %.1f m, %s) "
+                        "| probe@100m -> uv %.3f,%.3f depth %.3f",
+                        (double)(m_shadowOverride ? m_shadowOrtho : kShadowOrtho),
+                        m_shadowOverride ? "host-pinned via setShadowBounds" : "camera-locked",
+                        (double)(pr.x * 0.5f + 0.5f), (double)(pr.y * 0.5f + 0.5f), (double)pr.z);
+                } else {
+                    std::snprintf(b, sizeof(b),
+                        "[csm] ON -> %d cascades, lambda %.2f, distance %.0f m, splits %.1f/%.1f/%.1f/%.1f m, "
+                        "half-extents %.1f/%.1f/%.1f/%.1f m",
+                        state, (double)m_csmLambda, (double)std::min(m_csmDistance, m_camFar),
+                        (double)m_csm.splitFar[0], (double)m_csm.splitFar[1],
+                        (double)m_csm.splitFar[2], (double)m_csm.splitFar[3],
+                        (double)m_csm.c[0].halfExtent, (double)m_csm.c[1].halfExtent,
+                        (double)m_csm.c[2].halfExtent, (double)m_csm.c[3].halfExtent);
+                }
+                logInfo(b);
+            }
+        }
         return m_csmCascadesThisFrame;
     }
 

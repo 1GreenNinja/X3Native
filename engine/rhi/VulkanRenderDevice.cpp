@@ -644,6 +644,7 @@ void VulkanRenderDevice::setShadowCutout(bool enable) {
 // something sane rather than produce a degenerate ortho box.
 void VulkanRenderDevice::setCsmParams(const CsmParams& p) {
         m_csmEnabled = p.enabled;
+        m_csmDebug   = p.debug;
         // lambda outside [0,1] is meaningless in the practical-split blend.
         m_csmLambda   = (p.lambda   < 0.0f) ? 0.0f : (p.lambda > 1.0f ? 1.0f : p.lambda);
         // A shadow distance under the legacy 45 m would be a regression; the upper

@@ -621,6 +621,7 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_csm_lambda", "0.75",  "CSM practical-split blend: 0 = uniform slices, 1 = logarithmic");
     console.registerCVar("r_csm_dist",   "250.0", "CSM shadow distance in meters (view depth the cascades cover)");
     console.registerCVar("r_csm_blend",  "0.12",  "CSM cross-fade band between cascades, as a fraction of a slice (0 = hard edges)");
+    console.registerCVar("r_csm_debug",  "0",     "CSM debug: step shadow visibility per cascade so the cascade bands are visible");
     // The cheap interim + A/B reference: push the LEGACY single cascade forward
     // along the camera axis so the shadowed region leads the car instead of being
     // centred on it. Independent of r_csm. 0 = the historical camera-centred box.
@@ -835,6 +836,7 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     csmp.distance    = console.getFloat("r_csm_dist");
     csmp.blend       = console.getFloat("r_csm_blend");
     csmp.forwardBias = console.getFloat("r_shadowforward");
+    csmp.debug       = console.getInt("r_csm_debug") != 0;
     device.setCsmParams(csmp);
 }
 
