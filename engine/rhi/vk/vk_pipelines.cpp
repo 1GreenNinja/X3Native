@@ -1402,17 +1402,31 @@ bool VulkanRenderDevice::createShadowPipeline() {
 
 void VulkanRenderDevice::destroyGraphics() {
         // Mesh + texture registries (created by the app via the public API).
+        //
+        // LOD-CHAIN FIX (mines lane): chain member meshes ALIAS one shared vertex
+        // buffer (Mesh::vboShare != 0 — see createMeshLodChain). The old loop
+        // vmaDestroyBuffer'd m.vbo once PER LEVEL here, double-freeing the shared
+        // buffer and segfaulting shutdown the first time a world kept live chains
+        // until exit (no shipping world did before --world mines).
+        // destroyMesh() already refcounts via m_vboShares; mirror that here by
+        // skipping aliased vbos in the loop and freeing each share exactly once.
         for (auto& kv : m_meshes) {
             Mesh& m = kv.second;
             if (m.dynamic) {
                 for (uint32_t i = 0; i < kFramesInFlight; ++i)
                     if (m.dynVbo[i]) vmaDestroyBuffer(m_alloc, m.dynVbo[i], m.dynVboAlloc[i]);
+            } else if (m.vboShare != 0) {
+                // shared with the chain's other levels — freed once, below
             } else if (m.vbo) {
                 vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc);
             }
             vmaDestroyBuffer(m_alloc, m.ibo, m.iboAlloc);
         }
         m_meshes.clear();
+        // Free each still-registered shared chain vertex buffer exactly once.
+        for (auto& kv : m_vboShares)
+            if (kv.second.buf) vmaDestroyBuffer(m_alloc, kv.second.buf, kv.second.alloc);
+        m_vboShares.clear();
         // Drain any still-pending deferred frees (buffers AND images/views/samplers
         // queued by destroyMesh/destroyTexture). shutdown() waited idle first, so
         // every referencing frame has retired and it is safe to free immediately.

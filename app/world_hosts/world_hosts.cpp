@@ -55,6 +55,7 @@ const HostRoute kHostRoutes[] = {
     { "echotropolis",      hostEchotropolis    },
     { "gallery",           hostGallery         },
     { "tunnel",            hostTunnel          },   // terrain-corridor bore demo
+    { "mines",             hostMines           },   // mine-entrance showcase (inspx/mines)
 };
 constexpr unsigned kHostRouteCount =
     (unsigned)(sizeof(kHostRoutes) / sizeof(kHostRoutes[0]));

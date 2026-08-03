@@ -46,6 +46,7 @@ int hostWormholeTransit(HostContext& hc); // --world wormhole-transit (feast fol
 int hostTractor(HostContext& hc);         // --world tractor (feast fold: intro capital-ship capture beam)
 int hostEchotropolis(HostContext& hc); // --world echotropolis (Echo Harbor: island + city + day-night)
 int hostGallery  (HostContext& hc);   // --world gallery   (CHARACTER GALLERY: walkable cast + clip cycle)
+int hostMines    (HostContext& hc);   // --world mines     (MINE ENTRANCES: Armory rock + glowing mouths)
 
 // Headless self-test for the gallery cast + clip-cycle (--test-gallery).
 bool runGallerySelfTest();

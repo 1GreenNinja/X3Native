@@ -111,6 +111,9 @@ assets/converted_glb/ShowRoom_Vol30/*
 vehbuild.json
 assets/surface_library/
 assets/converted_glb/Detention/
+# mines lane (2026-08-03): Armory mine kit — asset-store distributed (manifest.json),
+# never LFS (the LFS budget is exhausted fleet-wide; see the weapon-viewmodel note below).
+assets/converted_glb/mine/
 assets/converted_glb/ModularSciFi_Interior/SM_Wall_B.glb
 assets/converted_glb/ModularSciFi_Interior/SM_Wall_C.glb
 assets/rigged_glb/FPArms_Jake.glb
