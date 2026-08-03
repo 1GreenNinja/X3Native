@@ -264,7 +264,11 @@ double WorldStreamer::realize(Region& r, Scene& scene, x3::rhi::IRenderDevice& d
         r.parse.reset();
 
     } else if (r.desc.builder == "city") {
-        City c; c.build(scene, device, physics, m_sharedSurf ? m_sharedSurf : &m_surflib);
+        // CONTENT WIRING: refill the glow list for THIS realize (the previous
+        // set died with the last eviction) and let City emit into it.
+        m_cityGlows.clear();
+        City c; c.build(scene, device, physics, m_sharedSurf ? m_sharedSurf : &m_surflib,
+                        m_emitCityGlows ? &m_cityGlows : nullptr);
     } else if (r.desc.builder == "oceanbase") {
         OceanBase ob; ob.build(scene, device, physics, m_sharedSurf ? m_sharedSurf : &m_surflib);
     } else if (r.desc.builder == "worldregions") {

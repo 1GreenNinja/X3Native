@@ -45,6 +45,14 @@ public:
         Approach,        // Spire approach road (cool LED)
         Apron,           // facility apron by the breach (warm white)
         Dock,            // the dock crate-zone WORK LIGHT (metal halide)
+        // ---- CONTENT WIRING (r_citylights 1): GLOW-ONLY sources ------------
+        // No post/arm/head/cone/disc geometry — city.cpp already draws the
+        // emissive window bands and neon strips. These are the POOLED LIGHTS
+        // those emissive surfaces never had: a night city where the windows
+        // and the signage actually throw light on the street. They ride the
+        // same nearest-K selection and the same region lifetime as the lamps.
+        Window,          // warm interior spill out of a lit window band
+        Sign,            // neon shop signage wash
         Count
     };
     enum class State : uint8_t { Lit = 0, Dead, Flicker };
@@ -58,6 +66,7 @@ public:
         State state     = State::Lit;
         bool  workLight = false;          // the dock rig (never dead/flickering)
         bool  cityOwned = false;          // true = region-ledger lifetime
+        bool  glowOnly  = false;          // window/sign wash: light only, no geometry
         float level     = 1.0f;           // live flicker level (1 = steady)
         // Flicker state machine (deterministic xorshift stream, dt-scaled).
         float    t = 0.0f, next = 0.0f, period = 0.1f, phase = 0.0f;
@@ -71,7 +80,30 @@ public:
     // Region-owned CITY lamps: the district street grids + the dock work
     // light. MUST be called inside the `city` region-build hook (the scene's
     // entity-capture window) so everything joins the region ledger.
-    void buildCityLamps(Scene& scene, x3::rhi::IRenderDevice& device);
+    //
+    // CONTENT WIRING (lane inspx/content-wiring) — `dense`:
+    //   false (r_citylights 0, the default): the ORIGINAL nine rows at the
+    //     original 30-34 m spacing, ~56 lamps. Byte-for-byte the pre-lane city.
+    //   true  (r_citylights 1): every street city.cpp actually authors gets a
+    //     lamp row at realistic urban spacing (16 m staggered => ~32 m per
+    //     kerbside), plus the connector freeway and the coast spur. ~240 lamps.
+    //     The BL predecessor's city was light-starved because Babylon could not
+    //     afford the lights; with r_clusterlights 1 that constraint is gone.
+    void buildCityLamps(Scene& scene, x3::rhi::IRenderDevice& device, bool dense = false);
+
+    // GLOW-ONLY city lights (r_citylights 1): the pooled lights behind the
+    // emissive window bands + neon signs city.cpp already draws. Fed in as
+    // authored world positions so the roster stays in city.cpp (one source of
+    // truth) instead of being duplicated here. Call inside the same region
+    // capture window; they are cityOwned and die with onCityTeardown().
+    struct Glow {
+        float pos[3]   = { 0, 0, 0 };
+        float color[3] = { 1, 1, 1 };
+        float range     = 9.0f;
+        float intensity = 2.0f;
+        bool  sign      = false;   // Zone::Sign vs Zone::Window
+    };
+    void adoptCityGlows(const std::vector<Glow>& glows);
 
     // Region teardown: abandon the city lamp records (entities die with the
     // ledger; the shared meshes/textures are the ledger's to destroy).

@@ -34,6 +34,12 @@ int hostCliffs(HostContext& hc) {
         x3::game::CliffsArea cliffs;
         cliffs.build(cscene, *device, *cphys, cjobs.get());
 
+        // CONTENT WIRING: cascades for the outdoor view depth. `r_csm` was only
+        // ever pushed to the device from runDefaultHost, which a --world host
+        // replaces -- so this world had cascaded shadows compiled in and
+        // unreachable. `--set r_csm 0` restores the legacy single 45 m box.
+        applyOutdoorCsm(hc, *device, 400.0f, "cliffs");
+
         const float dt = 1.0f / 60.0f;
 
         // ===== Headless capture: warm the ring + waves, pose the vantage, grab. ==

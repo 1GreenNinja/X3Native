@@ -820,6 +820,13 @@ int main(int argc, char** argv) {
         _hc.reflDnDisc       = o.reflDnDisc;
         _hc.reflDnNormal     = o.reflDnNormal;
         _hc.reflDnDepth      = o.reflDnDepth;
+        // CONTENT WIRING (lane inspx/content-wiring): --set pairs must be
+        // visible to the SCREENSHOT hosts too, not just the default host. This
+        // assignment used to sit below the dispatch, so a capture host could
+        // never read a cvar override -- `--screenshot-city --set r_citylights 1`
+        // silently rendered the default. Moved ahead of the dispatch; the
+        // default host still gets the same value further down.
+        _hc.cliCVars        = o.cliCVars;
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;

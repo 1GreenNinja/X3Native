@@ -153,6 +153,11 @@ int hostSurfaceStart(HostContext& hc) {
     // the accent). SEAM 2: the exact params now live in the shared exterior
     // module so the canon tower reads under the SAME light.
     x3::game::FacilityExterior::applyGoldenHourSky(*device);
+    // CONTENT WIRING: a 36 m glass tower, a 300 m soil plate and the city
+    // massing on the horizon, all at golden hour -- the textbook cascade case,
+    // and the legacy single 45 m box could not shadow past the apron.
+    // `--set r_csm 0` restores it.
+    applyOutdoorCsm(hc, *device, 300.0f, "surface");
 
     x3::game::Scene scene;
 

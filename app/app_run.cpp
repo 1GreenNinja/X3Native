@@ -12,6 +12,7 @@
 #include "engine/rhi/FrustumCull.h"          // CPU per-object frustum cull (--test-frustumcull)
 #include "engine/rhi/GpuCull.h"           // D15 GPU culling — meshlet builder self-test (--test-meshlet)
 #include "engine/rhi/Visibility.h"        // vis-unify: r_vis policy + unified stats
+#include "engine/rhi/ClusterLights.h"    // kMaxSceneLights — the clustered scene light cap
 #include <glm/gtc/matrix_transform.hpp>       // glm::perspective/lookAt/translate/scale (--test-frustumcull)
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -519,6 +520,23 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // that pixel. DEFAULT 0: r_clusterlights 0 is bit-for-bit the old render, which
     // is what keeps every existing md5 / screenshot gate green. Live.
     console.registerCVar("r_clusterlights", "0", "clustered froxel forward lighting (16x9x24 grid, up to 1024 lights); 0 = legacy 64-light loop (bit-exact)");
+    // CONTENT WIRING (lane inspx/content-wiring) — THE CPU-SIDE LIGHT BUDGET.
+    // r_clusterlights raised the DEVICE cap to 1024, but every app-side budget
+    // in app_run.cpp was still sized against the legacy 64-entry UBO and
+    // truncated unconditionally, so turning clustering on changed nothing in a
+    // real world (docs/design/CLUSTERED_LIGHTING.md says exactly this). This is
+    // the ceiling the frame assembles to WHEN CLUSTERING IS ON; with
+    // r_clusterlights 0 the budget is pinned to 64 and every feeder K to its
+    // historical constant, so the legacy render stays bit-for-bit unchanged.
+    console.registerCVar("r_maxlights", "1024", "CPU light budget when r_clusterlights 1 (clamped to the 1024 device cap); ignored while clustering is off -- then pinned to 64");
+    // CONTENT WIRING -- CITY LIGHT DENSITY. 0 = the nine authored lamp rows at
+    // 30-34 m (~56 lamps), i.e. the pre-lane city, byte-identical. 1 = every
+    // street city.cpp authors gets a row at realistic urban spacing (~240
+    // lamps) PLUS a glow-only pooled light per warm-lit window band and per
+    // neon sign. That is the 200+ live source scene clustered lighting exists
+    // to carry -- pair it with `--set r_clusterlights 1`, or the frame will
+    // still assemble to the legacy 64-light budget and most of them are wasted.
+    console.registerCVar("r_citylights", "0", "city light density: 0 = the 9 legacy lamp rows (bit-exact), 1 = every authored street + window/sign glow (~240 lamps; use with r_clusterlights 1)");
     // SSR / RT REFLECTIONS (STRIKE 3): a half-res compute pass marches each pixel's
     // reflection ray against the depth buffer and samples LAST frame's lit scene
     // (the TAA history image — reflections REQUIRE r_taa 1; with TAA off the whole
@@ -1604,6 +1622,45 @@ int runDefaultHost(HostContext& hc) {
     // strips after them TRUNCATED THEM AWAY — the first capture of the approach came
     // back pitch black. So the pool is selected NEAREST-TO-EYE across both rigs: the
     // lights that matter are the ones in the room you are standing in.
+    // ===================================================================
+    // CONTENT WIRING (lane inspx/content-wiring) — THE LIGHT BUDGET.
+    //
+    // Clustered forward lighting raised the DEVICE cap from 64 to
+    // kMaxSceneLights (1024, engine/rhi/ClusterLights.h). But every CPU-side
+    // budget in this file was sized against the LEGACY 64-entry UBO array and
+    // truncated unconditionally, so `r_clusterlights 1` changed nothing in a
+    // real world: the frame still handed the device <=64 lights. The feature
+    // shipped and nothing could reach it.
+    //
+    // These are now VARIABLES refreshed once per frame from the cvars
+    // (refreshLightBudgets(), called from the frame loop below). With
+    // `r_clusterlights 0` — the default — every one of them holds EXACTLY the
+    // constant it used to be, so the legacy path is bit-for-bit unchanged and
+    // every md5 / screenshot gate stays green. With `r_clusterlights 1` they
+    // scale to r_maxlights.
+    //
+    // Declared HERE (ahead of the lambdas that capture them) because `console`
+    // itself is not constructed until the S7 block much further down; the
+    // lambdas capture by reference and therefore see each frame's refresh.
+    // ===================================================================
+    size_t   lightBudget      = 64;   // final CPU cap before setPointLights
+    size_t   fixtureBudget    = 44;   // nearestFixtures K (legacy tower ceiling)
+    uint32_t canonLightBudget = 36;   // selectVisibleCanonLights K
+    uint32_t streetLampK      = 14;   // StreetLights::selectLights K
+    uint32_t docLightK        = 16;   // LevelDocWorld::selectLights K
+    size_t   strataLightK     = 16;   // strata mood lights taken while camY < 2
+
+    // ---- CONTENT WIRING: r_citylights is a BOOT cvar ------------------------
+    // The city lamps are GEOMETRY, built once inside the `city` region realize
+    // -- and that realize (buildStartRegions) runs well before the console is
+    // constructed, so there is nothing to read a cvar out of yet. Take the
+    // decision straight off the --set list instead. The cvar is still
+    // registered below so `r_citylights` reports the truth in-game; changing it
+    // at runtime would need a region rebuild, which is not a thing this does.
+    bool cityLightsDense = false;
+    for (const auto& kv : cliCVars)
+        if (kv.first == "r_citylights" && kv.second != "0") cityLightsDense = true;
+
     auto riftLights = [&](float x, float y, float z,
                           std::vector<x3::rhi::PointLight>& out) {
         out.clear();
@@ -1617,7 +1674,7 @@ int runDefaultHost(HostContext& hc) {
                   [&](const x3::rhi::PointLight& a, const x3::rhi::PointLight& b) {
                       return d2(a) < d2(b);
                   });
-        if (out.size() > 64) out.resize(64);
+        if (out.size() > lightBudget) out.resize(lightBudget);
     };
     auto riftInZone = [&](float x, float y, float z) {
         return riftBuilt && x >= riftRegMin.x && x <= riftRegMax.x &&
@@ -1717,7 +1774,6 @@ int runDefaultHost(HostContext& hc) {
         out.resize(k);
         return out;
     };
-    constexpr size_t kFixtureBudget = 44;
     // CANONLEVEL per-frame room-light budget. Was a hard-coded 16 at all three feed
     // sites — which a 40 m cell hall (now 5 ceiling lights of its own, plus whatever the
     // PVS pulls in through open doors) exhausts instantly, so the far half of the
@@ -1727,7 +1783,6 @@ int runDefaultHost(HostContext& hc) {
     //   + street lamps 14 (outdoors only) = 61, or + strata 16 (camY < 2 only) = 63.
     // Both worst cases still clear 64, and the tail the cap would trim is the FARTHEST
     // light either way (every feed is nearest-first).
-    constexpr uint32_t kCanonLightBudget = 36;
 
     auto shutdownGameSystems = [&]() {
         game.shutdown();                               // every enemy group + Martinez + barrels
@@ -3525,6 +3580,10 @@ int runDefaultHost(HostContext& hc) {
             canonWstream.setLookahead(hc.wsLookaheadS);
             canonWstream.setRealizedRoomTag(x3::game::kStreamedExteriorRoom);
             canonWstream.setSharedSurfaceLibrary(&canonRooms.surfaceLibrary());
+            // CONTENT WIRING: r_citylights 1 asks the `city` builder for the
+            // window/sign glow lights (no-op at 0 -- City's emitter is skipped
+            // entirely, so the legacy realize is byte-identical).
+            canonWstream.setEmitCityGlows(cityLightsDense);
             // ---- LIVING NPCs (city): the street crowds live INSIDE the city
             // region — built in the realize's capture window (the region ledger
             // owns every entity/mesh; the realize re-stamp tags them
@@ -3533,7 +3592,8 @@ int runDefaultHost(HostContext& hc) {
             // never write into recycled slots. Sites sit on the district flat
             // pads (placeOnTerrain anchors the ground). ----
             canonWstream.setRegionHooks(
-                [&cityCrowds, &cityCrowdSkins, &worldCars, &streetLights](
+                [&cityCrowds, &cityCrowdSkins, &worldCars, &streetLights,
+                 &canonWstream, cityLightsDense](
                               const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
                               x3::rhi::IRenderDevice& dev, x3::phys::IPhysicsWorld& ph) {
                     // WORLD CARS: park this region's curb cars (the system adds
@@ -3609,7 +3669,12 @@ int runDefaultHost(HostContext& hc) {
                     // capture window — every post/cone/pool entity + the shared
                     // cone/disc meshes + gradient textures join the region
                     // ledger (dedup'd handles: eviction destroys each once).
-                    streetLights.buildCityLamps(s, dev);
+                    streetLights.buildCityLamps(s, dev, cityLightsDense);
+                    // CONTENT WIRING: adopt the window-spill / neon-sign wash
+                    // City just emitted (empty unless r_citylights 1). These
+                    // carry no geometry -- they ride the lamp list purely for
+                    // its nearest-K selection and its region lifetime.
+                    if (cityLightsDense) streetLights.adoptCityGlows(canonWstream.cityGlows());
                     // SKINNED CITIZENS: plan/attach the skinned layer. build()
                     // does NO loads and NO Scene::add, so nothing enters the
                     // region ledger (the parked-cars doctrine); the pools fill
@@ -4219,6 +4284,47 @@ int runDefaultHost(HostContext& hc) {
         console->set(kv.first, kv.second);
         x3::logInfo("--set " + kv.first + " " + kv.second);
     }
+
+    // ---- CONTENT WIRING: map the light cvars onto this frame's budgets ------
+    // Called once here (so the headless capture paths, which never enter a
+    // frame loop, still get the requested state) and again after every
+    // applyRtaoCVars() in the loops (so a console edit is live).
+    //
+    // r_clusterlights 0  -> every budget holds EXACTLY the constant it was
+    //                       before this lane: 64 / 44 / 36 / 14 / 16 / 16.
+    //                       The legacy render is therefore bit-for-bit intact.
+    // r_clusterlights 1  -> the final cap becomes r_maxlights (clamped to the
+    //                       1024 device cap), and each feeder K is scaled by
+    //                       the same factor so the assembled frame can actually
+    //                       REACH the new cap instead of starving at 64. The
+    //                       street lamps get the biggest lift because they are
+    //                       the feeder the city was starved on (K=14 against
+    //                       ~56 built lamps, appended LAST).
+    auto refreshLightBudgets = [&]() {
+        if (console->getInt("r_clusterlights") == 0) {
+            lightBudget = 64; fixtureBudget = 44; canonLightBudget = 36;
+            streetLampK = 14;  docLightK = 16;    strataLightK = 16;
+            return;
+        }
+        int want = console->getInt("r_maxlights");
+        if (want <= 0) want = (int)x3::rhi::kMaxSceneLights;
+        const size_t cap = (size_t)std::min<int>(want, (int)x3::rhi::kMaxSceneLights);
+        lightBudget = cap;
+        // Scale the feeders against the 64-light baseline they were tuned for.
+        const double k = (double)cap / 64.0;
+        auto scale = [&](double base, double lo) {
+            return (uint32_t)std::max(lo, base * k);
+        };
+        fixtureBudget    = scale(44.0, 44.0);
+        canonLightBudget = scale(36.0, 36.0);
+        docLightK        = scale(16.0, 16.0);
+        strataLightK     = scale(16.0, 16.0);
+        // Street lamps: the city feeder. Give it the largest share — a night
+        // city is the one scene where hundreds of lamps are the subject.
+        streetLampK      = scale(14.0, 14.0) * 2u;
+        if (streetLampK > cap) streetLampK = (uint32_t)cap;
+    };
+    refreshLightBudgets();
 
     // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
     // sync (applyRtaoCVars) keeps the A/B state instead of re-enabling defaults.
@@ -4846,6 +4952,7 @@ int runDefaultHost(HostContext& hc) {
             // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
             // onto the device, exactly as the main loop does each frame.
             applyRtaoCVars(*console, *device);
+            refreshLightBudgets();
             double nowT = glfwGetTime();
             double cpuMs = (nowT - prevT) * 1000.0; prevT = nowT;
 
@@ -5515,7 +5622,7 @@ int runDefaultHost(HostContext& hc) {
             // Red shift through the shared helper (same math this block held —
             // the live canon loop + this staging path must never drift apart).
             std::vector<x3::rhi::PointLight> fl =
-                nearestFixtures(game.lightFixtures(), ssX, ssY, ssZ, kFixtureBudget);
+                nearestFixtures(game.lightFixtures(), ssX, ssY, ssZ, fixtureBudget);
             applyAlertRedShift(fl, facilityAlert.redShift());
             // Alarm strobes down the B1 spine so the red WASH reads in the still
             // even where the env-art fixtures are sparse (capture lighting only —
@@ -5529,7 +5636,7 @@ int runDefaultHost(HostContext& hc) {
                 fl.insert(fl.begin(), al);
             }
             x3::logInfo("alert shot: " + std::to_string(fl.size()) + " lights (incl. alarm strobes)");
-            if (fl.size() > 64) fl.resize(64);
+            if (fl.size() > lightBudget) fl.resize(lightBudget);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
         }
         // B4: the LEGACY tower's ceiling fixtures, fed NEAREST-TO-EYE. Level1Game::build
@@ -5540,7 +5647,7 @@ int runDefaultHost(HostContext& hc) {
         // this is the plain capture path, which never re-issued anything.
         if (!canonWorld && !game.lightFixtures().empty()) {
             std::vector<x3::rhi::PointLight> sfl =
-                nearestFixtures(game.lightFixtures(), ssX, ssY, ssZ, kFixtureBudget);
+                nearestFixtures(game.lightFixtures(), ssX, ssY, ssZ, fixtureBudget);
             device->setPointLights(sfl.data(), (uint32_t)sfl.size());
             x3::logInfo("[light] screenshot: fed " + std::to_string(sfl.size()) +
                         " nearest ceiling fixtures of " +
@@ -5665,6 +5772,7 @@ int runDefaultHost(HostContext& hc) {
             // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
             // onto the device, exactly as the main loop does each frame.
             applyRtaoCVars(*console, *device);
+            refreshLightBudgets();
             game.tick(dt, scene, *physics, ssEye, ssEye);
             // Tick the Spire mid floors too (independent enemy groups + gated F5
             // victim) so the screenshot/smoketest paths exercise the new content.
@@ -6054,7 +6162,7 @@ int runDefaultHost(HostContext& hc) {
                 }
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    ssEye.x, ssEye.y, ssEye.z, cl,
-                                                   kCanonLightBudget);
+                                                   canonLightBudget);
                 if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
                 // --screenshot-alert (canon): the LEVEL-3 LOCKDOWN red shift over
                 // the facility feed — the SAME multiplier + eye-inside-the-tower
@@ -6071,7 +6179,7 @@ int runDefaultHost(HostContext& hc) {
                         if (v == x3::game::kStreamedExteriorRoom) { ssExtVis = true; break; }
                     if (ssExtVis) {
                         streetLights.update(dt, scene);
-                        streetLights.selectLights(ssEye.x, ssEye.y, ssEye.z, cl, 14);
+                        streetLights.selectLights(ssEye.x, ssEye.y, ssEye.z, cl, streetLampK);
                     }
                 }
                 // W-RIFT: a capture vantage inside sub-level R1 gets the hub's own rig
@@ -6138,7 +6246,7 @@ int runDefaultHost(HostContext& hc) {
                         cl.insert(cl.begin(), beam);
                     }
                 }
-                if (cl.size() > 64) cl.resize(64);
+                if (cl.size() > lightBudget) cl.resize(lightBudget);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
             }
             // R11: the ELEVATOR CAB in a CAPTURE. The live loop feeds the cab's ceiling
@@ -6156,14 +6264,14 @@ int runDefaultHost(HostContext& hc) {
                 // (its own lights are pushed to the FRONT) against a SHAFT AND LOBBY lit by
                 // fixtures from unrelated floors — i.e. by nothing. Same disease, same fix.
                 std::vector<x3::rhi::PointLight> el =
-                    nearestFixtures(game.lightFixtures(), ssX, ssY, ssZ, kFixtureBudget);
+                    nearestFixtures(game.lightFixtures(), ssX, ssY, ssZ, fixtureBudget);
                 // FRONT of the list: level1 ships more than 64 fixtures, so appending
                 // would put the cab's own practical past the cap and truncate it away —
                 // the exact reason the first capture of the new cab came back black.
                 for (const auto& pl : elevator.pointLights())
                     if (pl.color[0] + pl.color[1] + pl.color[2] > 0.001f)
                         el.insert(el.begin(), pl);
-                if (el.size() > 64) el.resize(64);
+                if (el.size() > lightBudget) el.resize(lightBudget);
                 device->setPointLights(el.data(), (uint32_t)el.size());
             }
             // X3_SHOT_SEALIFE: the capture lights must be issued HERE — this is the
@@ -6795,7 +6903,8 @@ int runDefaultHost(HostContext& hc) {
             const float pitch = 0.12f * std::sin(t * 4.0f * 3.1415926f);
             device->setCamera(ex, ey, ez, yaw, pitch, 60.0f);
             audio->setListener(ex, ey, ez, yaw, pitch);
-            applyRtaoCVars(*console, *device);                  // live cvar->device sync
+            applyRtaoCVars(*console, *device);
+            refreshLightBudgets();                  // live cvar->device sync
             const x3::phys::Vec3 eye{ ex, ey, ez };
             game.tick(dt, scene, *physics, eye, eye);
             physics->step(dt);
@@ -6920,6 +7029,7 @@ int runDefaultHost(HostContext& hc) {
             // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
             // onto the device, exactly as the main loop does each frame.
             applyRtaoCVars(*console, *device);
+            refreshLightBudgets();
             if (i == 15) { x3::logInfo("smoketest: triggering swapchain recreate"); device->onResize(960, 540); }
             // Drive the Level 1 controller (doors/monsters/pickup/triggers) +
             // physics + scene sync, exactly as the main loop does.
@@ -7078,14 +7188,14 @@ int runDefaultHost(HostContext& hc) {
                     if (vis) cl.push_back(dl.light);
                 }
                 uint32_t nLit = x3::game::selectVisibleCanonLights(
-                    canonLights, canonVisRooms, eye.x, eye.y, eye.z, cl, kCanonLightBudget);
+                    canonLights, canonVisRooms, eye.x, eye.y, eye.z, cl, canonLightBudget);
                 if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
-                if (cl.size() > 64) cl.resize(64);
+                if (cl.size() > lightBudget) cl.resize(lightBudget);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
                 if (i == 0)
                     x3::logInfo("smoketest --world canonlevel: " + std::to_string(nLit) +
                                 " room point-lights fed for the visible set (cap " +
-                                std::to_string(kCanonLightBudget) + ")");
+                                std::to_string(canonLightBudget) + ")");
             }
             // --world fromdoc under validation: feed the doc lights, walk the player
             // point through the doc triggers, and HOT-RELOAD the doc mid-run (i==18)
@@ -7093,7 +7203,7 @@ int runDefaultHost(HostContext& hc) {
             // runs under the Vulkan validation layers + the VMA leak gate.
             if (docWorld && docLevel.built()) {
                 std::vector<x3::rhi::PointLight> dl;
-                docLevel.selectLights(eye.x, eye.y, eye.z, dl, 16);
+                docLevel.selectLights(eye.x, eye.y, eye.z, dl, docLightK);
                 device->setPointLights(dl.data(), (uint32_t)dl.size());
                 docLevel.updateTriggers(eye);
                 if (i == 18) {
@@ -8189,6 +8299,7 @@ int runDefaultHost(HostContext& hc) {
         // Push the live r_rtao* cvars onto the device (hardware RT ambient occlusion).
         // No-op on a non-RT GPU; default OFF so the visual build is unchanged.
         applyRtaoCVars(*console, *device);
+        refreshLightBudgets();
         glfwPollEvents();
 
         // ---- intro_play (console): roll the cold-open film NOW, at a frame
@@ -9589,7 +9700,7 @@ int runDefaultHost(HostContext& hc) {
             // already BUILT that cull. So the two do not fight: prim-point-light diagnosed it,
             // the audit fixed it, and the fix is what ships. Do NOT restore the raw feed.
             std::vector<x3::rhi::PointLight> fl =
-                nearestFixtures(game.lightFixtures(), camX, camY, camZ, kFixtureBudget);
+                nearestFixtures(game.lightFixtures(), camX, camY, camZ, fixtureBudget);
             // BLACK-PROP FIX (light routing). The F2-F7 west-wing dressing authors one
             // motivated KEY light per room, sitting right over that room's hero props
             // (beds / vats / crates / boardroom table). Until now those lights were only
@@ -9597,7 +9708,7 @@ int runDefaultHost(HostContext& hc) {
             // gameplay the tower rooms leaned entirely on the flashlight + distant
             // ceiling fixtures and the metallic kit props read dark. Append the current
             // floor's wing keys here (floor-Y gated inside collectFloorLights, so only
-            // the plate the player stands on contributes — kFixtureBudget is 44 against a
+            // the plate the player stands on contributes — fixtureBudget is 44 against a
             // 64-light device cap precisely so these, the elevator cab and the torch fit
             // in the headroom). Combined with the prop metallic clamp above the wing rooms
             // now read with their zone key in real play, not just captures.
@@ -9723,14 +9834,14 @@ int runDefaultHost(HostContext& hc) {
                 // Cap lights at 16 closest-to-eye over the SAME visible-room set.
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    camX, camY, camZ, fl,
-                                                   kCanonLightBudget);
+                                                   canonLightBudget);
                 // SEAM 2: the amber breach spill (the way-in read from the apron).
                 if (facilityExterior.built()) fl.push_back(facilityExterior.spillLight());
             }
             // FROMDOC LIGHTING: append the LevelDoc's authored point lights (closest
             // 16 to the eye) after the flashlight, mirroring the canonlevel feed.
             if (docWorld && docLevel.built())
-                docLevel.selectLights(camX, camY, camZ, fl, 16);
+                docLevel.selectLights(camX, camY, camZ, fl, docLightK);
             // LIVING WORLD: LOCKDOWN red emissive shift — at alert level 3+ every
             // facility light leans hard into alarm red (the level-3 visual tell).
             // CANON SCOPE: the lockdown is a FACILITY effect — the shift applies
@@ -9749,7 +9860,7 @@ int runDefaultHost(HostContext& hc) {
             // the device limit.
             if (liveStrataBuilt && camY < 2.0f) {
                 const auto& sl = liveStrata.pointLights();
-                size_t take = sl.size() < 16 ? sl.size() : (size_t)16;
+                size_t take = sl.size() < strataLightK ? sl.size() : strataLightK;
                 for (size_t i = 0; i < take; ++i) fl.push_back(sl[i]);
             }
             // STREET LIGHT: the nearest K=14 lit lamps join the pool ONLY when
@@ -9767,7 +9878,7 @@ int runDefaultHost(HostContext& hc) {
                     if (v == x3::game::kStreamedExteriorRoom) { exteriorVis = true; break; }
                 if (exteriorVis) {
                     if (!simFrozen) streetLights.update(dt, scene);
-                    streetLights.selectLights(camX, camY, camZ, fl, 14);
+                    streetLights.selectLights(camX, camY, camZ, fl, streetLampK);
                 }
             }
             // Gap C: at The Deep the club's own rig (neon/UV/orbit spots/bar fills)
@@ -9855,7 +9966,7 @@ int runDefaultHost(HostContext& hc) {
                     fl.insert(fl.begin(), beam);
                 }
             }
-            if (fl.size() > 64) fl.resize(64);
+            if (fl.size() > lightBudget) fl.resize(lightBudget);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
         }
         prevSpace = spaceNow;

@@ -50,6 +50,12 @@ int hostValley(HostContext& hc) {
             sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
             device->setSkyParams(sp);
         }
+        // CONTENT WIRING: cascades for the outdoor view depth. `r_csm` was only
+        // ever pushed to the device from runDefaultHost, which a --world host
+        // REPLACES -- so this world had cascaded shadows compiled in and
+        // unreachable, and everything past the legacy 45 m box cast nothing.
+        // `--set r_csm 0` restores that legacy single cascade exactly.
+        applyOutdoorCsm(hc, *device, 350.0f, "valley");
         x3::game::TerrainStreamer vstream;
         // Seed the residency ring at the origin so the valley content has ground.
         vstream.init(vscene, *device, *vphys, vjobs.get(), vcfg, 0.0f, 0.0f, /*radius=*/8);

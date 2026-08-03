@@ -49,6 +49,14 @@ int hostStreamed(HostContext& hc) {
             sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
             device->setSkyParams(sp);
         }
+        // CONTENT WIRING: cascades for the outdoor view depth. `r_csm` was only
+        // ever pushed to the device from runDefaultHost, which a --world host
+        // REPLACES -- so this world had cascaded shadows compiled in and
+        // unreachable, and everything past the legacy 45 m box cast nothing.
+        // `--set r_csm 0` restores that legacy single cascade exactly.
+        // The widest view depth in the game (15 km far plane, streamed city +
+        // ranges), so the cascades get the longest distance of any world.
+        applyOutdoorCsm(hc, *device, 600.0f, "streamed");
 
         // The region graph (data) + the residency manager.
         x3::game::WorldRegionGraph wgraph;
