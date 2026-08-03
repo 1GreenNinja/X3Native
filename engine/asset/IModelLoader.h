@@ -31,6 +31,22 @@ struct MeshPrimitive {
                                  // (lets makeDrawables() map nodes -> primitives so
                                  //  per-node TRS can be baked into each drawable)
 
+    // ---- POSITION bounds, in the primitive's own (pre-node-transform) space --
+    // glTF REQUIRES min/max on every POSITION accessor, so cgltf has already
+    // parsed these — we used to drop them on the floor. Keeping them costs one
+    // memcpy per primitive and no vertex walking, and it is the only bounds
+    // information available for a STATIC mesh: basePos below is populated for
+    // skinned primitives only, so an unskinned rock's vertices live exclusively
+    // on the GPU and the app layer has nothing to measure.
+    // Callers that need a whole-model AABB must compose these through the node
+    // transforms (a Z-up-authored asset carries its height on posMin/Max[2]
+    // until its node TRS rotates it) — see modelAabb().
+    // hasBounds is false for a primitive whose accessor omitted them (malformed
+    // glTF) so callers can tell "no bounds" from "a degenerate zero-size box".
+    bool     hasBounds = false;
+    float    posMin[3] = { 0, 0, 0 };
+    float    posMax[3] = { 0, 0, 0 };
+
     // ---- CPU-skinning data (J1). Only populated for primitives that carry
     // JOINTS_0 + WEIGHTS_0 (i.e. a skinned mesh) AND were uploaded to a real
     // device, so the anim runtime can recompute their vertices each frame and
@@ -169,6 +185,23 @@ std::vector<ModelDrawable> makeDrawables(const Model& m);
 // node-transform walk. Orphaned-mesh fallback drawables get an empty name.
 std::vector<ModelDrawable> makeDrawablesNamed(const Model& m,
                                               std::vector<std::string>& outNodeNames);
+
+// Whole-model AABB in MODEL space: the union of every primitive's POSITION
+// bounds pushed through the world transform of each node that references it
+// (all 8 corners, so a rotating node is handled correctly — transforming only
+// min/max would give a box that is too small on any non-axis-aligned rotation).
+//
+// This is what makes "scale an imported asset to a real-world height" possible:
+// the armory's meshes arrive at arbitrary authored scale, and X3_WORLD_RULES
+// rule 1 (metres) cannot be satisfied by a hand-tuned per-instance multiplier
+// that silently breaks on the next import. scale = targetHeight / extentY,
+// with the base seated by -min.y * scale (rule 4, origin at the contact
+// surface), is self-correcting for any asset.
+//
+// Returns false — and leaves out* untouched — if the model has no primitive
+// carrying bounds, so a caller can fall back rather than scale by a garbage
+// extent. Pure CPU, no device needed; safe on a headless-loaded model.
+bool modelAabb(const Model& m, float outMin[3], float outMax[3]);
 
 // Column-major 4x4 multiply helper: out = a * b (glTF/glm convention). Exposed so
 // callers can compose objectTransform (a) with a drawable's nodeTransform (b)

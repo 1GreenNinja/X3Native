@@ -27,7 +27,9 @@
 //   -9.81 (JoltPhysicsWorld::init -> SetGravity; the seam is documented at the
 //   top of app/player.cpp). P0 may not touch engine/ (addendum GATES), so this
 //   host matches the A1 APEX exactly — jumpVelocity = sqrt(2 * 9.81 * 2.207 m)
-//   — and accepts the longer air time (~40 steps vs A1's 29). The jump lands
+//   — and accepts the longer air time. Be precise about which number: the
+//   impulse is sqrt(2 * 9.81 * 2.207) = 6.58 m/s, so the RISE is ~40 steps and
+//   TOTAL air time is ~80, against A1's 29 total. The jump lands
 //   where the spec says; it hangs there longer. P1 owns the fix, and there are
 //   two honest routes: (a) per-body gravity scale on the character (an engine
 //   change, so it belongs to whoever owns engine/), or (b) setCharacterSwim(),
@@ -91,10 +93,6 @@ constexpr float kRailZ0      = -kRailLength * 0.5f;
 constexpr float kLateralGain = 4.0f;     // k ~= 4/s glue back to the rail
 constexpr float kCamSide     = 14.0f;    // m perpendicular offset
 constexpr float kCamUp       = 1.6f;     // m above the rail
-// Rig lift above the rail. Keep this SMALL: the camera sits 14 m out, so every
-// metre of lift is ~4 deg of downward pitch, and past ~2 m the 28 deg lens is
-// looking at nothing but ground. The mountains read because the lens is level,
-// not because the camera is high.
 // ZERO. The arithmetic is unforgiving with a 28 deg lens: the camera sits 14 m
 // out, so lift L pitches the view down by atan(L/14) and the frame spans only
 // +-14 deg about that. The ridge crest 2.1 km west subtends +8.7 deg, so even a
@@ -265,6 +263,13 @@ int hostLabZero3D(HostContext& hc) {
     // objects in the repo that other machines cannot fetch. Missing library =
     // no dressing, host runs exactly as before.
     struct DressInst { uint32_t model; float m[16]; };
+    // Per-model measurement: the Y extent we scale FROM and the base offset that
+    // seats the asset on the ground (X3_WORLD_RULES rule 4 — origin at the
+    // contact surface; these imports do not honour it, their origins float).
+    struct DressClass { float minH = 0.0f, maxH = 0.0f; };
+    struct DressMeta { DressClass cls; float extentY = 0.0f;
+                       float baseY = 0.0f; bool measured = false; };
+    std::vector<DressMeta>                             dressMeta;
     std::vector<std::vector<x3::asset::ModelDrawable>> dressModels;
     std::vector<x3::asset::Model>                      dressLoaded;
     std::vector<DressInst>                             dressInsts;
@@ -281,13 +286,38 @@ int hostLabZero3D(HostContext& hc) {
             "WhiteBarkPineRHEP_A.glb", "WhitebarkPineRHEP_C.glb", "WhitebarkPineRHEP_E.glb",
             "RockBigRHEWP.glb", "RockMediumBRHEWP.glb", "RockPileA2RHEWP.glb",
         };
-        for (const char* f : kDressFiles) {
-            x3::asset::Model m = dloader->load(f);
+        // AUTHORED REAL-WORLD HEIGHTS, per class (metres). The armory's meshes
+        // arrive at arbitrary authored scale — the pines measure ~12 m along
+        // their own Z before the node TRS stands them up — so a per-instance
+        // multiplier is guesswork that breaks on the next import. Instead each
+        // model is MEASURED (modelAabb) and scaled to a height drawn from this
+        // table, which is rule-1 (metres) compliant for any future asset, not
+        // just these six.
+        const DressClass kPineClass{ 6.0f, 12.0f };
+        const DressClass kRockClass{ 0.5f, 2.2f };
+        for (uint32_t fi = 0; fi < (uint32_t)(sizeof(kDressFiles) / sizeof(kDressFiles[0])); ++fi) {
+            x3::asset::Model m = dloader->load(kDressFiles[fi]);
             if (!m.ok) continue;
             std::vector<x3::asset::ModelDrawable> dr = x3::asset::makeDrawables(m);
             if (dr.empty()) { dloader->unload(m); continue; }
+            float lo[3], hi[3];
+            const bool measured = x3::asset::modelAabb(m, lo, hi);
+            DressMeta meta{};
+            meta.cls = (fi < 3) ? kPineClass : kRockClass;   // first three are pines
+            if (measured) {
+                meta.extentY = hi[1] - lo[1];
+                meta.baseY   = lo[1];
+                meta.measured = (meta.extentY > 1e-3f);
+            }
+            if (!meta.measured) {
+                // No bounds => refuse to invent a scale. Draw it at 1:1 and say
+                // so; a silently mis-scaled 40 m boulder is worse than a log line.
+                x3::logWarn(std::string("--world labzero3d: no bounds for ") + kDressFiles[fi] +
+                            " — placed unscaled (asset carries no POSITION bounds)");
+            }
             dressLoaded.push_back(std::move(m));
             dressModels.push_back(std::move(dr));
+            dressMeta.push_back(meta);
         }
         if (dressModels.empty()) {
             x3::logWarn(std::string("--world labzero3d: no dressing library at ") + dressDir +
@@ -312,31 +342,68 @@ int hostLabZero3D(HostContext& hc) {
                 const float py = x3::game::terrainHeightAtWorld(px, pz);
                 const float yaw = nextf() * 6.2831853f;
                 const uint32_t mdl = (uint32_t)(nextf() * (float)dressModels.size()) % (uint32_t)dressModels.size();
-                // Rocks read too uniform at one size; pines want less variance.
-                const float sc = (mdl >= 3) ? (0.8f + nextf() * 1.8f) : (0.9f + nextf() * 0.7f);
+                // Scale FROM the measured extent TO an authored height. Same LCG,
+                // so the variation is deterministic like everything else here.
+                const DressMeta& meta = dressMeta[mdl];
+                const float wantH = meta.cls.minH + nextf() * (meta.cls.maxH - meta.cls.minH);
+                const float sc = meta.measured ? (wantH / meta.extentY) : 1.0f;
+                // Seat it: the asset's own base sits at baseY in model space, so
+                // lifting by -baseY*sc puts its lowest point exactly on the ground
+                // instead of floating above it or sinking into the hill.
+                const float seatY = py - meta.baseY * sc;
                 const float c = std::cos(yaw) * sc, sn = std::sin(yaw) * sc;
                 DressInst inst{};
                 inst.model = mdl;
                 inst.m[0] = c;    inst.m[1] = 0;  inst.m[2] = -sn;  inst.m[3] = 0;
                 inst.m[4] = 0;    inst.m[5] = sc; inst.m[6] = 0;    inst.m[7] = 0;
                 inst.m[8] = sn;   inst.m[9] = 0;  inst.m[10] = c;   inst.m[11] = 0;
-                inst.m[12] = px;  inst.m[13] = py; inst.m[14] = pz; inst.m[15] = 1;
+                inst.m[12] = px;  inst.m[13] = seatY; inst.m[14] = pz; inst.m[15] = 1;
                 dressInsts.push_back(inst);
             }
             x3::logInfo("--world labzero3d: dressing " + std::to_string(dressModels.size()) +
                         " models, " + std::to_string(dressInsts.size()) + " instances");
         }
     }
+    // ASSET-DEBT (A1): the pine GLBs carry 0 images / 0 textures and a flat 0.8
+    // grey baseColorFactor, so they render as white skeletons. This is an
+    // authored two-tone stand-in — bark on the first primitive (material 0 is
+    // M_WBPRHEPBark*), needles on the rest — which passes at rail distance.
+    // It is a STOPGAP, not a fix: the real repair is re-exporting these with
+    // their maps baked, which the rocks prove the pipeline can do. Delete this
+    // block the day the textured pines land.
+    const float kPineBark[3]   = { 0.24f, 0.18f, 0.14f };
+    const float kPineNeedle[3] = { 0.10f, 0.22f, 0.12f };
     auto drawDressing = [&](const x3::rhi::FrameContext& frame) {
         for (const DressInst& inst : dressInsts) {
-            for (const auto& dr : dressModels[inst.model]) {
+            const auto& model = dressModels[inst.model];
+            for (size_t di = 0; di < model.size(); ++di) {
+                const auto& dr = model[di];
                 float fin[16]; x3::asset::mulMat4(inst.m, dr.nodeTransform, fin);
                 float tint[4] = { dr.baseColorFactor[0], dr.baseColorFactor[1],
                                   dr.baseColorFactor[2], dr.baseColorFactor[3] };
+                // Only untextured primitives get the stand-in; anything that came
+                // with a real albedo (every rock) is left exactly as authored.
+                if (dr.baseColorTexId == 0 && inst.model < 3) {
+                    const float* pal = (di == 0) ? kPineBark : kPineNeedle;
+                    tint[0] = pal[0]; tint[1] = pal[1]; tint[2] = pal[2];
+                }
                 device->drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
                                  x3::rhi::TextureHandle{ dr.baseColorTexId }, tint, fin);
             }
         }
+    };
+
+    // THE frame draw order, in ONE place. The headless settle loop and the
+    // windowed loop must issue identical draws forever, and keeping that as two
+    // parallel blocks already failed once: a replace-all edit matched only the
+    // headless block and the windowed path silently lost its dressing. Two sites
+    // that must agree is the defect; one site that both call is the fix, and
+    // every future addition (canyon geometry, hazards, HUD) inherits into both
+    // paths for free.
+    auto renderFrame = [&](const x3::rhi::FrameContext& frame) {
+        scene.render(*device, frame);
+        drawDressing(frame);
+        if (haveAvatar) avatar.drawAvatar(*device, frame, scene);
     };
 
     // ---- Camera rig state (smoothed; never snapped) ------------------------
@@ -385,10 +452,8 @@ int hostLabZero3D(HostContext& hc) {
         const x3::phys::Vec3 sd = rail.side(railS);
         const x3::phys::Vec3 tn = rail.tangent(railS);
 
-        // The rig sits ABOVE the rail, not on it. At eye level on a hillside the
-        // near slope eats the frame and the ridge behind the character is lost;
-        // lifting the camera and looking very slightly down puts the horizon in
-        // the upper third, which is what makes the mountains read as backdrop.
+        // Camera height = rail + kCamUp + kCamLift, and kCamLift is 0 on purpose
+        // (see its declaration for the subtended-angle arithmetic). Level lens.
         const float tgtCamX = rp.x + sd.x * kCamSide;
         const float tgtCamY = rp.y + kCamUp + kCamLift;
         const float tgtCamZ = rp.z + sd.z * kCamSide;
@@ -471,11 +536,7 @@ int hostLabZero3D(HostContext& hc) {
             updateCamera(kFixedStep);
             if (i == kSettle - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
-            if (frame.valid) {
-                scene.render(*device, frame);
-                drawDressing(frame);
-                if (haveAvatar) avatar.drawAvatar(*device, frame, scene);
-            }
+            if (frame.valid) renderFrame(frame);
             device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
@@ -542,10 +603,7 @@ int hostLabZero3D(HostContext& hc) {
         }
 
         auto frame = device->beginFrame();
-        if (frame.valid) {
-            scene.render(*device, frame);
-            if (haveAvatar) avatar.drawAvatar(*device, frame, scene);
-        }
+        if (frame.valid) renderFrame(frame);
         device->endFrame(frame);
     }
 

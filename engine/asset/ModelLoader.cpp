@@ -876,6 +876,24 @@ private:
                 // references this mesh back to its primitives (and bake the node TRS).
                 mp.meshIndex = static_cast<uint32_t>(mi);
 
+                // POSITION bounds. Computed from the narrowed vertex array rather
+                // than the accessor's min/max because that covers BOTH paths with
+                // one rule: a Draco-compressed primitive is decoded above and has
+                // no cgltf accessor to read min/max from. One O(n) pass at load,
+                // and it is the only bounds a static (unskinned) primitive will
+                // ever have — its vertices live on the GPU from here on.
+                if (!mv.empty()) {
+                    float lo[3] = { mv[0].pos[0], mv[0].pos[1], mv[0].pos[2] };
+                    float hi[3] = { lo[0], lo[1], lo[2] };
+                    for (const auto& v : mv)
+                        for (int k = 0; k < 3; ++k) {
+                            if (v.pos[k] < lo[k]) lo[k] = v.pos[k];
+                            if (v.pos[k] > hi[k]) hi[k] = v.pos[k];
+                        }
+                    for (int k = 0; k < 3; ++k) { mp.posMin[k] = lo[k]; mp.posMax[k] = hi[k]; }
+                    mp.hasBounds = true;
+                }
+
                 // ---- Retain CPU vertex data for skinned primitives (J1). The bind-
                 // pose pos/nrm/uv + per-vertex joint indices/weights let the anim
                 // runtime recompute vertices each frame and re-upload via updateMesh.
@@ -1421,6 +1439,52 @@ std::vector<ModelDrawable> makeDrawables(const Model& m) {
         }
     }
     return out;
+}
+
+bool modelAabb(const Model& m, float outMin[3], float outMax[3]) {
+    // Reuse makeDrawables' own output rather than re-deriving node world
+    // transforms: the two must agree about where a primitive ends up, and the
+    // cheapest way to guarantee that is to ask the same function. Drawables
+    // carry the composed nodeTransform, and their order matches m.primitives'
+    // mesh mapping, so we re-find each drawable's primitive by mesh id.
+    bool any = false;
+    float lo[3] = { 0, 0, 0 }, hi[3] = { 0, 0, 0 };
+
+    const std::vector<ModelDrawable> drawables = makeDrawables(m);
+    for (const ModelDrawable& d : drawables) {
+        for (const MeshPrimitive& p : m.primitives) {
+            if (!p.hasBounds) continue;
+            if (meshIdOf(p) != d.meshId) continue;
+            // All EIGHT corners through the node transform. Transforming only
+            // min/max would under-report the box for any rotated node — and the
+            // armory's Z-up imports are exactly that case.
+            for (int c = 0; c < 8; ++c) {
+                const float v[4] = {
+                    (c & 1) ? p.posMax[0] : p.posMin[0],
+                    (c & 2) ? p.posMax[1] : p.posMin[1],
+                    (c & 4) ? p.posMax[2] : p.posMin[2],
+                    1.0f
+                };
+                float w[3];
+                for (int r = 0; r < 3; ++r)
+                    w[r] = d.nodeTransform[0 * 4 + r] * v[0] + d.nodeTransform[1 * 4 + r] * v[1] +
+                           d.nodeTransform[2 * 4 + r] * v[2] + d.nodeTransform[3 * 4 + r] * v[3];
+                if (!any) {
+                    for (int k = 0; k < 3; ++k) { lo[k] = hi[k] = w[k]; }
+                    any = true;
+                } else {
+                    for (int k = 0; k < 3; ++k) {
+                        if (w[k] < lo[k]) lo[k] = w[k];
+                        if (w[k] > hi[k]) hi[k] = w[k];
+                    }
+                }
+            }
+            break;   // one primitive per drawable
+        }
+    }
+    if (!any) return false;                 // caller must not scale by a garbage extent
+    for (int k = 0; k < 3; ++k) { outMin[k] = lo[k]; outMax[k] = hi[k]; }
+    return true;
 }
 
 std::vector<ModelDrawable> makeDrawablesNamed(const Model& m,
