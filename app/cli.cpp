@@ -152,6 +152,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-anim") o.testAnim = true;
         else if (a == "--test-terrain") o.testTerrain = true;
         else if (a == "--test-terrainplace") o.testTerrainPlace = true;
+        else if (a == "--test-terraincorridor") o.testTerrainCorridor = true;
         else if (a == "--test-streaming") o.testStreaming = true;
         else if (a == "--test-ai") o.testAi = true;
         else if (a == "--test-bestiary") o.testBestiary = true;
@@ -279,6 +280,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--screenshot-complex") {                                   // 7-level Complex beauty set
             o.complexShot = true; o.worldMode = "complex"; o.screenshot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.complexShotDir = argv[++i];
+        }
+        else if (a == "--screenshot-tunnel") {                                    // terrain-corridor tunnel proof set
+            o.tunnelShot = true; o.worldMode = "tunnel"; o.screenshot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.tunnelShotDir = argv[++i];
         }
         else if (a == "--test-clubnpcs") o.testClubNpcs = true;
         else if (a == "--test-jukebox") o.testJukebox = true;

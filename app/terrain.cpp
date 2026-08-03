@@ -52,6 +52,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -183,13 +184,31 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
     // field), so LOD-decimation error at tile borders can exceed the old depth —
     // drop the skirt further there.
     const float skirtDepth = cfg.heightScale * 0.25f + (cfg.worldFeatures ? 40.0f : 0.0f) + 1.0f;
+    // ...EXCEPT inside a registered CORRIDOR. A skirt is a curtain hanging off
+    // the tile border to hide LOD cracks when you look at the border from
+    // OUTSIDE the ground; it is invisible because the neighbouring tile stands
+    // in front of it. A corridor deep enough to walk or drive through puts the
+    // camera UNDER the surface, and a ~55 m curtain then hangs straight across
+    // the bore every 32 m — a solid wall of terrain in the middle of the
+    // tunnel. Inside the corridor the field is a smooth flat-floored channel,
+    // so the LOD error there is centimetres and a short skirt is ample.
+    // Evaluated from the segment MIDPOINT, which is identical from either side
+    // of a shared seam, so the two tiles still agree bit-for-bit (the
+    // --test-terraincorridor C3 seam check).
+    const bool anyCorridor = (terrainCorridorCount() > 0);
     auto addSkirtEdge = [&](uint32_t i0, uint32_t j0, uint32_t i1, uint32_t j1) {
         const uint32_t topA = j0 * vpe + i0;
         const uint32_t topB = j1 * vpe + i1;
         const x3::rhi::MeshVertex& va = outVerts[topA];
         const x3::rhi::MeshVertex& vb = outVerts[topB];
+        float depth = skirtDepth;
+        if (anyCorridor) {
+            const float mx = (va.pos[0] + vb.pos[0]) * 0.5f;
+            const float mz = (va.pos[2] + vb.pos[2]) * 0.5f;
+            if (terrainCorridorDelta(mx, mz) < -0.25f) depth = std::min(depth, 2.5f);
+        }
         x3::rhi::MeshVertex la = va, lb = vb;
-        la.pos[1] -= skirtDepth; lb.pos[1] -= skirtDepth;
+        la.pos[1] -= depth; lb.pos[1] -= depth;
         float ex = vb.pos[0] - va.pos[0], ez = vb.pos[2] - va.pos[2];
         float nx = -ez, nz = ex;
         float inv = 1.0f / std::max(1e-5f, std::sqrt(nx * nx + nz * nz));
@@ -724,6 +743,173 @@ float mountainHeight(float x, float z, uint32_t seed) {
     return h;
 }
 
+// ===========================================================================
+// TERRAIN CORRIDOR DEPRESSION — see the block comment on TerrainCorridor in
+// app/terrain.h for the API contract and the BL provenance of the technique.
+//
+// This is the POLYLINE generalization of the river carve above: the river carve
+// is a fixed-profile channel following one authored spline with a levee, a
+// floodplain shelf and a pile of content guards; a corridor is the bare
+// primitive — closest approach to an ordered point list, a flat floor of
+// half-width `halfWidth`, and a smoothstep shoulder `falloff` wide. It shares
+// the river's exact style: pure, deterministic, bbox-guarded, `sstep`-shaped,
+// and combined into h by LOWERING only (never raising).
+//
+// GEOMETRY, precisely — the corridor is the UNION of one capsule per segment:
+//   per segment i:  t_i   = clamp(projection of p onto the segment, 0, 1)
+//                   d_i   = |p - segment_i(t_i)|            (exact, clamped ends)
+//                   dep_i = depth[i] + (depth[i+1]-depth[i]) * t_i
+//                   w_i   = 1 - smoothstep(halfWidth, halfWidth+falloff, d_i)
+//                   c_i   = dep_i * w_i
+//   depth(p) = max_i c_i          delta = -depth(p)   (<= 0; a pure lowering)
+//
+// WHY MAX-OF-SEGMENTS AND NOT MIN-DISTANCE-THEN-PROFILE (this is the whole
+// reason there is no crease): the obvious formulation — find the single closest
+// point on the polyline, then read the profile there — has a genuine VALUE
+// DISCONTINUITY on the medial axis inside a bend. On that bisector two feet are
+// exactly equidistant but sit at different arc positions, so they carry
+// different profile depths, and the winner-takes-all switch steps the ground by
+// |slope difference| * distance-from-joint. It is invisible on a flat profile
+// and a hard visible step as soon as the corridor grades. Taking the MAX of
+// per-segment contributions removes it by construction: each c_i is continuous
+// everywhere (t_i, d_i and dep_i all are), and the max of continuous functions
+// is continuous — at any switch the two contributions are EQUAL by definition.
+//
+// It also gives, for free:
+//   * no double-dig at a joint. Both adjacent segments evaluate the joint to
+//     exactly depth[joint] (t=1 and t=0 of the shared node), so max = the node's
+//     own depth. A SUM (or BL's overlapping per-sample circle stamps) digs ~2x
+//     there — the classic corridor-carve artifact.
+//   * a Lipschitz bound the self-test can assert against:
+//       |grad depth| <= max|d(depth)/ds| + maxDepth * 1.5/falloff
+//     (smoothstep' peaks at 1.5; the distance field is 1-Lipschitz; max of
+//     L-Lipschitz functions is L-Lipschitz).
+//   * rounded end caps, so the floor is a proper swept corridor, and the flat
+//     floor extends halfWidth past a node into the next reach (the union, not a
+//     kink). That is the one place the union differs from "the profile" on the
+//     spine: within ~halfWidth of a node the deeper neighbour wins. Deliberate,
+//     and asserted in the self-test.
+//
+// COST: the comparison runs on SQUARED distance; sqrt is taken only for the
+// segments that actually land in the shoulder band (inside the flat floor w is
+// exactly 1 and outside the reach the contribution is exactly 0 — both skip it).
+// ===========================================================================
+
+// One registered corridor + its precomputed XZ bounding box (expanded by the
+// full influence radius halfWidth+falloff). The box is a PURE ACCELERATOR: a
+// point outside it is provably >= halfWidth+falloff from every segment (all the
+// nodes are inside the unexpanded box), where w(d) is exactly 0 — so skipping it
+// cannot change a single bit of the result.
+struct CorridorRec {
+    TerrainCorridor c;
+    float minX = 0.0f, minZ = 0.0f, maxX = 0.0f, maxZ = 0.0f;
+};
+
+// The registry: a FIXED-CAPACITY array, no dynamic allocation (same shape as
+// kRanges/kPads above). Written only by registerTerrainCorridor/clear at boot;
+// read-only from every generation thread thereafter.
+struct CorridorRegistry {
+    CorridorRec rec[kMaxTerrainCorridors];
+    uint32_t    count = 0;
+};
+CorridorRegistry& corridorRegistry() {
+    static CorridorRegistry kReg;
+    return kReg;
+}
+
+// Exact SQUARED distance from p to segment i of a corridor, plus the depth
+// profile interpolated at the clamped closest point. Pure; i is a valid segment.
+inline void corridorSegment(const TerrainCorridor& c, int i, float x, float z,
+                            float& outD2, float& outDepth) {
+    const float ax = c.x[i], az = c.z[i];
+    const float abx = c.x[i+1] - ax, abz = c.z[i+1] - az;
+    const float len2 = abx * abx + abz * abz;
+    // Degenerate (repeated) control point: collapse to the node itself rather
+    // than dividing by ~0 — a duplicated point must never spike or produce NaN.
+    float t = (len2 > 1e-12f) ? ((x - ax) * abx + (z - az) * abz) / len2 : 0.0f;
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);   // clamp => rounded end caps
+    const float dx = x - (ax + abx * t), dz = z - (az + abz * t);
+    outD2    = dx * dx + dz * dz;
+    outDepth = c.depth[i] + (c.depth[i+1] - c.depth[i]) * t;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Corridor depression — public surface (see app/terrain.h).
+// ---------------------------------------------------------------------------
+float terrainCorridorDepthAt(const TerrainCorridor& c, float x, float z) {
+    if (c.nodeCount < 2) return 0.0f;
+    const float reach  = c.halfWidth + c.falloff;
+    const float reach2 = reach * reach;
+    const float flat2  = c.halfWidth * c.halfWidth;
+    float best = 0.0f;                             // never RAISES, so 0 is the floor
+    for (int i = 0; i + 1 < c.nodeCount; ++i) {
+        float d2, depth;
+        corridorSegment(c, i, x, z, d2, depth);
+        if (d2 >= reach2) continue;                // outside the shoulder: exactly 0
+        // w == 1 on the flat floor (no sqrt); smoothstep only in the shoulder.
+        const float cont = (d2 <= flat2)
+            ? depth
+            : depth * (1.0f - sstep(c.halfWidth, reach, std::sqrt(d2)));
+        if (cont > best) best = cont;              // UNION (max), never a sum
+    }
+    return best;
+}
+
+bool registerTerrainCorridor(const TerrainCorridor& c) {
+    CorridorRegistry& reg = corridorRegistry();
+    if (reg.count >= kMaxTerrainCorridors) return false;
+    if (c.nodeCount < 2 || c.nodeCount > TerrainCorridor::kMaxNodes) return false;
+    if (!(c.halfWidth >= 0.0f) || !(c.falloff >= 0.0f)) return false;   // also rejects NaN
+    if (c.halfWidth + c.falloff <= 0.0f) return false;                  // zero influence
+    for (int i = 0; i < c.nodeCount; ++i)
+        if (!std::isfinite(c.x[i]) || !std::isfinite(c.z[i]) || !std::isfinite(c.depth[i]))
+            return false;
+
+    CorridorRec& r = reg.rec[reg.count];
+    r.c = c;
+    r.minX = r.maxX = c.x[0];
+    r.minZ = r.maxZ = c.z[0];
+    for (int i = 1; i < c.nodeCount; ++i) {
+        r.minX = std::min(r.minX, c.x[i]); r.maxX = std::max(r.maxX, c.x[i]);
+        r.minZ = std::min(r.minZ, c.z[i]); r.maxZ = std::max(r.maxZ, c.z[i]);
+    }
+    const float reach = c.halfWidth + c.falloff;
+    r.minX -= reach; r.maxX += reach;
+    r.minZ -= reach; r.maxZ += reach;
+    ++reg.count;
+    return true;
+}
+
+void clearTerrainCorridors() { corridorRegistry().count = 0; }
+
+uint32_t terrainCorridorCount() { return corridorRegistry().count; }
+
+float terrainCorridorDelta(float x, float z) {
+    const CorridorRegistry& reg = corridorRegistry();
+    if (reg.count == 0) return 0.0f;               // the universal fast path
+    float deepest = 0.0f;                          // meters BELOW the surface
+    for (uint32_t i = 0; i < reg.count; ++i) {
+        const CorridorRec& r = reg.rec[i];
+        // Early-out: 4 compares, and terrain far from every corridor pays only
+        // this. Provably lossless (see CorridorRec).
+        if (x < r.minX || x > r.maxX || z < r.minZ || z > r.maxZ) continue;
+        const float d = terrainCorridorDepthAt(r.c, x, z);
+        if (d > deepest) deepest = d;              // deepest wins; never a sum
+    }
+    return -deepest;
+}
+
+namespace {
+// Fold the registered corridors into a height. The `== 0` guard is deliberate,
+// not defensive: it guarantees the returned float is the SAME OBJECT, bit for
+// bit, whenever no corridor influences the point — which is what makes "no
+// global regression" a bit-exact property rather than an epsilon one.
+inline float applyCorridors(float h, float x, float z) {
+    const float d = terrainCorridorDelta(x, z);
+    return (d == 0.0f) ? h : h + d;
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -736,7 +922,7 @@ float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ) {
     float h = fbm(worldX, worldZ, cfg.noiseFreq, cfg.octaves, cfg.seed);
     h = h * h * (3.0f - 2.0f * h);
     h *= cfg.heightScale;
-    if (!cfg.worldFeatures) return h;
+    if (!cfg.worldFeatures) return applyCorridors(h, worldX, worldZ);
 
     // MACRO RELIEF: modulate the base amplitude by a very-low-frequency field so
     // some country is near-flat plain and some carries the full hill height.
@@ -775,7 +961,12 @@ float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ) {
     // After the pads so a channel may cross a pad's outer blend ring; every
     // feature is internally guarded to zero near the graded content itself.
     h = authoredLandforms(h, worldX, worldZ);
-    return h;
+
+    // TERRAIN CORRIDOR DEPRESSION — LAST, so a registered corridor wins over
+    // every authored layer (a tunnel bore must be able to cut through a pad's
+    // blend ring or a mountain flank; the road it serves is pinned flat and does
+    // not move). Exactly zero-cost + bit-neutral when nothing is registered.
+    return applyCorridors(h, worldX, worldZ);
 }
 
 // ---------------------------------------------------------------------------
@@ -1864,6 +2055,444 @@ bool runStreamingSelfTest() {
     x3::logInfo(std::string("[stream-test] ") + std::to_string(gs_pass) + " passed, " +
                 std::to_string(gs_fail) + " failed");
     return gs_fail == 0;
+}
+
+// ===========================================================================
+// Headless CORRIDOR-DEPRESSION self-test (--test-terraincorridor). Pure math —
+// no window/Vulkan/physics/jobs. Asserts the five properties the primitive has
+// to have before any tunnel can be built on it:
+//   C1 NO GLOBAL REGRESSION — with a corridor registered, every world point
+//      outside its bounds returns a BIT-IDENTICAL height to the unmodified
+//      field, and clearing the registry restores the field exactly.
+//   C2 CENTRELINE DEPTH — on the spine the surface is lowered by exactly the
+//      requested depth profile (at the nodes AND at the interpolated
+//      mid-segment values), and (C2b) the cross-section is a flat floor out to
+//      halfWidth with a monotone shoulder reaching EXACTLY zero at the reach.
+//   C3 TILE-SEAM CONSISTENCY — two adjacent tiles are actually MESHED (the same
+//      buildTileMeshAbs the streamer's generate() runs) with a corridor lying
+//      across their shared edge; every vertex on that edge must match bit for
+//      bit between the two tiles. This is the property the whole design rests
+//      on: the field is a function of world (x,z), never of the tile origin.
+//   C4 NO CREASE / NO SPIKE AT JOINTS — an arc sweep around an interior joint
+//      stays within the analytic Lipschitz bound of the profile (a naive
+//      per-node circle stamp fails this), and the joint itself is never dug
+//      deeper than its own node depth (a summing implementation digs 2x there).
+//   C5 DETERMINISM — repeated evaluation, reversed traversal order, and a
+//      clear/re-register cycle all reproduce the field bit for bit.
+// ===========================================================================
+bool runTerrainCorridorSelfTest() {
+    int cPass = 0, cFail = 0;
+    auto checkC = [&](bool cond, const char* name) {
+        if (cond) { ++cPass; x3::logInfo(std::string("[corridor-test] PASS ") + name); }
+        else      { ++cFail; x3::logError(std::string("[corridor-test] FAIL ") + name); }
+    };
+
+    // The test owns the global corridor registry for its duration; nothing else
+    // in a headless run registers corridors. Start and finish empty.
+    clearTerrainCorridors();
+
+    // The corridor under test: a 4-node dog-leg with two REAL joints (~21 deg at
+    // N1, ~66 deg at N2 — a concave bend is exactly where a naive
+    // closest-point-then-profile carve steps), and a depth profile that eases in
+    // from a portal mouth, deepens under the ridge, and eases back out. Segments
+    // are long relative to the 28 m influence reach so each one has a genuine
+    // interior where only it contributes.
+    TerrainCorridor bore{};
+    bore.nodeCount = 4;
+    bore.x[0] = -260.0f; bore.z[0] =  -80.0f; bore.depth[0] =  0.0f;   // mouth
+    bore.x[1] = -100.0f; bore.z[1] =  -20.0f; bore.depth[1] = 10.0f;   // joint (~21 deg)
+    bore.x[2] =  120.0f; bore.z[2] =  -20.0f; bore.depth[2] = 18.0f;   // joint (~66 deg)
+    bore.x[3] =  200.0f; bore.z[3] =  160.0f; bore.depth[3] =  4.0f;   // mouth
+    bore.halfWidth = 7.0f;    // 14 m flat floor (a 4-lane deck + shoulders)
+    bore.falloff   = 21.0f;   // shoulder out to 28 m
+    const float kReach = bore.halfWidth + bore.falloff;
+
+    const TerrainConfig& wcfg = worldTerrainConfig();
+
+    // Probe points FAR from the corridor (negatives, the canonical world's own
+    // authored features, and the deep unbounded field).
+    const float farPts[][2] = {
+        {  600.0f,  400.0f }, { -900.0f, -500.0f }, { 3000.0f, 2000.0f },
+        { -3333.0f, 1234.5f }, {  480.0f, -560.0f }, { -230.0f, -760.0f },
+        {    0.0f, 5000.0f }, { 1100.0f,-1350.0f }, { -8600.0f,  0.0f },
+        {  700.0f,    0.0f }, {    0.0f, -400.0f }, { -600.0f,  500.0f },
+    };
+    const int nFar = (int)(sizeof(farPts) / sizeof(farPts[0]));
+    float baseFar[16] = {};
+    for (int i = 0; i < nFar; ++i) baseFar[i] = terrainHeightAt(wcfg, farPts[i][0], farPts[i][1]);
+
+    // A dense baseline grid over the corridor's own neighbourhood, so C1 also
+    // proves that points merely NEAR the corridor but past its shoulder are
+    // untouched (the interesting failure mode: an unclamped falloff).
+    const int   kG = 81;
+    const float gx0 = -320.0f, gz0 = -180.0f, gStep = 8.0f;   // spans the whole dog-leg
+    std::vector<float> baseGrid((size_t)kG * kG);
+    for (int j = 0; j < kG; ++j)
+        for (int i = 0; i < kG; ++i)
+            baseGrid[(size_t)j * kG + i] = terrainHeightAt(wcfg, gx0 + i * gStep, gz0 + j * gStep);
+
+    const bool registered = registerTerrainCorridor(bore);
+    checkC(registered && terrainCorridorCount() == 1u,
+           "C0 registerTerrainCorridor accepts a valid corridor (fixed-capacity registry)");
+
+    // ---- C1: no global regression (BIT-identical outside the bounds) --------
+    {
+        bool farExact = true;
+        for (int i = 0; i < nFar; ++i) {
+            const float h = terrainHeightAt(wcfg, farPts[i][0], farPts[i][1]);
+            if (h != baseFar[i]) {                    // bit-exact, not epsilon
+                farExact = false;
+                x3::logError("[corridor-test] far point (" + std::to_string(farPts[i][0]) + "," +
+                             std::to_string(farPts[i][1]) + ") moved " +
+                             std::to_string(h - baseFar[i]) + " m");
+            }
+        }
+        // Near-field grid: every sample with a zero corridor delta must be
+        // bit-identical to the baseline; every sample with a non-zero delta must
+        // be strictly LOWER, and must lie strictly inside the influence reach.
+        bool gridExact = true, loweredOnly = true;
+        int touched = 0, untouched = 0;
+        for (int j = 0; j < kG; ++j) {
+            for (int i = 0; i < kG; ++i) {
+                const float x = gx0 + i * gStep, z = gz0 + j * gStep;
+                const float h = terrainHeightAt(wcfg, x, z);
+                const float d = terrainCorridorDelta(x, z);
+                if (d == 0.0f) {
+                    ++untouched;
+                    if (h != baseGrid[(size_t)j * kG + i]) gridExact = false;
+                } else {
+                    ++touched;
+                    if (d > 0.0f || h >= baseGrid[(size_t)j * kG + i]) loweredOnly = false;
+                    if (terrainCorridorDepthAt(bore, x, z) <= 0.0f) loweredOnly = false;
+                }
+            }
+        }
+        checkC(farExact && gridExact && loweredOnly && touched > 0 && untouched > 0,
+               "C1 outside the corridor bounds the height is BIT-identical; inside it only LOWERS");
+    }
+
+    // ---- C1b: clearing the registry restores the field exactly --------------
+    {
+        clearTerrainCorridors();
+        bool restored = (terrainCorridorCount() == 0u);
+        for (int j = 0; j < kG; ++j)
+            for (int i = 0; i < kG; ++i)
+                if (terrainHeightAt(wcfg, gx0 + i * gStep, gz0 + j * gStep) !=
+                    baseGrid[(size_t)j * kG + i]) restored = false;
+        registerTerrainCorridor(bore);   // put it back for the remaining cases
+        checkC(restored, "C1b clearTerrainCorridors() restores the field bit-for-bit");
+    }
+
+    // ---- C2: the centreline is lowered by exactly the requested depth -------
+    // Three claims, in increasing strength:
+    //   (i)   ON THE SPINE the ground is lowered by AT LEAST the profile, always.
+    //   (ii)  AT EVERY NODE it is lowered by EXACTLY that node's depth.
+    //   (iii) In each segment's INTERIOR (t in [0.25,0.75]; segments are longer
+    //         than 4x the reach here, so no neighbour contributes) it is lowered
+    //         by EXACTLY the interpolated profile.
+    // The union's flat end caps mean (iii) does NOT extend into the last
+    // ~halfWidth before a deeper node — deliberate, and covered by (i).
+    {
+        bool atLeast = true, atNodes = true, interior = true;
+        float worstNode = 0.0f, worstInterior = 0.0f;
+
+        for (int s = 0; s + 1 < bore.nodeCount; ++s) {
+            for (int k = 0; k <= 64; ++k) {
+                const float t  = (float)k / 64.0f;
+                const float px = bore.x[s] + (bore.x[s+1] - bore.x[s]) * t;
+                const float pz = bore.z[s] + (bore.z[s+1] - bore.z[s]) * t;
+                const float want = bore.depth[s] + (bore.depth[s+1] - bore.depth[s]) * t;
+                const float got  = terrainCorridorDepthAt(bore, px, pz);
+                if (got < want - 1e-3f) atLeast = false;                    // (i)
+                if (t >= 0.25f && t <= 0.75f) {                             // (iii)
+                    worstInterior = std::max(worstInterior, std::fabs(got - want));
+                    if (std::fabs(got - want) > 1e-3f) interior = false;
+                }
+                // The SURFACE must actually move by that much, not just the
+                // primitive: measure the real field with and without the
+                // corridor registered.
+                if (k % 16 == 0) {
+                    clearTerrainCorridors();
+                    const float hBase = terrainHeightAt(wcfg, px, pz);
+                    registerTerrainCorridor(bore);
+                    const float hCut = terrainHeightAt(wcfg, px, pz);
+                    if (std::fabs((hBase - hCut) - got) > 1e-3f) atLeast = false;
+                    if (hBase - hCut < want - 1e-3f) atLeast = false;
+                }
+            }
+        }
+        for (int n = 0; n < bore.nodeCount; ++n) {                          // (ii)
+            const float got = terrainCorridorDepthAt(bore, bore.x[n], bore.z[n]);
+            worstNode = std::max(worstNode, std::fabs(got - bore.depth[n]));
+            if (std::fabs(got - bore.depth[n]) > 1e-3f) atNodes = false;
+        }
+        if (!atNodes || !interior)
+            x3::logError("[corridor-test] centreline error: node=" + std::to_string(worstNode) +
+                         " m interior=" + std::to_string(worstInterior) + " m");
+        checkC(atLeast && atNodes && interior,
+               "C2 centreline lowered by exactly the requested depth profile (nodes + segment interiors)");
+    }
+
+    // ---- C2b: cross-section — flat floor, smoothstep shoulder, exact zero ---
+    {
+        bool shoulderOk = true;
+        // Probe perpendicular to the middle segment (runs +X along z=-20); the
+        // sample x=10 is >100 m from either neighbouring segment.
+        const float px = 10.0f, pz = -20.0f;
+        const float mid = terrainCorridorDepthAt(bore, px, pz);
+        if (std::fabs(mid - 14.0f) > 1e-3f) shoulderOk = false;   // profile midpoint
+        // Flat out to halfWidth, both sides.
+        for (int k = 0; k <= 7; ++k) {
+            const float off = (float)k;
+            if (std::fabs(terrainCorridorDepthAt(bore, px, pz + off) - mid) > 1e-3f) shoulderOk = false;
+            if (std::fabs(terrainCorridorDepthAt(bore, px, pz - off) - mid) > 1e-3f) shoulderOk = false;
+        }
+        // Strictly between 0 and full depth in the shoulder, monotone decreasing.
+        float prev = mid;
+        for (int k = 1; k <= 20; ++k) {
+            const float off = bore.halfWidth + (float)k * (bore.falloff / 20.0f);
+            const float v = terrainCorridorDepthAt(bore, px, pz + off);
+            if (v > prev + 1e-4f) shoulderOk = false;         // never increases outward
+            if (k < 20 && !(v < mid + 1e-4f && v >= 0.0f)) shoulderOk = false;
+            prev = v;
+        }
+        // EXACTLY zero at and beyond the reach — this is what makes C1's
+        // bit-identity claim hold rather than being an epsilon.
+        for (int k = 0; k < 8; ++k) {
+            const float off = kReach + (float)k * 5.0f;
+            if (terrainCorridorDepthAt(bore, px, pz + off) != 0.0f) shoulderOk = false;
+            if (terrainCorridorDepthAt(bore, px, pz - off) != 0.0f) shoulderOk = false;
+        }
+        checkC(shoulderOk,
+               "C2b cross-section: flat floor to halfWidth, monotone smoothstep shoulder, exact 0 at reach");
+    }
+
+    // ---- C3: TILE-SEAM CONSISTENCY (the critical correctness property) ------
+    // Mesh two ADJACENT tiles with the very same buildTileMeshAbs the streamer's
+    // generate() runs, with a corridor lying across their shared edge, and
+    // compare the shared edge vertex for vertex.
+    {
+        TerrainConfig tcfg{};                 // legacy (worldFeatures=false) field
+        tcfg.tileSize = 32.0f; tcfg.tileVerts = 33; tcfg.heightScale = 40.0f; tcfg.seed = 909u;
+
+        clearTerrainCorridors();
+        TerrainCorridor seam{};
+        seam.nodeCount = 3;
+        seam.x[0] = 10.0f; seam.z[0] = -18.0f; seam.depth[0] =  3.0f;
+        seam.x[1] = 40.0f; seam.z[1] =  14.0f; seam.depth[1] = 11.0f;
+        seam.x[2] = 26.0f; seam.z[2] =  50.0f; seam.depth[2] =  6.0f;
+        seam.halfWidth = 6.0f; seam.falloff = 18.0f;
+        registerTerrainCorridor(seam);
+
+        std::vector<x3::rhi::MeshVertex> vA, vB;
+        std::vector<uint32_t> iA, iB;
+        const uint32_t vpe = tcfg.tileVerts;      // LOD0: 33 verts per edge
+        bool seamExact = true, seamInteresting = false;
+        float worstSeam = 0.0f;
+
+        // Seam 1: tile (0,0) spans x[0,32]; tile (1,0) spans x[32,64]. Shared
+        // edge x = 32, z in [0,32].
+        buildTileMeshAbs(tcfg,  0.0f, 0.0f, TerrainLod::Full, vA, iA);
+        buildTileMeshAbs(tcfg, 32.0f, 0.0f, TerrainLod::Full, vB, iB);
+        for (uint32_t j = 0; j < vpe; ++j) {
+            const x3::rhi::MeshVertex& a = vA[(size_t)j * vpe + (vpe - 1)];   // A's +X edge
+            const x3::rhi::MeshVertex& b = vB[(size_t)j * vpe + 0];           // B's -X edge
+            if (a.pos[0] != b.pos[0] || a.pos[2] != b.pos[2]) { seamExact = false; continue; }
+            worstSeam = std::max(worstSeam, std::fabs(a.pos[1] - b.pos[1]));
+            if (a.pos[1] != b.pos[1]) seamExact = false;              // BIT-exact
+            // The NORMALS must match too: they are central differences of the
+            // same field, so a tile-dependent corridor would shade a visible
+            // crease down the seam even if the positions agreed.
+            for (int k = 0; k < 3; ++k) if (a.normal[k] != b.normal[k]) seamExact = false;
+            if (terrainCorridorDelta(a.pos[0], a.pos[2]) != 0.0f) seamInteresting = true;
+        }
+        // Seam 2: the OTHER axis — tile (0,-1) above tile (0,0), shared edge z=0.
+        buildTileMeshAbs(tcfg, 0.0f, -32.0f, TerrainLod::Full, vA, iA);
+        buildTileMeshAbs(tcfg, 0.0f,   0.0f, TerrainLod::Full, vB, iB);
+        for (uint32_t i = 0; i < vpe; ++i) {
+            const x3::rhi::MeshVertex& a = vA[(size_t)(vpe - 1) * vpe + i];   // A's +Z edge
+            const x3::rhi::MeshVertex& b = vB[(size_t)0 * vpe + i];           // B's -Z edge
+            if (a.pos[0] != b.pos[0] || a.pos[2] != b.pos[2]) { seamExact = false; continue; }
+            worstSeam = std::max(worstSeam, std::fabs(a.pos[1] - b.pos[1]));
+            if (a.pos[1] != b.pos[1]) seamExact = false;
+            for (int k = 0; k < 3; ++k) if (a.normal[k] != b.normal[k]) seamExact = false;
+            if (terrainCorridorDelta(a.pos[0], a.pos[2]) != 0.0f) seamInteresting = true;
+        }
+        // A far-away tile origin must resolve the same world point identically:
+        // the field may not depend on which tile's local indexing reached it.
+        bool farTileExact = true;
+        for (int k = 0; k <= 32; ++k) {
+            const float wz = 16.0f;
+            const float fromA = terrainHeightAt(tcfg,     0.0f + (float)(k + 32), wz);
+            const float fromB = terrainHeightAt(tcfg,    32.0f + (float)k,        wz);
+            const float fromC = terrainHeightAt(tcfg, -8192.0f + (float)(k + 8224), wz);
+            if (fromA != fromB || fromA != fromC) farTileExact = false;
+        }
+        if (!seamExact)
+            x3::logError("[corridor-test] seam mismatch, worst dY=" + std::to_string(worstSeam) + " m");
+        checkC(seamExact && seamInteresting && farTileExact,
+               "C3 tile seam: a corridor crossing a seam meshes bit-identically from either tile");
+
+        clearTerrainCorridors();
+        registerTerrainCorridor(bore);
+    }
+
+    // ---- C4: no crease and no spike at a polyline joint ---------------------
+    {
+        // Analytic Lipschitz bound of the depression field (see the .cpp):
+        //   |grad(depth * w)| <= max|d(depth)/ds| + maxDepth * 1.5/falloff
+        // smoothstep' peaks at 1.5, the distance field is 1-Lipschitz, and the
+        // max of L-Lipschitz functions is L-Lipschitz.
+        float maxDepth = 0.0f, maxSlope = 0.0f;
+        for (int i = 0; i < bore.nodeCount; ++i) maxDepth = std::max(maxDepth, bore.depth[i]);
+        for (int i = 0; i + 1 < bore.nodeCount; ++i) {
+            const float dx = bore.x[i+1] - bore.x[i], dz = bore.z[i+1] - bore.z[i];
+            const float len = std::sqrt(dx * dx + dz * dz);
+            if (len > 1e-3f) maxSlope = std::max(maxSlope,
+                                std::fabs(bore.depth[i+1] - bore.depth[i]) / len);
+        }
+        const float lip = maxSlope + maxDepth * 1.5f / bore.falloff;
+
+        bool smooth = true, noSpike = true;
+        float worstRatio = 0.0f;
+        const int kArc = 2048;
+        // Full-circle sweeps around BOTH interior joints, at radii inside the
+        // flat floor, through the shoulder, and just past the reach.
+        const float radii[] = { 2.0f, 7.0f, 12.0f, 20.0f, 27.0f, 30.0f };
+        for (int jn = 1; jn <= 2; ++jn) {
+            const float cx = bore.x[jn], cz = bore.z[jn];
+            for (float r : radii) {
+                const float arcStep = 6.28318531f * r / (float)kArc;
+                const float allow = lip * arcStep * 1.25f + 1e-4f;   // 25% slack
+                float prev = 0.0f;
+                for (int k = 0; k <= kArc; ++k) {
+                    const float a = 6.28318531f * (float)k / (float)kArc;
+                    const float d = terrainCorridorDepthAt(bore, cx + std::cos(a) * r,
+                                                                 cz + std::sin(a) * r);
+                    if (k > 0) {
+                        const float jump = std::fabs(d - prev);
+                        worstRatio = std::max(worstRatio, jump / allow);
+                        if (jump > allow) smooth = false;
+                    }
+                    prev = d;
+                }
+            }
+            // NO SPIKE: the joint itself is dug to exactly its OWN node depth. A
+            // per-segment SUM (or BL-style overlapping circle stamps) digs ~2x
+            // here, because both adjacent segments claim the joint.
+            const float atJoint = terrainCorridorDepthAt(bore, cx, cz);
+            if (std::fabs(atJoint - bore.depth[jn]) > 1e-3f) noSpike = false;
+        }
+        // The same must hold ACROSS corridors: two co-located registered
+        // corridors must combine deepest-wins, not additively.
+        {
+            clearTerrainCorridors();
+            TerrainCorridor a{};
+            a.nodeCount = 2;
+            a.x[0] = -50.0f; a.z[0] = 0.0f; a.depth[0] = 6.0f;
+            a.x[1] =  50.0f; a.z[1] = 0.0f; a.depth[1] = 6.0f;
+            a.halfWidth = 5.0f; a.falloff = 15.0f;
+            TerrainCorridor b = a;                     // exactly co-located
+            registerTerrainCorridor(a);
+            registerTerrainCorridor(b);
+            if (std::fabs(terrainCorridorDelta(0.0f, 0.0f) + 6.0f) > 1e-4f) noSpike = false;
+            // A deeper overlapping corridor wins outright.
+            clearTerrainCorridors();
+            b.depth[0] = b.depth[1] = 9.0f;
+            registerTerrainCorridor(a);
+            registerTerrainCorridor(b);
+            if (std::fabs(terrainCorridorDelta(0.0f, 0.0f) + 9.0f) > 1e-4f) noSpike = false;
+            clearTerrainCorridors();
+            registerTerrainCorridor(bore);
+        }
+        if (!smooth)
+            x3::logError("[corridor-test] joint arc jump exceeded the Lipschitz bound by " +
+                         std::to_string(worstRatio) + "x");
+        checkC(smooth && noSpike,
+               "C4 joints are crease-free (arc sweep within the Lipschitz bound) and never double-dug");
+    }
+
+    // ---- C5: determinism (repeat / reverse order / re-register cycle) -------
+    {
+        const int kN = 4096;
+        std::vector<float> pass1((size_t)kN);
+        auto sampleAt = [](int k, float& x, float& z) {
+            // A deterministic scatter across the corridor and its surroundings.
+            x = -340.0f + (float)((k * 37) % 900) * 0.75f;
+            z = -200.0f + (float)((k * 61) % 520) * 0.75f;
+        };
+        for (int k = 0; k < kN; ++k) {
+            float x, z; sampleAt(k, x, z);
+            pass1[(size_t)k] = terrainHeightAt(wcfg, x, z);
+        }
+        bool repeatSame = true, reverseSame = true;
+        for (int k = 0; k < kN; ++k) {
+            float x, z; sampleAt(k, x, z);
+            if (terrainHeightAt(wcfg, x, z) != pass1[(size_t)k]) repeatSame = false;
+        }
+        for (int k = kN - 1; k >= 0; --k) {
+            float x, z; sampleAt(k, x, z);
+            if (terrainHeightAt(wcfg, x, z) != pass1[(size_t)k]) reverseSame = false;
+        }
+        // Clear + re-register must reproduce the identical field.
+        clearTerrainCorridors();
+        registerTerrainCorridor(bore);
+        bool cycleSame = true;
+        for (int k = 0; k < kN; ++k) {
+            float x, z; sampleAt(k, x, z);
+            if (terrainHeightAt(wcfg, x, z) != pass1[(size_t)k]) cycleSame = false;
+        }
+        checkC(repeatSame && reverseSame && cycleSame,
+               "C5 deterministic: repeat / reverse order / clear+re-register are bit-identical");
+    }
+
+    // ---- C6: registry hygiene (capacity + degenerate rejection) -------------
+    {
+        clearTerrainCorridors();
+        uint32_t accepted = 0;
+        for (uint32_t i = 0; i < kMaxTerrainCorridors + 3u; ++i)
+            if (registerTerrainCorridor(bore)) ++accepted;
+        const bool capped = (accepted == kMaxTerrainCorridors) &&
+                            (terrainCorridorCount() == kMaxTerrainCorridors);
+        clearTerrainCorridors();
+
+        TerrainCorridor bad{};
+        bad.nodeCount = 1; bad.halfWidth = 5.0f; bad.falloff = 5.0f;
+        const bool rejectShort = !registerTerrainCorridor(bad);
+        bad.nodeCount = TerrainCorridor::kMaxNodes + 1;
+        const bool rejectLong = !registerTerrainCorridor(bad);
+        bad.nodeCount = 2; bad.halfWidth = 0.0f; bad.falloff = 0.0f;
+        const bool rejectZero = !registerTerrainCorridor(bad);
+        bad.halfWidth = 5.0f; bad.falloff = 5.0f;
+        bad.x[1] = std::numeric_limits<float>::quiet_NaN();
+        const bool rejectNan = !registerTerrainCorridor(bad);
+        const bool empty = (terrainCorridorCount() == 0u);
+
+        // A degenerate (duplicated) control point must not spike, divide by zero
+        // or produce NaN — authored polylines pick up duplicates.
+        TerrainCorridor dup{};
+        dup.nodeCount = 3;
+        dup.x[0] =  0.0f; dup.z[0] = 0.0f; dup.depth[0] = 5.0f;
+        dup.x[1] =  0.0f; dup.z[1] = 0.0f; dup.depth[1] = 5.0f;   // duplicate node
+        dup.x[2] = 30.0f; dup.z[2] = 0.0f; dup.depth[2] = 5.0f;
+        dup.halfWidth = 4.0f; dup.falloff = 10.0f;
+        const float dd = terrainCorridorDepthAt(dup, 0.0f, 0.0f);
+        const bool dupOk = std::isfinite(dd) && std::fabs(dd - 5.0f) < 1e-3f;
+
+        // A single-node / empty corridor is inert, never a NaN.
+        TerrainCorridor none{};
+        const bool inert = (terrainCorridorDepthAt(none, 0.0f, 0.0f) == 0.0f);
+
+        checkC(capped && rejectShort && rejectLong && rejectZero && rejectNan &&
+               empty && dupOk && inert,
+               "C6 registry caps at kMaxTerrainCorridors + rejects degenerate corridors");
+    }
+
+    clearTerrainCorridors();   // leave the global registry exactly as we found it
+
+    x3::logInfo(std::string("[corridor-test] ") + std::to_string(cPass) + " passed, " +
+                std::to_string(cFail) + " failed");
+    return cFail == 0;
 }
 
 } // namespace x3::game

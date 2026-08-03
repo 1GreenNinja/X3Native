@@ -329,6 +329,7 @@ int main(int argc, char** argv) {
         _tf.listClips = o.listClips;
         _tf.testTerrain = o.testTerrain;
         _tf.testTerrainPlace = o.testTerrainPlace;
+        _tf.testTerrainCorridor = o.testTerrainCorridor;
         _tf.testStreaming = o.testStreaming;
         _tf.testWorldStream = o.testWorldStream;
         _tf.testWorldMap = o.testWorldMap;
@@ -803,6 +804,7 @@ int main(int argc, char** argv) {
         _hc.ecologyShot      = o.ecologyShot;      _hc.ecologyShotPath  = o.ecologyShotPath;
         _hc.crowdShot        = o.crowdShot;        _hc.crowdShotPath    = o.crowdShotPath;
         _hc.complexShot      = o.complexShot;      _hc.complexShotDir   = o.complexShotDir;
+        _hc.tunnelShot       = o.tunnelShot;       _hc.tunnelShotDir    = o.tunnelShotDir;
         // THE A/B SWITCHES HAVE TO BE SET BEFORE THE DISPATCH. These were only
         // assigned further down, in the block feeding the DEFAULT host — i.e.
         // after dispatchScreenshotHosts() had already returned. Every screenshot

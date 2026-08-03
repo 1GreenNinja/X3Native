@@ -73,6 +73,7 @@ struct TestFlags {
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;
     bool testTerrain = false, testTerrainPlace = false, testStreaming = false;
+    bool testTerrainCorridor = false;  // --test-terraincorridor (corridor heightfield depression)
     bool testWorldStream = false, testWorldMap = false, testAi = false, testBestiary = false;
     bool testBosses = false, testAct2Bosses = false, testSpireMid = false, testNexus = false;
     bool testAdaptiveHide = false;   // --test-adaptive-hide (canon-aliens rotate-damage rhythm)

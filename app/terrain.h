@@ -148,6 +148,97 @@ constexpr float kWorldSeaLevel = -10.0f;    // the ocean surface Y (W9 terrain d
 constexpr float kWorldWaterDry = -3.0e38f;  // "no water here" sentinel (< any real Y)
 float worldWaterLevelAt(float x, float z);
 
+// ===========================================================================
+// TERRAIN CORRIDOR DEPRESSION — the polyline generalization of the river carve,
+// and the mechanism that makes freeway tunnels possible WITHOUT CSG, voxels or
+// holes in the heightfield.
+//
+// PROVENANCE: the TECHNIQUE (do not raise the road onto piers and do not punch
+// a hole in the ground — pin the road flat and LOWER THE TERRAIN to meet it,
+// as a smoothstep depression stamped along the road's path) was learned by
+// studying the behaviour of Tim's own Babylon/BL predecessor world
+// (Q3Engine src/world/x3-world-terrain.js, analysed in
+// docs/design/BL_WORLD_PORT.md §2.2). BL reached for the same heightfield
+// depression even as its CSG fallback for cave mouths. The IMPLEMENTATION below
+// is entirely our own: BL stamped per-sample circles into an ALREADY-BUILT
+// vertex buffer after the fact (overlapping discs, one mesh, one pass); this is
+// a pure closest-approach-to-polyline field folded into h(x,z) itself, so it is
+// evaluated per vertex during STREAMED tile generation and is therefore
+// tile-order independent by construction. No BL code was transcribed — see
+// docs/CLEANROOM_PROCESS.md.
+//
+// WHY IT WORKS FOR TUNNELS: h(x,z) stays SINGLE-VALUED (no overhang, no hole,
+// no manifold surgery), so every existing consumer — the streamer, the collision
+// soup, the horizon ring, placeOnTerrain, worldWaterLevelAt — keeps working
+// untouched. The tunnel tube is then a normal mesh sitting IN the depression;
+// the hill visually closes over it because the depression only removes the
+// ground the tube occupies.
+//
+// PROPERTIES (all load-bearing):
+//   * PURE — terrainCorridorDepthAt() is a function of (corridor, x, z) only.
+//     No allocation, no mutation, no statics touched on the evaluation path.
+//   * DETERMINISTIC — pure float arithmetic; identical on every thread/run.
+//   * SEAM-CORRECT — because the field is a function of WORLD (x,z) and never of
+//     the tile origin/index, a corridor crossing a tile seam yields bit-identical
+//     heights from either tile. This is the property that lets it run inside
+//     streamed generation at all.
+//   * CHEAP — corridors registered in the registry carry a precomputed XZ
+//     bounding box (expanded by halfWidth+falloff); terrain outside every box
+//     pays 4 float compares per corridor and nothing else.
+//   * CREASE-FREE — the corridor is evaluated as the UNION (max) of one capsule
+//     per segment, each built on the exact squared distance to that segment with
+//     the projection clamped to [0,1]. Max-of-continuous is continuous, so there
+//     is no step where the winning segment changes — unlike the obvious
+//     "closest point on the polyline, then read the profile there", which steps
+//     the ground on the medial axis inside a bend wherever the profile grades.
+//     Overlapping corridors likewise combine by DEEPEST-WINS, never by summing,
+//     so a joint is never dug twice as deep as its own node asks for.
+// ===========================================================================
+struct TerrainCorridor {
+    static constexpr int kMaxNodes = 32;
+
+    int   nodeCount = 0;                 // >= 2 to have any effect
+    float x[kMaxNodes] = {};             // control points, world X (ordered)
+    float z[kMaxNodes] = {};             // control points, world Z (ordered)
+    // Depth PROFILE: how far below the natural surface the corridor floor sits
+    // at each node, in meters (>= 0). Linearly interpolated along each segment,
+    // so a corridor can ease in from 0 at a portal mouth and deepen under the
+    // ridge. On the spine the ground is lowered by exactly this value, EXCEPT
+    // within ~halfWidth of a node, where the deeper of the two adjacent reaches
+    // wins (that is the union's flat end cap, not a kink — see the .cpp).
+    float depth[kMaxNodes] = {};
+
+    float halfWidth = 8.0f;   // full-depth floor half-width (m); flat bottom
+    float falloff   = 16.0f;  // smoothstep run from halfWidth outward to zero (m)
+};
+
+// Pure primitive: the depression DEPTH (>= 0 m) this corridor asks for at world
+// (x,z). 0 outside the corridor's influence. No registry involved — safe to call
+// on a bare stack corridor from any thread.
+float terrainCorridorDepthAt(const TerrainCorridor& c, float x, float z);
+
+// ---- Registry -------------------------------------------------------------
+// A small FIXED-CAPACITY array (no dynamic allocation, matching how the terrain
+// layer already carries kRanges/kPads and how TerrainStreamer carries its
+// keep-out rect). Register corridors at BOOT, BEFORE the first height query /
+// TerrainStreamer::init(); the registry is then read-only for the rest of the
+// run, which is what keeps generation on worker threads race-free. Mutating it
+// while tiles are generating is NOT supported (tiles already built would keep
+// the old field — the same rule as setKeepOut()).
+constexpr uint32_t kMaxTerrainCorridors = 8;
+
+// Returns false if the registry is full or the corridor is degenerate
+// (nodeCount < 2 or > kMaxNodes, non-finite halfWidth/falloff, negative width).
+bool     registerTerrainCorridor(const TerrainCorridor& c);
+void     clearTerrainCorridors();
+uint32_t terrainCorridorCount();
+
+// Total lowering (<= 0 m) the registered corridors apply at world (x,z), the
+// deepest one winning (min, never a sum). Exactly 0 when nothing is registered
+// or the point is outside every corridor's bounding box — so with no corridors
+// registered terrainHeightAt() is BIT-IDENTICAL to the pre-corridor field.
+float    terrainCorridorDelta(float x, float z);
+
 // ---------------------------------------------------------------------------
 // W8-3 — HORIZON RING (the far-terrain stitch). A single static polar-grid mesh
 // sampled from the SAME canonical height field the streamer generates from, so
@@ -434,5 +525,16 @@ bool runTerrainPlaceSelfTest();
 // character stays on the surface the whole way (no fall-through). Logs PASS/FAIL
 // T#, returns true iff all pass. No window/Vulkan. Lives in terrain.cpp.
 bool runStreamingSelfTest();
+
+// Headless self-test (--test-terraincorridor). Asserts the corridor-depression
+// primitive: (C1) no global regression — height outside every corridor's bounds
+// is BIT-identical to the unmodified field; (C2) the centreline is lowered by
+// exactly the requested depth profile; (C3) TILE-SEAM CONSISTENCY — the shared
+// edge of two adjacent generated tiles matches bit-for-bit where a corridor
+// crosses the seam; (C4) no crease/spike at polyline joints (arc sweep around a
+// joint stays inside the analytic Lipschitz bound, and the joint is never dug
+// deeper than its node asks); (C5) determinism + registry hygiene. Logs PASS/FAIL
+// C#, returns true iff all pass. No window/Vulkan. Lives in terrain.cpp.
+bool runTerrainCorridorSelfTest();
 
 } // namespace x3::game
