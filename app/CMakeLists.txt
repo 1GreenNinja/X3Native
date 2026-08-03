@@ -15,6 +15,14 @@ add_executable(X3Engine WIN32
     # #28 deep monolith split — extracted self-contained --world hosts
     world_hosts/world_hosts.cpp
     world_hosts/host_echotropolis.cpp
+    # LIFT A (ported from the echotropolis lineage, branch inspx/city-blocks):
+    # the EchoRoads procedural ROAD GRAPH + geometry. Free-standing — the only
+    # dependency that did not already exist on this lineage is the sibling
+    # header echo_heightfield.h. Deliberately UNWIRED into any host: on this
+    # lineage the sole consumer is --test-echoroads (roads_test.cpp), which
+    # locks the emitted RoadGraph to a stable checksum.
+    world_hosts/echo_roads.cpp
+    roads_test.cpp
     world_hosts/host_destruct.cpp
     world_hosts/host_physjoint.cpp
     world_hosts/host_ragdoll.cpp

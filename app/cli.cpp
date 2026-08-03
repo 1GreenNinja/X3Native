@@ -91,6 +91,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--refldn-normal" && i + 1 < argc) o.reflDnNormal = (float)std::atof(argv[++i]);
         else if (a == "--refldn-depth" && i + 1 < argc)  o.reflDnDepth  = (float)std::atof(argv[++i]);
         else if (a == "--test-refldenoise") o.testReflDenoise = true;   // denoise filter self-test (pure CPU)
+        else if (a == "--test-echoroads") o.testEchoRoads = true;       // LIFT A: EchoRoads road-graph checksum (no GPU, no assets)
         else if (a == "--test-rt") { o.smoketest = true; o.testRt = true; }
         else if (a == "--test-reflections") { o.smoketest = true; o.testReflections = true; }
         else if (a == "--test-jobs") o.testJobs = true;

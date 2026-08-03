@@ -140,6 +140,11 @@ struct CliOptions {
     // energy conservation, off-is-identity, plus a permanent NEGATIVE CONTROL).
     // Pure CPU — engine/rhi/ReflDenoise.cpp is deliberately Vulkan-free.
     bool        testReflDenoise = false;
+    // --test-echoroads: LIFT A acceptance gate — the EchoRoads ROAD GRAPH
+    // lifted from the echotropolis lineage. Deterministic checksum over the
+    // emitted RoadGraph + the zigzag law / junction clustering / frontage
+    // contracts. Headless, no GPU, no assets (synthetic heightfield).
+    bool        testEchoRoads = false;
     // --refldn N / --refldn-disc S: reflection DENOISE knobs for the A/B that
     // proves the stage works. -1 = leave the device/cvar default; 0 iterations =
     // stage OFF, which is bit-exact to the pre-denoise renderer and is the
