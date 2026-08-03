@@ -156,6 +156,12 @@ struct NpcLifeConfig {
     // self-test). A streamed host passes its district room (e.g. kStreamedExteriorRoom)
     // so the living NPCs are PVS-culled with the city exactly like the crowd blockouts.
     uint32_t roomId            = kNoRoom;
+    // LEISURE MAGNET (Lane 4 — "citizens ENTER buildings"): when set, the
+    // social archetypes (Electrician / Courier / Gardener / OffShiftDrone)
+    // take their leisure AT this spot (the noodle bar counter) instead of
+    // their default corners — patrons appear on schedule and leave on it.
+    bool     leisureMagnet     = false;
+    float    leisureMagnetX    = 0.0f, leisureMagnetZ = 0.0f;
 };
 
 // Alarm sink: the host wires this to AlertSystem::reportGunshot so the heist trips real heat.
@@ -185,6 +191,15 @@ public:
 
     // Force the robbery to strike now (a trigger volume / the auto-timer / the self-test).
     void triggerRobbery();
+
+    // ---- PLAY-AS: hand one agent's body to the player ----
+    // While an agent is "controlled" its daily schedule is paused in update() and the
+    // host drives its body directly via driveControlled(). Pass -1 to release (the
+    // agent resumes its schedule from wherever it was left).
+    void setControlled(int idx) { m_controlled = idx; }
+    int  controlled() const { return m_controlled; }
+    // Place the controlled agent's body (world feet position + facing). No-op if none.
+    void driveControlled(float x, float y, float z, float yaw);
 
     // ---- The day clock ----
     void  setDayFraction(float t);
@@ -233,6 +248,7 @@ private:
     x3::phys::Vec3 m_freewayExit{};
     HackableRegistry* m_hax = nullptr;
     x3::llm::ILlmSystem* m_llm = nullptr;
+    int          m_controlled = -1;         // PLAY-AS: agent the host is driving (-1 == none)
 };
 
 // Headless self-test (--test-npclife). Asserts: (N1) the archetype mix spawns with one

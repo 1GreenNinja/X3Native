@@ -376,6 +376,14 @@ void NpcLife::build(const NpcLifeConfig& cfg, Scene& scene, x3::rhi::IRenderDevi
             sc = { cx-20+idx*40.0f, cz+9, cx+idx*20.0f, cz-9, cx, cz+9, 0.10f,0.90f, 0.10f,0.90f }; break;
         default: sc = { cx, cz, cx, cz, cx, cz, 0.3f,0.66f, 0.66f,0.86f }; break;
         }
+        // LEISURE MAGNET: the social archetypes spend their leisure window at
+        // the host's spot (the noodle bar counter) — real patrons on schedule.
+        if (m_cfg.leisureMagnet &&
+            (arch == Archetype::Electrician || arch == Archetype::Courier ||
+             arch == Archetype::Gardener    || arch == Archetype::OffShiftDrone)) {
+            sc.leisureX = m_cfg.leisureMagnetX + (float)(idx % 3) * 1.4f - 1.4f;
+            sc.leisureZ = m_cfg.leisureMagnetZ + (float)((idx / 3) % 2) * 1.2f;
+        }
         a.sched = sc;
         // Start at home (or the post for static archetypes), a touch of jitter.
         const Persona& p = persona(arch);
@@ -662,6 +670,13 @@ void NpcLife::triggerRobbery() {
     r.speed = 2.2f;
 }
 
+void NpcLife::driveControlled(float x, float y, float z, float yaw) {
+    if (m_controlled < 0 || m_controlled >= (int)m_agents.size()) return;
+    NpcAgent& a = m_agents[(uint32_t)m_controlled];
+    a.pos.x = x; a.pos.y = y; a.pos.z = z; a.yaw = yaw;
+    a.target = a.pos;   // so it doesn't lurch when the schedule resumes on release
+}
+
 void NpcLife::updateRobbery(float dt) {
     if (m_robber < 0) return;
     NpcAgent& r = m_agents[m_robber];
@@ -737,9 +752,12 @@ void NpcLife::update(float dt, Scene& scene) {
 
     updateRobbery(dt);
 
-    for (NpcAgent& a : m_agents) {
-        if (a.onFreeway) updateFreeway(a, dt);
-        else             updateWalker(a, dt);
+    for (uint32_t i = 0; i < m_agents.size(); ++i) {
+        NpcAgent& a = m_agents[i];
+        if ((int)i != m_controlled) {           // the played-as agent is host-driven
+            if (a.onFreeway) updateFreeway(a, dt);
+            else             updateWalker(a, dt);
+        }
         writeTransform(a, scene);
     }
 

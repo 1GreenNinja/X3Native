@@ -180,13 +180,23 @@ TodSample TimeOfDay::sampleAt(float t) const {
         float az   = lerp(m_cfg.sunAzimuthEast, m_cfg.sunAzimuthWest, clamp01(p));
 
         // Direction TOWARD the sun (engine convention; normalized internally).
-        // Near the zenith the horizontal component shrinks (cosE). Bias the Z so a
-        // midday sun lands near the engine default normalize(0.4,1,0.3).
-        float cosE = std::cos(std::abs(elev) * (kPi * 0.5f));
+        // `elev` IS the y component (a sine), so the horizontal magnitude must be
+        // sqrt(1 - y^2). The old cos(|elev| * pi/2) treated a sine as an angle
+        // fraction and UNDER-stated the horizontal term at every elevation (at
+        // elev 0.99 by 12x), pinning midday to the zenith: with no horizontal sun
+        // component every vertical facade gets N.L ~ 0 (flat, ambient-only towers)
+        // and every cast shadow falls straight down inside its own footprint.
+        float cosE = std::sqrt(std::max(0.0f, 1.0f - elev * elev));
         s.sky.sunDir[0] = std::sin(az) * cosE;
         s.sky.sunDir[1] = elev;
         s.sky.sunDir[2] = std::cos(az) * cosE * 0.6f + 0.2f;
         s.sunElevation  = elev;
+        // DUSTY-DAY FIX (Tim: "blue sky!") — placed AFTER sunElevation is set
+        // (the first draft read it before assignment): a HIGH sun burns the
+        // analytic haze off, so noon reads blue instead of milk; golden/low
+        // hours keep the authored haze where the atmosphere belongs.
+        if (elev > 0.30f)
+            s.sky.haze *= clamp01(1.0f - (elev - 0.30f) / 0.42f * 0.65f);
 
         // City lights: on whenever the sun is below (or barely above) the horizon.
         s.cityLightsOn = m_cfg.enableCityLights && (elev < 0.08f);

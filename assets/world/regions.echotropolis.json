@@ -1,0 +1,310 @@
+{
+  "format": "x3.regions/1",
+  "name": "Echotropolis Tier-2 region graph (WP-2, TIER2_STREAMING_PLAN.md \u00a71/\u00a74)",
+  "comment": "14 regions: crown, west_shoulder, 3 district pads (Urban/Recife/HIVEMIND), harbor_bay, and a 9-cell woodlands grid. Content lives in host-owned EchoRegion containers built/evicted through WorldStreamer::setRegionHooks (echo_regions.h, WP-1) \u2014 this graph runs the residency ENGINE only (wants/budget/hysteresis/proxy); no region here carries a Scene-ledger `leveldoc` OR a real ledger `builder` (Lane A is intentionally empty in Echotropolis, plan \u00a70). world_stream.cpp:77-80 hard-requires a non-empty `builder` or `leveldoc` to pass load() validation, so every region below carries a `builder` of the form `echoregion:<id>` \u2014 a value NOT in world_stream.cpp:266-274's whitelist (\"city\"|\"oceanbase\"|\"worldregions\"), so WorldStreamer::realize() logs one harmless '[worldstream] region `<id>`: unknown builder' line per (re)build before falling through to the region hooks (m_onRegionBuild, called unconditionally right after the ledger dispatch \u2014 world_stream.cpp:279) that actually build the content. This is the documented minimal-valid shape for a hook-only region under the CURRENT loader; it is not a functional bug, just log noise, and is flagged for WP-0/whoever touches world_stream.cpp next as a candidate for a real 'hookonly'/'none' sentinel in the whitelist. anchor=[x,y,z] world metres (y is NOT used by residency math \u2014 WorldStreamer::distToFootprint only reads x/z \u2014 so district/woodlands y values are nominal, not runtime-authoritative; runtime code should still sample hf.heightAt(anchor) for real placement per the plan's elevation note). radius = authored footprint (XZ) edge; loadRadius/unloadRadius = hysteresis measured from that edge (load closer than loadRadius, unload only past unloadRadius). Neighbors are listed symmetrically (matching regions.json/regions.canon.json's existing convention) and get a 1.5x load-radius warm automatically (plan \u00a71).",
+  "regions": [
+    {
+      "id": "crown",
+      "name": "Downtown crown \u2014 towers/houses/condos/crown infra+metro/hackables/streetlamps/drones",
+      "builder": "echoregion:crown",
+      "anchor": [
+        -20.0,
+        195.0,
+        760.0
+      ],
+      "radius": 500.0,
+      "loadRadius": 650.0,
+      "unloadRadius": 900.0,
+      "neighbors": [
+        "west_shoulder",
+        "harbor_bay",
+        "district_recife",
+        "district_urban",
+        "woodlands_NW",
+        "woodlands_N",
+        "woodlands_NE",
+        "woodlands_W",
+        "woodlands_C",
+        "woodlands_E",
+        "woodlands_SW",
+        "woodlands_S",
+        "woodlands_SE"
+      ]
+    },
+    {
+      "id": "west_shoulder",
+      "name": "Gold mine + truck lot + mine forest + lighthouse beam (west open shoulder)",
+      "builder": "echoregion:west_shoulder",
+      "anchor": [
+        -480.0,
+        195.0,
+        850.0
+      ],
+      "radius": 220.0,
+      "loadRadius": 500.0,
+      "unloadRadius": 750.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "district_urban",
+      "name": "URBAN DISTRICT pack (Urban Abandoned District, pad 700,350)",
+      "builder": "echoregion:district_urban",
+      "anchor": [
+        700.0,
+        35.0,
+        350.0
+      ],
+      "radius": 240.0,
+      "loadRadius": 650.0,
+      "unloadRadius": 900.0,
+      "neighbors": [
+        "district_hivemind",
+        "crown"
+      ]
+    },
+    {
+      "id": "district_recife",
+      "name": "RECIFE 2050 pack (Cyberpunk City Recife Environment, pad 950,1250)",
+      "builder": "echoregion:district_recife",
+      "anchor": [
+        950.0,
+        35.0,
+        1250.0
+      ],
+      "radius": 240.0,
+      "loadRadius": 650.0,
+      "unloadRadius": 900.0,
+      "neighbors": [
+        "crown",
+        "district_hivemind"
+      ]
+    },
+    {
+      "id": "district_hivemind",
+      "name": "HIVEMIND CYBERCITY pack (pad 1340,1000, content yOff -23 \u2014 anchor y is the nominal district baseline, not the yOff)",
+      "builder": "echoregion:district_hivemind",
+      "anchor": [
+        1340.0,
+        35.0,
+        1000.0
+      ],
+      "radius": 240.0,
+      "loadRadius": 650.0,
+      "unloadRadius": 900.0,
+      "neighbors": [
+        "district_recife",
+        "district_urban"
+      ]
+    },
+    {
+      "id": "harbor_bay",
+      "name": "Harbor fleet \u2014 3 boat lanes (south bay east/westbound + SW inlet northbound)",
+      "builder": "echoregion:harbor_bay",
+      "anchor": [
+        200.0,
+        0.0,
+        300.0
+      ],
+      "radius": 850.0,
+      "loadRadius": 500.0,
+      "unloadRadius": 800.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "woodlands_NW",
+      "name": "Woodlands cell NW (3x3 grid over -800..1600 x, 100..1500 z, cell ~800x466)",
+      "builder": "echoregion:woodlands_NW",
+      "anchor": [
+        -400.0,
+        100.0,
+        1266.67
+      ],
+      "radius": 463.08,
+      "loadRadius": 600.0,
+      "unloadRadius": 850.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "woodlands_N",
+      "name": "Woodlands cell N",
+      "builder": "echoregion:woodlands_N",
+      "anchor": [
+        400.0,
+        100.0,
+        1266.67
+      ],
+      "radius": 463.08,
+      "loadRadius": 600.0,
+      "unloadRadius": 850.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "woodlands_NE",
+      "name": "Woodlands cell NE",
+      "builder": "echoregion:woodlands_NE",
+      "anchor": [
+        1200.0,
+        100.0,
+        1266.67
+      ],
+      "radius": 463.08,
+      "loadRadius": 600.0,
+      "unloadRadius": 850.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "woodlands_W",
+      "name": "Woodlands cell W",
+      "builder": "echoregion:woodlands_W",
+      "anchor": [
+        -400.0,
+        100.0,
+        800.0
+      ],
+      "radius": 463.08,
+      "loadRadius": 600.0,
+      "unloadRadius": 850.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "woodlands_C",
+      "name": "Woodlands cell C (centre)",
+      "builder": "echoregion:woodlands_C",
+      "anchor": [
+        400.0,
+        100.0,
+        800.0
+      ],
+      "radius": 463.08,
+      "loadRadius": 600.0,
+      "unloadRadius": 850.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "woodlands_E",
+      "name": "Woodlands cell E",
+      "builder": "echoregion:woodlands_E",
+      "anchor": [
+        1200.0,
+        100.0,
+        800.0
+      ],
+      "radius": 463.08,
+      "loadRadius": 600.0,
+      "unloadRadius": 850.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "woodlands_SW",
+      "name": "Woodlands cell SW",
+      "builder": "echoregion:woodlands_SW",
+      "anchor": [
+        -400.0,
+        100.0,
+        333.33
+      ],
+      "radius": 463.08,
+      "loadRadius": 600.0,
+      "unloadRadius": 850.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "woodlands_S",
+      "name": "Woodlands cell S",
+      "builder": "echoregion:woodlands_S",
+      "anchor": [
+        400.0,
+        100.0,
+        333.33
+      ],
+      "radius": 463.08,
+      "loadRadius": 600.0,
+      "unloadRadius": 850.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "woodlands_SE",
+      "name": "Woodlands cell SE",
+      "builder": "echoregion:woodlands_SE",
+      "anchor": [
+        1200.0,
+        100.0,
+        333.33
+      ],
+      "radius": 463.08,
+      "loadRadius": 600.0,
+      "unloadRadius": 850.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "int_condo_rooms",
+      "name": "int_condo_rooms",
+      "builder": "echoregion:int_condo_rooms",
+      "anchor": [
+        -20.0,
+        0.0,
+        842.0
+      ],
+      "radius": 95.0,
+      "loadRadius": 120.0,
+      "unloadRadius": 160.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "int_noodle_bar",
+      "name": "int_noodle_bar",
+      "builder": "echoregion:int_noodle_bar",
+      "anchor": [
+        -72.0,
+        0.0,
+        746.0
+      ],
+      "radius": 12.0,
+      "loadRadius": 60.0,
+      "unloadRadius": 90.0,
+      "neighbors": [
+        "crown"
+      ]
+    },
+    {
+      "id": "int_harbor_shop",
+      "name": "int_harbor_shop",
+      "builder": "echoregion:int_harbor_shop",
+      "anchor": [
+        150.0,
+        0.0,
+        362.0
+      ],
+      "radius": 20.0,
+      "loadRadius": 60.0,
+      "unloadRadius": 90.0,
+      "neighbors": [
+        "harbor_bay"
+      ]
+    }
+  ]
+}

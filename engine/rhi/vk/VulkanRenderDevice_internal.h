@@ -160,6 +160,8 @@ public:
     void setCameraBasis(float x, float y, float z,
                         const float fwd[3], const float up[3], float fovDeg) override;
 
+    void setCameraRoll(float rollRadians) override;
+
     void setCameraFar(float farMeters) override;   // W8-3: far-plane override
 
     void setAmbient(float r, float g, float b) override;
@@ -402,11 +404,12 @@ public:
                      const float model[16], bool alphaMask = false, bool alphaBlend = false, TextureHandle emissiveTex = {},
                      TextureHandle detailTex = {}, float detailUvScale = 1.0f,
                      float clearcoat = 0.0f, float clearcoatRough = 0.05f,
-                     float selfLight = 0.0f, float metallicScale = 1.0f) override {
+                     float selfLight = 0.0f, float metallicScale = 1.0f,
+                     float foliage = 0.0f) override {
         drawMeshInternal(fc, mesh, baseColor, normal, metalRough, baseColorFactor, emissive,
                          model, alphaMask, alphaBlend, emissiveTex, detailTex, detailUvScale,
                          /*extraFlags=*/0u, /*glass=*/nullptr, clearcoat, clearcoatRough,
-                         selfLight, metallicScale);
+                         selfLight, metallicScale, foliage);
     }
 
     // Shared draw record append. The opaque/emissive/PBR/glass paths differ only by
@@ -419,7 +422,8 @@ public:
                           TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                           uint32_t extraFlags, const GlassMaterial* glass,
                           float clearcoat = 0.0f, float clearcoatRough = 0.05f,
-                          float selfLight = 0.0f, float metallicScale = 1.0f);
+                          float selfLight = 0.0f, float metallicScale = 1.0f,
+                          float foliage = 0.0f);
 
     // ---- Procedural planet body (FORGE3D port) -----------------------------
     // Queue a planet draw for THIS frame: resolve each TextureHandle to its
@@ -664,6 +668,11 @@ private:
     // rides the SPARE terrain-pack2 lane (a ship is never TERRAIN, which owns
     // that lane when set; clearcoat owns pack1, so the two never collide).
     static constexpr uint32_t kFlagShipSelfLit = 1u << 3;
+    // FOLIAGE (trees/vegetation): mesh.frag softens the diffuse (wrap lighting) and
+    // adds a warm back-translucency term so the low sun glows THROUGH the canopy
+    // instead of leaving the away-side flat black. No packed lane needed — a fixed
+    // shader intensity; the flag alone gates it. Every non-foliage draw is unchanged.
+    static constexpr uint32_t kFlagFoliage = 1u << 4;
 
     // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
     struct DrawRecord {
@@ -1302,7 +1311,11 @@ private:
     bool createFullscreenPipeline(const char* vsPath, const char* fsPath,
                                   VkPipelineLayout layout, VkFormat colorFmt,
                                   bool additiveBlend, VkPipeline& outPipe,
-                                  bool alphaBlend = false);
+                                  bool alphaBlend = false,
+                                  // PREMULTIPLIED over-blend (ONE, ONE_MINUS_SRC_ALPHA) —
+                                  // the volumetric pass emits fogColor*f + inscatter with
+                                  // f in alpha, so it both extinguishes and ADDS light.
+                                  bool premultipliedBlend = false);
 
     // (Re)write the post descriptor sets to point at the current HDR + bloom mip
     // image views. Called after createBloomTargets() at init + every resize. The
@@ -2546,6 +2559,14 @@ private:
                          };
     // Depth-fog fullscreen pass (ART_BIBLE §5). Push mirrors shaders/fog.frag.
     struct FogPush { glm::mat4 invProj; glm::vec4 colorDensity; glm::vec4 startMax; };
+    // Volumetric light-scattering variant of the same pass (shaders/volumetric.frag).
+    // Separate push (and separate pipeline/layout) so the FLAT fog path above is
+    // never touched: FogParams::volumetric == false records the original pipeline
+    // with the original push, byte-identical to the pre-volumetric build.
+    // Exactly 128 bytes = the Vulkan-guaranteed minimum maxPushConstantsSize.
+    struct VolPush { glm::mat4 invViewProj; glm::vec4 colorDensity; glm::vec4 startMax;
+                     glm::vec4 vol0; glm::vec4 vol1; };
+    static_assert(sizeof(VolPush) == 128, "VolPush must fit the guaranteed 128-byte push range");
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
 
@@ -3230,6 +3251,7 @@ private:
     float m_camYaw = -1.5708f;   // look toward -Z
     float m_camPitch = -0.30f;   // slightly down
     float m_camFov = 60.0f;
+    float m_camRoll = 0.0f;      // roll about view-forward (radians; 0 = upright)
     float m_camFar = 200.0f;     // W8-3: far plane (the historic hardcode as default)
     // Roll-capable camera basis (set by setCameraBasis). When m_camHasBasis, the
     // view uses these directly (up != world-up => the view rolls). setCamera (yaw/
@@ -3266,6 +3288,15 @@ private:
     VkPipelineLayout        m_fogLayout = VK_NULL_HANDLE;
     VkPipeline              m_fogPipe   = VK_NULL_HANDLE;
     VkDescriptorSet         m_setFog    = VK_NULL_HANDLE;   // b0 = main depth (TAA depth sampler)
+    // ---- Volumetric scattering variant of the fog pass ---------------------
+    // set0 = m_setFog (depth), set1 = the frame's objSet (Camera UBO b1 -> sun +
+    // lightViewProj + the 64 point lights), set2 = m_shadowSet (sampler2DShadow).
+    // Reuses the EXISTING sets/layouts so nothing new is allocated or written.
+    glm::mat4               m_volInvViewProjCPU{ 1.0f };  // jittered clip -> world
+    float                   m_volFrameSeed = 0.0f;        // dither rotation (TAA-friendly)
+    bool                    m_volActive = false;          // this frame's fog pass took the raymarch branch
+    VkPipelineLayout        m_volLayout = VK_NULL_HANDLE;
+    VkPipeline              m_volPipe   = VK_NULL_HANDLE;
     VkRenderingAttachmentInfo m_fogAttach{};
     VkRenderingInfo         m_fogRenderInfo{};
     // CPU per-object frustum cull (r_frustumcull). Default ON. m_frameFrustum is the

@@ -215,6 +215,11 @@ public:
         (void)up;
         setCamera(x, y, z, yaw, pitch, fovDeg);
     }
+    // Camera ROLL about the view-forward axis (radians; 0 = upright, positive
+    // rolls the horizon clockwise on screen). Same per-frame latch semantics as
+    // setCamera. Additive: default is a no-op so headless/test devices and hosts
+    // that never roll are byte-identical.
+    virtual void setCameraRoll(float rollRadians) { (void)rollRadians; }
 
     // W8-3: camera FAR-PLANE override (meters). Default 200 m (the historic
     // hardcode — every existing host is pixel-identical without calling this).
@@ -308,6 +313,22 @@ public:
         float density  = 0.0f;                   // extinction per meter (0.002-0.004 = subtle)
         float start    = 0.0f;                   // meters of clean air (viewmodel guard)
         float maxOpacity = 0.85f;                // far-wall cap (no milky wash law)
+        // ---- VOLUMETRIC LIGHT SCATTERING (opt-in; default OFF) ----------------
+        // When `volumetric` is false the fog pass runs the ORIGINAL flat
+        // Beer-Lambert shader and every frame is byte-identical to the pre-
+        // volumetric build. When true, the pass raymarches the view ray and
+        // accumulates in-scattering from the sun (shadow-mapped -> god rays) and
+        // from the frame's forward point lights (-> neon / street-lamp haze),
+        // through a Henyey-Greenstein phase function. The color/density/start/
+        // maxOpacity above still drive extinction, so the two paths produce the
+        // SAME image when scatterStrength == 0.
+        bool  volumetric      = false;
+        float scatterStrength = 0.0f;    // scattering coefficient (1/m). 0 == flat fog.
+        float anisotropy      = 0.70f;   // Henyey-Greenstein g (0.6-0.8 = forward haze)
+        int   steps           = 32;      // raymarch steps (clamped 4..64 in-shader)
+        float maxDistance     = 500.0f;  // march clamp (m) — cost + far-field guard
+        float sunScatter      = 1.0f;    // multiplier on the sun-shaft term
+        float lightScatter    = 1.0f;    // multiplier on the point-light haze term
     };
     virtual void setFog(const FogParams& f) {}
     // UNDERWATER CAUSTICS (mesh.frag): dancing refracted-sun filaments on any
@@ -644,7 +665,10 @@ public:
                                       // clamp (every existing call site shades byte-identically).
                                       // Rides the spare glass .w lane; selfLight rides terrainPack2 —
                                       // orthogonal, so a ship hull can carry both.
-                                      float /*metallicScale*/ = 1.0f) {
+                                      float /*metallicScale*/ = 1.0f,
+                                      // FOLIAGE (>0): mesh.frag wraps the diffuse + adds warm
+                                      // back-translucency so the sun glows through canopies.
+                                      float /*foliage*/ = 0.0f) {
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
     }
 

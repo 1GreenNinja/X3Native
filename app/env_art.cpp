@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cmath>
 #include <string>
+#include <unordered_set>
 
 namespace x3::game {
 
@@ -106,7 +107,21 @@ void placeYaw(float m[16], float yaw, float s,
     m[12]=wx - rpx; m[13]=wy - rpy; m[14]=wz - rpz; m[15]=1.0f;
 }
 
+// Lowercase copy (ASCII only — matches namedBounds()'s ad-hoc loop).
+inline std::string toLowerCopy(std::string s) {
+    for (char& c : s) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+    return s;
+}
+
 } // namespace
+
+void EnvArtSystem::setNodeSkip(std::vector<std::string> subs) {
+    m_nodeSkip.clear();
+    for (std::string& s : subs) {
+        std::string ls = toLowerCopy(std::move(s));
+        if (!ls.empty()) m_nodeSkip.push_back(std::move(ls));
+    }
+}
 
 uint32_t EnvArtSystem::loadAsset(const std::string& relPath) {
     // Cache: one upload per unique kit piece.
@@ -115,6 +130,42 @@ uint32_t EnvArtSystem::loadAsset(const std::string& relPath) {
 
     EnvAsset a;
     a.model = m_loader->load(relPath);
+    if (a.model.ok && !m_nodeSkip.empty()) {
+        // Drop primitives belonging to a skipped NODE (by name) or a skipped
+        // MATERIAL (by name) BEFORE makeDrawables() ever sees them — a dropped
+        // primitive never becomes a drawable, so it never draws. load() always
+        // hands back a private deep-copied Model (the process-wide model cache
+        // stores its own template), so mutating a.model.primitives here is safe
+        // and never corrupts a later loadAsset() of the same path in another
+        // EnvArtSystem instance.
+        std::unordered_set<int> skipMesh;
+        for (const auto& nd : a.model.nodes) {
+            if (nd.meshIndex < 0 || nd.name.empty()) continue;
+            const std::string ln = toLowerCopy(nd.name);
+            for (const std::string& s : m_nodeSkip)
+                if (ln.find(s) != std::string::npos) { skipMesh.insert(nd.meshIndex); break; }
+        }
+        const size_t before = a.model.primitives.size();
+        a.model.primitives.erase(
+            std::remove_if(a.model.primitives.begin(), a.model.primitives.end(),
+                [&](const x3::asset::MeshPrimitive& p) {
+                    if (skipMesh.count((int)p.meshIndex)) return true;
+                    if (p.materialIndex < a.model.materials.size()) {
+                        const std::string& mn = a.model.materials[p.materialIndex].name;
+                        if (!mn.empty()) {
+                            const std::string ln = toLowerCopy(mn);
+                            for (const std::string& s : m_nodeSkip)
+                                if (ln.find(s) != std::string::npos) return true;
+                        }
+                    }
+                    return false;
+                }),
+            a.model.primitives.end());
+        if (a.model.primitives.size() != before)
+            x3::logInfo("[env-art] node/material skip on " + relPath + ": " +
+                        std::to_string(before) + " -> " +
+                        std::to_string(a.model.primitives.size()) + " primitives");
+    }
     if (a.model.ok) {
         // makeDrawablesNamed == makeDrawables + the source node NAME per drawable
         // (same order/length). The names cost nothing and let densifyFoliage() find
@@ -258,6 +309,24 @@ uint32_t EnvArtSystem::densifyFoliage(const std::vector<std::string>& nameSubs, 
 void EnvArtSystem::setInstanceTransform(uint32_t idx, const float transform[16]) {
     if (idx >= m_instances.size() || !transform) return;
     for (int i = 0; i < 16; ++i) m_instances[idx].transform[i] = transform[i];
+}
+
+bool EnvArtSystem::beginFromDir(x3::rhi::IRenderDevice& device, std::string_view glbDir) {
+    m_assets.reset(x3::asset::createAssetSource());
+    if (!m_assets->mountDir(glbDir, 0)) {
+        x3::logWarn("[env-art] beginFromDir mountDir failed: " + std::string(glbDir));
+        return false;
+    }
+    m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+    return true;
+}
+
+bool EnvArtSystem::addGlbInstance(std::string_view relPath, const float transform[16]) {
+    if (!m_loader) return false;
+    const uint32_t a = loadAsset(std::string(relPath));   // cached by path
+    if (a >= m_assetTable.size() || !m_assetTable[a].ok) return false;
+    addInstance(a, transform);
+    return true;
 }
 
 Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
@@ -737,6 +806,17 @@ uint32_t EnvArtSystem::namedBounds(const std::vector<std::string>& subs,
 
 uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                             uint32_t maxDrawables, const float* cullMin, const float* cullMax) const {
+    // TIER-2 STREAMING (WP-4): a destroyed system has released its GPU handles —
+    // drawing it is a caller bug (some fan still calling ->draw() on a torn-down
+    // container). Never crash: log it once, then no-op forever after.
+    if (m_destroyed) {
+        if (!m_drawAfterDestroyLogged) {
+            x3::logError("[env-art] draw() called AFTER destroy() — no-op (caller bug: "
+                         "a destroyed EnvArtSystem is still in a draw fan)");
+            m_drawAfterDestroyLogged = true;
+        }
+        return 0;
+    }
     uint32_t drawn = 0;
     for (const EnvInstance& inst : m_instances) {
         const EnvAsset& a = m_assetTable[inst.asset];
@@ -771,7 +851,9 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                x3::rhi::TextureHandle{ d.emissiveTexId },
                                x3::rhi::TextureHandle{ d.detailTexId },   // HDRP micro-detail
                                d.detailUvScale,
-                               d.clearcoat, d.clearcoatRough);            // car-paint clearcoat lobe
+                               d.clearcoat, d.clearcoatRough,             // car-paint clearcoat lobe
+                               /*selfLight=*/0.0f, m_metalClamp,          // BLACK-PROP metallic clamp
+                               m_foliage);                                // vegetation wrap/translucency
         }
     }
     // FOLIAGE DENSIFY clones (densifyFoliage): one drawable each, at their own world
@@ -812,6 +894,102 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
 
 uint32_t EnvArtSystem::assetsLoaded() const {
     uint32_t n=0; for (const auto& a : m_assetTable) if (a.ok) ++n; return n;
+}
+
+// ===========================================================================
+// TIER-2 STREAMING (WP-4): EnvArtSystem::destroy() — see env_art.h for the
+// contract. Design notes (why this is NOT "loop m_instances/drawables and call
+// device.destroyMesh/destroyTexture on their ids"):
+//
+//   HANDLE TRACKING: every GPU handle this system ever minted already lives in
+//   m_assetTable[i].model (Model::primitives[].vertexBuffer/indexBuffer,
+//   Model::materials[].baseColorTex/normalTex/mrTex/emissiveTex/occlusionTex —
+//   see engine/asset/IModelLoader.h). loadAsset() never discards a Model after
+//   loading it, so no NEW tracking vectors are needed at the creation sites —
+//   the existing m_assetTable IS the handle table. What was missing was simply
+//   a call to release it.
+//
+//   WHY unload(), NOT raw device.destroy*(): engine/asset/ModelLoader.cpp shows
+//   two very different lifetimes for the two handle kinds:
+//     * MESHES are never shared — GpuUploader mints a fresh createMesh() per
+//       primitive on every load() call (ModelLoader.cpp ~L189), even for a
+//       process-wide MODEL CACHE hit (the cached CPU template's prim data is
+//       RE-uploaded, not its old handle reused; see "BOOT-TIME model cache"
+//       ~L137-160). A direct destroyMesh() per drawable would be safe in
+//       isolation for meshes alone.
+//     * TEXTURES are process-wide REFCOUNTED (g_texCacheByKey / g_texKeyByHandle,
+//       ModelLoader.cpp ~L93-135, decremented in GpuUploader::free() ~L266-290,
+//       only physically destroyed when the refcount hits 0). The SAME converted
+//       kit piece (e.g. SM_Wall_A.glb, or a district's shared prefab) is loaded
+//       by MANY separate EnvArtSystem instances across Echotropolis (towers,
+//       houses, condos, mine props, each district — loadAsset()'s path-cache is
+//       only PER-INSTANCE, see env_art.cpp's loadAsset()), and the BOOT-TIME
+//       MODEL CACHE itself holds a PERMANENT extra ref on every texture it has
+//       ever cached (preloadModels()'s comment: "meshes freed; the caches keep
+//       their own refs"). Calling device.destroyTexture() straight off a
+//       ModelDrawable's baseColorTexId/normalTexId/mrTexId/emissiveTexId would
+//       physically free a texture some OTHER live EnvArtSystem (or the process
+//       cache) still points at — exactly the double-free this WP must not
+//       introduce. ModelDrawable ids are also untagged uint32_t copies (see
+//       IModelLoader.h's meshIdOf()/ModelDrawable comment) — they carry no
+//       information the refcount code could use even if we wanted to reuse it.
+//
+//   IModelLoader::unload(Model&) (ModelLoader.cpp ~L516-534) already does this
+//   exactly right: unconditionally releases every primitive's mesh, and routes
+//   every material texture through the SAME acquire/release refcount the loader
+//   used when it loaded them — physically destroying only on the last release.
+//   So: destroy() simply hands every OK'd asset's Model to the loader that
+//   loaded it. That IS the "handle tracking" this WP needs; a second, parallel
+//   vector of raw ids would be redundant and (per the above) actively unsafe if
+//   ever used to free textures directly instead of asking the loader.
+//
+//   PARKED-CARS DOCTRINE — what destroy() intentionally does NOT free, and why:
+//     * The process-wide MODEL TEMPLATE cache (g_modelCache) and its own
+//       permanent texture refs. That cache is the engine's boot-time warm
+//       cache, shared by every loader (EnvArtSystem, MonsterSystem, CrowdSkin,
+//       NpcSkin...) in the process, and nothing in the engine ever clears it.
+//       Leaking that shared cache entry is CORRECT: it isn't this instance's to
+//       free, and freeing it would corrupt every other live loader of the same
+//       GLB. (This is the one deliberate leak in this design — acceptable per
+//       the WP-4 brief: "leaking a shared texture is acceptable; double-freeing
+//       is not.")
+//     * Any texture still referenced by a SIBLING EnvArtSystem's Model — the
+//       refcount above simply won't reach 0 yet for those; unload() already
+//       handles this correctly per-model, so destroy() does not second-guess it
+//       with its own bookkeeping.
+//     * m_lightFixtures hold no GPU handles (plain PointLight pos/color/range
+//       structs) — cleared below purely because a destroyed system's fixtures
+//       are meaningless (its geometry is gone), not because there's anything to
+//       release.
+//
+//   IDEMPOTENCY: m_destroyed guards a second call (logged once, no-op) so an
+//   integrator's teardown hook can be called defensively without risk.
+// ===========================================================================
+void EnvArtSystem::destroy(x3::rhi::IRenderDevice& device) {
+    (void)device; // must be the SAME device m_loader was created against (build()/
+                  // buildFromGlb()/buildFromGlbAt()/beginFromDir() all bind m_loader
+                  // to a device pointer at construction time); the parameter exists
+                  // so the call site reads the same way as every other device-owning
+                  // teardown (EchoRegion::destroy) and so a future loader-less path
+                  // (e.g. a headless variant) still has a device to hand assets to.
+    if (m_destroyed) {
+        x3::logWarn("[env-art] destroy() called again — ignoring (already destroyed)");
+        return;
+    }
+    if (m_loader) {
+        for (EnvAsset& a : m_assetTable) {
+            if (a.ok) m_loader->unload(a.model);   // frees meshes; refcount-releases textures
+            a.ok = false;
+        }
+    }
+    m_assetTable.clear();
+    m_assetPaths.clear();
+    m_instances.clear();     // draw() is instance-driven -> now a hard no-op even without the guard
+    m_lightFixtures.clear();
+    m_loader.reset();
+    m_assets.reset();
+    m_destroyed = true;
+    x3::logInfo("[env-art] destroy(): GPU resources released");
 }
 
 } // namespace x3::game

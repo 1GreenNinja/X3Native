@@ -67,6 +67,7 @@
 #include "intro_orchestrator.h"   // x3::intro::runIntroOrchestratorSelfTest (--test-introorch)
 #include "world_hosts.h"          // x3::apphost::runSurfaceStartSelfTest (--test-surfacestart)
 #include "star_systems.h"         // x3::starsys::runStarSystemsSelfTest (--test-starsystems)
+#include "world_hosts/echo_roads.h"   // x3::game::runCityBlocksSelfTest (--test-cityblocks)
 #include "cutscene.h"
 #include "npc_dialog.h"
 #include "chat_tree.h"
@@ -492,6 +493,11 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testSkillTree) {   // W9-3 RPG
         x3::logInfo("running the SKILL TREE self-test (S1-S7: prereq/cost + the stat fold reaching the player)...");
         return x3::game::runSkillTreeSelfTest() ? 0 : 1;
+    }
+    if (tf.testCityBlocks) {
+        x3::logInfo("running CITY BLOCK / LOT / FRONTAGE self-test (face extraction, frontage, "
+                    "non-overlap, road clearance, determinism + the polar-ring negative control)...");
+        return x3::game::runCityBlocksSelfTest() ? 0 : 1;
     }
     if (tf.testStrata) {
         x3::logInfo("running STRATA descent self-test (R-3 fold: bands + offshoots + on-foot route + club arrival)...");

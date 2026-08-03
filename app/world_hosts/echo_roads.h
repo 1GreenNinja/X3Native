@@ -292,12 +292,22 @@ int      seedWeighted(uint32_t seed, const float* weights, int n);
 // made houses float a corner or sink one; this probes the four footprint
 // corners plus the centre and seats at the MAX so nothing floats, reporting
 // the spread so the caller can drop a plinth under the overhang.
+// A footprint whose corners disagree by more than kMaxSeatGrade of its own
+// diagonal is not a building site, it is a cliff edge. Seating at MAX and
+// plinthing the overhang is right for a curb or a hillside, but on Echo
+// Harbor's 190 m crown wall it grew a full-height pedestal from the rim tower
+// down to the sea. Placement rejects those outright; kMaxPlinthDrop bounds
+// what a plinth may ever be even when the grade test passes.
+constexpr float kMaxSeatGrade  = 0.50f;   // rise/run across the footprint (~27 deg)
+constexpr float kMaxPlinthDrop = 14.0f;   // metres; deeper is terrain, not a plinth
 struct FootprintSeat {
-    bool  ok      = false;   // false when the heightfield is not loaded
-    float y       = 0;       // seat height (MAX of the 5 probes)
-    float yMin    = 0;       // lowest probe
-    float spread  = 0;       // y - yMin
-    bool  plinth  = false;   // spread exceeded the threshold
+    bool  ok        = false; // false when the heightfield is not loaded
+    float y         = 0;     // seat height (MAX of the 5 probes)
+    float yMin      = 0;     // lowest probe
+    float spread    = 0;     // y - yMin
+    float grade     = 0;     // spread / footprint diagonal — scale-free steepness
+    bool  plinth    = false; // spread exceeded the threshold
+    bool  buildable = false; // grade within kMaxSeatGrade (false => do not place)
 };
 FootprintSeat seatFootprint(const Heightfield& hf, float cx, float cz, float yaw,
                             float halfX, float halfZ, float plinthThresh = 0.30f);
@@ -339,6 +349,19 @@ public:
     // trim to the patch, paint breaks, stop bars at entries) + the filled
     // junction polygons themselves.
     bool build(x3::rhi::IRenderDevice& device, const Heightfield& hf);
+
+    // RIM SPLICE SEAM CLEARANCE (metres), applied by the NEXT build(). A rim
+    // waypoint probed closer than this to either fixed-arc splice node is
+    // skipped, because a waypoint that near the splice folds the ring into a
+    // U-turn the zigzag law cannot flatten — on the regenerated fjord that cost
+    // the entire freeway spine. It is NOT terrain-neutral, so it is off by
+    // default: 0 reproduces the Lift A road graph bit-for-bit (roads_test's
+    // golden checksums pin exactly that). Hosts building on the regenerated
+    // island pass kRimSeamClearRegenIsland. Must be called BEFORE build().
+    void setRimSeamClearance(float metres) { m_rimSeamClear = metres; }
+    // The value the regenerated-fjord host needs; see echo_roads.cpp for why
+    // 260 m, and why it is not the default.
+    static constexpr float kRimSeamClearRegenIsland = 260.0f;
 
     // Draw all buckets (no-op before build). Identity model; one drawMeshPBR
     // per bucket, alphaMask/Blend off, zero emissive (lighting is lights()).
@@ -398,6 +421,9 @@ public:
     uint32_t junctionCount() const { return m_junctionCount; }
 
 private:
+    // 0 = historic behaviour (see setRimSeamClearance).
+    float m_rimSeamClear = 0.0f;
+
     struct Bucket {                      // one material = one mesh = one draw
         std::vector<x3::rhi::MeshVertex> v;
         std::vector<uint32_t>            i;

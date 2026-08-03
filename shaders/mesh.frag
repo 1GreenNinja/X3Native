@@ -208,6 +208,9 @@ const uint FLAG_CLEARCOAT = 4u;
 // black silhouette just because the star is on its far side. The intensity byte
 // rides vTerrainPack.y (the spare lane; clearcoat owns .x, terrain owns both).
 const uint FLAG_SHIP_SELFLIT = 8u;
+// FOLIAGE (trees/vegetation): wrap the diffuse so the canopy's away-side isn't flat
+// black, + a warm back-translucency lobe so the low sun glows THROUGH the leaves.
+const uint FLAG_FOLIAGE = 16u;
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white sun
 
 #include "inc/mesh_terrain.glsl"   // procedural height/slope terrain splat
@@ -235,6 +238,10 @@ void main() {
     if ((vFlags & FLAG_GLASS) != 0u) discard;
 
     vec3 N = normalize(vNormal);
+    // TWO-SIDED lighting (pipeline is cull NONE): flip the normal on backfaces so
+    // mixed-winding HDRP kit meshes shade correctly from both sides — without this
+    // a flipped sub-mesh lights as if facing away (black wall).
+    if (!gl_FrontFacing) N = -N;
     // PBR normal map (non-terrain): perturb the geometry normal via a derivative TBN.
     if ((vFlags & FLAG_TERRAIN) == 0u && vNormalTexIndex > 0u)
         N = perturbNormal(N, vWorldPos, vUV, vNormalTexIndex);
@@ -294,6 +301,11 @@ void main() {
                            + uint(ssao.rtsh1.x)   * 26699u);
     int  rtshRaysLeft = int(ssao.rtsh0.z);
     vec3 rtshNg = normalize(vNormal);
+    // TWO-SIDED (see the N flip above): mixed-winding pack meshes present their
+    // BACK face — the unflipped vertex normal then points INTO the solid, so ray
+    // origins offset inside the wall and every sun ray self-intersects (whole
+    // districts read shadow=0 = pitch black). Flip the ray-offset normal too.
+    if (!gl_FrontFacing) rtshNg = -rtshNg;
     // SUN (tier >= 1): min() with the CSM term — the traced ray gives the
     // contact-hardening penumbra from STATIC geometry; the raster map keeps
     // shadows from skinned characters (absent from the static TLAS). Skip the
@@ -408,6 +420,10 @@ void main() {
                 --rtshRaysLeft;
                 vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshSeed);
             }
+            // r_debugview 7: point RT shadows forced lit — the A/B that caught
+            // the glass-in-TLAS self-occlusion (2026-07-30). Kept: zero cost,
+            // and it splits "light missing" from "light shadowed" instantly.
+            if (ssao.rtsh1.w > 6.5) vis = 1.0;
             atten *= vis;
 #endif
             lit += brdf(N, Vd, NoVd, L, F0d, albedo.rgb, aD, kPointDiffuseW)
@@ -463,6 +479,21 @@ void main() {
         // ambient diffuse + ambient*3.4*Fresnel constant (kept as the no-env fallback).
         Lo += iblAmbient(N, V, albedo.rgb, metallic, pRough, F0, ao, ambient, up, ddgiGI);
         color = Lo;
+    }
+
+    // ======================================================================
+    // FOLIAGE (FLAG_FOLIAGE): trees were flat black on the away-side. Two cheap
+    // canopy terms: (1) WRAP — lift the diffuse so light bends around the rounded
+    // crown instead of a hard terminator; (2) BACK-TRANSLUCENCY — when the camera
+    // looks toward the sun THROUGH the leaves, add a warm forward-scatter glow
+    // (albedo-tinted), gated by the sun shadow so a shadowed tree doesn't glow.
+    // ======================================================================
+    if ((vFlags & FLAG_FOLIAGE) != 0u) {
+        float wrap  = clamp((dot(N, kSunDir) + 0.6) / 1.6, 0.0, 1.0);
+        vec3  Vf    = normalize(cam.camPos.xyz - vWorldPos);
+        float back  = pow(max(dot(Vf, -kSunDir), 0.0), 3.0);
+        color += albedo.rgb * sunRad * (wrap * 0.35) * mix(0.55, 1.0, shadow)   // wrap fill
+               + albedo.rgb * sunRad * (back * 0.85) * shadow;                  // sun through canopy
     }
 
     // ======================================================================

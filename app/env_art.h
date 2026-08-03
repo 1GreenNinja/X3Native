@@ -96,6 +96,26 @@ public:
     // capture rig (re-pose the car between stills) — cheap, no reload.
     void setInstanceTransform(uint32_t idx, const float transform[16]);
 
+    // ---- DISTRICT API: a whole designer layout in ONE system ----
+    // beginFromDir mounts a GLB library dir + creates the loader (call once);
+    // addGlbInstance then loads (cached by path — repeated prefabs share one
+    // upload) and places one prefab at a world transform. Used by the district
+    // loader to replicate a Unity demo scene's exact placements.
+    bool beginFromDir(x3::rhi::IRenderDevice& device, std::string_view glbDir);
+    bool addGlbInstance(std::string_view relPath, const float transform[16]);
+
+    // Skip primitives whose glTF NODE NAME *or* MATERIAL NAME contains any of
+    // `subs` (lowercased substring match, mirrors namedBounds()'s mechanics) —
+    // applied at drawable-creation time in loadAsset(), so a matching primitive
+    // never gets a ModelDrawable and never draws. Node-name matching handles
+    // multi-node models (a whole node's mesh is dropped); material-name matching
+    // covers baked SINGLE-node scenes (e.g. a merged flora bake) where per-part
+    // identity lives in the material, not the node. Must be called BEFORE the
+    // load call (build/buildFromGlb/beginFromDir+addGlbInstance) whose assets it
+    // should filter — it only affects assets loaded afterward. Default empty =
+    // zero behavior change.
+    void setNodeSkip(std::vector<std::string> subs);
+
     // World-space AABB of all placed drawables' origins (engine-space ground truth —
     // for framing a preview camera). outMin/outMax are float[3]. No-op (huge/inverted)
     // if nothing is placed.
@@ -136,6 +156,15 @@ public:
                             uint32_t seed, float minR, float maxR,
                             float scaleMin, float scaleMax, float sink,
                             const float* keepOutXZR = nullptr);
+    // FOLIAGE: mark this system's meshes as vegetation so the PBR shader wraps the
+    // diffuse + adds warm back-translucency (sun glowing through a canopy). Applies
+    // to every instance/primitive this system draws. 0 = off (default; unchanged).
+    void setFoliage(float f) { m_foliage = f; }
+
+    // METALLIC CLAMP (the engine's BLACK-PROP fix, see drawMeshPBR): kit packs whose
+    // packed MR maps bake metallic~1 render black (no diffuse lobe + dark env spec).
+    // Clamp metallic to `m` (e.g. 0.2) so the albedo actually lights. 1 = off.
+    void setMetallicClamp(float m) { m_metalClamp = m; }
 
     // Diagnostics for logging / the host: how many assets loaded ok / instances.
     uint32_t scatterCount() const { return (uint32_t)m_scatter.size(); }
@@ -149,6 +178,23 @@ public:
     // if the light kit piece failed to load. Feed these to
     // IRenderDevice::setPointLights so the corridor reads as a lit interior.
     const std::vector<x3::rhi::PointLight>& lightFixtures() const { return m_lightFixtures; }
+
+    // TIER-2 STREAMING (WP-4): release every GPU resource this system created
+    // (meshes + textures for every asset loaded via build()/buildFromGlb()/
+    // buildFromGlbAt()/beginFromDir()+addGlbInstance()), then clear the instance
+    // list so draw() becomes a hard no-op. Routes through the SAME IModelLoader
+    // that loaded the assets (see env_art.cpp for why a naive direct
+    // device.destroyMesh/destroyTexture over ModelDrawable ids would be UNSAFE —
+    // textures are process-wide refcounted and shared across EnvArtSystem
+    // instances). Idempotent: a second call is a harmless no-op (warned once).
+    // TERMINAL: this system is not designed to be rebuilt after destroy() — call
+    // it only when the instance itself is going away. `device` must be the SAME
+    // IRenderDevice this system was built/loaded against.
+    //
+    // Post-destroy draw() call = a caller bug (something still fanning ->draw()
+    // over a destroyed container). It is logged ONCE as an error and otherwise a
+    // silent no-op — never a crash.
+    void destroy(x3::rhi::IRenderDevice& device);
 
 private:
     // Load one GLB by relative path under the mounted dir; returns the asset index
@@ -171,6 +217,13 @@ private:
     std::vector<EnvInstance>                 m_instances;
     std::vector<ScatterDraw>                 m_scatter;   // foliage densify clones (drawn after m_instances)
     std::vector<x3::rhi::PointLight>         m_lightFixtures; // omni per Light_A fixture
+    float                                    m_foliage = 0.0f; // >0 = vegetation shading
+    float                                    m_metalClamp = 1.0f; // <1 = BLACK-PROP fix
+    std::vector<std::string>                 m_nodeSkip; // lowercased node/material-name skip substrings
+
+    // TIER-2 STREAMING (WP-4): terminal-teardown bookkeeping. See destroy().
+    bool         m_destroyed = false;             // destroy() has run — teardown is done+terminal
+    mutable bool m_drawAfterDestroyLogged = false; // log-once guard for a post-destroy draw()
 };
 
 } // namespace x3::game

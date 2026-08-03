@@ -191,6 +191,13 @@ add_executable(X3Engine WIN32
     crowd_skin.cpp
     crowd_chatter.cpp
     npc_life.cpp
+    npc_skin.cpp
+    world_hosts/echo_regions.cpp
+    world_hosts/echo_region_builders.cpp
+    world_hosts/echo_woodlands.cpp
+    world_hosts/echo_roads.cpp
+    world_hosts/echo_interiors.cpp
+    world_hosts/echo_water.cpp
     hackables.cpp
     alert.cpp
     fx.cpp
@@ -281,6 +288,7 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/bloom_up.frag
     ${CMAKE_SOURCE_DIR}/shaders/composite.frag
     ${CMAKE_SOURCE_DIR}/shaders/fog.frag
+    ${CMAKE_SOURCE_DIR}/shaders/volumetric.frag
     ${CMAKE_SOURCE_DIR}/shaders/taa_resolve.frag
     ${CMAKE_SOURCE_DIR}/shaders/autoexposure.comp
     ${CMAKE_SOURCE_DIR}/shaders/depth.vert

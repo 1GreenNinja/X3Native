@@ -32,6 +32,7 @@
 #include "engine/rhi/IRenderDevice.h"
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace x3::game {
@@ -68,6 +69,14 @@ public:
         bool  cityOwned = false;          // true = region-ledger lifetime
         bool  glowOnly  = false;          // window/sign wash: light only, no geometry
         float level     = 1.0f;           // live flicker level (1 = steady)
+        // WD2 GRID CUT (junction-box hack): a blackout timer. While > 0 the
+        // lamp is forced Dead; expiry strikes it back to its pre-cut state.
+        float deadUntil = 0.0f;
+        State preState  = State::Lit;
+        // Ground-pool emissive multiplier (district lamps ride it: the island
+        // TERRAIN ignores pooled point lights — A/B proven at 8x intensity,
+        // black ground either way — so the disc must carry the night read).
+        float discMul   = 1.0f;
         // Flicker state machine (deterministic xorshift stream, dt-scaled).
         float    t = 0.0f, next = 0.0f, period = 0.1f, phase = 0.0f;
         bool     burst = false, on = true;
@@ -115,9 +124,27 @@ public:
     void buildHostLamps(Scene& scene, x3::rhi::IRenderDevice& device,
                         float apronY, float breachX, float apronZ);
 
+    // DISTRICT lamps (echotropolis metropolis): arbitrary host-supplied rows —
+    // rows[i] = {x0, z0, x1, z1, y, spacing}. Warm pools so the pack districts
+    // read at night (their HDRP kits carry only sparse baked neon).
+    void buildDistrictLamps(Scene& scene, x3::rhi::IRenderDevice& device,
+                            const float (*rows)[6], uint32_t nRows);
+
+    // Optional terrain query: when set, each lamp's GROUND-POOL disc seats on
+    // the LOCAL terrain instead of the row's flat y — on undulating ground
+    // (the crown drag) a row-seated disc is buried and the pool never reads.
+    // Set BEFORE the build calls.
+    using GroundFn = std::function<float(float x, float z)>;
+    void setGroundQuery(GroundFn fn) { m_ground = std::move(fn); }
+
     // Per-frame: advance the flicker machines (dt-scaled, irregular 8-13 Hz
     // bursts) and write cone/head/disc emissive levels into the scene.
     void update(float dt, Scene& scene);
+
+    // WD2 GRID CUT: force every lamp within `radius` of (x,z) Dead for
+    // `seconds` (emissives zeroed now; update() strikes them back after the
+    // timer). The dock work light is exempt. Returns lamps cut.
+    uint32_t killNear(Scene& scene, float x, float z, float radius, float seconds);
 
     // Append the nearest-K LIT lamps (dead excluded, flicker scaled by its
     // live level) to `out` as pooled PointLights. Returns how many appended.
@@ -160,6 +187,7 @@ private:
     void logBuild(const char* who, uint32_t first) const;
 
     std::vector<Lamp> m_lamps;
+    GroundFn m_ground;              // optional local-terrain seat for pools
     bool m_cityBuilt = false;
     bool m_hostBuilt = false;
 };

@@ -170,6 +170,23 @@ constexpr float kRimBearingStep = 20.0f;
 constexpr float kRimMaxR     = 700.0f;   // outward march limit (8 m steps)
 constexpr float kRimMinR     = 120.0f;   // rim closer than this = degenerate bearing
 constexpr float kRimTurnDrop = -0.17f;   // convexify: drop waypoint when turn dot < this (~>100 deg)
+// ISLAND-REGEN (2026-08-03): SEAM CLEARANCE. On the regenerated fjord terrain
+// the harbor city sits directly under the crown's south wall, so the south
+// rim lip is only ~200 m from the crown — rim waypoints probed there land
+// 80-150 m from the fixed arc's START node and the splice folds into a
+// U-turn (south-lip run antiparallel to the crown crossing) that no amount
+// of zigzag-law smoothing can flatten; the law then dropped the WHOLE RING
+// (the world's freeway spine).
+//
+// INTEGRATION (round 2): this shipped as an unconditional 260 m constant, and
+// it is NOT terrain-neutral. On roads_test's closed-form synthetic island — no
+// assets, fixed input — it moved the graph from 87 nodes/44 edges to 84/42,
+// broke all four golden checksums, and made the zigzag law drop THREE edges
+// where it had dropped one. So it is a fix for one specific landform, not a
+// general law: it is now OPT-IN. Default 0 reproduces the Lift A graph
+// bit-for-bit; the host that builds on the regenerated fjord asks for it by
+// name. See EchoRoads::setRimSeamClearance.
+// The value itself lives on EchoRoads (echo_roads.h) so hosts can name it.
 
 inline float h01(uint32_t n) {
     n = (n ^ 61u) ^ (n >> 16); n *= 9u; n ^= n >> 4; n *= 0x27d4eb2du;
@@ -624,7 +641,20 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 continue;
             }
             const float wr = rimR - kRimInset;
-            rim.push_back({ kCrownX + dx * wr, kCrownZ + dz * wr });
+            const Wp cand{ kCrownX + dx * wr, kCrownZ + dz * wr };
+            // seam clearance — opt-in per instance (see kRimSeamClearRegenIsland above)
+            const Wp& aS = kRingFixed[0];
+            const Wp& aE = kRingFixed[kRingFixedN - 1];
+            const float dS = std::sqrt((cand.x-aS.x)*(cand.x-aS.x) + (cand.z-aS.z)*(cand.z-aS.z));
+            const float dE = std::sqrt((cand.x-aE.x)*(cand.x-aE.x) + (cand.z-aE.z)*(cand.z-aE.z));
+            if (dS < m_rimSeamClear || dE < m_rimSeamClear) {
+                x3::logInfo("[roads] rim bearing " + std::to_string((int)deg) +
+                            " deg waypoint (" + std::to_string((int)cand.x) + "," +
+                            std::to_string((int)cand.z) + ") skipped — inside the " +
+                            std::to_string((int)m_rimSeamClear) + " m splice seam clearance");
+                continue;
+            }
+            rim.push_back(cand);
         }
         // Convexify by skipping: walking [arcEnd, rim..., arcStart], drop any
         // rim waypoint whose turn exceeds ~100 deg (backtrack pocket).
@@ -2485,6 +2515,12 @@ FootprintSeat seatFootprint(const Heightfield& hf, float cx, float cz, float yaw
     }
     s.ok = true; s.y = hi; s.yMin = lo; s.spread = hi - lo;
     s.plinth = s.spread > plinthThresh;
+    // Steepness relative to the footprint's own diagonal, so the verdict does
+    // not change with building size: 6 m of relief is a gentle hillside under a
+    // 60 m tower and a cliff under a 6 m shed.
+    const float diag = std::sqrt(4.0f * (halfX * halfX + halfZ * halfZ));
+    s.grade = diag > 1e-3f ? s.spread / diag : 0.0f;
+    s.buildable = s.grade <= kMaxSeatGrade;
     return s;
 }
 
@@ -3199,6 +3235,29 @@ bool runCityBlocksSelfTest() {
         Heightfield none;
         cbCheck(!seatFootprint(none, 0, 0, 0, 5, 5).ok,
                 "seatFootprint reports NOT-ok without a heightfield");
+
+        // CLIFF-EDGE REJECT. The gentle ramp above is a building site; a rim
+        // straddling a sheer wall is not. Before this, both seated at MAX and
+        // both got a plinth — which on the 190 m crown wall meant a pedestal
+        // from the tower down to the sea. grade is scale-free, so assert it
+        // against the footprint that produced it, not against a fixed metre count.
+        cbCheck(std::fabs(s.grade - s.spread / std::sqrt(4.0f * (30.0f * 30.0f + 30.0f * 30.0f)))
+                    < 1e-4f, "grade is spread over the footprint diagonal");
+        cbCheck(s.buildable, "a gentle ramp is a buildable footprint");
+        Heightfield cliff;
+        cliff.w = cliff.h = 64;
+        cliff.px.resize(64 * 64);
+        for (int z = 0; z < 64; ++z)
+            for (int x = 0; x < 64; ++x)
+                cliff.px[(size_t)z * 64 + x] =
+                    (uint16_t)(Heightfield::kSeaNorm * 65535.0f + (x >= 32 ? 20000.0f : 0.0f));
+        cbCheck(cliff.ok(), "synthetic cliff heightfield loads");
+        // Centre the footprint ON the step, so its corners straddle the wall.
+        // heightAt maps world x -> u = (x/kMeters + 0.5)*(w-1); invert for u=32.
+        const float rimX = (32.0f / 63.0f - 0.5f) * Heightfield::kMeters;
+        const FootprintSeat cs = seatFootprint(cliff, rimX, 0.0f, 0.0f, 30.0f, 30.0f);
+        cbCheck(cs.ok && cs.spread > s.spread, "the cliff footprint spans far more relief");
+        cbCheck(!cs.buildable, "a footprint straddling a sheer wall is REJECTED");
     }
 
     // ---- NEGATIVE CONTROL --------------------------------------------------

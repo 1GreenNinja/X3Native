@@ -679,6 +679,7 @@ private:
         for (size_t i = 0; i < data.materials_count; ++i) {
             const cgltf_material& cm = data.materials[i];
             Material m;
+            m.name = cm.name ? cm.name : "";
             if (cm.has_pbr_metallic_roughness) {
                 const auto& pbr = cm.pbr_metallic_roughness;
                 for (int k = 0; k < 4; ++k) m.baseColor[k] = pbr.base_color_factor[k];
@@ -1397,14 +1398,23 @@ std::vector<ModelDrawable> makeDrawables(const Model& m) {
 
     // ---- Walk nodes: each node with a mesh emits that mesh's primitives, baking
     // the node's world transform into each drawable. A mesh instanced by several
-    // nodes is therefore drawn once per node (correct for multi-part placement). ----
+    // nodes is therefore drawn once per node (correct for multi-part placement).
+    // SKINNED nodes bake IDENTITY instead (glTF spec: "the transform of the
+    // skinned mesh node MUST be ignored" — the joint palette already places the
+    // skin in model space). Blender exporters write identity there anyway, so
+    // the roster rigs are unchanged; Meshy rigs carry a real armature transform
+    // and were drawn DISPLACED from their cull sphere — the "only visible in a
+    // narrow arc" class Tim reported (play-as body, UFO, "most things"). ----
     for (size_t i = 0; i < n; ++i) {
         const Node& nd = m.nodes[i];
         if (nd.meshIndex < 0) continue;
+        static const float identS[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         for (const auto& p : m.primitives) {
             if ((int)p.meshIndex != nd.meshIndex) continue;
+            const bool skinnedHere = p.skinned && nd.skinIndex >= 0;
             ModelDrawable d;
-            if (fillDrawable(m, p, world[i].data(), d)) out.push_back(d);
+            if (fillDrawable(m, p, skinnedHere ? identS : world[i].data(), d))
+                out.push_back(d);
         }
     }
 

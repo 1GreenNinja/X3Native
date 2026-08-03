@@ -72,7 +72,7 @@ const ZoneLook& zoneLook(StreetLights::Zone z) {
         { 1.00f, 0.72f, 0.42f,  8.0f, 16.0f, 2.0f, 0.55f, 2.6f, 0.07f },  // Scrapyard sodium
         { 0.80f, 0.90f, 1.00f,  8.5f, 17.0f, 2.2f, 0.52f, 2.8f, 0.07f },  // New District LED
         { 1.00f, 0.70f, 0.38f,  8.0f, 16.0f, 2.0f, 0.55f, 2.5f, 0.07f },  // Industrial sodium
-        { 0.84f, 0.92f, 1.00f,  8.0f, 17.0f, 2.1f, 0.50f, 2.7f, 0.06f },  // Approach LED
+        { 0.84f, 0.92f, 1.00f,  8.0f, 17.0f, 2.6f, 0.50f, 2.7f, 0.10f },  // Approach LED (pool bumped for district night streets)
         { 1.00f, 0.85f, 0.60f,  7.0f, 15.0f, 2.0f, 0.50f, 2.5f, 0.06f },  // Apron warm white
         { 0.88f, 0.95f, 1.00f, 13.0f, 26.0f, 5.0f, 0.85f, 3.4f, 0.14f },  // Dock work light
         // GLOW-ONLY (no geometry): the cone/head/disc strengths are unused.
@@ -291,7 +291,12 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
             e.transparent = true;
             e.glass.opacity = 0.0f; e.glass.refraction = 0.0f;
             e.glass.roughness = 0.0f; e.glass.specular = 0.0f;
-            e.glass.additive = 3.5f;                 // soft silhouette rim fade
+            // Was 3.5 — over TWICE glass.frag's documented design value ("~1.5
+            // cones"). The rim term pow(dot(N,V), w) at 3.5 only lights a narrow
+            // face-on band; from oblique/orbit angles (every establishing shot)
+            // the whole cone read black — the "cones missing in captures" bug.
+            // 1.8 widens the band while still avoiding the solid-funnel look.
+            e.glass.additive = 1.8f;
             e.tag = (uint32_t)Tag::Prop;
             l.coneEnt = scene.handle(scene.add(e));
         }
@@ -299,10 +304,15 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
         // pooled-light budget). additive ~0 => no view-angle fade, so the pool
         // still reads down a grazing street view.
         {
+            static const bool kPoolDiag = std::getenv("ECHO_POOL_DIAG") != nullptr;
             Entity e;
             e.mesh = kit.disc;
             e.tex  = kit.discGrad;
-            composeYawScale(hx, groundY + 0.235f, hz, 0.0f,
+            // Seat the pool on LOCAL terrain when a query is wired — a row-y
+            // disc on undulating ground is buried and the pool never reads.
+            const float discY = m_ground ? m_ground(hx, hz) + 0.30f
+                                         : groundY + 0.235f;
+            composeYawScale(hx, discY, hz, 0.0f,
                             look.poolR * 0.95f, 1.0f, look.poolR * 0.95f, e.transform);
             e.baseColor[3] = 1.0f;
             e.emissive[0] = l.color[0]; e.emissive[1] = l.color[1]; e.emissive[2] = l.color[2];
@@ -310,7 +320,16 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
             e.transparent = true;
             e.glass.opacity = 0.0f; e.glass.refraction = 0.0f;
             e.glass.roughness = 0.0f; e.glass.specular = 0.0f;
-            e.glass.additive = 0.05f;
+            // DIAG (2026-07-30): 1.8 == the cone's proven-visible additive; the
+            // shipped 0.05 "flat pool" mode never showed a pixel on the crown.
+            e.glass.additive = [](){ const char* d = std::getenv("ECHO_POOL_ADDITIVE");
+                                     return d ? (float)std::atof(d) : 0.05f; }();
+            if (kPoolDiag) {   // ECHO_POOL_DIAG: unmistakable opaque red marker
+                e.tex = {}; e.transparent = false; e.glass = {};
+                e.baseColor[0] = 1.0f; e.baseColor[1] = 0.05f; e.baseColor[2] = 0.05f;
+                e.emissive[0] = 1.0f; e.emissive[1] = 0.0f; e.emissive[2] = 0.0f;
+                e.emissive[3] = 3.0f;
+            }
             e.tag = (uint32_t)Tag::Prop;
             l.discEnt = scene.handle(scene.add(e));
         }
@@ -492,6 +511,55 @@ void StreetLights::buildHostLamps(Scene& scene, x3::rhi::IRenderDevice& device,
     logBuild("host (apron + approach)", first);
 }
 
+void StreetLights::buildDistrictLamps(Scene& scene, x3::rhi::IRenderDevice& device,
+                                      const float (*rows)[6], uint32_t nRows) {
+    const uint32_t first = (uint32_t)m_lamps.size();
+    Kit kit = makeKit(device);
+    for (uint32_t r = 0; r < nRows; ++r) {
+        const float x0 = rows[r][0], z0 = rows[r][1], x1 = rows[r][2], z1 = rows[r][3];
+        const float y = rows[r][4], spacing = std::max(8.0f, rows[r][5]);
+        const float dx = x1 - x0, dz = z1 - z0;
+        const float len = std::sqrt(dx*dx + dz*dz);
+        if (len < 1.0f) continue;
+        const float px = -dz/len, pz = dx/len;      // perpendicular (arm faces the road)
+        const int n = std::max(2, (int)(len / spacing) + 1);
+        for (int i = 0; i < n; ++i) {
+            const float t = (float)i / (float)(n - 1);
+            const float side = (i & 1) ? 1.0f : -1.0f;   // alternate road sides
+            addLamp(scene, kit, device,
+                    x0 + dx*t + px*side*4.5f, z0 + dz*t + pz*side*4.5f, y,
+                    -px*side, -pz*side, Zone::Approach, false, false);
+        }
+    }
+    // CITY SCALE: the Approach look was calibrated for a facility service road
+    // (range 17 m, intensity 8) — in a district street flanked by 40 m towers
+    // that falloff dies before it touches a wall. Widen the pooled light for the
+    // lamps this call created only (host lamps in other worlds keep their tune).
+    // PROVEN CAUSE of the "posts glow, street black" night bug (A/B captured):
+    // 17 m from a lamp hung ~8 m up is a ~9 m ground pool — it dies long before
+    // a facade. Env-tunable so the falloff can be A/B'd without a rebuild.
+    const float rMul = [](){ const char* e = std::getenv("ECHO_LAMP_RANGE_MUL"); return e ? (float)std::atof(e) : 3.2f; }();
+    // 2.2 was tuned while the TLAS glass bug ate every ground photon; with the
+    // rays fixed (3fe89811) Tim called the night "a HAIR bright" — pulled back.
+    const float iMul = [](){ const char* e = std::getenv("ECHO_LAMP_INT_MUL");   return e ? (float)std::atof(e) : 1.5f; }();
+    // POOL READ (Lane 2 A/Bs, 2026-07-30, hash-verified live): (a) the island
+    // TERRAIN never catches pooled point lights — 8x intensity still left the
+    // street black while tower facades DID brighten; (b) the emissive disc
+    // renders invisibly on the crown at ANY strength (40x, +2.5 m lift — all
+    // no-ops), so the glass-pass fake-volumetric branch's flat-pool path needs
+    // a shader-side look before this knob can carry the night ground. Neutral
+    // default; env knob stays for the A/B loop.
+    const float pMul = [](){ const char* e = std::getenv("ECHO_LAMP_POOL_MUL");  return e ? (float)std::atof(e) : 1.0f; }();
+    for (size_t i = first; i < m_lamps.size(); ++i) {
+        m_lamps[i].range     *= rMul;   // ~17 -> ~54 m: reaches the facades
+        m_lamps[i].intensity *= iMul;   // carry the extra distance
+        m_lamps[i].discMul    = pMul;
+        if (Entity* e = scene.getChecked(m_lamps[i].discEnt))
+            e->emissive[3] = zoneLook(m_lamps[i].zone).discStr * pMul;
+    }
+    logBuild("district rows", first);
+}
+
 void StreetLights::logBuild(const char* who, uint32_t first) const {
     uint32_t dead = 0, flick = 0;
     for (size_t i = first; i < m_lamps.size(); ++i) {
@@ -507,8 +575,41 @@ void StreetLights::logBuild(const char* who, uint32_t first) const {
 // ---------------------------------------------------------------------------
 // Flicker (irregular 8-13 Hz bursts, deterministic per lamp, dt-scaled).
 // ---------------------------------------------------------------------------
+uint32_t StreetLights::killNear(Scene& scene, float x, float z,
+                                float radius, float seconds) {
+    uint32_t n = 0;
+    const float r2 = radius * radius;
+    for (Lamp& l : m_lamps) {
+        if (l.workLight) continue;               // the dock rig never dies
+        const float dx = l.head[0] - x, dz = l.head[2] - z;
+        if (dx * dx + dz * dz > r2) continue;
+        if (l.state != State::Dead) l.preState = l.state;
+        l.state = State::Dead;
+        l.deadUntil = std::max(l.deadUntil, seconds);
+        l.level = 0.0f;
+        if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = 0.0f;
+        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = 0.0f;
+        if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = 0.0f;
+        ++n;
+    }
+    return n;
+}
+
 void StreetLights::update(float dt, Scene& scene) {
     if (dt <= 0.0f) return;
+    // Grid-cut blackout timers: expiry strikes the lamp back to life.
+    for (Lamp& l : m_lamps) {
+        if (l.deadUntil <= 0.0f) continue;
+        l.deadUntil -= dt;
+        if (l.deadUntil > 0.0f) continue;
+        l.deadUntil = 0.0f;
+        l.state = l.preState;
+        l.level = 1.0f;
+        const ZoneLook& look = zoneLook(l.zone);
+        if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = look.coneStr;
+        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.discMul;
+        if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = look.headStr;
+    }
     for (Lamp& l : m_lamps) {
         if (l.state != State::Flicker) continue;
         auto frand = [&l]() {
@@ -544,7 +645,7 @@ void StreetLights::update(float dt, Scene& scene) {
 
         const ZoneLook& look = zoneLook(l.zone);
         if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = look.coneStr * l.level;
-        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.level;
+        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.discMul * l.level;
         if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = look.headStr * l.level;
     }
 }

@@ -1,0 +1,5 @@
+# METROPOLIS DISTRICTS — tag|layout|glbDir|padX|padZ|padYaw|padScale|meshFix|padYOff
+# Engine frame (docs/COORDINATES.md). Layouts from tools/unity_scene_to_layout.py.
+URBAN DISTRICT|assets/districts/urban.layout|D:/Assets/_glb/prefab_buildings/Urban Abandoned District|700|350|0|1|0|0
+RECIFE 2050|assets/districts/recife.layout|D:/Assets/_glb/prefab_buildings/Cyberpunk City Recife Environment|950|1250|0|1|0|0
+HIVEMIND CYBERCITY|assets/districts/hivemind.layout|D:/Assets/_glb/tech/Cyberpunk City Cyberpunk Cyberpunk City Sci-Fi City|1340|1000|0|1|0|-23

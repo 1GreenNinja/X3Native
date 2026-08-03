@@ -607,6 +607,8 @@ void VulkanRenderDevice::setCameraBasis(float x, float y, float z,
         m_camPitch = std::asin(f.y < -1.f ? -1.f : (f.y > 1.f ? 1.f : f.y));
     }
 
+void VulkanRenderDevice::setCameraRoll(float rollRadians) { m_camRoll = rollRadians; }
+
 void VulkanRenderDevice::setCameraFar(float farMeters) {
         // W8-3: clamp to sane bounds; feeds the main proj + the fog linearize.
         m_camFar = (farMeters < 50.0f) ? 50.0f : (farMeters > 100000.0f ? 100000.0f : farMeters);

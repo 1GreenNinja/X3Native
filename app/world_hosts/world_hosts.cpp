@@ -71,9 +71,9 @@ const char* const kHostRouteFlags[kHostRouteCount] = {
     kHostRoutes[18].flag, kHostRoutes[19].flag, kHostRoutes[20].flag,
     kHostRoutes[21].flag, kHostRoutes[22].flag, kHostRoutes[23].flag,
     kHostRoutes[24].flag, kHostRoutes[25].flag, kHostRoutes[26].flag,
-    kHostRoutes[27].flag,
+    kHostRoutes[27].flag, kHostRoutes[28].flag,
 };
-static_assert(kHostRouteCount == 28, "update kHostRouteFlags when adding a route");
+static_assert(kHostRouteCount == 29, "update kHostRouteFlags when adding a route");
 
 } // namespace
 

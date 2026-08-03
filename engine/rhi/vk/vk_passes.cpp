@@ -284,6 +284,15 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
             const DrawRecord& dr = m_drawRecords[i];
             if (!m_rt.hasBlas(dr.meshId)) continue;
+            // GLASS never enters the TLAS (2026-07-30). A translucent draw as an
+            // RT occluder is a lie the rays can't see through: the street lamps'
+            // fake-volumetric GLOW CONES enveloped their own emitters, so every
+            // point-shadow ray from the ground hit the shaft and the whole city
+            // floor read vis=0 — pitch black at night while debugview 2 showed
+            // the light landing (the 2026-07-30 hunt; debugview 7 = the A/B).
+            // Refraction/reflection through real panes never used the TLAS
+            // anyway (screen-space scene copy), so nothing else changes.
+            if (dr.flags & kFlagGlass) continue;
             VulkanRT::TlasInstance inst{};
             inst.meshId = dr.meshId;
             // instanceCustomIndex = the record's SSBO row this frame (filled by
@@ -1104,7 +1113,7 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
                       TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                       uint32_t extraFlags, const GlassMaterial* glass,
                       float clearcoat , float clearcoatRough , float selfLight ,
-                      float metallicScale ) {
+                      float metallicScale , float foliage ) {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1172,6 +1181,11 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
             const float sl = selfLight < 0.0f ? 0.0f : (selfLight > 1.0f ? 1.0f : selfLight);
             r.flags |= kFlagShipSelfLit;
             r.terrainPack2 = (uint32_t)(sl * 255.0f + 0.5f);
+        }
+        // FOLIAGE (trees): a flag-only gate — mesh.frag applies fixed wrap + warm
+        // back-translucency. No packed lane (never terrain), so nothing collides.
+        if (foliage > 0.001f && (r.flags & kFlagTerrain) == 0u) {
+            r.flags |= kFlagFoliage;
         }
         uint32_t emisIdx = 0;
         if (emissiveTex.valid()) {
@@ -1483,12 +1497,28 @@ void VulkanRenderDevice::prepareFrameData() {
         // Camera viewProj (right-handed, reverse-Y for Vulkan clip) + the sun's
         // ortho lightViewProj, written together into the per-frame camera UBO.
         const float aspect = (float)m_extent.width / (float)std::max(1u, m_extent.height);
+        // TWO LANES REACHED ROLL INDEPENDENTLY and both have live call sites:
+        // setCameraBasis(fwd,up) hands us a fully-specified orientation (the space
+        // fighter that loops and banks), while setCameraRoll(theta) rolls an
+        // ordinary yaw/pitch camera about its view axis. The basis is strictly the
+        // more specified of the two, so it wins outright when set; otherwise the
+        // roll tilts the derived up-vector. Neither path disturbs an unrolled
+        // camera: no basis and roll 0 is the historic (0,1,0) lookAt exactly.
         const glm::vec3 fwd = m_camHasBasis ? m_camFwd
                             : glm::vec3(std::cos(m_camPitch) * std::cos(m_camYaw),
                                         std::sin(m_camPitch),
                                         std::cos(m_camPitch) * std::sin(m_camYaw));
-        const glm::vec3 camUp = m_camHasBasis ? m_camUp : glm::vec3(0, 1, 0);
-        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, camUp);
+        glm::vec3 camUpWorld(0.0f, 1.0f, 0.0f);
+        if (m_camHasBasis) {
+            camUpWorld = m_camUp;
+        } else if (m_camRoll != 0.0f) {
+            // The sky/water/vol passes all derive from this viewProj (or its
+            // inverse), so they bank with the horizon for free.
+            const glm::vec3 rightFlat = glm::normalize(glm::cross(fwd, camUpWorld));
+            const glm::vec3 upOrtho   = glm::cross(rightFlat, fwd);
+            camUpWorld = upOrtho * std::cos(m_camRoll) + rightFlat * std::sin(m_camRoll);
+        }
+        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, camUpWorld);
         glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, m_camFar);
         proj[1][1] *= -1.0f;
 
@@ -1699,6 +1729,14 @@ void VulkanRenderDevice::prepareFrameData() {
             // Depth-fog pass (ART_BIBLE §5): the SAME jitter-inclusive inverse
             // projection SSAO reconstructs with, captured for fog.frag's push.
             m_fogInvProjCPU = su.invProj;
+            // VOLUMETRIC variant: the same jittered camera, inverted all the way to
+            // WORLD space (volumetric.frag marches in world so it can project each
+            // sample into the sun's lightViewProj and attenuate against world-space
+            // point lights). Same matrix the depth buffer was rasterized with.
+            m_volInvViewProjCPU = glm::inverse(ubo.viewProj);
+            // Dither rotation: the TAA frame counter, so successive frames offset the
+            // raymarch start differently and the resolve integrates the noise out.
+            m_volFrameSeed = (float)(m_taaFrameNum & 63u);
             su.params0 = glm::vec4(m_ssao.radius, m_ssao.bias, m_ssao.intensity, m_ssao.power);
             su.params1 = glm::vec4((float)m_extent.width, (float)m_extent.height,
                                    (float)m_extent.width / 4.0f, (float)m_extent.height / 4.0f);
@@ -1880,7 +1918,7 @@ void VulkanRenderDevice::prepareFrameData() {
             // shader's fragment->froxel lookup on the same frustum.
             const float eye[3] = { m_camPos.x, m_camPos.y, m_camPos.z };
             const float fw[3]  = { fwd.x, fwd.y, fwd.z };
-            const float up3[3] = { camUp.x, camUp.y, camUp.z };
+            const float up3[3] = { camUpWorld.x, camUpWorld.y, camUpWorld.z };
             const ClusterView cv = makeClusterView(eye, fw, up3, m_camFov, aspect,
                                                    0.1f /* matches glm::perspective above */,
                                                    m_camFar);
@@ -1994,8 +2032,14 @@ void VulkanRenderDevice::prepareFrameData() {
             // Camera basis (device convention; matches fwd above). right is the XZ
             // perpendicular; up = right x forward (orthonormal, screen-aligned).
             const float cy = std::cos(m_camYaw),   sy = std::sin(m_camYaw);
-            const glm::vec3 camRight(-sy, 0.0f, cy);
-            const glm::vec3 camUp = glm::normalize(glm::cross(camRight, fwd));
+            glm::vec3 camRight(-sy, 0.0f, cy);
+            glm::vec3 camUp = glm::normalize(glm::cross(camRight, fwd));
+            if (m_camRoll != 0.0f) {   // keep billboards screen-aligned while banked
+                const float cr = std::cos(m_camRoll), sr = std::sin(m_camRoll);
+                const glm::vec3 r0 = camRight, u0 = camUp;
+                camRight = r0 * cr - u0 * sr;
+                camUp    = u0 * cr + r0 * sr;
+            }
             const float invW = (m_extent.width  > 0) ? 1.0f / (float)m_extent.width  : 0.0f;
             const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
 
@@ -2099,7 +2143,16 @@ void VulkanRenderDevice::prepareFrameData() {
             if (mit == m_meshes.end()) return;
             const std::vector<uint32_t>& list = m_groups[mid];
             if (list.empty()) return;
-            if (cmdCount >= kMaxDrawMeshes) return;
+            if (cmdCount >= kMaxDrawMeshes) {
+                // NEVER truncate silently (Tier-2 M-A forensics: this cap was
+                // eating whole systems by submission order — "missing content"
+                // class bugs). Log once per second-ish via a simple counter.
+                static uint32_t sCapDropLogged = 0;
+                if ((sCapDropLogged++ % 300u) == 0u)
+                    logError("[rhi] kMaxDrawMeshes CAP HIT — mesh groups beyond " +
+                             std::to_string(kMaxDrawMeshes) + " DROPPED this frame (submission-order tail)");
+                return;
+            }
             const uint32_t baseRow = row;
             const glm::vec3 meshC = mit->second.boundsCenter;
             const float     meshR = mit->second.boundsRadius;

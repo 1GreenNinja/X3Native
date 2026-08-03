@@ -1647,8 +1647,21 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         // OPT-IN ONLY (setFog): when disabled the pass is never added — worlds
         // that don't opt in render byte-identical (r_bloom-0 discipline).
         // ----------------------------------------------------------------
+        //
+        // VOLUMETRIC UPGRADE: when the host also set FogParams::volumetric (and the
+        // raymarch pipeline built), this SAME slot runs shaders/volumetric.frag
+        // instead — a raymarched participating medium that adds sun shafts (shadow-
+        // map sampled) and point-light haze on top of the identical extinction law.
+        // It needs two extra sets the flat path doesn't (the frame Camera UBO and
+        // the sun shadow map), so the shadow image joins the pass's declared reads.
+        // volumetric == false takes the ORIGINAL branch verbatim.
         const bool fogOn = m_fogParams.enabled && m_fogParams.density > 0.0f
                         && (m_fogPipe != VK_NULL_HANDLE);
+        const bool volOn = fogOn && m_fogParams.volumetric
+                        && (m_volPipe != VK_NULL_HANDLE)
+                        && (m_shadowSet[m_frameIdx] != VK_NULL_HANDLE)
+                        && (m_frames[m_frameIdx].objSet != VK_NULL_HANDLE);
+        m_volActive = volOn;   // the record lambda must agree with the declared reads
         if (fogOn) {
             m_fogAttach = VkRenderingAttachmentInfo{};
             m_fogAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -1669,6 +1682,17 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            // Volumetric only: the sun shadow map is sampled per march step. It is
+            // already in DEPTH_READ_ONLY_OPTIMAL after the mesh/glass passes, so this
+            // declaration usually resolves to a no-op — but the graph must KNOW about
+            // the read or a future reorder would sample it in the wrong layout.
+            if (volOn) {
+                fog.addUse(ResourceUse{
+                    rgShadow, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            }
             fog.usesDynamicRendering = true;
             m_fogRenderInfo = VkRenderingInfo{};
             m_fogRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -1681,6 +1705,36 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             fog.record = [](void* ctx, VkCommandBuffer c){
                 auto* self = static_cast<VulkanRenderDevice*>(ctx);
                 self->postViewport(c, self->m_extent);
+                // ---- VOLUMETRIC branch: raymarched in-scattering ---------------
+                if (self->m_volActive) {
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_volPipe);
+                    // set0 = depth (the fog set), set1 = this frame's object/camera set
+                    // (Camera UBO b1), set2 = the sun shadow map. All pre-existing.
+                    VkDescriptorSet sets[3] = { self->m_setFog,
+                                                self->m_frames[self->m_frameIdx].objSet,
+                                                self->m_shadowSet[self->m_frameIdx] };
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_volLayout,
+                                            0, 3, sets, 0, nullptr);
+                    VolPush vp{};
+                    vp.invViewProj  = self->m_volInvViewProjCPU;
+                    vp.colorDensity = glm::vec4(self->m_fogParams.color[0],
+                                                self->m_fogParams.color[1],
+                                                self->m_fogParams.color[2],
+                                                self->m_fogParams.density);
+                    vp.startMax     = glm::vec4(self->m_fogParams.start,
+                                                self->m_fogParams.maxOpacity, 0.0f, 0.0f);
+                    vp.vol0 = glm::vec4(std::max(self->m_fogParams.scatterStrength, 0.0f),
+                                        glm::clamp(self->m_fogParams.anisotropy, -0.95f, 0.95f),
+                                        (float)std::clamp(self->m_fogParams.steps, 4, 64),
+                                        std::max(self->m_fogParams.maxDistance, 1.0f));
+                    vp.vol1 = glm::vec4(std::max(self->m_fogParams.sunScatter, 0.0f),
+                                        std::max(self->m_fogParams.lightScatter, 0.0f),
+                                        self->m_volFrameSeed, 0.0f);
+                    vkCmdPushConstants(c, self->m_volLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       0, sizeof(vp), &vp);
+                    vkCmdDraw(c, 3, 1, 0, 0);
+                    return;
+                }
                 vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_fogPipe);
                 vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_fogLayout,
                                         0, 1, &self->m_setFog, 0, nullptr);

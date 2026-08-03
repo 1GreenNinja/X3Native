@@ -54,6 +54,7 @@ struct TestFlags {
     bool testProgression = false;  // W9-3 RPG: XP/levels (--test-progression)
     bool testSkillTree = false;    // W9-3 RPG: skill tree (--test-skilltree)
     bool testStrata = false;            // R-3 fold: THE DESCENT (strata module chain)
+    bool testCityBlocks = false;        // --test-cityblocks (city block/lot/frontage generator)
     bool testElevatorShowcase = false;  // R-4 fold: THE CENTERPIECE showcase  // --test-goldenpath (W5-3: the endgame spine, Gate-C foundation)
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)

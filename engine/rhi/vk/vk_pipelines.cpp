@@ -777,7 +777,12 @@ bool VulkanRenderDevice::createGraphics() {
         vp.viewportCount = 1; vp.scissorCount = 1;
 
         VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_BACK_BIT;
+        // TWO-SIDED (2026-07-20): Unity HDRP kit packs (Leartes/ScansFactory city
+        // districts) ship MIXED-WINDING meshes and assume double-sided lit shading.
+        // Back-culling made flipped sub-meshes invisible ("hollow black buildings",
+        // near wall culled, unlit interior of the far wall showing). Cull NONE +
+        // the mesh.frag gl_FrontFacing normal flip = HDRP-equivalent semantics.
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
         rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
 
         VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
