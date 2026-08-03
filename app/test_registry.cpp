@@ -122,6 +122,7 @@
 #include "csm_test.h"
 #include "geolod_test.h"   // Lane 5: --test-geolod
 #include "refl_denoise_test.h"   // --test-refldenoise (reflection DENOISE filter, pure CPU)
+#include "roads_test.h"          // --test-echoroads (LIFT A: EchoRoads road graph, pure CPU)
 #include "ecology.h"
 #include "crowd.h"
 #include "npc_life.h"   // --test-npclife (LIVING CITY daily-life system)
@@ -1052,6 +1053,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(edge-aware a-trous: depth-edge + normal-crease preservation, energy "
                     "conservation, premultiplied confidence, off-is-identity, NEGATIVE CONTROL)...");
         return x3::game::runReflDenoiseSelfTest() ? 0 : 1;
+    }
+    if (tf.testEchoRoads) {
+        x3::logInfo("running ECHOROADS ROAD GRAPH self-test (LIFT A gate: "
+                    "stable graph checksum + determinism + the zigzag curvature law + "
+                    "junction clustering + sampleFrontage offset/yaw contract)...");
+        return x3::game::runEchoRoadsSelfTest() ? 0 : 1;
     }
     if (tf.testEcology) {
         x3::logInfo("running AMBIENT ECOLOGY self-test "
