@@ -50,12 +50,15 @@
 // ============================================================================
 
 #include "world_host_common.h"
+#include "engine/asset/IAssetSource.h"
+#include "engine/asset/IModelLoader.h"
 #include "../scene.h"
 #include "../terrain.h"
 #include "../thirdperson.h"
 #include "../mesh_prims.h"
 #include "../asset_root.h"
 #include "../labzero/labzero_rail.h"
+#include <cstdlib>   // std::getenv (dressing library path override)
 
 namespace x3 { namespace apphost {
 
@@ -248,6 +251,94 @@ int hostLabZero3D(HostContext& hc) {
         proxyId = scene.add(e);
     }
 
+    // ---- RAIL DRESSING: the casters -----------------------------------------
+    // Two jobs. Artistically, a bare hillside has no parallax and no sense of
+    // scale — pines and boulders give the rail depth cues as it slides past.
+    // Technically, they are the only way to TEST the sun-shadow range at all:
+    // with one character on an empty slope, every shadow falls inside the legacy
+    // 45 m box and a wider box provably changes nothing (measured — see the
+    // shadowfit_ON/OFF A/B).
+    //
+    // The library lives OUTSIDE the repo (C:\GameDev\Assets by fleet convention,
+    // override with X3_ARMORY_DIR) because *.glb is git-lfs-tracked here and the
+    // LFS server is not always reachable — committing 18 MB rocks would put
+    // objects in the repo that other machines cannot fetch. Missing library =
+    // no dressing, host runs exactly as before.
+    struct DressInst { uint32_t model; float m[16]; };
+    std::vector<std::vector<x3::asset::ModelDrawable>> dressModels;
+    std::vector<x3::asset::Model>                      dressLoaded;
+    std::vector<DressInst>                             dressInsts;
+    std::unique_ptr<x3::asset::IAssetSource>  dsrc;
+    std::unique_ptr<x3::asset::IModelLoader>  dloader;
+    {
+        const char* envDir = std::getenv("X3_ARMORY_DIR");
+        const std::string dressDir = envDir ? std::string(envDir)
+                                            : std::string("../Assets/armory/rocky_hills");
+        dsrc.reset(x3::asset::createAssetSource());
+        dsrc->mountDir(dressDir, 0);
+        dloader.reset(x3::asset::createModelLoader(device, dsrc.get()));
+        const char* kDressFiles[] = {
+            "WhiteBarkPineRHEP_A.glb", "WhitebarkPineRHEP_C.glb", "WhitebarkPineRHEP_E.glb",
+            "RockBigRHEWP.glb", "RockMediumBRHEWP.glb", "RockPileA2RHEWP.glb",
+        };
+        for (const char* f : kDressFiles) {
+            x3::asset::Model m = dloader->load(f);
+            if (!m.ok) continue;
+            std::vector<x3::asset::ModelDrawable> dr = x3::asset::makeDrawables(m);
+            if (dr.empty()) { dloader->unload(m); continue; }
+            dressLoaded.push_back(std::move(m));
+            dressModels.push_back(std::move(dr));
+        }
+        if (dressModels.empty()) {
+            x3::logWarn(std::string("--world labzero3d: no dressing library at ") + dressDir +
+                        " — bare rail (set X3_ARMORY_DIR to point at the armory pull)");
+        } else {
+            // Deterministic scatter: a fixed LCG, never a clock — the proof shot
+            // has to be reproducible frame-for-frame across machines and runs.
+            uint32_t rng = 0x1AB2E20u;
+            auto nextf = [&rng]() {
+                rng = rng * 1664525u + 1013904223u;
+                return (float)((rng >> 8) & 0xFFFFu) / 65535.0f;
+            };
+            for (int i = 0; i < 40; ++i) {
+                const float s   = nextf() * kRailLength;
+                // WEST of the rail (negative side offset): that is the side the
+                // camera looks toward, so these are on screen AND their shadows
+                // rake away from the lens under the low sun.
+                const float off = -(18.0f + nextf() * 120.0f);
+                const x3::phys::Vec3 rp = rail.point(s);
+                const x3::phys::Vec3 sd = rail.side(s);
+                const float px = rp.x + sd.x * off, pz = rp.z + sd.z * off;
+                const float py = x3::game::terrainHeightAtWorld(px, pz);
+                const float yaw = nextf() * 6.2831853f;
+                const uint32_t mdl = (uint32_t)(nextf() * (float)dressModels.size()) % (uint32_t)dressModels.size();
+                // Rocks read too uniform at one size; pines want less variance.
+                const float sc = (mdl >= 3) ? (0.8f + nextf() * 1.8f) : (0.9f + nextf() * 0.7f);
+                const float c = std::cos(yaw) * sc, sn = std::sin(yaw) * sc;
+                DressInst inst{};
+                inst.model = mdl;
+                inst.m[0] = c;    inst.m[1] = 0;  inst.m[2] = -sn;  inst.m[3] = 0;
+                inst.m[4] = 0;    inst.m[5] = sc; inst.m[6] = 0;    inst.m[7] = 0;
+                inst.m[8] = sn;   inst.m[9] = 0;  inst.m[10] = c;   inst.m[11] = 0;
+                inst.m[12] = px;  inst.m[13] = py; inst.m[14] = pz; inst.m[15] = 1;
+                dressInsts.push_back(inst);
+            }
+            x3::logInfo("--world labzero3d: dressing " + std::to_string(dressModels.size()) +
+                        " models, " + std::to_string(dressInsts.size()) + " instances");
+        }
+    }
+    auto drawDressing = [&](const x3::rhi::FrameContext& frame) {
+        for (const DressInst& inst : dressInsts) {
+            for (const auto& dr : dressModels[inst.model]) {
+                float fin[16]; x3::asset::mulMat4(inst.m, dr.nodeTransform, fin);
+                float tint[4] = { dr.baseColorFactor[0], dr.baseColorFactor[1],
+                                  dr.baseColorFactor[2], dr.baseColorFactor[3] };
+                device->drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                                 x3::rhi::TextureHandle{ dr.baseColorTexId }, tint, fin);
+            }
+        }
+    };
+
     // ---- Camera rig state (smoothed; never snapped) ------------------------
     x3::phys::Vec3 charPos = startPt;
     float camX = 0, camY = 0, camZ = 0;          // smoothed camera position
@@ -382,6 +473,7 @@ int hostLabZero3D(HostContext& hc) {
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
+                drawDressing(frame);
                 if (haveAvatar) avatar.drawAvatar(*device, frame, scene);
             }
             device->endFrame(frame);
