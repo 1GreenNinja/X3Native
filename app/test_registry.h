@@ -97,6 +97,7 @@ struct TestFlags {
     bool testCsm = false;   // Lane 3: cascaded shadow maps (splits, snapping, rotation invariance)
     bool testGeoLod = false;// Lane 5: mesh LOD (screen-space error, hysteresis) + vertex compression
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
+    bool testReflDenoise = false;    // --test-refldenoise (edge-aware a-trous reflection DENOISE; pure CPU)
     bool testLightningCharge = false;  // --test-lightning-charge (Lightning Gun CHARGE model)
     bool testEcology = false, testCrowd = false, testAlert = false, testFootIk = false;
     bool testNpcLife = false;    // --test-npclife (LIVING CITY daily-life system)

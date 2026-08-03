@@ -121,6 +121,7 @@
 #include "vehparts.h"
 #include "csm_test.h"
 #include "geolod_test.h"   // Lane 5: --test-geolod
+#include "refl_denoise_test.h"   // --test-refldenoise (reflection DENOISE filter, pure CPU)
 #include "ecology.h"
 #include "crowd.h"
 #include "npc_life.h"   // --test-npclife (LIVING CITY daily-life system)
@@ -1040,6 +1041,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(QEM decimation + screen-space-error selection + monotonicity + "
                     "hysteresis + no-chain fallback + NEGATIVE CONTROL)...");
         return x3::game::runGeoLodSelfTest() ? 0 : 1;
+    }
+    if (tf.testReflDenoise) {
+        x3::logInfo("running REFLECTION DENOISE self-test "
+                    "(edge-aware a-trous: depth-edge + normal-crease preservation, energy "
+                    "conservation, premultiplied confidence, off-is-identity, NEGATIVE CONTROL)...");
+        return x3::game::runReflDenoiseSelfTest() ? 0 : 1;
     }
     if (tf.testEcology) {
         x3::logInfo("running AMBIENT ECOLOGY self-test "

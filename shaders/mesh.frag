@@ -104,7 +104,7 @@ layout(set = 3, binding = 0) uniform sampler2D ssaoTex;
 layout(set = 3, binding = 1) uniform SsaoControl {
     vec4 ctrl;        // x=enabled, y=strength, z=1/screenW, w=1/screenH
     vec4 ibl;         // x=IBL valid(0/1), y=IBL intensity, z=prefilter max mip, w=metal ambient-spec floor strength (r_metalambient)
-    vec4 refl;        // x=reflections active (0/1), y=intensity, z/w=reserved (SSR/RT reflection pass, r_ssr)
+    vec4 refl;        // x=reflections active (0/1), y=intensity, z=env-specular scale (r_iblspec), w=glossy disc scale when the DENOISE stage ran (r_refldenoise; 0 = stage off -> legacy scale 1.0)
     // ---- DDGI probe-grid irradiance (r_ddgi; ray-query hardware only) ----
     vec4 ddgiCtrl;    // x=active (0/1), y=intensity (warm-up ramped), z=debug mode (0/1/2), w=self-shadow bias scale
     vec4 ddgiOrigin;  // xyz = probe-grid min corner (world), w = visMaxDist (m)
@@ -124,8 +124,26 @@ layout(set = 3, binding = 1) uniform SsaoControl {
 // gated by ssao.refl.x — when 0 this texture is never read and the IBL path is
 // byte-for-byte the pre-reflections math.
 layout(set = 3, binding = 2) uniform sampler2D reflTex;
+// DENOISED reflection buffer (set3/binding6, r_refldenoise): the output of the
+// edge-aware a-trous chain (shaders/refl_denoise.comp) over that same buffer.
+//
+// WHEN THE DENOISE STAGE IS OFF this descriptor is bound to the VERY SAME image
+// view as reflTex and ssao.refl.w is 0, so every expression below reduces to the
+// pre-denoise arithmetic on the pre-denoise texels — BIT-EXACT. That is the
+// r_refldenoise 0 contract that keeps the md5 gates holding, and it needs no
+// branch: same texels, and a disc-radius scale of exactly 1.0.
+//
+// WHY TWO BINDINGS INSTEAD OF ONE DENOISED BUFFER: a MIRROR needs no denoise.
+// Material roughness is NOT available in the reflection buffer (see the note in
+// engine/rhi/ReflDenoise.h: this is a forward renderer with no G-buffer, and
+// refl.comp is a depth-only pass with no material binding at all), so the
+// CONSUMER — which does know per-fragment roughness — picks the buffer instead.
+// The rough <= 0.05 mirror early-out below reads the RAW buffer and is therefore
+// completely untouched by this lane; the glossy disc, which is the lobe the
+// measured mottling actually lives on, reads the denoised one.
+layout(set = 3, binding = 6) uniform sampler2D reflDnTex;
 
-#include "inc/mesh_reflections.glsl"   // sampleReflGlossy: roughness-aware reflection tap  [LANE 1]
+#include "inc/mesh_reflections.glsl"   // sampleReflGlossy/Denoised/Auto: roughness-aware reflection tap  [LANE 1 + refl-denoise]
 // DDGI probe atlases (set3 bindings 3/4, r_ddgi). Octahedral-encoded per-probe
 // irradiance (8x8 tiles: 6x6 interior + 1px border, RGBA16F) and mean/mean^2
 // visibility depth (16x16 tiles: 14x14 + border, RG16F), produced by the
@@ -506,7 +524,7 @@ void main() {
                 // smooth (ccR small), so this is normally the single-tap path --
                 // but a satin/matte coat now blurs rather than losing the
                 // reflection, which is exactly the car-paint case.
-                vec4 rr  = sampleReflGlossy(ruv, ccR, ssao.ctrl.zw);
+                vec4 rr  = sampleReflAuto(ruv, ccR, ssao.ctrl.zw);
                 float rw = clamp(rr.a, 0.0, 1.0) * clamp(ssao.refl.y, 0.0, 1.0)
                          * (1.0 - smoothstep(0.55, 0.95, ccR));
                 pre = mix(pre, rr.rgb, rw);

@@ -335,6 +335,26 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         RgResource rgRefl = {};
         if (reflOn) rgRefl = m_graph.importImage("refl.out", m_reflImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // REFLECTION DENOISE (r_refldenoise): the aux geometry buffer refl.comp
+        // publishes (world normal + view distance) and the two a-trous ping-pong
+        // targets. Like refl.out they are fully rewritten every frame they are
+        // used, so an UNDEFINED import is correct and the graph DERIVES every
+        // GENERAL <-> SHADER_READ_ONLY transition between iterations — no
+        // hand-written barriers anywhere in this chain.
+        // The COUNT was decided in prepareFrameData (the SSAO control UBO and the
+        // refl UBO are both filled before this graph is built and both carry a
+        // denoise lane); here we only have to honour the same TAA hard-gate the
+        // reflection pass itself takes just above.
+        if (!reflOn) m_reflDenoiseThisFrame = 0;
+        const int reflDnIters = m_reflDenoiseThisFrame;
+        RgResource rgReflAux = {}, rgReflDn[2] = {};
+        if (reflDnIters > 0) {
+            rgReflAux = m_graph.importImage("refl.aux", m_reflAuxImg,
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            for (int i = 0; i < 2; ++i)
+                rgReflDn[i] = m_graph.importImage(i == 0 ? "refl.dn0" : "refl.dn1", m_reflDnImg[i],
+                    ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        }
         // DDGI probe atlases. PERSISTENT across frames (the probe field IS the
         // accumulated history), so they are imported with their tracked post-frame
         // state (the taa.hist pattern) — the graph derives the cross-frame
@@ -799,6 +819,86 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             m_graph.addPass(std::move(rp));
         }
 
+        // ---- REFLECTION DENOISE: AUX G-BUFFER (refl_aux.comp) ----------------
+        // Reconstructs the geometric normal + view distance from the depth buffer
+        // at the reflection buffer's own grid — the edge-stop inputs the a-trous
+        // passes below read, one texel fetch per tap instead of ~5 depth fetches
+        // x 25 taps x N iterations.
+        //
+        // refl.comp already computes both and publishing them from there would
+        // have been ~10 lines. It was tried and REVERTED: the extra store, its
+        // gate and the view-distance term perturb that shader's scheduling and FMA
+        // contraction enough to shift ~0.17% of subpixels by +-1 LSB, which breaks
+        // the `r_refldenoise 0` bit-exactness contract. As its own pass, refl.comp
+        // stays byte-identical SPIR-V and this simply is not added when the stage
+        // is off.
+        if (reflDnIters > 0) {
+            RenderPassDesc ap{};
+            ap.name = "refl-denoise-aux";
+            ap.queue = RgQueue::Compute;
+            ap.usesDynamicRendering = false;
+            ap.addUse(ResourceUse{
+                rgReflAux, VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            ap.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            ap.recordCtx = this;
+            ap.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordReflAuxBody(c); };
+            m_graph.addPass(std::move(ap));
+        }
+
+        // ---- REFLECTION DENOISE (refl_denoise.comp) --------------------------
+        // THE STAGE THE REFLECTION CHAIN WAS MISSING. GI has
+        // gather -> temporal -> denoise -> apply; reflections had refl.comp write
+        // and mesh.frag consume RAW. On real car paint that reads as blotchy
+        // mottling (flat door skin, mean |px - 9x9 local mean|: 5.53 reflections
+        // off vs 7.69 shipped) which the consumer-side blur cannot reach, because
+        // the noise is IN THE BUFFER — sweeping that blur 0/6/14/24 moved the
+        // number only 7.70/7.92/7.69/7.56.
+        //
+        // N a-trous iterations, tap spacing DOUBLING each time, ping-ponging
+        // between refl.dn0/refl.dn1. The parity rule (reflDenoiseDstIdx) makes
+        // the FINAL write always land in refl.dn0, so mesh.frag's set3 binding 6
+        // is a fixed descriptor — no per-frame descriptor rewrite, no per-frame
+        // allocation. Every barrier here is DERIVED: each pass declares its
+        // source SHADER_READ_ONLY and its destination GENERAL and the graph
+        // emits the transitions between iterations.
+        for (int i = 0; i < reflDnIters; ++i) {
+            const int dst = reflDenoiseDstIdx(i, reflDnIters);
+            RenderPassDesc dp{};
+            dp.name = "refl-denoise";
+            dp.queue = RgQueue::Compute;
+            dp.usesDynamicRendering = false;
+            dp.addUse(ResourceUse{
+                rgReflDn[dst], VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // Source: the raw reflection buffer on the first iteration, the
+            // previous iteration's target (the OTHER ping-pong image) after that.
+            dp.addUse(ResourceUse{
+                (i == 0) ? rgRefl : rgReflDn[dst ^ 1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            dp.addUse(ResourceUse{
+                rgReflAux, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            // The iteration index travels through a stable member context (the
+            // glass-frost mip-chain pattern) because RecordFn is a raw function
+            // pointer; the body derives tap spacing (1 << iter) and the
+            // ping-pong descriptor set from it.
+            m_reflDnCtx[i] = ReflDnPassCtx{ this, i };
+            dp.recordCtx = &m_reflDnCtx[i];
+            dp.record = [](void* ctx, VkCommandBuffer c){
+                auto* pc = static_cast<ReflDnPassCtx*>(ctx);
+                pc->self->recordReflDenoiseBody(c, pc->iter); };
+            m_graph.addPass(std::move(dp));
+        }
+
         // ---- DDGI probe passes (ddgi_rays.comp + ddgi_update.comp) ----------
         // BEFORE the main color pass (mesh.frag samples the atlases). The RAY
         // pass traces N rays/probe against the TLAS built in endFrame (a fenced
@@ -920,6 +1020,20 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             if (reflOn) {
                 colorPass.addUse(ResourceUse{
                     rgRefl, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
+            // DENOISED reflection buffer (set3 binding 6). Declared ONLY when the
+            // denoise chain ran, because that is the only case where binding 6
+            // points at refl.dn0; with the stage off it aliases m_reflView, whose
+            // read is already declared just above. Same "statically sampled ->
+            // must be declared" rule as the AO slot: mesh.frag references
+            // reflDnTex unconditionally, so whichever image the descriptor names
+            // has to be in SHADER_READ_ONLY when the draws run.
+            if (reflDnIters > 0) {
+                colorPass.addUse(ResourceUse{
+                    rgReflDn[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });

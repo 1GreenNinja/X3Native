@@ -1,0 +1,85 @@
+#version 460
+// REFLECTION DENOISE — AUX G-BUFFER pass.
+//
+// Writes, at the reflection buffer's own (half-res) grid, the per-texel geometry
+// shaders/refl_denoise.comp needs for its edge stops:
+//     rgb = world-space geometric normal
+//     a   = view distance in metres, or 0 for SKY / no valid surface
+//
+// CLEAN-ROOM, original work. The depth->world reconstruction and the
+// smaller-delta neighbour normal are this repository's OWN pattern, lifted from
+// shaders/rtao.comp and shaders/refl.comp (which reconstruct the identical
+// quantities the identical way). No GPL / id Tech / RBDOOM / Unreal source
+// consulted. See docs/CLEANROOM_PROCESS.md.
+//
+// WHY THIS IS A SEPARATE PASS AND NOT TWO LINES IN refl.comp.
+// refl.comp already computes both of these. Publishing them from there would
+// have been ~10 lines and one extra imageStore — and it is exactly what the
+// first version of this lane did. It was reverted, because it cost BIT-EXACTNESS
+// of `r_refldenoise 0`: adding the store, its gate and the view-distance term
+// perturbs how the compiler schedules and contracts (FMA) the rest of that
+// shader, and the pre/post captures came out with +-1 LSB scattered over ~0.17%
+// of subpixels. Visually nothing; enough to flip an md5 gate, which is precisely
+// what the fallback cvar exists to protect.
+//
+// Splitting it out makes refl.comp BYTE-IDENTICAL SPIR-V — nothing to argue
+// about — and this pass simply does not run when the stage is off, so the cost
+// when off is zero rather than "one cheap branch". The duplicated
+// reconstruction is ~9 depth fetches at half res (about 0.05 ms at 720p), and
+// it is deliberately the SAME formulation refl.comp uses so the denoiser weighs
+// taps against the very normal that generated each reflection ray.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depthTex;   // camera depth (D32, NEAREST)
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D auxOut;
+
+layout(push_constant) uniform Push {
+    mat4 invViewProj;   // CURRENT (jittered) clip -> world; matches this frame's depth
+    vec4 camPos;        // xyz = camera world position
+    vec4 params0;       // x = outW, y = outH, zw = unused
+} pc;
+
+// Same convention as rtao.comp / refl.comp: NDC xy in [-1,1], depth already
+// [0,1], the projection Y-flip baked into invViewProj.
+vec3 worldFromDepth(vec2 uv, float depth) {
+    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 wp  = pc.invViewProj * ndc;
+    return wp.xyz / wp.w;
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    int W = int(pc.params0.x);
+    int H = int(pc.params0.y);
+    if (px.x >= W || px.y >= H) return;
+
+    vec2  uv    = (vec2(px) + 0.5) / vec2(W, H);
+    float depth = texture(depthTex, uv).r;
+    // SKY: dist 0 is the sentinel the denoiser rejects taps on.
+    if (depth >= 1.0) { imageStore(auxOut, px, vec4(0.0)); return; }
+
+    vec3 P = worldFromDepth(uv, depth);
+
+    // Geometric normal from depth, picking the SMALLER-delta neighbour on each
+    // axis — robust across depth discontinuities, and byte-for-byte the
+    // reconstruction refl.comp uses to build the reflection ray.
+    vec2 texel = 1.0 / vec2(W, H);
+    float dR = texture(depthTex, uv + vec2(texel.x, 0.0)).r;
+    float dL = texture(depthTex, uv - vec2(texel.x, 0.0)).r;
+    float dU = texture(depthTex, uv + vec2(0.0, texel.y)).r;
+    float dD = texture(depthTex, uv - vec2(0.0, texel.y)).r;
+    vec3 pR = worldFromDepth(uv + vec2(texel.x, 0.0), dR);
+    vec3 pL = worldFromDepth(uv - vec2(texel.x, 0.0), dL);
+    vec3 pU = worldFromDepth(uv + vec2(0.0, texel.y), dU);
+    vec3 pD = worldFromDepth(uv - vec2(0.0, texel.y), dD);
+    vec3 ddx = (abs(dR - depth) < abs(depth - dL)) ? (pR - P) : (P - pL);
+    vec3 ddy = (abs(dU - depth) < abs(depth - dD)) ? (pU - P) : (P - pD);
+    vec3 N = normalize(cross(ddx, ddy));
+    if (any(isnan(N))) { imageStore(auxOut, px, vec4(0.0)); return; }
+
+    vec3 V = normalize(pc.camPos.xyz - P);
+    if (dot(N, V) < 0.0) N = -N;              // face the camera (reconstruction sign)
+
+    imageStore(auxOut, px, vec4(N, distance(pc.camPos.xyz, P)));
+}

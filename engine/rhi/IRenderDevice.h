@@ -827,11 +827,31 @@ public:
     // mesh.frag blends the result INTO its split-sum IBL specular by confidence
     // (replace-where-confident through the same F0/roughness env-BRDF weighting
     // — energy-conserving, never additive on top of full IBL specular).
+    //
+    // DENOISE STAGE (r_refldenoise). refl.comp used to write and mesh.frag used
+    // to consume RAW — reflections had no equivalent of the GI chain's
+    // gather -> temporal -> denoise -> apply. On real car paint that showed as
+    // blotchy mottling (mean |px - 9x9 local mean| on flat door skin: 5.53 with
+    // reflections off vs 7.69 shipped) which the consumer-side blur could not
+    // reach, because the noise is IN THE BUFFER. `denoiseIters` a-trous
+    // iterations of an edge-aware (depth + normal) filter now run between the
+    // two; see engine/rhi/ReflDenoise.h for the filter and for the honest
+    // roughness decision. 0 = OFF and BIT-EXACT to the pre-denoise renderer.
     struct ReflectionParams {
         bool  ssr        = false;   // master gate (r_ssr; OFF until the app enables it)
         bool  rtFallback = true;    // ray-query fallback where SSR misses (r_rtreflections)
         bool  fullRes    = false;   // r_reflquality: false = half-res (default), true = full
         float intensity  = 1.0f;    // blend-weight scale on the composed reflection [0..1]
+        // ---- denoise stage ----
+        int   denoiseIters      = 4;      // r_refldenoise: a-trous iterations; 0 = OFF (bit-exact)
+        float denoiseDepthSigma = 0.06f;  // r_refldn_depth: depth stop, RELATIVE to view distance
+        float denoiseNormalPow  = 16.0f;  // r_refldn_normal: normal stop exponent
+        // r_refldn_disc: scale applied to mesh.frag's roughness-driven glossy
+        // disc when the stage ran. The wide averaging has moved into a pass that
+        // CAN reject across a depth/normal edge, so the un-depth-tested consumer
+        // disc — the source of the silhouette bleed — shrinks. Ignored (treated
+        // as exactly 1.0) when denoiseIters is 0.
+        float denoiseDiscScale  = 0.40f;
     };
     // Cached + re-applied each frame, like setRtaoParams. Default no-op.
     virtual void          setReflectionParams(const ReflectionParams&) {}

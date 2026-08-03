@@ -168,6 +168,7 @@ add_executable(X3Engine WIN32
     geolod_test.cpp     # Lane 5: --test-geolod
     geolod_shot.cpp     # Lane 5: --screenshot-geolod (A/B capture + perf)
     glb_cpu_read.cpp    # Lane 5: CPU-side GLB re-read so real art can be decimated
+    refl_denoise_test.cpp   # refl-denoise lane: --test-refldenoise
     perfshop.cpp
     ecology.cpp
     fish.cpp
@@ -280,6 +281,14 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_temporal.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_blur.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_apply.frag
+    # REFLECTION DENOISE (r_refldenoise) — the stage the reflection chain was
+    # missing; the GI equivalent of ssgi_blur.frag above. Plain compute, no ray
+    # query, so it belongs in the default (non-RT) list.
+    # refl_aux.comp rebuilds the normal + view distance the denoiser weighs taps
+    # against. Its own shader rather than a few lines in refl.comp, so refl.comp's
+    # SPIR-V stays byte-identical and r_refldenoise 0 stays bit-exact.
+    ${CMAKE_SOURCE_DIR}/shaders/refl_aux.comp
+    ${CMAKE_SOURCE_DIR}/shaders/refl_denoise.comp
     ${CMAKE_SOURCE_DIR}/shaders/ibl_brdf_lut.frag
     ${CMAKE_SOURCE_DIR}/shaders/ibl_env.frag
     ${CMAKE_SOURCE_DIR}/shaders/ibl_irradiance.frag
@@ -386,7 +395,9 @@ add_custom_command(
 list(APPEND SPV_FILES ${SPV_DIR}/mesh_rt.frag.spv)
 # Copy compiled .spv next to the exe so runtime loads <exedir>/shaders/*.spv.
 #
-# BUILD BUG THIS FIXES (Lane 3): the copy used to be a POST_BUILD on X3Engine.
+# BUILD BUG THIS FIXES (Lane 3 / csm; the refl-denoise lane independently
+# replicated the same fix, and this is the merged single copy of it): the copy
+# used to be a POST_BUILD on X3Engine.
 # POST_BUILD only runs when the TARGET is relinked, so editing ONLY a shader
 # recompiled the .spv into ${SPV_DIR} and then never copied it — the exe kept
 # loading the previous SPIR-V. Shader-only iterations silently did nothing, and

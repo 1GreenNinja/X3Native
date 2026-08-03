@@ -663,7 +663,15 @@ bool VulkanRenderDevice::createGraphics() {
             // mesh.frag statically references them, so they are part of the
             // layout on EVERY device; non-DDGI paths point them at the blurred-AO
             // view as a layout-valid placeholder (never sampled — gate 0).
-            VkDescriptorSetLayoutBinding b[6]{};
+            // Binding 6 = the DENOISED reflection buffer (r_refldenoise). Like
+            // bindings 3/4 it is on EVERY device because mesh.frag statically
+            // references it; when the denoise stage is off it is pointed at the
+            // RAW reflection view (or, before the refl chain exists at all, at
+            // the blurred-AO placeholder), which is exactly what makes
+            // r_refldenoise 0 bit-exact. NOTE the array ORDER: binding 6 sits at
+            // index 5 and the RT-only TLAS at index 6, so the `? 7 : 6` count
+            // below drops the TLAS and keeps binding 6 on non-RT devices.
+            VkDescriptorSetLayoutBinding b[7]{};
             b[0].binding = 0; b[0].descriptorCount = 1;
             b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -684,11 +692,14 @@ bool VulkanRenderDevice::createGraphics() {
             // VK_KHR_acceleration_structure). Only the mesh_rt.frag variant
             // statically references it; the plain pipelines never touch it, so
             // it may stay unwritten until the first TLAS build lands.
-            b[5].binding = 5; b[5].descriptorCount = 1;
-            b[5].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            b[5].binding = 6; b[5].descriptorCount = 1;
+            b[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             b[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[6].binding = 5; b[6].descriptorCount = 1;
+            b[6].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            b[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-            ci.bindingCount = m_rtSupported ? 6u : 5u; ci.pBindings = b;
+            ci.bindingCount = m_rtSupported ? 7u : 6u; ci.pBindings = b;
             if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_meshAoSetLayout) != VK_SUCCESS) {
                 logError("[rhi] mesh ao set layout failed"); return false;
             }

@@ -545,6 +545,54 @@ void VulkanRenderDevice::recordReflComputeBody(VkCommandBuffer c) {
         vkCmdDispatch(c, gx, gy, 1);
     }
 
+void VulkanRenderDevice::recordReflAuxBody(VkCommandBuffer c) {
+        if (!m_reflAuxPipe || !m_reflAuxSet) return;
+        ReflAuxPush pc{};
+        // The SAME (jittered) viewProj this frame's depth was rasterized with —
+        // m_lastViewProj, exactly what prepareReflUbo hands refl.comp, so the
+        // reconstructed normal here is the one that generated the reflection ray.
+        pc.invViewProj = glm::inverse(m_lastViewProj);
+        pc.camPos = glm::vec4(m_camPos, 0.0f);
+        pc.params0 = glm::vec4((float)m_reflExtent.width, (float)m_reflExtent.height, 0.0f, 0.0f);
+        vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_reflAuxPipe);
+        vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_reflAuxLayout,
+                                0, 1, &m_reflAuxSet, 0, nullptr);
+        vkCmdPushConstants(c, m_reflAuxLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        const uint32_t gx = (m_reflExtent.width  + 7) / 8;
+        const uint32_t gy = (m_reflExtent.height + 7) / 8;
+        vkCmdDispatch(c, gx, gy, 1);
+    }
+
+void VulkanRenderDevice::recordReflDenoiseBody(VkCommandBuffer c, int iter) {
+        const int total = m_reflDenoiseThisFrame;
+        if (!m_reflDnPipe || iter < 0 || iter >= total) return;
+        // Ping-pong set selection. The destination alternates so the FINAL write
+        // always lands in m_reflDnImg[0] (reflDenoiseDstIdx); the source is the
+        // raw reflection buffer on the first iteration and the previous
+        // destination — i.e. the OTHER ping-pong image — thereafter.
+        //   sets: [0] refl->dn0  [1] refl->dn1  [2] dn1->dn0  [3] dn0->dn1
+        const int dst = reflDenoiseDstIdx(iter, total);
+        const int setIdx = (iter == 0) ? dst : (dst == 0 ? 2 : 3);
+        if (!m_reflDnSet[setIdx]) return;
+
+        ReflDnPush pc{};
+        // A-TROUS DILATION: spacing doubles each iteration (1, 2, 4, ...), so n
+        // iterations reach +-2*(2^n - 1) texels for n*25 taps — the whole point
+        // of the wavelet form. A plain box of the same reach would be ~841 taps
+        // at n = 3.
+        pc.params0 = glm::vec4((float)m_reflExtent.width, (float)m_reflExtent.height,
+                               (float)(1 << iter), m_refl.denoiseDepthSigma);
+        pc.params1 = glm::vec4(m_refl.denoiseNormalPow, 0.0f, 0.0f, 0.0f);
+
+        vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_reflDnPipe);
+        vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_reflDnLayout,
+                                0, 1, &m_reflDnSet[setIdx], 0, nullptr);
+        vkCmdPushConstants(c, m_reflDnLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        const uint32_t gx = (m_reflExtent.width  + 7) / 8;
+        const uint32_t gy = (m_reflExtent.height + 7) / 8;
+        vkCmdDispatch(c, gx, gy, 1);
+    }
+
 void VulkanRenderDevice::computeDdgiVolume() {
         glm::vec3 mn, mx;
         if (m_ddgi.sizeX > 0.0f && m_ddgi.sizeY > 0.0f && m_ddgi.sizeZ > 0.0f) {
@@ -1557,10 +1605,20 @@ void VulkanRenderDevice::prepareFrameData() {
         // writes confidence 0 (camPos.w gate in refl.comp) -> pure IBL fallback.
         m_reflActiveThisFrame = false;
         m_reflHistValid = false;
+        m_reflDenoiseThisFrame = 0;
         if (m_refl.ssr && taaWant && ensureReflReady()) {
             m_reflActiveThisFrame = true;
             m_reflHistValid = m_taaHistoryValid;
             m_reflPrevVP = m_taaHistoryValid ? m_taaPrevVP : unjitteredVP;
+            // DENOISE iteration count for THIS frame. Decided here, not in the
+            // graph, because both the SSAO control UBO below (refl.w = the
+            // consumer disc scale) and prepareReflUbo (params1.y = the aux-store
+            // gate) are filled before the graph is built. reflDenoiseWanted()
+            // folds "requested" (r_refldenoise > 0) together with "buildable",
+            // so a non-fatal creation failure lands everything on 0 = the
+            // pre-denoise behaviour.
+            m_reflDenoiseThisFrame = reflDenoiseWanted()
+                ? std::min(m_refl.denoiseIters, kReflDenoiseMaxIters) : 0;
         }
 
         // ---- DDGI: decide activation for THIS frame --------------------------
@@ -1670,8 +1728,19 @@ void VulkanRenderDevice::prepareFrameData() {
             // steel to reflect it also floods every dielectric in the room with
             // irradiance. They are different lobes and they need different knobs --
             // metals are kD ~ 0 (pure reflection), concrete is kD ~ 1 (pure diffuse).
+            // .w = the GLOSSY DISC SCALE, and it is 0 unless the DENOISE stage
+            // actually ran this frame — mesh.frag reads 0 as "legacy", i.e. an
+            // exact 1.0 multiplier, which is half of what makes r_refldenoise 0
+            // bit-exact (the other half is set3 binding 6 aliasing the raw refl
+            // view). When the stage DID run, the wide edge-aware averaging has
+            // moved into a pass that can reject across a depth/normal edge, so
+            // the consumer's un-depth-tested disc — the cause of the reflection
+            // halo bleeding past the car's lower silhouette onto the floor —
+            // shrinks by this factor.
             sc.refl = glm::vec4(m_reflActiveThisFrame ? 1.0f : 0.0f,
-                                m_refl.intensity, m_iblSpecular, 0.0f);
+                                m_refl.intensity, m_iblSpecular,
+                                (m_reflActiveThisFrame && m_reflDenoiseThisFrame > 0)
+                                    ? std::max(m_refl.denoiseDiscScale, 0.0f) : 0.0f);
             // DDGI lane (r_ddgi): gate + the probe-grid geometry mesh.frag needs
             // to interpolate the atlases. The intensity RAMPS in over the first
             // ~16 updates after activation so cold (black) probes never read as

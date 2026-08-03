@@ -1492,6 +1492,35 @@ private:
     // the ray-query pipeline when the TLAS was built this frame, else SSR-only.
     void recordReflComputeBody(VkCommandBuffer c);
 
+    // Record the DENOISE AUX dispatch (shaders/refl_aux.comp): reconstruct the
+    // geometric normal + view distance from the depth buffer at the reflection
+    // buffer's own grid, which is what refl_denoise.comp's edge stops read. It is
+    // a SEPARATE pass rather than ~10 lines inside refl.comp specifically so
+    // refl.comp's SPIR-V stays untouched and `r_refldenoise 0` stays bit-exact —
+    // see the header of shaders/refl_aux.comp for the measurement that forced it.
+    void recordReflAuxBody(VkCommandBuffer c);
+
+    // Record ONE a-trous denoise iteration (shaders/refl_denoise.comp). `iter` is
+    // the 0-based iteration index; the tap spacing is 1 << iter and the ping-pong
+    // set is chosen from the same parity rule the graph uses, so the LAST write
+    // always lands in m_reflDnImg[0] and mesh.frag's set3 binding 6 is a FIXED
+    // descriptor with no per-frame churn.
+    void recordReflDenoiseBody(VkCommandBuffer c, int iter);
+
+    // Which of the two ping-pong images iteration `iter` writes, for a chain of
+    // `total` iterations. Chosen so the final write is always index 0.
+    static int reflDenoiseDstIdx(int iter, int total) { return (total - 1 - iter) & 1; }
+
+    // Is the denoise stage both REQUESTED (r_refldenoise > 0) and BUILDABLE
+    // (pipeline + all three targets present)? Everything that can fail during
+    // creation is non-fatal, so this is the single predicate the graph, the UBO
+    // and the descriptor writes all agree on.
+    bool reflDenoiseWanted() const {
+        return m_refl.denoiseIters > 0 && m_reflDnPipe != VK_NULL_HANDLE
+            && m_reflAuxPipe != VK_NULL_HANDLE && m_reflAuxView != VK_NULL_HANDLE
+            && m_reflDnView[0] != VK_NULL_HANDLE && m_reflDnView[1] != VK_NULL_HANDLE;
+    }
+
     void destroyRefl();
 
     // ======================================================================
@@ -1923,6 +1952,84 @@ private:
     };
     static_assert(sizeof(ReflUBO) == 64 * 3 + 16 * 5, "ReflUBO std140 layout");
     VkBuffer m_reflUboBuf[kFramesInFlight] = {}; VmaAllocation m_reflUboAlloc[kFramesInFlight] = {}; void* m_reflUboMapped[kFramesInFlight] = {};
+
+    // ---- REFLECTION DENOISE (r_refldenoise; shaders/refl_denoise.comp) ----
+    // The stage the reflection chain was missing. refl.comp wrote and mesh.frag
+    // consumed RAW, while GI had a whole gather -> temporal -> denoise -> apply
+    // chain for the same class of problem. Measured defect: on CTR.glb's
+    // CTR_Body (base rough 0.4 / metal 0.8) the reflection arrives as blotchy
+    // mottling — mean |px - 9x9 local mean| on flat door skin 5.53 (reflections
+    // off) vs 7.69 (shipped) — and sweeping mesh.frag's consumer disc across
+    // radii 0/6/14/24 moved it only 7.70/7.92/7.69/7.56, proving the noise is in
+    // the BUFFER, not in the consumer kernel.
+    //
+    // The filter is an edge-aware a-trous wavelet with depth AND normal edge
+    // stops and PREMULTIPLIED-confidence accumulation; its device-independent
+    // definition (and the full rationale, including why roughness is NOT packed
+    // into the buffer) lives in engine/rhi/ReflDenoise.h, which is what
+    // --test-refldenoise asserts against.
+    //
+    // RESOURCES. m_reflAuxImg carries the per-texel geometry (rgb = world
+    // normal, a = view distance) that refl_aux.comp reconstructs from depth, so
+    // an edge stop costs ONE fetch per tap instead of re-deriving a normal from
+    // depth 25 times per iteration. m_reflDnImg[2] are the a-trous ping-pong
+    // targets; the iteration parity (reflDenoiseDstIdx) is chosen so the FINAL
+    // write always lands in index 0, which is why mesh.frag's set3 binding 6 is
+    // a fixed descriptor and no per-frame descriptor rewrite is needed. All
+    // three are created with the refl targets — no per-frame allocation.
+    //
+    // BIT-EXACT OFF, and it is enforced structurally rather than by argument:
+    //   * the aux + denoise passes are simply not added to the graph;
+    //   * set3 binding 6 points at m_reflView — the SAME image binding 2 has;
+    //   * SsaoControl.refl.w stays 0, which routes mesh.frag through
+    //     sampleReflGlossy(), whose source text is unchanged;
+    //   * refl.comp and refl_aux.comp are separate shaders, so refl.comp's
+    //     SPIR-V is byte-identical to the pre-lane build.
+    // The first cut of this lane did NOT do the last two — it folded a
+    // `* discScale` (exactly 1.0 when off) into sampleReflGlossy and put the aux
+    // store inside refl.comp — and the A/B against the pre-lane build came back
+    // with +-1 LSB on ~0.17% of subpixels purely from shifted FMA contraction.
+    static constexpr int kReflDenoiseMaxIters = 5;
+    static constexpr VkFormat kReflAuxFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    int        m_reflDenoiseIters = 0;               // iterations the targets/descriptors were built for
+    int        m_reflDenoiseThisFrame = 0;           // iterations actually in the graph this frame
+    VkImage    m_reflAuxImg = VK_NULL_HANDLE; VmaAllocation m_reflAuxAlloc = nullptr; VkImageView m_reflAuxView = VK_NULL_HANDLE;
+    VkImage    m_reflDnImg[2] = {}; VmaAllocation m_reflDnAlloc[2] = {}; VkImageView m_reflDnView[2] = {};
+    VkDescriptorSetLayout m_reflDnSetLayout = VK_NULL_HANDLE;  // src sampler + dst storage + aux sampler
+    VkPipelineLayout      m_reflDnLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_reflDnPipe      = VK_NULL_HANDLE;
+    VkDescriptorPool      m_reflDnPool      = VK_NULL_HANDLE;
+    // AUX pass (refl_aux.comp): depth sampler + aux storage image.
+    VkDescriptorSetLayout m_reflAuxSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout      m_reflAuxLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_reflAuxPipe      = VK_NULL_HANDLE;
+    VkDescriptorSet       m_reflAuxSet       = VK_NULL_HANDLE;   // static views only -> written once
+    struct ReflAuxPush {
+        glm::mat4 invViewProj;   // CURRENT (jittered) clip -> world
+        glm::vec4 camPos;        // xyz = camera world position
+        glm::vec4 params0;       // x = W, y = H, zw = unused
+    };
+    static_assert(sizeof(ReflAuxPush) == 96, "ReflAuxPush must match refl_aux.comp");
+    // FOUR static sets cover every (src, dst) pair the ping-pong can produce:
+    //   [0] src = refl (raw)     -> dst = dn[0]      (first iteration, even count)
+    //   [1] src = refl (raw)     -> dst = dn[1]      (first iteration, odd count)
+    //   [2] src = dn[1]          -> dst = dn[0]
+    //   [3] src = dn[0]          -> dst = dn[1]
+    // They reference only static views, so they are written ONCE at build time.
+    VkDescriptorSet m_reflDnSet[4] = {};
+    // Push constants (matches the Push block in shaders/refl_denoise.comp).
+    struct ReflDnPush {
+        glm::vec4 params0;   // x = W, y = H, z = tap spacing, w = depthSigma
+        glm::vec4 params1;   // x = normalPow, yzw = reserved
+    };
+    static_assert(sizeof(ReflDnPush) == 32, "ReflDnPush must match refl_denoise.comp");
+    // Per-iteration record context. RenderPassDesc::record is a RAW function
+    // pointer (deliberately, to keep std::function heap traffic out of the frame
+    // loop), so the iteration index travels through a stable member the same way
+    // the glass-frost mip chain passes its level. Fixed array = no per-frame
+    // allocation.
+    struct ReflDnPassCtx { VulkanRenderDevice* self = nullptr; int iter = 0; };
+    ReflDnPassCtx m_reflDnCtx[kReflDenoiseMaxIters]{};
 
     // ======================================================================
     // DDGI — dynamic diffuse global illumination (r_ddgi; ddgi_rays.comp +

@@ -72,7 +72,7 @@ vec3 iblAmbient(vec3 N, vec3 V, vec3 albedo, float metallic, float perceptualRou
         // hand-off to the prefiltered env now happens much later (0.55 -> 0.95)
         // because the reflection is no longer wrong at mid roughness -- it is
         // simply softer. Mirror surfaces are unchanged (single tap, same weight).
-        vec4 rr  = sampleReflGlossy(ruv, perceptualRough, ssao.ctrl.zw);
+        vec4 rr  = sampleReflAuto(ruv, perceptualRough, ssao.ctrl.zw);
         float rw = clamp(rr.a, 0.0, 1.0) * clamp(ssao.refl.y, 0.0, 1.0)
                  * (1.0 - smoothstep(0.55, 0.95, perceptualRough));
         prefiltered = mix(prefiltered, rr.rgb, rw);

@@ -123,6 +123,7 @@ struct HostContext {
     bool        loaderShot = false;     std::string loaderShotPath;
     bool        skyShot = false;        std::string skyShotPath;
     bool        ddgiShot = false;       std::string ddgiShotDir;
+    bool        reflVerifyShot = false; std::string reflVerifyShotDir;
     bool        rtshShot = false;       std::string rtshShotDir;
     bool        showroomShot = false;   std::string showroomShotPath;
     bool        planetShot = false;     std::string planetShotPath;
@@ -164,6 +165,15 @@ struct HostContext {
     int         legacyPost = 0;
     bool        noTaa = false;
     bool        noRefl = false;
+    // Reflection DENOISE A/B (--refldn N / --refldn-disc S). Negative = leave the
+    // device default. 0 iterations = stage OFF, which is bit-exact to the
+    // pre-denoise renderer and is the "before" side of the door-skin blotch
+    // measurement. Threaded through HostContext because the screenshot hosts do
+    // NOT run the per-frame cvar sync — the same reason --norefl lives here.
+    int         reflDenoise = -1;
+    float       reflDnDisc  = -1.0f;
+    float       reflDnNormal = -1.0f;   // --refldn-normal: normal edge-stop exponent (<0 = default)
+    float       reflDnDepth  = -1.0f;   // --refldn-depth: depth edge-stop sigma (<0 = default)
     bool        skipIntro = false;
     // ---- Interactive intro (Phase 4 branch wiring) ----
     // Per-save deterministic seed for the intro outcome roll. 0 = derive from the

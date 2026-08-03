@@ -388,6 +388,7 @@ int main(int argc, char** argv) {
         _tf.testVehParts = o.testVehParts;
         _tf.testCsm      = o.testCsm;
         _tf.testGeoLod   = o.testGeoLod;
+        _tf.testReflDenoise = o.testReflDenoise;   // reflection DENOISE filter (no GPU needed)
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
         _tf.testNpcLife = o.testNpcLife;
@@ -528,7 +529,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -765,6 +766,7 @@ int main(int argc, char** argv) {
         _hc.loaderShot       = o.loaderShot;       _hc.loaderShotPath   = o.loaderShotPath;
         _hc.skyShot          = o.skyShot;          _hc.skyShotPath      = o.skyShotPath;
         _hc.ddgiShot         = o.ddgiShot;         _hc.ddgiShotDir      = o.ddgiShotDir;
+        _hc.reflVerifyShot   = o.reflVerifyShot;   _hc.reflVerifyShotDir = o.reflVerifyShotDir;
         _hc.rtshShot         = o.rtshShot;         _hc.rtshShotDir      = o.rtshShotDir;
         _hc.showroomShot     = o.showroomShot;     _hc.showroomShotPath = o.showroomShotPath;
         _hc.planetShot       = o.planetShot;       _hc.planetShotPath   = o.planetShotPath;
@@ -801,6 +803,21 @@ int main(int argc, char** argv) {
         _hc.ecologyShot      = o.ecologyShot;      _hc.ecologyShotPath  = o.ecologyShotPath;
         _hc.crowdShot        = o.crowdShot;        _hc.crowdShotPath    = o.crowdShotPath;
         _hc.complexShot      = o.complexShot;      _hc.complexShotDir   = o.complexShotDir;
+        // THE A/B SWITCHES HAVE TO BE SET BEFORE THE DISPATCH. These were only
+        // assigned further down, in the block feeding the DEFAULT host — i.e.
+        // after dispatchScreenshotHosts() had already returned. Every screenshot
+        // host therefore saw noTaa/noRefl as false no matter what was on the
+        // command line, and `--norefl --screenshot-car` silently captured with
+        // reflections still ON. (They are assigned again below; harmless.)
+        _hc.noTaa            = o.noTaa;
+        _hc.noRefl           = o.noRefl;
+        // Reflection DENOISE A/B — same rule as noTaa/noRefl above: it MUST be
+        // assigned BEFORE the dispatch or the screenshot hosts never see it.
+        // That is the exact bug 02146c10 had to fix for --norefl.
+        _hc.reflDenoise      = o.reflDenoise;
+        _hc.reflDnDisc       = o.reflDnDisc;
+        _hc.reflDnNormal     = o.reflDnNormal;
+        _hc.reflDnDepth      = o.reflDnDepth;
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;
@@ -828,6 +845,10 @@ int main(int argc, char** argv) {
     _hc.legacyPost      = o.legacyPost;
     _hc.noTaa           = o.noTaa;
     _hc.noRefl          = o.noRefl;
+    _hc.reflDenoise     = o.reflDenoise;
+    _hc.reflDnDisc      = o.reflDnDisc;
+    _hc.reflDnNormal    = o.reflDnNormal;
+    _hc.reflDnDepth     = o.reflDnDepth;
     _hc.skipIntro       = o.skipIntro;
     _hc.introForce      = o.introForce;        // DEV --intro-force outcome override
     _hc.editorMode      = o.editorMode;

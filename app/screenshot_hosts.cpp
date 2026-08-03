@@ -89,6 +89,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool loaderShot = hc.loaderShot;        const std::string& loaderShotPath = hc.loaderShotPath;
     const bool skyShot = hc.skyShot;              const std::string& skyShotPath = hc.skyShotPath;
     const bool ddgiShot = hc.ddgiShot;            const std::string& ddgiShotDir = hc.ddgiShotDir;
+    const bool reflVerifyShot = hc.reflVerifyShot; const std::string& reflVerifyShotDir = hc.reflVerifyShotDir;
     const bool rtshShot = hc.rtshShot;            const std::string& rtshShotDir = hc.rtshShotDir;
     const bool showroomShot = hc.showroomShot;    const std::string& showroomShotPath = hc.showroomShotPath;
     const bool carShot = hc.carShot;              const std::string& carShotDir = hc.carShotDir;
@@ -642,6 +643,186 @@ int dispatchScreenshotHosts(HostContext& hc) {
         x3::logInfo("--screenshot-ddgi: GPU frame avg " + std::to_string(gpuOff) +
                     " ms (off) vs " + std::to_string(gpuOn) + " ms (on) -> DDGI cost ~" +
                     std::to_string(gpuOn - gpuOff) + " ms (rays+update, 20x6x20 probes, 128 rays)");
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return ok ? 0 : 1;
+    }
+
+    // ---- REFLECTION VERIFY rig (--screenshot-reflverify [outDir]) -----------
+    // A purpose-built A/B bench for the two rt-refl shader changes. Every other
+    // reflective scene in this repo (--screenshot-car, showroom, drive) needs
+    // GLB assets; this rig is 100% procedural so it runs on a bare checkout.
+    //
+    // THE RIG: the camera is pitched DOWN at a metal floor. The floor is a ramp
+    // of 8 strips whose ROUGHNESS climbs 0.02 -> 0.85 left-to-right (metallic 1,
+    // so the specular lobe is the whole look). Three wide bars hang ABOVE and
+    // AHEAD, deliberately OUTSIDE the vertical frustum: they are never on screen,
+    // so the SSR march always walks off the top edge and the RT ray-query
+    // fallback is the ONLY thing that can shade their reflection. The bars are a
+    // saturated RED, a saturated GREEN and a bright EMISSIVE CYAN.
+    //
+    // WHAT EACH CHANGE SHOWS UP AS:
+    //   bc8c52a0 (per-object material): with the OLD refl.comp every bar
+    //     reflects as the SAME grey; with the new one the reflection must carry
+    //     red / green / cyan-glow.
+    //   de12fbb5 (glossy blur): left strips stay mirror-sharp; the reflection
+    //     must blur progressively to the right instead of vanishing by rough 0.6.
+    if (reflVerifyShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(reflVerifyShotDir, mkec);
+        x3::logInfo("--screenshot-reflverify: writing to " + reflVerifyShotDir);
+        x3::logInfo(std::string("--screenshot-reflverify: rayTracingSupported=") +
+                    (device->rayTracingSupported() ? "YES" : "NO"));
+
+        auto makeMesh = [&](const x3::prims::PrimMesh& pm) {
+            return device->createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                      pm.index.data(), (uint32_t)pm.index.size());
+        };
+        auto greyPx = x3::prims::makeSolidRGBA(4, 220, 220, 220);
+        x3::rhi::TextureHandle greyTex = device->createTexture(greyPx.data(), 4, 4, /*srgb=*/true);
+
+        // ---- The roughness ramp floor: 8 strips, metallic = 1.0. -------------
+        // glTF MR packing: G = roughness, B = metallic.
+        const int   kStrips = 8;
+        const float kRough[kStrips] = { 0.02f, 0.08f, 0.15f, 0.25f, 0.35f, 0.50f, 0.68f, 0.85f };
+        x3::rhi::MeshHandle    stripMesh[kStrips];
+        x3::rhi::TextureHandle stripMr[kStrips];
+        for (int i = 0; i < kStrips; ++i) {
+            const float xc = -7.0f + 2.0f * (float)i;      // 1.9 m wide strips, x -7..+7
+            stripMesh[i] = makeMesh(x3::prims::makeBox(0.95f, 0.05f, 16.0f, xc, -0.05f, -4.0f, 0.25f));
+            const uint8_t mr[4] = { 0, (uint8_t)(kRough[i] * 255.0f + 0.5f), 255, 255 };
+            stripMr[i] = device->createTexture(mr, 1, 1, false);
+        }
+        // A dark surround so the strips read as the only reflector.
+        x3::rhi::MeshHandle surroundMesh = makeMesh(x3::prims::makeBox(40.0f, 0.04f, 40.0f, 0.0f, -0.12f, -4.0f, 0.5f));
+        const uint8_t surroundMrPx[4] = { 0, 230, 0, 255 };   // rough .9, dielectric
+        x3::rhi::TextureHandle surroundMr = device->createTexture(surroundMrPx, 1, 1, false);
+
+        // ---- The OFF-SCREEN bars (the RT-fallback subjects). -----------------
+        // y = 7 m, well above the top of a -20 deg pitched 60 deg frustum.
+        x3::rhi::MeshHandle barRed   = makeMesh(x3::prims::makeBox(14.0f, 0.45f, 1.1f, 0.0f, 7.0f,  -2.0f, 1.0f));
+        x3::rhi::MeshHandle barGreen = makeMesh(x3::prims::makeBox(14.0f, 0.45f, 1.1f, 0.0f, 7.0f, -10.0f, 1.0f));
+        x3::rhi::MeshHandle barCyan  = makeMesh(x3::prims::makeBox(14.0f, 0.45f, 1.1f, 0.0f, 7.0f, -18.0f, 1.0f));
+        const float kRedAlb[4]   = { 0.90f, 0.04f, 0.03f, 1.0f };
+        const float kGreenAlb[4] = { 0.05f, 0.80f, 0.08f, 1.0f };
+        const float kCyanAlb[4]  = { 0.10f, 0.85f, 0.95f, 1.0f };
+        const float kNoEmis[4]   = { 0, 0, 0, 0 };
+        const float kCyanEmis[4] = { 0.10f, 0.85f, 1.00f, 8.0f };   // HDR glow
+        const float kWhite[4]    = { 1, 1, 1, 1 };
+        const float kSurround[4] = { 0.06f, 0.06f, 0.07f, 1.0f };
+        const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+
+        // ---- DEPTH-DISCONTINUITY probes. sampleReflGlossy() widens its disc in
+        // SCREEN space with no depth/normal rejection, so the real risk of a
+        // larger kReflBlurPx is reflected radiance SMEARING across a silhouette.
+        // These matte pillars stand ON the reflective ramp and give it hard
+        // internal depth edges to smear across; without them this rig is a
+        // single flat plane and cannot see that failure mode at all.
+        x3::rhi::MeshHandle pillarMesh = makeMesh(x3::prims::makeBox(0.55f, 1.30f, 0.55f, 0.0f, 1.30f, 0.0f, 1.0f));
+        const uint8_t pillarMrPx[4] = { 0, 235, 0, 255 };    // rough .92, dielectric (not a reflector)
+        x3::rhi::TextureHandle pillarMr = device->createTexture(pillarMrPx, 1, 1, false);
+        const float kPillarAlb[4] = { 0.55f, 0.53f, 0.50f, 1.0f };
+
+        // `allMirror` forces EVERY strip to the rough-0.02 material. de12fbb5
+        // claims a single tap (bit-identical to the pre-change path) at
+        // rough <= 0.05, so an all-mirror frame must diff to ZERO old vs new.
+        bool allMirror = false;
+        bool withPillars = false;
+        auto drawScene = [&](const x3::rhi::FrameContext& f) {
+            device->drawMeshPBR(f, surroundMesh, greyTex, x3::rhi::TextureHandle{}, surroundMr,
+                                kSurround, kNoEmis, identity);
+            for (int i = 0; i < kStrips; ++i)
+                device->drawMeshPBR(f, stripMesh[i], greyTex, x3::rhi::TextureHandle{},
+                                    allMirror ? stripMr[0] : stripMr[i],
+                                    kWhite, kNoEmis, identity);
+            if (withPillars) {
+                float m[16];
+                for (int i = 0; i < 4; ++i) {
+                    const float px = -6.0f + 4.0f * (float)i;
+                    const float mm[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, px, 0.0f, 1.0f, 1 };
+                    for (int k = 0; k < 16; ++k) m[k] = mm[k];
+                    device->drawMeshPBR(f, pillarMesh, greyTex, x3::rhi::TextureHandle{}, pillarMr,
+                                        kPillarAlb, kNoEmis, m);
+                }
+            }
+            device->drawMesh(f, barRed,   greyTex, kRedAlb,   identity);
+            device->drawMesh(f, barGreen, greyTex, kGreenAlb, identity);
+            device->drawMeshEmissive(f, barCyan, greyTex, kCyanAlb, kCyanEmis, identity);
+        };
+
+        // ---- Lighting: modest ambient so the per-object ALBEDO term in the RT
+        // fallback is clearly readable, sun low and to the side. ---------------
+        device->setAmbient(0.22f, 0.22f, 0.26f);
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.55f; sp.sunDir[2] = 0.75f;
+            device->setSkyParams(sp);
+        }
+        device->setShadowBounds(0.0f, 2.0f, -4.0f, 40.0f);
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+
+        // Camera: high and pitched steeply DOWN so the 8 roughness strips read as
+        // 8 broad bands instead of converging to a point, and so the top of the
+        // frustum sits near the horizon (every bar at y=7 is safely off-screen).
+        auto poseMain = [&]() {
+            device->setCamera(0.0f, 5.0f, 9.0f, std::atan2(-1.0f, 0.0f), -0.55f, 60.0f);
+        };
+        // A tighter pose for judging the blur kernel / tap pattern up close.
+        auto poseClose = [&]() {
+            device->setCamera(0.0f, 5.0f, 5.0f, std::atan2(-1.0f, 0.0f), -0.72f, 38.0f);
+        };
+
+        auto shoot = [&](const std::string& name, int settle) -> bool {
+            const std::string path = reflVerifyShotDir + "/" + name + ".png";
+            for (int i = 0; i < settle; ++i) {
+                glfwPollEvents();
+                if (i == settle - 1) device->armCapture(path.c_str());
+                auto f = device->beginFrame();
+                if (f.valid) drawScene(f);
+                device->endFrame(f);
+            }
+            const bool ok = device->captureFrame(path.c_str());
+            x3::logInfo(std::string(ok ? "--screenshot-reflverify: wrote "
+                                       : "--screenshot-reflverify: FAILED ") + path);
+            return ok;
+        };
+
+        auto setRefl = [&](bool on, bool rt, bool fullRes) {
+            x3::rhi::IRenderDevice::ReflectionParams rf{};
+            rf.ssr = on; rf.rtFallback = rt; rf.fullRes = fullRes; rf.intensity = 1.0f;
+            device->setReflectionParams(rf);
+        };
+
+        bool ok = true;
+        const int kSettle = 90;   // TAA history + SSR + auto-exposure + IBL probe
+
+        // (1) reflections OFF — the baseline every other shot is read against.
+        setRefl(false, false, false); poseMain();  ok &= shoot("ramp_ssr_off", kSettle);
+        // (2) SSR only, RT fallback OFF — the off-screen bars CANNOT appear.
+        setRefl(true, false, false);  poseMain();  ok &= shoot("ramp_ssr_on_rt_off", kSettle);
+        // (3) SSR + RT fallback — the money shot for both changes (half-res, the
+        //     shipping default) and (4) the same at full-res.
+        setRefl(true, true, false);   poseMain();  ok &= shoot("ramp_ssr_on_rt_on_halfres", kSettle);
+        setRefl(true, true, true);    poseMain();  ok &= shoot("ramp_ssr_on_rt_on_fullres", kSettle);
+        // (5) close pose, RT on, half-res — for judging tap pattern / ringing.
+        setRefl(true, true, false);   poseClose(); ok &= shoot("close_ssr_on_rt_on_halfres", kSettle);
+        setRefl(false, false, false); poseClose(); ok &= shoot("close_ssr_off", kSettle);
+        // (6) ALL-MIRROR frame (every strip rough 0.02): the invariance gate for
+        //     de12fbb5 — this frame must be identical old-vs-new mesh.frag.
+        allMirror = true;
+        setRefl(true, true, false);   poseMain();  ok &= shoot("mirror_all_ssr_on_rt_on", kSettle);
+        allMirror = false;
+        // (7) DEPTH-EDGE probe: matte pillars standing on the ramp. The blur disc
+        //     has no depth rejection, so this is where a too-large kReflBlurPx
+        //     shows up as a halo bleeding across each pillar's silhouette.
+        withPillars = true;
+        setRefl(true, true, false);   poseMain();  ok &= shoot("edges_ssr_on_rt_on", kSettle);
+        setRefl(false, false, false); poseMain();  ok &= shoot("edges_ssr_off", kSettle);
+        withPillars = false;
 
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -1491,10 +1672,30 @@ int dispatchScreenshotHosts(HostContext& hc) {
         { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
         { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
         {
+            // --norefl HAS TO REACH HERE. main.cpp pushes an OFF ReflectionParams
+            // for --norefl at startup, but this block then overwrote it
+            // unconditionally, so `--norefl --screenshot-car` still captured with
+            // reflections ON — i.e. the one rig that shows CLEARCOAT CAR PAINT had
+            // no A/B at all. Honouring hc.noRefl here is what makes the off-side of
+            // the clearcoat comparison capturable.
             x3::rhi::IRenderDevice::ReflectionParams rf{};
-            rf.ssr = true; rf.rtFallback = true; rf.fullRes = true; rf.intensity = 1.0f;
+            const bool on = !hc.noRefl;
+            rf.ssr = on; rf.rtFallback = on; rf.fullRes = on; rf.intensity = 1.0f;
+            // DENOISE STAGE A/B (--refldn N, --refldn-disc S), threaded for
+            // exactly the same reason as --norefl above: this host never runs the
+            // per-frame cvar sync, so the CLI is the only way the knob can reach
+            // it. `--refldn 0` disables the stage and is BIT-EXACT to the
+            // pre-denoise renderer — that is the "before" side of the door-skin
+            // blotch measurement this lane exists to move.
+            if (hc.reflDenoise  >= 0)    rf.denoiseIters      = hc.reflDenoise;
+            if (hc.reflDnDisc   >= 0.0f) rf.denoiseDiscScale  = hc.reflDnDisc;
+            if (hc.reflDnNormal >= 0.0f) rf.denoiseNormalPow  = hc.reflDnNormal;
+            if (hc.reflDnDepth  >= 0.0f) rf.denoiseDepthSigma = hc.reflDnDepth;
             device->setReflectionParams(rf);
-            x3::logInfo(std::string("--screenshot-car: reflections ON; rayTracingSupported=") +
+            x3::logInfo(std::string("--screenshot-car: reflections ") + (on ? "ON" : "OFF (--norefl)") +
+                        "; denoise iters=" + std::to_string(rf.denoiseIters) +
+                        " disc=" + std::to_string(rf.denoiseDiscScale) +
+                        "; rayTracingSupported=" +
                         (device->rayTracingSupported() ? "YES" : "NO"));
         }
         device->setShadowBounds(carX, carY, carZ, 40.0f);
