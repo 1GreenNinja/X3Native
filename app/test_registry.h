@@ -96,6 +96,7 @@ struct TestFlags {
     bool testWeapons = false, testScript = false, testVehicle = false, testVehParts = false;
     bool testCsm = false;   // Lane 3: cascaded shadow maps (splits, snapping, rotation invariance)
     bool testGeoLod = false;// Lane 5: mesh LOD (screen-space error, hysteresis) + vertex compression
+    bool testMineFx = false;// mines lane: Armory mine entrance census + glow bake
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
     bool testLightningCharge = false;  // --test-lightning-charge (Lightning Gun CHARGE model)
     bool testEcology = false, testCrowd = false, testAlert = false, testFootIk = false;

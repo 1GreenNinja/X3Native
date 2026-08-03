@@ -294,6 +294,66 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/converted_glb/mine/barrel.glb",
+      "sha256": "7ea1972e40336940d6e692469e347c0d8119c78f472fb76636535bb137d345fd",
+      "size": 162956,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/converted_glb/mine/boulder_a.glb",
+      "sha256": "c020b45833d7a5670d6c518a3d428cfbee4b6cf369a76a7a9bb8e6bc7e305376",
+      "size": 2264180,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/converted_glb/mine/boulder_b.glb",
+      "sha256": "f04e7d7bb799e0ce900b1aebcffbde12450f46daa0a84b84900b31552ec40419",
+      "size": 2218256,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/converted_glb/mine/cliff_a.glb",
+      "sha256": "0427c394db3005dc3533f75eb5560e0554b8be7cad6f81902ece8eb6cf54d867",
+      "size": 245304,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/converted_glb/mine/cliff_b.glb",
+      "sha256": "dbaa2b26c7961e5b556777139ec5a49012098bcb69b2f6073d131658dbaf82c4",
+      "size": 64500,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/converted_glb/mine/crate.glb",
+      "sha256": "d97ddb6fca37174f374163316c22e89e15fc497498b2c9df8bbb3ab6fae097b9",
+      "size": 27232,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/converted_glb/mine/ore_a.glb",
+      "sha256": "83777e9a69a2ec948a4679af46fdea994031353fe17f53833ffbfcd23af708df",
+      "size": 3811456,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/converted_glb/mine/ore_b.glb",
+      "sha256": "2c5430372fc24fab42b447db35df528b4d40bdf074ad4b778db6260733ef874a",
+      "size": 3789624,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/converted_glb/mine/ore_c.glb",
+      "sha256": "0b34394dee770181bea84e51a4aee2a9674cf2caf09a2c950ebfbbd0720bf12b",
+      "size": 3808184,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/converted_glb/mine/rocks_group.glb",
+      "sha256": "4effe729904bdc0b430b6f095393e55cc8087aedb79608204c40e6d6f32bc9f4",
+      "size": 3924812,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
       "repo_path": "assets/rigged_glb/AnnaBodySuit.glb",
       "sha256": "1dc934ab0161c7848b3e0abfed558f793da1852e2fd9ac0b15e15c872f4f3de2",
       "size": 16440740,
@@ -610,6 +670,42 @@
       "sha256": "80f49f35d2c5caa5c89c60c473f980aae3192e343d3ee3028984986ea5a8771f",
       "size": 8400283,
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/fw_rock_cliff/albedo.png",
+      "sha256": "1d39b0902676cb1e1551c71dad2005184d2a483a4bce8533c315655c2fa654d5",
+      "size": 2366441,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/surface_library/fw_rock_cliff/mr.png",
+      "sha256": "5f105e5ffce320bd386195eacf65a080ea241fc40eafa4614009d4b44100ef12",
+      "size": 710275,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/surface_library/fw_rock_cliff/normal.png",
+      "sha256": "e3ed061a53b625b68f4f7ddd3210e09484caa25f180a8eb723271a3699414a3e",
+      "size": 1507998,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/surface_library/fw_wood_beam/albedo.png",
+      "sha256": "e22f497657bfa51167eb739c91420505dadeff91e555926b89daab619c3652d1",
+      "size": 1625787,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/surface_library/fw_wood_beam/mr.png",
+      "sha256": "9d6ace75b37293edd628c7fd64a75757ad0886b6ded1251ae8cc18dd13b2a864",
+      "size": 597126,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+    },
+    {
+      "repo_path": "assets/surface_library/fw_wood_beam/normal.png",
+      "sha256": "59d9728fd62f2b498edf09650a900b128198748b1f2b4959c3a5e65a3dc495b2",
+      "size": 2119000,
+      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/surface_library/hh_ceiling_01a/albedo.png",

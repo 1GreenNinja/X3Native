@@ -23,6 +23,7 @@ add_executable(X3Engine WIN32
     world_hosts/host_showroom.cpp
     world_hosts/host_valley.cpp
     world_hosts/host_cliffs.cpp
+    world_hosts/host_mines.cpp   # mine-entrance showcase (inspx/mines)
     world_hosts/host_streamed.cpp
     # Phase 2 — space-combat stack folded from feat/cockpit-vattalus
     world_hosts/host_space.cpp
@@ -160,6 +161,7 @@ add_executable(X3Engine WIN32
     vehicle.cpp
     world_cars.cpp
     street_lights.cpp
+    mine_fx.cpp         # the mine-entrance family (Armory rock + glowing mouth)
     vehparts.cpp
     csm_test.cpp
     mesh_lod.cpp        # Lane 5: screen-space-error discrete LOD selection

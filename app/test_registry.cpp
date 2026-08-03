@@ -142,6 +142,7 @@
 #include "space/eva.h"            // x3::space::runEvaSelfTest (--test-eva)
 
 #include "test_registry.h"
+#include "mine_fx.h"
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
 #include "speaking_monster.h"    // x3::apphost::SpeakingMonster (--demo-dialog)
 
@@ -1034,6 +1035,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(practical splits + frustum-slice containment + texel-snap stability + "
                     "rotation invariance + bit-exact r_csm 0 + NEGATIVE CONTROL)...");
         return x3::game::runCsmSelfTest() ? 0 : 1;
+    }
+    if (tf.testMineFx) {
+        x3::logInfo("running MINE ENTRANCE self-test "
+                    "(EoS arch-glow bake varies + fixture census + light complement + "
+                    "deep-core brightest + teardown)...");
+        return x3::game::runMineFxSelfTest() ? 0 : 1;
     }
     if (tf.testGeoLod) {
         x3::logInfo("running MESH LOD + VERTEX COMPRESSION self-test "
