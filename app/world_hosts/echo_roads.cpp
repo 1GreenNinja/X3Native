@@ -170,6 +170,15 @@ constexpr float kRimBearingStep = 20.0f;
 constexpr float kRimMaxR     = 700.0f;   // outward march limit (8 m steps)
 constexpr float kRimMinR     = 120.0f;   // rim closer than this = degenerate bearing
 constexpr float kRimTurnDrop = -0.17f;   // convexify: drop waypoint when turn dot < this (~>100 deg)
+// ISLAND-REGEN (2026-08-03): SEAM CLEARANCE. On the regenerated fjord terrain
+// the harbor city sits directly under the crown's south wall, so the south
+// rim lip is only ~200 m from the crown — rim waypoints probed there land
+// 80-150 m from the fixed arc's START node and the splice folds into a
+// U-turn (south-lip run antiparallel to the crown crossing) that no amount
+// of zigzag-law smoothing can flatten; the law then dropped the WHOLE RING
+// (the world's freeway spine). A waypoint that close to the splice nodes can
+// never contribute a sane fillet, whatever the terrain: skip it with a log.
+constexpr float kRimSeamClear = 260.0f;  // rim wp closer than this to arc start/end = skipped
 
 inline float h01(uint32_t n) {
     n = (n ^ 61u) ^ (n >> 16); n *= 9u; n ^= n >> 4; n *= 0x27d4eb2du;
@@ -624,7 +633,20 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
                 continue;
             }
             const float wr = rimR - kRimInset;
-            rim.push_back({ kCrownX + dx * wr, kCrownZ + dz * wr });
+            const Wp cand{ kCrownX + dx * wr, kCrownZ + dz * wr };
+            // seam clearance (see kRimSeamClear above)
+            const Wp& aS = kRingFixed[0];
+            const Wp& aE = kRingFixed[kRingFixedN - 1];
+            const float dS = std::sqrt((cand.x-aS.x)*(cand.x-aS.x) + (cand.z-aS.z)*(cand.z-aS.z));
+            const float dE = std::sqrt((cand.x-aE.x)*(cand.x-aE.x) + (cand.z-aE.z)*(cand.z-aE.z));
+            if (dS < kRimSeamClear || dE < kRimSeamClear) {
+                x3::logInfo("[roads] rim bearing " + std::to_string((int)deg) +
+                            " deg waypoint (" + std::to_string((int)cand.x) + "," +
+                            std::to_string((int)cand.z) + ") skipped — inside the " +
+                            std::to_string((int)kRimSeamClear) + " m splice seam clearance");
+                continue;
+            }
+            rim.push_back(cand);
         }
         // Convexify by skipping: walking [arcEnd, rim..., arcStart], drop any
         // rim waypoint whose turn exceeds ~100 deg (backtrack pocket).

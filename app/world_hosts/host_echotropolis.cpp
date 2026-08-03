@@ -886,12 +886,26 @@ int hostEchotropolis(HostContext& hc) {
     Heightfield hf;   // orbit-pivot terrain sampler (windowed only; headless keeps y=0)
     {
         const char* dirEnv = std::getenv("ECHO_ISLAND_DIR");
-        // MESA-RIM EXTENSION (Tim: "extend the cliffs out at the top to support
-        // them"): the default island is now the 20260728 rebake — plateau pushed
-        // ~55m past the old rim with steep outcropping falloff, so the west-edge
-        // towers stand on rock instead of air. ECHO_ISLAND_DIR still overrides
-        // (the fjord candidate lives in assets/island_fjord for its own test).
-        const std::string islandDir = dirEnv ? dirEnv : "D:/GameDev/EchoHarbor/assets/island_mesa";
+        // ISLAND-REGEN (2026-08-03): the original SimCityLLM2 bakes were LOST —
+        // the terrain is now generated IN-REPO by tools/echo_terrain_gen.py
+        // (fjord-inlet + harbor + crown plateau, Tim's two-city canon) and the
+        // committed LFS copy under assets/island_mesa is the default. The old
+        // authoring-box dir still wins if it exists (same slot names), and
+        // ECHO_ISLAND_DIR overrides everything (fjord/desert swap tests).
+        std::string islandDir = dirEnv ? dirEnv : "D:/GameDev/EchoHarbor/assets/island_mesa";
+        if (!dirEnv) {
+            std::error_code ec;
+            auto hasBake = [&ec](const std::string& d) {
+                return std::filesystem::exists(d + "/island_20260530.glb", ec);
+            };
+            if (!hasBake(islandDir)) {
+                // committed regen bake: assetRoot() first, then the repo-run
+                // layout (build-ninja/bin is one level shallower than the
+                // build/bin/<Config> shape assetRoot()'s heuristic assumes)
+                islandDir = x3::game::assetRoot() + "/island_mesa";
+                if (!hasBake(islandDir)) islandDir = "assets/island_mesa";
+            }
+        }
         if (island.buildFromGlb(*device, islandDir, "island_20260530.glb"))
             x3::logInfo("--world echotropolis: island GLB loaded from " + islandDir);
         else
