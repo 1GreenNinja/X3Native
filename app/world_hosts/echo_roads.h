@@ -292,12 +292,22 @@ int      seedWeighted(uint32_t seed, const float* weights, int n);
 // made houses float a corner or sink one; this probes the four footprint
 // corners plus the centre and seats at the MAX so nothing floats, reporting
 // the spread so the caller can drop a plinth under the overhang.
+// A footprint whose corners disagree by more than kMaxSeatGrade of its own
+// diagonal is not a building site, it is a cliff edge. Seating at MAX and
+// plinthing the overhang is right for a curb or a hillside, but on Echo
+// Harbor's 190 m crown wall it grew a full-height pedestal from the rim tower
+// down to the sea. Placement rejects those outright; kMaxPlinthDrop bounds
+// what a plinth may ever be even when the grade test passes.
+constexpr float kMaxSeatGrade  = 0.50f;   // rise/run across the footprint (~27 deg)
+constexpr float kMaxPlinthDrop = 14.0f;   // metres; deeper is terrain, not a plinth
 struct FootprintSeat {
-    bool  ok      = false;   // false when the heightfield is not loaded
-    float y       = 0;       // seat height (MAX of the 5 probes)
-    float yMin    = 0;       // lowest probe
-    float spread  = 0;       // y - yMin
-    bool  plinth  = false;   // spread exceeded the threshold
+    bool  ok        = false; // false when the heightfield is not loaded
+    float y         = 0;     // seat height (MAX of the 5 probes)
+    float yMin      = 0;     // lowest probe
+    float spread    = 0;     // y - yMin
+    float grade     = 0;     // spread / footprint diagonal — scale-free steepness
+    bool  plinth    = false; // spread exceeded the threshold
+    bool  buildable = false; // grade within kMaxSeatGrade (false => do not place)
 };
 FootprintSeat seatFootprint(const Heightfield& hf, float cx, float cz, float yaw,
                             float halfX, float halfZ, float plinthThresh = 0.30f);

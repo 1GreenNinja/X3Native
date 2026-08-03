@@ -262,6 +262,11 @@ bool legacyCorridorHit(const EchoRoads* roads, float x, float z, float clear) {
 // a checkout where the building packs are absent (they live under D:/Assets on
 // the authoring box and are not in the repo). OFF by default: unset, this file
 // behaves exactly as if the proxy code were not here.
+// How far a building's seat may sit from the finished surface of the street it
+// fronts. Steps, driveways and a retaining course are metres; the crown-rim
+// spill was 50-190 m. Generous enough that honest terrain is never refused.
+constexpr float kMaxStreetOffset = 12.0f;
+
 bool cityProxyOn() {
     static const bool on = [](){ const char* e = std::getenv("ECHO_CITY_PROXY");
                                  return e && *e && *e != '0'; }();
@@ -309,13 +314,46 @@ struct FootprintTable {
 // Place ONE building. Every placement in this file goes through here, so the
 // footprint-corner terrain seat (and the plinth under an overhang) is not
 // something a call site can forget.
+// `roadY`, when given, is the finished surface of the street this building
+// ADDRESSES. A building that sits far off its own street is not fronting it:
+// the frontage walk offsets ~10-15 m sideways from the centreline, which on the
+// crown rim steps clean off a near-vertical 190 m wall, so points meant for a
+// clifftop street landed part-way down the face. See kMaxStreetOffset.
 bool placeSeated(EchoRegion& region, EchoRegionCtx& ctx, const BuildingPalette& p,
                  const FootprintTable& ft, int idx,
-                 float cx, float cz, float yaw, EnvArtSystem* pack) {
+                 float cx, float cz, float yaw, EnvArtSystem* pack,
+                 const float* roadY = nullptr) {
     const float halfX = ft.w[idx] * 0.5f, halfZ = ft.d[idx] * 0.5f;
     const x3::game::FootprintSeat seat =
         x3::game::seatFootprint(ctx.hf, cx, cz, yaw, halfX, halfZ);
+    // CLIFF-EDGE REJECT. A footprint straddling the crown rim reads ~190 m of
+    // relief; seating it at MAX and plinthing the drop built a tower-wide
+    // pedestal all the way down the sea wall. Such a lot is not a building
+    // site — decline it and let the caller pick another asset or skip.
+    if (seat.ok && !seat.buildable) {
+        static int rejects = 0;
+        if (++rejects <= 12)
+            x3::logInfo("[region] lot rejected — cliff grade " +
+                        std::to_string(seat.grade) + " (" +
+                        std::to_string(seat.spread) + " m across footprint) at (" +
+                        std::to_string(cx) + ", " + std::to_string(cz) + ")" +
+                        (rejects == 12 ? " [further rejects not logged]" : ""));
+        return false;
+    }
     const float gy = seat.ok ? seat.y : 190.0f;
+    // OFF-ITS-OWN-STREET REJECT. The grade test above rejects a footprint that
+    // STRADDLES the wall; this rejects one that found a flat ledge part-way
+    // DOWN it, which no local probe can distinguish from honest ground.
+    if (seat.ok && roadY && std::fabs(gy - *roadY) > kMaxStreetOffset) {
+        static int offRoad = 0;
+        if (++offRoad <= 12)
+            x3::logInfo("[region] placement rejected — seats " +
+                        std::to_string(gy - *roadY) + " m off its own street (y=" +
+                        std::to_string(gy) + ", road=" + std::to_string(*roadY) + ") at (" +
+                        std::to_string(cx) + ", " + std::to_string(cz) + ")" +
+                        (offRoad == 12 ? " [further rejects not logged]" : ""));
+        return false;
+    }
     const float s = p.scale, c = std::cos(yaw), sn = std::sin(yaw);
     const float T[16] = { c*s, 0, -sn*s, 0,  0, s, 0, 0,  sn*s, 0, c*s, 0,
                           cx, gy + p.a[idx].lift, cz, 1 };
@@ -332,9 +370,14 @@ bool placeSeated(EchoRegion& region, EchoRegionCtx& ctx, const BuildingPalette& 
         // away under this building. Seating at MAX stops it sinking; the
         // plinth stops it floating. One heightAt() at the pivot could not tell
         // you either way — that is the bug this replaces.
-        if (seat.ok && seat.plinth)
+        // Bounded: past kMaxPlinthDrop this stops being a pedestal under an
+        // overhang and becomes a wall down a hillside. The grade reject above
+        // catches the cliff case; this bounds what survives it.
+        if (seat.ok && seat.plinth) {
+            const float base = std::max(seat.yMin - 0.4f, gy - x3::game::kMaxPlinthDrop);
             ctx.roads->addPlinth(cx, cz, yaw, halfX * 1.04f, halfZ * 1.04f,
-                                 seat.yMin - 0.4f, gy + 0.10f);
+                                 base, gy + 0.10f);
+        }
         // ECHO_CITY_PROXY=1: a blockout mass at the exact footprint/yaw, for
         // photographing the LAYOUT on checkouts where the building GLBs are
         // not present. Off by default; emits nothing otherwise.
@@ -711,7 +754,8 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
                 const float px = f.x + f.nx * halfD, pz = f.z + f.nz * halfD;
                 if (!landOk(px, pz)) { ++wet; continue; }
                 if (!occ.free(px, pz, f.yaw, halfW + 1.2f, halfD + 1.2f)) { ++spaced; continue; }
-                if (!placeSeated(region, ctx, pal, ft, idx, px, pz, f.yaw, packPtr)) continue;
+                if (!placeSeated(region, ctx, pal, ft, idx, px, pz, f.yaw, packPtr, &f.roadY))
+                    continue;
                 occ.take(px, pz, f.yaw, halfW + 1.2f, halfD + 1.2f);
                 ++fromFrontage;
                 camAt(px, pz, ctx.hf.ok() ? ctx.hf.heightAt(px, pz) : 190.0f);
@@ -1348,7 +1392,9 @@ void buildWaterfrontRow(EchoRegion& region, EchoRegionCtx& ctx) {
     // module, so walking it puts the towers exactly where the literals were
     // trying to be — but square to the street, evenly spaced, and never on it.
     // The literals remain as the no-road-graph fallback.
-    struct Spot { float x, z, yaw; };
+    // hasRoad is false for the authored-literal fallback below, which has no
+    // parent street to measure against — those keep their original behaviour.
+    struct Spot { float x, z, yaw, roadY; bool hasRoad; };
     std::vector<Spot> spots;
     bool fromRoads = false;
     if (ctx.roads && !cityLegacyOn()) {   // fallback cvar: the authored literals
@@ -1362,12 +1408,12 @@ void buildWaterfrontRow(EchoRegion& region, EchoRegionCtx& ctx) {
             const float here  = ctx.hf.heightAt(f.x, f.z);
             if (here < 2.5f) continue;                 // the pad itself is wet
             if (probe > 2.5f) continue;                // inland side — skip
-            spots.push_back({ f.x, f.z, f.yaw });
+            spots.push_back({ f.x, f.z, f.yaw, f.roadY, true });
         }
         fromRoads = !spots.empty();
     }
     if (!fromRoads)
-        for (const auto& r : kRow) spots.push_back({ r.x, r.z, r.yaw });
+        for (const auto& r : kRow) spots.push_back({ r.x, r.z, r.yaw, 0.0f, false });
 
     Occupancy occ;
     int placed = 0, spacedOut = 0, noFit = 0;
@@ -1382,7 +1428,8 @@ void buildWaterfrontRow(EchoRegion& region, EchoRegionCtx& ctx) {
         const float fx = std::sin(s.yaw), fz = std::cos(s.yaw);
         const float px = s.x - fx * halfD, pz = s.z - fz * halfD;
         if (!occ.free(px, pz, s.yaw, halfW + 3.0f, halfD + 3.0f)) { ++spacedOut; continue; }
-        if (!placeSeated(region, ctx, pal, ft, idx, px, pz, s.yaw, nullptr)) continue;
+        if (!placeSeated(region, ctx, pal, ft, idx, px, pz, s.yaw, nullptr,
+                         s.hasRoad ? &s.roadY : nullptr)) continue;
         occ.take(px, pz, s.yaw, halfW + 3.0f, halfD + 3.0f);
         ++placed;
         // WD2 CAMERA SATURATION: a promenade cam on every glass tower.

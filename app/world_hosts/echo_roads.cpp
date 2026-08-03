@@ -2507,6 +2507,12 @@ FootprintSeat seatFootprint(const Heightfield& hf, float cx, float cz, float yaw
     }
     s.ok = true; s.y = hi; s.yMin = lo; s.spread = hi - lo;
     s.plinth = s.spread > plinthThresh;
+    // Steepness relative to the footprint's own diagonal, so the verdict does
+    // not change with building size: 6 m of relief is a gentle hillside under a
+    // 60 m tower and a cliff under a 6 m shed.
+    const float diag = std::sqrt(4.0f * (halfX * halfX + halfZ * halfZ));
+    s.grade = diag > 1e-3f ? s.spread / diag : 0.0f;
+    s.buildable = s.grade <= kMaxSeatGrade;
     return s;
 }
 
@@ -3221,6 +3227,29 @@ bool runCityBlocksSelfTest() {
         Heightfield none;
         cbCheck(!seatFootprint(none, 0, 0, 0, 5, 5).ok,
                 "seatFootprint reports NOT-ok without a heightfield");
+
+        // CLIFF-EDGE REJECT. The gentle ramp above is a building site; a rim
+        // straddling a sheer wall is not. Before this, both seated at MAX and
+        // both got a plinth — which on the 190 m crown wall meant a pedestal
+        // from the tower down to the sea. grade is scale-free, so assert it
+        // against the footprint that produced it, not against a fixed metre count.
+        cbCheck(std::fabs(s.grade - s.spread / std::sqrt(4.0f * (30.0f * 30.0f + 30.0f * 30.0f)))
+                    < 1e-4f, "grade is spread over the footprint diagonal");
+        cbCheck(s.buildable, "a gentle ramp is a buildable footprint");
+        Heightfield cliff;
+        cliff.w = cliff.h = 64;
+        cliff.px.resize(64 * 64);
+        for (int z = 0; z < 64; ++z)
+            for (int x = 0; x < 64; ++x)
+                cliff.px[(size_t)z * 64 + x] =
+                    (uint16_t)(Heightfield::kSeaNorm * 65535.0f + (x >= 32 ? 20000.0f : 0.0f));
+        cbCheck(cliff.ok(), "synthetic cliff heightfield loads");
+        // Centre the footprint ON the step, so its corners straddle the wall.
+        // heightAt maps world x -> u = (x/kMeters + 0.5)*(w-1); invert for u=32.
+        const float rimX = (32.0f / 63.0f - 0.5f) * Heightfield::kMeters;
+        const FootprintSeat cs = seatFootprint(cliff, rimX, 0.0f, 0.0f, 30.0f, 30.0f);
+        cbCheck(cs.ok && cs.spread > s.spread, "the cliff footprint spans far more relief");
+        cbCheck(!cs.buildable, "a footprint straddling a sheer wall is REJECTED");
     }
 
     // ---- NEGATIVE CONTROL --------------------------------------------------
