@@ -29,6 +29,8 @@
 #include "engine/rhi/Csm.h" // kNumCascades (perf receipt line)
 #include "ocean_base.h"        // W3-4: --screenshot-oceanbase undersea vantage
 #include "city.h"              // W8-3: --screenshot-city district vantage
+#include "street_lights.h"     // content wiring: --screenshot-city night lamp grid
+#include "engine/rhi/ClusterLights.h"  // kMaxSceneLights
 #include "cutscene.h"
 #include "leveldoc_world.h"
 #include "level_loader.h"
@@ -2539,15 +2541,87 @@ int dispatchScreenshotHosts(HostContext& hc) {
             x3::game::addTerrainHorizonRing(cscene, *device, splat, hr);
         }
 
+        // ==== CONTENT WIRING (lane inspx/content-wiring) =====================
+        // THE MONEY SHOT. `--screenshot-city` built the districts under an
+        // afternoon sun and NOTHING ELSE -- no lamps, no window light, no sign
+        // wash, because the predecessor renderer could not afford them and this
+        // host was written against that world. Clustered forward lighting
+        // raised the cap 64 -> 1024 and nothing had spent it.
+        //
+        //   --set r_citylights 1      -> NIGHT, every authored street lamped at
+        //                                urban spacing (~240 lamps), plus a
+        //                                pooled light per lit window band and
+        //                                per neon sign.
+        //   --set r_clusterlights 1   -> the froxel path that can actually
+        //                                carry them (without it the frame still
+        //                                truncates to the legacy 64).
+        //   --set r_debugview 6       -> the froxel occupancy heatmap.
+        // With neither flag this host renders EXACTLY what it always did.
+        bool cityDense = false, cityCluster = false;
+        int  cityDebugView = 0;
+        for (const auto& kv : hc.cliCVars) {
+            if (kv.first == "r_citylights"    && kv.second != "0") cityDense   = true;
+            if (kv.first == "r_clusterlights" && kv.second != "0") cityCluster = true;
+            if (kv.first == "r_debugview") cityDebugView = std::atoi(kv.second.c_str());
+        }
+
+        if (cityDense) {
+            // NIGHT. The lamps are the subject, so the sun goes to a thin blue
+            // moonlight and the ambient drops to a city-glow floor -- bright
+            // enough that unlit massing is readable silhouette, dark enough that
+            // a 16 m sodium pool actually reads as light.
+            sp.sunDir[0] = -0.30f; sp.sunDir[1] = 0.62f; sp.sunDir[2] = -0.42f;
+            sp.sunColor[0] = 0.40f; sp.sunColor[1] = 0.48f; sp.sunColor[2] = 0.74f;
+            sp.sunIntensity = 0.10f;   // sky DISK/glow only
+            sp.haze  = 0.20f;
+            sp.exposure = 1.0f;
+            // sunLight is the separate multiplier on mesh.frag's directional
+            // key. sunIntensity alone leaves the whole world daylit -- that is
+            // the trap: the sky looked dim and every facade stayed lit.
+            sp.sunLight = 0.055f;      // thin moonlight, silhouette only
+            sp.zenith[0]  = 0.010f; sp.zenith[1]  = 0.016f; sp.zenith[2]  = 0.040f;
+            sp.horizon[0] = 0.055f; sp.horizon[1] = 0.055f; sp.horizon[2] = 0.090f;
+            device->setSkyParams(sp);
+            device->setAmbient(0.014f, 0.016f, 0.026f);   // city-glow floor
+            device->setIblIntensity(0.10f);               // the sky IBL is what kept the grass green
+            device->setExposure(1.10f);
+        }
+        if (cityCluster) device->setClusterLights(true);
+        if (cityDebugView) device->setDebugView(cityDebugView);
+
         x3::game::City city;
-        city.build(cscene, *device, *cphys);
+        std::vector<x3::game::StreetLights::Glow> cityGlows;
+        city.build(cscene, *device, *cphys, nullptr, cityDense ? &cityGlows : nullptr);
+
+        x3::game::StreetLights cityLamps;
+        if (cityDense) {
+            cityLamps.buildCityLamps(cscene, *device, /*dense*/true);
+            cityLamps.adoptCityGlows(cityGlows);
+            x3::logInfo("--screenshot-city: NIGHT + " + std::to_string(cityLamps.lampCount()) +
+                        " city light sources (" + std::to_string(cityLamps.deadCount()) +
+                        " dead, " + std::to_string(cityLamps.flickerCount()) + " flickering, " +
+                        std::to_string(cityGlows.size()) + " window/sign glows); clustered=" +
+                        (cityCluster ? "1" : "0"));
+        }
 
         auto renderShot = [&](float cx, float cy, float cz, float yaw, float pitch,
                               const std::string& path) -> bool {
             const int kFrames = 90;    // settle: shadows + TAA history + bloom
+            std::vector<x3::rhi::PointLight> lampPool;
             for (int i = 0; i < kFrames; ++i) {
                 glfwPollEvents();
                 cphys->step(1.0f / 60.0f);
+                if (cityDense) {
+                    // Feed the NEAREST lamps to the eye. The budget is the
+                    // clustered scene cap when clustering is on, and the legacy
+                    // 64 when it is not -- which is exactly the A/B this lane
+                    // exists to make visible.
+                    cityLamps.update(1.0f / 60.0f, cscene);
+                    lampPool.clear();
+                    const uint32_t k = cityCluster ? x3::rhi::kMaxSceneLights : 64u;
+                    cityLamps.selectLights(cx, cy, cz, lampPool, k);
+                    device->setPointLights(lampPool.data(), (uint32_t)lampPool.size());
+                }
                 device->setCamera(cx, cy, cz, yaw, pitch, 70.0f);
                 if (i == kFrames - 1) device->armCapture(path.c_str());
                 auto frame = device->beginFrame();
@@ -2555,7 +2629,18 @@ int dispatchScreenshotHosts(HostContext& hc) {
                 device->endFrame(frame);
             }
             const bool ok = device->captureFrame(path.c_str());
-            if (ok) x3::logInfo("--screenshot-city: wrote " + path);
+            if (ok) {
+                const auto st = device->stats();
+                x3::logInfo("--screenshot-city: wrote " + path);
+                x3::logInfo("[city-perf] " + path +
+                            "  lights=" + std::to_string(lampPool.size()) +
+                            "  tris=" + std::to_string(st.triangles) +
+                            "  draws=" + std::to_string(st.drawCalls) +
+                            "  gpu=" + std::to_string(st.gpuFrameMs) + " ms" +
+                            "  clusterLights=" + std::to_string(st.clusterLights) +
+                            "  clusterOverflow=" + std::to_string(st.clusterOverflows) +
+                            "  maxFroxelLoad=" + std::to_string(st.clusterMaxLoad));
+            }
             else    x3::logError("--screenshot-city: capture FAILED for " + path);
             return ok;
         };

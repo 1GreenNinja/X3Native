@@ -25,6 +25,7 @@
 #include "headless_device.h"
 #include "mesh_prims.h"
 #include "street_lights.h"
+#include "engine/rhi/ClusterLights.h"   // kMaxSceneLights (--test-city D3)
 #include "surface_library.h"
 #include "asset_root.h"
 
@@ -69,8 +70,22 @@ const float kNeon[5][3] = {
 } // namespace
 
 void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-                 SurfaceLibrary* sharedSurf) {
+                 SurfaceLibrary* sharedSurf, std::vector<StreetLights::Glow>* outGlows) {
     (void)physics;   // blockout-plus city is visual-only this pass (no collision body)
+
+    // CONTENT WIRING: emit a glow-only pooled light for every warm-lit window
+    // band and every neon sign, so the night city's own surfaces light the
+    // street. No-op when the caller does not ask (outGlows == nullptr), which
+    // is what keeps the legacy render byte-identical.
+    auto emitGlow = [&](float x, float y, float z, const float col[3],
+                        float range, float intensity, bool sign) {
+        if (!outGlows) return;
+        StreetLights::Glow g;
+        g.pos[0] = x; g.pos[1] = y; g.pos[2] = z;
+        g.color[0] = col[0]; g.color[1] = col[1]; g.color[2] = col[2];
+        g.range = range; g.intensity = intensity; g.sign = sign;
+        outGlows->push_back(g);
+    };
 
     // Real PBR surface sets (ART_BIBLE §4). On a headless device the loads no-op
     // and everything renders as tinted graybox — tests are unaffected. A shared
@@ -114,6 +129,14 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
                 addBoxProp(cx, g[1] + y, cz, w * 0.5f + 0.06f, 0.55f, d * 0.5f + 0.06f,
                            kDarkGlass, lit ? kLitBand : nullptr);
                 ++m_windowBands;
+                // A lit band is a whole floor of windows; give it a warm spill
+                // light just outside each long face so the wash lands on the
+                // facade and the street, not inside the massing box.
+                if (lit) {
+                    const float warm[3] = { 1.00f, 0.80f, 0.52f };
+                    emitGlow(cx, g[1] + y, cz + d * 0.5f + 1.2f, warm, 11.0f, 2.4f, false);
+                    emitGlow(cx, g[1] + y, cz - d * 0.5f - 1.2f, warm, 11.0f, 2.4f, false);
+                }
             }
         }
         if (h >= 24.0f) {   // rooftop AC block + antenna + red beacon
@@ -129,6 +152,10 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
             addBoxProp(cx, g[1] + std::min(h - 0.6f, 3.4f), cz + d * 0.5f + 0.10f,
                        w * 0.32f, 0.28f, 0.08f, nc, em);
             ++m_neonSigns;
+            // The signage wash: the strip's own colour thrown onto the awning,
+            // the walk and the shopfront a couple of metres in front of it.
+            emitGlow(cx, g[1] + std::min(h - 0.6f, 3.4f) - 0.4f, cz + d * 0.5f + 1.6f,
+                     accentNeon, 9.0f, 3.0f, true);
         }
     };
 
@@ -417,7 +444,10 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
                 + std::to_string(m_neonSigns) + " neon signs, "
                 + std::to_string(m_trafficLights) + " traffic lights, "
                 + std::to_string(m_roadSegments) + " road segments, 4 freeway tunnels; "
-                + std::to_string((uint32_t)m_props.size()) + " props");
+                + std::to_string((uint32_t)m_props.size()) + " props"
+                + (outGlows ? ("; " + std::to_string(outGlows->size()) +
+                               " glow lights emitted (window spill + sign wash)")
+                            : std::string()));
 }
 
 // ===========================================================================
@@ -558,6 +588,73 @@ bool runCitySelfTest() {
             check(inRange && (sl.flickerCount() == 0 || sawDip),
                   "L5 flicker bursts animate (levels in range, dips observed)");
         }
+
+        // ==== CONTENT WIRING (lane inspx/content-wiring) =================
+        // The legacy build above is the NEGATIVE CONTROL: it must stay at the
+        // nine authored rows. If a future edit accidentally makes the dense
+        // grid the default, D1 fails and says so.
+        check(sl.lampCount() >= 50 && sl.lampCount() <= 80,
+              "D1 NEGATIVE CONTROL: r_citylights 0 keeps the legacy lamp count ("
+              + std::to_string(sl.lampCount()) + ", expected 50..80)");
+    }
+
+    // ==== D2..D4: the DENSE city (r_citylights 1) ========================
+    {
+        Scene dscene;
+        HeadlessDevice ddev;
+        std::unique_ptr<x3::phys::IPhysicsWorld> dphys(x3::phys::createPhysicsWorld());
+        dphys->init();
+
+        // D2: City emits a glow light per warm-lit window band + per neon sign.
+        std::vector<StreetLights::Glow> glows;
+        City dc;
+        dc.build(dscene, ddev, *dphys, nullptr, &glows);
+        uint32_t signGlows = 0, windowGlows = 0;
+        for (const auto& g : glows) (g.sign ? signGlows : windowGlows)++;
+        check(!glows.empty() && signGlows == dc.neonSignCount() && windowGlows > 0,
+              "D2 city glow lights emitted (" + std::to_string(windowGlows) +
+              " window spill + " + std::to_string(signGlows) + " sign wash; signs match "
+              + std::to_string(dc.neonSignCount()) + ")");
+
+        StreetLights dsl;
+        dsl.buildCityLamps(dscene, ddev, /*dense*/true);
+        const uint32_t denseLamps = dsl.lampCount();
+        dsl.adoptCityGlows(glows);
+
+        // D3: THE POINT OF THE LANE. Clustered lighting raised the cap to 1024
+        // and the city fed 14. A dense night city must clear 200 LIVE sources
+        // (dead lamps excluded -- those emit nothing), or the froxel path is
+        // still carrying a scene the legacy 64-light loop could have handled.
+        std::vector<x3::rhi::PointLight> pool;
+        const uint32_t live = dsl.selectLights(200.0f, 2.0f, 500.0f, pool,
+                                               x3::rhi::kMaxSceneLights);
+        check(live >= 200,
+              "D3 dense city yields 200+ LIVE point lights (" + std::to_string(live) +
+              " of " + std::to_string(dsl.lampCount()) + " sources; " +
+              std::to_string(denseLamps) + " lamps + " + std::to_string(glows.size()) +
+              " glows, " + std::to_string(dsl.deadCount()) + " dead)");
+
+        // D4: and it must be a real multiple of the legacy grid, not a nudge.
+        check(denseLamps >= 200,
+              "D4 every authored street lamped (" + std::to_string(denseLamps) +
+              " lamps vs ~56 legacy, >=200)");
+
+        // D5: the glow lights carry NO geometry -- they are pure PointLights.
+        // If a future edit gives them posts/cones, the city entity count
+        // explodes silently. Compare the scene size before/after adoption.
+        {
+            StreetLights probe;
+            Scene pscene;
+            HeadlessDevice pdev;
+            probe.buildCityLamps(pscene, pdev, true);
+            const size_t before = pscene.size();
+            probe.adoptCityGlows(glows);
+            check(pscene.size() == before,
+                  "D5 glow lights add ZERO scene entities (scene stayed at " +
+                  std::to_string(before) + ")");
+        }
+
+        dphys->shutdown();
     }
 
     physics->shutdown();

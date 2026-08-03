@@ -75,6 +75,9 @@ const ZoneLook& zoneLook(StreetLights::Zone z) {
         { 0.84f, 0.92f, 1.00f,  8.0f, 17.0f, 2.1f, 0.50f, 2.7f, 0.06f },  // Approach LED
         { 1.00f, 0.85f, 0.60f,  7.0f, 15.0f, 2.0f, 0.50f, 2.5f, 0.06f },  // Apron warm white
         { 0.88f, 0.95f, 1.00f, 13.0f, 26.0f, 5.0f, 0.85f, 3.4f, 0.14f },  // Dock work light
+        // GLOW-ONLY (no geometry): the cone/head/disc strengths are unused.
+        { 1.00f, 0.82f, 0.55f,  2.6f, 10.0f, 0.0f, 0.0f, 0.0f, 0.0f },    // Window spill (warm)
+        { 1.00f, 0.55f, 0.65f,  3.2f,  9.0f, 0.0f, 0.0f, 0.0f, 0.0f },    // Sign wash (tinted per-glow)
     };
     return k[(uint32_t)z];
 }
@@ -343,11 +346,25 @@ void StreetLights::lampRow(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
     }
 }
 
-void StreetLights::buildCityLamps(Scene& scene, x3::rhi::IRenderDevice& device) {
+void StreetLights::buildCityLamps(Scene& scene, x3::rhi::IRenderDevice& device, bool dense) {
     if (m_cityBuilt) return;
     const uint32_t first = (uint32_t)m_lamps.size();
     Kit kit = makeKit(device);
 
+    // ---- CONTENT WIRING (lane inspx/content-wiring) -------------------------
+    // THE CITY WAS LIGHT-STARVED, AND NOT FOR AN ART REASON. city.cpp authors a
+    // 3x3 Scrapyard street grid, four New District mains, five side streets, an
+    // Industrial cross + connector, the Scrapyard/District freeway and the
+    // coast spur. Only NINE of those roads ever got lamps, at 30-34 m staggered
+    // (~65 m per kerbside), because the BL predecessor could not afford more
+    // than a handful of live point lights. Clustered forward lighting removed
+    // that constraint (64 -> 1024) and nothing had spent it.
+    //
+    // `dense` lights EVERY authored street at realistic urban spacing. 16 m
+    // staggered is ~32 m per kerbside, which is what a real arterial runs.
+    // ~240 lamps; with the ~8% dead variance that is ~220 live sources, the
+    // 200+ the clustered path exists to carry.
+    if (!dense) {
     // SCRAPYARD (warm sodium): the main street + the mid N-S cross street.
     lampRow(scene, kit, device, -758.0f, 500.0f, -442.0f, 500.0f, 32.0f, 9.2f, Zone::Scrapyard, true);
     lampRow(scene, kit, device, -580.0f, 444.0f, -580.0f, 556.0f, 34.0f, 7.2f, Zone::Scrapyard, true);
@@ -361,6 +378,41 @@ void StreetLights::buildCityLamps(Scene& scene, x3::rhi::IRenderDevice& device) 
     // INDUSTRIAL (warm sodium): the cross street + the freeway connector.
     lampRow(scene, kit, device, -256.0f, 350.0f, -144.0f, 350.0f, 32.0f, 6.2f, Zone::Industrial, true);
     lampRow(scene, kit, device, -200.0f, 356.0f, -200.0f, 496.0f, 34.0f, 6.2f, Zone::Industrial, true);
+    } else {
+    // ================= DENSE CITY (r_citylights 1) =======================
+    // Street geometry mirrors app/city.cpp's addRoad() calls; the row endpoints
+    // are inset ~8 m from each road end so a lamp never floats past the asphalt
+    // it lights. Spacing: 16 m staggered on the arterials, 20 m on the side
+    // streets, 30 m on the long inter-district connectors (motorway spacing,
+    // and it keeps the freeway from dominating the frame's light budget).
+    const float kMain = 16.0f, kSide = 20.0f, kLink = 30.0f;
+
+    // ---- SCRAPYARD CITY (-600, 500): 3 E-W x 3 N-S, warm sodium ----
+    lampRow(scene, kit, device, -767.0f, 500.0f, -433.0f, 500.0f, kMain, 9.2f, Zone::Scrapyard, true);
+    lampRow(scene, kit, device, -742.0f, 450.0f, -458.0f, 450.0f, kMain, 8.2f, Zone::Scrapyard, true);
+    lampRow(scene, kit, device, -717.0f, 400.0f, -483.0f, 400.0f, kMain, 7.2f, Zone::Scrapyard, true);
+    lampRow(scene, kit, device, -680.0f, 448.0f, -680.0f, 552.0f, kSide, 7.2f, Zone::Scrapyard, true);
+    lampRow(scene, kit, device, -580.0f, 448.0f, -580.0f, 552.0f, kSide, 7.2f, Zone::Scrapyard, true);
+    lampRow(scene, kit, device, -500.0f, 448.0f, -500.0f, 552.0f, kSide, 7.2f, Zone::Scrapyard, true);
+
+    // ---- NEW DISTRICT (200, 500): 4 E-W mains x 5 N-S sides, cool LED ----
+    const float mainZ[4] = { 560.0f, 500.0f, 440.0f, 410.0f };
+    for (int i = 0; i < 4; ++i)
+        lampRow(scene, kit, device, 88.0f, mainZ[i], 312.0f, mainZ[i], kMain, 8.2f,
+                Zone::NewDistrict, true);
+    const float sideX[5] = { 120.0f, 170.0f, 220.0f, 270.0f, 310.0f };
+    for (int i = 0; i < 5; ++i)
+        lampRow(scene, kit, device, sideX[i], 418.0f, sideX[i], 572.0f, kSide, 5.2f,
+                Zone::NewDistrict, true);
+
+    // ---- INDUSTRIAL ZONE (-200, 350): cross street + freeway connector ----
+    lampRow(scene, kit, device, -252.0f, 350.0f, -148.0f, 350.0f, kMain, 6.2f, Zone::Industrial, true);
+    lampRow(scene, kit, device, -200.0f, 358.0f, -200.0f, 492.0f, kSide, 6.2f, Zone::Industrial, true);
+
+    // ---- CONNECTORS: the Scrapyard/District freeway + the coast spur ----
+    lampRow(scene, kit, device, -415.0f, 500.0f,   70.0f, 500.0f, kLink, 7.4f, Zone::NewDistrict, true);
+    lampRow(scene, kit, device,  330.0f, 500.0f,  640.0f, 500.0f, kLink, 5.4f, Zone::NewDistrict, true);
+    }
 
     // THE DOCK WORK LIGHT: a flood rig on the warehouse dock edge, lighting
     // the crate-crew runs (carry lanes x 103..137, z 421..431 — the crew the
@@ -375,6 +427,32 @@ void StreetLights::buildCityLamps(Scene& scene, x3::rhi::IRenderDevice& device) 
 
     m_cityBuilt = true;
     logBuild("city (region-owned)", first);
+}
+
+// ---------------------------------------------------------------------------
+// GLOW-ONLY city lights (r_citylights 1). city.cpp already draws the emissive
+// window bands and the neon signage strips; what it never had was the POOLED
+// LIGHT those surfaces imply, so a lit window threw nothing onto the street
+// below it. These carry no geometry at all -- pure PointLights riding the lamp
+// list so they inherit the nearest-K selection, the region lifetime and the
+// teardown, with none of the post/cone/disc cost.
+// ---------------------------------------------------------------------------
+void StreetLights::adoptCityGlows(const std::vector<Glow>& glows) {
+    for (const Glow& g : glows) {
+        Lamp l;
+        l.zone      = g.sign ? Zone::Sign : Zone::Window;
+        l.cityOwned = true;
+        l.glowOnly  = true;
+        l.state     = State::Lit;
+        l.head[0] = g.pos[0]; l.head[1] = g.pos[1]; l.head[2] = g.pos[2];
+        l.color[0] = g.color[0]; l.color[1] = g.color[1]; l.color[2] = g.color[2];
+        l.range     = g.range;
+        l.intensity = g.intensity;
+        l.level     = 1.0f;
+        m_lamps.push_back(l);
+    }
+    x3::logInfo("street-lights: adopted " + std::to_string(glows.size()) +
+                " glow-only city lights (window spill + neon sign wash)");
 }
 
 void StreetLights::onCityTeardown() {

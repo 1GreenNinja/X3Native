@@ -55,6 +55,16 @@ int hostDrive(HostContext& hc) {
           sp.sunColor[0]=1.0f; sp.sunColor[1]=0.97f; sp.sunColor[2]=0.92f;
           sp.sunIntensity=1.1f; sp.haze=0.4f; sp.exposure=1.0f;
           device->setSkyParams(sp); }
+        // CONTENT WIRING: cascades for the outdoor view depth. `r_csm` was only
+        // ever pushed to the device from runDefaultHost, which a --world host
+        // REPLACES -- so this world had cascaded shadows compiled in and
+        // unreachable, and everything past the legacy 45 m box cast nothing.
+        // `--set r_csm 0` restores that legacy single cascade exactly.
+        // THE BLOCKER CASE (LANE_DISPATCH_PLAN): at 200 km/h the legacy 45 m
+        // camera-locked box is swept past the car in 0.8 s. Cascades are what
+        // racing needs; the r_shadowforward interim is still honoured through
+        // CsmParams::forwardBias for the legacy path.
+        applyOutdoorCsm(hc, *device, 400.0f, worldMode.c_str());
 
         // --- World ground: drive uses STREAMED terrain; boat/fly use a flat slab. ---
         x3::game::Scene          vscene;

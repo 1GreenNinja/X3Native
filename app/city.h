@@ -17,6 +17,7 @@
 #include "scene.h"
 #include "terrain.h"
 #include "surface_library.h"
+#include "street_lights.h"   // StreetLights::Glow -- the window/sign glow sink
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -61,8 +62,15 @@ public:
     // `sharedSurf` (optional): a caller-lifetime SurfaceLibrary (the WorldStreamer's
     // shared cache) so repeat realizes don't re-decode the PBR sets; when null the
     // builder uses a local library (self-tests / one-shot hosts).
+    // CONTENT WIRING (lane inspx/content-wiring): `outGlows`, when non-null,
+    // receives one GLOW-ONLY point light per warm-lit window band and one per
+    // neon signage strip. The emissive surfaces have always been drawn; what
+    // was missing is the light they imply falling on the street. Emitting them
+    // from HERE keeps the building roster a single source of truth -- the lamp
+    // system just adopts the list (StreetLights::adoptCityGlows).
     void build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-               SurfaceLibrary* sharedSurf = nullptr);
+               SurfaceLibrary* sharedSurf = nullptr,
+               std::vector<StreetLights::Glow>* outGlows = nullptr);
 
     // ---- Queries (host HUD + self-test) ----
     bool built() const { return m_built; }

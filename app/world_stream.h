@@ -44,6 +44,7 @@
 #include "scene.h"
 #include "level_loader.h"
 #include "surface_library.h"
+#include "street_lights.h"   // StreetLights::Glow -- the city window/sign glow sink
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -161,6 +162,14 @@ public:
     // does NOT destroy it (its owner does). Null (default) = the streamer's own
     // internal library, exactly as before.
     void setSharedSurfaceLibrary(SurfaceLibrary* lib) { m_sharedSurf = lib; }
+    // CONTENT WIRING (lane inspx/content-wiring): ask the `city` builder to
+    // emit a glow-only pooled light per lit window band + neon sign. Off by
+    // default -- City::build's emitter is a no-op without a sink, so the
+    // legacy realize is byte-identical. The region-build HOOK reads
+    // cityGlows() straight after the builder ran and hands the list to the
+    // lamp system, which owns the lifetime (region ledger) from there.
+    void setEmitCityGlows(bool on) { m_emitCityGlows = on; }
+    const std::vector<StreetLights::Glow>& cityGlows() const { return m_cityGlows; }
     // LIVING NPCs (region-owned host layers): optional hooks bracketed into the
     // region lifecycle so a host system (e.g. the city street crowds) can live
     // INSIDE a streamed region without leaking across teardown:
@@ -275,6 +284,8 @@ private:
     // textures from per-region teardown; shutdown() destroys them once.
     SurfaceLibrary m_surflib;
     SurfaceLibrary* m_sharedSurf = nullptr;  // SEAM 3: optional external library (not owned)
+    bool m_emitCityGlows = false;            // content wiring: window/sign glow lights
+    std::vector<StreetLights::Glow> m_cityGlows;  // refilled by each `city` realize
     uint32_t m_roomTag = kNoRoom;            // SEAM 3: roomId stamped on realized entities
     RegionBuildFn    m_onRegionBuild;        // LIVING NPCs: region-owned host content
     RegionTeardownFn m_onRegionTeardown;
