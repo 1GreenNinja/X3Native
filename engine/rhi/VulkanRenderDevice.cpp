@@ -915,6 +915,12 @@ FrameContext VulkanRenderDevice::beginFrame() {
         if (!m_perfEnvRead) {
             m_perfEnvRead = true;
             m_perfT0 = std::chrono::steady_clock::now();
+            // LANE 6 / M-D: the ONE number the fast-boot work needs and nobody
+            // was printing — true process-start to first rendered frame. The
+            // [boot] marks stop after device init (~1 s); every world host's own
+            // build blocks are unmarked, so this line is the only honest total
+            // for a world that does not run the --smoketest report path.
+            x3::boot::mark("FIRST FRAME (world build complete)");
             if (const char* e = std::getenv("X3_PASSTIMERS")) m_passTimersOn = (std::atoi(e) != 0);
             if (const char* d = std::getenv("X3_PASSDUMP")) {
                 m_perfAutoDumpS = (float)std::atof(d);
