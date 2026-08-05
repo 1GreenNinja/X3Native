@@ -24,7 +24,15 @@ layout(location = 0) in  vec2 vUV;
 layout(location = 0) out float outAO;
 
 void main() {
-    float centerDepth = texture(depthTex, vUV).r;
+    // HALF-RES PASS OVER A FULL-RES DEPTH BUFFER — see the long note in ssao.frag.
+    // This blur runs at the AO's half resolution but its bilateral weight reads the
+    // FULL-res depth image through a NEAREST sampler, so every depth fetch here
+    // lands exactly on the seam between two full-res texels and flip-flops on the
+    // last bit of the UV. Nudge half a full-res texel (= a quarter of an AO texel)
+    // so each fetch is unambiguously inside one texel.
+    const vec2 dNudge = pc.aoTexel * 0.25;
+
+    float centerDepth = texture(depthTex, vUV + dNudge).r;
     float sum = 0.0;
     float wsum = 0.0;
 
@@ -35,7 +43,7 @@ void main() {
             vec2 off = vec2(float(x), float(y)) * pc.aoTexel;
             vec2 uv = vUV + off;
             float ao = texture(aoTex, uv).r;
-            float d  = texture(depthTex, uv).r;
+            float d  = texture(depthTex, uv + dNudge).r;
             // Depth weight: nearby (in depth) taps count fully, distant ones fade.
             float dw = exp(-abs(d - centerDepth) / max(1e-5, pc.depthSigma));
             sum  += ao * dw;

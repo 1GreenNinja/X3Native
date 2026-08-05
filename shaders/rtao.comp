@@ -56,8 +56,15 @@ void main() {
     int outH = int(ub.params1.y);
     if (px.x >= outW || px.y >= outH) return;
 
-    // Half-res pixel -> screen UV at the texel center.
-    vec2 uv = (vec2(px) + 0.5) / vec2(outW, outH);
+    // HALF-RES DISPATCH OVER A FULL-RES DEPTH BUFFER — the defect ssao.frag
+    // documents at length. A half-res texel centre maps to full-res texel
+    // coordinate exactly 2i + 1.0, the SEAM between two depth texels, so the
+    // NEAREST depth sampler picks one or the other on the last bit of the UV;
+    // the resulting one-texel depth error is screen-locked and the derivative
+    // normal below multiplies it into a visible pinstripe on grazing surfaces.
+    // Nudging a QUARTER of an output texel is half a full-res texel at half res
+    // and a harmless sub-texel offset if this pass ever runs at full res.
+    vec2 uv = (vec2(px) + 0.5) / vec2(outW, outH) + 0.25 / vec2(outW, outH);
 
     float depth = texture(depthTex, uv).r;
     // Sky / far plane: fully unoccluded (AO = 1) so the background is untouched.

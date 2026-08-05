@@ -32,6 +32,10 @@ int hostTunnel(HostContext& hc) {
 
     x3::logInfo("--world tunnel: terrain-corridor bore demo");
 
+    // Render-pass A/B: `--set r_ssao 0` etc. reach this host too (opt-in; a run
+    // with no --set is unchanged). See world_host_common.h.
+    applyWorldHostRenderCVars(hc, *device);
+
     // ==== STEP 1 — REGISTER THE CORRIDOR, BEFORE ANY HEIGHT CONSUMER =========
     // app/terrain.h's contract: "Register corridors at BOOT, BEFORE the first
     // height query / TerrainStreamer::init()". Everything below (the streamer,

@@ -365,6 +365,13 @@ void main() {
                                    cam.ambientCount.rgb, N.y * 0.5 + 0.5, vec4(0.0)), 1.0);
         return;
     }
+    // r_debugview 8: the blurred SSAO buffer, raw. The instrument that separates
+    // "the AO term is wrong" from "the shading on top of it is wrong" — and the
+    // one that found the half-res/full-res depth-seam pinstripe (see ssao.frag).
+    if (ssao.rtsh1.w > 7.5 && ssao.rtsh1.w < 8.5) {
+        outColor = vec4(vec3(texture(ssaoTex, gl_FragCoord.xy * ssao.ctrl.zw).r), 1.0);
+        return;
+    }
     // r_debugview 6: the CLUSTER OCCUPANCY heatmap — how many lights this
     // fragment's froxel actually holds. Black = none, blue->green->red as the
     // list fills, WHITE where the froxel is at the cap and lights are being
