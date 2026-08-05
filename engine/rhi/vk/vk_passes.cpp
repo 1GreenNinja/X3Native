@@ -178,6 +178,9 @@ void VulkanRenderDevice::rewriteRtaoTlas(uint32_t slot) {
     }
 
 bool VulkanRenderDevice::buildRtSceneAS() {
+        // LANE 6: INCLUDES the blocking vkWaitForFences(UINT64_MAX) that VulkanRT.h
+        // pays per frame for the BLAS batch + the TLAS build (VULKAN_ROADMAP.md 2.1).
+        X3_CPU_ZONE(Z_AsBuild);
         // Ensure a BLAS for each distinct mesh referenced this frame — BATCHED
         // (one submit for the whole set; ~8000 per-mesh one-shot submits used to
         // cost ~6.6 s on the legacy tower's first frame, docs/BOOT_TIME.md) and
@@ -187,6 +190,7 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         constexpr uint32_t kBlasFrameBudget = 4096;
         uint32_t built = 0;
         bool     deferred = false;
+        { X3_CPU_ZONE(Z_AsBlas);
         m_rt.beginBlasBatch();
         // ---- SKINNED-CHARACTER TLAS REFIT (#3, r_skinnedrt) -------------------
         // Per-frame, build/refit a BLAS for each visible skinned character from its
@@ -261,6 +265,7 @@ bool VulkanRenderDevice::buildRtSceneAS() {
                 ++built;
         }
         m_rt.endBlasBatch();
+        }   // end Z_AsBlas
         // PERF (measured, 33 skinned chars, RT GPU): cold = ~30 ms for 33 full BLAS
         // BUILDS (one-time warm-up, attributed to the batched-AS boundary); steady
         // state = ~2.0-2.6 ms for 33 REFITS incl. the fence wait (~60-75 us/char) —
@@ -278,12 +283,31 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         // Build the TLAS from this frame's instances. hasBlas() now returns true for
         // skinned meshes too (their per-frame skinned BLAS built above), so skinned
         // characters enter the TLAS automatically alongside static geometry.
+        // LANE 6: this repack walks EVERY draw record (~92,000 in echotropolis),
+        // does up to two hash lookups per record (hasBlas + hasSkinnedBlas) and a
+        // 64-byte memcpy. It is pure CPU and has never been separated from the AS
+        // build's fence waits in any measurement.
+        uint64_t sig = 0;
+        { X3_CPU_ZONE(Z_AsInstances);
         m_rtInstScratch.clear();
         m_rtInstScratch.reserve(m_drawRecords.size());
         m_skinnedRtInstances = 0;
+        // LANE 6 (measured fix): this loop used to do hasBlas() + hasSkinnedBlas()
+        // — FOUR unordered_map probes — for every one of ~90,000 draw records, and
+        // buildTlas then repeated two of them. Draw records arrive in runs of the
+        // same mesh (every EnvArt system fans its instances consecutively), so a
+        // one-entry memo collapses almost all of it, and the resolved address is
+        // handed to buildTlas so it never looks up again.
+        uint32_t        memoMesh    = UINT32_MAX;
+        VkDeviceAddress memoAddr    = 0;
+        bool            memoSkinned = false;
         for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
             const DrawRecord& dr = m_drawRecords[i];
-            if (!m_rt.hasBlas(dr.meshId)) continue;
+            if (dr.meshId != memoMesh) {
+                memoMesh = dr.meshId;
+                memoAddr = m_rt.blasAddrOf(dr.meshId, &memoSkinned);
+            }
+            if (!memoAddr) continue;
             // GLASS never enters the TLAS (2026-07-30). A translucent draw as an
             // RT occluder is a lie the rays can't see through: the street lamps'
             // fake-volumetric GLOW CONES enveloped their own emitters, so every
@@ -311,9 +335,10 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             // never drawn glass. AO / reflections / DDGI / acoustics trace with
             // cullMask 0xFF and still see glass exactly as before.
             inst.mask = (dr.flags & kFlagGlass) ? 0x7Fu : 0xFFu;
+            inst.blasAddr = memoAddr;
             std::memcpy(inst.model, dr.model, sizeof(inst.model));
             m_rtInstScratch.push_back(inst);
-            if (m_rt.hasSkinnedBlas(dr.meshId)) ++m_skinnedRtInstances;
+            if (memoSkinned) ++m_skinnedRtInstances;
         }
 
         // Decide whether to (re)build the TLAS this frame. Rebuilding into the SAME
@@ -327,7 +352,17 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         //   * rebuildTlasEachFrame=true (moving geometry): rebuild every frame, idling
         //     first so the prior frame's compute has retired before the backing is
         //     overwritten. Correct (if heavier) — for dynamic scenes.
-        const uint64_t sig = tlasSignature(m_rtInstScratch);
+        // LANE 6 (measured fix): the signature exists ONLY to answer "can we skip
+        // the rebuild?". When a rebuild is already forced — first build, any skinned
+        // BLAS refit this frame (which is EVERY frame with characters on screen),
+        // or rebuildTlasEachFrame — hashing ~90k instances x 18 FNV mixes answers a
+        // question nobody asked. Skip it and store 0 as a "signature unknown"
+        // sentinel; the first genuinely static frame afterwards recomputes, sees a
+        // difference, rebuilds once, and settles back onto the static fast path.
+        const bool rebuildForced = !m_rt.tlasBuilt() || m_skinnedRtThisFrame
+                                || m_rtao.rebuildTlasEachFrame;
+        sig = rebuildForced ? 0ull : tlasSignature(m_rtInstScratch);
+        }   // end Z_AsInstances
         const bool firstBuild = !m_rt.tlasBuilt();
         const bool changed    = (sig != m_rtTlasSig);
         // SKINNED: a refit BLAS keeps its handle/address but its geometry (and thus
@@ -360,7 +395,8 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         // steady-state per-frame wait is zero.
         ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (TLAS (re)build)
         const VkAccelerationStructureKHR before = m_rt.tlas();
-        if (!m_rt.buildTlas(m_rtInstScratch)) return false;
+        { X3_CPU_ZONE(Z_AsTlas);
+          if (!m_rt.buildTlas(m_rtInstScratch)) return false; }
         m_rtTlasSig = sig;
         // SKINNED-RT telemetry/proof (one-shot edge log): the first frame any skinned
         // character actually enters the TLAS, report how many + the BLAS build/refit
@@ -1114,6 +1150,13 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
                       uint32_t extraFlags, const GlassMaterial* glass,
                       float clearcoat , float clearcoatRough , float selfLight ,
                       float metallicScale , float foliage ) {
+        // LANE 6: this walk is the cost `docs/screenshots/gpucull/RESULTS.md:46-54`
+        // names ("dominated by the immediate-mode drawMesh() submission walk") but
+        // never measured against the rest of the frame. Now it is a named bucket —
+        // and DrawScope ALSO charges the gap since the previous drawMesh returned
+        // to cpu.host_drawfan, which is how the host's per-instance work becomes
+        // visible without editing a single host file (see x3_cpuzones.h).
+        ::x3::perf::DrawScope _x3draw;
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1253,6 +1296,7 @@ void VulkanRenderDevice::drawPlanet(const FrameContext& fc, MeshHandle mesh, con
 
 void VulkanRenderDevice::drawHudQuad(const FrameContext& fc, float xPx, float yPx,
                  float wPx, float hPx, const float rgba[4]) {
+        X3_CPU_ZONE(Z_Hud);
         if (!fc.valid || !m_hudPipeline) return;
         const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
                              rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
@@ -1441,6 +1485,7 @@ void VulkanRenderDevice::emitQuad(HudVertex out[6], float xPx, float yPx, float 
     }
 
 void VulkanRenderDevice::prepareFrameData() {
+        X3_CPU_ZONE(Z_Prepare);
         if (m_framePrepared) return;
         m_framePrepared = true;
         m_frameCmdCount = 0; m_frameCmdOpaque = 0;

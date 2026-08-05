@@ -773,6 +773,13 @@ void VulkanRenderDevice::setDdgiParams(const DdgiParams& p) {
         // hardware — on anything else this is a harmless store and the graph
         // never adds the DDGI passes (raster ambient is byte-for-byte unchanged).
         m_ddgi = p;
+        // LANE 6 A/B LOCK: X3_FORCE_DDGI=0|1 pins the enable flag against the
+        // host's per-frame cvar sync. The world hosts re-push r_ddgi every frame,
+        // so an A/B run had no scriptable way to hold a toggle — this gives one
+        // without editing a host file. Unset = untouched behaviour.
+        { static const int lock = []{ const char* e = std::getenv("X3_FORCE_DDGI");
+                                      return e ? (std::atoi(e) ? 1 : 0) : -1; }();
+          if (lock >= 0) m_ddgi.enabled = (lock != 0); }
         m_ddgi.countX = std::max(2, std::min(32, m_ddgi.countX));
         m_ddgi.countY = std::max(2, std::min(32, m_ddgi.countY));
         m_ddgi.countZ = std::max(2, std::min(32, m_ddgi.countZ));
@@ -809,7 +816,11 @@ void VulkanRenderDevice::setSkinnedRtEnabled(bool enabled) {
         // OFF, buildRtSceneAS skips the skinned-BLAS pass entirely and the static
         // RT path is byte-identical to the pre-feature behavior. Harmless store on a
         // non-RT GPU (the whole RT block is gated by m_rtSupported regardless).
-        m_skinnedRtEnabled = enabled;
+        // LANE 6 A/B LOCK: X3_FORCE_SKINNEDRT=0|1 pins this against the host's
+        // per-frame cvar sync so `r_skinnedrt` is scriptable from a launch line.
+        static const int lock = []{ const char* e = std::getenv("X3_FORCE_SKINNEDRT");
+                                    return e ? (std::atoi(e) ? 1 : 0) : -1; }();
+        m_skinnedRtEnabled = (lock >= 0) ? (lock != 0) : enabled;
 }
 bool VulkanRenderDevice::skinnedRtEnabled() const { return m_skinnedRtEnabled; }
 uint32_t VulkanRenderDevice::skinnedRtInstanceCount() const { return m_skinnedRtInstances; }
@@ -873,6 +884,10 @@ void VulkanRenderDevice::submitDecals(const DecalInstance* decals, uint32_t coun
     }
 
 FrameContext VulkanRenderDevice::beginFrame() {
+        // LANE 6: this bucket is where GPU BACK-PRESSURE shows up — the
+        // vkWaitForFences below blocks until the ring slot's prior submission
+        // retires. Big here = the frame is GPU-bound. Small here = CPU-bound.
+        X3_CPU_ZONE(Z_BeginFrame);
         FrameContext fc{};
         // BOOT-TIME upload batching: SUBMIT any still-recording uploads (queue
         // order + the trailing barrier give this frame full visibility — no CPU
@@ -907,15 +922,43 @@ FrameContext VulkanRenderDevice::beginFrame() {
         // timestamps (written kFramesInFlight frames ago) are now guaranteed
         // available — read them back without a stall, then recycle the pool.
         if (m_tsSupported && fr.tsPending) {
-            uint64_t ticks[2] = { 0, 0 };
-            VkResult qr = vkGetQueryPoolResults(m_dev.device, fr.tsPool, 0, 2,
-                sizeof(ticks), ticks, sizeof(uint64_t),
-                VK_QUERY_RESULT_64_BIT);
-            if (qr == VK_SUCCESS) {
-                uint64_t t0 = ticks[0] & m_tsValidMask;
-                uint64_t t1 = ticks[1] & m_tsValidMask;
-                if (t1 >= t0)
-                    m_lastGpuMs = (float)((t1 - t0) * (double)m_tsPeriodNs * 1e-6);
+            // LANE 6: read the whole-frame bracket AND every per-pass pair in one
+            // call. WITH_AVAILABILITY is deliberate — a pass that was recorded but
+            // whose queries somehow did not resolve reports availability 0 instead
+            // of returning VK_NOT_READY for the entire batch and poisoning the
+            // frame bracket that used to be the only measurement we had.
+            const uint32_t nQ = 2u + fr.tsPassCount * 2u;
+            uint64_t raw[kFrameTsQueries * 2] = {};   // {value, availability} pairs
+            VkResult qr = vkGetQueryPoolResults(m_dev.device, fr.tsPool, 0, nQ,
+                sizeof(uint64_t) * 2 * nQ, raw, sizeof(uint64_t) * 2,
+                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            if (qr == VK_SUCCESS || qr == VK_NOT_READY) {
+                auto val   = [&](uint32_t q) { return raw[q * 2] & m_tsValidMask; };
+                auto avail = [&](uint32_t q) { return raw[q * 2 + 1] != 0; };
+                float frameGpuMs = 0.0f;
+                if (avail(0) && avail(1) && val(1) >= val(0)) {
+                    m_lastGpuMs = (float)((val(1) - val(0)) * (double)m_tsPeriodNs * 1e-6);
+                    frameGpuMs = m_lastGpuMs;
+                }
+                // Per-pass GPU ms, in the same order the graph recorded them.
+                float passGpuMs[kMaxTimedPasses] = {};
+                for (uint32_t p = 0; p < fr.tsPassCount; ++p) {
+                    const uint32_t q0 = 2u + p * 2u, q1 = q0 + 1u;
+                    if (avail(q0) && avail(q1) && val(q1) >= val(q0))
+                        passGpuMs[p] = (float)((val(q1) - val(q0)) * (double)m_tsPeriodNs * 1e-6);
+                }
+                // THE THREE DEAD FIELDS, FINALLY ASSIGNED. `m_cullGpuMs` and
+                // `m_hzbGpuMs` have been declared-and-never-written since D15; the
+                // HUD has printed "cull 0.00/0.00" on every machine ever since.
+                m_cullGpuMs = m_hzbGpuMs = 0.0f;
+                for (uint32_t p = 0; p < fr.tsPassCount; ++p) {
+                    const char* n = fr.tsPassNames[p];
+                    if (!n) continue;
+                    if      (std::strcmp(n, "gpu-cull")  == 0) m_cullGpuMs += passGpuMs[p];
+                    else if (std::strcmp(n, "hzb-build") == 0) m_hzbGpuMs  += passGpuMs[p];
+                }
+                m_perfFrameGpuMs += frameGpuMs;
+                accumulatePerfFrame(fr, passGpuMs);
             }
             fr.tsPending = false;
         }
@@ -974,7 +1017,37 @@ FrameContext VulkanRenderDevice::beginFrame() {
         // on the command buffer (vs host) keeps the pool's availability state
         // VUID-correct: every query is reset, then written exactly once below.
         if (m_tsSupported && fr.tsPool)
-            vkCmdResetQueryPool(fr.cmd, fr.tsPool, 0, 2);
+            vkCmdResetQueryPool(fr.cmd, fr.tsPool, 0, kFrameTsQueries);
+
+        // LANE 6: hand the render graph this slot's per-pass query range. Queries
+        // [0,1] stay the whole-frame bracket; [2..) are the pass pairs. X3_PASSTIMERS=0
+        // (read once below) disables them so the measurement overhead is itself A/B-able.
+        if (!m_perfEnvRead) {
+            m_perfEnvRead = true;
+            m_perfT0 = std::chrono::steady_clock::now();
+            if (const char* e = std::getenv("X3_PASSTIMERS")) m_passTimersOn = (std::atoi(e) != 0);
+            if (const char* d = std::getenv("X3_PASSDUMP")) {
+                m_perfAutoDumpS = (float)std::atof(d);
+                if (m_perfAutoDumpS > 0.0f) {
+                    m_perfNextDumpS = m_perfAutoDumpS;
+                    logInfo("[perf] X3_PASSDUMP active: per-pass GPU+CPU breakdown every " +
+                            std::to_string(m_perfAutoDumpS) + " s");
+                }
+            }
+            x3::perf::zonesEnabled() = m_passTimersOn;
+        }
+        if (m_tsSupported && fr.tsPool && m_passTimersOn)
+            m_graph.enableTiming(fr.tsPool, 2, kMaxTimedPasses);
+        else
+            m_graph.disableTiming();
+        // LANE 6: fold the PREVIOUS frame's CPU zone buckets into the rolling
+        // window, THEN clear for this frame. This must happen here and not at the
+        // end of endFrame: the Z_EndFrameTotal scope only destructs when endFrame
+        // RETURNS, so accumulating inside endFrame recorded it as 0 and the
+        // residual row went negative. (Found by the breakdown reporting a -22.7 ms
+        // row — the instrumentation caught its own bug.)
+        accumulateCpuZones();
+        x3::perf::frameAccum().reset();
 
         // Timestamp the start of the frame at TOP_OF_PIPE; paired with the
         // BOTTOM_OF_PIPE stamp at endFrame this brackets the whole frame (shadow
@@ -1000,6 +1073,7 @@ FrameContext VulkanRenderDevice::beginFrame() {
 
 void VulkanRenderDevice::endFrame(const FrameContext& fc) {
         if (!fc.valid) return;
+        X3_CPU_ZONE(Z_EndFrameTotal);
         auto& fr = m_frames[m_frameIdx];
         uint32_t imageIndex = fc.backbuffer;
 
@@ -1162,7 +1236,7 @@ void VulkanRenderDevice::endFrame(const FrameContext& fc) {
         submit.commandBufferInfoCount   = 1;   submit.pCommandBufferInfos = &cmdS;
         submit.signalSemaphoreInfoCount = m_headless ? 0u : 1u;
         submit.pSignalSemaphoreInfos    = m_headless ? nullptr : &signalS;
-        vkQueueSubmit2(m_gfxQueue, 1, &submit, fr.inFlight);
+        { X3_CPU_ZONE(Z_Submit); vkQueueSubmit2(m_gfxQueue, 1, &submit, fr.inFlight); }
         m_asyncCullThisFrame = false;
 
         // Fix 1: if this frame recorded the capture copy, remember which fence to
@@ -1184,6 +1258,7 @@ void VulkanRenderDevice::endFrame(const FrameContext& fc) {
             present.swapchainCount = 1;
             present.pSwapchains = &m_swapchain;
             present.pImageIndices = &imageIndex;
+            X3_CPU_ZONE(Z_Submit);
             VkResult pr = vkQueuePresentKHR(m_gfxQueue, &present);
             if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) m_needsRecreate = true;
         }
@@ -1238,6 +1313,184 @@ void VulkanRenderDevice::endFrame(const FrameContext& fc) {
     }
 
 RenderStats VulkanRenderDevice::stats() const { return m_lastStats; }
+
+// ===========================================================================
+// LANE 6 — PER-PASS / PER-ZONE PERF BREAKDOWN
+//
+// Before this, `engine/rhi/vk/vk_resources.cpp` created a 2-query timestamp pool
+// (frame start, frame end) and NOTHING else. m_cullGpuMs / m_hzbGpuMs were
+// declared with the comment "(0 = not measured)" and never assigned; the HUD
+// printed `cull 0.00/0.00` on every machine that has ever run this engine. The
+// consequence, spelled out in docs/VULKAN_ROADMAP.md 1.2: EVERY per-pass
+// millisecond quoted anywhere in this repo is a whole-frame delta, not a pass
+// cost. This code is what makes a pass cost a real measurement.
+// ===========================================================================
+
+void VulkanRenderDevice::resetPerfWindow() {
+        for (uint32_t i = 0; i < m_perfPassCount; ++i) {
+            m_perfPass[i].gpuMs = m_perfPass[i].cpuMs = 0.0;
+            m_perfPass[i].frames = 0;
+        }
+        // Keep the name slots (identity is stable) but drop the counts.
+        for (uint32_t z = 0; z < x3::perf::Z_Count; ++z) { m_perfCpuTicks[z] = 0; m_perfCpuCalls[z] = 0; }
+        m_perfFrameCpuMs = m_perfFrameGpuMs = 0.0;
+        m_perfFrames = m_perfCpuFrames = 0;
+    }
+
+void VulkanRenderDevice::accumulatePerfFrame(const Frame& fr, const float* passGpuMs) {
+        for (uint32_t p = 0; p < fr.tsPassCount; ++p) {
+            const char* n = fr.tsPassNames[p];
+            if (!n) continue;
+            // Find (or create) the accumulator row for this pass. Names are string
+            // literals, so pointer identity is a valid fast path; strcmp is the
+            // fallback for two literals that the linker did not pool.
+            uint32_t row = UINT32_MAX;
+            for (uint32_t i = 0; i < m_perfPassCount; ++i) {
+                if (m_perfPass[i].name == n || std::strcmp(m_perfPass[i].name, n) == 0) { row = i; break; }
+            }
+            if (row == UINT32_MAX) {
+                if (m_perfPassCount >= kMaxTimedPasses) continue;
+                row = m_perfPassCount++;
+                m_perfPass[row].name = n;
+            }
+            m_perfPass[row].gpuMs += passGpuMs[p];
+            m_perfPass[row].cpuMs += fr.tsPassCpuMs[p];
+            m_perfPass[row].frames += 1;
+        }
+        ++m_perfFrames;
+    }
+
+void VulkanRenderDevice::accumulateCpuZones() {
+        const x3::perf::FrameAccum& a = x3::perf::frameAccum();
+        for (uint32_t z = 0; z < x3::perf::Z_Count; ++z) {
+            m_perfCpuTicks[z] += a.ticks[z];
+            m_perfCpuCalls[z] += a.calls[z];
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (m_perfHaveLastEnd)
+            m_perfFrameCpuMs += std::chrono::duration<double, std::milli>(now - m_perfLastEnd).count();
+        m_perfLastEnd = now; m_perfHaveLastEnd = true;
+        ++m_perfCpuFrames;
+
+        // Console-side requests (see x3_cpuzones.h Control — the console lives in a
+        // host file this lane may not edit, so it posts a request instead).
+        x3::perf::Control& ctl = x3::perf::control();
+        if (ctl.setTimers >= 0) { setPassTimers(ctl.setTimers != 0); ctl.setTimers = -1; }
+        if (ctl.dumpRequest)    { ctl.dumpRequest = false; logPerfBreakdown("console"); resetPerfWindow(); return; }
+
+        if (m_perfAutoDumpS > 0.0f) {
+            const double tS = std::chrono::duration<double>(now - m_perfT0).count();
+            if (tS >= m_perfNextDumpS) {
+                m_perfNextDumpS = tS + m_perfAutoDumpS;
+                logPerfBreakdown("auto");
+                resetPerfWindow();
+            }
+        }
+    }
+
+void VulkanRenderDevice::logPerfBreakdown(const char* why) {
+        if (m_perfCpuFrames == 0) { logInfo("[perf] no frames in window"); return; }
+        char b[256];
+        const double invG = m_perfFrames    ? 1.0 / (double)m_perfFrames    : 0.0;
+        const double invC = m_perfCpuFrames ? 1.0 / (double)m_perfCpuFrames : 0.0;
+        const double frameCpu = m_perfFrameCpuMs * invC;
+        const double frameGpu = m_perfFrameGpuMs * invG;
+
+        std::snprintf(b, sizeof(b),
+            "[perf] ===== FRAME COST BREAKDOWN (%s) — %u frames — CPU %.2f ms/frame "
+            "(%.1f FPS) | GPU %.2f ms/frame =====",
+            why, m_perfCpuFrames, frameCpu, frameCpu > 0.0 ? 1000.0 / frameCpu : 0.0, frameGpu);
+        logInfo(b);
+        std::snprintf(b, sizeof(b),
+            "[perf]   scene: drawMesh submitted %u  distinct meshes %u  objects drawn %u  "
+            "TLAS instances %u  BLAS %u",
+            m_lastStats.objectsSubmitted, (uint32_t)m_groupOrder.size(),
+            m_lastStats.objectsDrawn, m_rt.lastInstanceCount(), m_rt.blasCount());
+        logInfo(b);
+        if (!m_passTimersOn) {
+            logInfo("[perf]   (per-pass timers DISABLED via X3_PASSTIMERS=0 — GPU rows are empty)");
+        }
+
+        // ---- CPU side first: the frame is CPU-bound, so this is the story. ----
+        // Leaves that partition the device's share of the frame. endframe_total is
+        // a COMPOSITE (it contains prepare/as/graph/submit) so it is not summed;
+        // its residual is reported instead.
+        const uint32_t leaves[] = { x3::perf::Z_BeginFrame, x3::perf::Z_DrawMesh,
+                                    x3::perf::Z_HostDrawFan,
+                                    x3::perf::Z_Skin, x3::perf::Z_Hud,
+                                    x3::perf::Z_Prepare, x3::perf::Z_AsBuild,
+                                    x3::perf::Z_GraphRecord, x3::perf::Z_Submit };
+        double leafSum = 0.0;
+        logInfo("[perf]   -- CPU (per frame) ------------------------------------");
+        for (uint32_t li = 0; li < sizeof(leaves) / sizeof(leaves[0]); ++li) {
+            const uint32_t z = leaves[li];
+            const double ms = x3::perf::ticksToMs(m_perfCpuTicks[z]) * invC;
+            leafSum += ms;
+            std::snprintf(b, sizeof(b), "[perf]   %-20s %8.3f ms  %5.1f%%   calls/frame %8.1f",
+                          x3::perf::zoneName(z), ms, frameCpu > 0.0 ? 100.0 * ms / frameCpu : 0.0,
+                          (double)m_perfCpuCalls[z] * invC);
+            logInfo(b);
+        }
+        {
+            const double endTot = x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_EndFrameTotal]) * invC;
+            const double endOther = endTot
+                - x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_Prepare]) * invC
+                - x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_AsBuild]) * invC
+                - x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_GraphRecord]) * invC
+                - x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_Submit]) * invC;
+            std::snprintf(b, sizeof(b), "[perf]   %-20s %8.3f ms  %5.1f%%   (endFrame minus its named children)",
+                          "cpu.endframe_rest", endOther, frameCpu > 0.0 ? 100.0 * endOther / frameCpu : 0.0);
+            logInfo(b);
+            leafSum += endOther;
+            // Everything the frame spends OUTSIDE the render device: game tick,
+            // physics, AI/LLM, the host's EnvArt draw fans' own loop overhead,
+            // world streaming, input. This is the number nobody has ever had.
+            const double host = frameCpu - leafSum;
+            std::snprintf(b, sizeof(b), "[perf]   %-20s %8.3f ms  %5.1f%%   <- game tick/physics/AI/streaming",
+                          "cpu.host_outside", host, frameCpu > 0.0 ? 100.0 * host / frameCpu : 0.0);
+            logInfo(b);
+        }
+        // Nested sub-buckets: these are INSIDE cpu.rt_as_build, printed after the
+        // partition so they are never mistaken for additional cost.
+        {
+            const uint32_t subs[] = { x3::perf::Z_AsBlas, x3::perf::Z_AsInstances, x3::perf::Z_AsTlas };
+            for (uint32_t si = 0; si < 3; ++si) {
+                const double ms = x3::perf::ticksToMs(m_perfCpuTicks[subs[si]]) * invC;
+                std::snprintf(b, sizeof(b), "[perf]   %-20s %8.3f ms          (inside cpu.rt_as_build)",
+                              x3::perf::zoneName(subs[si]), ms);
+                logInfo(b);
+            }
+        }
+
+        // ---- GPU side: real per-pass timestamps, sorted by cost. ----
+        logInfo("[perf]   -- GPU passes (per frame, sorted) ---------------------");
+        uint32_t order[kMaxTimedPasses];
+        for (uint32_t i = 0; i < m_perfPassCount; ++i) order[i] = i;
+        for (uint32_t i = 1; i < m_perfPassCount; ++i) {   // insertion sort, tiny N
+            const uint32_t k = order[i];
+            int j = (int)i - 1;
+            while (j >= 0 && m_perfPass[order[j]].gpuMs < m_perfPass[k].gpuMs) { order[j + 1] = order[j]; --j; }
+            order[j + 1] = k;
+        }
+        double gpuSum = 0.0, passCpuSum = 0.0;
+        for (uint32_t i = 0; i < m_perfPassCount; ++i) {
+            const PerfPassAccum& r = m_perfPass[order[i]];
+            if (r.frames == 0) continue;
+            const double g = r.gpuMs * invG;      // averaged over ALL window frames
+            const double c = r.cpuMs * invG;      // (a pass that ran in half the
+            gpuSum += g; passCpuSum += c;         //  frames costs half as much/frame)
+            std::snprintf(b, sizeof(b),
+                "[perf]   %-22s gpu %7.3f ms %5.1f%%  cpu-record %7.3f ms   ran %u/%u frames",
+                r.name, g, frameGpu > 0.0 ? 100.0 * g / frameGpu : 0.0, c, r.frames, m_perfFrames);
+            logInfo(b);
+        }
+        std::snprintf(b, sizeof(b),
+            "[perf]   pass gpu sum %.2f ms vs frame bracket %.2f ms (delta %.2f = gaps/overlap) | "
+            "pass cpu-record sum %.2f ms",
+            gpuSum, frameGpu, frameGpu - gpuSum, passCpuSum);
+        logInfo(b);
+        logInfo("[perf] ===== end breakdown =====");
+    }
 
 VulkanRenderDevice::FramePacing VulkanRenderDevice::framePacing() const {
         FramePacing p{};

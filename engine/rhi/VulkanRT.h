@@ -419,7 +419,25 @@ public:
         // exactly as before.
         uint8_t  mask = 0xFF;
         float    model[16];   // column-major 4x4 (the renderer's ObjectData::model)
+        // LANE 6: the caller has ALREADY resolved this mesh's BLAS address (it has
+        // to, to decide whether the instance is admissible at all), so carrying it
+        // here removes a SECOND pair of unordered_map lookups per instance inside
+        // buildTlas. With ~90k draw records in echotropolis that pair of lookups
+        // was pure duplicated work. 0 = "not resolved, look it up" (old behaviour).
+        VkDeviceAddress blasAddr = 0;
     };
+
+    // Resolve a mesh's BLAS device address (static first, then skinned). 0 = no
+    // BLAS. `isSkinned` (optional) reports which table answered, so a caller that
+    // needs BOTH facts pays ONE lookup instead of hasBlas()+hasSkinnedBlas().
+    VkDeviceAddress blasAddrOf(uint32_t meshId, bool* isSkinned = nullptr) const {
+        auto it = m_blas.find(meshId);
+        if (it != m_blas.end()) { if (isSkinned) *isSkinned = false; return it->second.addr; }
+        auto sk = m_skinnedBlas.find(meshId);
+        if (sk != m_skinnedBlas.end()) { if (isSkinned) *isSkinned = true; return sk->second.addr; }
+        if (isSkinned) *isSkinned = false;
+        return 0;
+    }
 
     // Rebuild the TLAS from the given instance list (instances whose mesh has no
     // BLAS are skipped). Recorded as a one-time submit (static-first v1). The TLAS
@@ -451,12 +469,16 @@ public:
         m_instScratch.clear();
         m_instScratch.reserve(instances.size());
         for (const TlasInstance& in : instances) {
-            VkDeviceAddress blasAddr = 0;
-            auto it = m_blas.find(in.meshId);
-            if (it != m_blas.end()) blasAddr = it->second.addr;
-            else {
-                auto sk = m_skinnedBlas.find(in.meshId);
-                if (sk != m_skinnedBlas.end()) blasAddr = sk->second.addr;
+            // LANE 6: use the address the caller already resolved; fall back to the
+            // table lookup only for callers that did not pre-resolve one.
+            VkDeviceAddress blasAddr = in.blasAddr;
+            if (!blasAddr) {
+                auto it = m_blas.find(in.meshId);
+                if (it != m_blas.end()) blasAddr = it->second.addr;
+                else {
+                    auto sk = m_skinnedBlas.find(in.meshId);
+                    if (sk != m_skinnedBlas.end()) blasAddr = sk->second.addr;
+                }
             }
             if (!blasAddr) continue;
             VkAccelerationStructureInstanceKHR row{};
