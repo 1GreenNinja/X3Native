@@ -88,7 +88,12 @@ int hostTunnel(HostContext& hc) {
 
     // ==== STEP 3 — the road, the shell, the portals ==========================
     x3::game::TunnelCorridorWorld tunnel;
-    tunnel.build(scene, *device, *phys, route);
+    // The streamer's ground texture IS the terrain splat MARKER. Handing it to
+    // the tunnel is what lets the BACKFILL LID — the mesh that carries the
+    // hillside back over the cut-and-cover bore — shade through the same
+    // height/slope splat as the streamed tiles instead of reading as a separate
+    // object draped over the hill. Without it the build warns and falls back.
+    tunnel.build(scene, *device, *phys, route, streamer.groundTexture());
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
@@ -144,6 +149,9 @@ int hostTunnel(HostContext& hc) {
                 { 2, "03_far_mouth" },
                 { 3, "04_saddle"    },
                 { 4, "05_portal_detail" },
+                { 5, "06_mouth_headon" },
+                { 6, "07_inside_looking_out" },
+                { 7, "08_exit_portal" },
             };
             for (const Shot& sh : shots) {
                 float cam[5]; tunnel.showcaseCamera(route, sh.which, cam);

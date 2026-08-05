@@ -9,15 +9,46 @@
 // derived from that grade, and then lays a road ribbon + an arched tunnel tube
 // + portal headwalls into the depression the corridor just made.
 //
-// THE SHAPE OF THE TRICK (why there is no hole in the ground):
-//   * On the APPROACHES the corridor is cut all the way down to the road, so
-//     the road runs in an OPEN CUTTING with sloped shoulders. No shell.
-//   * Under the HILL the corridor is only cut down to (road + tube + soil
-//     cover), so the ground stays ABOVE the tube. That stretch is ENCLOSED and
-//     gets walls + a crown. The terrain is the tunnel's lid; there is no hole,
-//     no CSG, no voxel, and h(x,z) is still single-valued.
-//   * The step between those two regimes is the PORTAL. Real tunnels have a
-//     headwall there for exactly the same reason.
+// THE SHAPE OF THE TRICK — REVISED (fix/tunnel-mouth). The original build had
+// TWO depth regimes: cut to road level on the approaches, cut only to
+// (road + tube + cover) under the hill so the TERRAIN was the tunnel's roof.
+// That shipped a defect its own author flagged as irreducible: ~9 m of road per
+// mouth buried under an earth ramp. It is worse than irreducible — it is
+// UNFIXABLE in that form, and here is the proof:
+//
+//   Walk the road centreline. Where the road is open to the sky the ground is
+//   AT road level. Where the terrain is the roof the ground is ABOVE the crown.
+//   h(s) is continuous. By the intermediate value theorem it must pass through
+//   every height in between — including the whole interval (road, crown), which
+//   is the inside of the bore. So there is ALWAYS an s-interval where the
+//   ground surface is inside the tunnel, on the roadway. Tightening the falloff
+//   only shortens that interval; driving it to zero would need an infinite
+//   gradient, and the limit case is a vertical WALL of earth across the bore,
+//   which is worse, not better. A single-valued heightfield cannot roof a
+//   drivable tunnel mouth. Full stop.
+//
+// So this module now builds the tunnel the way one is actually built:
+//   * CUT-AND-COVER. The corridor is cut to ROAD LEVEL along its ENTIRE length
+//     — under the ridge as well as on the approaches. h(x,z) is therefore never
+//     above the road anywhere on the roadway, for any route, on any regenerated
+//     terrain. The defect is gone BY CONSTRUCTION, not by tuning.
+//   * THE BACKFILL LID. The hillside over the tube is put back as ONE swept
+//     static mesh reconstructing the PRE-corridor surface, drawn with the
+//     terrain splat marker so it shades identically to the ground and meets the
+//     untouched terrain EXACTLY at the corridor's zero-delta boundary (the seam
+//     is exact by construction — terrainCorridorDelta() is precisely 0 there).
+//     This is the one deliberate, LOCAL break of the single-value rule: the
+//     heightfield itself stays single-valued (streamer, collision soup, horizon
+//     ring, placeOnTerrain, worldWaterLevelAt all untouched); one mesh, ~8 k
+//     triangles, one draw call carries the overhang. That is the honest cost.
+//   * THE PORTAL is then a real portal: a headwall standing proud of the
+//     backfill with the arch cut through its spandrel, WINGWALLS tapering out
+//     of it into the hillside until they die at the zero-delta seam, and a
+//     projecting arch ring in front of the face.
+//   * THE APPROACH CUTTING is part of the tunnel: retaining walls stand at the
+//     toe of the cut batter on both shoulders, their tops following the natural
+//     grade while the road stays flat, splaying outward into the headwall.
+//     The ground is HELD BACK BESIDE the road instead of climbing across it.
 //
 // PROVENANCE (clean-room — docs/CLEANROOM_PROCESS.md). The TECHNIQUE was
 // learned by studying the behaviour of the Babylon/BL predecessor world, as
@@ -70,22 +101,64 @@ constexpr float kTcMinSoilCover   = 3.5f;   // ground kept above the tube's oute
 // Corridor footprint. The flat floor must be wider than the tube's outer shell
 // so the tube sits INSIDE the depression, never straddling its shoulder.
 constexpr float kTcCorridorHalfW  = 8.8f;
-// The shoulder run is deliberately SHORT. It is not just a cosmetic slope: the
-// corridor's depth step at a portal is rounded off over roughly
-// (halfWidth + falloff) by the union's end caps, and over that run the ground
-// sweeps from road level up past the tube's crown — i.e. straight through the
-// bore. Every metre of falloff is a metre of earth ramp inside the tunnel
-// mouth, so keep it tight and let the cutting walls be steep, rock-cut walls.
-constexpr float kTcCorridorFall   = 10.0f;
+// The shoulder run. Under the old two-regime build this had to be kept tight
+// because every metre of it was a metre of earth ramp inside the mouth. With
+// cut-and-cover the depth profile no longer steps at the portal at all, so the
+// falloff is now free to be a believable cut batter — and it is also the run
+// over which the BACKFILL LID blends back to the untouched hillside. At
+// halfWidth + falloff the corridor delta is exactly 0, which is what makes the
+// lid's outer seam exact rather than tuned.
+constexpr float kTcCorridorFall   = 14.0f;
 // Road grading. kTcMinCut keeps the ribbon in a shallow groove even on open
 // ground so it never fights the bumpy natural surface; kTcMaxGrade is the
 // steepest the profile may climb (4.5 %, a real motorway limit).
 constexpr float kTcMinCut         = 1.6f;
 constexpr float kTcMaxGrade       = 0.045f;
-// The honest cost of the technique (BL_WORLD_PORT.md §4.3b: "the hill above a
-// tunnel gets a visible saddle"). kTcMaxScar CAPS how much material the bore
-// reach may remove, so the ridge gets a shallow dip instead of being gutted.
-constexpr float kTcMaxScar        = 9.0f;
+// BL_WORLD_PORT.md §4.3b warned that "the hill above a tunnel gets a visible
+// saddle". The old build answered that with kTcMaxScar, a cap on how much the
+// bore reach could dig. Cut-and-cover answers it properly: the cut is BACKFILLED
+// and the ridge is restored to its pre-corridor profile by the lid, so there is
+// no saddle at all. kTcMaxScar is retired.
+//
+// ---- BACKFILL LID (the mesh that carries the overhang) --------------------
+constexpr float kTcLidCover       = 1.20f;  // soil kept over the shell's outer crown
+constexpr float kTcLidSink        = 0.55f;  // apron dives under the terrain at the seam
+constexpr float kTcLidApron       = 5.0f;   // lid runs this far PAST the zero-delta edge
+constexpr float kTcLidStep        = 3.0f;   // longitudinal sample spacing (m)
+constexpr int   kTcLidLateral     = 45;     // lateral samples across the lid
+// ---- PORTAL STRUCTURE ------------------------------------------------------
+constexpr float kTcPortalHalfW    = 11.0f;  // headwall half-width (bore is 7.9 outer)
+constexpr float kTcPortalThick    = 1.7f;   // headwall slab thickness along the road
+constexpr float kTcPortalProud    = 0.75f;  // headwall parapet above the backfill
+constexpr float kTcPortalSplay    = 6.5f;   // headwall -> wingwall taper run (m)
+constexpr float kTcCanopy         = 3.0f;   // arch ring projects past the headwall face
+// How far back from each mouth the backfill eases DOWN onto the cut face,
+// outside the headwall's own width. Without it the lid arrives at the portal at
+// full natural height right out to the seam, the wingwall has to retain all of
+// it, and the wingwall runs out across the hillside as an isolated concrete fin
+// standing 3 m proud of the ground (b.png, pass 4). Real backfill over a portal
+// slopes down at the flanks onto the cut, and then the wingwall dies with it.
+constexpr float kTcPortalTaper    = 15.0f;
+// How far the roofed span may run out past the point where the natural hillside
+// still gives full cover — the CUT-AND-COVER EXTENSION (a "false tunnel"), the
+// thing that lets the mouth sit in daylight on a shallow bank instead of being
+// dragged back into the hill.
+constexpr float kTcPortalExtend   = 20.0f;
+constexpr float kTcPortalMinBank  = 2.6f;   // stop extending once the bank is this low
+// ---- APPROACH-CUTTING RETAINING WALLS --------------------------------------
+constexpr float kTcWallBench      = 4.5f;   // nominal bench between wall and batter
+// Where up the cut batter the wall's top is taken from, as a fraction of the
+// falloff. A real cutting is retained for roughly the lower half of its height
+// and battered in rock above that; sampling too close to the toe (the first
+// attempt used the bench width) reads the batter at ~20 %% and no wall is ever
+// tall enough to qualify, which is exactly what happened.
+constexpr float kTcWallTopFrac    = 0.45f;
+constexpr float kTcWallBenchMax   = 6.0f;  // widest catch berm behind a wall
+constexpr int   kTcWallMinRun     = 3;     // stations; below this a wall floats
+constexpr float kTcWallThick      = 0.55f;
+constexpr float kTcWallMinH       = 1.4f;   // below this the cutting needs no wall
+constexpr float kTcWallMaxH       = 9.0f;   // above this the batter carries the rest
+constexpr float kTcWallSplay      = 16.0f;  // run over which the wall flares into the portal
 // §4.4: keep at most a handful of REAL point lights in the bore. BL's own
 // ratio (a PointLight on every 3rd 15 m strip) would be ~23 lights for a 350 m
 // tunnel — 36 % of the engine's entire 64-light forward budget for one tunnel.
@@ -107,33 +180,45 @@ struct TunnelStation {
 struct TunnelRoute {
     std::vector<TunnelStation> st;
     float dirX = 1.0f, dirZ = 0.0f;   // unit XZ heading (constant — a straight run)
+    float ox = 0.0f, oz = 0.0f;       // world XZ of node 0 (s = 0)
     float totalLen = 0.0f;
-    // The SHELLED span [boreS0, boreS1] in arc length, measured against the
-    // FINAL (post-corridor) height field rather than the design intent, so it
-    // can never disagree with what the terrain actually does. It runs from
-    // where the trench floor first LEAVES road level to where it comes back —
-    // NOT merely the fully-buried reach. That distinction is the whole trick:
-    // the corridor's depth step is rounded off over ~halfWidth by the union's
-    // end caps, so there is always a ~25 m ramp where the ground is above the
-    // road but below the crown. Roof only the buried part and that ramp buries
-    // the road instead; roof the ramp too and the tube simply emerges from the
-    // bank, which is what a real portal does anyway.
+    // The ROOFED span [boreS0, boreS1] in arc length: shell + backfill lid +
+    // a portal at each end. It is decided against the NATURAL (pre-corridor)
+    // hillside — "is there a hill here to go under?" — and then extended
+    // outward by the cut-and-cover extension, NOT against the post-corridor
+    // field. With cut-and-cover the post-corridor field is flat by
+    // construction, so it has nothing left to say about where a tunnel is.
     float boreS0 = 0.0f, boreS1 = 0.0f;
-    // The fully-buried sub-span (>= the required soil cover) — reported, and
-    // used to decide whether there is a tunnel here at all.
+    // The sub-span where the NATURAL hillside alone already gives full cover —
+    // i.e. what would have been bored rather than cut-and-covered. Reported.
     float coverS0 = 0.0f, coverS1 = 0.0f;
-    // Total length of road INSIDE the shell that still has an earth ramp over
-    // it. This is the technique's irreducible residual and is reported, not
-    // hidden: a single-valued heightfield cannot step vertically, so at each
-    // mouth the ground must sweep continuously from road level up past the
-    // crown, and over that sweep it necessarily crosses the bore.
+    // Total length of road anywhere on the route that has ground above it.
+    // Under cut-and-cover this is 0 by construction and the boot log says so;
+    // it is kept because it is the number this whole lane exists to drive to 0,
+    // and --test-tunnelmouth asserts it.
     float buriedRoadLen = 0.0f;
+    float maxRoadBury   = 0.0f;   // worst ground-above-road on the roadway (m)
     bool  boreValid = false;
 
     // Interpolated queries (clamped to the ends).
     float roadYAt(float s) const;
     void  posAt(float s, float out[3]) const;   // {x, roadY, z}
+    // (s, lateral offset) -> world XZ. `lat` is metres right of the direction
+    // of travel. The corridor is a straight run, so the frame is constant.
+    void  worldAt(float s, float lat, float& outX, float& outZ) const;
 };
+
+// The PRE-corridor surface at world (x,z). terrainHeightAtWorld() applies the
+// registered corridors last, and terrainCorridorDelta() is exactly the amount
+// they removed, so subtracting it recovers the natural hillside — before OR
+// after registration, with no second height field to keep in sync.
+float tunnelNaturalHeightAt(float x, float z);
+
+// The BACKFILL LID surface at (s, lat) — the reconstructed hillside over the
+// tube. Public because both the builder and --test-tunnelmouth need the exact
+// same function: the test asserts the lid clears the shell and lands on the
+// terrain at the seam, and it can only do that if it asks the real thing.
+float tunnelLidHeightAt(const TunnelRoute& route, float s, float lat);
 
 // BOOT ENTRY POINT. Samples the canonical height field, grades the road,
 // registers exactly ONE TerrainCorridor, then re-samples the FINAL field to
@@ -147,8 +232,16 @@ const TunnelRoute& registerTunnelCorridor();
 class TunnelCorridorWorld {
 public:
     // `route` must come from registerTunnelCorridor().
+    // `groundTex` MUST be the terrain splat MARKER (TerrainStreamer::
+    // groundTexture() / makeTerrainSplatMarker()). The renderer flags any draw
+    // that uses that handle as terrain and shades it through the same
+    // height/slope splat as the streamed tiles (vk_passes.cpp m_terrainMarkerId)
+    // — which is the ONLY reason the backfill lid is invisible as a distinct
+    // object. Pass an invalid handle and the lid falls back to a procedural
+    // earth tone, which reads as a tarpaulin over the hill; the build warns.
     bool build(Scene& scene, x3::rhi::IRenderDevice& device,
-               x3::phys::IPhysicsWorld& physics, const TunnelRoute& route);
+               x3::phys::IPhysicsWorld& physics, const TunnelRoute& route,
+               x3::rhi::TextureHandle groundTex = {});
 
     void shutdown(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics);
 
@@ -159,9 +252,16 @@ public:
     //   0 approach (on the road, outside the entrance portal, looking in)
     //   1 inside   (mid-bore)
     //   2 far mouth (outside the exit portal, looking BACK at it)
-    //   3 saddle   (above the ridge, showing the scar the corridor leaves)
+    //   3 saddle   (above the ridge — under cut-and-cover it should read as an
+    //               INTACT hill, which is the whole point of the backfill lid)
     //   4 portal detail (three-quarter close-up of the concrete/terrain seam)
+    //   5 mouth head-on, close (the headwall + wingwalls + the arch ring)
+    //   6 inside looking OUT at the entrance mouth (the dark-to-light frame —
+    //     this is the shot the old build could not survive: it is where the
+    //     earth ramp filled the arch)
+    //   7 far-mouth three-quarter (the exit portal from the side, on the bank)
     void showcaseCamera(const TunnelRoute& route, int which, float cam[5]) const;
+    static constexpr int kShowcaseShots = 8;
 
 private:
     std::vector<x3::rhi::MeshHandle>    m_meshes;
@@ -176,5 +276,24 @@ private:
     SurfaceLibrary                      m_surf;
     uint32_t m_entities = 0;
 };
+
+// ---------------------------------------------------------------------------
+// --test-tunnelmouth — THE DEFECT GATE. Headless, no device, no physics: it
+// registers the corridor and interrogates the real height field.
+//   M0  the corridor registers and a roofed span is found
+//   M1  THE DEFECT: sample terrainHeightAtWorld across the FULL road width at
+//       0.5 m for the whole route — the ground is never above the road datum.
+//       This is the assertion the old build fails by ~18 m of road.
+//   M2  route.buriedRoadLen == 0 and the boot log's number agrees with M1
+//   M3  the backfill lid clears the shell's outer skin by >= kTcLidCover*0.8
+//       everywhere over the roofed span (the lid never cuts into the bore)
+//   M4  the lid lands EXACTLY on the untouched terrain at the zero-delta seam
+//       (|lid - terrain| tiny at halfWidth+falloff) and dives under it beyond
+//   M5  the road grade never exceeds kTcMaxGrade and the profile is smooth
+//   M6  REGENERATION PROOF: re-derive the whole route against three perturbed
+//       height fields (shifted route centres) and assert M1 still holds — the
+//       fix must be a property of the construction, not of this one hillside.
+// ---------------------------------------------------------------------------
+bool runTunnelMouthSelfTest();
 
 } // namespace x3::game
