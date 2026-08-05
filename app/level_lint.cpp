@@ -156,6 +156,317 @@ LevelLintReport lintCanonFloor(const CanonFloor& floor) {
     return rep;
 }
 
+// ===================================================================================
+// SEAL / ENCLOSURE probe (2026-08-04 — owner playtest: "OPEN HOLES TO SPACE where the
+// transitions should be, between doors, halls and rooms").
+//
+// GATE A had NO hole check. It validated where doorways SIT (seat / span / junction /
+// reachability) but never whether the SHELL those doorways perforate stays CLOSED, so
+// it reported 0 violations while the level leaked to sky. Root cause found by this
+// probe's first run: the wall-dedup in buildCanonFloor dropped an ENTIRE wall face
+// whenever a neighbour "covered" it — but classify() calls rooms adjacent at up to
+// TOL = 0.8 m of separation, and the interstice between two separated wall planes has
+// NO FLOOR and NO CEILING. Ten rooms shipped with a dropped face and the covering wall
+// standing 0.5-2.0 m away on a different plane: from inside those rooms you looked
+// straight down/up through the unfloored slot into the void.
+//
+// The probe is an OPENING LEDGER + outward ray sample, and it is deliberately a mirror
+// of buildCanonFloor's emission rules (same convention as the rest of this file):
+//   1. Enumerate every OPENING in the shell — dropped wall faces, every doorway cut,
+//      every gap-bridge mouth.
+//   2. Enumerate every SEALED VOLUME — room interiors, gap-bridge corridors, the
+//      doorway-reveal throats that fill an adjacency interstice, cross-level tubes.
+//   3. Sample a grid across each opening rect, step 0.30 m OUTWARD through it, and
+//      require the sample to land inside a sealed volume. A sample that lands in
+//      nothing is a sightline out of the world.
+// Sampling the OPENING (rather than firing from room centres) means the probe cannot
+// miss a leak by unlucky ray direction: every hole is an opening by construction.
+// ===================================================================================
+namespace {
+
+// How far past the opening plane we sample. Deliberately SMALL: the question is
+// "is there anything immediately beyond this opening?", so the sample must sit just
+// outside the plane rather than leaping past a thin sealing member (a 0.2 m wall,
+// a threshold kickplate) and reporting the sealed cavity behind it as void.
+constexpr float kSealStep   = 0.10f;
+constexpr float kSealMargin = 0.05f;   // volume containment slack
+const char* kFaceName[4] = { "-X", "+X", "-Z", "+Z" };
+
+struct SealVol { float x0, x1, y0, y1, z0, z1; };
+struct SealGap { float c, clearTop, half; DoorwayKind kind; uint32_t partner; };
+
+struct SealReport {
+    std::vector<std::string> violations;
+    int openings = 0;      // openings examined
+    int escapes  = 0;      // openings with at least one escaping probe
+    int dropped  = 0;      // wall faces dropped by the dedup
+    int deckExempt = 0;    // openings onto an open-air deck (invariant does not apply)
+};
+
+bool inSealVol(const SealVol& v, float x, float y, float z) {
+    const float e = kSealMargin;
+    return x > v.x0 - e && x < v.x1 + e && y > v.y0 - e && y < v.y1 + e &&
+           z > v.z0 - e && z < v.z1 + e;
+}
+
+// forceSkip*: negative-control hook — force one extra face to be dropped so the probe
+// must go red on a shell it would otherwise pass.
+// legacySkipRule = reproduce the pre-2026-08-04 dedup (skip a face on ANY covering
+// neighbour, even one whose wall plane is metres away) — the shipped bug, used as this
+// probe's negative control.
+SealReport sealShell(const CanonFloor& floor,
+                     uint32_t forceSkipRoom = kNoRoom, int forceSkipFace = -1,
+                     bool quiet = false, bool legacySkipRule = false) {
+    SealReport R;
+    const uint32_t nRooms = (uint32_t)floor.rooms.size();
+    if (!nRooms) return R;
+    constexpr float kDoorHalfL = 0.8f;    // mirror of level_loader kDoorHalf
+    constexpr float kLintelL   = 2.2f;    // mirror of level_loader kLintel
+
+    // ---- 1. OPENINGS: per-room, per-face doorway cuts (mirror addGapToRoom /
+    //         addBridgeMouthToRoom).
+    std::vector<std::vector<SealGap>> gaps(nRooms * 4);
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.a >= nRooms || dw.b >= nRooms) continue;
+        const CanonRoom& A = floor.rooms[dw.a];
+        const CanonRoom& B = floor.rooms[dw.b];
+        const float ct   = std::max(A.y0(), B.y0()) + kLintelL;
+        const float half = dw.cutHalf > 0.0f ? dw.cutHalf : kDoorHalfL;
+        auto addGap = [&](uint32_t ri, const CanonRoom& r) {
+            if (dw.axis == 0)
+                gaps[ri * 4 + ((std::fabs(dw.cx - r.x0()) < std::fabs(dw.cx - r.x1())) ? 0 : 1)]
+                    .push_back({ dw.cz, ct, half, dw.kind, (ri == dw.a ? dw.b : dw.a) });
+            else
+                gaps[ri * 4 + ((std::fabs(dw.cz - r.z0()) < std::fabs(dw.cz - r.z1())) ? 2 : 3)]
+                    .push_back({ dw.cx, ct, half, dw.kind, (ri == dw.a ? dw.b : dw.a) });
+        };
+        auto addMouth = [&](uint32_t ri, const CanonRoom& r, const CanonRoom& o) {
+            if (dw.axis == 0) gaps[ri * 4 + (o.cx > r.cx ? 1 : 0)].push_back({ dw.cz, ct, half, dw.kind, (ri == dw.a ? dw.b : dw.a) });
+            else              gaps[ri * 4 + (o.cz > r.cz ? 3 : 2)].push_back({ dw.cx, ct, half, dw.kind, (ri == dw.a ? dw.b : dw.a) });
+        };
+        if (dw.kind == DoorwayKind::AdjacentX || dw.kind == DoorwayKind::AdjacentZ ||
+            dw.kind == DoorwayKind::Overlap) { addGap(dw.a, A); addGap(dw.b, B); }
+        else if (dw.kind == DoorwayKind::GapBridge) { addMouth(dw.a, A, B); addMouth(dw.b, B, A); }
+    }
+
+    // ---- 2. DROPPED FACES: mirror of buildCanonFloor's wall dedup (incl. the SEAL LAW
+    //         that a skip is only legal when the dropped plane sits behind the owner's
+    //         shell). Mirroring the RULE (not its outcome) is what lets a doctored shell
+    //         drive this red.
+    std::vector<unsigned char> skipFace(nRooms * 4, 0);
+    {
+        std::vector<unsigned char> wantSkip(nRooms * 4, 0), ownFace(nRooms * 4, 0);
+        const float eps = 0.02f;
+        auto coversY = [&](const CanonRoom& b, const CanonRoom& s) {
+            return b.y0() <= s.y0() + eps && b.y1() >= s.y1() - eps;
+        };
+        auto coversZ = [&](const CanonRoom& b, const CanonRoom& s) {
+            return b.z0() <= s.z0() + eps && b.z1() >= s.z1() - eps && coversY(b, s);
+        };
+        auto coversX = [&](const CanonRoom& b, const CanonRoom& s) {
+            return b.x0() <= s.x0() + eps && b.x1() >= s.x1() - eps && coversY(b, s);
+        };
+        auto planeOf = [](const CanonRoom& r, int f) {
+            return (f == 0) ? r.x0() : (f == 1) ? r.x1() : (f == 2) ? r.z0() : r.z1();
+        };
+        for (const CanonDoorway& dw : floor.doorways) {
+            if (dw.a >= nRooms || dw.b >= nRooms) continue;
+            if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
+                dw.kind != DoorwayKind::Overlap) continue;
+            const CanonRoom& A = floor.rooms[dw.a];
+            const CanonRoom& B = floor.rooms[dw.b];
+            int fa, fb; bool aCovB, bCovA;
+            if (dw.axis == 0) {
+                fa = (std::fabs(dw.cx - A.x0()) < std::fabs(dw.cx - A.x1())) ? 0 : 1;
+                fb = (std::fabs(dw.cx - B.x0()) < std::fabs(dw.cx - B.x1())) ? 0 : 1;
+                aCovB = coversZ(A, B); bCovA = coversZ(B, A);
+            } else {
+                fa = (std::fabs(dw.cz - A.z0()) < std::fabs(dw.cz - A.z1())) ? 2 : 3;
+                fb = (std::fabs(dw.cz - B.z0()) < std::fabs(dw.cz - B.z1())) ? 2 : 3;
+                aCovB = coversX(A, B); bCovA = coversX(B, A);
+            }
+            auto skipLegal = [&](const CanonRoom& owner, float dropPlane) {
+                if (legacySkipRule) return true;        // negative control: the shipped bug
+                const float lo = (dw.axis == 0) ? owner.x0() : owner.z0();
+                const float hi = (dw.axis == 0) ? owner.x1() : owner.z1();
+                return dropPlane >= lo - kWallT && dropPlane <= hi + kWallT;
+            };
+            if (aCovB && skipLegal(A, planeOf(B, fb)))      { wantSkip[dw.b*4+fb]=1; ownFace[dw.a*4+fa]=1; }
+            else if (bCovA && skipLegal(B, planeOf(A, fa))) { wantSkip[dw.a*4+fa]=1; ownFace[dw.b*4+fb]=1; }
+        }
+        for (uint32_t i = 0; i < nRooms * 4; ++i) skipFace[i] = wantSkip[i] && !ownFace[i];
+        if (forceSkipRoom < nRooms && forceSkipFace >= 0 && forceSkipFace < 4)
+            skipFace[forceSkipRoom * 4 + forceSkipFace] = 1;    // negative control
+    }
+
+    // ---- 3. SEALED VOLUMES: room interiors + every connector the builder emits.
+    std::vector<SealVol> vols;
+    vols.reserve(nRooms + floor.doorways.size());
+    for (const CanonRoom& r : floor.rooms) {
+        if (r.platform) continue;                       // slabs, not enclosures
+        vols.push_back({ r.x0(), r.x1(), r.y0(), r.y1(), r.z0(), r.z1() });
+    }
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.a >= nRooms || dw.b >= nRooms) continue;
+        const CanonRoom& a = floor.rooms[dw.a];
+        const CanonRoom& b = floor.rooms[dw.b];
+
+        // THRESHOLD SEAL (mirror of level_loader's THRESHOLD SEAL block). The canon
+        // rooms are authored CENTRED on y with DIFFERENT heights, so their FLOORS sit at
+        // different levels and every wall cut is opened from its own room's floor — the
+        // bottom 0.25-0.50 m of the opening used to look UNDER the higher room's floor
+        // slab into raw void. The builder now closes that band with a solid kickplate
+        // spanning both host wall planes; model it exactly so the probe agrees with the
+        // shipped geometry (and still goes red if the kickplate is ever removed).
+        if (dw.kind != DoorwayKind::CrossLevel && dw.kind != DoorwayKind::None) {
+            const float yLoS = std::min(a.y0(), b.y0()), yHiS = std::max(a.y0(), b.y0());
+            if (yHiS - yLoS > 0.02f) {
+                const bool pIsX = (dw.axis == 0);
+                const float cut = pIsX ? dw.cz : dw.cx;
+                const float hw  = (dw.cutHalf > 0.0f ? dw.cutHalf : kDoorHalfL) + kWallT;
+                float dLo, dHi;
+                if (dw.kind == DoorwayKind::GapBridge) {
+                    if (pIsX) {
+                        if (a.cx < b.cx) { dLo = a.x1(); dHi = b.x0(); } else { dLo = b.x1(); dHi = a.x0(); }
+                    } else {
+                        if (a.cz < b.cz) { dLo = a.z1(); dHi = b.z0(); } else { dLo = b.z1(); dHi = a.z0(); }
+                    }
+                    if (dHi < dLo) std::swap(dLo, dHi);
+                    dLo -= kWallT; dHi += kWallT;
+                } else {
+                    const float pa0 = pIsX ? a.x0() : a.z0(), pa1 = pIsX ? a.x1() : a.z1();
+                    const float pb0 = pIsX ? b.x0() : b.z0(), pb1 = pIsX ? b.x1() : b.z1();
+                    const float p   = pIsX ? dw.cx : dw.cz;
+                    const float pa  = (std::fabs(p - pa0) < std::fabs(p - pa1)) ? pa0 : pa1;
+                    const float pb  = (std::fabs(p - pb0) < std::fabs(p - pb1)) ? pb0 : pb1;
+                    dLo = std::min(std::min(pa, pb), p) - kWallT;
+                    dHi = std::max(std::max(pa, pb), p) + kWallT;
+                }
+                if (dHi - dLo > 0.02f) {
+                    if (pIsX) vols.push_back({ dLo, dHi, yLoS, yHiS, cut - hw, cut + hw });
+                    else      vols.push_back({ cut - hw, cut + hw, yLoS, yHiS, dLo, dHi });
+                }
+            }
+        }
+
+        if (dw.kind == DoorwayKind::GapBridge) {
+            const float fy  = std::max(a.y0(), b.y0());
+            const float h   = std::min(std::min(a.h, b.h), 3.0f);
+            const float yLo = std::min(a.y0(), b.y0());
+            if (dw.axis == 0) {
+                float xlo, xhi;
+                if (a.cx < b.cx) { xlo = a.x1(); xhi = b.x0(); } else { xlo = b.x1(); xhi = a.x0(); }
+                if (xhi < xlo) std::swap(xlo, xhi);
+                vols.push_back({ xlo, xhi, yLo, fy + h, dw.cz - kDoorHalfL, dw.cz + kDoorHalfL });
+            } else {
+                float zlo, zhi;
+                if (a.cz < b.cz) { zlo = a.z1(); zhi = b.z0(); } else { zlo = b.z1(); zhi = a.z0(); }
+                if (zhi < zlo) std::swap(zlo, zhi);
+                vols.push_back({ dw.cx - kDoorHalfL, dw.cx + kDoorHalfL, yLo, fy + h, zlo, zhi });
+            }
+        } else if (dw.kind == DoorwayKind::CrossLevel) {
+            const float yLo = std::min(a.y0(), b.y0()), yHi = std::max(a.y0(), b.y0());
+            vols.push_back({ dw.cx - 1.5f, dw.cx + 1.5f, yLo, yHi + 1.0f, dw.cz - 1.5f, dw.cz + 1.5f });
+        } else if (dw.kind == DoorwayKind::AdjacentX || dw.kind == DoorwayKind::AdjacentZ) {
+            // DOORWAY REVEAL throat: jambs + header + floor strip filling the interstice
+            // between two separated-but-adjacent wall planes (level_loader "W2-E DOORWAY
+            // REVEALS"). It seals the THROAT only — never the rest of the face, which is
+            // exactly why dropping a face over a separated plane is a hole.
+            const bool planeIsX = (dw.axis == 0);
+            const float pa  = planeIsX ? dw.cx : dw.cz;
+            const float pb0 = planeIsX ? b.x0() : b.z0(), pb1 = planeIsX ? b.x1() : b.z1();
+            const float pb  = (std::fabs(pa - pb0) < std::fabs(pa - pb1)) ? pb0 : pb1;
+            const float sep = std::fabs(pb - pa);
+            if (sep < 0.05f || sep > 1.0f) continue;
+            const float dLo = std::min(pa, pb) - kWallT * 0.5f, dHi = std::max(pa, pb) + kWallT * 0.5f;
+            const float cut = planeIsX ? dw.cz : dw.cx;
+            const float hf  = dw.cutHalf > 0.0f ? dw.cutHalf : kDoorHalfL;
+            const float yF  = std::max(a.y0(), b.y0()), yC = std::min(a.y1(), b.y1());
+            if (planeIsX) vols.push_back({ dLo, dHi, yF, yC, cut - hf, cut + hf });
+            else          vols.push_back({ cut - hf, cut + hf, yF, yC, dLo, dHi });
+        }
+    }
+
+    // ---- 4. PROBE every opening.
+    auto probeOpening = [&](uint32_t ri, int f, float cLo, float cHi, float yLo, float yHi,
+                            const char* what) {
+        const CanonRoom& r = floor.rooms[ri];
+        if (cHi - cLo < 0.05f || yHi - yLo < 0.05f) return;
+        ++R.openings;
+        const bool planeIsX = (f == 0 || f == 1);
+        const float plane   = planeIsX ? ((f == 0) ? r.x0() : r.x1())
+                                       : ((f == 2) ? r.z0() : r.z1());
+        const float outward = (f == 0 || f == 2) ? -kSealStep : +kSealStep;
+        const float probe   = plane + outward;
+        const int nc = std::max(3, (int)((cHi - cLo) / 0.75f) + 1);
+        const int ny = std::max(3, (int)((yHi - yLo) / 0.75f) + 1);
+        uint32_t bad = 0, tot = 0;
+        float bx = 0, by = 0, bz = 0;
+        for (int i = 0; i < nc; ++i)
+            for (int j = 0; j < ny; ++j) {
+                const float c = cLo + 0.05f + (cHi - cLo - 0.10f) * (float)i / (float)(nc - 1);
+                const float y = yLo + 0.05f + (yHi - yLo - 0.10f) * (float)j / (float)(ny - 1);
+                const float px = planeIsX ? probe : c;
+                const float pz = planeIsX ? c : probe;
+                ++tot;
+                bool in = false;
+                for (const SealVol& v : vols) if (inSealVol(v, px, y, pz)) { in = true; break; }
+                if (!in) { ++bad; bx = px; by = y; bz = pz; }
+            }
+        if (bad) {
+            ++R.escapes;
+            if (R.violations.size() < 40)
+                R.violations.push_back(fmt(
+                    "SEAL-SHELL room %u '%s' face %s (%s): %u/%u probe(s) pass through the opening into "
+                    "OPEN VOID — e.g. (%.2f, %.2f, %.2f) lies inside no room, corridor, throat or tube",
+                    ri, r.name.c_str(), kFaceName[f], what, bad, tot, bx, by, bz));
+        }
+    };
+
+    constexpr float kStandH = 1.8f;   // a space you cannot stand in is not an enclosure
+    for (uint32_t ri = 0; ri < nRooms; ++ri) {
+        const CanonRoom& r = floor.rooms[ri];
+        if (r.platform) continue;                       // no walls authored
+        // DECK EXEMPTION: the roof deck / helipad are authored as 0.3-0.5 m thin slab
+        // "rooms". Their 'walls' are a parapet you step over, not an enclosure, and the
+        // structures standing on them (guard posts) legitimately break the rim. Probing
+        // them for enclosure is a category error, not a hole.
+        if (r.h < kStandH) continue;
+        for (int f = 0; f < 4; ++f) {
+            const bool planeIsX = (f == 0 || f == 1);
+            const float runLo = planeIsX ? r.z0() : r.x0();
+            const float runHi = planeIsX ? r.z1() : r.x1();
+            if (skipFace[ri * 4 + f]) {
+                ++R.dropped;
+                probeOpening(ri, f, runLo, runHi, r.y0(), r.y1(), "wall face DROPPED by the dedup");
+                continue;                               // whole face is the opening
+            }
+            for (const SealGap& g : gaps[ri * 4 + f]) {
+                // DECK EXEMPTION (same rule as the deck rooms themselves): a doorway
+                // whose partner is an open-air deck / platform opens onto SKY by design
+                // — the roof IS outside. Counted and logged, never silently dropped.
+                if (g.partner < nRooms &&
+                    (floor.rooms[g.partner].platform || floor.rooms[g.partner].h < kStandH)) {
+                    ++R.deckExempt;
+                    continue;
+                }
+                const float h  = g.half > 0.0f ? g.half : kDoorHalfL;
+                const float lo = std::max(runLo, g.c - h), hi = std::min(runHi, g.c + h);
+                const std::string what = std::string(kindName(g.kind)) + " cut -> '" +
+                                         (g.partner < nRooms ? floor.rooms[g.partner].name : std::string("?")) + "'";
+                probeOpening(ri, f, lo, hi, r.y0(), std::min(g.clearTop, r.y1()), what.c_str());
+            }
+        }
+    }
+    if (!quiet)
+        x3::logInfo(fmt("[levellint] seal-shell: %d opening(s) probed, %d dropped face(s), "
+                        "%d open-air-deck opening(s) exempt, %d escape(s) to open void",
+                        R.openings, R.dropped, R.deckExempt, R.escapes));
+    return R;
+}
+
+} // namespace
+
 // ---- PRIM WINDING lint (QA mainlevel sweep, D10 root cause) -----------------------
 // makeRamp shipped faces whose geometric winding flipped with `dir`/`axis` (mixed
 // front/back parity). Invisible on the no-cull emissive route; on the backface-culling
@@ -514,6 +825,48 @@ bool runLevelLintSelfTest() {
                     " backward tris across ramp variants; negative control " +
                     (ctrlCaught ? "red-capable" : "BROKEN"));
     }
+    // ---- SEAL-SHELL gate (2026-08-04 owner playtest: "open holes to space where the
+    // transitions should be"). Every opening in the shell must give onto sealed
+    // interior space. Ships with TWO negative controls:
+    //   NC1 (regression): re-run the probe against the LEGACY dedup rule — the code
+    //        exactly as it shipped. It MUST go red, which is the proof both that the
+    //        probe sees this defect class and that the loader fix is what closed it.
+    //   NC2 (generic):    delete one arbitrary wall face and require the probe to see
+    //        the hole, so the probe stays red-capable even if the level data changes.
+    {
+        const SealReport sr = sealShell(floor);
+        for (const std::string& v : sr.violations) rep.violations.push_back(v);
+        rep.sealEscape = sr.escapes;
+        if (sr.escapes > 40)
+            rep.violations.push_back(fmt("SEAL-SHELL (%d further escaping opening(s) not listed)",
+                                         sr.escapes - 40));
+
+        const SealReport nc1 = sealShell(floor, kNoRoom, -1, /*quiet*/true, /*legacy*/true);
+        // NC2: drop a wall face that the real shell keeps. Room 0's four faces are the
+        // Main Hall's; at least one is an exterior wall, so deleting it must leak.
+        int nc2Escapes = 0;
+        for (int f = 0; f < 4 && nc2Escapes == 0; ++f)
+            nc2Escapes = sealShell(floor, 0, f, /*quiet*/true).escapes;
+
+        if (nc1.escapes <= sr.escapes)
+            rep.violations.push_back(fmt(
+                "SEAL-SHELL NEGATIVE CONTROL FAILED: the legacy dedup rule produced %d escape(s) "
+                "(baseline %d) — the probe cannot see the very defect it was built for",
+                nc1.escapes, sr.escapes));
+        if (nc2Escapes == 0)
+            rep.violations.push_back(
+                "SEAL-SHELL NEGATIVE CONTROL FAILED: deleting a wall face produced no escape");
+        // Print what the legacy rule leaks, so the gate's own output documents the
+        // defect this probe exists to catch (and proves the control is not vacuous).
+        for (size_t i = 0; i < nc1.violations.size() && i < 6; ++i)
+            x3::logInfo("[levellint] seal-shell NC1 (legacy dedup) would ship: " + nc1.violations[i]);
+        x3::logInfo(fmt("[levellint] seal-shell: %d escape(s) live; negative controls — "
+                        "legacy-dedup rule %d escape(s) (%s), deleted-wall %d escape(s) (%s)",
+                        sr.escapes, nc1.escapes,
+                        nc1.escapes > sr.escapes ? "red-capable" : "BROKEN",
+                        nc2Escapes, nc2Escapes > 0 ? "red-capable" : "BROKEN"));
+    }
+
     // ---- HIDDEN-4.5 SEAL gate (fix/spire-hollow-core, owner canon 2026-07-25:
     // level 4.5 is HIDDEN — elevator-only, no stairway, no sightline; AMENDED by
     // the owner's 7762 master order: ONE sanctioned code-locked opening exists —
@@ -774,7 +1127,8 @@ bool runLevelLintSelfTest() {
                 " | door-seat=" + std::to_string(rep.doorSeat) +
                 " junction=" + std::to_string(rep.junctionSlab) +
                 " cut-span=" + std::to_string(rep.cutSpan) +
-                " unreachable=" + std::to_string(rep.unreachable));
+                " unreachable=" + std::to_string(rep.unreachable) +
+                " seal-escape=" + std::to_string(rep.sealEscape));
     x3::logInfo(std::string("--test-levellint: ") + (rep.pass() ? "PASS (0 violations)"
                 : (std::to_string(rep.violations.size()) + " violation(s) — FAIL")));
     return rep.pass();
