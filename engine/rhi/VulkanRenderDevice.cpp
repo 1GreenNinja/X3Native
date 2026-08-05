@@ -22,6 +22,87 @@ namespace x3::rhi {
 
 IRenderDevice* createRenderDevice() { return new VulkanRenderDevice(); }
 
+// ---------------------------------------------------------------------------
+// ROADMAP CAPABILITY PROBE (docs/VULKAN_ROADMAP.md) — DIAGNOSTIC ONLY.
+//
+// Reports, once at boot, the device's real API version + which post-1.3
+// extensions it advertises. This ENABLES NOTHING and changes no behavior: it is
+// two `vkEnumerateDeviceExtensionProperties` calls + a `vkGetPhysicalDeviceProperties`
+// against the ALREADY-created device, run once, before the first frame.
+//
+// WHY IT EXISTS: every "adopt later" verdict in docs/VULKAN_ROADMAP.md is gated
+// on one unknown — what the Pascal (GTX 1080 Ti) fleet floor actually exposes on
+// its final driver (R580 is the last NVIDIA branch to support Maxwell/Pascal/
+// Volta, so whatever those boxes report is their PERMANENT ceiling). The repo has
+// no measured Pascal capability data at all. This line produces it: boot the
+// engine on each fleet machine and read one log line, instead of guessing from
+// vendor marketing. `drawIndirectCount` in particular is asserted absent on
+// Pascal in engine/rhi/GpuCull.h:9 and that assertion has never been verified.
+//
+// Everything here is core Vulkan 1.0/1.1 — the probe itself runs on any device.
+// ---------------------------------------------------------------------------
+static void logRoadmapCaps(VkPhysicalDevice phys) {
+    if (phys == VK_NULL_HANDLE) return;
+
+    uint32_t n = 0;
+    if (vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, nullptr) != VK_SUCCESS || n == 0) {
+        logWarn("[rhi/caps] device extension enumeration failed — roadmap probe skipped");
+        return;
+    }
+    std::vector<VkExtensionProperties> exts(n);
+    if (vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, exts.data()) != VK_SUCCESS) {
+        logWarn("[rhi/caps] device extension enumeration failed — roadmap probe skipped");
+        return;
+    }
+    auto has = [&](const char* name) {
+        for (const VkExtensionProperties& e : exts)
+            if (std::strcmp(e.extensionName, name) == 0) return true;
+        return false;
+    };
+
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(phys, &props);
+
+    // The candidate table from docs/VULKAN_ROADMAP.md, in the doc's own order.
+    // `drawIndirectCount` is a 1.2 CORE feature, so it is reported from the API
+    // version rather than the extension list (the KHR extension name is still
+    // probed for pre-1.2 exposure).
+    struct Cap { const char* label; const char* ext; };
+    static const Cap kCaps[] = {
+        { "drawIndirectCount", "VK_KHR_draw_indirect_count"      },
+        { "meshShader",        "VK_EXT_mesh_shader"              },
+        { "descriptorBuffer",  "VK_EXT_descriptor_buffer"        },
+        { "descriptorHeap",    "VK_EXT_descriptor_heap"          },
+        { "untypedPointers",   "VK_KHR_shader_untyped_pointers"  },
+        { "hostImageCopy",     "VK_EXT_host_image_copy"          },
+        { "fragShadingRate",   "VK_KHR_fragment_shading_rate"    },
+        { "coopMatrix",        "VK_KHR_cooperative_matrix"       },
+        { "videoDecodeH265",   "VK_KHR_video_decode_h265"        },
+        { "presentWait",       "VK_KHR_present_wait"             },
+        { "swapchainMaint1",   "VK_EXT_swapchain_maintenance1"   },
+        { "maintenance5",      "VK_KHR_maintenance5"             },
+        { "maintenance6",      "VK_KHR_maintenance6"             },
+        { "rtPositionFetch",   "VK_KHR_ray_tracing_position_fetch" },
+        { "asHostCommands",    "VK_KHR_deferred_host_operations" },
+    };
+
+    const uint32_t major = VK_API_VERSION_MAJOR(props.apiVersion);
+    const uint32_t minor = VK_API_VERSION_MINOR(props.apiVersion);
+    const uint32_t patch = VK_API_VERSION_PATCH(props.apiVersion);
+
+    std::string line = "[rhi/caps] device Vulkan " + std::to_string(major) + "." +
+                       std::to_string(minor) + "." + std::to_string(patch) + " |";
+    for (const Cap& c : kCaps) {
+        const bool present = has(c.ext) ||
+            // 1.2 promoted draw_indirect_count into core; a 1.2+ device has it
+            // whether or not it still advertises the KHR alias.
+            (std::strcmp(c.label, "drawIndirectCount") == 0 &&
+             props.apiVersion >= VK_API_VERSION_1_2);
+        line += std::string(" ") + c.label + (present ? "=1" : "=0");
+    }
+    logInfo(line);
+}
+
 bool VulkanRenderDevice::init(const DeviceDesc& desc) {
         m_vsync = desc.vsync;
         m_headless = desc.headless;
@@ -188,6 +269,7 @@ bool VulkanRenderDevice::init(const DeviceDesc& desc) {
         logInfo(std::string("[rhi] device ready: ") + phys.name +
                 " (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)" +
                 (m_headless ? " [HEADLESS: offscreen target, no surface/swapchain]" : ""));
+        logRoadmapCaps(m_dev.physical_device);
         x3::boot::mark("rhi: instance+device");
 
         // ---- VERTEX COMPRESSION (Lane 5): resolve the mesh vertex format ONCE.
