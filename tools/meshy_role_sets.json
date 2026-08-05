@@ -1,0 +1,235 @@
+{
+ "_readme": [
+  "ROLE SETS for the Meshy clip pipeline (tools/meshy_clip_library.py).",
+  "",
+  "WHY SETS EXIST: Meshy's exporter can only carry the LAST 20 ACTIONS selected on a",
+  "model, so 20 is a HARD architectural cap per baked variant -- not a preference.",
+  "The agreed rule is VARIANTS BY ROLE, MERGE BY CHARACTER-WHO-NEEDS-BOTH: bake each",
+  "role as its own <=20-clip variant, then fuse whatever a given character actually",
+  "needs into one GLB locally with tools/glb-merge-anims.mjs, which is FREE and has",
+  "no 20-clip limit.",
+  "",
+  "Entries are ['<meshy_action_name>', '<engine_clip_name>']. The Meshy name is",
+  "resolved to its integer action_id against tools/meshy_actions.json at runtime, so",
+  "ids are never hand-typed here. The engine name is what the merged GLB's",
+  "AnimationGroup gets called.",
+  "",
+  "LOCOMOTION USES _inplace WHEREVER MESHY SHIPS ONE. Meshy publishes ~90 clips",
+  "twice: root-motion original and an `_inplace` twin with root translation stripped.",
+  "Engine-driven movement (character controller / navmesh / RTS steering) wants the",
+  "_inplace twin, otherwise the mesh slides out of its collision capsule.",
+  "",
+  "COST: every clip costs 3 credits to bake. per_set_credits = clips x 3. Rigging a",
+  "character costs 5 credits ONCE; every set baked onto that same rig_task_id reuses",
+  "it for free."
+ ],
+ "credits_per_clip": 3,
+ "credits_per_rig": 5,
+ "export_cap": 20,
+
+ "sets": {
+  "x3_npc_normal": {
+   "project": "X3Native",
+   "role": "NORMAL",
+   "desc": "Baseline unarmed human NPC: facility staff, street civilians, captives. The default set every humanoid gets.",
+   "clips": [
+    ["Idle", "idle"],
+    ["Idle_02", "idle_alt"],
+    ["Alert", "alert"],
+    ["Casual_Walk_inplace", "walk"],
+    ["Walk_Backward_inplace", "walk_back"],
+    ["run_fast_2_inplace", "run"],
+    ["Sneaky_Walk_inplace", "sneak"],
+    ["Idle_Turn_Left", "turn_left"],
+    ["Idle_Turn_Right", "turn_right"],
+    ["Look_Around_Dumbfounded", "look_around"],
+    ["Chair_Sit_Idle_M", "sit_idle"],
+    ["Stand_and_Chat", "talk"],
+    ["Talk_with_Hands_Open", "talk_alt"],
+    ["Wave_One_Hand", "wave"],
+    ["open_door", "open_door"],
+    ["Phone_Call_Gesture", "phone"],
+    ["Shrug", "shrug"],
+    ["Stand_and_Drink", "drink"],
+    ["Hit_Reaction", "hitreact"],
+    ["Dead", "death"]
+   ]
+  },
+
+  "x3_fps_combat": {
+   "project": "X3Native",
+   "role": "FIGHTING",
+   "desc": "Armed FPS combatant (Jake in 3P, guards, mercs): gun-ready locomotion, reloads, hit reactions, differentiated deaths.",
+   "clips": [
+    ["Combat_Stance", "combat_idle"],
+    ["Rifle_Charge_inplace", "combat_run"],
+    ["Walk_Forward_While_Shooting_inplace", "fire_walk_fwd"],
+    ["Walk_Backward_While_Shooting_inplace", "fire_walk_back"],
+    ["Walk_Backward_with_Gun_1_inplace", "walk_back_gun"],
+    ["Walk_Left_with_Gun_inplace", "strafe_gun"],
+    ["Cautious_Crouch_Walk_Forward_inplace", "crouch_fwd"],
+    ["Cautious_Crouch_Walk_Backward_inplace", "crouch_back"],
+    ["Crouch_Walk_Left_with_Gun_inplace", "crouch_strafe_gun"],
+    ["Standing_Reload", "reload"],
+    ["Kneeling_Reload", "reload_crouch"],
+    ["Running_Reload_inplace", "reload_run"],
+    ["Rifle_Turn_Left", "turn_left"],
+    ["Rifle_Aim_Turn_Right", "turn_right"],
+    ["Forward_Roll_and_Fire", "roll_fire"],
+    ["Gunshot_Reaction", "hit_gunshot"],
+    ["Hit_Reaction", "hit_react"],
+    ["Shot_in_the_Back_and_Fall", "death_back"],
+    ["Shot_and_Fall_Forward", "death_fwd"],
+    ["Shot_and_Blown_Back", "death_blownback"]
+   ]
+  },
+
+  "x3_club_dancer": {
+   "project": "X3Native",
+   "role": "DANCING",
+   "desc": "Club 1127 dancers -- 20 distinct loops so a floor of dancers never twins. Intended to REPLACE the hand-baked Blender dance loops.",
+   "clips": [
+    ["All_Night_Dance", "dance_01"],
+    ["Bass_Beats", "dance_02"],
+    ["Boom_Dance", "dance_03"],
+    ["Bubble_Dance", "dance_04"],
+    ["Cherish_Pop_Dance", "dance_05"],
+    ["Crystal_Beads", "dance_06"],
+    ["Cardio_Dance", "dance_07"],
+    ["Denim_Pop_Dance", "dance_08"],
+    ["Fast_Lightning", "dance_09"],
+    ["Gangnam_Groove", "dance_10"],
+    ["Indoor_Swing", "dance_11"],
+    ["Love_You_Pop_Dance", "dance_12"],
+    ["OMG_Groove", "dance_13"],
+    ["Pop_Dance_LSA2", "dance_14"],
+    ["Shake_It_Off_Dance", "dance_15"],
+    ["Superlove_Pop_Dance", "dance_16"],
+    ["You_Groove", "dance_17"],
+    ["Hip_Hop_Dance", "dance_18"],
+    ["Hip_Hop_Dance_2", "dance_19"],
+    ["ymca_dance", "dance_20"]
+   ]
+  },
+
+  "x3_club_crowd": {
+   "project": "X3Native",
+   "role": "NORMAL",
+   "desc": "Club 1127 non-dancing patrons: seated drinkers, talkers, cheerers. Pairs with x3_club_dancer to fill a room without everyone dancing.",
+   "clips": [
+    ["Chair_Sit_Idle_F", "sit_idle_f"],
+    ["Chair_Sit_Idle_M", "sit_idle_m"],
+    ["Sit_and_Drink", "sit_drink"],
+    ["Stand_and_Drink", "stand_drink"],
+    ["Stand_and_Chat", "chat"],
+    ["Talk_Passionately", "talk_excited"],
+    ["Talk_with_Left_Hand_on_Hip", "talk_hip"],
+    ["Talk_with_Hands_Open", "talk_open"],
+    ["Listening_Gesture", "listen"],
+    ["Sit_Cheer_with_Left_Hand", "sit_cheer"],
+    ["Seated_Fist_Pump", "sit_fistpump"],
+    ["Cheer_with_Both_Hands_Up", "cheer_both"],
+    ["Cheer_with_One_Hand_Up", "cheer_one"],
+    ["Stand_Clap_and_Sit_Down", "clap_sit"],
+    ["Stand_Wave_and_Sit_Down", "wave_sit"],
+    ["Phone_Conversation", "phone_talk"],
+    ["Happy_Sway_Standing", "sway"],
+    ["Step_Hip_Hop_Dance", "bob_to_music"],
+    ["Arm_Circle_Shuffle", "shuffle"],
+    ["Look_Around_Dumbfounded", "look_around"]
+   ]
+  },
+
+  "rf_sword": {
+   "project": "Riftforged",
+   "role": "FIGHTING",
+   "desc": "Medieval melee: sword/axe/hammer swings, parries, blocks, shield work. Riftforged warrior + any X3Native melee enemy.",
+   "clips": [
+    ["Combat_Stance", "combat_idle"],
+    ["Walk_Backward_with_Sword_inplace", "walk_back_sword"],
+    ["Sword_and_Shield_Alert_Turn_Left", "turn_left"],
+    ["Sword_and_Shield_Alert_Turn_Right", "turn_right"],
+    ["Right_Hand_Sword_Slash", "slash_r"],
+    ["Left_Slash", "slash_l"],
+    ["Thrust_Slash", "thrust"],
+    ["Charged_Slash", "slash_charged"],
+    ["Charged_Upward_Slash", "slash_up"],
+    ["Double_Combo_Attack", "combo_2"],
+    ["Triple_Combo_Attack", "combo_3"],
+    ["Sword_Judgment", "finisher"],
+    ["Heavy_Hammer_Swing", "hammer_swing"],
+    ["Axe_Spin_Attack", "axe_spin"],
+    ["Sword_Parry", "parry"],
+    ["Block1", "block"],
+    ["Block3", "block_alt"],
+    ["Shield_Push_Left", "shield_bash"],
+    ["Hit_Reaction_1", "hit_react"],
+    ["Knock_Down", "death"]
+   ]
+  },
+
+  "rf_caster": {
+   "project": "Riftforged",
+   "role": "CASTING",
+   "desc": "Spellcaster: channels, casts, ground slams, buffs. NOTE Meshy's own catalog misspells these 'mage_soell_cast' -- that typo IS the real action name, do not correct it.",
+   "clips": [
+    ["Charged_Spell_Cast", "cast_charged"],
+    ["Charged_Spell_Cast_1", "cast_charged_alt"],
+    ["Charged_Ground_Slam", "cast_ground_slam"],
+    ["mage_soell_cast", "cast_01"],
+    ["mage_soell_cast_1", "cast_02"],
+    ["mage_soell_cast_2", "cast_03"],
+    ["mage_soell_cast_3", "cast_04"],
+    ["mage_soell_cast_4", "cast_05"],
+    ["mage_soell_cast_5", "cast_06"],
+    ["mage_soell_cast_6", "cast_07"],
+    ["mage_soell_cast_7", "cast_08"],
+    ["mage_soell_cast_8", "cast_09"],
+    ["Skill_01", "skill_01"],
+    ["Skill_02", "skill_02"],
+    ["Skill_03", "skill_03"],
+    ["Victory_Cheer", "victory"],
+    ["Hit_Reaction", "hit_react"],
+    ["Dead", "death"]
+   ]
+  },
+
+  "eos_rts_unit": {
+   "project": "EmpiresOfShadow",
+   "role": "FIGHTING",
+   "desc": "RTS combat unit. Deliberately small -- the camera is far away, so read-at-distance beats variety.",
+   "clips": [
+    ["Idle", "idle"],
+    ["Casual_Walk_inplace", "walk"],
+    ["Spear_Walk_inplace", "walk_spear"],
+    ["run_fast_2_inplace", "run"],
+    ["Standard_Forward_Charge_inplace", "charge"],
+    ["Attack", "attack"],
+    ["Right_Hand_Sword_Slash", "attack_alt"],
+    ["Block1", "block"],
+    ["Hit_Reaction", "hit_react"],
+    ["Dead", "death"],
+    ["Knock_Down", "death_alt"],
+    ["Victory_Cheer", "victory"]
+   ]
+  },
+
+  "eos_rts_worker": {
+   "project": "EmpiresOfShadow",
+   "role": "NORMAL",
+   "desc": "RTS economy unit: hauling, pushing, gathering. All carry-walks use the _inplace twins.",
+   "clips": [
+    ["Idle", "idle"],
+    ["Casual_Walk_inplace", "walk"],
+    ["Carry_Heavy_Object_Walk_inplace", "carry_crate"],
+    ["Carry_Water_Bucket_Walk_inplace", "carry_bucket"],
+    ["Carry_Heavy_Cannon_Forward_inplace", "carry_heavy"],
+    ["Step_Forward_and_Push", "push_start"],
+    ["Push_and_Walk_Forward", "push_walk"],
+    ["Female_Crouch_Pick_Up_Place_Side", "gather"],
+    ["Hit_Reaction", "hit_react"],
+    ["Dead", "death"]
+   ]
+  }
+ }
+}

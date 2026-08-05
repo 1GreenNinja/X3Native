@@ -1,0 +1,6111 @@
+{
+ "source": "https://docs.meshy.ai/en/api/animation-library",
+ "count": 678,
+ "id_min": 0,
+ "id_max": 696,
+ "inplace_count": 90,
+ "actions": [
+  {
+   "id": 0,
+   "name": "Idle",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle.gif"
+  },
+  {
+   "id": 1,
+   "name": "Walking_Woman",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walking_Woman_woman.gif"
+  },
+  {
+   "id": 2,
+   "name": "Alert",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Alert.gif"
+  },
+  {
+   "id": 3,
+   "name": "Arise",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Arise.gif"
+  },
+  {
+   "id": 4,
+   "name": "Attack",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Attack.gif"
+  },
+  {
+   "id": 5,
+   "name": "BackLeft_run",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/BackLeft_run.gif"
+  },
+  {
+   "id": 6,
+   "name": "BackRight_Run",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/BackRight_Run.gif"
+  },
+  {
+   "id": 7,
+   "name": "BeHit_FlyUp",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/BeHit_FlyUp.gif"
+  },
+  {
+   "id": 8,
+   "name": "Dead",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Dead.gif"
+  },
+  {
+   "id": 9,
+   "name": "ForwardLeft_Run_Fight",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/ForwardLeft_Run_Fight.gif"
+  },
+  {
+   "id": 10,
+   "name": "ForwardRight_Run_Fight",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/ForwardRight_Run_Fight.gif"
+  },
+  {
+   "id": 11,
+   "name": "Idle_02",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_02.gif"
+  },
+  {
+   "id": 12,
+   "name": "Idle_03",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_03.gif"
+  },
+  {
+   "id": 13,
+   "name": "Jump_Run",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Run.gif"
+  },
+  {
+   "id": 14,
+   "name": "Run_02",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_02.gif"
+  },
+  {
+   "id": 15,
+   "name": "Run_03",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_03.gif"
+  },
+  {
+   "id": 16,
+   "name": "RunFast",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/RunFast.gif"
+  },
+  {
+   "id": 17,
+   "name": "Skill_01",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Skill_01.gif"
+  },
+  {
+   "id": 18,
+   "name": "Skill_02",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Skill_02.gif"
+  },
+  {
+   "id": 19,
+   "name": "Skill_03",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Skill_03.gif"
+  },
+  {
+   "id": 20,
+   "name": "Walk_Fight_Back",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Fight_Back.gif"
+  },
+  {
+   "id": 21,
+   "name": "Walk_Fight_Forward",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Fight_Forward.gif"
+  },
+  {
+   "id": 22,
+   "name": "FunnyDancing_01",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/FunnyDancing_01.gif"
+  },
+  {
+   "id": 23,
+   "name": "FunnyDancing_02",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/FunnyDancing_02.gif"
+  },
+  {
+   "id": 24,
+   "name": "FunnyDancing_03",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/FunnyDancing_03.gif"
+  },
+  {
+   "id": 25,
+   "name": "Agree_Gesture",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Agree_Gesture.gif"
+  },
+  {
+   "id": 26,
+   "name": "Angry_Stomp",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Angry_Stomp.gif"
+  },
+  {
+   "id": 27,
+   "name": "Big_Heart_Gesture",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Big_Heart_Gesture.gif"
+  },
+  {
+   "id": 28,
+   "name": "Big_Wave_Hello",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Big_Wave_Hello.gif"
+  },
+  {
+   "id": 29,
+   "name": "Call_Gesture",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Call_Gesture.gif"
+  },
+  {
+   "id": 30,
+   "name": "Casual_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Casual_Walk.gif"
+  },
+  {
+   "id": 31,
+   "name": "Catching_Breath",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Catching_Breath.gif"
+  },
+  {
+   "id": 32,
+   "name": "Chair_Sit_Idle_F",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Chair_Sit_Idle_F.gif"
+  },
+  {
+   "id": 33,
+   "name": "Chair_Sit_Idle_M",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Chair_Sit_Idle_M.gif"
+  },
+  {
+   "id": 34,
+   "name": "Checkout_Gesture",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Checkout_Gesture.gif"
+  },
+  {
+   "id": 35,
+   "name": "Clapping_Run",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Clapping_Run.gif"
+  },
+  {
+   "id": 36,
+   "name": "Confused_Scratch",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Confused_Scratch.gif"
+  },
+  {
+   "id": 37,
+   "name": "Discuss_While_Moving",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Discuss_While_Moving.gif"
+  },
+  {
+   "id": 38,
+   "name": "Dozing_Elderly",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Dozing_Elderly.gif"
+  },
+  {
+   "id": 39,
+   "name": "Excited_Walk_F",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Excited_Walk_F.gif"
+  },
+  {
+   "id": 40,
+   "name": "Excited_Walk_M",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Excited_Walk_M.gif"
+  },
+  {
+   "id": 41,
+   "name": "Formal_Bow",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Formal_Bow.gif"
+  },
+  {
+   "id": 42,
+   "name": "Gentlemans_Bow",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Gentleman%E2%80%99s_Bow.gif"
+  },
+  {
+   "id": 43,
+   "name": "Handbag_Walk",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Handbag_Walk.gif"
+  },
+  {
+   "id": 44,
+   "name": "Happy_jump_f",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Happy_Jump_F.gif"
+  },
+  {
+   "id": 45,
+   "name": "Indoor_Play",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Indoor_Play.gif"
+  },
+  {
+   "id": 46,
+   "name": "Jump_Rope",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Rope.gif"
+  },
+  {
+   "id": 47,
+   "name": "Listening_Gesture",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Listening_Gesture.gif"
+  },
+  {
+   "id": 48,
+   "name": "Mirror_Viewing",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Mirror_Viewing.gif"
+  },
+  {
+   "id": 49,
+   "name": "Motivational_Cheer",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Motivational_Cheer.gif"
+  },
+  {
+   "id": 50,
+   "name": "Phone_Call_Gesture",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Phone_Call_Gesture.gif"
+  },
+  {
+   "id": 51,
+   "name": "Shouting_Angrily",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Shouting_Angrily.gif"
+  },
+  {
+   "id": 52,
+   "name": "Sit_to_Stand_Transition_F",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_to_Stand_Transition_F.gif"
+  },
+  {
+   "id": 53,
+   "name": "Sit_to_Stand_Transition_M",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_to_Stand_Transition_M.gif"
+  },
+  {
+   "id": 54,
+   "name": "Squat_Stance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Squat_Stance.gif"
+  },
+  {
+   "id": 55,
+   "name": "Stage_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stage_Walk.gif"
+  },
+  {
+   "id": 56,
+   "name": "Stand_and_Chat",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_and_Chat.gif"
+  },
+  {
+   "id": 57,
+   "name": "Stand_to_Sit_Transition_M",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_to_Sit_Transition_M.gif"
+  },
+  {
+   "id": 58,
+   "name": "Step_to_Sit_Transition",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Step_to_Sit_Transition.gif"
+  },
+  {
+   "id": 59,
+   "name": "Victory_Cheer",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Victory_Cheer.gif"
+  },
+  {
+   "id": 60,
+   "name": "Walk_to_Sit",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_to_Sit.gif"
+  },
+  {
+   "id": 61,
+   "name": "happy_jump_m",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Happy_Jump_M.gif"
+  },
+  {
+   "id": 62,
+   "name": "penguin_walk",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Penguin_walk.gif"
+  },
+  {
+   "id": 63,
+   "name": "Arm_Circle_Shuffle",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Arm_Circle_Shuffle.gif"
+  },
+  {
+   "id": 64,
+   "name": "All_Night_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/All_Night_Dance.gif"
+  },
+  {
+   "id": 65,
+   "name": "Bass_Beats",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Bass_Beats.gif"
+  },
+  {
+   "id": 66,
+   "name": "Boom_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Boom_Dance.gif"
+  },
+  {
+   "id": 67,
+   "name": "Bubble_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Bubble_Dance.gif"
+  },
+  {
+   "id": 68,
+   "name": "Cherish_Pop_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cherish_Pop_Dance.gif"
+  },
+  {
+   "id": 69,
+   "name": "Crystal_Beads",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crystal_Beads.gif"
+  },
+  {
+   "id": 70,
+   "name": "Cardio_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cardio_Dance.gif"
+  },
+  {
+   "id": 71,
+   "name": "Denim_Pop_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Denim_Pop_Dance.gif"
+  },
+  {
+   "id": 72,
+   "name": "Dont_You_Dare",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Dont_You_Dare.gif"
+  },
+  {
+   "id": 73,
+   "name": "Fast_Lightning",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fast_Lightning.gif"
+  },
+  {
+   "id": 74,
+   "name": "Gangnam_Groove",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Gangnam_Groove.gif"
+  },
+  {
+   "id": 75,
+   "name": "Indoor_Swing",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Indoor_Swing.gif"
+  },
+  {
+   "id": 76,
+   "name": "Love_You_Pop_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Love_You_Pop_Dance.gif"
+  },
+  {
+   "id": 77,
+   "name": "Magic_Genie",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Magic_Genie.gif"
+  },
+  {
+   "id": 78,
+   "name": "Not_Your_Mom",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Not_Your_Mom.gif"
+  },
+  {
+   "id": 79,
+   "name": "OMG_Groove",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/OMG_Groove.gif"
+  },
+  {
+   "id": 80,
+   "name": "Pop_Dance_LSA2",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Pop_Dance_LSA2.gif"
+  },
+  {
+   "id": 81,
+   "name": "Pod_Baby_Groove",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Pod_Baby_Groove.gif"
+  },
+  {
+   "id": 82,
+   "name": "Shake_It_Off_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Shake_It_Off_Dance.gif"
+  },
+  {
+   "id": 83,
+   "name": "Superlove_Pop_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Superlove_Pop_Dance.gif"
+  },
+  {
+   "id": 84,
+   "name": "You_Groove",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/You_Groove.gif"
+  },
+  {
+   "id": 85,
+   "name": "Axe_Stance",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Axe_Stance.gif"
+  },
+  {
+   "id": 86,
+   "name": "Basic_Jump",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Basic_Jump.gif"
+  },
+  {
+   "id": 87,
+   "name": "Boxing_Practice",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Boxing_Practice.gif"
+  },
+  {
+   "id": 88,
+   "name": "Chest_Pound_Taunt",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Chest_Pound_Taunt.gif"
+  },
+  {
+   "id": 89,
+   "name": "Combat_Stance",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Combat_Stance.gif"
+  },
+  {
+   "id": 90,
+   "name": "Counterstrike",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Counterstrike.gif"
+  },
+  {
+   "id": 91,
+   "name": "Double_Blade_Spin",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Double_Blade_Spin.gif"
+  },
+  {
+   "id": 92,
+   "name": "Double_Combo_Attack",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Double_Combo_Attack.gif"
+  },
+  {
+   "id": 93,
+   "name": "Dodge_and_Counter",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Dodge_and_Counter.gif"
+  },
+  {
+   "id": 94,
+   "name": "Flying_Fist_Kick",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Flying_Fist_Kick.gif"
+  },
+  {
+   "id": 95,
+   "name": "Gun_Hold_Left_Turn",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Gun_Hold_Left_Turn.gif"
+  },
+  {
+   "id": 96,
+   "name": "Kung_Fu_Punch",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Kung_Fu_Punch.gif"
+  },
+  {
+   "id": 97,
+   "name": "Left_Slash",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Left_Slash.gif"
+  },
+  {
+   "id": 98,
+   "name": "Run_and_Shoot",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_and_Shoot.gif"
+  },
+  {
+   "id": 99,
+   "name": "Reaping_Swing",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Reaping_Swing.gif"
+  },
+  {
+   "id": 100,
+   "name": "Rightward_Spin",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Rightward_Spin.gif"
+  },
+  {
+   "id": 101,
+   "name": "Sword_Shout",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_Shout.gif"
+  },
+  {
+   "id": 102,
+   "name": "Sword_Judgment",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_Judgment.gif"
+  },
+  {
+   "id": 103,
+   "name": "Simple_Kick",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Simple_Kick.gif"
+  },
+  {
+   "id": 104,
+   "name": "Side_Shot",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Side_Shot.gif"
+  },
+  {
+   "id": 105,
+   "name": "Triple_Combo_Attack",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Triple_Combo_Attack.gif"
+  },
+  {
+   "id": 106,
+   "name": "Confident_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Confident_Walk.gif"
+  },
+  {
+   "id": 107,
+   "name": "Confident_Strut",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Confident_Strut.gif"
+  },
+  {
+   "id": 108,
+   "name": "Flirty_Strut",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Flirty_Strut.gif"
+  },
+  {
+   "id": 109,
+   "name": "Groovy_Walk",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Groovy_Walk.gif"
+  },
+  {
+   "id": 110,
+   "name": "Hello_Run",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hello_Run.gif"
+  },
+  {
+   "id": 111,
+   "name": "Injured_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Injured_Walk.gif"
+  },
+  {
+   "id": 112,
+   "name": "Monster_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Monster_Walk.gif"
+  },
+  {
+   "id": 113,
+   "name": "Mummy_Stagger",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Mummy_Stagger.gif"
+  },
+  {
+   "id": 114,
+   "name": "Proud_Strut",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Proud_Strut.gif"
+  },
+  {
+   "id": 115,
+   "name": "Quick_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Quick_Walk.gif"
+  },
+  {
+   "id": 116,
+   "name": "Run_to_Walk_Transition",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_to_Walk_Transition.gif"
+  },
+  {
+   "id": 117,
+   "name": "Red_Carpet_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Red_Carpet_Walk.gif"
+  },
+  {
+   "id": 118,
+   "name": "Skip_Forward",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Skip_Forward.gif"
+  },
+  {
+   "id": 119,
+   "name": "Slow_Orc_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Slow_Orc_Walk.gif"
+  },
+  {
+   "id": 120,
+   "name": "Touch_and_Run",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Touch_and_Run.gif"
+  },
+  {
+   "id": 121,
+   "name": "Thoughtful_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Thoughtful_Walk.gif"
+  },
+  {
+   "id": 122,
+   "name": "Texting_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Texting_Walk.gif"
+  },
+  {
+   "id": 123,
+   "name": "Unsteady_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Unsteady_Walk.gif"
+  },
+  {
+   "id": 124,
+   "name": "Walking_with_Phone",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walking_with_Phone.gif"
+  },
+  {
+   "id": 125,
+   "name": "Charged_Spell_Cast",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Charged_Spell_Cast.gif"
+  },
+  {
+   "id": 126,
+   "name": "Charged_Spell_Cast_1",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Charged_Spell_Cast_1.gif"
+  },
+  {
+   "id": 127,
+   "name": "Charged_Ground_Slam",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Charged_Ground_Slam.gif"
+  },
+  {
+   "id": 128,
+   "name": "Heavy_Hammer_Swing",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Heavy_Hammer_Swing.gif"
+  },
+  {
+   "id": 129,
+   "name": "mage_soell_cast",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/mage_soell_cast.gif"
+  },
+  {
+   "id": 130,
+   "name": "mage_soell_cast_1",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/mage_soell_cast_1.gif"
+  },
+  {
+   "id": 131,
+   "name": "mage_soell_cast_2",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/mage_soell_cast_2.gif"
+  },
+  {
+   "id": 132,
+   "name": "mage_soell_cast_3",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/mage_soell_cast_3.gif"
+  },
+  {
+   "id": 133,
+   "name": "mage_soell_cast_4",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/mage_soell_cast_4.gif"
+  },
+  {
+   "id": 134,
+   "name": "mage_soell_cast_5",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/mage_soell_cast_5.gif"
+  },
+  {
+   "id": 135,
+   "name": "mage_soell_cast_6",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/mage_soell_cast_6.gif"
+  },
+  {
+   "id": 136,
+   "name": "mage_soell_cast_7",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/mage_soell_cast_7.gif"
+  },
+  {
+   "id": 137,
+   "name": "mage_soell_cast_8",
+   "category": "Fighting",
+   "subcategory": "CastingSpell",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/mage_soell_cast_8.gif"
+  },
+  {
+   "id": 138,
+   "name": "Block1",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Block1.gif"
+  },
+  {
+   "id": 139,
+   "name": "Block2",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Block2.gif"
+  },
+  {
+   "id": 140,
+   "name": "Block3",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Block3.gif"
+  },
+  {
+   "id": 141,
+   "name": "Block4",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Block4.gif"
+  },
+  {
+   "id": 142,
+   "name": "Block5",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Block5.gif"
+  },
+  {
+   "id": 143,
+   "name": "Block6",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Block6.gif"
+  },
+  {
+   "id": 144,
+   "name": "Block8",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Block8.gif"
+  },
+  {
+   "id": 145,
+   "name": "Block9",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Block9.gif"
+  },
+  {
+   "id": 146,
+   "name": "Block10",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Block10.gif"
+  },
+  {
+   "id": 147,
+   "name": "Sword_Parry",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_Parry.gif"
+  },
+  {
+   "id": 148,
+   "name": "Sword_Parry_Backward",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_Parry_Backward.gif"
+  },
+  {
+   "id": 149,
+   "name": "Two_Handed_Parry",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Two_Handed_Parry.gif"
+  },
+  {
+   "id": 150,
+   "name": "Hit_Reaction_with_Bow",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hit_Reaction_with_Bow.gif"
+  },
+  {
+   "id": 151,
+   "name": "Sword_Parry_Backward_1",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_Parry_Backward_1.gif"
+  },
+  {
+   "id": 152,
+   "name": "Sword_Parry_Backward_2",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_Parry_Backward_2.gif"
+  },
+  {
+   "id": 153,
+   "name": "Sword_Parry_Backward_3",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_Parry_Backward_3.gif"
+  },
+  {
+   "id": 154,
+   "name": "Sword_Parry_Backward_4",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_Parry_Backward_4.gif"
+  },
+  {
+   "id": 155,
+   "name": "Sword_Parry_Backward_5",
+   "category": "Fighting",
+   "subcategory": "Blocking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_Parry_Backward_5.gif"
+  },
+  {
+   "id": 156,
+   "name": "Stand_Dodge",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Dodge.gif"
+  },
+  {
+   "id": 157,
+   "name": "Stand_Dodge_1",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Dodge_1.gif"
+  },
+  {
+   "id": 158,
+   "name": "Roll_Dodge",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Roll_Dodge.gif"
+  },
+  {
+   "id": 159,
+   "name": "Roll_Dodge_1",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Roll_Dodge_1.gif"
+  },
+  {
+   "id": 160,
+   "name": "Roll_Dodge_2",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Roll_Dodge_2.gif"
+  },
+  {
+   "id": 161,
+   "name": "Roll_Dodge_3",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Roll_Dodge_3.gif"
+  },
+  {
+   "id": 162,
+   "name": "Stand_Dodge_2",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Dodge_2.gif"
+  },
+  {
+   "id": 163,
+   "name": "Roll_Dodge_4",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Roll_Dodge_4.gif"
+  },
+  {
+   "id": 164,
+   "name": "Stand_Dodge_3",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Dodge_3.gif"
+  },
+  {
+   "id": 165,
+   "name": "Kneeling_Reload",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Kneeling_Reload.gif"
+  },
+  {
+   "id": 166,
+   "name": "Running_Reload",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Running_Reload.gif"
+  },
+  {
+   "id": 167,
+   "name": "Slow_Walk_Reload",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Slow_Walk_Reload.gif"
+  },
+  {
+   "id": 168,
+   "name": "Prone_Reload",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Prone_Reload.gif"
+  },
+  {
+   "id": 169,
+   "name": "Forward_Reload_Subtle",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Forward_Reload_Subtle.gif"
+  },
+  {
+   "id": 170,
+   "name": "Standing_Reload",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Standing_Reload.gif"
+  },
+  {
+   "id": 171,
+   "name": "Hit_Reaction_to_Waist",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hit_Reaction_to_Waist.gif"
+  },
+  {
+   "id": 172,
+   "name": "Electrocution_Reaction",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Electrocution_Reaction.gif"
+  },
+  {
+   "id": 173,
+   "name": "Slap_Reaction",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Slap_Reaction.gif"
+  },
+  {
+   "id": 174,
+   "name": "Face_Punch_Reaction",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Face_Punch_Reaction.gif"
+  },
+  {
+   "id": 175,
+   "name": "Face_Punch_Reaction_1",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Face_Punch_Reaction_1.gif"
+  },
+  {
+   "id": 176,
+   "name": "Face_Punch_Reaction_2",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Face_Punch_Reaction_2.gif"
+  },
+  {
+   "id": 177,
+   "name": "Gunshot_Reaction",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Gunshot_Reaction.gif"
+  },
+  {
+   "id": 178,
+   "name": "Hit_Reaction",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hit_Reaction.gif"
+  },
+  {
+   "id": 179,
+   "name": "Hit_Reaction_1",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hit_Reaction_1.gif"
+  },
+  {
+   "id": 180,
+   "name": "Shot_in_the_Back_and_Fall",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Shot_in_the_Back_and_Fall.gif"
+  },
+  {
+   "id": 181,
+   "name": "Electrocuted_Fall",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Electrocuted_Fall.gif"
+  },
+  {
+   "id": 182,
+   "name": "Shot_and_Blown_Back",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Shot_and_Blown_Back.gif"
+  },
+  {
+   "id": 183,
+   "name": "Shot_and_Fall_Backward",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Shot_and_Fall_Backward.gif"
+  },
+  {
+   "id": 184,
+   "name": "Shot_and_Fall_Forward",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Shot_and_Fall_Forward.gif"
+  },
+  {
+   "id": 185,
+   "name": "Shot_and_Slow_Fall_Backward",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Shot_and_Slow_Fall_Backward.gif"
+  },
+  {
+   "id": 186,
+   "name": "Strangled_and_Fall_Forward",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Strangled_and_Fall_Forward.gif"
+  },
+  {
+   "id": 187,
+   "name": "Knock_Down",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Knock_Down.gif"
+  },
+  {
+   "id": 188,
+   "name": "Fall_Dead_from_Abdominal_Injury",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fall_Dead_from_Abdominal_Injury.gif"
+  },
+  {
+   "id": 189,
+   "name": "dying_backwards",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/dying_backwards.gif"
+  },
+  {
+   "id": 190,
+   "name": "Knock_Down_1",
+   "category": "Fighting",
+   "subcategory": "Dying",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Knock_Down_1.gif"
+  },
+  {
+   "id": 191,
+   "name": "Left_Jab_from_Guard",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Left_Jab_from_Guard.gif"
+  },
+  {
+   "id": 192,
+   "name": "Right_Jab_from_Guard",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Right_Jab_from_Guard.gif"
+  },
+  {
+   "id": 193,
+   "name": "Left_Hook_from_Guard",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Left_Hook_from_Guard.gif"
+  },
+  {
+   "id": 194,
+   "name": "Right_Uppercut_from_Guard",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Right_Uppercut_from_Guard.gif"
+  },
+  {
+   "id": 195,
+   "name": "Right_Upper_Hook_from_Guard",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Right_Upper_Hook_from_Guard.gif"
+  },
+  {
+   "id": 196,
+   "name": "Left_Uppercut_from_Guard",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Left_Uppercut_from_Guard.gif"
+  },
+  {
+   "id": 197,
+   "name": "Left_Short_Hook_from_Guard",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Left_Short_Hook_from_Guard.gif"
+  },
+  {
+   "id": 198,
+   "name": "Punch_Combo",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Punch_Combo.gif"
+  },
+  {
+   "id": 199,
+   "name": "Weapon_Combo",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Weapon_Combo.gif"
+  },
+  {
+   "id": 200,
+   "name": "Punch_Combo_1",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Punch_Combo_1.gif"
+  },
+  {
+   "id": 201,
+   "name": "Punch_Combo_2",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Punch_Combo_2.gif"
+  },
+  {
+   "id": 202,
+   "name": "Weapon_Combo_1",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Weapon_Combo_1.gif"
+  },
+  {
+   "id": 203,
+   "name": "Punch_Combo_3",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Punch_Combo_3.gif"
+  },
+  {
+   "id": 204,
+   "name": "Punch_Combo_4",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Punch_Combo_4.gif"
+  },
+  {
+   "id": 205,
+   "name": "Punch_Combo_5",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Punch_Combo_5.gif"
+  },
+  {
+   "id": 206,
+   "name": "Spartan_Kick",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Spartan_Kick.gif"
+  },
+  {
+   "id": 207,
+   "name": "Roundhouse_Kick",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Roundhouse_Kick.gif"
+  },
+  {
+   "id": 208,
+   "name": "Lunge_Roundhouse_Kick",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Lunge_Roundhouse_Kick.gif"
+  },
+  {
+   "id": 209,
+   "name": "Boxing_Guard_Right_Straight_Kick",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Boxing_Guard_Right_Straight_Kick.gif"
+  },
+  {
+   "id": 210,
+   "name": "Boxing_Guard_Prep_Straight_Punch",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Boxing_Guard_Prep_Straight_Punch.gif"
+  },
+  {
+   "id": 211,
+   "name": "Boxing_Guard_Step_Knee_Strike",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Boxing_Guard_Step_Knee_Strike.gif"
+  },
+  {
+   "id": 212,
+   "name": "Elbow_Strike",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Elbow_Strike.gif"
+  },
+  {
+   "id": 213,
+   "name": "Leg_Sweep",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Leg_Sweep.gif"
+  },
+  {
+   "id": 214,
+   "name": "Punch_Forward_with_Both_Fists",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Punch_Forward_with_Both_Fists.gif"
+  },
+  {
+   "id": 215,
+   "name": "High_Kick",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/High_Kick.gif"
+  },
+  {
+   "id": 216,
+   "name": "Lunge_Spin_Kick",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Lunge_Spin_Kick.gif"
+  },
+  {
+   "id": 217,
+   "name": "Sweeping_Kick",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sweeping_Kick.gif"
+  },
+  {
+   "id": 218,
+   "name": "Step_in_High_Kick",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Step_in_High_Kick.gif"
+  },
+  {
+   "id": 219,
+   "name": "Right_Hand_Sword_Slash",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Right_Hand_Sword_Slash.gif"
+  },
+  {
+   "id": 220,
+   "name": "Shield_Push_Left",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Shield_Push_Left.gif"
+  },
+  {
+   "id": 221,
+   "name": "Charged_Upward_Slash",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Charged_Upward_Slash.gif"
+  },
+  {
+   "id": 222,
+   "name": "Draw_and_Shoot_from_Back",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Draw_and_Shoot_from_Back.gif"
+  },
+  {
+   "id": 223,
+   "name": "Draw_and_Shoot_from_Back_1",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Draw_and_Shoot_from_Back_1.gif"
+  },
+  {
+   "id": 224,
+   "name": "Archery_Shot",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Archery_Shot.gif"
+  },
+  {
+   "id": 225,
+   "name": "Archery_Shot_1",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Archery_Shot_1.gif"
+  },
+  {
+   "id": 226,
+   "name": "Archery_Shot_2",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Archery_Shot_2.gif"
+  },
+  {
+   "id": 227,
+   "name": "Archery_Shot_3",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Archery_Shot_3.gif"
+  },
+  {
+   "id": 228,
+   "name": "Walk_Forward_with_Bow_Aimed",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Forward_with_Bow_Aimed.gif"
+  },
+  {
+   "id": 229,
+   "name": "Draw_and_Shoot_from_Back_2",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Draw_and_Shoot_from_Back_2.gif"
+  },
+  {
+   "id": 230,
+   "name": "Walk_Backward_with_Bow_Aimed",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Bow_Aimed.gif"
+  },
+  {
+   "id": 231,
+   "name": "Archery_Aim_with_Lateral_Scan",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Archery_Aim_with_Lateral_Scan.gif"
+  },
+  {
+   "id": 232,
+   "name": "Cowboy_Quick_Draw_Shooting",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cowboy_Quick_Draw_Shooting.gif"
+  },
+  {
+   "id": 233,
+   "name": "Walk_Backward_While_Shooting",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_While_Shooting.gif"
+  },
+  {
+   "id": 234,
+   "name": "Walk_Forward_While_Shooting",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Forward_While_Shooting.gif"
+  },
+  {
+   "id": 235,
+   "name": "Forward_Roll_and_Fire",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Forward_Roll_and_Fire.gif"
+  },
+  {
+   "id": 236,
+   "name": "Draw_and_Shoot_Left",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Draw_and_Shoot_Left.gif"
+  },
+  {
+   "id": 237,
+   "name": "Charged_Axe_Chop",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Charged_Axe_Chop.gif"
+  },
+  {
+   "id": 238,
+   "name": "Axe_Spin_Attack",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Axe_Spin_Attack.gif"
+  },
+  {
+   "id": 239,
+   "name": "Crouch_Pull_and_Throw",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_Pull_and_Throw.gif"
+  },
+  {
+   "id": 240,
+   "name": "Thrust_Slash",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Thrust_Slash.gif"
+  },
+  {
+   "id": 241,
+   "name": "Weapon_Combo_2",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Weapon_Combo_2.gif"
+  },
+  {
+   "id": 242,
+   "name": "Charged_Slash",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Charged_Slash.gif"
+  },
+  {
+   "id": 243,
+   "name": "Idle_3",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_3.gif"
+  },
+  {
+   "id": 244,
+   "name": "Idle_4",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_4.gif"
+  },
+  {
+   "id": 245,
+   "name": "Idle_5",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_5.gif"
+  },
+  {
+   "id": 246,
+   "name": "Idle_6",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_6.gif"
+  },
+  {
+   "id": 247,
+   "name": "Idle_7",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_7.gif"
+  },
+  {
+   "id": 248,
+   "name": "Idle_8",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_8.gif"
+  },
+  {
+   "id": 249,
+   "name": "Idle_9",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_9.gif"
+  },
+  {
+   "id": 250,
+   "name": "Idle_10",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_10.gif"
+  },
+  {
+   "id": 251,
+   "name": "Idle_11",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_11.gif"
+  },
+  {
+   "id": 252,
+   "name": "Idle_12",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_12.gif"
+  },
+  {
+   "id": 253,
+   "name": "Idle_13",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_13.gif"
+  },
+  {
+   "id": 254,
+   "name": "Idle_14",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_14.gif"
+  },
+  {
+   "id": 255,
+   "name": "Angry_Ground_Stomp",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Angry_Ground_Stomp.gif"
+  },
+  {
+   "id": 256,
+   "name": "Angry_Ground_Stomp_1",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Angry_Ground_Stomp_1.gif"
+  },
+  {
+   "id": 257,
+   "name": "Angry_Ground_Stomp_2",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Angry_Ground_Stomp_2.gif"
+  },
+  {
+   "id": 258,
+   "name": "CrouchLookAroundBow",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/CrouchLookAroundBow.gif"
+  },
+  {
+   "id": 259,
+   "name": "Step_Forward_and_Push",
+   "category": "DailyActions",
+   "subcategory": "Pushing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Step_Forward_and_Push.gif"
+  },
+  {
+   "id": 260,
+   "name": "Push_Forward_and_Stop",
+   "category": "DailyActions",
+   "subcategory": "Pushing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Push_Forward_and_Stop.gif"
+  },
+  {
+   "id": 261,
+   "name": "Push_and_Walk_Forward",
+   "category": "DailyActions",
+   "subcategory": "Pushing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Push_and_Walk_Forward.gif"
+  },
+  {
+   "id": 262,
+   "name": "Crouch_and_Push_Forward",
+   "category": "DailyActions",
+   "subcategory": "Pushing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_and_Push_Forward.gif"
+  },
+  {
+   "id": 263,
+   "name": "Sleep_on_Desk",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sleep_on_Desk.gif"
+  },
+  {
+   "id": 264,
+   "name": "Cough_While_Sleeping",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cough_While_Sleeping.gif"
+  },
+  {
+   "id": 265,
+   "name": "Groan_Holding_Stomach_in_Sleep",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Groan_Holding_Stomach_in_Sleep.gif"
+  },
+  {
+   "id": 266,
+   "name": "Lie_Down_Hands_Spread",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Lie_Down_Hands_Spread.gif"
+  },
+  {
+   "id": 267,
+   "name": "Sleep_Normally",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sleep_Normally.gif"
+  },
+  {
+   "id": 268,
+   "name": "Sit_and_Doze_Off",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_and_Doze_Off.gif"
+  },
+  {
+   "id": 269,
+   "name": "sleep",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/sleep.gif"
+  },
+  {
+   "id": 270,
+   "name": "Toss_and_Turn",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Toss_and_Turn.gif"
+  },
+  {
+   "id": 271,
+   "name": "Wake_Up_and_Look_Up",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wake_Up_and_Look_Up.gif"
+  },
+  {
+   "id": 272,
+   "name": "Lie_on_Chair_Sunbathe_and_Sleep",
+   "category": "DailyActions",
+   "subcategory": "Sleeping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Lie_on_Chair_Sunbathe_and_Sleep.gif"
+  },
+  {
+   "id": 273,
+   "name": "Male_Run_Forward_Pick_Up_Left",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Male_Run_Forward_Pick_Up_Left.gif"
+  },
+  {
+   "id": 274,
+   "name": "Female_Crouch_Pick_Up_Place_Side",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Crouch_Pick_Up_Place_Side.gif"
+  },
+  {
+   "id": 275,
+   "name": "Female_Run_Forward_Pick_Up_Right",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Run_Forward_Pick_Up_Right.gif"
+  },
+  {
+   "id": 276,
+   "name": "Male_Bend_Over_Pick_Up",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Male_Bend_Over_Pick_Up.gif"
+  },
+  {
+   "id": 277,
+   "name": "Female_Crouch_Pick_Fruit_Basket_Stand",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Crouch_Pick_Fruit_Basket_Stand.gif"
+  },
+  {
+   "id": 278,
+   "name": "Female_Stand_Pick_Fruit_Basket",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Stand_Pick_Fruit_Basket.gif"
+  },
+  {
+   "id": 279,
+   "name": "Female_Crouch_Pick_Gun_Point_Forward",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Crouch_Pick_Gun_Point_Forward.gif"
+  },
+  {
+   "id": 280,
+   "name": "Female_Crouch_Pick_Throw_Forward",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Crouch_Pick_Throw_Forward.gif"
+  },
+  {
+   "id": 281,
+   "name": "Female_Bend_Over_Pick_Up_Inspect",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Bend_Over_Pick_Up_Inspect.gif"
+  },
+  {
+   "id": 282,
+   "name": "Female_Walk_Pick_Put_In_Pocket",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Walk_Pick_Put_In_Pocket.gif"
+  },
+  {
+   "id": 283,
+   "name": "Pull_Radish",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Pull_Radish.gif"
+  },
+  {
+   "id": 284,
+   "name": "Collect_Object",
+   "category": "DailyActions",
+   "subcategory": "PickingUpItem",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Collect_Object.gif"
+  },
+  {
+   "id": 285,
+   "name": "open_door",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/open_door.gif"
+  },
+  {
+   "id": 286,
+   "name": "open_door_1",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/open_door_1.gif"
+  },
+  {
+   "id": 287,
+   "name": "open_door_2",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/open_door_2.gif"
+  },
+  {
+   "id": 288,
+   "name": "open_door_3",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/open_door_3.gif"
+  },
+  {
+   "id": 289,
+   "name": "open_door_4",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/open_door_4.gif"
+  },
+  {
+   "id": 290,
+   "name": "Wave_One_Hand",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wave_One_Hand.gif"
+  },
+  {
+   "id": 291,
+   "name": "Wave_for_Help",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wave_for_Help.gif"
+  },
+  {
+   "id": 292,
+   "name": "Gesture_with_Hand_on_Gun",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Gesture_with_Hand_on_Gun.gif"
+  },
+  {
+   "id": 293,
+   "name": "Wave_for_Help_1",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wave_for_Help_1.gif"
+  },
+  {
+   "id": 294,
+   "name": "Wave_for_Help_2",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wave_for_Help_2.gif"
+  },
+  {
+   "id": 295,
+   "name": "Wave_for_Help_3",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wave_for_Help_3.gif"
+  },
+  {
+   "id": 296,
+   "name": "Wave_for_Help_4",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wave_for_Help_4.gif"
+  },
+  {
+   "id": 297,
+   "name": "Personalized_Gesture",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Personalized_Gesture.gif"
+  },
+  {
+   "id": 298,
+   "name": "Cheer_with_Both_Hands_Up",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cheer_with_Both_Hands_Up.gif"
+  },
+  {
+   "id": 299,
+   "name": "Stand_Clap_and_Sit_Down",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Clap_and_Sit_Down.gif"
+  },
+  {
+   "id": 300,
+   "name": "Sit_Cheer_with_Left_Hand",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_Cheer_with_Left_Hand.gif"
+  },
+  {
+   "id": 301,
+   "name": "Cheer_with_Both_Hands_1",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cheer_with_Both_Hands_1.gif"
+  },
+  {
+   "id": 302,
+   "name": "Stand_Wave_and_Sit_Down",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Wave_and_Sit_Down.gif"
+  },
+  {
+   "id": 303,
+   "name": "Cheer_with_Both_Hands",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cheer_with_Both_Hands.gif"
+  },
+  {
+   "id": 304,
+   "name": "Seated_Fist_Pump",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Seated_Fist_Pump.gif"
+  },
+  {
+   "id": 305,
+   "name": "Stand_Cheer_and_Sit_Down",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Cheer_and_Sit_Down.gif"
+  },
+  {
+   "id": 306,
+   "name": "Cheer_with_One_Hand_Up",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cheer_with_One_Hand_Up.gif"
+  },
+  {
+   "id": 307,
+   "name": "Sitting_Answering_Questions",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sitting_Answering_Questions.gif"
+  },
+  {
+   "id": 308,
+   "name": "Talk_Passionately",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Talk_Passionately.gif"
+  },
+  {
+   "id": 309,
+   "name": "Talk_with_Left_Hand_on_Hip",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Talk_with_Left_Hand_on_Hip.gif"
+  },
+  {
+   "id": 310,
+   "name": "Talk_with_Left_Hand_Raised",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Talk_with_Left_Hand_Raised.gif"
+  },
+  {
+   "id": 311,
+   "name": "Stand_Talking_Angry",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Talking_Angry.gif"
+  },
+  {
+   "id": 312,
+   "name": "Phone_Conversation",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Phone_Conversation.gif"
+  },
+  {
+   "id": 313,
+   "name": "Talk_with_Hands_Open",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Talk_with_Hands_Open.gif"
+  },
+  {
+   "id": 314,
+   "name": "Talk_with_Right_Hand_Open",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Talk_with_Right_Hand_Open.gif"
+  },
+  {
+   "id": 315,
+   "name": "Hand_on_Hip_Gesture",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hand_on_Hip_Gesture.gif"
+  },
+  {
+   "id": 316,
+   "name": "Headache_Relief",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Headache_Relief.gif"
+  },
+  {
+   "id": 317,
+   "name": "Shrug",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Shrug.gif"
+  },
+  {
+   "id": 318,
+   "name": "Scheming_Hand_Rub",
+   "category": "DailyActions",
+   "subcategory": "Interacting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Scheming_Hand_Rub.gif"
+  },
+  {
+   "id": 319,
+   "name": "air_squat",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/air_squat.gif"
+  },
+  {
+   "id": 320,
+   "name": "bicep_curl",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/bicep_curl.gif"
+  },
+  {
+   "id": 321,
+   "name": "bicycle_crunch",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/bicycle_crunch.gif"
+  },
+  {
+   "id": 322,
+   "name": "circle_crunch",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/circle_crunch.gif"
+  },
+  {
+   "id": 323,
+   "name": "golf_drive",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/golf_drive.gif"
+  },
+  {
+   "id": 324,
+   "name": "idle_to_push_up",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/idle_to_push_up.gif"
+  },
+  {
+   "id": 325,
+   "name": "jump_push_up",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/jump_push_up.gif"
+  },
+  {
+   "id": 326,
+   "name": "jumping_jacks",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/jumping_jacks.gif"
+  },
+  {
+   "id": 327,
+   "name": "kettlebell_swing",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/kettlebell_swing.gif"
+  },
+  {
+   "id": 328,
+   "name": "push_up_to_idle",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/push_up_to_idle.gif"
+  },
+  {
+   "id": 329,
+   "name": "push_up",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/push_up.gif"
+  },
+  {
+   "id": 330,
+   "name": "situps",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/situps.gif"
+  },
+  {
+   "id": 331,
+   "name": "Sumo_High_Pull",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sumo_High_Pull.gif"
+  },
+  {
+   "id": 333,
+   "name": "Look_Around_Dumbfounded",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Look_Around_Dumbfounded.gif"
+  },
+  {
+   "id": 334,
+   "name": "Lower_Weapon_Look_Raise",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Lower_Weapon_Look_Raise.gif"
+  },
+  {
+   "id": 335,
+   "name": "Axe_Breathe_and_Look_Around",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Axe_Breathe_and_Look_Around.gif"
+  },
+  {
+   "id": 336,
+   "name": "Long_Breathe_and_Look_Around",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Long_Breathe_and_Look_Around.gif"
+  },
+  {
+   "id": 337,
+   "name": "Torch_Look_Around",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Torch_Look_Around.gif"
+  },
+  {
+   "id": 338,
+   "name": "Short_Breathe_and_Look_Around",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Short_Breathe_and_Look_Around.gif"
+  },
+  {
+   "id": 339,
+   "name": "Walking_Scan_with_Sudden_Look_Back",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walking_Scan_with_Sudden_Look_Back.gif"
+  },
+  {
+   "id": 340,
+   "name": "Crawl_and_Look_Back",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crawl_and_Look_Back.gif"
+  },
+  {
+   "id": 341,
+   "name": "Walk_Slowly_and_Look_Around",
+   "category": "DailyActions",
+   "subcategory": "LookingAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Slowly_and_Look_Around.gif"
+  },
+  {
+   "id": 342,
+   "name": "Stand_and_Drink",
+   "category": "DailyActions",
+   "subcategory": "Drinking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_and_Drink.gif"
+  },
+  {
+   "id": 343,
+   "name": "Sit_and_Drink",
+   "category": "DailyActions",
+   "subcategory": "Drinking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_and_Drink.gif"
+  },
+  {
+   "id": 344,
+   "name": "Stand_Up1",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up1.gif"
+  },
+  {
+   "id": 345,
+   "name": "Stand_Up2",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up2.gif"
+  },
+  {
+   "id": 346,
+   "name": "Stand_Up3",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up3.gif"
+  },
+  {
+   "id": 347,
+   "name": "Stand_Up4",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up4.gif"
+  },
+  {
+   "id": 348,
+   "name": "Stand_Up5",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up5.gif"
+  },
+  {
+   "id": 349,
+   "name": "Stand_Up6",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up6.gif"
+  },
+  {
+   "id": 350,
+   "name": "Stand_Up7",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up7.gif"
+  },
+  {
+   "id": 351,
+   "name": "Stand_Up8",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up8.gif"
+  },
+  {
+   "id": 352,
+   "name": "Stand_Up9",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up9.gif"
+  },
+  {
+   "id": 353,
+   "name": "Stand_Up10",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_Up10.gif"
+  },
+  {
+   "id": 354,
+   "name": "Sitting_Clap",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sitting_Clap.gif"
+  },
+  {
+   "id": 355,
+   "name": "Sit_Finger_Wag_No",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_Finger_Wag_No.gif"
+  },
+  {
+   "id": 356,
+   "name": "Sit_Hands_on_Head_Lean_Back",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_Hands_on_Head_Lean_Back.gif"
+  },
+  {
+   "id": 357,
+   "name": "Sit_Thumbs_Up_Right",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_Thumbs_Up_Right.gif"
+  },
+  {
+   "id": 358,
+   "name": "Sit_Shout_Hands_on_Mouth",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_Shout_Hands_on_Mouth.gif"
+  },
+  {
+   "id": 359,
+   "name": "Look_Back_and_Sit",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Look_Back_and_Sit.gif"
+  },
+  {
+   "id": 360,
+   "name": "Sit_to_standTransition_Female_2",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_to_standTransition_Female_2.gif"
+  },
+  {
+   "id": 361,
+   "name": "Sit_Dodge",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_Dodge.gif"
+  },
+  {
+   "id": 362,
+   "name": "Sit_Cross_Legged",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_Cross_Legged.gif"
+  },
+  {
+   "id": 363,
+   "name": "Sit_Cross_Legged_on_Floor",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_Cross_Legged_on_Floor.gif"
+  },
+  {
+   "id": 364,
+   "name": "Sit_on_Chair_Arms_Crossed",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_on_Chair_Arms_Crossed.gif"
+  },
+  {
+   "id": 365,
+   "name": "Kneel_on_One_Knee_and_Stand",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Kneel_on_One_Knee_and_Stand.gif"
+  },
+  {
+   "id": 366,
+   "name": "falling_down",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/falling_down.gif"
+  },
+  {
+   "id": 367,
+   "name": "SideLying_Reach_Help",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/SideLying_Reach_Help.gif"
+  },
+  {
+   "id": 368,
+   "name": "Angry_To_Tantrum_Sit",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Angry_To_Tantrum_Sit.gif"
+  },
+  {
+   "id": 369,
+   "name": "Lie_Back_Leg_Swing",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Lie_Back_Leg_Swing.gif"
+  },
+  {
+   "id": 370,
+   "name": "Stand_To_Side_Lying",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_To_Side_Lying.gif"
+  },
+  {
+   "id": 371,
+   "name": "Sit_Lie_Bed",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sit_Lie_Bed.gif"
+  },
+  {
+   "id": 372,
+   "name": "Prone_Reach_Help",
+   "category": "DailyActions",
+   "subcategory": "Transitioning",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Prone_Reach_Help.gif"
+  },
+  {
+   "id": 375,
+   "name": "Handstand_Flip",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Handstand_Flip.gif"
+  },
+  {
+   "id": 376,
+   "name": "Punch_Pose",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Punch_Pose.gif"
+  },
+  {
+   "id": 377,
+   "name": "Relax_arms_then_strike_battle_pose",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Relax_arms_then_strike_battle_pose.gif"
+  },
+  {
+   "id": 378,
+   "name": "Large_step_then_high_kick",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Large_step_then_high_kick.gif"
+  },
+  {
+   "id": 379,
+   "name": "Side_jumps_in_horse_stance",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Side_jumps_in_horse_stance.gif"
+  },
+  {
+   "id": 381,
+   "name": "Step_Right_for_Exercise",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Step_Right_for_Exercise.gif"
+  },
+  {
+   "id": 382,
+   "name": "Jump_and_Slam_Back_Down",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_and_Slam_Back_Down.gif"
+  },
+  {
+   "id": 384,
+   "name": "Quick_Step_and_Spin_Dodge",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Quick_Step_and_Spin_Dodge.gif"
+  },
+  {
+   "id": 385,
+   "name": "Boxing_Warmup",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Boxing_Warmup.gif"
+  },
+  {
+   "id": 386,
+   "name": "Zombie_Scream",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Zombie_Scream.gif"
+  },
+  {
+   "id": 387,
+   "name": "Half_Squat_with_Thumb_Up",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Half_Squat_with_Thumb_Up.gif"
+  },
+  {
+   "id": 388,
+   "name": "Show_Both_Arm_Muscles",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Show_Both_Arm_Muscles.gif"
+  },
+  {
+   "id": 389,
+   "name": "Grip_and_Throw_Down",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Grip_and_Throw_Down.gif"
+  },
+  {
+   "id": 390,
+   "name": "Stand_on_Pole_and_Balance",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stand_on_Pole_and_Balance.gif"
+  },
+  {
+   "id": 391,
+   "name": "Head_Hold_in_Pain",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Head_Hold_in_Pain.gif"
+  },
+  {
+   "id": 392,
+   "name": "Ground_Flip_and_Sweep_Up",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Ground_Flip_and_Sweep_Up.gif"
+  },
+  {
+   "id": 393,
+   "name": "baseball_pitching",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/baseball_pitching.gif"
+  },
+  {
+   "id": 394,
+   "name": "Backflip_and_Hooks",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Backflip_and_Hooks.gif"
+  },
+  {
+   "id": 395,
+   "name": "Breakdance_1990",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Breakdance_1990.gif"
+  },
+  {
+   "id": 396,
+   "name": "Burpee_Exercise",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Burpee_Exercise.gif"
+  },
+  {
+   "id": 397,
+   "name": "360_Power_Spin_Jump",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/360_Power_Spin_Jump.gif"
+  },
+  {
+   "id": 398,
+   "name": "Crouch_Charge_and_Throw",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_Charge_and_Throw.gif"
+  },
+  {
+   "id": 399,
+   "name": "Step_Step_Turn_Kick",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Step_Step_Turn_Kick.gif"
+  },
+  {
+   "id": 401,
+   "name": "Sprint_Roll_and_Flip",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sprint_Roll_and_Flip.gif"
+  },
+  {
+   "id": 402,
+   "name": "Run_and_Leap",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_and_Leap.gif"
+  },
+  {
+   "id": 403,
+   "name": "Victory_Fist_Pump",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Victory_Fist_Pump.gif"
+  },
+  {
+   "id": 404,
+   "name": "Crouch_and_Step_Back",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_and_Step_Back.gif"
+  },
+  {
+   "id": 405,
+   "name": "Joyful_Dance_with_Hand_Sway",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Joyful_Dance_with_Hand_Sway.gif"
+  },
+  {
+   "id": 406,
+   "name": "Thomas_Flair_to_Jump_Up",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Thomas_Flair_to_Jump_Up.gif"
+  },
+  {
+   "id": 407,
+   "name": "Wall_Push_Jump_and_Flip",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wall_Push_Jump_and_Flip.gif"
+  },
+  {
+   "id": 408,
+   "name": "Jazz_Hands",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jazz_Hands.gif"
+  },
+  {
+   "id": 409,
+   "name": "Finger_Wag_No",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Finger_Wag_No.gif"
+  },
+  {
+   "id": 410,
+   "name": "Kick_a_Soccer_Ball",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Kick_a_Soccer_Ball.gif"
+  },
+  {
+   "id": 411,
+   "name": "Neck_Slashing_Gesture",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Neck_Slashing_Gesture.gif"
+  },
+  {
+   "id": 412,
+   "name": "victory",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/victory.gif"
+  },
+  {
+   "id": 413,
+   "name": "Backflip_and_Rise",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Backflip_and_Rise.gif"
+  },
+  {
+   "id": 414,
+   "name": "Double_kick_forward",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Double_kick_forward.gif"
+  },
+  {
+   "id": 415,
+   "name": "Happy_Sway_Standing",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Happy_Sway_Standing.gif"
+  },
+  {
+   "id": 416,
+   "name": "Hit_in_Back_While_Running",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hit_in_Back_While_Running.gif"
+  },
+  {
+   "id": 417,
+   "name": "Hop_with_Arms_Raised",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hop_with_Arms_Raised.gif"
+  },
+  {
+   "id": 419,
+   "name": "Jump_to_Catch_and_Fall",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_to_Catch_and_Fall.gif"
+  },
+  {
+   "id": 420,
+   "name": "Left_Hand_Bitten_Step_Back",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Left_Hand_Bitten_Step_Back.gif"
+  },
+  {
+   "id": 421,
+   "name": "Over_Shoulder_Throw",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Over_Shoulder_Throw.gif"
+  },
+  {
+   "id": 422,
+   "name": "Rising_Flying_Kick",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Rising_Flying_Kick.gif"
+  },
+  {
+   "id": 425,
+   "name": "Vault_with_Rifle",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Vault_with_Rifle.gif"
+  },
+  {
+   "id": 426,
+   "name": "Roll_Behind_Cover",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Roll_Behind_Cover.gif"
+  },
+  {
+   "id": 427,
+   "name": "Vault_and_Land",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Vault_and_Land.gif"
+  },
+  {
+   "id": 428,
+   "name": "Unarmed_Vault",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Unarmed_Vault.gif"
+  },
+  {
+   "id": 429,
+   "name": "Parkour_Vault",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Parkour_Vault.gif"
+  },
+  {
+   "id": 430,
+   "name": "Parkour_Vault_with_Roll",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Parkour_Vault_with_Roll.gif"
+  },
+  {
+   "id": 431,
+   "name": "Parkour_Vault_1",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Parkour_Vault_1.gif"
+  },
+  {
+   "id": 432,
+   "name": "Parkour_Vault_2",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Parkour_Vault_2.gif"
+  },
+  {
+   "id": 433,
+   "name": "Parkour_Vault_3",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Parkour_Vault_3.gif"
+  },
+  {
+   "id": 434,
+   "name": "Fast_Ladder_Climb",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fast_Ladder_Climb.gif"
+  },
+  {
+   "id": 435,
+   "name": "Ladder_Climb_Finish",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Ladder_Climb_Finish.gif"
+  },
+  {
+   "id": 436,
+   "name": "Ladder_Mount_Start",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Ladder_Mount_Start.gif"
+  },
+  {
+   "id": 437,
+   "name": "Slow_Ladder_Climb",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Slow_Ladder_Climb.gif"
+  },
+  {
+   "id": 438,
+   "name": "Ladder_Climb_Loop",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Ladder_Climb_Loop.gif"
+  },
+  {
+   "id": 439,
+   "name": "Climb_Left_with_Both_Limbs",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Left_with_Both_Limbs.gif"
+  },
+  {
+   "id": 440,
+   "name": "Climb_Right_with_Both_Limbs",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Right_with_Both_Limbs.gif"
+  },
+  {
+   "id": 441,
+   "name": "Climb_Stairs",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Stairs.gif"
+  },
+  {
+   "id": 442,
+   "name": "Fast_Stair_Climb",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fast_Stair_Climb.gif"
+  },
+  {
+   "id": 444,
+   "name": "climbing_up_wall",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/climbing_up_wall.gif"
+  },
+  {
+   "id": 445,
+   "name": "diagonal_wall_run",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/diagonal_wall_run.gif"
+  },
+  {
+   "id": 446,
+   "name": "Hang_and_Climb_Left",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hang_and_Climb_Left.gif"
+  },
+  {
+   "id": 447,
+   "name": "Hang_and_Climb_Rght",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hang_and_Climb_Rght.gif"
+  },
+  {
+   "id": 448,
+   "name": "Jump_and_Grab_Wall",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_and_Grab_Wall.gif"
+  },
+  {
+   "id": 449,
+   "name": "Climb_Up_Rope",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Up_Rope.gif"
+  },
+  {
+   "id": 450,
+   "name": "Wall_Flip",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wall_Flip.gif"
+  },
+  {
+   "id": 451,
+   "name": "One_Arm_Handstand",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/One_Arm_Handstand.gif"
+  },
+  {
+   "id": 452,
+   "name": "Backflip",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Backflip.gif"
+  },
+  {
+   "id": 453,
+   "name": "Backflip_Sweep_Kick",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Backflip_Sweep_Kick.gif"
+  },
+  {
+   "id": 455,
+   "name": "Sweep_Kick",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sweep_Kick.gif"
+  },
+  {
+   "id": 456,
+   "name": "Jumping_Head_Scissor_Takedown",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jumping_Head_Scissor_Takedown.gif"
+  },
+  {
+   "id": 457,
+   "name": "Jumping_Punch",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jumping_Punch.gif"
+  },
+  {
+   "id": 458,
+   "name": "Unicycle_Jump_Dismount",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Unicycle_Jump_Dismount.gif"
+  },
+  {
+   "id": 459,
+   "name": "Run_Jump_and_Roll",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_Jump_and_Roll.gif"
+  },
+  {
+   "id": 460,
+   "name": "Jump_with_Arms_Open",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_with_Arms_Open.gif"
+  },
+  {
+   "id": 461,
+   "name": "Jump_with_Arms_and_Legs_Open",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_with_Arms_and_Legs_Open.gif"
+  },
+  {
+   "id": 462,
+   "name": "Backflip_Jump",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Backflip_Jump.gif"
+  },
+  {
+   "id": 463,
+   "name": "Run_and_Jump",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_and_Jump.gif"
+  },
+  {
+   "id": 464,
+   "name": "Leap_and_Punch",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Leap_and_Punch.gif"
+  },
+  {
+   "id": 465,
+   "name": "Leap_Right_and_Catch",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Leap_Right_and_Catch.gif"
+  },
+  {
+   "id": 466,
+   "name": "Regular_Jump",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Regular_Jump.gif"
+  },
+  {
+   "id": 467,
+   "name": "Jump_Over_Obstacle_2",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Over_Obstacle_2.gif"
+  },
+  {
+   "id": 468,
+   "name": "Back_Jump",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Back_Jump.gif"
+  },
+  {
+   "id": 470,
+   "name": "Jumping_Down",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jumping_Down.gif"
+  },
+  {
+   "id": 471,
+   "name": "Jump_Over_Obstacle",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Over_Obstacle.gif"
+  },
+  {
+   "id": 472,
+   "name": "Jump_Over_Obstacle_1",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Over_Obstacle_1.gif"
+  },
+  {
+   "id": 473,
+   "name": "Quad_Jump_Left",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Quad_Jump_Left.gif"
+  },
+  {
+   "id": 474,
+   "name": "Quad_Jump_Up",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Quad_Jump_Up.gif"
+  },
+  {
+   "id": 475,
+   "name": "Quad_Climb_Right",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Quad_Climb_Right.gif"
+  },
+  {
+   "id": 476,
+   "name": "Hang_and_Push_with_Foot",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hang_and_Push_with_Foot.gif"
+  },
+  {
+   "id": 477,
+   "name": "Rope_Hang_Idle",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Rope_Hang_Idle.gif"
+  },
+  {
+   "id": 478,
+   "name": "Bar_Hang_Idle",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Bar_Hang_Idle.gif"
+  },
+  {
+   "id": 479,
+   "name": "Upside_Down_Rope_Hang",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Upside_Down_Rope_Hang.gif"
+  },
+  {
+   "id": 480,
+   "name": "Upside_Down_Rope_Hang_1",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Upside_Down_Rope_Hang_1.gif"
+  },
+  {
+   "id": 481,
+   "name": "Upside_Down_Rope_Hang_2",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Upside_Down_Rope_Hang_2.gif"
+  },
+  {
+   "id": 482,
+   "name": "Grab_Wall_Midair_Idle",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Grab_Wall_Midair_Idle.gif"
+  },
+  {
+   "id": 483,
+   "name": "Slow_Bar_Hang_Left",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Slow_Bar_Hang_Left.gif"
+  },
+  {
+   "id": 484,
+   "name": "Slow_Bar_Hang_Right",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Slow_Bar_Hang_Right.gif"
+  },
+  {
+   "id": 485,
+   "name": "Jump_and_Hang_on_Bar",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_and_Hang_on_Bar.gif"
+  },
+  {
+   "id": 486,
+   "name": "Wall_Support_to_Step_Down",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wall_Support_to_Step_Down.gif"
+  },
+  {
+   "id": 487,
+   "name": "Climb_Attempt_and_Fall_3",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Attempt_and_Fall_3.gif"
+  },
+  {
+   "id": 488,
+   "name": "Climb_Attempt_and_Fall_4",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Attempt_and_Fall_4.gif"
+  },
+  {
+   "id": 489,
+   "name": "Climb_Attempt_and_Fall_5",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Attempt_and_Fall_5.gif"
+  },
+  {
+   "id": 490,
+   "name": "Fall_Down",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fall_Down.gif"
+  },
+  {
+   "id": 491,
+   "name": "Fall_from_Bar",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fall_from_Bar.gif"
+  },
+  {
+   "id": 492,
+   "name": "Wall_Support_Jump_to_Ground",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Wall_Support_Jump_to_Ground.gif"
+  },
+  {
+   "id": 493,
+   "name": "Jump_Down_from_Wall",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Down_from_Wall.gif"
+  },
+  {
+   "id": 494,
+   "name": "Swing_on_Rope_to_Ground",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Swing_on_Rope_to_Ground.gif"
+  },
+  {
+   "id": 495,
+   "name": "Grab_Bar_and_Swing_Forward",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Grab_Bar_and_Swing_Forward.gif"
+  },
+  {
+   "id": 496,
+   "name": "Rope_Hang_Backflip_to_Crouch",
+   "category": "BodyMovements",
+   "subcategory": "HangingfromLedge",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Rope_Hang_Backflip_to_Crouch.gif"
+  },
+  {
+   "id": 497,
+   "name": "climbing_down_wall",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/climbing_down_wall.gif"
+  },
+  {
+   "id": 498,
+   "name": "Climb_Attempt_and_Fall",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Attempt_and_Fall.gif"
+  },
+  {
+   "id": 499,
+   "name": "Climb_Attempt_and_Fall_1",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Attempt_and_Fall_1.gif"
+  },
+  {
+   "id": 500,
+   "name": "Climb_Attempt_and_Fall_2",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Attempt_and_Fall_2.gif"
+  },
+  {
+   "id": 501,
+   "name": "Leap_of_Faith",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Leap_of_Faith.gif"
+  },
+  {
+   "id": 502,
+   "name": "Fall1",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fall1.gif"
+  },
+  {
+   "id": 503,
+   "name": "Fall2",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fall2.gif"
+  },
+  {
+   "id": 504,
+   "name": "Fall3",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fall3.gif"
+  },
+  {
+   "id": 505,
+   "name": "Fall4",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Fall4.gif"
+  },
+  {
+   "id": 506,
+   "name": "Dive_Down_and_Land",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Dive_Down_and_Land.gif"
+  },
+  {
+   "id": 507,
+   "name": "Dive_Down_and_Land_1",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Dive_Down_and_Land_1.gif"
+  },
+  {
+   "id": 508,
+   "name": "Dive_Down_and_Land_2",
+   "category": "BodyMovements",
+   "subcategory": "FallingFreely",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Dive_Down_and_Land_2.gif"
+  },
+  {
+   "id": 509,
+   "name": "Lean_Forward_Sprint",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Lean_Forward_Sprint.gif"
+  },
+  {
+   "id": 510,
+   "name": "Standard_Forward_Charge",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Standard_Forward_Charge.gif"
+  },
+  {
+   "id": 511,
+   "name": "Rifle_Charge",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Rifle_Charge.gif"
+  },
+  {
+   "id": 512,
+   "name": "Male_Head_Down_Charge",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Male_Head_Down_Charge.gif"
+  },
+  {
+   "id": 513,
+   "name": "Female_Head_Down_Charge",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Head_Down_Charge.gif"
+  },
+  {
+   "id": 514,
+   "name": "Female_Bow_Charge_Left_Hand",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Bow_Charge_Left_Hand.gif"
+  },
+  {
+   "id": 515,
+   "name": "Female_Throwing_Stance_Charge",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Throwing_Stance_Charge.gif"
+  },
+  {
+   "id": 516,
+   "name": "slide_light",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/slide_light.gif"
+  },
+  {
+   "id": 517,
+   "name": "slide_right",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/slide_right.gif"
+  },
+  {
+   "id": 518,
+   "name": "sliding_rool",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/sliding_rool.gif"
+  },
+  {
+   "id": 519,
+   "name": "sliding_stumble",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/sliding_stumble.gif"
+  },
+  {
+   "id": 520,
+   "name": "Crouch_Walk_with_Torch",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_Walk_with_Torch.gif"
+  },
+  {
+   "id": 521,
+   "name": "Crouch_Walk_Left_with_Torch",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_Walk_Left_with_Torch.gif"
+  },
+  {
+   "id": 522,
+   "name": "Crouch_Walk_Right_with_Torch",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_Walk_Right_with_Torch.gif"
+  },
+  {
+   "id": 523,
+   "name": "Cautious_Crouch_Walk_Backward",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cautious_Crouch_Walk_Backward.gif"
+  },
+  {
+   "id": 524,
+   "name": "Cautious_Crouch_Walk_Forward",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cautious_Crouch_Walk_Forward.gif"
+  },
+  {
+   "id": 525,
+   "name": "Cautious_Crouch_Walk_Left",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cautious_Crouch_Walk_Left.gif"
+  },
+  {
+   "id": 526,
+   "name": "Cautious_Crouch_Walk_Right",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cautious_Crouch_Walk_Right.gif"
+  },
+  {
+   "id": 527,
+   "name": "Crouch_Walk_Left_with_Gun",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_Walk_Left_with_Gun.gif"
+  },
+  {
+   "id": 528,
+   "name": "Walk_Left_with_Gun",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Left_with_Gun.gif"
+  },
+  {
+   "id": 529,
+   "name": "Walk_Backward_with_Gun",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Gun.gif"
+  },
+  {
+   "id": 530,
+   "name": "run_fast_3",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_3.gif"
+  },
+  {
+   "id": 531,
+   "name": "Sprint_and_Sudden_Stop",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sprint_and_Sudden_Stop.gif"
+  },
+  {
+   "id": 532,
+   "name": "run_fast_4",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_4.gif"
+  },
+  {
+   "id": 533,
+   "name": "run_fast_5",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_5.gif"
+  },
+  {
+   "id": 534,
+   "name": "run_fast_6",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_6.gif"
+  },
+  {
+   "id": 535,
+   "name": "run_fast_7",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_7.gif"
+  },
+  {
+   "id": 536,
+   "name": "run_fast_8",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_8.gif"
+  },
+  {
+   "id": 537,
+   "name": "run_fast_9",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_9.gif"
+  },
+  {
+   "id": 538,
+   "name": "run_fast_10",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_10.gif"
+  },
+  {
+   "id": 539,
+   "name": "run_fast_2",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_2.gif"
+  },
+  {
+   "id": 540,
+   "name": "Injured_Walk_Backward",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Injured_Walk_Backward.gif"
+  },
+  {
+   "id": 541,
+   "name": "Walk_Backward_with_Gun_1",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Gun_1.gif"
+  },
+  {
+   "id": 542,
+   "name": "Walk_Backward_with_Grenade",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Grenade.gif"
+  },
+  {
+   "id": 543,
+   "name": "Step_Back",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Step_Back.gif"
+  },
+  {
+   "id": 544,
+   "name": "Walk_Backward",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward.gif"
+  },
+  {
+   "id": 545,
+   "name": "Walk_Backward_with_Bow",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Bow.gif"
+  },
+  {
+   "id": 546,
+   "name": "Walk_Backward_with_Sword",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Sword.gif"
+  },
+  {
+   "id": 547,
+   "name": "Walk_Backward_with_Bow_1",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Bow_1.gif"
+  },
+  {
+   "id": 548,
+   "name": "Walk_Backward_with_Sword_Shield",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Sword_Shield.gif"
+  },
+  {
+   "id": 549,
+   "name": "Crawl_Backward",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crawl_Backward.gif"
+  },
+  {
+   "id": 550,
+   "name": "Carry_Heavy_Cannon_Forward",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Carry_Heavy_Cannon_Forward.gif"
+  },
+  {
+   "id": 551,
+   "name": "Carry_Heavy_Object_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Carry_Heavy_Object_Walk.gif"
+  },
+  {
+   "id": 552,
+   "name": "Carry_Water_Bucket_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Carry_Water_Bucket_Walk.gif"
+  },
+  {
+   "id": 553,
+   "name": "Elderly_Shaky_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Elderly_Shaky_Walk.gif"
+  },
+  {
+   "id": 554,
+   "name": "Funky_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Funky_Walk.gif"
+  },
+  {
+   "id": 555,
+   "name": "Limping_Walk_1",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Limping_Walk_1.gif"
+  },
+  {
+   "id": 556,
+   "name": "Limping_Walk_2",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Limping_Walk_2.gif"
+  },
+  {
+   "id": 557,
+   "name": "Limping_Walk_3",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Limping_Walk_3.gif"
+  },
+  {
+   "id": 558,
+   "name": "Limping_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Limping_Walk.gif"
+  },
+  {
+   "id": 559,
+   "name": "Sneaky_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sneaky_Walk.gif"
+  },
+  {
+   "id": 560,
+   "name": "Spear_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Spear_Walk.gif"
+  },
+  {
+   "id": 561,
+   "name": "Step_Hip_Hop_Dance",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Step_Hip_Hop_Dance.gif"
+  },
+  {
+   "id": 562,
+   "name": "Stumble_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stumble_Walk.gif"
+  },
+  {
+   "id": 563,
+   "name": "Stylish_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stylish_Walk.gif"
+  },
+  {
+   "id": 564,
+   "name": "Tightrope_Walk",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Tightrope_Walk.gif"
+  },
+  {
+   "id": 565,
+   "name": "Walk_with_Umbrella",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_with_Umbrella.gif"
+  },
+  {
+   "id": 566,
+   "name": "walking_2",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/walking_2.gif"
+  },
+  {
+   "id": 567,
+   "name": "Walk_with_Walker_Support",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_with_Walker_Support.gif"
+  },
+  {
+   "id": 568,
+   "name": "Swim_Idle",
+   "category": "WalkAndRun",
+   "subcategory": "Swimming",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Swim_Idle.gif"
+  },
+  {
+   "id": 569,
+   "name": "Swim_Forward",
+   "category": "WalkAndRun",
+   "subcategory": "Swimming",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Swim_Forward.gif"
+  },
+  {
+   "id": 570,
+   "name": "swimming_to_edge",
+   "category": "WalkAndRun",
+   "subcategory": "Swimming",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/swimming_to_edge.gif"
+  },
+  {
+   "id": 571,
+   "name": "Run_Turn_Left",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_Turn_Left.gif"
+  },
+  {
+   "id": 572,
+   "name": "Walk_Turn_Left",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Turn_Left.gif"
+  },
+  {
+   "id": 573,
+   "name": "Rifle_Turn_Left",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Rifle_Turn_Left.gif"
+  },
+  {
+   "id": 574,
+   "name": "Walk_Turn_Left_with_Weapon",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Turn_Left_with_Weapon.gif"
+  },
+  {
+   "id": 575,
+   "name": "Combat_Idle_Turn_Left",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Combat_Idle_Turn_Left.gif"
+  },
+  {
+   "id": 576,
+   "name": "Idle_Turn_Left",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_Turn_Left.gif"
+  },
+  {
+   "id": 577,
+   "name": "Idle_Step_Turn_Left",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_Step_Turn_Left.gif"
+  },
+  {
+   "id": 578,
+   "name": "Idle_Torch_Turn_Left",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_Torch_Turn_Left.gif"
+  },
+  {
+   "id": 579,
+   "name": "Depressed_Full_Turn_Left",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Depressed_Full_Turn_Left.gif"
+  },
+  {
+   "id": 580,
+   "name": "Sword_and_Shield_Alert_Turn_Left",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_and_Shield_Alert_Turn_Left.gif"
+  },
+  {
+   "id": 581,
+   "name": "Run_Sharp_Turn_Right",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_Sharp_Turn_Right.gif"
+  },
+  {
+   "id": 582,
+   "name": "Run_Turn_Right",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_Turn_Right.gif"
+  },
+  {
+   "id": 583,
+   "name": "Walk_Turn_Right",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Turn_Right.gif"
+  },
+  {
+   "id": 584,
+   "name": "Walk_Turn_Right_Female",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Turn_Right_Female.gif"
+  },
+  {
+   "id": 585,
+   "name": "Rifle_Aim_Turn_Right",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Rifle_Aim_Turn_Right.gif"
+  },
+  {
+   "id": 586,
+   "name": "Idle_Turn_Right",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_Turn_Right.gif"
+  },
+  {
+   "id": 587,
+   "name": "Walk_Turn_Right_Idle_Style",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Turn_Right_Idle_Style.gif"
+  },
+  {
+   "id": 588,
+   "name": "Frustrated_Turn_Right",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Frustrated_Turn_Right.gif"
+  },
+  {
+   "id": 589,
+   "name": "Alert_Quick_Turn_Right",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Alert_Quick_Turn_Right.gif"
+  },
+  {
+   "id": 590,
+   "name": "Sword_and_Shield_Alert_Turn_Right",
+   "category": "WalkAndRun",
+   "subcategory": "TurningAround",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sword_and_Shield_Alert_Turn_Right.gif"
+  },
+  {
+   "id": 591,
+   "name": "Hip_Hop_Dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hip_Hop_Dance.gif"
+  },
+  {
+   "id": 592,
+   "name": "Hip_Hop_Dance_1",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hip_Hop_Dance_1.gif"
+  },
+  {
+   "id": 593,
+   "name": "Hip_Hop_Dance_2",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hip_Hop_Dance_2.gif"
+  },
+  {
+   "id": 594,
+   "name": "Hip_Hop_Dance_3",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hip_Hop_Dance_3.gif"
+  },
+  {
+   "id": 595,
+   "name": "jazz_danc",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/jazz_danc.gif"
+  },
+  {
+   "id": 596,
+   "name": "ymca_dance",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/ymca_dance.gif"
+  },
+  {
+   "id": 597,
+   "name": "Hip_Hop_Dance_4",
+   "category": "Dancing",
+   "subcategory": "Dancing",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hip_Hop_Dance_4.gif"
+  },
+  {
+   "id": 598,
+   "name": "kettlebell_swing_1",
+   "category": "DailyActions",
+   "subcategory": "WorkingOut",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/kettlebell_swing_1.gif"
+  },
+  {
+   "id": 599,
+   "name": "Idle_15",
+   "category": "DailyActions",
+   "subcategory": "Idle",
+   "inplace": false,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Idle_15.gif"
+  },
+  {
+   "id": 601,
+   "name": "Backflip_inplace",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Backflip.gif"
+  },
+  {
+   "id": 604,
+   "name": "Backflip_Sweep_Kick_inplace",
+   "category": "BodyMovements",
+   "subcategory": "PerformingStunt",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Backflip_Sweep_Kick.gif"
+  },
+  {
+   "id": 605,
+   "name": "Back_Jump_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Back_Jump.gif"
+  },
+  {
+   "id": 606,
+   "name": "BackLeft_run_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/BackLeft_run.gif"
+  },
+  {
+   "id": 607,
+   "name": "BackRight_Run_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/BackRight_Run.gif"
+  },
+  {
+   "id": 608,
+   "name": "BeHit_FlyUp_inplace",
+   "category": "Fighting",
+   "subcategory": "GettingHit",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/BeHit_FlyUp.gif"
+  },
+  {
+   "id": 609,
+   "name": "Boxing_Practice_inplace",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Boxing_Practice.gif"
+  },
+  {
+   "id": 610,
+   "name": "Carry_Heavy_Cannon_Forward_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Carry_Heavy_Cannon_Forward.gif"
+  },
+  {
+   "id": 611,
+   "name": "Carry_Heavy_Object_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Carry_Heavy_Object_Walk.gif"
+  },
+  {
+   "id": 612,
+   "name": "Carry_Water_Bucket_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Carry_Water_Bucket_Walk.gif"
+  },
+  {
+   "id": 613,
+   "name": "Casual_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Casual_Walk.gif"
+  },
+  {
+   "id": 615,
+   "name": "Cautious_Crouch_Walk_Backward_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cautious_Crouch_Walk_Backward.gif"
+  },
+  {
+   "id": 616,
+   "name": "Cautious_Crouch_Walk_Forward_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cautious_Crouch_Walk_Forward.gif"
+  },
+  {
+   "id": 617,
+   "name": "Cautious_Crouch_Walk_Left_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cautious_Crouch_Walk_Left.gif"
+  },
+  {
+   "id": 618,
+   "name": "Cautious_Crouch_Walk_Right_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Cautious_Crouch_Walk_Right.gif"
+  },
+  {
+   "id": 619,
+   "name": "Climb_Left_with_Both_Limbs_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Left_with_Both_Limbs.gif"
+  },
+  {
+   "id": 620,
+   "name": "Climb_Right_with_Both_Limbs_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Climbing",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Climb_Right_with_Both_Limbs.gif"
+  },
+  {
+   "id": 621,
+   "name": "Confident_Strut_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Confident_Strut.gif"
+  },
+  {
+   "id": 622,
+   "name": "Crawl_Backward_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crawl_Backward.gif"
+  },
+  {
+   "id": 623,
+   "name": "Crouch_Walk_Left_with_Gun_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_Walk_Left_with_Gun.gif"
+  },
+  {
+   "id": 624,
+   "name": "Crouch_Walk_Left_with_Torch_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_Walk_Left_with_Torch.gif"
+  },
+  {
+   "id": 625,
+   "name": "Crouch_Walk_Right_with_Torch_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Crouch_Walk_Right_with_Torch.gif"
+  },
+  {
+   "id": 626,
+   "name": "Elderly_Shaky_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Elderly_Shaky_Walk.gif"
+  },
+  {
+   "id": 627,
+   "name": "Female_Bow_Charge_Left_Hand_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Bow_Charge_Left_Hand.gif"
+  },
+  {
+   "id": 628,
+   "name": "Female_Throwing_Stance_Charge_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Female_Throwing_Stance_Charge.gif"
+  },
+  {
+   "id": 629,
+   "name": "Flirty_Strut_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Flirty_Strut.gif"
+  },
+  {
+   "id": 630,
+   "name": "ForwardLeft_Run_Fight_inplace",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/ForwardLeft_Run_Fight.gif"
+  },
+  {
+   "id": 631,
+   "name": "ForwardRight_Run_Fight_inplace",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/ForwardRight_Run_Fight.gif"
+  },
+  {
+   "id": 632,
+   "name": "Funky_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Funky_Walk.gif"
+  },
+  {
+   "id": 635,
+   "name": "Handbag_Walk_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Handbag_Walk.gif"
+  },
+  {
+   "id": 636,
+   "name": "Hello_Run_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Hello_Run.gif"
+  },
+  {
+   "id": 637,
+   "name": "Injured_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Injured_Walk.gif"
+  },
+  {
+   "id": 638,
+   "name": "Injured_Walk_Backward_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Injured_Walk_Backward.gif"
+  },
+  {
+   "id": 639,
+   "name": "Jazz_Hands_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jazz_Hands.gif"
+  },
+  {
+   "id": 640,
+   "name": "Jump_Over_Obstacle_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Over_Obstacle.gif"
+  },
+  {
+   "id": 641,
+   "name": "Jump_Over_Obstacle_1_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Over_Obstacle_1.gif"
+  },
+  {
+   "id": 642,
+   "name": "Jump_Over_Obstacle_2_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Jumping",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Over_Obstacle_2.gif"
+  },
+  {
+   "id": 643,
+   "name": "Jump_Run_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Jump_Run.gif"
+  },
+  {
+   "id": 644,
+   "name": "Lean_Forward_Sprint_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Lean_Forward_Sprint.gif"
+  },
+  {
+   "id": 645,
+   "name": "Limping_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Limping_Walk.gif"
+  },
+  {
+   "id": 646,
+   "name": "Limping_Walk_1_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Limping_Walk_1.gif"
+  },
+  {
+   "id": 647,
+   "name": "Limping_Walk_2_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Limping_Walk_2.gif"
+  },
+  {
+   "id": 648,
+   "name": "Limping_Walk_3_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Limping_Walk_3.gif"
+  },
+  {
+   "id": 649,
+   "name": "Lunge_Roundhouse_Kick_inplace",
+   "category": "Fighting",
+   "subcategory": "Punching",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Lunge_Roundhouse_Kick.gif"
+  },
+  {
+   "id": 650,
+   "name": "Mummy_Stagger_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Mummy_Stagger.gif"
+  },
+  {
+   "id": 651,
+   "name": "Parkour_Vault_with_Roll_inplace",
+   "category": "BodyMovements",
+   "subcategory": "VaultingOverObstacle",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Parkour_Vault_with_Roll.gif"
+  },
+  {
+   "id": 652,
+   "name": "Proud_Strut_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Proud_Strut.gif"
+  },
+  {
+   "id": 653,
+   "name": "Red_Carpet_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Red_Carpet_Walk.gif"
+  },
+  {
+   "id": 654,
+   "name": "Rifle_Charge_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Rifle_Charge.gif"
+  },
+  {
+   "id": 656,
+   "name": "Run_and_Leap_inplace",
+   "category": "BodyMovements",
+   "subcategory": "Acting",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_and_Leap.gif"
+  },
+  {
+   "id": 657,
+   "name": "run_fast_10_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_10.gif"
+  },
+  {
+   "id": 658,
+   "name": "run_fast_2_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_2.gif"
+  },
+  {
+   "id": 659,
+   "name": "run_fast_3_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_3.gif"
+  },
+  {
+   "id": 660,
+   "name": "run_fast_4_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_4.gif"
+  },
+  {
+   "id": 661,
+   "name": "run_fast_5_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_5.gif"
+  },
+  {
+   "id": 662,
+   "name": "run_fast_6_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_6.gif"
+  },
+  {
+   "id": 663,
+   "name": "run_fast_7_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_7.gif"
+  },
+  {
+   "id": 664,
+   "name": "run_fast_8_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_8.gif"
+  },
+  {
+   "id": 665,
+   "name": "run_fast_9_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/run_fast_9.gif"
+  },
+  {
+   "id": 666,
+   "name": "Running_Reload_inplace",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Running_Reload.gif"
+  },
+  {
+   "id": 667,
+   "name": "Run_to_Walk_Transition_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Run_to_Walk_Transition.gif"
+  },
+  {
+   "id": 668,
+   "name": "Skip_Forward_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Skip_Forward.gif"
+  },
+  {
+   "id": 669,
+   "name": "Slow_Orc_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Slow_Orc_Walk.gif"
+  },
+  {
+   "id": 670,
+   "name": "Slow_Walk_Reload_inplace",
+   "category": "Fighting",
+   "subcategory": "Transitioning",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Slow_Walk_Reload.gif"
+  },
+  {
+   "id": 671,
+   "name": "Sneaky_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Sneaky_Walk.gif"
+  },
+  {
+   "id": 672,
+   "name": "Spear_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Spear_Walk.gif"
+  },
+  {
+   "id": 673,
+   "name": "Standard_Forward_Charge_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Running",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Standard_Forward_Charge.gif"
+  },
+  {
+   "id": 674,
+   "name": "Stumble_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stumble_Walk.gif"
+  },
+  {
+   "id": 675,
+   "name": "Stylish_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Stylish_Walk.gif"
+  },
+  {
+   "id": 676,
+   "name": "Texting_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Texting_Walk.gif"
+  },
+  {
+   "id": 677,
+   "name": "Tightrope_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Tightrope_Walk.gif"
+  },
+  {
+   "id": 678,
+   "name": "Unsteady_Walk_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Unsteady_Walk.gif"
+  },
+  {
+   "id": 679,
+   "name": "Walk_Backward_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward.gif"
+  },
+  {
+   "id": 680,
+   "name": "Walk_Backward_While_Shooting_inplace",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_While_Shooting.gif"
+  },
+  {
+   "id": 681,
+   "name": "Walk_Backward_with_Bow_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Bow.gif"
+  },
+  {
+   "id": 682,
+   "name": "Walk_Backward_with_Bow_1_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Bow_1.gif"
+  },
+  {
+   "id": 683,
+   "name": "Walk_Backward_with_Bow_Aimed_inplace",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Bow_Aimed.gif"
+  },
+  {
+   "id": 684,
+   "name": "Walk_Backward_with_Grenade_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Grenade.gif"
+  },
+  {
+   "id": 685,
+   "name": "Walk_Backward_with_Gun_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Gun.gif"
+  },
+  {
+   "id": 686,
+   "name": "Walk_Backward_with_Gun_1_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Gun_1.gif"
+  },
+  {
+   "id": 687,
+   "name": "Walk_Backward_with_Sword_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Backward_with_Sword.gif"
+  },
+  {
+   "id": 688,
+   "name": "Walk_Fight_Back_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Fight_Back.gif"
+  },
+  {
+   "id": 689,
+   "name": "Walk_Fight_Forward_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Fight_Forward.gif"
+  },
+  {
+   "id": 690,
+   "name": "Walk_Forward_While_Shooting_inplace",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Forward_While_Shooting.gif"
+  },
+  {
+   "id": 691,
+   "name": "Walk_Forward_with_Bow_Aimed_inplace",
+   "category": "Fighting",
+   "subcategory": "AttackingwithWeapon",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Forward_with_Bow_Aimed.gif"
+  },
+  {
+   "id": 692,
+   "name": "walking_2_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/walking_2.gif"
+  },
+  {
+   "id": 693,
+   "name": "Walking_with_Phone_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walking_with_Phone.gif"
+  },
+  {
+   "id": 694,
+   "name": "Walk_Left_with_Gun_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "CrouchWalking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_Left_with_Gun.gif"
+  },
+  {
+   "id": 695,
+   "name": "Walk_with_Umbrella_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_with_Umbrella.gif"
+  },
+  {
+   "id": 696,
+   "name": "Walk_with_Walker_Support_inplace",
+   "category": "WalkAndRun",
+   "subcategory": "Walking",
+   "inplace": true,
+   "rig_type": "biped",
+   "preview": "https://cdn.meshy.ai/webapp-assets/feature-demo/animation/preview/biped/Walk_with_Walker_Support.gif"
+  }
+ ]
+}
