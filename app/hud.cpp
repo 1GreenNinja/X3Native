@@ -5,8 +5,10 @@
 #include "hud.h"
 #include "alert.h"   // alertLevelName (the LIVING-WORLD alert indicator)
 #include "engine/rhi/Visibility.h"   // unified vis stats block (vis-unify)
+#include "engine/core/x3_cpuzones.h"  // LANE 6: r_passdump / r_passtimers control block
 
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <cmath>
 
@@ -56,6 +58,24 @@ void Hud::init(x3::con::IConsole& console, bool* quitFlag) {
     };
     console.registerCommand("stats",    statsToggle, "toggle/set the renderer stats panel");
     console.registerCommand("r_speeds", statsToggle, "toggle/set the renderer stats panel (alias)");
+
+    // ---- LANE 6: the real r_speeds — a NAMED frame cost breakdown ----------
+    // `r_passdump` logs every render-graph pass's REAL GPU timestamp cost plus
+    // the CPU zone partition of the frame, averaged over the frames since the
+    // last dump. Until this shipped the engine had exactly two GPU timestamps
+    // (frame start / frame end), so every per-pass millisecond in every doc in
+    // this repo was a whole-frame delta. See engine/core/x3_cpuzones.h for why
+    // the request goes through a control block instead of the device directly.
+    console.registerCommand("r_passdump", [&console](const std::vector<std::string>&) {
+        x3::perf::control().dumpRequest = true;
+        console.print("perf: breakdown will print to the log at the end of this frame");
+    }, "log the per-pass GPU + per-zone CPU frame cost breakdown");
+    console.registerCommand("r_passtimers", [&console](const std::vector<std::string>& a) {
+        const bool on = a.empty() ? !x3::perf::zonesEnabled() : (std::atoi(a[0].c_str()) != 0);
+        x3::perf::control().setTimers = on ? 1 : 0;
+        console.print(std::string("r_passtimers = ") + (on ? "1" : "0") +
+                      "  (0 removes ALL timestamp/rdtsc measurement overhead — the A/B)");
+    }, "enable/disable per-pass GPU timestamps + CPU zones");
 
     console.print("X3 console ready. type 'help' for commands, '~' to close.");
 }

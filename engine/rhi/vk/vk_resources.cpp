@@ -846,6 +846,7 @@ void VulkanRenderDevice::unregisterSkinnedMesh(MeshHandle mesh) {
     }
 
 void VulkanRenderDevice::setSkinnedPalette(MeshHandle mesh, const float* palette, uint32_t jointCount) {
+        X3_CPU_ZONE(Z_Skin);
         if (!palette || jointCount == 0) return;
         auto it = m_skinnedMeshes.find(mesh.id);
         if (it == m_skinnedMeshes.end()) return;
@@ -935,11 +936,14 @@ bool VulkanRenderDevice::createPerFrame() {
             vkCreateSemaphore(m_dev.device, &si, nullptr, &fr.imageAvailable);
             vkCreateFence(m_dev.device, &fi, nullptr, &fr.inFlight);
 
-            // 2 timestamps per frame (pass begin + pass end).
+            // LANE 6: was `queryCount = 2` — the whole-frame bracket ONLY, which is
+            // why no per-pass GPU cost has ever been measurable in this engine.
+            // Now: [0]=frame start, [1]=frame end, [2 .. 2+2N)=per-pass pairs
+            // written by RenderGraph::execute (see kFrameTsQueries).
             if (m_tsSupported) {
                 VkQueryPoolCreateInfo qci{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
                 qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-                qci.queryCount = 2;
+                qci.queryCount = kFrameTsQueries;
                 if (vkCreateQueryPool(m_dev.device, &qci, nullptr, &fr.tsPool) != VK_SUCCESS) {
                     logError("[rhi] timestamp query pool create failed; GPU timing disabled");
                     m_tsSupported = false; // fall back: CPU stats only
