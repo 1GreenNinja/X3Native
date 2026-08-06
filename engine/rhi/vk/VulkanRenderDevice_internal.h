@@ -193,6 +193,7 @@ public:
     void setFilmic(const FilmicParams& f) override;
     // Underwater caustics (mesh.frag; rides the SsaoControl caustics lane).
     void setCaustics(const CausticsParams& c) override;
+    void setWetness(const WetnessParams& w) override;
 
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override;
@@ -2746,6 +2747,9 @@ private:
         // Underwater caustics (setCaustics): all zero when no host opted in ->
         // the mesh.frag gate never opens (dry worlds byte-identical).
         glm::vec4 caustics;     // x = enabled, y = water surface Y, z = time (s), w = intensity
+        // Surface wetness (setWetness): all zero when no host opted in -> the
+        // mesh.frag gate never opens (dry worlds byte-identical).
+        glm::vec4 wetness;      // x = amount, y = porosity, z = puddles, w = min roughness
     };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.
@@ -3281,6 +3285,7 @@ private:
     // ---- Painterly levers (ART_BIBLE §5): host-opted zone atmosphere + grade ----
     FogParams               m_fogParams{};       // enabled=false -> fog pass never recorded
     CausticsParams          m_caustics{};        // enabled=false -> mesh.frag caustics gate stays shut
+    WetnessParams           m_wetness{};         // amount=0 -> mesh.frag wetness gate stays shut
     GradeParams             m_gradeParams{};     // strength=0 -> composite grade block inert
     FilmicParams            m_filmic{};          // enabled=false -> composite filmic block inert
     uint32_t                m_filmicFrame = 0;   // per-frame grain-seed advance (the crawl)

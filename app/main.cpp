@@ -393,6 +393,7 @@ int main(int argc, char** argv) {
         _tf.testReflDenoise = o.testReflDenoise;   // reflection DENOISE filter (no GPU needed)
         _tf.testEchoRoads = o.testEchoRoads;       // LIFT A: EchoRoads road graph (no GPU needed)
         _tf.testMineFx   = o.testMineFx;
+        _tf.testWetness  = o.testWetness;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
         _tf.testNpcLife = o.testNpcLife;

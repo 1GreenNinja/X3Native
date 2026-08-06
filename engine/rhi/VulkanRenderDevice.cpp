@@ -641,6 +641,7 @@ void VulkanRenderDevice::setFilmic(const FilmicParams& f) { m_filmic = f; }
 // Underwater caustics: cached like fog, written into the per-frame mesh
 // control UBO (SsaoControl caustics lane) by prepareFrameData.
 void VulkanRenderDevice::setCaustics(const CausticsParams& c) { m_caustics = c; }
+void VulkanRenderDevice::setWetness(const WetnessParams& w) { m_wetness = w; }
 
 void VulkanRenderDevice::setMetalAmbient(float s) { m_metalAmbient = (s >= 0.0f) ? s : 1.0f; }
 

@@ -351,6 +351,30 @@ public:
         float intensity = 1.0f;   // 0..1 master scale (1 = calibrated look)
     };
     virtual void setCaustics(const CausticsParams&) {}
+    // SURFACE WETNESS (rain). A water film changes three things about a surface
+    // and this is all of them: the diffuse DARKENS (light refracts into the film,
+    // scatters in the substrate and comes back attenuated), the surface gets
+    // SMOOTHER (water fills the micro-cavities that made it rough), and the
+    // dielectric F0 rises toward the air-water interface. Together those turn a
+    // matte street into a mirror — which is the whole reason the reflection and
+    // DDGI work pays off in a Pacific-Northwest harbour that actually rains.
+    //
+    // `amount` is the GLOBAL soak, not the instantaneous rainfall: surfaces stay
+    // wet long after a shower stops, so the host integrates precipitation into
+    // this (see x3::game::WetnessModel) rather than passing rain straight through.
+    // Per-fragment the shader modulates it by exposure — an upward-facing face
+    // catches rain, a soffit or a tunnel bore does not — and by cavity occlusion,
+    // because water pools where AO says the geometry dishes inward.
+    //
+    // amount = 0 (the default) is byte-identical: the shader gate never opens, so
+    // every dry world and every existing screenshot is untouched.
+    struct WetnessParams {
+        float amount    = 0.0f;   // 0..1 global soak (0 = bone dry, gate closed)
+        float porosity  = 1.0f;   // 0..1 how much this world's materials darken when wet
+        float puddles   = 1.0f;   // 0..1 how strongly cavity/AO pooling reads
+        float minRough  = 0.06f;  // roughness a fully-soaked surface converges to
+    };
+    virtual void setWetness(const WetnessParams&) {}
     // Filmic grade + split-tone + vignette in the composite pass, master-lerped by
     // `strength` (0 = bit-identical passthrough — the shader never enters the block).
     struct GradeParams {

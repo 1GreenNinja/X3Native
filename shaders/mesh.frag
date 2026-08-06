@@ -115,6 +115,8 @@ layout(set = 3, binding = 1) uniform SsaoControl {
     vec4 rtsh1;       // x = frame seed (per-frame jitter rotation; 0 when TAA is off), yzw = reserved
     // ---- Underwater caustics (setCaustics; all zero when no host opted in) ----
     vec4 caustics;    // x = enabled (0/1), y = local water surface Y, z = time (s), w = intensity
+    // ---- Surface wetness (setWetness; amount 0 = gate shut, byte-identical) ----
+    vec4 wetness;     // x = amount (0..1 soak), y = porosity, z = puddles, w = min roughness
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
@@ -228,6 +230,7 @@ const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white su
 #include "inc/mesh_caustics.glsl"   // underwater caustics modulation
 
 #include "inc/mesh_normalmap.glsl"   // perturbNormal: derivative-TBN normal mapping
+#include "inc/mesh_wetness.glsl"   // rain wetness: darken/smooth/F0 + exposure & pooling  [LANE: wetness]
 
 void main() {
     // GLASS meshes are NOT shaded by the opaque pass — they are drawn in the
@@ -400,8 +403,30 @@ void main() {
         // F0 = 0.04, satin roughness 0.5) — not a copy of the maths, the maths.
         vec3  Vd = normalize(cam.camPos.xyz - vWorldPos);
         const float kDielectricRough = 0.5;   // satin clad/floor default
-        const float aD  = kDielectricRough * kDielectricRough;   // -> GGX alpha
+        const float aDdry = kDielectricRough * kDielectricRough;  // folded at compile time
         vec3  F0d = vec3(0.04);
+        float dRough = kDielectricRough;
+        float aD = aDdry;
+        // RAIN WETNESS on the dielectric path too: a graybox street has to get
+        // wet exactly like a textured one, or the world rains in patches. Applied
+        // BEFORE aD derives from the roughness. metallic = 0 by definition here.
+        // THIS BRANCH IS THE UNTEXTURED PATH — terrain splats and graybox, i.e.
+        // ground, rock and grass. Those are PERVIOUS: rain soaks in, so they
+        // darken but must not gloss. Sending them down the impervious path put
+        // bright specular streaking across the green hillsides at noon (the
+        // FLAG_TERRAIN test alone missed it: this world's terrain reaches here
+        // WITHOUT that flag set, which is why gating on the flag changed
+        // nothing at all in the A/B).
+        // GATED so the DRY path keeps its original codegen exactly. Making
+        // kDielectricRough mutable to pass it by reference cost the compiler its
+        // 0.5*0.5 constant fold, and that alone shifted 119 pixels by one LSB
+        // with wetness OFF — small, but "off is byte-identical" is a claim this
+        // project actually checks, so it has to be true.
+        if (ssao.wetness.x > 0.0) {
+            applyWetness(albedo.rgb, dRough, F0d, N, ao, 0.0, ssao.wetness,
+                         kWetTerrainGloss);
+            aD = dRough * dRough;
+        }
         float NoVd = max(dot(N, Vd), 1e-4);
         vec3  lit  = brdf(N, Vd, NoVd, kSunDir, F0d, albedo.rgb, aD, kSunDiffuseW) * sunRad * shadow;
         for (int i = 0; i < nLights; ++i) {
@@ -430,7 +455,7 @@ void main() {
                  * PL.colorPad.rgb * atten;
         }
         color = lit
-              + iblAmbient(N, Vd, albedo.rgb, 0.0, kDielectricRough, F0d, ao, ambient, up, ddgiGI);
+              + iblAmbient(N, Vd, albedo.rgb, 0.0, dRough, F0d, ao, ambient, up, ddgiGI);
     } else {
         // ---- PBR metallic-roughness (Cook-Torrance GGX). glTF MR: B=metallic, G=roughness. ----
         vec3  mr       = texture(textures[nonuniformEXT(vMrTexIndex)], vUV).rgb;
@@ -447,8 +472,18 @@ void main() {
         float mrClamp  = vGlassParams.w > 0.0 ? vGlassParams.w : 1.0;
         float metallic = mr.b * mrClamp;
         float pRough   = clamp(mr.g - detSmoothAdj * 0.4, 0.045, 1.0);  // perceptual roughness (for IBL) + detail-smoothness nudge
-        float a        = pRough; a *= a;                         // -> GGX alpha (direct lights)
         vec3  F0       = mix(vec3(0.04), albedo.rgb, metallic);
+        // RAIN WETNESS. Ordered deliberately: F0 is built from the DRY albedo
+        // (so a metal keeps its own tint), then the film darkens/smooths/raises
+        // what it should, and only THEN do `a` and `diff` derive from the
+        // wet values. amount 0 returns on the first compare -> byte-identical.
+        // gloss: terrain (soil/grass/scree) is PERVIOUS — water soaks in, so it
+        // darkens without glossing; everything else is a built surface that
+        // holds a film. See the note in mesh_wetness.glsl.
+        if (ssao.wetness.x > 0.0)
+            applyWetness(albedo.rgb, pRough, F0, N, ao, metallic, ssao.wetness,
+                         (vFlags & FLAG_TERRAIN) != 0u ? kWetTerrainGloss : 1.0);
+        float a        = pRough; a *= a;                         // -> GGX alpha (direct lights)
         vec3  diff     = albedo.rgb * (1.0 - metallic);
         vec3  V        = normalize(cam.camPos.xyz - vWorldPos);
         float NoV      = max(dot(N, V), 1e-4);
