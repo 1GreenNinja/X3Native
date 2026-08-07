@@ -157,7 +157,13 @@ int hostLabZero3D(HostContext& hc) {
         // light that gives the hillside its shape is the one that skims it. It is
         // also the only sun angle under which the shadow range is testable at all
         // — a noon sun casts nothing long enough to leave a 45 m box.
-        sp.sunDir[0] = 1.0f; sp.sunDir[1] = 0.23f; sp.sunDir[2] = 0.30f;
+        // Low sun raking ACROSS the rail (from +Z), not down it. A side-scroller
+        // camera looks along -X; a sun behind the lens throws every shadow away
+        // into the screen where the caster itself hides it. Crossing the view
+        // lays the shadows sideways across open ground — which is both the
+        // better-looking light and the only geometry in which shadow RANGE is
+        // observable at all.
+        sp.sunDir[0] = 0.22f; sp.sunDir[1] = 0.26f; sp.sunDir[2] = 1.0f;
         sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
         sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
         device->setSkyParams(sp);
@@ -165,6 +171,16 @@ int hostLabZero3D(HostContext& hc) {
     // Horizon: the rail's whole point is that the mountains it skirts are REAL
     // geometry receding into depth, so the far plane has to reach them.
     device->setCameraFar(15000.0f);
+    // MEASURED 2026-08-04, and it supersedes the "unproven" note on the commit
+    // that added setShadowFollowRange. A/B at 160 vs 0 with 40 casters dressed
+    // and the sun crossing the view: 813 of 230400 sampled pixels differ (0.35%
+    // of frame), max channel-sum delta 171, mean 49, all within x 546..1242 /
+    // y 156..496 — the mid-ground band holding casters beyond the legacy box.
+    // The two earlier A/Bs came back null because the SUN WAS BEHIND THE LENS,
+    // so every shadow fell behind the object that cast it. That was a broken
+    // experiment, not a broken feature; the effect is small here only because
+    // few casters land in the 45-128 m window in this framing.
+    //
     // Open-world sun shadows. The stock box is 45 m half-extent centered on the
     // camera; on a rail that reads 200 m of hillside per frame that runs out of
     // shadow almost immediately. 160 m across, biased ahead of the lens and
