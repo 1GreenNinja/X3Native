@@ -60,6 +60,7 @@
 #include "../mesh_prims.h"
 #include "../asset_root.h"
 #include "../labzero/labzero_rail.h"
+#include "../labzero/labzero_feel.h"   // [P1] THE coyote/buffer machine (shared with the sim)
 #include <cstdlib>   // std::getenv (dressing library path override)
 
 namespace x3 { namespace apphost {
@@ -430,9 +431,18 @@ int hostLabZero3D(HostContext& hc) {
     float easedLead = 0.0f;                       // eased look-ahead scalar
     bool  rigPrimed = false;
 
+    // [P1] Jump feel: the SHARED state machine, not a local edge check.
+    // The previous `jumpHeld && !prevJumpHeld` in the input block threw away
+    // both tuned windows — running off a ledge gave zero forgiveness, and a
+    // press that landed on a frame where the accumulator ran no fixed steps
+    // vanished entirely. Now the HELD LEVEL is sampled per frame and every
+    // fixed step asks labzero_feel, exactly as the sim does.
+    labzero::LzFeelState feel{};
+    const labzero::LzFeelConfig feelCfg{};   // K::COYOTE_STEPS / K::BUFFER_STEPS defaults
+
     // Advance ONE fixed step of gameplay. Returns the desired velocity actually
     // issued (diagnostics / future test hooks).
-    auto stepGameplay = [&](float moveAxis, bool run, bool jumpEdge) {
+    auto stepGameplay = [&](float moveAxis, bool run, bool jumpHeld) {
         charPos = phys->getBodyPosition(charId);
         railS = rail.nearestS(charPos);
 
@@ -452,7 +462,13 @@ int hostLabZero3D(HostContext& hc) {
         };
 
         // F1: .y > 0 is a one-shot jump impulse; gravity is the world's.
-        if (jumpEdge && phys->characterGrounded(charId))
+        // The grounded flag feeds the feel machine, which owns the decision —
+        // note it can fire while AIRBORNE (that is coyote time doing its job),
+        // so this must NOT be re-gated on characterGrounded() here.
+        const bool grounded = phys->characterGrounded(charId);
+        const labzero::LzJumpAction act =
+            labzero::lzFeelStep(feel, feelCfg, jumpHeld, grounded, /*jetEligible=*/false);
+        if (act == labzero::LzJumpAction::Jump)
             desired.y = std::sqrt(2.0f * kWorldGravity * kJumpApex);
 
         phys->moveCharacter(charId, desired, kFixedStep);
@@ -544,7 +560,9 @@ int hostLabZero3D(HostContext& hc) {
             // Jump early so the capture frame shows GROUND CONTACT, not a pose
             // frozen mid-arc: with the F1 apex-matched impulse the air time is
             // ~80 steps, so a press at step 10 has landed well before frame 95.
-            stepGameplay(/*moveAxis=*/1.0f, /*run=*/false, /*jumpEdge=*/(i == 10));
+            // Held for a single step == one press: the feel machine sees the
+            // rising edge on step 10 and the release on 11.
+            stepGameplay(/*moveAxis=*/1.0f, /*run=*/false, /*jumpHeld=*/(i == 10));
             phys->step(kFixedStep);
             scene.update(*phys);
             stream.update(scene, *device, *phys, charPos.x, charPos.z);
@@ -571,7 +589,6 @@ int hostLabZero3D(HostContext& hc) {
                 "LeftShift run, Esc quit");
     double prevTime = glfwGetTime();
     float  accumulator = 0.0f;
-    bool   prevJump = false;
     int    lastW = (int)W, lastH = (int)H;
 
     while (!glfwWindowShouldClose(window)) {
@@ -588,18 +605,20 @@ int hostLabZero3D(HostContext& hc) {
         if (kd(GLFW_KEY_D) || kd(GLFW_KEY_RIGHT)) moveAxis += 1.0f;
         if (kd(GLFW_KEY_A) || kd(GLFW_KEY_LEFT))  moveAxis -= 1.0f;
         const bool run = kd(GLFW_KEY_LEFT_SHIFT);
-        // Controls v2: jumpHeld = Space || J. Edge-press only (B3 lives here).
-        const bool jumpNow  = kd(GLFW_KEY_SPACE) || kd(GLFW_KEY_J);
-        bool       jumpEdge = jumpNow && !prevJump;
-        prevJump = jumpNow;
+        // Controls v2: jumpHeld = Space || J, merged here and passed as a LEVEL.
+        // Edge detection belongs to labzero_feel (B3 lives there now) — doing it
+        // here is what dropped presses that landed on a zero-step frame.
+        const bool jumpHeld = kd(GLFW_KEY_SPACE) || kd(GLFW_KEY_J);
 
         // Fixed-step accumulator, MAX_STEPS clamp (A1). Dragging the window must
         // not slow the game down — that is the accumulator's whole point.
         accumulator += dt;
         int steps = 0;
         while (accumulator >= kFixedStep && steps < kMaxSteps) {
-            stepGameplay(moveAxis, run, jumpEdge);
-            jumpEdge = false;          // one impulse per press, never per step
+            // The held LEVEL goes in every step; the feel machine turns it into
+            // exactly one jump per press (its prevJumpHeld is the edge detector,
+            // and the buffer means a press between steps is not lost).
+            stepGameplay(moveAxis, run, jumpHeld);
             phys->step(kFixedStep);
             accumulator -= kFixedStep;
             ++steps;

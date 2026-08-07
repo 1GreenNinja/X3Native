@@ -18,6 +18,11 @@
 #include <random>
 #include <vector>
 
+// [P1] The jump-feel state machine (coyote / buffer / edge), shared with the 3D
+// rail host so the suite tests the code the game runs. Std-lib only, so the Sim
+// Purity Rule above still holds.
+#include "labzero_feel.h"
+
 namespace labzero {
 
 // ============================================================================
@@ -286,31 +291,30 @@ private:
     }
 
     void stepJumpAndToggle(const LzInput& in) {
-        // Coyote: refreshed on ground, decays airborne (order matters -- this
-        // is BEFORE the press is read, matching Player.cs exactly)
-        if (player.onGround) player.coyote = K::COYOTE_STEPS;
-        else if (player.coyote > 0) --player.coyote;
+        // [P1] The coyote/buffer state machine now lives in labzero_feel.h and is
+        // shared with the 3D rail host — the addendum's "one implementation, two
+        // clients" rule, so the suite below tests the code the GAME runs rather
+        // than a copy of it. This function keeps everything that is sim-specific
+        // (what a jump DOES to vy/onGround, and flipping the jetpack) and
+        // delegates only the timing decision. Behaviour is identical: T3 (coyote
+        // 5-late fires / 6 blocked), T4 (buffer 4-early fires / 9 blocked, held
+        // key no-refire) and T1's determinism hash all pin it from the outside.
+        LzFeelState fs{ player.coyote, player.jumpBuffer, player.prevJumpHeld };
+        const LzFeelConfig fc{ K::COYOTE_STEPS, K::BUFFER_STEPS };
+        const bool jetEligible = player.hasJetpack &&
+                                 (player.jetActive || player.jetFuel >= K::JET_REARM);
 
-        bool edge = in.jumpHeld && !player.prevJumpHeld;
-        player.prevJumpHeld = in.jumpHeld;
+        const LzJumpAction act = lzFeelStep(fs, fc, in.jumpHeld, player.onGround, jetEligible);
 
-        // Jetpack toggle intercepts the AIRBORNE jump edge (grounded always jumps)
-        if (edge && !player.onGround && player.hasJetpack &&
-            (player.jetActive || player.jetFuel >= K::JET_REARM)) {
+        player.coyote       = fs.coyote;
+        player.jumpBuffer   = fs.jumpBuffer;
+        player.prevJumpHeld = fs.prevJumpHeld;
+
+        if (act == LzJumpAction::ToggleJet) {
             player.jetActive = !player.jetActive;
-            player.jumpBuffer = 0;
-            return;
-        }
-
-        if (edge) player.jumpBuffer = K::BUFFER_STEPS;
-        else if (player.jumpBuffer > 0) --player.jumpBuffer;
-
-        if (player.jumpBuffer <= 0) return;
-        if (player.coyote > 0) {
+        } else if (act == LzJumpAction::Jump) {
             player.vy = K::JUMP_STRENGTH;
             player.onGround = false;
-            player.coyote = 0;
-            player.jumpBuffer = 0;
         }
     }
 
