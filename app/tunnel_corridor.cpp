@@ -3,6 +3,8 @@
 // transcribed; the technique is documented in docs/design/BL_WORLD_PORT.md
 // §2.2/§2.3/§3.2/§3.3/§4.3/§4.4 and re-implemented here from first principles.
 #include "tunnel_corridor.h"
+
+#include <cstdlib>
 #include "mesh_prims.h"
 #include "asset_root.h"        // assetRoot() — the surface_library mount point
 
@@ -540,8 +542,14 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     //     a pale cement), so the ribbon keeps its procedural low-contrast dark
     //     checker rather than being dressed in something that is not asphalt.
     m_surf.mount(x3::game::assetRoot() + "/surface_library");
-    const SurfaceSet& boreSet   = m_surf.get(device, "cv_shotcrete_break");
+    // BORE LINING SET. X3_BORE_SET overrides for A/B sweeps (dev only).
+    const char* boreSetName = [](){ const char* e = std::getenv("X3_BORE_SET");
+                                    return (e && *e) ? e : "mw_concrete_panels_b"; }();
+    const float boreUvOverride = [](){ const char* e = std::getenv("X3_BORE_UV");
+                                       return (e && *e) ? (float)std::atof(e) : 0.0f; }();
+    const SurfaceSet& boreSet   = m_surf.get(device, boreSetName);
     const SurfaceSet& portalSet = m_surf.get(device, "mw_concrete_panels_a");
+    const SurfaceSet& roadSet   = m_surf.get(device, "rd_asphalt_01");
     if (!boreSet.ok || !portalSet.ok)
         x3::logWarn("tunnel corridor: surface_library set(s) unavailable — "
                     "falling back to the procedural checker concrete");
@@ -631,7 +639,15 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float nD[3] = { 0, -1, 0 };
             mb.quad(aLd, aRd, bRd, bLd, nD, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
         }
-        Material m; m.alb = asphaltTex; m.mr = roughMR;
+        // REAL ASPHALT. The note above ("NOT WIRED, and honestly: the ROAD") is
+        // now resolved: rd_asphalt_01 is a 2K albedo + tangent normal + MR set
+        // built from a purchased pack, with the source's Unity HDRP maskmap
+        // transposed into glTF channel order (roughness = 1 - smoothness, and
+        // metallic carried through rather than assumed). Falls back to the old
+        // procedural checker if the set is absent, so a thin checkout still runs.
+        Material m;
+        if (roadSet.ok) { m.alb = roadSet.albedo; m.mr = roadSet.mr; m.nrm = roadSet.normal; }
+        else            { m.alb = asphaltTex;     m.mr = roughMR; }
         upload(mb, m, /*collide*/true);
 
         // ---- Lane markings. BL §3.4 as DATA: solid white edge lines at
@@ -682,7 +698,8 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // 7.1 m it draws a 3.5 m fissure and the bore reads as a collapsed cavern
         // rather than a lined tunnel. 0.30 (one tile per 3.3 m) puts that same
         // crack at ~1.6 m — shotcrete crazing at the scale a driver would see it.
-        const float kBoreUV = boreSet.ok ? 0.30f : 0.14f;
+        const float kBoreUV = boreUvOverride > 0.0f ? boreUvOverride
+                                                    : (boreSet.ok ? 0.16f : 0.14f);
         emitSweep(shell, bf, right, inner, -1.0f, kBoreUV);   // drivable bore surface
         emitSweep(shell, bf, right, outer, +1.0f, kBoreUV);   // buried outer skin
         Material sm;
