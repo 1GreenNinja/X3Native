@@ -49,13 +49,29 @@ inline std::string resolveAssetRoot() {
     const fs::path exe = exeDirPath();
 
     const fs::path candidates[] = {
+        exe / ".." / ".." / "assets",         // build-ninja/bin    -> repo/assets
         exe / ".." / ".." / ".." / "assets",  // build/bin/<Config> -> repo/assets
         exe / "assets",                        // assets next to the exe
         fs::path(".") / "assets",              // run from repo root
         fs::path("assets"),                    // relative fallback
     };
+    // A candidate must LOOK LIKE the asset root, not merely exist under that
+    // name. Windows path comparison is CASE-INSENSITIVE, and the old first
+    // candidate assumed a three-deep build/bin/<Config> layout — so under the
+    // two-deep ninja layout it overshot to "D:\assets", which silently matched
+    // an unrelated "D:\Assets" folder on this machine. is_directory() said yes,
+    // resolution stopped there, and EVERY committed asset in the repo became
+    // invisible: terrain splats fell back to procedural noise, the tunnel's
+    // shotcrete lining reported "incomplete", and the art was written off as
+    // living only on the authoring box while it sat in assets/ the whole time.
+    // Requiring a known marker subdirectory makes a wrong-but-existing path
+    // fail over to the next candidate instead of winning.
+    auto looksLikeAssetRoot = [&](const fs::path& p) {
+        return fs::is_directory(p / "surface_library", ec)
+            || fs::is_directory(p / "converted_glb", ec);
+    };
     for (const fs::path& c : candidates) {
-        if (fs::is_directory(c, ec)) {
+        if (fs::is_directory(c, ec) && looksLikeAssetRoot(c)) {
             // Normalize (collapse the ../ segments) so logs read cleanly.
             fs::path norm = fs::weakly_canonical(c, ec);
             return (ec ? c : norm).string();

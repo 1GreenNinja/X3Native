@@ -612,8 +612,17 @@ public:
     // carry the terrain flag + the four packed detail-texture indices. Passing
     // any invalid handle returns an invalid marker (terrain falls back to flat).
     // Each of grass/rock/snow/sand should be a small seamless RGBA8 sRGB tile.
+    //
+    // NORMAL MAPS (grassN/rockN/snowN/sandN) are OPTIONAL and give the splat its
+    // RELIEF: each layer's tangent-space normal map, sampled and blended with the
+    // exact weight its albedo got. They must be created with srgb=false (a normal
+    // map is data, not colour). Omit them — or pass invalid handles — and terrain
+    // shades from the geometry normal exactly as it did before, which is what
+    // every caller that has not been updated gets.
     virtual TextureHandle registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
-                                                  TextureHandle snow,  TextureHandle sand) = 0;
+                                                  TextureHandle snow,  TextureHandle sand,
+                                                  TextureHandle grassN = {}, TextureHandle rockN = {},
+                                                  TextureHandle snowN  = {}, TextureHandle sandN = {}) = 0;
 
     // Submit a draw between beginFrame/endFrame. An invalid baseColor falls back
     // to the built-in 1x1 white texture, so baseColorFactor alone gives a flat

@@ -416,7 +416,9 @@ void VulkanRenderDevice::destroyTexture(TextureHandle h) {
     }
 
 TextureHandle VulkanRenderDevice::registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
-                                      TextureHandle snow,  TextureHandle sand) {
+                                      TextureHandle snow,  TextureHandle sand,
+                                      TextureHandle grassN, TextureHandle rockN,
+                                      TextureHandle snowN,  TextureHandle sandN) {
         auto idxOf = [this](TextureHandle h) -> uint32_t {
             if (!h.valid()) return 0;
             auto it = m_textures.find(h.id);
@@ -428,6 +430,23 @@ TextureHandle VulkanRenderDevice::registerTerrainMaterial(TextureHandle grass, T
         m_terrainTexIdx[1] = idxOf(rock);
         m_terrainTexIdx[2] = idxOf(snow);
         m_terrainTexIdx[3] = idxOf(sand);
+        // NORMAL maps are per-layer OPTIONAL: an invalid handle resolves to 0,
+        // which mesh.frag reads as "this layer has no relief" and falls back to
+        // the geometry normal for it alone. A caller that passes none at all gets
+        // all four zero -> the pre-relief renderer, exactly.
+        m_terrainNrmIdx[0] = idxOf(grassN);
+        m_terrainNrmIdx[1] = idxOf(rockN);
+        m_terrainNrmIdx[2] = idxOf(snowN);
+        m_terrainNrmIdx[3] = idxOf(sandN);
+        {
+            char msg[224];
+            std::snprintf(msg, sizeof(msg),
+                          "[rhi] terrain material: albedo idx %u/%u/%u/%u  normal idx %u/%u/%u/%u"
+                          " (grass/rock/snow/sand; 0 = none)",
+                          m_terrainTexIdx[0], m_terrainTexIdx[1], m_terrainTexIdx[2], m_terrainTexIdx[3],
+                          m_terrainNrmIdx[0], m_terrainNrmIdx[1], m_terrainNrmIdx[2], m_terrainNrmIdx[3]);
+            x3::logInfo(msg);
+        }
         // Allocate a marker id that can never collide with a real texture id
         // (createTexture hands out m_nextTexId++ starting at 1). A high reserved
         // value keeps the two id spaces disjoint without touching m_nextTexId.

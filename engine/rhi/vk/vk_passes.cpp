@@ -1814,6 +1814,14 @@ void VulkanRenderDevice::prepareFrameData() {
             sc.caustics = glm::vec4(m_caustics.enabled ? 1.0f : 0.0f,
                                     m_caustics.waterY, m_caustics.time,
                                     m_caustics.intensity);
+            // TERRAIN NORMAL MAPS: packed exactly like the per-object albedo pack
+            // (see the terrainPack1/2 fill above) so inc/mesh_terrain.glsl unpacks
+            // both with the same two shifts. All zero until a host registers
+            // normals -> terrainNormal() returns the geometry normal.
+            sc.terrainNrm = glm::uvec4(
+                (m_terrainNrmIdx[0] << 16) | (m_terrainNrmIdx[1] & 0xFFFFu),
+                (m_terrainNrmIdx[2] << 16) | (m_terrainNrmIdx[3] & 0xFFFFu),
+                0u, 0u);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
