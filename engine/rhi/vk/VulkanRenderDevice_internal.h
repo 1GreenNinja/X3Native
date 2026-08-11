@@ -123,8 +123,13 @@ constexpr uint32_t kFramesInFlight = 2;
 // HUD printed 0.00 on every machine. It now holds the frame bracket PLUS a pair
 // per graph pass. The busiest echotropolis frame records ~30 passes; 48 leaves
 // headroom without making the readback wide.
-constexpr uint32_t kMaxTimedPasses = 48;
-constexpr uint32_t kFrameTsQueries = 2 + kMaxTimedPasses * 2;   // = 98
+// LANE 6 REPLAY ON MAIN (2026-08): main carries clustered lights, CSM, geo-LOD and
+// reflection denoise, all of which add graph passes the 0bc0d482 base never had. 48
+// silently CLAMPED (std::min in vk_graph.cpp) — an over-cap pass would vanish from
+// the breakdown and the "pass sum == frame bracket" invariant would quietly fail.
+// 96 leaves headroom on the widest frame this engine records.
+constexpr uint32_t kMaxTimedPasses = 96;
+constexpr uint32_t kFrameTsQueries = 2 + kMaxTimedPasses * 2;   // = 194
 // Glass frost (M4): number of progressively-downsampled blur levels of the scene
 // copy. Each is a separate single-mip image (the render-graph tracks one layout per
 // image). The glass shader samples the deepest level for the frosted look.

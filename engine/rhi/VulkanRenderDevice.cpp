@@ -1415,11 +1415,18 @@ void VulkanRenderDevice::logPerfBreakdown(const char* why) {
         // Leaves that partition the device's share of the frame. endframe_total is
         // a COMPOSITE (it contains prepare/as/graph/submit) so it is not summed;
         // its residual is reported instead.
+        // LANE 6 REPLAY: the six cpu.host_* spans are EXCLUSIVE (HostScope subtracts
+        // whatever the device already charged inside them), so they belong in the
+        // partition alongside the device leaves. cpu.host_outside is now only what
+        // NO span covers at all.
         const uint32_t leaves[] = { x3::perf::Z_BeginFrame, x3::perf::Z_DrawMesh,
                                     x3::perf::Z_HostDrawFan,
                                     x3::perf::Z_Skin, x3::perf::Z_Hud,
                                     x3::perf::Z_Prepare, x3::perf::Z_AsBuild,
-                                    x3::perf::Z_GraphRecord, x3::perf::Z_Submit };
+                                    x3::perf::Z_GraphRecord, x3::perf::Z_Submit,
+                                    x3::perf::Z_HostInput, x3::perf::Z_HostPhysics,
+                                    x3::perf::Z_HostStream, x3::perf::Z_HostSim,
+                                    x3::perf::Z_HostDrawFans, x3::perf::Z_HostFrameCap };
         double leafSum = 0.0;
         logInfo("[perf]   -- CPU (per frame) ------------------------------------");
         for (uint32_t li = 0; li < sizeof(leaves) / sizeof(leaves[0]); ++li) {

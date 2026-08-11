@@ -61,6 +61,7 @@
 #include "../perfshop.h"               // NFS LAYER: the dormant performance shop, live
 #include "../hud.h"                    // ENGINE CONSOLE: D6 IConsole + Hud drop-down front-end
 #include "engine/core/IConsole.h"
+#include "engine/core/x3_cpuzones.h"  // LANE 6 REPLAY: host frame-span CPU zones (splits cpu.host_outside)
 #include <string>
 
 #include <stb_image.h>   // stbi_load_16_from_memory (impl compiled in engine ModelLoader.cpp)
@@ -3316,6 +3317,16 @@ int hostEchotropolis(HostContext& hc) {
 
     int lastW = (int)hc.W, lastH = (int)hc.H;
     while (!glfwWindowShouldClose(window) && !wantQuit) {
+        // ===== LANE 6 REPLAY (2026-08): the frame loop is SPAN-TIMED ==========
+        // The 0bc0d482 breakdown left 41 % of the frame in an unattributed
+        // `cpu.host_outside` row because nothing outside the render device was
+        // measured. These five spans + the physics zone below partition the loop
+        // body. They are EXCLUSIVE (HostScope subtracts every device zone that
+        // fires inside them — drawMesh, hud, beginFrame — so nothing is counted
+        // twice), and they are DELIMITED rather than brace-nested because the
+        // loop body declares locals that later spans still read. Zero cost with
+        // X3_PASSTIMERS=0 / `r_passtimers 0`.
+        x3::perf::HostScope zInput(x3::perf::Z_HostInput);
         glfwPollEvents();
         {
             const bool esc = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
@@ -3714,7 +3725,7 @@ int hostEchotropolis(HostContext& hc) {
             if (shopBuilt && shop.shopMode()) { vin = {}; vin.brake = 1.0f; }
             worldCars.driveInput(vin);
             worldCars.preStep(dt);
-            phys->step(dt);
+            { X3_HOST_ZONE(Z_HostPhysics); phys->step(dt); }
             worldCars.postStep(dt);
             if (audioOn) worldCars.updateAudio(eaudio.get(), vin.throttle);
             // Drive XP: every leg of real road banked earns progression.
@@ -3780,7 +3791,7 @@ int hostEchotropolis(HostContext& hc) {
             in.diveHeld    = kd(GLFW_KEY_LEFT_CONTROL) || kd(GLFW_KEY_C);  // swim: dive
             in.lookDX = ddx; in.lookDY = ddy;
             player.update(in, dt, *phys);
-            phys->step(dt);
+            { X3_HOST_ZONE(Z_HostPhysics); phys->step(dt); }
         }
         // ---- FLY MODE step: free camera over the city (Tim's spec) ----------
         if (flyMode) {
@@ -4080,6 +4091,8 @@ int hostEchotropolis(HostContext& hc) {
                             x3::game::todPhaseName(prevPhase));
             }
         }
+        zInput.stop();                                   // LANE 6 span boundary
+        x3::perf::HostScope zStream(x3::perf::Z_HostStream);
         // ===== TIER-2 MILESTONE B: the streamer TICKS ========================
         // Wants come from the ACTIVE CAMERA (plan 6.1: in this world the camera
         // IS the player), with the VISTA RULE keeping the whole island resident
@@ -4119,6 +4132,8 @@ int hostEchotropolis(HostContext& hc) {
             }
         }
 
+        zStream.stop();                                  // LANE 6 span boundary
+        x3::perf::HostScope zSim(x3::perf::Z_HostSim);
         syncCVars();   // r_* console cvars -> device (before the atmosphere writes post)
         const x3::game::TodSample todS = tod.sample();
         applyTodSample(device, todS);
@@ -4289,12 +4304,21 @@ int hostEchotropolis(HostContext& hc) {
                 }
             }
 
-            // Drone flybys: an occasional pass fired AT a live drone's position.
-            if (!drones.empty()) {
+            // Drone flybys: an occasional pass fired AT a live aircraft's position.
+            //
+            // ⚠ BUILD FIX (lane6 replay, 2026-08-11): as pushed, origin/main tip
+            // 9d19cb51 DOES NOT COMPILE — this block referenced `drones` / `struct
+            // Drone`, neither of which exists anywhere in this host (or the repo).
+            // `helis` / `Heli` is the only per-frame aircraft container here and it
+            // carries exactly the fields this block reads (phase/w/cx/cz/r/y), so it
+            // is substituted verbatim. This is a COMPILE fix, not a design ruling —
+            // the lane that wrote 9d19cb51 should confirm whether the flyby SFX was
+            // meant for a drone container that was never landed.
+            if (!helis.empty()) {
                 flybyT -= dt;
                 if (flybyT <= 0.0f) {
                     flybyT = 12.0f + audRand01() * 14.0f;
-                    const Drone& d = drones[audRng % drones.size()];
+                    const Heli& d = helis[audRng % helis.size()];
                     const float a = d.phase + waterTime * d.w;
                     const auto& s = sfxFlyby[audRng % 3];
                     if (s.valid())
@@ -4370,7 +4394,17 @@ int hostEchotropolis(HostContext& hc) {
             device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
         }
 
+        // LANE 6 SPAN BOUNDARY — and it MUST be exactly here. beginFrame() calls
+        // accumulateCpuZones() + frameAccum().reset() (VulkanRenderDevice.cpp:1049):
+        // that is the accumulator's frame edge. A host span that STRADDLES it sees
+        // `attributed` snap back to 0 and its exclusive subtraction underflows, so
+        // the span silently reports 0.000 ms forever. (First cut of this wiring did
+        // exactly that and cpu.host_drawfans read 0.000 in every window — the
+        // instrumentation catching its own bug for the second time.) So: zSim ends
+        // BEFORE the reset, zFans begins AFTER it, and neither crosses.
+        zSim.stop();
         auto frame = device->beginFrame();
+        x3::perf::HostScope zFans(x3::perf::Z_HostDrawFans);
         island.draw(*device, frame);
         props.draw(*device, frame);    // P4 coast dressing (lighthouse/dock/boats/skyline)
         // TIER-2 M-A: houses/towers/mine/streets+metro/condos/districts/hackables/
@@ -4761,6 +4795,7 @@ int hostEchotropolis(HostContext& hc) {
                 device->drawHudText(frame, tz, px + pad, ty, 12.0f, hdr);
             }
         }
+        zFans.stop();                                    // LANE 6 span boundary
         device->endFrame(frame);
         if (!g_playasCapPath.empty()) {   // PLAYAS_DEMO: finalize the armed copy
             device->captureFrame(g_playasCapPath.c_str());
@@ -4775,6 +4810,10 @@ int hostEchotropolis(HostContext& hc) {
         // the frame budget so vsync-off doesn't churn the GPU on invisible
         // frames. Sleep most of the wait, spin the last ~1 ms for accuracy. ----
         {
+            // LANE 6: named, not hidden. frameCpu is wall-clock endFrame-to-endFrame,
+            // so a binding frame cap would inflate the CPU frame time and land in the
+            // host residual. This row MUST read ~0 for a breakdown to be believed.
+            X3_HOST_ZONE(Z_HostFrameCap);
             const float maxfps = (float)std::atof(console->getString("r_maxfps").c_str());
             if (maxfps > 0.0f) {
                 const double target = frameCapPrev + 1.0 / (double)maxfps;

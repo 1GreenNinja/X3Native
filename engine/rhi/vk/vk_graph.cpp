@@ -2152,6 +2152,21 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         {
             auto& frTs = m_frames[m_frameIdx];
             const uint32_t n = std::min(m_graph.timedPassCount(), kMaxTimedPasses);
+            // LANE 6 REPLAY: clamping used to be SILENT. If it ever fires, the
+            // breakdown is missing passes and the pass-sum invariant is void — say so
+            // once, loudly, rather than publish a quietly-truncated measurement.
+            if (m_graph.timedPassCount() > kMaxTimedPasses) {
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    char wb[160];
+                    std::snprintf(wb, sizeof(wb),
+                        "[perf] TIMED-PASS OVERFLOW: %u passes recorded but only %u timed "
+                        "— the r_passdump breakdown is TRUNCATED (raise kMaxTimedPasses)",
+                        m_graph.timedPassCount(), kMaxTimedPasses);
+                    logInfo(wb);
+                }
+            }
             frTs.tsPassCount = n;
             for (uint32_t i = 0; i < n; ++i) {
                 frTs.tsPassNames[i] = m_graph.timedPassName(i);
