@@ -1313,8 +1313,18 @@ bool VulkanRenderDevice::createSampledTexture(const void* rgba8, uint32_t w, uin
             // Generate each successive mip by a 2x linear downscale blit from the previous.
             int32_t mw = (int32_t)w, mh = (int32_t)h;
             for (uint32_t i = 1; i < mipLevels; ++i) {
+                // SYNC (WAW): src STAGE must name the command that actually wrote
+                // this mip. Mip 0 came from vkCmdCopyBufferToImage (COPY_BIT); every
+                // mip after it came from vkCmdBlitImage, which runs in BLIT_BIT —
+                // and COPY_BIT does NOT include BLIT_BIT. Hard-coding COPY_BIT left
+                // the blit's TRANSFER_WRITE outside this barrier's src scope, so the
+                // layout transition (itself a write) was unordered against it:
+                // SYNC-HAZARD-WRITE-AFTER-WRITE, "previously written by
+                // vkCmdBlitImage ... at VK_PIPELINE_STAGE_2_BLIT_BIT". The access
+                // mask was already correct; only the stage was wrong.
                 barrierMip(i - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           (i == 1) ? VK_PIPELINE_STAGE_2_COPY_BIT : VK_PIPELINE_STAGE_2_BLIT_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
                 barrierMip(i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
@@ -1332,9 +1342,13 @@ bool VulkanRenderDevice::createSampledTexture(const void* rgba8, uint32_t w, uin
                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                 mw = nw; mh = nh;
             }
-            // Last mip is still TRANSFER_DST -> SHADER_READ.
+            // Last mip is still TRANSFER_DST -> SHADER_READ. SAME src-stage rule as
+            // the loop above: with a mip chain the last mip was produced by the
+            // final vkCmdBlitImage (BLIT_BIT); only a single-mip texture was
+            // produced by vkCmdCopyBufferToImage (COPY_BIT).
             barrierMip(mipLevels - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       (mipLevels == 1) ? VK_PIPELINE_STAGE_2_COPY_BIT : VK_PIPELINE_STAGE_2_BLIT_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         };
         // BOOT-TIME upload batching: record the copy + mip-blit chain into the

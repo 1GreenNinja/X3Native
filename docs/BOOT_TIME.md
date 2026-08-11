@@ -112,6 +112,12 @@ pass) and CPU contention between the 29-file warmup and driver init.
 
 * `--test-boottime` (canonlevel, Release, warm cache): **5/5 PASS < 2000 ms**, median **1594.7 ms**
 * Full `--test-*` suite (Release): **83/83 PASS** (boottime is additive on top)
-* `--smoketest` Release: 30 frames + recreate OK, **0 VUID**, VMA `allocationCount=0`
+* `--smoketest` Release: 30 frames + recreate OK, VMA `allocationCount=0`
+  — ⚠️ the "0 VUID" this line used to claim was VACUOUS: Release compiled the
+  validation layers out (`#ifdef _DEBUG`), so nothing was being checked. Re-run
+  with `--validate` for a real VUID result. See `docs/VALIDATION.md`.
 * `--smoketest` Debug (validation ON): **0 VUID**, `allocationCount=0`
+* `--smoketest --vksync` (SYNCHRONIZATION validation, Release + Debug, default +
+  canonlevel): **0 sync hazards**. Standard validation does not check barriers;
+  when this was first enabled it reported 4079.
 * `--test-framepacing`: **5/5 PASS** — zero unattributed spikes, zero late pipelines/modules/pools

@@ -683,6 +683,18 @@ struct CliOptions {
     // legacy 32 B layout (bit-exact), 1 = 24 B (packed normal), 2 = 20 B (packed
     // normal + half UV). See engine/rhi/VertexPack.h.
     uint32_t    vertexFormat = 0;
+    // ---- VULKAN VALIDATION GATE (docs/VALIDATION.md) -----------------------
+    // vkValidation: -1 = per-config default (ON in Debug, OFF in Release),
+    // 0 = force OFF (--no-validate), 1 = force ON (--validate, works in Release
+    // too). The old code hard-compiled this to `#ifdef _DEBUG`, which is why
+    // every Release "--smoketest: 0 VUID" this project ever reported meant only
+    // that the layers were ABSENT.
+    int         vkValidation = -1;
+    // --vksync / X3_VK_SYNC_VALIDATION=1: also enable SYNCHRONIZATION validation
+    // (VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT). Standard
+    // validation does NOT include it. Implies vkValidation=1. Expensive, so it is
+    // off by default; it is the only way to prove a barrier claim.
+    bool        vkSyncValidation = false;
     // Lane 5: discrete mesh LOD proof capture (3 distances x LOD off/on + perf).
     bool        geoLodShot = false; std::string geoLodShotDir = "docs/screenshots/geo-lod";
     bool        terrainShot = false;

@@ -214,8 +214,30 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         // cleared each frame -> UNDEFINED is valid. The shadow map persists its
         // prior-frame state across frames (DEPTH_READ_ONLY after the last main pass
         // sampled it), except on the very first use where it is UNDEFINED.
+        // SYNC (cross-submit WAW): the ENTRY SCOPE differs by mode even though the
+        // entry LAYOUT is UNDEFINED in both (contents are discarded either way).
+        //  * WINDOWED — the swapchain image is freshly acquired and the submit waits
+        //    on the acquire semaphore, which orders this frame against every prior
+        //    use of that image. TOP_OF_PIPE / access 0 is honest.
+        //  * HEADLESS — there is no swapchain, no acquire and no semaphore: the SAME
+        //    persistent m_offscreenColorImg is reused every frame on the same queue.
+        //    TOP_OF_PIPE / 0 orders against NOTHING, so this frame's first layout
+        //    transition (itself a write) could overlap the PREVIOUS frame's still
+        //    in-flight COLOR_ATTACHMENT_WRITE to the same memory. Submission order
+        //    alone does not give a memory dependency. Sync validation reports it as
+        //    "vkQueueSubmit2(): WRITE_AFTER_WRITE ... previously written by
+        //    vkCmdEndRendering (from VkCommandBuffer <prev frame>)".
+        //    Declaring the prior frame's write in the src scope closes it. Cost is
+        //    one frame-start dependency on the headless capture path ONLY — the
+        //    shipped windowed path is byte-for-byte unchanged (still TOP_OF_PIPE/0).
         RgResource rgColor = m_graph.importImage("frame.color", colorTargetImg,
-            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            m_headless
+                ? ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+                                     | VK_PIPELINE_STAGE_2_COPY_BIT,
+                                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+                                     | VK_ACCESS_2_TRANSFER_READ_BIT }
+                : ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         // D15 HZB: when the pyramid reduces LAST frame's depth this frame, import
         // the depth with its preserved post-frame state (UNDEFINED would discard
         // the contents the reduce is about to read). Otherwise exactly as before.
@@ -370,8 +392,19 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         // (mips 1..N) before the glass pass samples it, so there is no cross-frame
         // dependency the graph must preserve.
         RgResource rgSceneCopy = {};
+        // SYNC (cross-submit WAW): same story as frame.color above. The CONTENTS are
+        // discarded each frame (entry layout stays UNDEFINED), but this is the SAME
+        // VkImage every frame with no semaphore between submits, so the entry scope
+        // must name what the PREVIOUS frame did to it — the vkCmdCopyImage that
+        // filled it (TRANSFER_WRITE at COPY) and the glass pass that sampled it
+        // (SHADER_SAMPLED_READ at FRAGMENT_SHADER). With TOP_OF_PIPE / 0 this
+        // frame's first layout transition was unordered against both, which sync
+        // validation reports at vkQueueSubmit2 as "previously written by
+        // vkCmdCopyImage (from VkCommandBuffer <the other frame-in-flight>)".
         if (glassCopyOn) rgSceneCopy = m_graph.importImage("scene.copy", m_sceneCopyImg,
-            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED,
+                           VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT });
         // GI half-res buffers + the prev-depth copy. Imported each frame; the accum
         // buffers persist across frames (history), but the graph only tracks layout
         // within a frame so importing UNDEFINED is correct (each is fully written by
@@ -399,8 +432,12 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
             rgGiDenoise = m_graph.importImage("gi.denoise", m_giDenoiseImg,
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            // SYNC (cross-submit WAW): copy destination reused every frame — same
+            // entry-scope rule as scene.copy / frame.color above.
             rgGiPrevDepth = m_graph.importImage("gi.prevDepth", m_giPrevDepthImg,
-                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED,
+                               VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT });
         }
 
         // ---- Pass 0a: GPU compute skinning pre-pass (GPU SKINNING OF MODELS) --
@@ -577,11 +614,23 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
                 // Depth read-only (EQUAL test): EARLY/LATE fragment-test read.
+                // SYNC (WAW): the EQUAL test writes no depth, but the attachment's
+                // storeOp is STORE (line above, "preserved for later passes"), and
+                // a depth STORE is a DEPTH_STENCIL_ATTACHMENT_WRITE at
+                // LATE_FRAGMENT_TESTS performed by vkCmdEndRendering. Declaring only
+                // READ dropped that write from the graph's tracked state, so the
+                // NEXT pass's transition carried srcAccessMask =
+                // DEPTH_STENCIL_ATTACHMENT_READ_BIT and was unordered against it:
+                // SYNC-HAZARD-WRITE-AFTER-WRITE "previously written by
+                // vkCmdEndRendering". Declare the store. (storeOp is deliberately
+                // NOT changed to STORE_OP_NONE here — that would be a behavioural
+                // change to a shared pass; declaring the write is the minimum.)
                 vpass.addUse(ResourceUse{
                     rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                        | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/true });
                 vpass.usesDynamicRendering = true;
                 m_velDepthAttach = VkRenderingAttachmentInfo{};
                 m_velDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -988,12 +1037,21 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             // no write) so declare it READ; otherwise this pass writes depth. Either
             // way it must end as DEPTH_ATTACHMENT for this pass; the graph derives the
             // transition from the pre-pass / SSAO pass's prior state.
+            // SYNC (WAW): even in the prePassOn "we only test EQUAL" case this pass
+            // still WRITES depth whenever storeDepth is set, because a depth
+            // storeOp of STORE is a DEPTH_STENCIL_ATTACHMENT_WRITE at
+            // LATE_FRAGMENT_TESTS issued by vkCmdEndRendering. Declaring READ alone
+            // let the tracked state forget that write, and the following pass's
+            // depth transition (water/glass/particles -> DEPTH_READ_ONLY, or the
+            // sampled read) went out with srcAccessMask =
+            // DEPTH_STENCIL_ATTACHMENT_READ_BIT only. Add the write when we store.
             colorPass.addUse(ResourceUse{
                 rgDepth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                prePassOn ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-                          : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/!prePassOn });
+                (prePassOn ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                           : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+                    | (storeDepth ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0),
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/(!prePassOn || storeDepth) });
             // READ the shadow map in DEPTH_READ_ONLY — the graph derives the
             // DEPTH_ATTACHMENT->DEPTH_READ_ONLY transition from pass 1's write state.
             colorPass.addUse(ResourceUse{
@@ -1097,7 +1155,14 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             waterPass.addUse(ResourceUse{
                 rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                // SYNC (RAW): LOAD_OP_LOAD above means vkCmdBeginRendering READS
+                // this attachment, and the blend reads it again per fragment — so
+                // the incoming barrier must make the previous pass's writes visible
+                // to COLOR_ATTACHMENT_READ, not just COLOR_ATTACHMENT_WRITE.
+                // Declaring WRITE alone was SYNC-HAZARD-READ-AFTER-WRITE at
+                // vkCmdBeginRendering. Same shape as the bloom-up pass (~line 109)
+                // and the fog pass, which already get this right.
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
             // Depth: read-only attachment AND sampled texture, same DEPTH_READ_ONLY
             // layout. Combined fragment-test + fragment-shader stages, read access.
@@ -1186,7 +1251,9 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             glassPass.addUse(ResourceUse{
                 rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                // SYNC (RAW): LOAD_OP_LOAD + alpha blend -> the attachment is READ.
+                // See the water pass above.
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
             // Depth: read-only attachment (LEQUAL test, no write). The graph derives
             // the DEPTH_ATTACHMENT -> DEPTH_READ_ONLY transition from the main pass.
@@ -1410,7 +1477,10 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 ap.name = "gi-apply";
                 ap.addUse(ResourceUse{
                     rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    // SYNC (RAW): LOAD_OP_LOAD -> vkCmdBeginRendering READS it.
+                    // See the water pass for the full note.
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
                 ap.addUse(ResourceUse{
                     rgGiDenoise, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1506,7 +1576,9 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             ap.name = "rtao-apply";
             ap.addUse(ResourceUse{
                 rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                // SYNC (RAW): LOAD_OP_LOAD -> vkCmdBeginRendering READS it.
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
             ap.addUse(ResourceUse{
                 rgRtao, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1566,7 +1638,8 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             dp.addUse(ResourceUse{
                 rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                // SYNC (RAW): LOAD_OP_LOAD -> vkCmdBeginRendering READS it.
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
             dp.addUse(ResourceUse{
                 rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
@@ -1616,7 +1689,8 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             partPass.addUse(ResourceUse{
                 rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                // SYNC (RAW): LOAD_OP_LOAD + additive blend -> the attachment is READ.
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
             partPass.addUse(ResourceUse{
                 rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
@@ -2053,7 +2127,9 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             ui.addUse(ResourceUse{
                 rgColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                // SYNC (RAW): LOAD_OP_LOAD ("preserve scene+HUD") -> the composite's
+                // write must be made visible to COLOR_ATTACHMENT_READ as well.
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
             ui.usesDynamicRendering = true;
             m_editorUiRenderInfo = VkRenderingInfo{};

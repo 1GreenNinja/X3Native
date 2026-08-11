@@ -624,11 +624,24 @@ int main(int argc, char** argv) {
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
     desc.vsync  = !o.bench;
+    // ---- VULKAN VALIDATION GATE (docs/VALIDATION.md) -----------------------
+    // WAS: a bare `#ifdef _DEBUG` that compiled the layers OUT of Release. That
+    // made every Release "--smoketest: 0 VUID" report VACUOUS — it proved only
+    // that validation was ABSENT, and several lanes quoted it as evidence of a
+    // clean frame. Now the default is still per-config (ON in Debug, OFF in
+    // Release, so nothing gets slower by accident) but it is OVERRIDABLE:
+    //   --validate / --no-validate / X3_VK_VALIDATION=0|1
+    //   --vksync   / X3_VK_SYNC_VALIDATION=1   (adds SYNCHRONIZATION validation)
+    // The device logs one `[rhi] VALIDATION: layers=… sync-validation=…` line at
+    // init; a "0 VUID" or "zero hazards" claim is only meaningful when quoted
+    // together with that line.
 #ifdef _DEBUG
-    desc.validation = true;
+    const bool validationDefault = true;
 #else
-    desc.validation = false;
+    const bool validationDefault = false;
 #endif
+    desc.validation     = (o.vkValidation < 0) ? validationDefault : (o.vkValidation != 0);
+    desc.syncValidation = o.vkSyncValidation && desc.validation;
 
     if (!device->init(desc)) {
         x3::logError("render device init failed");
@@ -843,6 +856,8 @@ int main(int argc, char** argv) {
     // bootTestExit. Thread the few extra prelude objects through the context.
     // ======================================================================
     _hc.descVsync       = desc.vsync;
+    _hc.descValidation     = desc.validation;
+    _hc.descSyncValidation = desc.syncValidation;
     _hc.cliCVars        = o.cliCVars;
     _hc.bootAudioFut    = &bootAudioFut;
     _hc.smoketest       = o.smoketest;

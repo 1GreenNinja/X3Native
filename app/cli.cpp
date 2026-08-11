@@ -19,6 +19,17 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         // Lane 3: cascaded-shadow-map proof suite (A/B at 3 distances, a camera
         // pan proving edges do not swim, and a cascade-boundary framing).
         // Declared OUTSIDE the big else-if chain: MSVC C1061 nesting limit.
+        // ---- VULKAN VALIDATION GATE (docs/VALIDATION.md) -------------------
+        // Declared OUTSIDE the big else-if chain below for the same MSVC C1061
+        // nesting reason as the flags around it.
+        //   --validate      force the validation layers ON (works in Release)
+        //   --no-validate   force them OFF (e.g. timing a Debug build)
+        //   --vksync        + SYNCHRONIZATION validation; implies --validate
+        // Env equivalents (so a CI/agent harness can flip them without touching
+        // the command line): X3_VK_VALIDATION=0|1, X3_VK_SYNC_VALIDATION=1.
+        if (a == "--validate")    { o.vkValidation = 1; continue; }
+        if (a == "--no-validate") { o.vkValidation = 0; continue; }
+        if (a == "--vksync")      { o.vkSyncValidation = true; o.vkValidation = 1; continue; }
         // Lane 5: vertex-format version. Outside the else-if chain (C1061).
         if (a == "--vtxfmt") {
             if (i + 1 < argc) o.vertexFormat = (uint32_t)std::atoi(argv[++i]);
@@ -613,6 +624,16 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             }
         }
     }
+
+    // ---- VULKAN VALIDATION GATE: environment fallbacks ---------------------
+    // Applied AFTER the arg loop so an explicit flag always wins over the env.
+    // X3_VK_SYNC_VALIDATION=1 implies validation ON (the feature does nothing
+    // without the layers).
+    if (const char* e = std::getenv("X3_VK_SYNC_VALIDATION"))
+        if (e[0] == '1') { o.vkSyncValidation = true; if (o.vkValidation < 0) o.vkValidation = 1; }
+    if (o.vkValidation < 0)
+        if (const char* e = std::getenv("X3_VK_VALIDATION"))
+            o.vkValidation = (e[0] == '1') ? 1 : 0;
 }
 
 }} // namespace x3::apphost

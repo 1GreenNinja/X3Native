@@ -49,6 +49,38 @@ bool VulkanRenderDevice::init(const DeviceDesc& desc) {
                     "expect benign perf warnings; not for the 0-VUID gate");
         }
 #endif
+        // ---- SYNCHRONIZATION VALIDATION (--vksync / X3_VK_SYNC_VALIDATION=1) ----
+        // Standard validation does NOT check synchronization: it validates API
+        // usage and reports VUIDs, but it never asks "was this read/write ordered
+        // against the last one?". SYNC-HAZARD-* findings only exist when this
+        // feature is explicitly enabled. It is expensive (the layer shadow-tracks
+        // every memory access), hence opt-in rather than always-on — but it is the
+        // ONLY thing that makes a barrier claim provable. See docs/VALIDATION.md.
+        const bool syncVal = desc.syncValidation && desc.validation;
+        if (syncVal) {
+            ib.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT);
+            // HONEST COUNTS. The layer silences a message after
+            // duplicate_message_limit (default 10) repeats, so a hazard that fires
+            // on every pass of every frame is reported 10 times and then goes quiet
+            // — the count then tells you NOTHING about how many call sites are
+            // affected, and a PARTIAL fix looks identical to no fix at all. Lift the
+            // cap (0 == unlimited) whenever sync validation is on, so "N hazards ->
+            // 0" is a real measurement and a per-site fix shows as a stepwise drop.
+            // Set via the layer's environment interface rather than
+            // VkLayerSettingsCreateInfoEXT because the vendored vk-bootstrap's
+            // InstanceBuilder exposes no pNext hook. Only set when unset, so an
+            // operator can still override it from the shell.
+            if (!std::getenv("VK_LAYER_DUPLICATE_MESSAGE_LIMIT"))
+                _putenv_s("VK_LAYER_DUPLICATE_MESSAGE_LIMIT", "0");
+        }
+        // ONE unmissable, greppable line stating what the layers were ACTUALLY
+        // asked to check. Every "0 VUID" / "zero hazards" report must quote it —
+        // without it a clean run is indistinguishable from a run with no checking
+        // at all (which is exactly how the Release "0 VUID" claims were hollow).
+        logInfo(std::string("[rhi] VALIDATION: layers=") + (desc.validation ? "ON" : "OFF")
+                + " sync-validation=" + (syncVal ? "ON" : "OFF")
+                + (desc.validation ? "" : "  <-- NO VUID CHECKING: a '0 VUID' result from this run is MEANINGLESS")
+                + (syncVal ? "" : "  <-- NO SYNC CHECKING: missing barriers will NOT be reported"));
         auto inst_ret = ib.build();
         if (!inst_ret) { logError(std::string("[rhi] instance: ") + inst_ret.error().message()); return false; }
         m_inst = inst_ret.value();

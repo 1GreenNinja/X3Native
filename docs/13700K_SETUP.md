@@ -37,7 +37,7 @@ cmake --build --preset windows-vs2026 # Release x64
 ```
 Controls (windowed): mouse look, **WASD** move, **Space/Ctrl** up/down, **Shift** sprint, **Esc** quit. Expected log: `[rhi] device ready: NVIDIA GeForce GTX 1080 Ti (Vulkan 1.3 ...)`.
 
-For a **validation-clean** check, build + run the **Debug** config's `--smoketest` (validation layers on; must be error-free).
+For a **validation-clean** check, build + run the **Debug** config's `--smoketest` (validation layers on; must be error-free). Release can now do it too with `--validate` — before that flag existed Release compiled the layers out, so a Release "0 VUID" meant only that nothing was checked. If you touched any barrier, `ResourceUse`, `loadOp`/`storeOp` or image layout, add **`--vksync`** for synchronization validation (not included in standard validation). See `docs/VALIDATION.md`.
 
 ## 4. What's done (so you don't redo it)
 

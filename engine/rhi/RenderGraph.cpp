@@ -56,9 +56,17 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
     // kMaxUsesPerPass (shared from RenderGraph.h) bounds both a pass's declared
     // uses[] and this barrier batch, so they can never disagree.
     VkImageMemoryBarrier2 barriers[kMaxUsesPerPass];
+    // Per-use record of whether this pass's use CONTINUED an existing read epoch
+    // (read-after-read, same layout, nothing written since). Filled in the barrier
+    // loop, consumed by the state-advance loop below so the two agree.
+    bool continuesRead[kMaxUsesPerPass];
 
     for (RenderPassDesc& pass : m_passes) {
         uint32_t bcount = 0;
+        // Clear the whole array (not just the iterations reached): the batch-cap
+        // guard below can `break` out early, which would otherwise leave stale
+        // flags from the previous pass driving this pass's state advance.
+        for (uint32_t i = 0; i < kMaxUsesPerPass; ++i) continuesRead[i] = false;
 
         // ---- Derive the barriers for this pass from its declared resource uses.
         // For each used resource compare the required (layout,stage,access) with
@@ -68,6 +76,7 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
         // memory available/visible to this pass's stage/access (dst scope) — this
         // is the same dependency the hand-code expressed, derived generically.
         for (uint32_t ui = 0; ui < pass.useCount; ++ui) {
+            continuesRead[ui] = false;   // default: the state advance overwrites
             const ResourceUse& use = pass.uses[ui];
             if (!use.res.valid() || use.res.id >= m_resources.size()) continue;
             // Fix 5: a pass that needs MORE barriers than the batch can hold is a
@@ -95,10 +104,40 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
 
             // A transition is needed when the layout must change, when this pass
             // writes (WAR/WAW must order against the prior reader/writer), or when
-            // this pass reads something a prior pass wrote (RAW). The only case we
-            // can safely skip is read-after-read in the SAME layout with no prior
-            // write — there is no hazard there.
-            const bool needBarrier = layoutChange || use.isWrite || prevWasWrite;
+            // this pass reads something a prior pass wrote (RAW).
+            //
+            // SYNC FIX — read-after-read is NOT unconditionally safe to skip. The
+            // old rule ("skip read-after-read in the SAME layout with no prior
+            // write — there is no hazard there") is only true about the two READS.
+            // It silently drops the dependency on the WRITE that came before them:
+            // that write was made visible by ONE barrier, whose dstScope named only
+            // the FIRST reader. A second reader in the same layout but with a
+            // different stage/access never gets the write made visible to IT.
+            // Concretely: depth-prepass writes depth -> SSAO samples it
+            // (FRAGMENT_SHADER / SHADER_SAMPLED_READ, layout DEPTH_READ_ONLY) ->
+            // the velocity / particle / debris pass then uses the SAME layout as a
+            // LOAD_OP_LOAD depth attachment (EARLY_FRAGMENT_TESTS /
+            // DEPTH_STENCIL_ATTACHMENT_READ). Same layout, both reads, no write in
+            // between -> no barrier was emitted, and the prepass's write was never
+            // made visible to the fragment-test read. Sync validation reports it as
+            // "vkCmdBeginRendering ... READ_AFTER_WRITE ... current synchronization
+            // allows SHADER_SAMPLED_READ at FRAGMENT_SHADER, but ... must allow
+            // DEPTH_STENCIL_ATTACHMENT_READ at EARLY_FRAGMENT_TESTS".
+            //
+            // So: also emit when this read needs stage or access bits the tracked
+            // (already-made-visible) scope does not already cover. The barrier's
+            // src scope is the previous reader, which CHAINS the original write's
+            // availability forward per the spec's memory-dependency chaining. Read
+            // scopes are then accumulated (below) rather than overwritten, so the
+            // set only ever grows until the next write and this stays O(1) barriers
+            // per new scope — not one per pass.
+            const bool widerScope = ((use.stage  & ~cur.stage)  != 0) ||
+                                    ((use.access & ~cur.access) != 0);
+            const bool needBarrier = layoutChange || use.isWrite || prevWasWrite || widerScope;
+            // Record whether this is a continuing read epoch (same layout, this use
+            // reads, nothing written since) so the state advance accumulates instead
+            // of overwriting.
+            continuesRead[ui] = !layoutChange && !use.isWrite && !prevWasWrite;
             if (!needBarrier) continue;
 
             VkImageMemoryBarrier2& b = barriers[bcount++];
@@ -141,8 +180,21 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
             if (!use.res.valid() || use.res.id >= m_resources.size()) continue;
             Resource& r = m_resources[use.res.id];
             r.state.layout = use.layout;
-            r.state.stage  = use.stage;
-            r.state.access = use.access;
+            if (continuesRead[ui]) {
+                // Read epoch continues: ACCUMULATE. The comment above always
+                // claimed "we still record the latest reader's stage/access so a
+                // subsequent writer waits on ALL readers" — but an overwrite keeps
+                // only the LAST reader, so a following writer could race an earlier
+                // one (WAR), and a following reader saw a scope narrower than what
+                // had actually been made visible. OR-ing is what "all readers"
+                // means, and it also makes widerScope above settle: once a scope has
+                // been covered, later uses inside the same epoch add no barrier.
+                r.state.stage  |= use.stage;
+                r.state.access |= use.access;
+            } else {
+                r.state.stage  = use.stage;
+                r.state.access = use.access;
+            }
         }
 
         // ---- Drive dynamic rendering + record the pass body (function pointer +

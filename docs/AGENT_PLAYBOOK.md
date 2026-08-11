@@ -61,6 +61,12 @@ push. Never batch-merge unbuilt branches.
 - **Fable gate**: Release build relinked (mtime verified) · relevant --test-* suites 0
   new fails · `--world canonlevel --smoketest` 0 VUID + allocationCount=0 ·
   `--test-levellint` PASS whenever geometry moved.
+  > ⚠️ **A "0 VUID" claim is only valid if the layers were ON.** Release used to
+  > compile validation out entirely, so every historical Release "0 VUID" proved
+  > nothing. Run `--validate` (or use Debug) and QUOTE the
+  > `smoketest: VALIDATION layers=… sync-validation=…` line with the result.
+  > **Touched a barrier / ResourceUse / loadOp / storeOp / layout? Add `--vksync`**
+  > — standard validation does NOT check synchronization. See `docs/VALIDATION.md`.
 - **Eye gate**: the agent reads its own renders and scores honestly; the DIRECTOR
   re-reads every screenshot personally before accepting a merge (memory rule: never
   relay a visual claim you haven't seen). Overselling a blockout is a firing offense.

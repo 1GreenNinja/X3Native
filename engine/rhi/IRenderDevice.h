@@ -14,6 +14,14 @@ struct DeviceDesc {
     uint32_t height = 0;
     bool     vsync       = true;
     bool     validation  = false;          // Vulkan validation layers
+    // SYNCHRONIZATION VALIDATION (VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_
+    // VALIDATION_EXT). NOT part of standard validation — without this flag the
+    // layers check API usage (VUIDs) but never look for missing barriers, so a
+    // "0 VUID" run says NOTHING about whether the frame's sync is correct.
+    // Expensive (the layer shadow-tracks every access), so it is opt-in:
+    // `--vksync` on the CLI or X3_VK_SYNC_VALIDATION=1 in the environment.
+    // Implies `validation` (the feature is meaningless without the layers).
+    bool     syncValidation = false;
     // HEADLESS / OFFSCREEN mode (validation + screenshot paths). When true the
     // device creates NO surface and NO swapchain — instead it renders into an
     // offscreen color image (same format/extent the swapchain used) that the

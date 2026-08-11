@@ -7313,6 +7313,18 @@ int runDefaultHost(HostContext& hc) {
                 x3::rhi::formatVisLine(x3::rhi::assembleVisStats(st, g_visPolicy.mode)));
         }
         x3::logInfo("smoketest: 30 frames + recreate OK");
+        // GATE HONESTY: restate what was actually being checked. "30 frames OK"
+        // with layers=OFF proves the frame did not crash and NOTHING about VUIDs;
+        // "0 VUID" with sync-validation=OFF proves nothing about barriers. Quote
+        // this line alongside any such claim. See docs/VALIDATION.md.
+        x3::logInfo(std::string("smoketest: VALIDATION layers=")
+                    + (hc.descValidation ? "ON" : "OFF")
+                    + " sync-validation=" + (hc.descSyncValidation ? "ON" : "OFF")
+                    + (hc.descValidation
+                           ? (hc.descSyncValidation
+                                  ? "  (VUID + SYNC-HAZARD checking active)"
+                                  : "  (VUID checking active; SYNC HAZARDS NOT CHECKED - add --vksync)")
+                           : "  (NO CHECKING AT ALL - a '0 VUID' claim from this run is meaningless; add --validate)"));
         // [boot] visibility: log the boot total in --smoketest runs too (headless,
         // so no swapchain/loading-fade — a lower bound, not the interactive gate).
         x3::boot::report("smoketest boot (headless, to last frame)");

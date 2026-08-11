@@ -148,6 +148,12 @@ struct HostContext {
 
     // ---- Default-host (interactive render loop) extra prelude state (Phase C) ----
     bool        descVsync = true;       // DeviceDesc.vsync (smoketest UBO mirror)
+    // What the validation layers were ACTUALLY asked to check on this run (the
+    // resolved DeviceDesc values, not the CLI request). The smoketest verdict
+    // line restates them so a copied "30 frames + recreate OK" can never again be
+    // mistaken for "0 VUID" on a run that had no layers loaded.
+    bool        descValidation = false;
+    bool        descSyncValidation = false;
     // --set <cvar> <value> pairs applied after console cvar registration.
     std::vector<std::pair<std::string, std::string>> cliCVars;
     // Boot-time async audio future (launched in main(); joined in the default host).

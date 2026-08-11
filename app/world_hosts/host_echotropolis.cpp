@@ -4290,11 +4290,31 @@ int hostEchotropolis(HostContext& hc) {
             }
 
             // Drone flybys: an occasional pass fired AT a live drone's position.
-            if (!drones.empty()) {
+            //
+            // BUILD FIX (sync-val lane): the audio commit that added this block was
+            // written against the host-local `drones` vector, which the earlier
+            // TIER-2 region split (a99b6ed9) had ALREADY moved into
+            // echo_region_builders.cpp as the function-local `dronePoses` — so main
+            // did not compile. The orbits are deterministic constants, so mirror
+            // them here (verbatim from buildCrown's addDrone calls) and use the
+            // SAME pose formula the region builder animates them with. Positions
+            // are therefore identical to the live drones; nothing else changed.
+            // If dronePoses is ever exposed through EchoRegionCtx, delete this
+            // table and read it instead.
+            struct DroneOrbit { float cx, cz, r, y, w, phase; };
+            static constexpr DroneOrbit kDroneOrbits[] = {
+                { -20.0f,  760.0f, 150.0f, 210.0f,  0.26f, 0.0f },
+                { 110.0f,  660.0f, 120.0f, 250.0f, -0.32f, 1.7f },
+                { -160.0f, 840.0f, 180.0f, 190.0f,  0.22f, 3.1f },
+                { -60.0f,  900.0f, 130.0f, 285.0f,  0.30f, 4.4f },
+                {  60.0f,  800.0f, 200.0f, 165.0f, -0.24f, 5.5f },
+                { -220.0f, 700.0f, 110.0f, 300.0f, -0.28f, 2.3f },
+            };
+            {
                 flybyT -= dt;
                 if (flybyT <= 0.0f) {
                     flybyT = 12.0f + audRand01() * 14.0f;
-                    const Drone& d = drones[audRng % drones.size()];
+                    const DroneOrbit& d = kDroneOrbits[audRng % (sizeof(kDroneOrbits) / sizeof(kDroneOrbits[0]))];
                     const float a = d.phase + waterTime * d.w;
                     const auto& s = sfxFlyby[audRng % 3];
                     if (s.valid())
