@@ -1436,6 +1436,152 @@ public:
     virtual bool supportsDescriptorIndexing() const = 0;
     virtual bool supportsMeshShaders() const = 0;
 
+    // ========================================================================
+    // ---- CLI `--set` OVERRIDE LATCH ---------------------------------------
+    //
+    // WHY THIS EXISTS (it cost real evidence). The per-frame cvar->device sync
+    // hub lives in the DEFAULT host (app_run.cpp applyRtaoCVars). Every
+    // `--world <name>` host runs INSTEAD of that function, never alongside it,
+    // so `--set` NEVER REACHED THE DEVICE on a --world run: the frame rendered
+    // the default state, silently, and looked entirely plausible. A lane
+    // concluded an artifact "survives r_bloom 0 / r_taa 0 / r_taasharpen 0" —
+    // none of those three tests had run.
+    //
+    // Applying the --set once at host entry is NOT enough on its own: hosts
+    // overwrite these params themselves AFTER entry (host_showroom's
+    // setSsaoParams(enabled=false), host_club's setExposure(1.0),
+    // host_echotropolis's per-frame setPostFX/setExposure/setRtaoParams). That
+    // is the same silent lie one layer down. So the app installs the parsed
+    // --set list ONCE and every subsequent setter call on this device re-stamps
+    // the overridden FIELDS on its way through: whoever writes last, the
+    // COMMAND LINE WINS, for the whole run.
+    //
+    // STRICTLY OPT-IN, AND FIELD-LEVEL. A field is stamped only if that cvar
+    // was actually passed. `active == false` — the default, and the state of
+    // any run with no `--set` — makes every apply() an immediate no-op, so a
+    // run without `--set` executes exactly the code it always did.
+    //
+    // Installed by the --world host dispatch only (app/world_hosts). The
+    // default host is deliberately NOT latched: it seeds its console from
+    // --set and syncs per frame, so latching it would freeze in-game console
+    // edits.
+    // ========================================================================
+    template <class T> struct CVarOpt {
+        bool has = false;
+        T    v{};
+        void set(T x) { has = true; v = x; }
+        void stamp(T& dst) const { if (has) dst = v; }
+    };
+    struct RenderCVarOverrides {
+        bool active = false;   // false = every apply() below returns immediately
+
+        CVarOpt<int>   debugView;      // r_debugview
+        CVarOpt<float> exposure;       // r_exposure
+
+        // SSAO (r_ssao*)
+        CVarOpt<bool>  ssaoEnabled;
+        CVarOpt<float> ssaoRadius, ssaoBias, ssaoIntensity, ssaoPower, ssaoStrength;
+
+        // SSGI (r_ssgi*)
+        CVarOpt<bool>  giEnabled;
+        CVarOpt<float> giIntensity, giStrength;
+
+        // RT AO (r_rtao*)
+        CVarOpt<bool>  rtaoEnabled;
+        CVarOpt<float> rtaoRadius, rtaoStrength;
+        CVarOpt<int>   rtaoRays;
+
+        // Reflections (r_ssr / r_rtreflections / r_reflquality / r_refl*)
+        CVarOpt<bool>  reflSsr, reflRt, reflFullRes;
+        CVarOpt<float> reflIntensity;
+        CVarOpt<int>   reflDenoiseIters;
+        CVarOpt<float> reflDnDepth, reflDnNormal, reflDnDisc;
+
+        // HDR post stack (r_tonemap / r_bloom* / r_autoexposure / r_ae* /
+        // r_taa / r_taasharpen / r_velocity / r_filmic)
+        CVarOpt<int>   tonemapMode;
+        CVarOpt<bool>  bloom;
+        CVarOpt<float> bloomIntensity, bloomThreshold;
+        CVarOpt<bool>  autoExposure;
+        CVarOpt<float> aeSpeed, aeMin, aeMax, aeKey;
+        CVarOpt<bool>  taa;
+        CVarOpt<float> taaSharpen;
+        CVarOpt<bool>  velocity, filmicAllowed;
+
+        // RT soft shadows (r_rtshadows / r_rtsun_size / r_rtpoint_*)
+        CVarOpt<int>   rtsTier;
+        CVarOpt<float> rtsSunSize;
+        CVarOpt<int>   rtsPointMax;
+        CVarOpt<float> rtsPointRadius;
+
+        // DDGI probe-grid GI (r_ddgi / r_ddgi_debug / r_ddgi_rays /
+        // r_ddgi_intensity / r_ddgi_n[xyz] / r_ddgi_hyst)
+        CVarOpt<bool>  ddgiEnabled;
+        CVarOpt<int>   ddgiDebug, ddgiRays, ddgiNx, ddgiNy, ddgiNz;
+        CVarOpt<float> ddgiIntensity, ddgiHyst;
+
+        // Scalar levers with their own setters (r_metalambient / r_clusterlights)
+        CVarOpt<float> metalAmbient;
+        CVarOpt<bool>  clusterLights;
+
+        void apply(SsaoParams& p) const {
+            if (!active) return;
+            ssaoEnabled.stamp(p.enabled);   ssaoRadius.stamp(p.radius);
+            ssaoBias.stamp(p.bias);         ssaoIntensity.stamp(p.intensity);
+            ssaoPower.stamp(p.power);       ssaoStrength.stamp(p.strength);
+        }
+        void apply(GiParams& p) const {
+            if (!active) return;
+            giEnabled.stamp(p.enabled); giIntensity.stamp(p.intensity);
+            giStrength.stamp(p.strength);
+        }
+        void apply(RtaoParams& p) const {
+            if (!active) return;
+            rtaoEnabled.stamp(p.enabled); rtaoRadius.stamp(p.radius);
+            rtaoRays.stamp(p.rays);       rtaoStrength.stamp(p.strength);
+        }
+        void apply(ReflectionParams& p) const {
+            if (!active) return;
+            reflSsr.stamp(p.ssr);           reflRt.stamp(p.rtFallback);
+            reflFullRes.stamp(p.fullRes);   reflIntensity.stamp(p.intensity);
+            reflDenoiseIters.stamp(p.denoiseIters);
+            reflDnDepth.stamp(p.denoiseDepthSigma);
+            reflDnNormal.stamp(p.denoiseNormalPow);
+            reflDnDisc.stamp(p.denoiseDiscScale);
+        }
+        void apply(PostFXParams& p) const {
+            if (!active) return;
+            tonemapMode.stamp(p.tonemapMode);   bloom.stamp(p.bloomEnabled);
+            bloomIntensity.stamp(p.bloomIntensity);
+            bloomThreshold.stamp(p.bloomThreshold);
+            autoExposure.stamp(p.autoExposure); aeSpeed.stamp(p.aeSpeed);
+            aeMin.stamp(p.aeMin);               aeMax.stamp(p.aeMax);
+            aeKey.stamp(p.aeKey);               taa.stamp(p.taa);
+            taaSharpen.stamp(p.taaSharpen);     velocity.stamp(p.velocity);
+            filmicAllowed.stamp(p.filmicAllowed);
+        }
+        void apply(RtShadowParams& p) const {
+            if (!active) return;
+            rtsTier.stamp(p.tier);          rtsSunSize.stamp(p.sunSizeDeg);
+            rtsPointMax.stamp(p.pointMax);  rtsPointRadius.stamp(p.pointRadius);
+        }
+        void apply(DdgiParams& p) const {
+            if (!active) return;
+            ddgiEnabled.stamp(p.enabled);   ddgiDebug.stamp(p.debug);
+            ddgiRays.stamp(p.raysPerProbe); ddgiIntensity.stamp(p.intensity);
+            ddgiNx.stamp(p.countX);         ddgiNy.stamp(p.countY);
+            ddgiNz.stamp(p.countZ);         ddgiHyst.stamp(p.hysteresis);
+        }
+        float applyExposure(float e)  const { if (active) exposure.stamp(e);  return e; }
+        int   applyDebugView(int m)   const { if (active) debugView.stamp(m); return m; }
+        float applyMetalAmbient(float s) const { if (active) metalAmbient.stamp(s); return s; }
+        bool  applyClusterLights(bool b) const { if (active) clusterLights.stamp(b); return b; }
+    };
+    // Install the latch. Default no-op (headless stub / any other backend); the
+    // Vulkan device stores it and stamps every setter above. Calling with a
+    // default-constructed (active == false) value disarms it.
+    virtual void setCVarOverrides(const RenderCVarOverrides&) {}
+
     // ---- Editor UI (Dear ImGui, docking) — EDITOR-ONLY (Level Architect P0) ----
     // The native level editor draws its panels with Dear ImGui INTO the swapchain
     // image, in a dedicated render pass AFTER the game composite/HUD pass. ImGui is
