@@ -25,7 +25,13 @@ layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outGi;
 
 void main() {
-    float centerDepth = texture(depthTex, vUV).r;
+    // HALF-RES PASS OVER A FULL-RES DEPTH BUFFER — see ssao.frag. Every depth
+    // fetch at a half-res texel centre lands on the seam between two full-res
+    // texels; nudge half a full-res texel (= a quarter of a GI texel) so the
+    // NEAREST sampler cannot flip-flop between them.
+    const vec2 dNudge = pc.giTexel * 0.25;
+
+    float centerDepth = texture(depthTex, vUV + dNudge).r;
     if (centerDepth >= 1.0) { outGi = texture(giTex, vUV); return; }
 
     vec4  sum  = vec4(0.0);
@@ -38,7 +44,7 @@ void main() {
             vec2 off = vec2(float(x), float(y)) * pc.giTexel * pc.stepScale;
             vec2 uv  = vUV + off;
             vec4 gi  = texture(giTex, uv);
-            float d  = texture(depthTex, uv).r;
+            float d  = texture(depthTex, uv + dNudge).r;
             float dw = exp(-abs(d - centerDepth) / max(1e-5, pc.depthSigma));
             float sw = exp(-float(x * x + y * y) * 0.25);   // spatial Gaussian
             float w  = dw * sw;

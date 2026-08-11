@@ -319,9 +319,18 @@ x3::rhi::TextureHandle loadTerrainAlbedo(x3::rhi::IRenderDevice& device,
 //
 // Real 2K albedos (curated via tools/tex_curate.py -> assets/surface_library/,
 // published via tools/asset_store.py) replace the old 64px procedural-noise
-// fill (W3-4's placeholder): rock reuses the already-game-ready sr_concrete_01
-// set; grass/sand/snow are new sets picked from docs/tex_catalog.json:
+// fill (W3-4's placeholder). Sets picked from docs/tex_catalog.json:
 //   grass -> terrain_grass (Rocky Hills Environment - Whitebark Pine, GrassTileRHEP)
+//   rock  -> terrain_rock  (Rocky Hills Environment - Whitebark Pine, CliffTileRHEP)
+//     ROCK WAS sr_concrete_01, AND THAT IS WHY THE GROUND HAD A GRID IN IT.
+//     sr_concrete_01 is a photo of a CONCRETE PANEL WALL - flat slabs divided by
+//     straight vertical and horizontal joints, with form-tie bolt holes. Splatted
+//     onto terrain and tiled every 5.56 m it produced the rectangular grid
+//     marching up the cut faces in 08_exit_portal and the grey-blue slab blobs
+//     scattered over the field in 04_saddle. It was never a rock texture; it was
+//     borrowed because it was "already game-ready". CliffTileRHEP is a purpose-
+//     built seamless natural cliff tile from the SAME pack as the grass, so the
+//     two read as one landscape.
 //   sand  -> terrain_sand  (Landscape Ground Pack 3, T_ground_sand_01)
 //   snow  -> terrain_snow  (Ancient Desert Town, MarbleWhite00 -- the catalog has
 //            NO texture set with "snow"/"ice"/"arctic"/"frost" anywhere in its
@@ -329,7 +338,7 @@ x3::rhi::TextureHandle loadTerrainAlbedo(x3::rhi::IRenderDevice& device,
 //            substitute and is used deliberately, not by oversight)
 x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
     auto grass = loadTerrainAlbedo(device, "terrain_grass", 1001u,  78, 116,  56, 18); // green
-    auto rock  = loadTerrainAlbedo(device, "sr_concrete_01", 2002u, 104, 100,  92, 24); // grey-brown
+    auto rock  = loadTerrainAlbedo(device, "terrain_rock",  2002u, 104, 100,  92, 24); // grey-brown
     auto snow  = loadTerrainAlbedo(device, "terrain_snow",  3003u, 222, 226, 235, 14); // bright white-blue
     auto sand  = loadTerrainAlbedo(device, "terrain_sand",  4004u, 178, 158, 118, 18); // tan
     x3::rhi::TextureHandle marker =

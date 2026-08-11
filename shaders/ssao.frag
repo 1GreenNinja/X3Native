@@ -58,12 +58,29 @@ void main() {
     float intensity = ub.params0.z;
     float power     = ub.params0.w;
 
-    float depth = texture(depthTex, vUV).r;
+    // HALF-RES PASS OVER A FULL-RES DEPTH BUFFER — sample a texel CENTRE, not a
+    // texel SEAM. This pass runs at half resolution; a half-res texel centre maps
+    // to full-res texel coordinate exactly 2i + 1.0, which is the boundary BETWEEN
+    // full-res depth texels 2i and 2i+1. The depth sampler is NEAREST, so which of
+    // the two is returned is decided by the last bit of the interpolated UV — the
+    // fetched depth flip-flops by one texel's worth of depth in a pattern that is
+    // pinned to SCREEN X and survives every camera move. On a surface seen at a
+    // grazing angle that one-texel error is large, dFdx(P) below turns it into a
+    // wildly wrong reconstructed normal, and the hemisphere then reports a
+    // periodic AO error: vertical pinstripes down every long wall, floor and
+    // tunnel bore in the game. Nudging the fetch half a FULL-RES texel puts it
+    // unambiguously inside texel 2i+1 and the flip-flop disappears.
+    // (Reconstruction uses the SAME uv so P still matches the depth it was read
+    // from; the shift is a quarter of a half-res texel and derivatives are
+    // unchanged.)
+    const vec2 dUV = vUV + 0.5 / vec2(ub.params1.x, ub.params1.y);
+
+    float depth = texture(depthTex, dUV).r;
 
     // Far plane / sky (depth == 1 with reverse-Z-less [0,1] clip == far): no AO.
     if (depth >= 1.0) { outAO = 1.0; return; }
 
-    vec3 P = viewPosFromDepth(vUV, depth);
+    vec3 P = viewPosFromDepth(dUV, depth);
 
     // Reconstruct the view-space normal from screen-space derivatives of P. Using
     // the cross product of the partials gives a per-pixel geometric normal without

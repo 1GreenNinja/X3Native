@@ -331,6 +331,7 @@ int main(int argc, char** argv) {
         _tf.testTerrain = o.testTerrain;
         _tf.testTerrainPlace = o.testTerrainPlace;
         _tf.testTerrainCorridor = o.testTerrainCorridor;
+        _tf.testTunnelMouth     = o.testTunnelMouth;
         _tf.testStreaming = o.testStreaming;
         _tf.testWorldStream = o.testWorldStream;
         _tf.testWorldMap = o.testWorldMap;
