@@ -107,6 +107,12 @@ struct TunnelStation {
 struct TunnelRoute {
     std::vector<TunnelStation> st;
     float dirX = 1.0f, dirZ = 0.0f;   // unit XZ heading (constant — a straight run)
+    // The route's OWN origin. posAt() used to read file-scope constants, which is
+    // what pinned the module to exactly one tunnel; carrying them per route is
+    // what lets several coexist.
+    float cx = 0.0f, cz = 0.0f;       // route centre (world XZ)
+    float halfLen = 0.0f;             // half the spine length (m)
+    const char* name = "";
     float totalLen = 0.0f;
     // The SHELLED span [boreS0, boreS1] in arc length, measured against the
     // FINAL (post-corridor) height field rather than the design intent, so it
@@ -135,12 +141,35 @@ struct TunnelRoute {
     void  posAt(float s, float out[3]) const;   // {x, roadY, z}
 };
 
-// BOOT ENTRY POINT. Samples the canonical height field, grades the road,
-// registers exactly ONE TerrainCorridor, then re-samples the FINAL field to
-// find the genuinely enclosed span. MUST be called before the first
-// TerrainStreamer::init() / horizon-ring build, per app/terrain.h's registry
-// contract ("register at BOOT, before the first height query"). Idempotent:
-// the second call returns the cached route without touching the registry.
+// WHERE a tunnel goes. One per bore; the module used to hard-code exactly one.
+struct TunnelSpec {
+    const char* name = "tunnel";
+    float cx = 0.0f, cz = 0.0f;      // route CENTRE (world XZ) — the hill to bore
+    float dirX = 1.0f, dirZ = 0.0f;  // unit XZ heading (normalized on entry)
+    float halfLen = 320.0f;          // half the spine: bore + approach cuttings
+};
+
+// BOOT ENTRY POINT, one call per tunnel. Samples the canonical height field,
+// grades the road, registers ONE TerrainCorridor for this spec, then re-samples
+// the FINAL field to find the genuinely enclosed span. MUST be called before the
+// first TerrainStreamer::init() / horizon-ring build, per app/terrain.h's
+// registry contract ("register at BOOT, before the first height query").
+//
+// Returns nullptr when the corridor registry is full (kMaxTerrainCorridors) or
+// the route is degenerate. A NON-null route with boreValid == false is a real
+// answer, not a failure: it means the terrain along that heading has no hill to
+// bore, and the caller should NOT dress a tunnel there. Callers must check.
+//
+// Routes accumulate and are owned by the module; the returned pointer is stable.
+const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec);
+
+// How many routes have been registered, and indexed access to them.
+uint32_t          tunnelRouteCount();
+const TunnelRoute* tunnelRouteAt(uint32_t i);
+
+// The original single-tunnel demo route (--world tunnel), unchanged: the same
+// authored hill, the same constants. Idempotent — the second call returns the
+// cached route without touching the registry.
 const TunnelRoute& registerTunnelCorridor();
 
 // The built world: road ribbon, tunnel shell, portals, markings, lights.

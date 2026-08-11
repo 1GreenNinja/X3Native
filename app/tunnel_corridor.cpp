@@ -291,22 +291,46 @@ float TunnelRoute::roadYAt(float s) const {
 }
 
 void TunnelRoute::posAt(float s, float out[3]) const {
-    // `s` is arc length from node 0, which sits at -kRouteHalfLen about the
-    // scan centre; fold it back to the centre-relative parameter.
-    out[0] = kRouteCX + dirX * (s - kRouteHalfLen);
-    out[2] = kRouteCZ + dirZ * (s - kRouteHalfLen);
+    // `s` is arc length from node 0, which sits at -halfLen about this route's
+    // own centre; fold it back to the centre-relative parameter. These were
+    // file-scope constants, which is exactly what allowed only one tunnel.
+    out[0] = cx + dirX * (s - halfLen);
+    out[2] = cz + dirZ * (s - halfLen);
     out[1] = roadYAt(s);
 }
 
 // ---------------------------------------------------------------------------
 // registerTunnelCorridor — the BOOT step. Sample, grade, register, verify.
 // ---------------------------------------------------------------------------
-const TunnelRoute& registerTunnelCorridor() {
-    static TunnelRoute route;
-    static bool built = false;
-    if (built) return route;
-    built = true;
+namespace {
+// Every route registered this boot. Fixed capacity to match the terrain
+// registry's own contract (kMaxTerrainCorridors); stable addresses because
+// callers hold the returned pointer.
+std::vector<TunnelRoute>& routeStore() { static std::vector<TunnelRoute> v; return v; }
+} // namespace
 
+uint32_t           tunnelRouteCount()          { return (uint32_t)routeStore().size(); }
+const TunnelRoute* tunnelRouteAt(uint32_t i)   { return i < routeStore().size() ? &routeStore()[i] : nullptr; }
+
+const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
+    if (routeStore().size() >= kMaxTerrainCorridors) {
+        x3::logError(std::string("tunnel corridor: registry full — '") + spec.name + "' not registered");
+        return nullptr;
+    }
+    const float dmag = std::sqrt(spec.dirX*spec.dirX + spec.dirZ*spec.dirZ);
+    if (!(dmag > 1e-4f) || !(spec.halfLen > 1.0f)) {
+        x3::logError(std::string("tunnel corridor: degenerate spec '") + spec.name + "'");
+        return nullptr;
+    }
+    routeStore().reserve(kMaxTerrainCorridors);
+    routeStore().emplace_back();
+    TunnelRoute& route = routeStore().back();
+
+    const float kRouteCX = spec.cx, kRouteCZ = spec.cz;
+    const float kRouteDirX = spec.dirX / dmag, kRouteDirZ = spec.dirZ / dmag;
+    const float kRouteHalfLen = spec.halfLen;
+    route.cx = kRouteCX; route.cz = kRouteCZ;
+    route.halfLen = kRouteHalfLen; route.name = spec.name;
     route.dirX = kRouteDirX; route.dirZ = kRouteDirZ;
     const float rx = -kRouteDirZ, rz = kRouteDirX;    // unit lateral in XZ
     const float ds = (2.0f * kRouteHalfLen) / (float)(kRouteNodes - 1);
@@ -394,7 +418,7 @@ const TunnelRoute& registerTunnelCorridor() {
         c.x[i] = route.st[i].x; c.z[i] = route.st[i].z; c.depth[i] = route.st[i].depth;
     }
     const bool ok = registerTerrainCorridor(c);
-    if (!ok) { x3::logError("tunnel corridor: registerTerrainCorridor REJECTED the route"); return route; }
+    if (!ok) { x3::logError("tunnel corridor: registerTerrainCorridor REJECTED the route"); return &route; }
 
     // --- 5) Find the genuinely ENCLOSED span by re-reading the FINAL field.
     // The union-of-capsules formulation rounds the depth step over ~halfWidth,
@@ -473,8 +497,24 @@ const TunnelRoute& registerTunnelCorridor() {
         route.coverS0, route.coverS1, route.coverS1 - route.coverS0, route.buriedRoadLen);
     x3::logInfo(b);
     if (!route.boreValid)
-        x3::logWarn("tunnel corridor: no enclosed span found — the demo will be an open cutting only");
-    return route;
+        x3::logWarn(std::string("tunnel corridor: '") + route.name +
+                    "' found no enclosed span — no hill on this heading, so it is an open cutting only");
+    return &route;
+}
+
+// The original single-tunnel demo (--world tunnel). Same authored hill, same
+// constants, so the demo's geometry is unchanged by the generalisation.
+const TunnelRoute& registerTunnelCorridor() {
+    static const TunnelRoute* cached = nullptr;
+    if (cached) return *cached;
+    TunnelSpec demo;
+    demo.name = "demo ridge";
+    demo.cx = kRouteCX;   demo.cz = kRouteCZ;
+    demo.dirX = kRouteDirX; demo.dirZ = kRouteDirZ;
+    demo.halfLen = kRouteHalfLen;
+    cached = registerTunnelCorridorFor(demo);
+    if (!cached) { static TunnelRoute empty; return empty; }
+    return *cached;
 }
 
 // ---------------------------------------------------------------------------

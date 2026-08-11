@@ -3212,6 +3212,18 @@ int runDefaultHost(HostContext& hc) {
         // underfoot. Same defaults as before (32 m tiles, heightScale 55 m, seed
         // 1337) => behavior + look unchanged; this just shares the config.
         const x3::game::TerrainConfig& tcfg = x3::game::worldTerrainConfig();
+        // FREEWAY TUNNEL CORRIDORS — the boot step, and it has to be HERE.
+        // app/terrain.h's registry contract is "register before the first height
+        // query", and the spawn probe below is that first query. It cannot go in
+        // the city REGION builder: the city is streamed, so that builder runs long
+        // after terrain init and its corridors would be ignored by every tile
+        // already generated. Gated by ENV, not a cvar, for the same reason: at
+        // this point in boot the console does not exist yet. X3_FREEWAY_TUNNELS=0
+        // skips registration entirely and restores the pre-corridor field exactly.
+        {
+            const char* e = std::getenv("X3_FREEWAY_TUNNELS");
+            if (!(e && e[0] == '0')) x3::game::registerCityFreewayTunnels();
+        }
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
         sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;

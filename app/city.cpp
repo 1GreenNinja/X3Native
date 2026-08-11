@@ -27,6 +27,7 @@
 #include "street_lights.h"
 #include "engine/rhi/ClusterLights.h"   // kMaxSceneLights (--test-city D3)
 #include "surface_library.h"
+#include "tunnel_corridor.h"   // TunnelSpec / registerTunnelCorridorFor (freeway bores)
 #include "asset_root.h"
 
 #include "engine/core/x3_log.h"
@@ -68,6 +69,46 @@ const float kNeon[5][3] = {
 };
 
 } // namespace
+
+// ---- BOOT: register one terrain corridor per freeway tunnel ---------------
+// Each plan gives a MOUTH, a heading and a bore length. The corridor's spine has
+// to be longer than the bore: a tunnel needs an approach CUTTING on each side to
+// bring the road down to portal level at a drivable grade, or the portal sits in
+// a cliff face. kApproach is that run, per side.
+uint32_t registerCityFreewayTunnels() {
+    static uint32_t bored = 0;
+    static bool done = false;
+    if (done) return bored;
+    done = true;
+
+    constexpr float kApproach = 170.0f;   // graded run outside each portal (m)
+    for (uint32_t i = 0; i < kFreewayTunnelCount; ++i) {
+        const TunnelDef& t = kTunnels[i];
+        TunnelSpec spec;
+        spec.name = t.name;
+        // Centre the spine on the MIDDLE of the intended bore, not the mouth,
+        // so the approach cuttings fall symmetrically outside it.
+        spec.cx   = t.mx + t.dx * (t.len * 0.5f);
+        spec.cz   = t.mz + t.dz * (t.len * 0.5f);
+        spec.dirX = t.dx; spec.dirZ = t.dz;
+        spec.halfLen = t.len * 0.5f + kApproach;
+        const TunnelRoute* r = registerTunnelCorridorFor(spec);
+        if (!r) continue;
+        if (r->boreValid) {
+            ++bored;
+            x3::logInfo(std::string("[city] ") + t.name + ": BORED — shell " +
+                        std::to_string((int)(r->boreS1 - r->boreS0)) + " m");
+        } else {
+            x3::logWarn(std::string("[city] ") + t.name +
+                        ": no hill on this heading — registered as an open cutting, "
+                        "no tunnel dressed");
+        }
+    }
+    x3::logInfo("[city] freeway tunnels: " + std::to_string(bored) + "/" +
+                std::to_string(kFreewayTunnelCount) + " produced a genuine bore");
+    return bored;
+}
+
 
 void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                  SurfaceLibrary* sharedSurf, std::vector<StreetLights::Glow>* outGlows) {
@@ -503,6 +544,44 @@ bool runCitySelfTest() {
             if (t.length <= 0.0f || std::fabs(mag - 1.0f) > 1e-3f || !nonEmpty(t.name)) ok = false;
         }
         check(ok, "C3 four freeway tunnels (unit heading + nonzero bore length)");
+    }
+
+    // ---- C3b THE TUNNELS ARE ACTUALLY BORED, not two boxes each. -----------
+    // Before this lane each "tunnel" was a portal box plus an 18 m sunken
+    // throat box: nothing was cut, nothing was bored, and nothing could be
+    // driven through. Now each plan registers a real TerrainCorridor.
+    {
+        clearTerrainCorridors();
+        const uint32_t before = terrainCorridorCount();
+        const uint32_t bored  = registerCityFreewayTunnels();
+        const uint32_t after  = terrainCorridorCount();
+        check(before == 0 && after == kFreewayTunnelCount,
+              "C3b every freeway tunnel registered a terrain corridor (" +
+              std::to_string(after) + "/" + std::to_string(kFreewayTunnelCount) + ")");
+        // The corridors must be DISTINCT — the singleton builder this replaced
+        // could only ever hold one route, so four calls yielded one tunnel.
+        bool distinct = tunnelRouteCount() >= kFreewayTunnelCount;
+        for (uint32_t a = 0; a < tunnelRouteCount() && distinct; ++a)
+            for (uint32_t b = a + 1; b < tunnelRouteCount(); ++b) {
+                const TunnelRoute* ra = tunnelRouteAt(a);
+                const TunnelRoute* rb = tunnelRouteAt(b);
+                if (ra && rb && std::fabs(ra->cx - rb->cx) < 1.0f
+                             && std::fabs(ra->cz - rb->cz) < 1.0f) { distinct = false; break; }
+            }
+        check(distinct, "C3b the four routes are DISTINCT (the singleton could hold only one)");
+        // Report bore validity rather than assert it: whether a heading meets a
+        // hill is a fact about the terrain, and a silent pass here would hide a
+        // freeway that tunnels through flat ground.
+        x3::logInfo("[city-test] freeway bores that found a hill: " +
+                    std::to_string(bored) + "/" + std::to_string(kFreewayTunnelCount));
+        for (uint32_t i = 0; i < tunnelRouteCount(); ++i) {
+            const TunnelRoute* r = tunnelRouteAt(i);
+            if (!r) continue;
+            x3::logInfo(std::string("[city-test]   ") + r->name + ": " +
+                        (r->boreValid ? ("bore " + std::to_string((int)(r->boreS1 - r->boreS0)) + " m")
+                                      : std::string("open cutting (no hill on this heading)")));
+        }
+        clearTerrainCorridors();
     }
 
     // ---- Props placed. ----
