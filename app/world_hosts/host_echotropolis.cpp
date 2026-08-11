@@ -4304,21 +4304,33 @@ int hostEchotropolis(HostContext& hc) {
                 }
             }
 
-            // Drone flybys: an occasional pass fired AT a live aircraft's position.
+            // Drone flybys: an occasional pass fired AT a live drone's position.
             //
-            // ⚠ BUILD FIX (lane6 replay, 2026-08-11): as pushed, origin/main tip
-            // 9d19cb51 DOES NOT COMPILE — this block referenced `drones` / `struct
-            // Drone`, neither of which exists anywhere in this host (or the repo).
-            // `helis` / `Heli` is the only per-frame aircraft container here and it
-            // carries exactly the fields this block reads (phase/w/cx/cz/r/y), so it
-            // is substituted verbatim. This is a COMPILE fix, not a design ruling —
-            // the lane that wrote 9d19cb51 should confirm whether the flyby SFX was
-            // meant for a drone container that was never landed.
-            if (!helis.empty()) {
+            // BUILD FIX — origin/main's tip 9d19cb51 DOES NOT COMPILE. The audio
+            // commit was written against a host-local `drones` vector that the
+            // earlier TIER-2 region split (a99b6ed9) had ALREADY moved into
+            // echo_region_builders.cpp as the function-local `dronePoses`. This is
+            // the sync-val lane's repair (772bf11b), cherry-picked verbatim so both
+            // branches carry the SAME fix: mirror the six deterministic orbits from
+            // buildCrown's addDrone calls and animate them with the region builder's
+            // own pose formula, so firing positions match the live drones. ONLY this
+            // hunk was taken from 772bf11b — none of its barrier work, which would
+            // have contaminated this lane's frame-cost measurement.
+            // If dronePoses is ever exposed through EchoRegionCtx, delete this table.
+            struct DroneOrbit { float cx, cz, r, y, w, phase; };
+            static constexpr DroneOrbit kDroneOrbits[] = {
+                { -20.0f,  760.0f, 150.0f, 210.0f,  0.26f, 0.0f },
+                { 110.0f,  660.0f, 120.0f, 250.0f, -0.32f, 1.7f },
+                { -160.0f, 840.0f, 180.0f, 190.0f,  0.22f, 3.1f },
+                { -60.0f,  900.0f, 130.0f, 285.0f,  0.30f, 4.4f },
+                {  60.0f,  800.0f, 200.0f, 165.0f, -0.24f, 5.5f },
+                { -220.0f, 700.0f, 110.0f, 300.0f, -0.28f, 2.3f },
+            };
+            {
                 flybyT -= dt;
                 if (flybyT <= 0.0f) {
                     flybyT = 12.0f + audRand01() * 14.0f;
-                    const Heli& d = helis[audRng % helis.size()];
+                    const DroneOrbit& d = kDroneOrbits[audRng % (sizeof(kDroneOrbits) / sizeof(kDroneOrbits[0]))];
                     const float a = d.phase + waterTime * d.w;
                     const auto& s = sfxFlyby[audRng % 3];
                     if (s.valid())
