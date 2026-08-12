@@ -305,6 +305,7 @@ int main(int argc, char** argv) {
         _tf.testSkillTree = o.testSkillTree;      // W9-3 RPG
         _tf.testStrata = o.testStrata;
         _tf.testCityBlocks = o.testCityBlocks;
+        _tf.testSeaLevel = o.testSeaLevel;
         _tf.testElevatorShowcase = o.testElevatorShowcase;
         _tf.testIntro = o.testIntro;
         _tf.testIntroOrch = o.testIntroOrch;

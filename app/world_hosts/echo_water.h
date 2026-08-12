@@ -22,6 +22,7 @@
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "echo_heightfield.h"
+#include "echo_sea.h"   // kEchoSeaLevelY — the ONE datum these presets ride on
 
 #include <cstdint>
 
@@ -40,7 +41,7 @@ namespace x3::game {
 //   wp.steepness = tune.steepness; wp.waveLength = tune.waveLength;
 //   wp.speed = tune.speed;         (wp.enabled/time/colors/sun stay as applyOcean sets them)
 struct WaterTuning {
-    float seaLevel   = 0.10f;   // world +Y (m); matches applyOcean's wp.seaLevel = 0.10f
+    float seaLevel   = kEchoSeaLevelY;   // world +Y (m) — DERIVED, never authored
     float amplitude  = 0.16f;   // wave height scale (m); matches applyOcean's current 0.16f
     float steepness  = 0.50f;   // 0..1 Gerstner sharpness; matches applyOcean's 0.5f
     float waveLength = 14.0f;   // base wavelength (m); matches applyOcean's 14.0f
@@ -184,58 +185,56 @@ private:
 };
 
 // ============================================================================
-// SWELL TUNING TABLE — 3 presets Tim can pick by feel. Each stays under the
-// island GLB's baked ocean-ring punch-through margin.
+// SWELL TUNING TABLE — 3 presets Tim can pick by feel. Every one rides
+// kEchoSeaLevelY; NONE of them states a sea height of its own any more.
 //
-// THE MARGIN MATH: shaders/water.vert sums N=4 Gerstner waves whose Y term is
-// `A * ampMul[i] * sin(phase_i)` (steepness/Q only displaces X/Z, NEVER Y — see
-// water.vert L55-57 vs L60-66, so trough depth is independent of `steepness`).
-// ampMul[] = { 1.0, 0.5, 0.28, 0.14 }, summing to 1.92. The theoretical WORST
-// CASE (all 4 sines simultaneously at -1, phase-aligned) puts the trough at:
-//     worstTroughY = seaLevel - amplitude * 1.92
-// The island bake's flat ocean ring sits at OCEAN_Y = -0.4 (tools/
-// island_to_glb.py). host_echotropolis.cpp's applyOcean() comments document
-// this exact fight ("WATER WAVE 1b... the black SHARDS freckling the bay"):
-// troughs punching below -0.4 let the dark ring show through as triangle
-// shards, and 0.26 amplitude (with a smaller sea lift) was empirically still
-// too tight; the shipped tuning (seaLevel 0.10, amplitude 0.16) leaves
-// worstTroughY = 0.10 - 0.16*1.92 = -0.2072, a ~0.193 m margin above the ring.
-// Each preset below is checked against the SAME worst-case formula and kept
-// at >= 0.07 m worst-case margin above the -0.4 ring (a real cushion given the
-// worst case is a rare simultaneous 4-wave alignment, not the typical trough).
+// THE MARGIN MATH now lives in echo_sea.h (echoWorstTroughY / echoMaxAmplitude)
+// so it is one formula instead of three hand-computed comments that could
+// disagree with the code they describe — which is precisely how the seaLevel
+// 0.10 in this table drifted from the 0.0 the rest of the world used.
+//
+//     worstTroughY  = kEchoSeaLevelY - amplitude * 1.92
+//     amplitude_max = (kEchoSeaLevelY - kEchoOceanRingY - margin) / 1.92
+//                   = (0.0 - (-0.4) - 0.05) / 1.92  =  0.1823 m
+//
+// WHAT MOVING THE DATUM TO 0 COST, stated plainly: the sea dropped 0.10 m, so
+// every preset lost 0.10 m of headroom over the ring. CALM and HARBOR still
+// clear it comfortably and are UNCHANGED. STORM did not — 0.22 amplitude now
+// troughs at -0.4224, i.e. THROUGH the ring — so its amplitude is cut to 0.175.
+// That is a real 20% loss of storm wave height and it is the price of the
+// unification; it is not hidden in a rounding. If Tim wants the big storm back
+// the lever is the RING, not the sea: re-bake with OCEAN_Y = -1.0 (invisible,
+// since the ring is only ever seen from above 140 m or at night) and
+// echoMaxAmplitude() rises to 0.49 on its own. The gate below will fail the
+// instant anyone raises an amplitude without doing that.
 struct SwellPreset {
     const char* name;
     WaterTuning tune;
-    float worstTroughY;   // documented, not enforced at runtime — see math above
-    float ringMarginM;    // worstTroughY - (-0.4)
+    float worstTroughY;   // == echoWorstTroughY(tune.amplitude); gate re-derives it
+    float ringMarginM;    // worstTroughY - kEchoOceanRingY
 };
 
-// CALM — glassy harbor water at rest (dawn/dead-calm bay). Worst trough:
-// 0.10 - 0.08*1.92 = -0.0536  =>  margin 0.3464 m (wide open).
+// CALM — glassy harbor water at rest (dawn/dead-calm bay).
+// Worst trough: 0.0 - 0.08*1.92 = -0.1536  =>  margin 0.2464 m (wide open).
 inline constexpr WaterTuning kSwellCalm{
-    /*seaLevel*/ 0.10f, /*amplitude*/ 0.08f, /*steepness*/ 0.35f,
+    /*seaLevel*/ kEchoSeaLevelY, /*amplitude*/ 0.08f, /*steepness*/ 0.35f,
     /*waveLength*/ 18.0f, /*speed*/ 0.60f,
 };
 
-// HARBOR — the shipped "living water" default (byte-identical to applyOcean's
-// current values, see host_echotropolis.cpp ~L397). Worst trough:
-// 0.10 - 0.16*1.92 = -0.2072  =>  margin 0.1928 m.
+// HARBOR — the shipped "living water" default; the one applyOcean drives.
+// Worst trough: 0.0 - 0.16*1.92 = -0.3072  =>  margin 0.0928 m.
 inline constexpr WaterTuning kSwellHarbor{
-    /*seaLevel*/ 0.10f, /*amplitude*/ 0.16f, /*steepness*/ 0.50f,
+    /*seaLevel*/ kEchoSeaLevelY, /*amplitude*/ 0.16f, /*steepness*/ 0.50f,
     /*waveLength*/ 14.0f, /*speed*/ 1.00f,
 };
 
-// STORM — the roughest swell that still clears the ring with a real cushion.
-// Worst trough: 0.10 - 0.22*1.92 = -0.3224  =>  margin 0.0776 m. Shorter
-// wavelength (11 m, choppier wind-driven look) + higher steepness (0.62,
-// peaked crests) + faster scroll (1.35x); amplitude deliberately NOT pushed
-// to the theoretical max (~0.234 before the margin drops under 0.05 m) —
-// 0.22 leaves slack for the boat-heave sampling in echoShipPose (which reads
-// the same surface off-center at the hull's bow/stern/beam, so an unlucky hull
-// orientation can locally sample closer to a real trough than the "worst case
-// at one point" formula alone).
+// STORM — the roughest swell that still clears the ring. Amplitude cut 0.22 ->
+// 0.175 by the datum move (see above). Worst trough: 0.0 - 0.175*1.92 =
+// -0.336  =>  margin 0.064 m. The choppy read is carried mostly by the short
+// 11 m wavelength, the 0.62 steepness (peaked crests) and the 1.35x scroll,
+// which are untouched — but it IS a shorter sea than it was.
 inline constexpr WaterTuning kSwellStorm{
-    /*seaLevel*/ 0.10f, /*amplitude*/ 0.22f, /*steepness*/ 0.62f,
+    /*seaLevel*/ kEchoSeaLevelY, /*amplitude*/ 0.175f, /*steepness*/ 0.62f,
     /*waveLength*/ 11.0f, /*speed*/ 1.35f,
 };
 

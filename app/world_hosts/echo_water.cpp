@@ -250,10 +250,16 @@ int EchoSplashes::liveCount() const {
 
 // ---------------------------------------------------------------------------
 // Swell preset table (see echo_water.h for the ring-margin math per preset).
+// worstTroughY/ringMarginM are DERIVED here (not hand-typed literals as they
+// were) so the table can never describe a margin the tuning does not have —
+// that divergence is the bug this lane exists to make impossible.
 const SwellPreset kSwellPresets[3] = {
-    { "calm",   kSwellCalm,   -0.0536f, 0.3464f },
-    { "harbor", kSwellHarbor, -0.2072f, 0.1928f },
-    { "storm",  kSwellStorm,  -0.3224f, 0.0776f },
+    { "calm",   kSwellCalm,   echoWorstTroughY(kSwellCalm.amplitude),
+                              echoWorstTroughY(kSwellCalm.amplitude)   - kEchoOceanRingY },
+    { "harbor", kSwellHarbor, echoWorstTroughY(kSwellHarbor.amplitude),
+                              echoWorstTroughY(kSwellHarbor.amplitude) - kEchoOceanRingY },
+    { "storm",  kSwellStorm,  echoWorstTroughY(kSwellStorm.amplitude),
+                              echoWorstTroughY(kSwellStorm.amplitude)  - kEchoOceanRingY },
 };
 
 } // namespace x3::game

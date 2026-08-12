@@ -82,17 +82,31 @@ import numpy as np
 from PIL import Image
 
 # ---------------------------------------------------------------- constants
+# ---------------------------------------------------------------------------
+# THE SEA DATUM lives in app/world_hosts/echo_sea.h (kEchoSeaLevelY = 0). It is
+# defined as the height where heightAt crosses zero, i.e. where hn == SEANORM —
+# which is fixed BY THIS FILE and baked into the GLB. So the constants below are
+# not free: `--test-sealevel` PARSES this file and fails if any of them stops
+# agreeing with the engine. Do not edit one side only.
+#   SEANORM        -> Heightfield::kSeaNorm   (puts the datum at y=0)
+#   HSCALE         -> Heightfield::kScale
+#   OCEAN_Y        -> kEchoOceanRingY. NOT a sea level: it is the FLOOR the
+#                     Gerstner troughs must clear. Lowering it is what buys
+#                     bigger waves (echoMaxAmplitude()); it must never be raised
+#                     toward the datum to "fix" a waterline.
+#   WATER_MIN_LAND -> datum + kEchoLandMinClear (echo_roads.cpp kWaterMinLand)
 SEED       = 20260803          # bake seed (date of the fjord regen)
 FRAME      = 4096.0            # kMeters — echo_heightfield.h
 HSCALE     = 320.0             # kScale
-SEANORM    = 0.20              # kSeaNorm
+SEANORM    = 0.20              # kSeaNorm  => sea datum at world y = 0
 N_PNG      = 1025              # heightfield resolution (4 m/px, ~2.1 MB PNG)
 N_MESH     = 513               # land mesh grid (samples PNG every 2nd px)
-OCEAN_Y    = -0.4              # baked flat water sheet (island_to_glb.py law)
+OCEAN_Y    = -0.4              # baked flat water sheet = kEchoOceanRingY (a FLOOR)
 OCEAN_EXT  = 14000.0           # water sheet + old "ocean ring" reach
 SKIRT_Y    = -8.0              # skirt bottom (below the water sheet)
 
-WATER_MIN_LAND = 1.5           # echo_roads.cpp kWaterMinLand (waterline def)
+WATER_MIN_LAND = 1.5           # echo_roads.cpp kWaterMinLand (= datum + 1.5)
+KEEL_DRAFT     = -4.0          # echo_region_builders.cpp kKeelDraft (= datum - 4.0)
 
 # ---------------------------------------------------------------- helpers
 def smoothstep(t):
@@ -683,7 +697,13 @@ def verify(px, meta):
              ((-560, 260), (0, 1), 420, "SW inlet N")]
     for (sx, sz), (dx, dz), ln, nm in lanes:
         worst = max(ha(sx + dx * t, sz + dz * t) for t in range(0, int(ln) + 1, 20))
-        chk(worst < -1.5, "boat lane %s: max floor %.1f m (want < -1.5)" % (nm, worst))
+        # Was `< -1.5`, which is NOT the depth the engine requires: the coastline
+        # gate in buildHarborBay clips lanes to kKeelDraft = -4.0. A bake could
+        # therefore pass its own lane check and still have every lane clipped or
+        # dropped at run time. Same number on both sides now.
+        chk(worst < KEEL_DRAFT,
+            "boat lane %s: max floor %.1f m (want < %.1f = keel draft)"
+            % (nm, worst, KEEL_DRAFT))
 
     rep.append("  note: legacy lighthouse-beam anchor (-493,789) now sits at "
                "%.1f m on the west shoulder (stale prop coordinate from the "

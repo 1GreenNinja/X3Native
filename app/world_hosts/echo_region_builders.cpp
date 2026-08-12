@@ -61,6 +61,8 @@
 //     forest/houses respectively).
 
 #include "echo_region_builders.h"
+#include "echo_sea.h"          // THE sea datum: keel draft / boat freeboard / land clearance
+#include "echo_water.h"        // echoShipPose — hulls ride the ACTUAL Gerstner surface
 #include "echo_interiors.h"    // condo-room sub-region + vendor dressing
 #include "echo_roads.h"        // V8: the city block/lot/frontage generator
 #include "../hackables.h"      // WD2 camera saturation (builders register cams)
@@ -703,7 +705,7 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
             ctx.hax->add(cam);
         };
         auto landOk = [&](float x, float z) {
-            return !ctx.hf.ok() || ctx.hf.heightAt(x, z) >= 2.5f;
+            return !ctx.hf.ok() || ctx.hf.heightAt(x, z) >= echoLandSafe();   // sea + 2.50 m
         };
 
         // ---- TIER 1: one building per LOT --------------------------------
@@ -1420,8 +1422,8 @@ void buildWaterfrontRow(EchoRegion& region, EchoRegionCtx& ctx) {
             if (!ctx.hf.ok()) continue;
             const float probe = ctx.hf.heightAt(f.x + f.nx * 30.0f, f.z + f.nz * 30.0f);
             const float here  = ctx.hf.heightAt(f.x, f.z);
-            if (here < 2.5f) continue;                 // the pad itself is wet
-            if (probe > 2.5f) continue;                // inland side — skip
+            if (here < echoLandSafe()) continue;       // the pad itself is wet
+            if (probe > echoLandSafe()) continue;      // inland side — skip
             spots.push_back({ f.x, f.z, f.yaw, f.roadY, true });
         }
         fromRoads = !spots.empty();
@@ -1511,11 +1513,12 @@ namespace {
 
 struct LaneClip { float startD = 0.0f, len = 0.0f; bool ok = false; };
 
-// Keel draft: sea level is world y = 0 and the boats' hulls sit at kBoatY ~0.6
-// with a +/-0.35 bob, so terrain shallower than this would breach a hull.
+// Keel draft: the hull rides echoBoatY() (= sea + 0.60 m freeboard) on the
+// Gerstner surface, so terrain shallower than this would breach a hull.
 // Deliberately generous (a grounded ship reads far worse than a lane that hugs
-// deeper water).
-constexpr float kKeelDraft   = -4.0f;   // required terrain depth (m, negative = below sea)
+// deeper water). Stated as a DEPTH BELOW THE DATUM so moving the sea moves the
+// navigable envelope with it — it used to be the absolute -4.0.
+constexpr float kKeelDraft   = echoKeelDraft();   // = sea - 4.00 m (echo_sea.h)
 constexpr float kLaneHalfW   = 35.0f;   // corridor half-width probed either side (m)
 constexpr float kProbeStep   = 5.0f;    // centreline sample spacing (m)
 constexpr float kMinLaneLen  = 150.0f;  // below this a lane is dropped, not sailed
@@ -1561,7 +1564,14 @@ LaneClip clipLaneToWater(const Heightfield& hf, float sx, float sz,
 
 void buildHarborBay(EchoRegion& region, EchoRegionCtx& ctx) {
     const float kBoatYaw = [](){ const char* e=std::getenv("ECHO_BOAT_YAW"); return e?(float)std::atof(e):0.0f; }();
-    const float kBoatY   = [](){ const char* e=std::getenv("ECHO_BOAT_Y");   return e?(float)std::atof(e):0.6f; }();
+    // Hull origin above STILL WATER. Was the absolute 0.6; now sea + freeboard,
+    // so it tracks the datum. ECHO_BOAT_Y still overrides it as an absolute
+    // (it is a debug lever, and an absolute is what a debugger wants).
+    const float kBoatY   = [](){ const char* e=std::getenv("ECHO_BOAT_Y");
+                                 return e?(float)std::atof(e):echoBoatY(); }();
+    // ECHO_SHIP_FLATBOB=1 restores the pre-fix flat sin() bob — the A/B lever
+    // for the "hulls sit proud of the surface" repro, from one binary.
+    const bool kFlatBob  = [](){ const char* e=std::getenv("ECHO_SHIP_FLATBOB"); return e && *e=='1'; }();
     struct FleetDef { const char* dir; const char* glb; float scale; float speedMul; };
     static const FleetDef kFleet[] = {
         { "D:/Assets/_glb/tech/Medieval Ship/Assets/MedievalShip/MedievalShip 3D_Model",
@@ -1577,7 +1587,11 @@ void buildHarborBay(EchoRegion& region, EchoRegionCtx& ctx) {
         { "D:/Assets/_glb/ancients/Pirate Island/Assets/Hivemind/PirateIsland/HDRP(Default)/Art/Meshes/Props/JollyBoat",
           "SM_JollyBoat_01.glb", 1.5f, 0.9f },                                  // jolly-boat tender
     };
-    struct BoatPose { EnvArtSystem* body; float sx,sz,dx,dz,len,speed,off,scale; };
+    // halfLen/halfBeam are MEASURED off the loaded mesh (see addBoat), not
+    // guessed per asset — FleetDef carries no hull dims and inventing them
+    // would put the wave-sampling footprint somewhere the art is not.
+    struct BoatPose { EnvArtSystem* body; float sx,sz,dx,dz,len,speed,off,scale;
+                      float halfLen, halfBeam; };
     std::vector<BoatPose> boatPoses;
     // ---- UNTEXTURED-HERO REPAIR (Tim 2026-08-12: the ship "renders near-white").
     // MedievalShip_.glb is the only vessel in the fleet with no material
@@ -1636,7 +1650,19 @@ void buildHarborBay(EchoRegion& region, EchoRegionCtx& ctx) {
         if (!legacyMat && std::string(fd.glb).rfind("MedievalShip", 0) == 0)
             b->setMaterialOverride(kShipMats);
         if (b->buildFromGlbAt(ctx.device, fd.dir, fd.glb, I)) {
-            boatPoses.push_back({ b.get(), sx, sz, dx, dz, len, speed*fd.speedMul, off, fd.scale });
+            // HULL FOOTPRINT, measured. echoShipPose samples the wave surface at
+            // the bow/stern/port/starboard, so it needs real half-extents. The
+            // loaded AABB is in WORLD space with the heading already applied;
+            // all three authored lanes are axis-aligned (dx,dz in {0,+/-1}), so
+            // the AABB's X/Z extents ARE the hull's length and beam. For a
+            // diagonal lane this would over-estimate slightly, which errs
+            // toward a gentler tilt — the safe direction.
+            float mn[3], mx[3]; b->worldBounds(mn, mx);
+            const float ex = (mx[0] - mn[0]) * 0.5f, ez = (mx[2] - mn[2]) * 0.5f;
+            const float halfLen  = std::max(0.5f, std::max(ex, ez));
+            const float halfBeam = std::max(0.25f, std::min(ex, ez));
+            boatPoses.push_back({ b.get(), sx, sz, dx, dz, len, speed*fd.speedMul, off,
+                                  fd.scale, halfLen, halfBeam });
             region.addArt(std::move(b));
         }
     };
@@ -1692,15 +1718,72 @@ void buildHarborBay(EchoRegion& region, EchoRegionCtx& ctx) {
         x3::logInfo("[region] HARBOR FLEET — " + std::to_string(boatPoses.size()) +
                     " vessels on " + std::to_string(3 - dropped) + "/3 coastline-gated lanes");
     }
-    region.setUpdate([boatPoses, kBoatYaw, kBoatY](float /*dt*/, float t) {
+    // ---- LIVING BAY: HULLS RIDE THE ACTUAL SURFACE ------------------------
+    // echo_water.h shipped echoShipPose() — heave/pitch/roll sampled off the
+    // SAME Gerstner sum shaders/water.vert draws — but nothing ever called it.
+    // The hulls used a flat `kBoatY + sin(t*0.7)*0.35` bob: a single sine on a
+    // fixed clock, unrelated in phase, frequency, direction OR amplitude to the
+    // water under them. So a boat rose while the sea under it fell, and for
+    // most of each cycle it sat visibly proud of (or sunk into) the surface.
+    //
+    // WHY THIS BELONGS TO THE SEA-LEVEL LANE AND NOT AN EARLIER ONE: the bob
+    // was centred on 0.6 while the drawn sea was at 0.10 and the terrain said
+    // 0.0. There was no single surface to ride. Now there is exactly one, and
+    // `kSwellHarbor` is both what applyOcean feeds the GPU and what this
+    // samples, so the hull and the water are evaluations of one function.
+    // `t` is the shared water clock (host: waterTime -> both applyOcean and
+    // regionSet.updateAll).
+    const WaterTuning swell = kSwellHarbor;
+    region.setUpdate([boatPoses, kBoatYaw, kBoatY, kFlatBob, swell](float /*dt*/, float t) {
         for (const auto& b : boatPoses) {
             if (!b.body) continue;
             const float d = std::fmod(b.off + t * b.speed, b.len);
             const float x = b.sx + b.dx * d, z = b.sz + b.dz * d;
-            const float y = kBoatY + std::sin(t * 0.7f + b.off) * 0.35f;   // gentle bob
             const float heading = std::atan2(b.dx, b.dz) + kBoatYaw;
-            const float s = b.scale, ch = std::cos(heading), sh = std::sin(heading);
-            const float M[16] = { ch*s,0,-sh*s,0, 0,s,0,0, sh*s,0,ch*s,0, x, y, z, 1 };
+            const float s = b.scale;
+            if (kFlatBob) {   // A/B: the pre-fix flat bob, verbatim
+                const float y = kBoatY + std::sin(t * 0.7f + b.off) * 0.35f;
+                const float ch = std::cos(heading), sh = std::sin(heading);
+                const float M[16] = { ch*s,0,-sh*s,0, 0,s,0,0, sh*s,0,ch*s,0, x, y, z, 1 };
+                b.body->setInstanceTransform(0, M);
+                continue;
+            }
+            ShipWaveState w;
+            echoShipPose(x, z, heading, b.halfLen, b.halfBeam, t, swell, w);
+            const float y = kBoatY + w.heaveY;
+            // R = Ry(heading) * Rx(-pitch) * Rz(-roll). The negations carry
+            // echoShipPose's stated sign convention (+pitch = bow UP, +roll =
+            // starboard DOWN) into this basis, where local +Z is forward and
+            // local +X is starboard: Rx(+p) would push +Z down, and Rz(+r)
+            // would push +X up — both backwards.
+            const float ch = std::cos(heading),  sh = std::sin(heading);
+            const float cp = std::cos(-w.pitchRad), sp = std::sin(-w.pitchRad);
+            const float cr = std::cos(-w.rollRad),  sr = std::sin(-w.rollRad);
+            // Row-major 3x3 products, written out (no matrix type in this TU).
+            const float Ry[9] = {  ch, 0.0f,  sh,
+                                  0.0f, 1.0f, 0.0f,
+                                  -sh, 0.0f,  ch };
+            const float Rx[9] = { 1.0f, 0.0f, 0.0f,
+                                  0.0f,   cp,  -sp,
+                                  0.0f,   sp,   cp };
+            const float Rz[9] = {   cr,  -sr, 0.0f,
+                                    sr,   cr, 0.0f,
+                                  0.0f, 0.0f, 1.0f };
+            auto mul3 = [](const float A[9], const float B[9], float O[9]) {
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 3; ++c)
+                        O[r*3+c] = A[r*3+0]*B[0*3+c] + A[r*3+1]*B[1*3+c] + A[r*3+2]*B[2*3+c];
+            };
+            float RyRx[9], R[9];
+            mul3(Ry, Rx, RyRx);
+            mul3(RyRx, Rz, R);
+            // Column-major 4x4 for the device: column k = R * e_k, scaled.
+            const float M[16] = {
+                R[0]*s, R[3]*s, R[6]*s, 0.0f,
+                R[1]*s, R[4]*s, R[7]*s, 0.0f,
+                R[2]*s, R[5]*s, R[8]*s, 0.0f,
+                x,      y,      z,      1.0f,
+            };
             b.body->setInstanceTransform(0, M);
         }
     });

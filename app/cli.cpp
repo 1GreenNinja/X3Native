@@ -160,6 +160,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-skilltree") o.testSkillTree = true;       // W9-3 skill tree
         else if (a == "--test-strata") o.testStrata = true;                       // R-3 fold
         else if (a == "--test-cityblocks") o.testCityBlocks = true;               // Lane 4 city blocks
+        else if (a == "--test-sealevel") o.testSeaLevel = true;                   // Echo Harbor sea datum
         else if (a == "--test-elevator-showcase") o.testElevatorShowcase = true;  // R-4 fold
         else if (a == "--screenshot-elevator") {                                  // R-4 beauty trio
             o.elevShot = true; o.worldMode = "elevator-showcase"; o.screenshot = true;
