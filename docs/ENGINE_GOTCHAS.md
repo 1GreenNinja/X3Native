@@ -122,6 +122,19 @@ boss "14.0,-2.3,-9.0,-0.6,0" · ward WR-1 "7.6,-0.15,38.9,0.45,0". Cameras embed
 boundary walls see floating doors/void (doors PVS-cull per-room since W2-A2's gate;
 walls always did) — derive cameras from room data, never eyeball coordinates.
 
+### 4.1b `--screenshot --world echotropolis` DOES NOT RENDER STREAMED CONTENT
+`regionSet.drawAll()` / `updateAll()` are gated on the WorldStreamer's residency state
+(`bindStreamerForDrawGate`, TIER-2 M-B), and the streamer is **only ticked in the live
+loop** — never in the capture settle loop. So every still of this world shows the
+streamed regions according to a streamer that has never run: the harbour fleet is
+neither posed nor drawn, and the pose clock never leaves t ≈ 0.38 s. This is how the
+"boat lanes cross dry land" defect survived two filings AND a flood-fill audit while
+being plainly visible on Tim's monitor: **every screenshot-based check was looking at an
+empty bay.** Two opt-in levers (both default-off, no existing reference capture moves):
+`ECHO_SHOT_STREAMED=1` drops the draw gate for the still; `ECHO_SHOT_T=<sec>` offsets the
+pose clock so a still can be composed anywhere in the traffic cycle. If you are verifying
+ANY moving or streamed content in a still, you must pass both.
+
 ### 4.2 The screenshot path and the viewmodel
 Until W2-A2, `--screenshot` NEVER drew the FP viewmodel — the "pistol" in old cell shots
 was the hovering pickup prop. It draws now, but F1's cell lighting blows the pistol

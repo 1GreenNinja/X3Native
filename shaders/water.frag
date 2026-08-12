@@ -32,6 +32,11 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     vec4  p0;   // x=seaLevel, y=time, z=amplitude, w=steepness
     vec4  p1;   // x=baseWavelength, y=speed, z=specular, w=fresnelBase
     vec4  p2;   // x=patchHalfExtent, y=1/screenW, z=1/screenH, w=reserved
+    // xyz = far-ocean handoff colour (linear); w = 1 when supplied, else 0.
+    // See IRenderDevice::WaterParams::horizonColor — a world that draws its own
+    // far-ocean mesh beyond this finite patch hands us the colour that mesh
+    // renders as, so the patch edge dissolves into it instead of into the sky.
+    vec4  p3;
 } u;
 
 // Scene depth buffer (the SSAO depth pre-pass output). Sampled as data (R32F via
@@ -127,11 +132,31 @@ void main() {
     float viewDist = length(u.camPos.xyz - vWorldPos);
     float distFog = clamp((viewDist - 80.0) / 220.0, 0.0, 1.0);
     float edge    = max(abs(vGrid.x), abs(vGrid.y));
-    float edgeFade = smoothstep(0.82, 1.0, edge);
+    // EDGE FADE. The patch is a square centred on the camera, so `edge` is the
+    // ONLY quantity that reaches 1.0 exactly where the geometry stops — the
+    // distance fade cannot, because the edge sits 240 m away along the axes but
+    // 339 m away at the corners. The old 0.82..1.0 band was 43 m of a 480 m
+    // tile: at a sea-level grazing view that is a few screen pixels, i.e. a HARD
+    // LINE, and along the axes the distance term had only reached 0.73 when the
+    // geometry ended — a 27% colour step drawn dead-straight across the sea.
+    // Widening the band to 0.35..0.995 spends ~155 m on the blend and guarantees
+    // the patch is fully handed off BEFORE it terminates, in every direction.
+    // Both the widened band and the handoff target are gated on p3.w, so a world
+    // that supplies no horizonColor gets the historic 0.82..1.0 sky fade
+    // BYTE-FOR-BYTE. Nothing outside Echo Harbor's sea changes.
+    float edgeFade = mix(smoothstep(0.82, 1.0,   edge),
+                         smoothstep(0.35, 0.995, edge), u.p3.w);
     float fog = max(distFog, edgeFade);
     vec3 horizonSky = skyColor(normalize(vWorldPos - u.camPos.xyz + vec3(0.0, 0.0, 0.0)), sunDir);
-    // Use a horizon-ish sky tint for the fade target (slightly toward the camera ray).
-    color = mix(color, horizonSky, fog);
+    // FADE TARGET. Historic behavior (p3.w == 0): the analytic sky, so the sea
+    // melts into the sky at the horizon with no seam. When the host supplies a
+    // far-ocean handoff colour (p3.w == 1) the EDGE fades into that instead, so
+    // the patch dissolves into the mesh that continues the ocean past it; the
+    // pure DISTANCE fade still targets the sky, so the true horizon is unchanged.
+    vec3 edgeTarget = mix(horizonSky, u.p3.rgb, u.p3.w);
+    float edgeShare = (fog > 1e-5) ? clamp(edgeFade / fog, 0.0, 1.0) : 0.0;
+    vec3 fadeTarget = mix(horizonSky, edgeTarget, edgeShare);
+    color = mix(color, fadeTarget, fog);
 
     outColor = vec4(color, 1.0);
 }

@@ -123,6 +123,14 @@ void EnvArtSystem::setNodeSkip(std::vector<std::string> subs) {
     }
 }
 
+void EnvArtSystem::setMaterialOverride(std::vector<MaterialOverride> ovr) {
+    m_matOverride.clear();
+    for (MaterialOverride& o : ovr) {
+        o.nameSub = toLowerCopy(std::move(o.nameSub));
+        if (!o.nameSub.empty()) m_matOverride.push_back(std::move(o));
+    }
+}
+
 uint32_t EnvArtSystem::loadAsset(const std::string& relPath) {
     // Cache: one upload per unique kit piece.
     for (uint32_t i=0;i<m_assetPaths.size();++i)
@@ -165,6 +173,29 @@ uint32_t EnvArtSystem::loadAsset(const std::string& relPath) {
             x3::logInfo("[env-art] node/material skip on " + relPath + ": " +
                         std::to_string(before) + " -> " +
                         std::to_string(a.model.primitives.size()) + " primitives");
+    }
+    if (a.model.ok && !m_matOverride.empty()) {
+        // MATERIAL OVERRIDE — patch the PBR constants of the private deep-copied
+        // Model before makeDrawables() reads them into drawables. Same lowercased
+        // substring mechanics as setNodeSkip; first matching rule wins.
+        uint32_t hits = 0;
+        for (auto& m : a.model.materials) {
+            if (m.name.empty()) continue;
+            const std::string ln = toLowerCopy(m.name);
+            for (const MaterialOverride& o : m_matOverride) {
+                if (ln.find(o.nameSub) == std::string::npos) continue;
+                if (o.setBaseColor) for (int i = 0; i < 4; ++i) m.baseColor[i] = o.baseColor[i];
+                if (o.setMetallic)  m.metallic  = o.metallic;
+                if (o.setRoughness) m.roughness = o.roughness;
+                if (o.setEmissive)  for (int i = 0; i < 3; ++i) m.emissive[i] = o.emissive[i];
+                ++hits;
+                break;
+            }
+        }
+        if (hits)
+            x3::logInfo("[env-art] material override on " + relPath + ": " +
+                        std::to_string(hits) + "/" + std::to_string(a.model.materials.size()) +
+                        " materials patched");
     }
     if (a.model.ok) {
         // makeDrawablesNamed == makeDrawables + the source node NAME per drawable

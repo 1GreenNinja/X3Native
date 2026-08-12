@@ -1461,9 +1461,90 @@ void buildDistrictHivemind(EchoRegion& region, EchoRegionCtx& ctx) {
 }
 
 // ===========================================================================
-// buildHarborBay — boats (3 lanes) + pose updates. See host_echotropolis.cpp
-// ~1956-2018. No INTEGRATOR gaps (needs only ctx.device).
+// COASTLINE GATE (Tim 2026-08-12: "Ships still sail in to the city and cliff")
+//
+// WHY THIS EXISTS. The three harbour lanes below are AUTHORED straight segments.
+// They were authored against a bake of the island that no longer exists: the
+// shipped default is `assets/island_mesa` (the 20260728 mesa-rim rebake, see
+// host_echotropolis.cpp's ECHO_ISLAND_DIR block), and on THAT heightfield the
+// south-bay eastbound lane climbs a 130 m headland — the hero tall ship sails
+// straight through the cliff and the cliffside village. Sampling the shipped PNG
+// along the authored polylines: lane A is above -1.5 m for 68 of 153 samples
+// (peak +130.0 m), lane C for 33 of 85 (peak +5.0 m), lane B for 12 of 153.
+//
+// WHY THE EARLIER FLOOD-FILL AUDIT PASSED ANYWAY. That audit answered a
+// different question: it flood-filled the WET CELLS from open ocean and reported
+// that 99.7% of them are ocean-connected and that "all three lanes" are
+// reachable. Connectivity of the water body says nothing about whether the
+// AUTHORED POLYLINE between two reachable endpoints stays in the water — a
+// straight line between two connected harbour cells is free to cross a
+// peninsula, and here it does. Reachability was never the invariant; "every
+// point of the swept path is navigable" is.
+//
+// WHAT THIS DOES. Before a lane is used it is re-validated against the ACTIVE
+// heightfield (ctx.hf — the same PNG the rendered GLB was meshed from): sample
+// the centreline plus +/- a beam-clearance corridor every kProbeStep metres,
+// keep the LONGEST CONTIGUOUS RUN whose terrain is deeper than the keel draft
+// everywhere across the corridor, and sail only that. A lane whose surviving run
+// is shorter than kMinLaneLen is DROPPED and logged rather than beached. Same
+// doctrine the fjord coastline-audit note asks for: authored placements
+// re-validate vs the active hf, then relocate or skip+log.
+//
+// This makes the fleet self-healing across re-bakes: change the island and the
+// lanes clip themselves instead of sailing into the new landform.
 // ===========================================================================
+namespace {
+
+struct LaneClip { float startD = 0.0f, len = 0.0f; bool ok = false; };
+
+// Keel draft: sea level is world y = 0 and the boats' hulls sit at kBoatY ~0.6
+// with a +/-0.35 bob, so terrain shallower than this would breach a hull.
+// Deliberately generous (a grounded ship reads far worse than a lane that hugs
+// deeper water).
+constexpr float kKeelDraft   = -4.0f;   // required terrain depth (m, negative = below sea)
+constexpr float kLaneHalfW   = 35.0f;   // corridor half-width probed either side (m)
+constexpr float kProbeStep   = 5.0f;    // centreline sample spacing (m)
+constexpr float kMinLaneLen  = 150.0f;  // below this a lane is dropped, not sailed
+
+// True when the full beam corridor at `d` metres along the lane is navigable.
+bool laneWetAt(const Heightfield& hf, float sx, float sz, float dx, float dz, float d) {
+    const float px = -dz, pz = dx;                  // unit perpendicular
+    const float x = sx + dx * d, z = sz + dz * d;
+    for (float o = -kLaneHalfW; o <= kLaneHalfW + 0.01f; o += kLaneHalfW * 0.5f)
+        if (hf.heightAt(x + px * o, z + pz * o) > kKeelDraft) return false;
+    return true;
+}
+
+// Longest contiguous navigable run along an authored lane, in lane-local metres.
+LaneClip clipLaneToWater(const Heightfield& hf, float sx, float sz,
+                         float dx, float dz, float len) {
+    LaneClip best{};
+    if (!hf.ok()) { best.startD = 0.0f; best.len = len; best.ok = true; return best; }  // no hf -> legacy behavior
+    float runStart = -1.0f;
+    for (float d = 0.0f; d <= len + 0.01f; d += kProbeStep) {
+        if (laneWetAt(hf, sx, sz, dx, dz, d)) {
+            if (runStart < 0.0f) runStart = d;
+        } else if (runStart >= 0.0f) {
+            const float runLen = (d - kProbeStep) - runStart;
+            if (runLen > best.len) { best.startD = runStart; best.len = runLen; }
+            runStart = -1.0f;
+        }
+    }
+    if (runStart >= 0.0f && (len - runStart) > best.len) {
+        best.startD = runStart; best.len = len - runStart;
+    }
+    // Inset one probe step at each end so a hull never straddles the last wet
+    // sample into the first dry one.
+    if (best.len > 2.0f * kProbeStep) {
+        best.startD += kProbeStep;
+        best.len    -= 2.0f * kProbeStep;
+    }
+    best.ok = best.len >= kMinLaneLen;
+    return best;
+}
+
+} // namespace
+
 void buildHarborBay(EchoRegion& region, EchoRegionCtx& ctx) {
     const float kBoatYaw = [](){ const char* e=std::getenv("ECHO_BOAT_YAW"); return e?(float)std::atof(e):0.0f; }();
     const float kBoatY   = [](){ const char* e=std::getenv("ECHO_BOAT_Y");   return e?(float)std::atof(e):0.6f; }();
@@ -1484,30 +1565,118 @@ void buildHarborBay(EchoRegion& region, EchoRegionCtx& ctx) {
     };
     struct BoatPose { EnvArtSystem* body; float sx,sz,dx,dz,len,speed,off,scale; };
     std::vector<BoatPose> boatPoses;
+    // ---- UNTEXTURED-HERO REPAIR (Tim 2026-08-12: the ship "renders near-white").
+    // MedievalShip_.glb is the only vessel in the fleet with no material
+    // authoring: 28 of its 62 materials carry the bare glTF/Blender default
+    // (baseColorFactor 0.8 grey, metallic 0, roughness 0.5) with NO
+    // baseColorTexture — and their TEXCOORD_0 accessors have NO bufferView, i.e.
+    // every UV is (0,0), so the mesh CANNOT be textured without a re-unwrap
+    // (the pack's own thumbnail ships it grey). 0.8 linear grey under a noon sun
+    // + ACES + bloom is what reads as a pale, near-translucent blob. The other
+    // five hulls are fully textured and are untouched by this.
+    //
+    // So: give the hero real material CONSTANTS by glTF material name (see
+    // EnvArtSystem::setMaterialOverride). Values are linear albedo. Note that
+    // roughness/metallic can only reach the shader through an MR map, which this
+    // asset has none of — so the untextured parts stay on mesh.frag's dielectric
+    // path (fixed satin roughness 0.5), and colour is the whole lever. Honest
+    // limitation, recorded here rather than papered over: this is flat-colour
+    // PBR, not textured PBR.
+    static const std::vector<EnvArtSystem::MaterialOverride> kShipMats = [](){
+        auto rule = [](const char* sub, float r, float g, float b) {
+            EnvArtSystem::MaterialOverride o; o.nameSub = sub;
+            o.setBaseColor = true; o.baseColor[0]=r; o.baseColor[1]=g; o.baseColor[2]=b; o.baseColor[3]=1.0f;
+            return o;
+        };
+        return std::vector<EnvArtSystem::MaterialOverride>{
+            rule("m_ship_body", 0.078f, 0.046f, 0.028f),   // tarred oak hull
+            rule("m_prow",      0.100f, 0.061f, 0.035f),   // bowsprit, lighter oak
+            rule("m_mast",      0.115f, 0.072f, 0.041f),   // spars / yards
+            rule("m_fencing",   0.070f, 0.043f, 0.025f),   // rails
+            rule("m_ladders",   0.080f, 0.050f, 0.029f),
+            rule("m_wheel",     0.065f, 0.038f, 0.022f),
+            rule("m_sails",     0.300f, 0.262f, 0.205f),   // weathered canvas (NOT 0.8 white)
+            rule("m_flag",      0.180f, 0.028f, 0.028f),   // deep red
+            rule("m_barrel",    0.085f, 0.052f, 0.030f),
+            rule("cannon",      0.022f, 0.021f, 0.020f),   // cast iron
+        };
+    }();
+
     auto addBoat = [&](const FleetDef& fd, float sx, float sz, float dx, float dz,
                        float len, float speed, float off){
         const float L = std::sqrt(dx*dx + dz*dz); dx/=L; dz/=L;
         auto b = std::make_unique<EnvArtSystem>();
-        const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, sx, kBoatY, sz, 1 };
+        // SPAWN AT THE LANE OFFSET, not the lane head. The build transform used
+        // to ignore `off`, so all three vessels of a lane were stacked on top of
+        // one another at its start — invisible in the live game (the first pose
+        // update separates them) but the ONLY thing a still ever showed, because
+        // the capture path never ticks the streamer that drives those updates.
+        // Spawning correctly makes a still an honest picture of the fleet.
+        const float hx = sx + dx * off, hz = sz + dz * off;
+        const float hh = std::atan2(dx, dz) + kBoatYaw;
+        const float hc = std::cos(hh), hs = std::sin(hh), hsc = fd.scale;
+        const float I[16] = { hc*hsc,0,-hs*hsc,0, 0,hsc,0,0, hs*hsc,0,hc*hsc,0, hx, kBoatY, hz, 1 };
+        // ECHO_SHIP_LEGACY_MAT=1 keeps the pack's bare 0.8 grey (the A/B lever
+        // for the near-white-hero repro).
+        static const bool legacyMat = [](){ const char* e=std::getenv("ECHO_SHIP_LEGACY_MAT"); return e && *e=='1'; }();
+        if (!legacyMat && std::string(fd.glb).rfind("MedievalShip", 0) == 0)
+            b->setMaterialOverride(kShipMats);
         if (b->buildFromGlbAt(ctx.device, fd.dir, fd.glb, I)) {
             boatPoses.push_back({ b.get(), sx, sz, dx, dz, len, speed*fd.speedMul, off, fd.scale });
             region.addArt(std::move(b));
         }
     };
     {
-        struct BL { float sx,sz,dx,dz,len,speed; int n; };
+        struct BL { const char* name; float sx,sz,dx,dz,len,speed; int n; };
+        // RE-AUTHORED 2026-08-12 against the shipped `assets/island_mesa` bake.
+        // The previous table (z=330 EB / z=240 WB / x=-560 z 260..680 NB) was
+        // authored for a bake whose coastline no longer exists and ran straight
+        // over the headland. These three sit in the open bay north of the island
+        // and survive the coastline gate INTACT on BOTH shipped bakes (mesa and
+        // fjord) — only the safety inset is trimmed. They also stay 140-250 m off
+        // the cliffside village, so the fleet reads as harbour traffic passing
+        // the waterfront instead of docking in it.
         const BL bl[] = {
-            { -400.0f,  330.0f,  1.0f,  0.0f, 760.0f, 15.0f, 3 },   // south bay, eastbound
-            {  340.0f,  240.0f, -1.0f,  0.0f, 760.0f, 13.0f, 3 },   // south bay, westbound
-            { -560.0f,  260.0f,  0.0f,  1.0f, 420.0f, 12.0f, 3 },   // SW inlet, northbound
+            { "outer bay eastbound", -600.0f,  170.0f,  1.0f,  0.0f, 1240.0f, 15.0f, 3 },
+            { "outer bay westbound",  640.0f,  110.0f, -1.0f,  0.0f, 1240.0f, 13.0f, 3 },
+            { "west inlet northbnd", -550.0f,  -70.0f,  0.0f,  1.0f,  540.0f, 12.0f, 3 },
         };
-        int vi = 0;
-        for (const BL& l : bl)
+        // A/B LEVER: ECHO_BOAT_LEGACY_LANES=1 restores the exact pre-fix table
+        // AND bypasses the coastline gate, so the beached-galleon repro and its
+        // fix can be captured from ONE binary at identical framing.
+        const BL blLegacy[] = {
+            { "south bay eastbound (LEGACY)", -400.0f, 330.0f,  1.0f, 0.0f, 760.0f, 15.0f, 3 },
+            { "south bay westbound (LEGACY)",  340.0f, 240.0f, -1.0f, 0.0f, 760.0f, 13.0f, 3 },
+            { "SW inlet northbound (LEGACY)", -560.0f, 260.0f,  0.0f, 1.0f, 420.0f, 12.0f, 3 },
+        };
+        const bool legacyLanes = [](){ const char* e = std::getenv("ECHO_BOAT_LEGACY_LANES"); return e && *e=='1'; }();
+        const BL* table = legacyLanes ? blLegacy : bl;
+        int vi = 0, dropped = 0;
+        for (int li = 0; li < 3; ++li) {
+            const BL& l = table[li];
+            const float L = std::sqrt(l.dx*l.dx + l.dz*l.dz);
+            const float ux = l.dx / L, uz = l.dz / L;
+            LaneClip c;
+            if (legacyLanes) { c.startD = 0.0f; c.len = l.len; c.ok = true; }
+            else             c = clipLaneToWater(ctx.hf, l.sx, l.sz, ux, uz, l.len);
+            if (!c.ok) {
+                x3::logWarn(std::string("[region] LANE DROPPED (coastline gate) — ") + l.name +
+                            ": only " + std::to_string((int)c.len) + " m of " +
+                            std::to_string((int)l.len) + " m is navigable on the active heightfield");
+                vi += l.n; ++dropped; continue;
+            }
+            if (c.len < l.len - 1.0f)
+                x3::logInfo(std::string("[region] lane clipped to water — ") + l.name + ": " +
+                            std::to_string((int)l.len) + " m -> " + std::to_string((int)c.len) +
+                            " m (starts " + std::to_string((int)c.startD) + " m in)");
+            const float sx = l.sx + ux * c.startD, sz = l.sz + uz * c.startD;
             for (int k = 0; k < l.n; ++k) {
-                addBoat(kFleet[vi % 6], l.sx, l.sz, l.dx, l.dz, l.len, l.speed, l.len * (float)k / (float)l.n);
+                addBoat(kFleet[vi % 6], sx, sz, ux, uz, c.len, l.speed, c.len * (float)k / (float)l.n);
                 ++vi;
             }
-        x3::logInfo("[region] HARBOR FLEET — " + std::to_string(boatPoses.size()) + " vessels");
+        }
+        x3::logInfo("[region] HARBOR FLEET — " + std::to_string(boatPoses.size()) +
+                    " vessels on " + std::to_string(3 - dropped) + "/3 coastline-gated lanes");
     }
     region.setUpdate([boatPoses, kBoatYaw, kBoatY](float /*dt*/, float t) {
         for (const auto& b : boatPoses) {
