@@ -25,6 +25,12 @@
 //   CUT-SPAN    every wall cut / bridge-mouth coordinate lies inside its host
 //               face's span with door-half margin (no floating lintels).
 //   REACH       BFS over doorways reaches every room from room 0.
+//   SEAL-SHELL  every opening in the shell (dropped wall face / doorway cut / bridge
+//               mouth) gives onto SEALED interior space — probes stepped outward
+//               through the opening must land in a room, corridor, throat or tube,
+//               never in open void. This is the hole/enclosure gate; without it the
+//               lint reported 0 violations while ten rooms leaked to the skybox
+//               (owner playtest 2026-08-04).
 // ===========================================================================
 
 #include <string>
@@ -40,6 +46,7 @@ struct LevelLintReport {
     int junctionSlab = 0;  // Overlap doorways that would receive a slab
     int cutSpan = 0;       // cut/mouth coordinates outside their face span
     int unreachable = 0;   // rooms BFS cannot reach from room 0
+    int sealEscape = 0;    // SEAL-SHELL: openings whose outward probes escape to void
     bool pass() const { return violations.empty(); }
 };
 

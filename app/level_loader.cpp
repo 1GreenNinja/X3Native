@@ -305,7 +305,7 @@ void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p
                  float cx, float cz, float yLo, float yHi, uint32_t axis, float sideSign,
                  x3::rhi::TextureHandle tex, x3::rhi::TextureHandle mrTex,
                  x3::rhi::TextureHandle normalTex,
-                 const float color[4], uint32_t room, bool vis) {
+                 const float color[4], uint32_t room, bool vis, float halfW) {
     const float rise = yHi - yLo;
     if (rise <= 0.02f) return;                       // flat: no ramp needed
     // Run keeps the slope ≤ ~35° (tan 35° ≈ 0.70); never shorter than the wall so
@@ -318,9 +318,15 @@ void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p
     // run*dir. Put the origin `run` out on the lower side and climb back to the plane.
     float origin = sideSign * run;                   // origin offset from the plane along the run axis
     float dir    = -sideSign;                        // climb back toward the plane
+    // SEAL LAW (2026-08-04): the wedge must be as wide as the OPENING it serves. It was
+    // hard-coded to kDoorHalf while an Overlap junction widens its cut to cutHalf (up to
+    // 2.0 = a 4 m throat), so at every wide junction with a floor step the 0.25-0.50 m
+    // band under the higher room's floor slab stayed OPEN either side of the 1.6 m ramp —
+    // a slot you could see the void through, at Jake's Cell among others.
+    if (halfW < kDoorHalf) halfW = kDoorHalf;
     x3::prims::PrimMesh geo = (axis == 1)
-        ? x3::prims::makeRamp(cx, yLo, cz + origin, kDoorHalf, run, rise, /*axis*/1, dir, 0.5f)
-        : x3::prims::makeRamp(cx + origin, yLo, cz, kDoorHalf, run, rise, /*axis*/0, dir, 0.5f);
+        ? x3::prims::makeRamp(cx, yLo, cz + origin, halfW, run, rise, /*axis*/1, dir, 0.5f)
+        : x3::prims::makeRamp(cx + origin, yLo, cz, halfW, run, rise, /*axis*/0, dir, 0.5f);
     Entity e;
     if (vis)
         e.mesh = d.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
@@ -1460,6 +1466,7 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     {
         std::vector<unsigned char> wantSkip(nRooms * 4, 0), ownFace(nRooms * 4, 0);
         const float eps = 0.02f;
+        uint32_t sealKept = 0;
         auto faceX = [&](const CanonRoom& r, float planeX) {
             return (std::fabs(planeX - r.x0()) < std::fabs(planeX - r.x1())) ? 0 : 1;   // -X : +X
         };
@@ -1489,10 +1496,44 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                 fa = faceZ(A, dw.cz); fb = faceZ(B, dw.cz);
                 aCovB = coversX(A, B); bCovA = coversX(B, A);
             }
-            if (aCovB)      { wantSkip[dw.b * 4 + fb] = 1; ownFace[dw.a * 4 + fa] = 1; }
-            else if (bCovA) { wantSkip[dw.a * 4 + fa] = 1; ownFace[dw.b * 4 + fb] = 1; }
+            // SEAL LAW (2026-08-04, owner playtest "open holes to space where the
+            // transitions should be"). The dedup above is only legal when the dropped
+            // wall's plane is ACTUALLY BEHIND the owner's shell — i.e. the two planes
+            // are COINCIDENT (the classic shared-wall case) or the dropped face lies
+            // INSIDE the owner's volume (interpenetrating Overlap rooms genuinely share
+            // the space, so the owner's floor/ceiling carry the opening).
+            //
+            // classify() calls two rooms "adjacent" at up to TOL = 0.8 m of separation.
+            // For those pairs the interstice between the wall planes has NO FLOOR and NO
+            // CEILING (neither room's slab or lid spans it). Dropping the near wall
+            // therefore did not dedup a coincident face — it deleted the only thing
+            // standing between the room interior and an unfloored, unceilinged slot that
+            // reads as raw sky/void from inside the room. 10 of these shipped: the F1
+            // Main Hall's Entrance / Admin Office / IT Room / Network Hub (0.5 m) and
+            // EVERY floor's Elevator Lobby -> corridor transition on F2..F7 (0.5 m).
+            // A separated pair keeps BOTH walls; the doorway-reveal block below already
+            // seals the throat between them with jambs + header + floor strip.
+            auto planeOf = [](const CanonRoom& r, int f) {
+                return (f == 0) ? r.x0() : (f == 1) ? r.x1() : (f == 2) ? r.z0() : r.z1();
+            };
+            auto skipLegal = [&](const CanonRoom& owner, float dropPlane) {
+                const float lo = (dw.axis == 0) ? owner.x0() : owner.z0();
+                const float hi = (dw.axis == 0) ? owner.x1() : owner.z1();
+                return dropPlane >= lo - kWallT && dropPlane <= hi + kWallT;
+            };
+            if (aCovB && skipLegal(A, planeOf(B, fb))) {
+                wantSkip[dw.b * 4 + fb] = 1; ownFace[dw.a * 4 + fa] = 1;
+            } else if (bCovA && skipLegal(B, planeOf(A, fa))) {
+                wantSkip[dw.a * 4 + fa] = 1; ownFace[dw.b * 4 + fb] = 1;
+            } else if (aCovB || bCovA) {
+                ++sealKept;   // separated planes: BOTH walls stand (LAW 2, no gap)
+            }
             // else: partial overlap — keep both walls (no skip, no hole).
         }
+        if (sealKept)
+            x3::logInfo("buildCanonFloor: wall dedup — " + std::to_string(sealKept) +
+                        " face(s) KEPT (planes separated; dropping them would open the "
+                        "unfloored interstice to the sky)");
         for (uint32_t i = 0; i < nRooms * 4; ++i) skipFace[i] = wantSkip[i] && !ownFace[i];
     }
 
@@ -1626,12 +1667,70 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         if (dw.axis == 1) {
             // AdjacentZ/overlap on a Z-plane: ramp runs along Z into the lower room.
             float sideSign = (lower.cz < dw.cz) ? -1.0f : +1.0f;
-            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 1, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis);
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 1, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis, dw.cutHalf);
         } else {
             // AdjacentX/overlap on an X-plane: ramp runs along X into the lower room.
             float sideSign = (lower.cx < dw.cx) ? -1.0f : +1.0f;
-            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis);
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, rampAlbedo, rampMr, rampNormal, rampTint, lowerId, floorVis, dw.cutHalf);
         }
+    }
+
+    // ---- THRESHOLD SEAL (2026-08-04, owner playtest "open holes to space where the
+    // transitions should be"). The canonical rooms are authored CENTRED on y with
+    // DIFFERENT heights, so their FLOORS sit at different levels (F1: Main Hall -2.50,
+    // the service corridors -2.25, the front offices -2.00). Every wall cut is opened
+    // from its OWN room's floor, so at a stepped doorway the bottom 0.25-0.50 m of the
+    // opening looked UNDER the higher room's floor slab and out into raw void.
+    // The ramp wedge above climbs the step but stands at the doorway centre, leaving the
+    // strip between it and the wall plane open — and it never applied to gap bridges at
+    // all. Drop a solid THRESHOLD (a kickplate under the higher floor) across the full
+    // opening, spanning both host wall planes, so the step band is closed by construction
+    // (LAW 2: never gapped). Collision-on, tagged to room a.
+    {
+        uint32_t thresholds = 0;
+        for (const CanonDoorway& dw : floor.doorways) {
+            if (dw.kind == DoorwayKind::CrossLevel || dw.kind == DoorwayKind::None) continue;
+            const CanonRoom& a = floor.rooms[dw.a];
+            const CanonRoom& b = floor.rooms[dw.b];
+            const float yLo = std::min(a.y0(), b.y0()), yHi = std::max(a.y0(), b.y0());
+            if (yHi - yLo <= 0.02f) continue;              // floors level: no band to seal
+            const bool planeIsX = (dw.axis == 0);
+            const float cut  = planeIsX ? dw.cz : dw.cx;
+            const float half = (dw.cutHalf > 0.0f ? dw.cutHalf : kDoorHalf) + kWallT;
+            float dLo, dHi;
+            if (dw.kind == DoorwayKind::GapBridge) {
+                // Skirt the full bridge run (the corridor deck sits at the higher floor).
+                if (planeIsX) {
+                    if (a.cx < b.cx) { dLo = a.x1(); dHi = b.x0(); } else { dLo = b.x1(); dHi = a.x0(); }
+                } else {
+                    if (a.cz < b.cz) { dLo = a.z1(); dHi = b.z0(); } else { dLo = b.z1(); dHi = a.z0(); }
+                }
+                if (dHi < dLo) std::swap(dLo, dHi);
+                dLo -= kWallT; dHi += kWallT;
+            } else {
+                const float pa0 = planeIsX ? a.x0() : a.z0(), pa1 = planeIsX ? a.x1() : a.z1();
+                const float pb0 = planeIsX ? b.x0() : b.z0(), pb1 = planeIsX ? b.x1() : b.z1();
+                const float p   = planeIsX ? dw.cx : dw.cz;
+                const float pa  = (std::fabs(p - pa0) < std::fabs(p - pa1)) ? pa0 : pa1;
+                const float pb  = (std::fabs(p - pb0) < std::fabs(p - pb1)) ? pb0 : pb1;
+                dLo = std::min(std::min(pa, pb), p) - kWallT;
+                dHi = std::max(std::max(pa, pb), p) + kWallT;
+            }
+            if (dHi - dLo < 0.02f) continue;
+            const float dC = (dLo + dHi) * 0.5f, dH = (dHi - dLo) * 0.5f;
+            const float yC = (yLo + yHi) * 0.5f, yH = (yHi - yLo) * 0.5f;
+            float thTint[4]; tintFor(a.type, thTint);
+            const uint32_t ei = planeIsX
+                ? addBox(scene, device, physics, dH, yH, half, dC, yC, cut,
+                         rampAlbedo, rampTint, dw.a, true, wallVis)
+                : addBox(scene, device, physics, half, yH, dH, cut, yC, dC,
+                         rampAlbedo, rampTint, dw.a, true, wallVis);
+            scene.get(ei).mrTex = rampMr; scene.get(ei).normalTex = rampNormal;
+            ++thresholds;
+        }
+        if (thresholds)
+            x3::logInfo("buildCanonFloor: threshold seal — " + std::to_string(thresholds) +
+                        " stepped doorway(s) closed under the higher floor");
     }
 
     // ---- W2-E DOORWAY REVEALS: adjacent rooms within wall-gap tolerance (0.05..1.0 m
