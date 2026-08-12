@@ -196,6 +196,43 @@ def cmd_publish(args) -> int:
         log("nothing to publish")
         return 1
 
+    # ---- normal-map guard ------------------------------------------------
+    # The store is the ONLY distribution path for assets/surface_library (it is
+    # gitignored; the LFS budget is spent), so publishing is the moment a bad
+    # texture becomes everyone's problem. Two corrupt normal maps
+    # (cc_cement_white, cc_porous_cement — blue channel INVERTED) shipped this
+    # way and one of them was misdiagnosed as an engine filtering bug. Audit any
+    # normal map on its way in. See tools/audit_normal_maps.py.
+    if not getattr(args, "skip_audit", False):
+        normals = [f for f in files if f.name.lower() == "normal.png"]
+        if normals:
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from audit_normal_maps import analyse, classify  # same tools/ dir
+            except ImportError as e:
+                log(f"NOTE: normal-map audit unavailable ({e}); publishing unchecked.")
+            else:
+                bad = []
+                for f in normals:
+                    try:
+                        rec = analyse(f)
+                    except Exception as e:
+                        log(f"NOTE: could not audit {f.name} ({e}); skipping its check.")
+                        continue
+                    errs = [msg for lvl, msg in classify(rec, 0.0) if lvl == "ERROR"]
+                    for msg in errs:
+                        log(f"CORRUPT NORMAL MAP: {repr(str(f))}: {msg}")
+                    if errs:
+                        bad.append(f)
+                if bad:
+                    log("")
+                    log(f"ERROR: refusing to publish {len(bad)} corrupt normal map(s). "
+                        f"Nothing was written; the manifest is unchanged.")
+                    log("  Diagnose:  python tools/audit_normal_maps.py")
+                    log("  Repair:    python tools/repair_normal_map.py <path>")
+                    log("  Override:  --skip-audit  (only if you can explain why)")
+                    return 1
+
     by_path = {e["repo_path"]: e for e in m["assets"]}
     published = copied = skipped = 0
     bytes_total = bytes_copied = 0
@@ -397,6 +434,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("publish", help="hash + upload file(s)/dir(s) into the store, update the manifest")
     p.add_argument("files", nargs="+")
     p.add_argument("--note", default="", help="source_note recorded in the manifest (provenance)")
+    p.add_argument("--skip-audit", action="store_true",
+                   help="bypass the normal-map corruption check (see tools/audit_normal_maps.py)")
     p.set_defaults(fn=cmd_publish)
 
     f = sub.add_parser("fetch", help="restore manifest assets that are missing/mismatched locally")

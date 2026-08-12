@@ -649,9 +649,27 @@
     },
     {
       "repo_path": "assets/surface_library/cc_cement_white/normal.png",
-      "sha256": "ade52d505fc8872a8a4dda6c9be3e4fa4f70161290533057378c2f7782e6b5f4",
-      "size": 11868273,
-      "source_note": ""
+      "sha256": "1f76a17bda202cec040d569c9b0b82d7eba889b2c4658691c5d2eb76cf3da987",
+      "size": 9813878,
+      "source_note": "blue channel was INVERTED (B=255-B_true); reconstructed z=sqrt(1-x^2-y^2), cross-checked against 255-B to within 1 grey level"
+    },
+    {
+      "repo_path": "assets/surface_library/cc_exec_floor/albedo.png",
+      "sha256": "d9225cfb40622acbdf040e71bae9c4dca5025796ac32aece9055343e81184f90",
+      "size": 1308772,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cc_exec_floor/mr.png",
+      "sha256": "1c7aca116ede06469c4a2940f593a5862b88321809ba9cf59f7308ab5444b2ba",
+      "size": 77,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cc_exec_floor/normal.png",
+      "sha256": "f009768b7329612dfee1e26f38ffe6da83992e3f91caddb6c48a2ac1da0de766",
+      "size": 769877,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
     },
     {
       "repo_path": "assets/surface_library/cc_porous_cement/albedo.png",
@@ -667,9 +685,63 @@
     },
     {
       "repo_path": "assets/surface_library/cc_porous_cement/normal.png",
-      "sha256": "80f49f35d2c5caa5c89c60c473f980aae3192e343d3ee3028984986ea5a8771f",
-      "size": 8400283,
-      "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+      "sha256": "c48875cb35a1067908774d8d5f3f37d98dcc67605c1ff40e39b86f9e87a0ed97",
+      "size": 8188421,
+      "source_note": "blue channel was INVERTED (B=255-B_true); reconstructed z=sqrt(1-x^2-y^2), cross-checked against 255-B to within 1 grey level"
+    },
+    {
+      "repo_path": "assets/surface_library/cv_rock_flume/albedo.png",
+      "sha256": "c72ab8ca535349c61feb623f4a6a312179d967ffb3afbe833bd8d2ab3ffc4828",
+      "size": 2036400,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cv_rock_flume/mr.png",
+      "sha256": "95ef26075b090c44ff065111ae4bc448a081a34dc2d3cfbef018530f075a732f",
+      "size": 578137,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cv_rock_flume/normal.png",
+      "sha256": "ec51ec34646b78107b775600cf82534115c8fa71cd98f8af9f5bbc305df3f9cc",
+      "size": 1745787,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cv_rock_wet/albedo.png",
+      "sha256": "52507d1e9a9bb434cfd6a161962b8015cae91563555020c963e281099b399091",
+      "size": 2220683,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cv_rock_wet/mr.png",
+      "sha256": "904b1fb442daa12ce42f797cc8fe74772e4907712553aa6a8acf859b96be9623",
+      "size": 690018,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cv_rock_wet/normal.png",
+      "sha256": "bf5eec167ddf0bc3b760c55b05fe4fb62ff848fdfab1ad0ce0f41f6868cc8246",
+      "size": 1973451,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cv_shotcrete_break/albedo.png",
+      "sha256": "ab846fb16a54b99c1da0cdf74daff12c7b8c2b48d71e3c6c465e333c1582f9fd",
+      "size": 2420564,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cv_shotcrete_break/mr.png",
+      "sha256": "dab91958693f16cbddaa8e97d551429a020a44655416bf8cd5f0d8a709689ece",
+      "size": 588927,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/cv_shotcrete_break/normal.png",
+      "sha256": "4ea71f498e4111d8f747262a18e26627f1ecdf07eb8824d0fd20627b9af06baa",
+      "size": 2173300,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
     },
     {
       "repo_path": "assets/surface_library/fw_rock_cliff/albedo.png",
@@ -744,6 +816,24 @@
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
     },
     {
+      "repo_path": "assets/surface_library/hh_privacy_glass/albedo.png",
+      "sha256": "705e788abcd326b5b994efdffb2f179d9f3a2e9f626a880420d3e1c6f173bb19",
+      "size": 1245327,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_privacy_glass/mr.png",
+      "sha256": "a999a4001091bde1983906259f09c8f5b6892397e893bc872548c4ac4e05b62f",
+      "size": 174401,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/hh_privacy_glass/normal.png",
+      "sha256": "70e3be5ae32f14a6eb6ca54e0cce41250430a7efe9e198e924e9789292569f62",
+      "size": 637179,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
       "repo_path": "assets/surface_library/hh_wall_01a/albedo.png",
       "sha256": "99f734cc93910f1b480fbb78f1c5311f6e19270e015a7eb0ce109385817964cb",
       "size": 1134705,
@@ -760,6 +850,24 @@
       "sha256": "0a8bc61554521b6a3bbd6b3cba40d5016f419d3668e0c16ce835b21041c1850c",
       "size": 778665,
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_cleanlab_white/albedo.png",
+      "sha256": "2d4096ecbbf8f9fa9bd7206b272ce3ebc4af90b3af88154a116c875f1c158677",
+      "size": 943296,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_cleanlab_white/mr.png",
+      "sha256": "f758363feec2bc8470077104ee4163b461299751306c8acb20c9a5c5c31a58da",
+      "size": 110729,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_cleanlab_white/normal.png",
+      "sha256": "9640fe41b8ec9e7f58115a10e11e46166f3467dd59e25b6766d9050f61e7af82",
+      "size": 534122,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
     },
     {
       "repo_path": "assets/surface_library/mw_concrete_panels_a/albedo.png",
@@ -796,6 +904,24 @@
       "sha256": "a603b58606c41a31fcddae2c8f02ad7ff46aeaa8f3ed8b76b4a1dc49def129ef",
       "size": 9254878,
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_concrete_scorched/albedo.png",
+      "sha256": "1495b2d78a07adba1b953d86c52897dcb1588e2d72717330bb684f6ed5df828f",
+      "size": 2385766,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_concrete_scorched/mr.png",
+      "sha256": "aafb2189d5b46eb06c8a7d1098ca077e04ac26c58d706520578c9d6f4d087eff",
+      "size": 521221,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/mw_concrete_scorched/normal.png",
+      "sha256": "9b22f253373fa6535e3858ee38a79942557aada4eddb16f8f1687f58f6cbc510",
+      "size": 1994177,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
     },
     {
       "repo_path": "assets/surface_library/mw_floor_trim/albedo.png",
@@ -942,6 +1068,24 @@
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
     },
     {
+      "repo_path": "assets/surface_library/sl_chute_steel/albedo.png",
+      "sha256": "212b786f1981bc290483a31cc04071cedd23754424add8da7d6802f6b5d903ec",
+      "size": 1261025,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/sl_chute_steel/mr.png",
+      "sha256": "128149271310233c010ca18c5c84ca77a908370e3a76f3ab9af075576dae6638",
+      "size": 480074,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/sl_chute_steel/normal.png",
+      "sha256": "6c313acc2ae4823c1413bb1fe8e2cb56e8720812eac0cd46f0f65208e1a44632",
+      "size": 926658,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
       "repo_path": "assets/surface_library/sr_concrete_01/albedo.png",
       "sha256": "be0cbab3174452613e654fc7ec3f51dd412d564bdfd29eda7098e1e4ed7b073d",
       "size": 6331184,
@@ -1014,6 +1158,24 @@
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
     },
     {
+      "repo_path": "assets/surface_library/sr_metal_cryo/albedo.png",
+      "sha256": "27fa13ca18696bc272be939ae955fe4da00cc99abeedd35bb41fcf778bf2df78",
+      "size": 2311013,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_cryo/mr.png",
+      "sha256": "11bac702784d39b7d7b0acbb99d219070538528835ad29054eb3bb344745970b",
+      "size": 497974,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_cryo/normal.png",
+      "sha256": "d47b2c7640b36cec7109aea1406bb806ba51069829f6a4af50b672ce4ef6a1d9",
+      "size": 1853386,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
       "repo_path": "assets/surface_library/sr_metal_lattice/albedo.png",
       "sha256": "28539e16d359129959db7c71e1d558af74f99a3e96e89b281bd928c1dc99e318",
       "size": 2874961,
@@ -1030,6 +1192,24 @@
       "sha256": "085b2c9201e23701eba7cbe4a7c96366477a15ea4f146d4b49bf5a872ff397c5",
       "size": 2720149,
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_waste/albedo.png",
+      "sha256": "475acb2ae0a08d16422dc8081630892d7598be9deb5d0489a5625b20596b8433",
+      "size": 2157989,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_waste/mr.png",
+      "sha256": "e60c0eb2657c67865e6af08daf8e69ade1265cff6797971bce9d63324616fd0e",
+      "size": 526079,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+    },
+    {
+      "repo_path": "assets/surface_library/sr_metal_waste/normal.png",
+      "sha256": "7744c5eb00920f40fdb96fa7e2a0291f05dfa1a9f84c870e164c42b5645c573d",
+      "size": 1671815,
+      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
     },
     {
       "repo_path": "assets/surface_library/sr_rubberfloor/albedo.png",
