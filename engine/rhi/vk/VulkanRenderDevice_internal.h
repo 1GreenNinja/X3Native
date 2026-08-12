@@ -1456,6 +1456,13 @@ private:
     // is ready. Called from endFrame BEFORE the graph records the frame.
     bool buildRtSceneAS();
 
+    // X3_TLAS_VERIFY=1 only: byte-compare the partially-updated instance buffer
+    // against a full naive repack of every row. See m_rtRowMirror.
+    void verifyRtInstanceRows(uint32_t instCount);
+
+    // X3_TLAS_VERIFY=2 only: drive the synthetic streaming-churn window.
+    void rtChurnWindow(uint32_t recordCount);
+
 
     // =====================================================================
     // RT ACOUSTICS — ASYNC batched ray queries against the SAME scene TLAS
@@ -1926,6 +1933,22 @@ private:
         uint32_t        pad      = 0;
     };
     std::vector<RtRowSrc> m_rtRowShadow;
+    // ---- X3_TLAS_VERIFY=1: exhaustive proof that the partition is exact --------
+    // A partially-updated TLAS input cannot be checked by a smoketest: a stale row
+    // renders as slightly-wrong GI or a shadow from a car that already drove away,
+    // and only sometimes. So the invariant is checked DIRECTLY, every frame, over
+    // a live run: m_rtRowMirror is the exact byte image of what we wrote into the
+    // (unreadable, write-combined) device instance buffer, and the verifier
+    // independently repacks EVERY row the naive way and memcmps the two. Any
+    // mismatch is a hard [ERROR] naming the row. Off by default and then neither
+    // vector is touched, so this costs nothing in a normal run.
+    bool m_rtVerify = false;                                   // X3_TLAS_VERIFY=1|2
+    bool m_rtChurn  = false;                                   // X3_TLAS_VERIFY=2
+    uint32_t m_rtChurnLo = 0, m_rtChurnHi = 0, m_rtChurnFrame = 0;
+    bool m_rtVerifyChecked = false;                            // env read once
+    uint64_t m_rtVerifyFrames = 0, m_rtVerifyBad = 0;
+    std::vector<VkAccelerationStructureInstanceKHR> m_rtRowMirror;   // = device buffer
+    std::vector<VkAccelerationStructureInstanceKHR> m_rtRowExpect;   // naive full repack
     uint32_t m_rtLastInstCount = 0;   // instance count of the last-built TLAS
     uint32_t m_rtStaticRows    = 0;   // rows left untouched this frame (telemetry)
     uint32_t m_rtDynamicRows   = 0;   // rows actually rewritten this frame (telemetry)

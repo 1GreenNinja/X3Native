@@ -177,6 +177,83 @@ void VulkanRenderDevice::rewriteRtaoTlas(uint32_t slot) {
         }
     }
 
+// X3_TLAS_VERIFY=2 only. Emulates a streaming region load/unload the ONLY way
+// that matters to a partitioned instance buffer: by withholding a large
+// CONTIGUOUS BLOCK of draw records from the middle of the list, which splices
+// every row index after it. Held for 45 frames, released for 45, block position
+// and size walking each cycle so the splice lands somewhere new every time.
+// Withholding records is exactly what an unloaded region does; re-admitting them
+// is exactly what a load does. Off (window empty) unless the env gate asks.
+void VulkanRenderDevice::rtChurnWindow(uint32_t recordCount) {
+        if (!m_rtChurn || recordCount < 64) { m_rtChurnLo = m_rtChurnHi = 0; return; }
+        const uint32_t phase = (uint32_t)(m_rtChurnFrame++ / 45u);
+        if ((phase & 1u) == 0u) { m_rtChurnLo = m_rtChurnHi = 0; return; }   // "loaded"
+        const uint32_t cycle = phase / 2u;
+        const uint32_t lo    = (uint32_t)(((uint64_t)recordCount * ((cycle * 7u) % 10u)) / 16u);
+        uint32_t hi = lo + recordCount / (4u + (cycle % 5u));
+        if (hi > recordCount) hi = recordCount;
+        m_rtChurnLo = lo; m_rtChurnHi = hi;
+    }
+
+// ---- X3_TLAS_VERIFY: prove the partially-updated instance buffer is exact ----
+// Repacks EVERY instance row from scratch, the naive way the old code did, and
+// byte-compares it against m_rtRowMirror (the exact image of what the partial
+// path wrote into the device buffer). A stale row -- the failure mode a
+// partitioned TLAS actually has, and the one no smoketest can see -- is reported
+// as a hard [ERROR] naming the first offending row. Only runs under the env gate.
+void VulkanRenderDevice::verifyRtInstanceRows(uint32_t instCount) {
+        ++m_rtVerifyFrames;
+        m_rtRowExpect.clear();
+        m_rtRowExpect.reserve(instCount);
+        for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
+            if (i >= m_rtChurnLo && i < m_rtChurnHi) continue;   // "unloaded region"
+            const DrawRecord& dr = m_drawRecords[i];
+            const VkDeviceAddress a = m_rt.blasAddrOf(dr.meshId);   // no memo: independent
+            if (!a) continue;
+            if (dr.flags & kFlagGlass) continue;
+            const uint32_t custom = (i < m_recordSsboRow.size()) ? m_recordSsboRow[i] : 0u;
+            VkAccelerationStructureInstanceKHR e{};
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 4; ++c)
+                    e.transform.matrix[r][c] = dr.model[c * 4 + r];
+            e.instanceCustomIndex = custom & 0xFFFFFFu;
+            e.mask = 0xFFu;
+            e.instanceShaderBindingTableRecordOffset = 0;
+            e.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            e.accelerationStructureReference = a;
+            m_rtRowExpect.push_back(e);
+        }
+        char b[256];
+        if ((uint32_t)m_rtRowExpect.size() != instCount) {
+            std::snprintf(b, sizeof(b),
+                "[rt] TLAS VERIFY FAIL: row count %u but a full repack yields %u",
+                instCount, (uint32_t)m_rtRowExpect.size());
+            logError(b); ++m_rtVerifyBad; return;
+        }
+        uint32_t bad = 0, firstBad = 0;
+        for (uint32_t n = 0; n < instCount; ++n) {
+            if (std::memcmp(&m_rtRowMirror[n], &m_rtRowExpect[n],
+                            sizeof(VkAccelerationStructureInstanceKHR)) != 0) {
+                if (!bad) firstBad = n;
+                ++bad;
+            }
+        }
+        if (bad) {
+            ++m_rtVerifyBad;
+            std::snprintf(b, sizeof(b),
+                "[rt] TLAS VERIFY FAIL: %u/%u instance rows STALE (first row %u) — the "
+                "partial update missed a change", bad, instCount, firstBad);
+            logError(b);
+        } else if ((m_rtVerifyFrames % 300u) == 1u) {
+            std::snprintf(b, sizeof(b),
+                "[rt] TLAS VERIFY ok: %u/%u rows byte-exact vs a full repack "
+                "(%llu frames checked, %llu bad; this frame rewrote %u)",
+                instCount, instCount, (unsigned long long)m_rtVerifyFrames,
+                (unsigned long long)m_rtVerifyBad, m_rtDynamicRows);
+            logInfo(b);
+        }
+    }
+
 bool VulkanRenderDevice::buildRtSceneAS() {
         // LANE 6: INCLUDES the blocking vkWaitForFences(UINT64_MAX) that VulkanRT.h
         // pays per frame for the BLAS batch + the TLAS build (VULKAN_ROADMAP.md 2.1).
@@ -332,16 +409,32 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         VkAccelerationStructureInstanceKHR* rows =
             m_rt.beginInstanceWrite((uint32_t)m_drawRecords.size(), &rowsInvalidated);
         if (!rows) { m_rt.submitBlasBatch(); return false; }
-        if (rowsInvalidated) m_rtRowShadow.clear();
+        if (!m_rtVerifyChecked) {
+            m_rtVerifyChecked = true;
+            const char* v = std::getenv("X3_TLAS_VERIFY");
+            m_rtVerify = (v && (v[0] == '1' || v[0] == '2'));
+            m_rtChurn  = (v && v[0] == '2');
+            if (m_rtVerify)
+                logInfo("[rt] X3_TLAS_VERIFY — every frame's partially-updated instance "
+                        "buffer is byte-compared against a full naive repack");
+            if (m_rtChurn)
+                logInfo("[rt] X3_TLAS_VERIFY=2 — SYNTHETIC STREAMING CHURN: a large "
+                        "contiguous block of instances is withheld and re-admitted on a "
+                        "cycle, so the region load/unload SPLICE is exercised on demand");
+        }
+        if (rowsInvalidated) { m_rtRowShadow.clear(); m_rtRowMirror.clear(); }
         m_rtRowShadow.resize(m_drawRecords.size());
+        if (m_rtVerify) m_rtRowMirror.resize(m_drawRecords.size());
         m_skinnedRtInstances = 0;
         // LANE 6 (measured fix, kept): draw records arrive in runs of the same mesh
         // (every EnvArt system fans its instances consecutively), so a one-entry
         // memo collapses almost all of the BLAS-address hash lookups.
+        rtChurnWindow((uint32_t)m_drawRecords.size());
         uint32_t        memoMesh    = UINT32_MAX;
         VkDeviceAddress memoAddr    = 0;
         bool            memoSkinned = false;
         for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
+            if (i >= m_rtChurnLo && i < m_rtChurnHi) continue;   // "unloaded region"
             const DrawRecord& dr = m_drawRecords[i];
             if (dr.meshId != memoMesh) {
                 memoMesh = dr.meshId;
@@ -401,6 +494,7 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             tmp.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
             tmp.accelerationStructureReference = memoAddr;
             std::memcpy(&rows[n], &tmp, sizeof(tmp));
+            if (m_rtVerify) m_rtRowMirror[n] = tmp;   // mirror the device write
         }
         // The shadow must describe EXACTLY the rows the build will read, or a later
         // frame would compare index n against a stale entry from a longer list.
@@ -408,6 +502,7 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         m_rtStaticRows  = (instCount > dynRows) ? (instCount - dynRows) : 0u;
         m_rtDynamicRows = dynRows;
         m_rtRowShifts   = rowShifts;
+        if (m_rtVerify) verifyRtInstanceRows(instCount);
         }   // end Z_AsInstances
 
         // Decide whether to (re)build the TLAS this frame. The old code hashed all
