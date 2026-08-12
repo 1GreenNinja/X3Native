@@ -3018,8 +3018,9 @@ private:
         glm::vec4 p0;             // 128: x=seaLevel,y=time,z=amplitude,w=steepness
         glm::vec4 p1;             // 144: x=baseWavelength,y=speed,z=specular,w=fresnelBase
         glm::vec4 p2;             // 160: x=patchHalfExtent,y=1/W,z=1/H,w=reserved
+        glm::vec4 p3;             // 176: xyz=horizonColor (linear), w=1 when supplied else 0
     };
-    static_assert(sizeof(WaterUBO) == 176, "WaterUBO must match the std140 layout in water.{vert,frag}");
+    static_assert(sizeof(WaterUBO) == 192, "WaterUBO must match the std140 layout in water.{vert,frag}");
     WaterParams m_water{};   // cached tunables (setWaterParams)
     // Unit-patch grid mesh (vec2 grid coord per vertex), built once at init.
     VkBuffer      m_waterVbo = VK_NULL_HANDLE; VmaAllocation m_waterVboAlloc = nullptr;

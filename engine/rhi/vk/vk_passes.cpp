@@ -2314,6 +2314,12 @@ void VulkanRenderDevice::prepareFrameData() {
             const float invW = (m_extent.width  > 0) ? 1.0f / (float)m_extent.width  : 0.0f;
             const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
             w.p2 = glm::vec4(kWaterPatchHalf, invW, invH, 0.0f);
+            // horizonColor: negative red = "not supplied" -> the shader keeps the
+            // historic analytic-sky fade (byte-identical for every world that
+            // never sets it).
+            const bool hasHorizon = m_water.horizonColor[0] >= 0.0f;
+            w.p3 = glm::vec4(m_water.horizonColor[0], m_water.horizonColor[1],
+                             m_water.horizonColor[2], hasHorizon ? 1.0f : 0.0f);
             std::memcpy(m_waterUboMapped[m_frameIdx], &w, sizeof(WaterUBO));
         }
 

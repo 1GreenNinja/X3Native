@@ -32,6 +32,9 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     vec4  p1;
     // x = patchHalfExtent (m), y = 1/screenW, z = 1/screenH, w = reserved
     vec4  p2;
+    // xyz = far-ocean handoff colour (linear); w = 1 when supplied, else 0
+    // (0 keeps the historic analytic-sky fade -- see IRenderDevice WaterParams)
+    vec4  p3;
 } u;
 
 layout(location = 0) in vec2 inGrid;   // patch coord in [-1,1]

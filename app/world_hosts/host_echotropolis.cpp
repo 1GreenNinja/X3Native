@@ -362,6 +362,38 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     device->setAmbient(amb[0] * g_ambScale, amb[1] * g_ambScale, amb[2] * g_ambScale);
 }
 
+// ---- SEA CONTINUITY (the "ocean plank", 2026-08-12) -------------------------
+// ONE albedo shared by the two surfaces that make up the sea: the baked
+// `island_ocean` horizon quad (via EnvArtSystem::setMaterialOverride at island
+// load) and the Gerstner patch's edge/horizon fade target (WaterParams::
+// horizonColor). They used to disagree — pale desaturated ring vs saturated
+// animated patch — and the disagreement drew a hard camera-locked square across
+// the water. Tune together or not at all. Linear, NOT sRGB.
+// ECHO_SEA_ALBEDO="r,g,b" overrides for a no-rebuild A/B.
+bool seaLegacy() {
+    static const bool v = [](){ const char* e = std::getenv("ECHO_SEA_LEGACY"); return e && *e == '1'; }();
+    return v;
+}
+const float* seaAlbedo() {
+    // ECHO_SEA_LEGACY=1 hands back the bake's own pale ring albedo.
+    static float legacy[3] = { 0.285f, 0.34f, 0.42f };
+    if (seaLegacy()) return legacy;
+    static float v[3] = { 0.052f, 0.108f, 0.150f };   // deep coastal blue-grey
+    static bool init = false;
+    if (!init) {
+        init = true;
+        if (const char* e = std::getenv("ECHO_SEA_ALBEDO")) {
+            const char* s = e; char* end = nullptr;
+            for (int i = 0; i < 3 && s && *s; ++i) {
+                v[i] = std::strtof(s, &end);
+                s = (end && *end == ',') ? end + 1 : nullptr;
+            }
+        }
+    }
+    return v;
+}
+#define kSeaAlbedo seaAlbedo()
+
 // Gerstner ocean at sea level 0, lit by the SAME sun as the sky (doctrine: one
 // light). Water color follows the daylight: full color at noon, ember-dark at
 // night (the baked GLB ocean ring darkens automatically via the PBR sun).
@@ -377,7 +409,12 @@ void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSamp
     // ring owns the ocean alone. Smooth cutover, no pop: the fade band kills
     // it across 60m of climb.
     constexpr float kPatchMaxEye = 140.0f;
-    if (eyeHeight > kPatchMaxEye) {
+    // A/B DIAGNOSTIC (2026-08-12): ECHO_WATER_OFF=1 kills the Gerstner patch at
+    // ANY eye height, so a capture shows the baked ring alone. This is how the
+    // sea-level "plank" was pinned on the patch boundary rather than on a fog,
+    // LOD or depth seam — same frame, patch on vs off.
+    static const bool kWaterOff = [](){ const char* e=std::getenv("ECHO_WATER_OFF"); return e && *e=='1'; }();
+    if (kWaterOff || eyeHeight > kPatchMaxEye) {
         x3::rhi::IRenderDevice::WaterParams off{};
         off.enabled = false;
         device->setWaterParams(off);
@@ -418,6 +455,33 @@ void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSamp
     if (s.sunElevation > 0.10f) wp.sunDir[1] = s.sky.sunDir[1];   // day: the real sun
     wp.specular = 1.0f + 15.0f * dayness;
     wp.fresnel = 0.02f;
+    // PLANK FIX part 2/2 — hand the patch edge the colour the baked 28 km
+    // `island_ocean` quad beyond it actually renders as, so the square boundary
+    // has no contrast left to draw. Same albedo the island material override
+    // uses (seaAlbedo()), scaled by the same daylight factor that drives the
+    // patch's own deep/shallow tints, plus the fresnel-lifted sky share a flat
+    // up-facing dielectric picks up at grazing view — the ring's shading is
+    // constant per view angle, so a constant is the right approximation.
+    // ECHO_SEA_LEGACY=1 restores the pre-fix sea EXACTLY (bake albedo on the ring,
+    // no horizonColor -> water.frag falls back to its historic 0.82..1.0 sky
+    // fade) so the plank can be A/B'd from one binary.
+    if (!seaLegacy()) {
+        const float* sa = kSeaAlbedo;
+        // Coefficients MEASURED, not guessed: with the patch edge fully handed
+        // off, the water's boundary pixel IS tonemap(horizonColor), so the pair
+        // was swept against the ring's own rendered value at the seam until the
+        // two matched (ECHO_SEA_HORIZON="r,g,b" is the sweep knob).
+        const float lift = 0.028f * dayF;   // grazing fresnel share of the sky IBL
+        for (int i = 0; i < 3; ++i)
+            wp.horizonColor[i] = sa[i] * dayF * 1.44f + s.sky.horizon[i] * lift;
+        if (const char* e = std::getenv("ECHO_SEA_HORIZON")) {
+            const char* p = e; char* end = nullptr;
+            for (int i = 0; i < 3 && p && *p; ++i) {
+                wp.horizonColor[i] = std::strtof(p, &end);
+                p = (end && *end == ',') ? end + 1 : nullptr;
+            }
+        }
+    }
     device->setWaterParams(wp);
 }
 
@@ -907,6 +971,41 @@ int hostEchotropolis(HostContext& hc) {
                 islandDir = x3::game::assetRoot() + "/island_mesa";
                 if (!hasBake(islandDir)) islandDir = "assets/island_mesa";
             }
+        }
+        // ---- THE OCEAN "PLANK" (Tim 2026-08-12: "the ocean plank of white
+        // artifact visual mess is there"). MECHANISM, named:
+        //   The bake's `island_ocean` primitive is ONE flat 28 km quad at
+        //   y = -0.4 carrying no textures and metallicFactor 0, so mesh.frag
+        //   shades it on the DIELECTRIC path. Every fragment of that quad shares
+        //   a single normal, so its shading is CONSTANT for a given view angle —
+        //   and at the grazing angles you get looking out to sea, Schlick
+        //   fresnel + the sky IBL drive it to a flat, near-white sheet (measured
+        //   217,220,223 sRGB at ~250 m in the repro frame). The animated
+        //   Gerstner patch, meanwhile, is a 240 m half-extent square CENTRED ON
+        //   THE CAMERA (VulkanRenderDevice_internal.h kWaterPatchHalf). Where
+        //   that square ends, the near-white sheet begins — an axis-aligned,
+        //   dead-straight, camera-locked boundary drawn across the sea. THAT
+        //   BOUNDARY IS THE PLANK. It is not a far-plane, LOD, depth-precision
+        //   or reflection-plane seam, and it is not a second water plane: it is
+        //   the one water patch ending against the one baked ring.
+        //   (Same defect Tim reported from altitude as "the square white wave
+        //   artifact"; applyOcean's 2026-07 mitigation only disables the patch
+        //   above 140 m eye height, which is exactly why it survived at sea
+        //   level, where he is now flying.)
+        // FIX part 1/2: pull the ring's albedo down from the bake's pale
+        // (0.285,0.34,0.42) to real deep water, so its diffuse + IBL term stops
+        // blowing out. Part 2/2 is water.frag fading the patch edge INTO this
+        // same colour instead of into the sky (WaterParams::horizonColor below).
+        // ECHO_SEA_ALBEDO="r,g,b" (linear) re-tunes without a rebuild.
+        {
+            x3::game::EnvArtSystem::MaterialOverride sea;
+            sea.nameSub = "island_ocean";
+            sea.setBaseColor = true;
+            sea.baseColor[0] = kSeaAlbedo[0];
+            sea.baseColor[1] = kSeaAlbedo[1];
+            sea.baseColor[2] = kSeaAlbedo[2];
+            sea.baseColor[3] = 1.0f;
+            island.setMaterialOverride({ sea });
         }
         if (island.buildFromGlb(*device, islandDir, "island_20260530.glb"))
             x3::logInfo("--world echotropolis: island GLB loaded from " + islandDir);
@@ -1962,6 +2061,32 @@ int hostEchotropolis(HostContext& hc) {
         int kSettle = shotResidents ? 90 : 24;   // drain skin spawns
         const int kSettleMax = talkDemo ? 4000 : kSettle;   // TALKDEMO waits out the reply
         const float dt = 1.0f / 60.0f;
+        // ---- WHY THE BEACHED GALLEON SURVIVED TWO FILINGS -------------------
+        // The capture rig cannot see the harbour fleet. regionSet.drawAll()/
+        // updateAll() are gated on the WorldStreamer's residency state (M-B,
+        // bindStreamerForDrawGate), and the streamer is only ever TICKED in the
+        // live loop — never here. So every `--screenshot` of this world renders
+        // the streamed regions' content according to a streamer that has never
+        // run: the boats are neither posed nor drawn. Every screenshot-based
+        // audit of "do vessels cross land" was therefore looking at an empty
+        // bay, which is exactly how a flood-fill on paper could disagree with
+        // Tim's monitor. Two opt-in levers, both default-off (no existing
+        // reference capture moves):
+        //   ECHO_SHOT_STREAMED=1  drop the draw gate for the still, so
+        //                         force-resident region content actually renders
+        //   ECHO_SHOT_T=<sec>     offset the pose clock, so a still can be
+        //                         composed anywhere in the traffic cycle instead
+        //                         of only at t=0.38 s
+        const bool shotStreamed = [](){ const char* e=std::getenv("ECHO_SHOT_STREAMED"); return e && *e=='1'; }();
+        const float shotT = [](){ const char* e=std::getenv("ECHO_SHOT_T"); return e?(float)std::atof(e):0.0f; }();
+        if (shotStreamed) {
+            regionSet.bindStreamerForDrawGate(nullptr);
+            x3::logInfo("--world echotropolis: ECHO_SHOT_STREAMED — region draw gate dropped for the capture "
+                        "(streamed content is otherwise INVISIBLE in stills; the streamer never ticks here)");
+        }
+        if (shotT != 0.0f)
+            x3::logInfo("--world echotropolis: ECHO_SHOT_T — pose clock offset " +
+                        std::to_string(shotT) + " s");
         const x3::game::TodSample shotTod = tod.sample();   // frozen at ECHO_TOD
         for (int i = 0; i < kSettle; ++i) {
             glfwPollEvents();
@@ -2052,7 +2177,7 @@ int hostEchotropolis(HostContext& hc) {
             // TIER-2 M-A: houses/towers/mine/streets+metro/condos/districts/hackables/
             // mineForest/woodlands/mineGlow/subway/boats/drones draw via the regions.
             // updateAll uses the settle-loop clock EXACTLY like the old pose calls.
-            regionSet.updateAll(dt, (float)i * dt);
+            regionSet.updateAll(dt, shotT + (float)i * dt);
             regionSet.drawAll(*device, frame);
             for (auto& r : infra) r->draw(*device, frame);       // freeway decks (host-persistent)
             lampScene.render(*device, frame);                    // posts + cones + pools
@@ -3810,9 +3935,19 @@ int hostEchotropolis(HostContext& hc) {
         // ---- FLY MODE step: free camera over the city (Tim's spec) ----------
         if (flyMode) {
             if (!flySeeded) {   // first entry: aerial approach vantage on the city
-                flyX = -900.0f; flyY = 320.0f; flyZ = 1400.0f;
-                flyYaw = std::atan2(-flyZ, -flyX);   // look at the island centre
-                flyPitch = -0.12f; flyRoll = 0.0f;
+                // --shot-cam now SEEDS the live fly camera too when no capture was
+                // requested. It used to be honoured only by the screenshot path, so
+                // there was no way to start a live run at a named vantage — which is
+                // exactly what an A/B (perf or visual) at a reported viewpoint needs.
+                // Additive: no --shot-cam == the historic aerial approach, unchanged.
+                if (shotCamOverride) {
+                    flyX = shotCam[0]; flyY = shotCam[1]; flyZ = shotCam[2];
+                    flyYaw = shotCam[3]; flyPitch = shotCam[4]; flyRoll = 0.0f;
+                } else {
+                    flyX = -900.0f; flyY = 320.0f; flyZ = 1400.0f;
+                    flyYaw = std::atan2(-flyZ, -flyX);   // look at the island centre
+                    flyPitch = -0.12f; flyRoll = 0.0f;
+                }
                 flySeeded = true;
             }
             flyYaw   += ddx * 0.0028f * g_sensMul;   // mouselook

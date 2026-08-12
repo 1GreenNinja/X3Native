@@ -1131,6 +1131,16 @@ public:
         float sunDir[3]      = { 0.4f, 1.0f, 0.3f };      // toward the sun (normalized internally)
         float specular       = 12.0f;                     // sun-glint strength (HDR -> bloom)
         float fresnel        = 0.02f;                     // base (face-on) reflectance
+        // HORIZON HANDOFF COLOR (linear). The Gerstner patch is a FINITE square
+        // centred on the camera; a world that also draws a far-ocean mesh beyond
+        // it (Echo Harbor bakes a 28 km flat quad into the island GLB) shows a
+        // hard, dead-straight, camera-locked seam wherever the two meet, because
+        // the patch fades to the ANALYTIC SKY while the far mesh is shaded as a
+        // dielectric. Set this to the colour that far mesh actually renders as
+        // and the patch fades into IT instead of into the sky, so the seam has
+        // nothing left to reveal. Negative red (the default) keeps the historic
+        // sky-fade behavior byte-for-byte, for every world that has no far mesh.
+        float horizonColor[3] = { -1.0f, -1.0f, -1.0f };
     };
     // Set the active water parameters for subsequent frames (cached + re-applied
     // each frame, like setSkyParams). Calling with enabled=false disables water.

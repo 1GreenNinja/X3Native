@@ -116,6 +116,36 @@ public:
     // zero behavior change.
     void setNodeSkip(std::vector<std::string> subs);
 
+    // ---- MATERIAL OVERRIDE (per-material PBR patch, by name substring) ----
+    // Some purchased GLBs ship with NO material authoring at all: every part
+    // carries the glTF/Blender default baseColorFactor 0.8 grey, metallic 0,
+    // roughness 0.5 and — worse — a TEXCOORD_0 accessor with no bufferView (all
+    // UVs = 0), so they cannot be textured without a re-unwrap. The harbor's hero
+    // tall ship (MedievalShip_.glb) is exactly that: 28 of its 62 materials are
+    // bare 0.8 grey, which a bright sun + ACES + bloom renders as a near-WHITE
+    // blob. The baked island's flat `island_ocean` horizon quad is the same class
+    // of problem in reverse — roughness 0.25 turns a 28 km plane into a mirror
+    // that reflects the sky as a hard-edged pale slab wherever it shows outside
+    // the Gerstner water patch.
+    //
+    // Rather than rewrite (and re-commit) multi-megabyte LFS art, callers patch
+    // the PBR constants at load time, keyed on the glTF MATERIAL NAME the same
+    // lowercased-substring way setNodeSkip matches. Applied in loadAsset() to the
+    // private deep-copied Model BEFORE makeDrawables(), so the change lands in the
+    // drawables and never touches the shared model cache or the file on disk.
+    // Only the fields whose `set*` flag is true are written; textures, alpha mode
+    // and double-sidedness are never touched. FIRST matching rule wins (so a
+    // specific rule can precede a broad one). Must be called BEFORE the load call
+    // it should affect. Default empty = zero behavior change.
+    struct MaterialOverride {
+        std::string nameSub;                        // lowercased substring; "" never matches
+        bool  setBaseColor = false; float baseColor[4] = {1, 1, 1, 1};
+        bool  setMetallic  = false; float metallic     = 0.0f;
+        bool  setRoughness = false; float roughness    = 1.0f;
+        bool  setEmissive  = false; float emissive[3]  = {0, 0, 0};
+    };
+    void setMaterialOverride(std::vector<MaterialOverride> ovr);
+
     // World-space AABB of all placed drawables' origins (engine-space ground truth —
     // for framing a preview camera). outMin/outMax are float[3]. No-op (huge/inverted)
     // if nothing is placed.
@@ -220,6 +250,7 @@ private:
     float                                    m_foliage = 0.0f; // >0 = vegetation shading
     float                                    m_metalClamp = 1.0f; // <1 = BLACK-PROP fix
     std::vector<std::string>                 m_nodeSkip; // lowercased node/material-name skip substrings
+    std::vector<MaterialOverride>            m_matOverride; // lowercased material-name PBR patches
 
     // TIER-2 STREAMING (WP-4): terminal-teardown bookkeeping. See destroy().
     bool         m_destroyed = false;             // destroy() has run — teardown is done+terminal
