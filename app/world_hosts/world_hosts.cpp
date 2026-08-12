@@ -12,8 +12,17 @@
 // (introcockpit / ship-windows / ship-interior / descentslide / bodycontact /
 // wormhole / wormhole-transit / tractor were dispatchable but invisible to the
 // menu, the consoles and the hub). One table, exported, gate-checked.
+//
+// [--set] The dispatch is ALSO where the CLI `--set` overrides are applied. The
+// per-frame cvar->device sync hub lives in runDefaultHost, which these hosts run
+// INSTEAD of — so `--world tunnel --set r_bloom 0` used to render the DEFAULT
+// state, silently, and every A/B taken that way was void. Wiring that per host
+// would be the same forget-me trap one layer up, so it happens HERE, once, for
+// every route in kHostRoutes: a new --world is covered the moment it is
+// dispatchable. See app/world_hosts/world_host_common.h.
 #include "../host_context.h"
 #include "../world_hosts.h"
+#include "world_host_common.h"   // applyHostRenderCVars / reportUnappliedHostCVars
 
 namespace x3 { namespace apphost {
 
@@ -77,12 +86,31 @@ static_assert(kHostRouteCount == 29, "update kHostRouteFlags when adding a route
 
 } // namespace
 
+namespace {
+// Run ONE route with the `--set` wiring around it. Every dispatch path goes
+// through here, so no host can be added without it:
+//   before — push the CLI cvar overrides onto the device AND arm the run-long
+//            latch that keeps them there (opt-in: a run with no --set does
+//            nothing at all, see world_host_common.h);
+//   after  — name, at ERROR level, every --set nothing applied, so a run that
+//            ignored a flag says so in its own output instead of quietly
+//            producing a plausible-looking lie.
+int runRoute(int (*host)(HostContext&), const char* flag, HostContext& hc) {
+    const std::string who = std::string("--world ") + flag;
+    if (hc.device) applyHostRenderCVars(hc, *hc.device, who);
+    const int rc = host(hc);
+    reportUnappliedHostCVars(hc, who);
+    return rc;
+}
+} // namespace
+
 int dispatchWorldHost(HostContext& hc) {
     // --screenshot-destruct forces the destruct host regardless of worldMode
     // (the old first line was `worldMode == "destruct" || hc.destructShot`).
-    if (hc.destructShot) return hostDestruct(hc);
+    if (hc.destructShot) return runRoute(hostDestruct, "destruct", hc);
     for (unsigned i = 0; i < kHostRouteCount; ++i)
-        if (hc.worldMode == kHostRoutes[i].flag) return kHostRoutes[i].host(hc);
+        if (hc.worldMode == kHostRoutes[i].flag)
+            return runRoute(kHostRoutes[i].host, kHostRoutes[i].flag, hc);
     return -1;
 }
 

@@ -194,7 +194,15 @@ public:
     // Whole-scene brightness: pre-tonemap exposure multiplier in the composite pass.
     // With auto-exposure ON this is the compensation BIAS on the adapted value.
     void setExposure(float e) override;
-    void setDebugView(int mode) override { m_debugView = mode; }
+    void setDebugView(int mode) override { m_debugView = m_cvarOv.applyDebugView(mode); }
+
+    // ---- CLI `--set` OVERRIDE LATCH (IRenderDevice::RenderCVarOverrides) ----
+    // Armed once by the --world host dispatch from the parsed --set list; every
+    // render-param setter above re-stamps the overridden FIELDS on its way
+    // through, so a host's own write (or a per-frame one) can never silently
+    // undo the command line. Disarmed (active == false) by default: a run with
+    // no --set takes the identical code path it always did.
+    void setCVarOverrides(const RenderCVarOverrides& ov) override { m_cvarOv = ov; }
 
     // Painterly levers (ART_BIBLE §5): per-zone depth fog + filmic grade. Host
     // opt-in state, deliberately outside PostFXParams (setPostFX re-applies from
@@ -3385,6 +3393,9 @@ private:
     // floor; point lights only pool under fixtures, leaving floor/walls black between.
     glm::vec3               m_ambient{ 0.42f, 0.44f, 0.50f };
     int                     m_debugView = 0;   // r_debugview: 0 = off, 1 = shading normals
+    // CLI --set override latch (see setCVarOverrides above). Default-constructed
+    // = inactive = every apply() is an immediate no-op.
+    RenderCVarOverrides     m_cvarOv{};
     // Final additive bloom strength; defaults to the global subtle value, per-scene
     // override via setBloom() (the showroom raises it for the glowing-spire hero look).
     float                   m_bloomIntensity = kBloomIntensity;

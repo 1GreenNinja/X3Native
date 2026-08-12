@@ -661,7 +661,12 @@ void VulkanRenderDevice::setGpuCullEquivalenceCheck(bool enabled) {
 
 void VulkanRenderDevice::setBloom(float intensity) { m_bloomIntensity = intensity; }
 
-void VulkanRenderDevice::setExposure(float e) { m_exposure = (e > 0.0f) ? e : 1.0f; }
+void VulkanRenderDevice::setExposure(float eIn) {
+        // CLI --set latch: `--set r_exposure X` wins over any host write (see
+        // IRenderDevice::RenderCVarOverrides). No-op unless a --set armed it.
+        const float e = m_cvarOv.applyExposure(eIn);
+        m_exposure = (e > 0.0f) ? e : 1.0f;
+    }
 
 // Painterly levers (ART_BIBLE §5) — host-opted zone atmosphere + grade. Stored
 // outside PostFXParams so the live cvar loop (setPostFX) never clobbers them.
@@ -674,12 +679,16 @@ void VulkanRenderDevice::setFilmic(const FilmicParams& f) { m_filmic = f; }
 // control UBO (SsaoControl caustics lane) by prepareFrameData.
 void VulkanRenderDevice::setCaustics(const CausticsParams& c) { m_caustics = c; }
 
-void VulkanRenderDevice::setMetalAmbient(float s) { m_metalAmbient = (s >= 0.0f) ? s : 1.0f; }
+void VulkanRenderDevice::setMetalAmbient(float sIn) {
+        const float s = m_cvarOv.applyMetalAmbient(sIn);   // CLI --set latch
+        m_metalAmbient = (s >= 0.0f) ? s : 1.0f;
+    }
 
 void VulkanRenderDevice::setIblIntensity(float s) { m_iblIntensity = (s >= 0.0f) ? s : 1.0f; }
 void VulkanRenderDevice::setIblSpecular(float s)  { m_iblSpecular  = s; }   // <0 = unset (fall back to the IBL intensity)
 
-void VulkanRenderDevice::setPostFX(const PostFXParams& p) {
+void VulkanRenderDevice::setPostFX(const PostFXParams& pIn) {
+        PostFXParams p = pIn; m_cvarOv.apply(p);   // CLI --set latch
         if (p.autoExposure && !m_post.autoExposure) m_aeSnap = true;
         // TAA toggled ON: the history image holds stale (or never-written) data —
         // invalidate so the first TAA frame is a clean passthrough, not a blend
@@ -750,7 +759,8 @@ void VulkanRenderDevice::setPointLights(const PointLight* lights, uint32_t count
         m_pointLights.assign(lights, lights + n);
     }
 
-void VulkanRenderDevice::setClusterLights(bool enable) {
+void VulkanRenderDevice::setClusterLights(bool enableIn) {
+        const bool enable = m_cvarOv.applyClusterLights(enableIn);   // CLI --set latch
         // Live toggle. The froxel lists are rebuilt from scratch every frame the
         // feature is on, and the SSBO counts were zeroed at creation, so flipping
         // this on mid-run can never read a stale list.
@@ -779,7 +789,8 @@ void VulkanRenderDevice::setSkyTime(float t) { m_skyTime = t; }
 
 bool VulkanRenderDevice::rayTracingSupported() const { return m_rtSupported; }
 
-void VulkanRenderDevice::setRtaoParams(const RtaoParams& p) {
+void VulkanRenderDevice::setRtaoParams(const RtaoParams& pIn) {
+        RtaoParams p = pIn; m_cvarOv.apply(p);   // CLI --set latch
         // Cache a snapshot (re-applied each frame, like setSsaoParams). When RT is
         // unsupported this is a harmless no-op store: the graph never adds the RT
         // chain because m_rtSupported is false. The first time it is enabled on an
@@ -788,7 +799,8 @@ void VulkanRenderDevice::setRtaoParams(const RtaoParams& p) {
         m_rtao.rays = std::max(1, std::min(32, m_rtao.rays));
     }
 
-void VulkanRenderDevice::setReflectionParams(const ReflectionParams& p) {
+void VulkanRenderDevice::setReflectionParams(const ReflectionParams& pIn) {
+        ReflectionParams p = pIn; m_cvarOv.apply(p);   // CLI --set latch
         // Cache a snapshot (re-applied each frame, like setRtaoParams). The chain
         // is built LAZILY on first activation in prepareFrameData (a run that never
         // enables r_ssr pays zero init cost) and requires TAA to be active (the TAA
@@ -798,7 +810,8 @@ void VulkanRenderDevice::setReflectionParams(const ReflectionParams& p) {
         m_refl.intensity = std::max(0.0f, std::min(1.0f, m_refl.intensity));
     }
 
-void VulkanRenderDevice::setDdgiParams(const DdgiParams& p) {
+void VulkanRenderDevice::setDdgiParams(const DdgiParams& pIn) {
+        DdgiParams p = pIn; m_cvarOv.apply(p);   // CLI --set latch
         // Cache a snapshot (re-applied each frame, like setRtaoParams). The DDGI
         // chain is built LAZILY on first activation (a run that never enables
         // r_ddgi pays zero init cost) and requires ray-query + position-fetch
@@ -829,7 +842,8 @@ void VulkanRenderDevice::setDdgiParams(const DdgiParams& p) {
         m_ddgi.normalBias = std::max(0.0f, std::min(4.0f, m_ddgi.normalBias));
     }
 
-void VulkanRenderDevice::setRtShadowParams(const RtShadowParams& p) {
+void VulkanRenderDevice::setRtShadowParams(const RtShadowParams& pIn) {
+        RtShadowParams p = pIn; m_cvarOv.apply(p);   // CLI --set latch
         // Cache a snapshot (re-applied each frame, like setRtaoParams). On a
         // device without ray query this is a harmless store: the RT mesh
         // pipeline variants are never created, the want-gate below stays false
@@ -873,7 +887,8 @@ bool VulkanRenderDevice::worldToScreen(float wx, float wy, float wz, float& sx, 
         return true;
     }
 
-void VulkanRenderDevice::setSsaoParams(const SsaoParams& sp) {
+void VulkanRenderDevice::setSsaoParams(const SsaoParams& spIn) {
+        SsaoParams sp = spIn; m_cvarOv.apply(sp);   // CLI --set latch
         // Cache a snapshot; prepareFrameData() bakes radius/bias/intensity/power
         // into the per-frame SSAO UBO + the mesh.frag control block, and
         // buildAndExecuteGraph gates the SSAO chain on `enabled`. Enabled by
@@ -888,7 +903,8 @@ void VulkanRenderDevice::setWaterParams(const WaterParams& wp) {
         m_water = wp;
     }
 
-void VulkanRenderDevice::setGiParams(const GiParams& gp) {
+void VulkanRenderDevice::setGiParams(const GiParams& gpIn) {
+        GiParams gp = gpIn; m_cvarOv.apply(gp);   // CLI --set latch
         // Cache a snapshot; prepareFrameData() bakes the tunables into the per-frame
         // GI UBO + temporal UBO, and buildAndExecuteGraph gates the GI chain on
         // `enabled`. Enabled by default with tasteful values (no app wiring required

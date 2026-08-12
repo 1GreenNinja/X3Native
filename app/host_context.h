@@ -157,6 +157,10 @@ struct HostContext {
     bool        descSyncValidation = false;
     // --set <cvar> <value> pairs applied after console cvar registration.
     std::vector<std::pair<std::string, std::string>> cliCVars;
+    // [--set AUDIT] The `--screenshot-*` flag this run is, verbatim ("" = none).
+    // See CliOptions::captureHost — dispatchScreenshotHosts uses it to know a
+    // capture host owns this run before any handler has run.
+    std::string captureHost;
     // Boot-time async audio future (launched in main(); joined in the default host).
     // Non-owning pointer to main()'s local future.
     std::future<BootAudio>* bootAudioFut = nullptr;

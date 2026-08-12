@@ -110,6 +110,12 @@ struct CliOptions {
     std::string loaderShotPath = "build/proof/loader_room.png";
     // --set <cvar> <value> pairs, applied right after console cvar registration.
     std::vector<std::pair<std::string, std::string>> cliCVars;
+    // [--set AUDIT] The `--screenshot-*` flag this run is, verbatim ("" = none).
+    // Recorded by ONE prefix match at the top of parseCli's arg loop, so a capture
+    // flag added later is covered without anyone remembering to add it here. Read
+    // by dispatchScreenshotHosts to know, BEFORE the handlers run, that a capture
+    // host owns this run and the CLI cvar overrides must reach it.
+    std::string captureHost;
     // --screenshot-perfshop [dir]: headless PERFORMANCE-SHOP proofs — boot the
     // drive world, build the shop, set the car on the lift, capture the bay
     // (car on lift + neon sign), the PARTS terminal, and the DYNO mid-pull into

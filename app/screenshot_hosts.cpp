@@ -38,6 +38,7 @@
 #include "level1.h"            // F2 rescue rooms: buildLevel1 / Level1ArtMask (--screenshot-rescuerooms)
 #include "wing_dressing.h"     // F2-F7 wing dressing (--screenshot-rescuerooms)
 #include "editor/editor_host.h"
+#include "world_hosts/world_host_common.h"   // applyHostRenderCVars / reportUnappliedHostCVars
 #include "asset_root.h"
 #include "intro_orchestrator.h"   // X3_INTRO_CAPTURE headless combat-evidence run
 
@@ -77,7 +78,10 @@
 
 namespace x3 { namespace apphost {
 
-int dispatchScreenshotHosts(HostContext& hc) {
+// The capture handlers themselves, verbatim. Renamed to *Impl and made static so
+// dispatchScreenshotHosts below can wrap ALL of them at once — see the note there
+// for why a per-handler call would not have worked.
+static int dispatchScreenshotHostsImpl(HostContext& hc) {
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
     const bool headless = hc.headless;
@@ -2970,13 +2974,23 @@ int dispatchScreenshotHosts(HostContext& hc) {
         //                                truncates to the legacy 64).
         //   --set r_debugview 6       -> the froxel occupancy heatmap.
         // With neither flag this host renders EXACTLY what it always did.
+        // r_citylights is a BOOT cvar: it decides GEOMETRY (which lamps get
+        // built), not a device parameter, so it is read off the --set list here
+        // rather than pushed through a setter. It still CLAIMS its name, so the
+        // end-of-run audit does not report it as silently ignored.
+        //
+        // r_clusterlights / r_debugview used to be hand-read here too and pushed
+        // with their own setClusterLights/setDebugView calls. They are device
+        // params, so the dispatch wrapper now applies them through the ONE shared
+        // mechanism (applyHostRenderCVars) and the latch keeps them — those hand
+        // rolled lines are gone. r_clusterlights is still read for the receipt
+        // line below, which reports the light budget it implies.
         bool cityDense = false, cityCluster = false;
-        int  cityDebugView = 0;
         for (const auto& kv : hc.cliCVars) {
             if (kv.first == "r_citylights"    && kv.second != "0") cityDense   = true;
             if (kv.first == "r_clusterlights" && kv.second != "0") cityCluster = true;
-            if (kv.first == "r_debugview") cityDebugView = std::atoi(kv.second.c_str());
         }
+        if (cityDense) claimHostCVar("r_citylights");
 
         if (cityDense) {
             // NIGHT. The lamps are the subject, so the sun goes to a thin blue
@@ -2999,8 +3013,6 @@ int dispatchScreenshotHosts(HostContext& hc) {
             device->setIblIntensity(0.10f);               // the sky IBL is what kept the grass green
             device->setExposure(1.10f);
         }
-        if (cityCluster) device->setClusterLights(true);
-        if (cityDebugView) device->setDebugView(cityDebugView);
 
         x3::game::City city;
         std::vector<x3::game::StreetLights::Glow> cityGlows;
@@ -4004,6 +4016,50 @@ int dispatchScreenshotHosts(HostContext& hc) {
     }
 
     return -1;   // no capture flag set — continue boot
+}
+
+// ===========================================================================
+// `--set` WIRING FOR THE CAPTURE HOSTS — the SAME bug the --world hosts had.
+//
+// The per-frame cvar->device sync hub (app_run.cpp applyRtaoCVars) belongs to
+// runDefaultHost. The `--screenshot-*` handlers run BEFORE it and return, so
+// `--set` never reached them either: `--screenshot-city --set r_bloom 0` wrote
+// a PNG with bloom still on, exited 0, and looked entirely plausible. That
+// matters more here than anywhere else, because captures are how this project
+// verifies ART — a silently-dropped flag voids the visual evidence itself.
+//
+// WHY A WRAPPER AND NOT THE TWO-LINE HOIST kHostRoutes got. The --world side is
+// a TABLE (one route -> one function pointer), so the wiring slots cleanly
+// around each dispatch. This side is ONE 3,700-line function with 25 top-level
+// `return`s, one per capture family — there is no table and no single exit to
+// hang the "after" audit on. Rather than edit 25 return sites (which is exactly
+// the remember-me trap this whole change exists to kill), the body became a
+// static *Impl and this thin wrapper owns entry and exit for every handler at
+// once. Same by-construction property, no per-handler opt-in.
+//
+// hc.captureHost is the pre-dispatch signal that a capture owns this run — set
+// by ONE prefix match in parseCli, so a `--screenshot-*` flag added later is
+// covered with no edit here (see cli.h).
+// ===========================================================================
+int dispatchScreenshotHosts(HostContext& hc) {
+    const bool capture = !hc.captureHost.empty();
+    if (capture && hc.device) applyHostRenderCVars(hc, *hc.device, hc.captureHost);
+
+    const int rc = dispatchScreenshotHostsImpl(hc);
+
+    if (rc < 0) {
+        // No handler HERE owned it (e.g. --screenshot-destruct / -tunnel /
+        // -elevator are --world hosts, and -vigil / -dialog / -crowd belong to
+        // the default host). Hand the device back with the latch DISARMED: the
+        // --world dispatch re-arms it identically, and the default host must
+        // keep its live console edits (it syncs every frame from a console
+        // already seeded with --set). Reporting is left to whoever does own it.
+        if (capture && hc.device)
+            hc.device->setCVarOverrides(x3::rhi::IRenderDevice::RenderCVarOverrides{});
+        return rc;
+    }
+    reportUnappliedHostCVars(hc, hc.captureHost);
+    return rc;
 }
 
 }} // namespace x3::apphost
