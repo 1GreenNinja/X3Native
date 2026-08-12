@@ -669,6 +669,32 @@ private:
     };
     static_assert(sizeof(ObjectData) == 160, "ObjectData must match std430 layout");
 
+    // ---- THE STABLE RT MATERIAL TABLE (ddgi_rays.comp / refl.comp) -----------
+    // WHY THIS EXISTS. A ray query returns instanceCustomIndex; the ray shaders
+    // use it to fetch the hit surface's material. That index used to be the hit
+    // record's row in the per-object SSBO (ObjectData) — but that buffer is
+    // COMPACTED BY VISIBILITY: only instances that survive the frustum cull get a
+    // row. The TLAS, correctly, admits off-screen geometry too, because RT needs
+    // what the camera cannot see. So every culled instance carried customIndex 0
+    // and every DDGI/reflection ray that hit it shaded with object row 0's
+    // albedo/emissive. On the steady-state city that was 62.7% of the TLAS.
+    //
+    // The fix is to stop indexing a cull-compacted table. This one has a row per
+    // DRAW RECORD, visible or not, so a record's index is the same whether the
+    // camera is looking at it or not. That also removes the row CHURN: with the
+    // compacted index, moving the camera reshuffled ~25 k instanceCustomIndex
+    // values per frame and forced their TLAS instance rows to be rewritten
+    // despite nothing having moved.
+    //
+    // Only the two fields the ray shaders actually read live here — keeping this
+    // 32 B (rather than mirroring all 160 B of ObjectData) is what makes the
+    // per-record table cheaper than the compacted one it replaces.
+    struct RtMaterialGpu {
+        glm::vec4 baseColorFactor;
+        glm::vec4 emissive;          // rgb = linear color, a = strength
+    };
+    static_assert(sizeof(RtMaterialGpu) == 32, "RtMaterialGpu must match std430 layout");
+
     // Per-object flag bits packed into ObjectData::flags. TERRAIN drives mesh.frag's
     // procedural splat (was the standalone terrainFlag); GLASS routes the fragment to
     // the transparent glass pass (mesh.frag DISCARDs it; glass.frag draws it). The
@@ -770,6 +796,15 @@ private:
         //   indirectBuf : VkDrawIndexedIndirectCommand array (one per distinct mesh)
         //   objSet      : the set-1 descriptor (points at objBuf+camBuf; written once)
         VkBuffer      objBuf = VK_NULL_HANDLE;      VmaAllocation objAlloc = nullptr;  void* objMapped = nullptr;
+        //   rtMatBuf    : THE STABLE RT MATERIAL TABLE — one RtMaterialGpu row per
+        //                 DRAW RECORD (not per VISIBLE object). objBuf is compacted
+        //                 by visibility, so a row index into it is only meaningful
+        //                 for an on-screen instance; the TLAS deliberately contains
+        //                 OFF-SCREEN geometry too, and that geometry must still
+        //                 shade with its OWN material. Indexed by draw-record index,
+        //                 which does not move when the camera does. See
+        //                 prepareFrameData() and shaders/rt_material.glsl.
+        VkBuffer      rtMatBuf = VK_NULL_HANDLE;    VmaAllocation rtMatAlloc = nullptr; void* rtMatMapped = nullptr;
         VkBuffer      camBuf = VK_NULL_HANDLE;      VmaAllocation camAlloc = nullptr;  void* camMapped = nullptr;
         VkBuffer      indirectBuf = VK_NULL_HANDLE; VmaAllocation indirectAlloc = nullptr; void* indirectMapped = nullptr;
         VkDescriptorSet objSet = VK_NULL_HANDLE;
@@ -1947,6 +1982,9 @@ private:
     uint32_t m_rtChurnLo = 0, m_rtChurnHi = 0, m_rtChurnFrame = 0;
     bool m_rtVerifyChecked = false;                            // env read once
     uint64_t m_rtVerifyFrames = 0, m_rtVerifyBad = 0;
+    // Material-lookup arm of the harness: instances checked / instances whose
+    // instanceCustomIndex resolved to somebody else's material.
+    uint32_t m_rtVerifyMatChecked = 0, m_rtVerifyMatBad = 0;
     std::vector<VkAccelerationStructureInstanceKHR> m_rtRowMirror;   // = device buffer
     std::vector<VkAccelerationStructureInstanceKHR> m_rtRowExpect;   // naive full repack
     uint32_t m_rtLastInstCount = 0;   // instance count of the last-built TLAS
@@ -2170,6 +2208,15 @@ private:
     // SSBO row of each draw record this frame (TLAS instanceCustomIndex source —
     // the grouped SSBO write order differs from the draw-record order).
     std::vector<uint32_t> m_recordSsboRow;
+    // ---- Stable RT material table (see RtMaterialGpu) ------------------------
+    // CPU shadow of what each frame slot's rtMatBuf already holds, so a frame
+    // only writes the rows whose material actually CHANGED. Materials are near
+    // static, so in the steady state this write is ~free — which is the whole
+    // reason a per-record table is affordable where a per-record ObjectData
+    // (160 B/row) would not have been. One shadow per frame-in-flight because
+    // the slots are written independently.
+    std::vector<RtMaterialGpu> m_rtMatShadow[kFramesInFlight];
+    uint32_t                   m_rtMatRowsWritten = 0;   // telemetry: rows written this frame
 
     // Graphics
     VmaAllocator  m_alloc = nullptr;

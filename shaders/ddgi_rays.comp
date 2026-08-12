@@ -13,9 +13,9 @@
 //     albedo * (sun N.L * sunVisibility(shadow ray) + point lights N.L*atten)
 //   + emissive
 //   + albedo * irradianceField(hit)            <- the recursive/infinite bounce
-// where albedo/emissive come from the per-object SSBO row addressed by the
-// TLAS instanceCustomIndex (the SAME 160-byte std430 ObjectData rows the
-// raster path uses), the geometric hit normal comes from hardware position
+// where albedo/emissive come from the STABLE RT MATERIAL TABLE row addressed by
+// the TLAS instanceCustomIndex (one row per draw record, visible or not — see
+// the binding below), the geometric hit normal comes from hardware position
 // fetch (GL_EXT_ray_tracing_position_fetch), and irradianceField() samples the
 // PREVIOUS frame's probe atlases — the classic DDGI multibounce feedback.
 // A miss samples the analytic-sky environment cube (the IBL env, mip 2-ish);
@@ -33,24 +33,20 @@ layout(local_size_x = 128) in;     // threads = rays; raysPerFrame <= 128
 // mesh.vert's declaration — DO NOT change the stride). -----------------------
 layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
 
-struct ObjectData {
-    mat4 model;
+// THE STABLE RT MATERIAL TABLE. One row per DRAW RECORD — NOT the per-frame
+// ObjectData SSBO, which is COMPACTED BY VISIBILITY. A ray query hits
+// off-screen geometry constantly (that is the point of tracing against a TLAS
+// that admits it), and a frustum-culled instance has no row in the compacted
+// buffer at all: it used to carry instanceCustomIndex 0, so every such hit
+// shaded with object row 0's albedo. Indexing a table that is not compacted
+// fixes that, and also stops the index churning every time the camera moves.
+struct RtMaterial {
     vec4 baseColorFactor;
     vec4 emissive;        // rgb = linear emissive color, a = strength
-    uint texIndex;
-    uint flags;           // bit0 = TERRAIN, bit1 = GLASS
-    uint terrainPack1;
-    uint terrainPack2;
-    uint normalTexIndex;
-    uint mrTexIndex;
-    uint emissiveTexIndex;
-    uint detailPacked;
-    vec4 glassParams;
-    vec4 glassTint;
 };
-layout(std430, set = 0, binding = 1) readonly buffer Objects {
-    ObjectData objects[];
-} objBuf;
+layout(std430, set = 0, binding = 1) readonly buffer RtMaterials {
+    RtMaterial materials[];
+} matBuf;
 
 // Per-probe ray results (this pass writes; ddgi_update reads).
 layout(std430, set = 0, binding = 2) writeonly buffer Rays {
@@ -200,8 +196,13 @@ void main() {
 
         vec3 hitP = origin + dir * t;
         uint objIdx = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
-        ObjectData od = objBuf.objects[objIdx];
-        vec3 albedo = clamp(od.baseColorFactor.rgb, 0.0, 1.0);
+        vec3 albedo   = vec3(0.5);
+        vec4 emissive = vec4(0.0);
+        if (objIdx < matBuf.materials.length()) {
+            RtMaterial mt = matBuf.materials[objIdx];
+            albedo   = clamp(mt.baseColorFactor.rgb, 0.0, 1.0);
+            emissive = mt.emissive;
+        }
 
         // ---- Direct sun: N.L gated by ONE shadow ray (honest occlusion). ----
         vec3 sunDir = normalize(ub.sunDirIntensity.xyz);
@@ -235,7 +236,7 @@ void main() {
         }
 
         // ---- Emissive surfaces ARE the dynamic light sources (panels). ----
-        radiance += od.emissive.rgb * od.emissive.a;
+        radiance += emissive.rgb * emissive.a;
 
         // ---- Infinite bounce: the hit's diffuse exit radiance from LAST
         // frame's probe field (energy-conserving: albedo < 1). ----

@@ -484,6 +484,20 @@ bool VulkanRenderDevice::createGraphics() {
                 }
                 fr.objMapped = info.pMappedData;
 
+                // STABLE RT MATERIAL TABLE: one row per DRAW RECORD (not per
+                // visible object), so off-screen TLAS instances shade with their
+                // own material. 32 B/row against ObjectData's 160 B — the whole
+                // uncompacted table costs less than a quarter of the compacted
+                // one it replaces for RT purposes.
+                VkBufferCreateInfo rbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                rbci.size = (VkDeviceSize)kMaxDrawsPerFrame * sizeof(RtMaterialGpu);
+                rbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                VmaAllocationInfo rinfo{};
+                if (x3vmaCreateBuffer(&rbci, &aci, &fr.rtMatBuf, &fr.rtMatAlloc, &rinfo) != VK_SUCCESS) {
+                    logError("[rhi] RT material SSBO create failed"); return false;
+                }
+                fr.rtMatMapped = rinfo.pMappedData;
+
                 // Frame UBO (camera viewProj + sun lightViewProj + point lights).
                 VkBufferCreateInfo cbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
                 cbci.size = sizeof(FrameUBO);
@@ -1448,6 +1462,7 @@ void VulkanRenderDevice::destroyGraphics() {
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             auto& fr = m_frames[i];
             if (fr.objBuf)      { vmaDestroyBuffer(m_alloc, fr.objBuf, fr.objAlloc); fr.objBuf = VK_NULL_HANDLE; fr.objAlloc = nullptr; fr.objMapped = nullptr; }
+            if (fr.rtMatBuf)    { vmaDestroyBuffer(m_alloc, fr.rtMatBuf, fr.rtMatAlloc); fr.rtMatBuf = VK_NULL_HANDLE; fr.rtMatAlloc = nullptr; fr.rtMatMapped = nullptr; }
             if (fr.camBuf)      { vmaDestroyBuffer(m_alloc, fr.camBuf, fr.camAlloc); fr.camBuf = VK_NULL_HANDLE; fr.camAlloc = nullptr; fr.camMapped = nullptr; }
             if (fr.lightBuf)    { vmaDestroyBuffer(m_alloc, fr.lightBuf, fr.lightAlloc); fr.lightBuf = VK_NULL_HANDLE; fr.lightAlloc = nullptr; fr.lightMapped = nullptr; }
             if (fr.clusterBuf)  { vmaDestroyBuffer(m_alloc, fr.clusterBuf, fr.clusterAlloc); fr.clusterBuf = VK_NULL_HANDLE; fr.clusterAlloc = nullptr; fr.clusterMapped = nullptr; }

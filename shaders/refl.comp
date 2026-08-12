@@ -60,30 +60,24 @@ layout(set = 0, binding = 3) uniform Refl {
 #ifdef REFL_RT
 layout(set = 0, binding = 4) uniform accelerationStructureEXT tlas;
 // PER-OBJECT MATERIAL for RT hits. The TLAS instanceCustomIndex carries the hit
-// object's row in the SAME per-frame 160-byte std430 ObjectData buffer the mesh
-// pass and ddgi_rays.comp already read, so a ray-query hit CAN recover the real
-// albedo/emissive. The "no material access in the ray-query tier" limitation
-// this shader used to document applies to PER-TRIANGLE data (uv / interpolated
-// normal / texture fetch), NOT to per-OBJECT factors. Layout must match
-// ObjectData in ddgi_rays.comp byte-for-byte.
-struct ObjectData {
-    mat4 model;
+// object's row in the STABLE RT MATERIAL TABLE, so a ray-query hit CAN recover
+// the real albedo/emissive. The "no material access in the ray-query tier"
+// limitation this shader used to document applies to PER-TRIANGLE data (uv /
+// interpolated normal / texture fetch), NOT to per-OBJECT factors.
+//
+// THE TABLE IS NOT THE OBJECT SSBO, deliberately. That buffer is compacted by
+// visibility, and the whole reason this fallback exists is that the hit is
+// OFF-SCREEN — so the hit object very often has no row there at all and used to
+// resolve to row 0, i.e. some arbitrary visible object's colour. One row per
+// draw record, visible or not. Layout must match RtMaterial in ddgi_rays.comp
+// byte-for-byte.
+struct RtMaterial {
     vec4 baseColorFactor;
     vec4 emissive;        // rgb = linear emissive color, a = strength
-    uint texIndex;
-    uint flags;           // bit0 = TERRAIN, bit1 = GLASS
-    uint terrainPack1;
-    uint terrainPack2;
-    uint normalTexIndex;
-    uint mrTexIndex;
-    uint emissiveTexIndex;
-    uint detailPacked;
-    vec4 glassParams;
-    vec4 glassTint;
 };
-layout(std430, set = 0, binding = 5) readonly buffer Objects {
-    ObjectData objects[];
-} objBuf;
+layout(std430, set = 0, binding = 5) readonly buffer RtMaterials {
+    RtMaterial materials[];
+} matBuf;
 #endif
 
 const vec3  kSunColor       = vec3(1.0, 0.97, 0.92); // matches mesh.frag's sun tint
@@ -267,7 +261,7 @@ void main() {
                 // PER-OBJECT MATERIAL (was: a single flat constant for every
                 // off-screen hit, which made all such reflections the same grey
                 // smudge regardless of what was actually there). The TLAS
-                // instanceCustomIndex indexes the per-frame ObjectData rows, so
+                // instanceCustomIndex indexes the stable RT material table, so
                 // recover the hit object's REAL albedo + emissive — the same
                 // path ddgi_rays.comp uses.
                 //
@@ -282,10 +276,10 @@ void main() {
                 uint objIdx = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
                 vec3 albedo   = vec3(kFallbackAlbedo);
                 vec3 emissive = vec3(0.0);
-                if (objIdx < objBuf.objects.length()) {
-                    ObjectData od = objBuf.objects[objIdx];
-                    albedo   = clamp(od.baseColorFactor.rgb, 0.0, 1.0);
-                    emissive = max(od.emissive.rgb * od.emissive.a, 0.0);
+                if (objIdx < matBuf.materials.length()) {
+                    RtMaterial mt = matBuf.materials[objIdx];
+                    albedo   = clamp(mt.baseColorFactor.rgb, 0.0, 1.0);
+                    emissive = max(mt.emissive.rgb * mt.emissive.a, 0.0);
                 }
                 // Half-lambert on -R (surfaces facing back toward the ray get
                 // more sun) — bounded [0.5,1] so it never darkens below the
