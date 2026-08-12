@@ -631,6 +631,26 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     };
     std::vector<Frame> roadFrames;
     for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 4.0f) roadFrames.push_back(frameAt(s));
+    // FEATHER THE ENDS INTO THE GROUND. The route stops at a hard boundary, and
+    // the ribbon is a THICK slab (kSlabDrop) — so at s=0 and s=totalLen it was
+    // simply cut off mid-section, leaving the slab's end face standing in the
+    // air over the downhill shoulder with a triangular void beneath it. Against
+    // convincing rock that reads as an unfinished mesh, which is exactly how it
+    // was reported. A real road does not begin at a cliff edge: it EMERGES from
+    // the surface. Easing the last few metres up to natural grade closes the
+    // void because the slab's top meets the ground it was hanging over.
+    {
+        constexpr float kFeather = 16.0f;   // run over which the road surfaces
+        for (Frame& f : roadFrames) {
+            const float dEnd = std::min(f.s, route.totalLen - f.s);
+            if (dEnd >= kFeather) continue;
+            const float t = 1.0f - clampf(dEnd / kFeather, 0.0f, 1.0f);   // 1 AT the end
+            const float g = terrainHeightAtWorld(f.p[0], f.p[2]);
+            // Only ever raise: dropping the road here would re-open the gap on
+            // the uphill side, and the corridor is already cut to this datum.
+            if (g > f.p[1]) f.p[1] += (g - f.p[1]) * t * t;   // eased, no kink
+        }
+    }
 
     // ================= 1) THE ROAD RIBBON ===================================
     // A swept slab. It is thick (kSlabDrop) on purpose: the corridor's depth is
@@ -802,6 +822,70 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     const float ml = std::sqrt(mx*mx + my*my); if (ml > 1e-4f) { mx /= ml; my /= ml; }
                     const float n[3] = { right[0]*mx, my, right[2]*mx };
                     portals.quad(a, b, c, d, n, 0, 1, 0, 1);
+                }
+
+                // ---- SPLAYED WING WALLS ------------------------------------
+                // THE PORTAL-SWEEP RESIDUAL, fixed the way real portals fix it.
+                // The corridor's depression spans halfWidth+falloff (8.8+10.0 =
+                // 18.8 m from the spine) but the headwall only caps +/-12.8 m.
+                // In that 6 m band either side the ground sweeps continuously
+                // from road level up to natural grade — and because a
+                // single-valued heightfield CANNOT step vertically, that sweep
+                // necessarily crosses the bore. Visually: grass climbing into
+                // the arch, which no amount of headwall height fixes (raising
+                // it just stands the slab proud of the hill like a billboard).
+                //
+                // A real tunnel portal does not fight that with a taller slab.
+                // It RETAINS the earth with wing walls splayed back from the
+                // headwall edges. That is what these are: from each side of the
+                // headwall, a panel running outward to the falloff edge and
+                // BACKWARD along the cutting, holding the bank off the arch.
+                {
+                    // How far a wing may ever stand above the ground it retains.
+                    // A retaining wall shows a course or two of freeboard; more
+                    // than that and it reads as a slab dropped on the hillside.
+                    constexpr float kWingProud = 2.6f;
+                    const float wingOut = kTcCorridorHalfW + kTcCorridorFall;  // 18.8 m
+                    const float wingRun = 11.0f;      // how far back it splays
+                    const float wdir = (end == 0) ? -1.0f : 1.0f;
+                    // SEGMENTED, because a bank is not a straight line. The first
+                    // version sampled the ground only at the root and the tip and
+                    // drew one quad between them: on a curved hillside that top
+                    // edge cannot follow the bank, so the wall stood proud of the
+                    // slope as a floating slab. Walking it in steps and sampling
+                    // the terrain at each one lets the coping ride the ground.
+                    const int kWingSegs = 8;
+                    for (int side = -1; side <= 1; side += 2) {
+                        float prev[4][3]; bool havePrev = false;
+                        for (int i = 0; i <= kWingSegs; ++i) {
+                            const float t  = (float)i / (float)kWingSegs;
+                            const float sx = (float)side * (rectHalfW + (wingOut - rectHalfW) * t);
+                            const Frame f  = frameAt(sEnd + wdir * wingRun * t);
+                            const float px = f.p[0] + right[0]*sx, pz = f.p[2] + right[2]*sx;
+                            const float g  = terrainHeightAtWorld(px, pz);
+                            // Top: headwall height at the root, easing to a little
+                            // above the local bank by the tip. Clamped so it can
+                            // never stand more than kWingProud above the ground it
+                            // is retaining — that clamp is what kills the billboard.
+                            const float want = (f.p[1] + rectTop) * (1.0f - t) + (g + 1.0f) * t;
+                            const float top  = std::min(want, g + kWingProud);
+                            const float bot  = std::min(g, f.p[1]) - 5.0f;
+                            float cur[4][3] = {
+                                { px, bot, pz }, { px, top, pz },
+                                { px + right[0]*0.55f*(float)side, top, pz + right[2]*0.55f*(float)side },
+                                { px + right[0]*0.55f*(float)side, bot, pz + right[2]*0.55f*(float)side } };
+                            if (havePrev) {
+                                const float nx = -(float)side;
+                                const float wn[3] = { right[0]*nx, 0.0f, right[2]*nx };
+                                const float upn[3] = { 0, 1, 0 };
+                                portals.quad(prev[0], prev[1], cur[1], cur[0], wn,  0,1,0,1); // inner face
+                                portals.quad(cur[3],  cur[2],  prev[2], prev[3], wn, 0,1,0,1); // outer face
+                                portals.quad(prev[1], prev[2], cur[2], cur[1], upn, 0,1,0,1); // coping
+                            }
+                            for (int k = 0; k < 4; ++k) for (int j = 0; j < 3; ++j) prev[k][j] = cur[k][j];
+                            havePrev = true;
+                        }
+                    }
                 }
             }
             Material pm;
