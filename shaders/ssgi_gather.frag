@@ -63,11 +63,19 @@ void main() {
     int   numSamp   = int(ub.params1.z);
     float bias      = ub.params1.w;
 
-    float depth = texture(depthTex, vUV).r;
+    // HALF-RES PASS OVER A FULL-RES DEPTH BUFFER — the identical defect ssao.frag
+    // documents at length: a half-res texel centre maps to full-res texel
+    // coordinate exactly 2i + 1.0, the SEAM between two depth texels, and the
+    // NEAREST depth sampler then picks one or the other on the last bit of the
+    // interpolated UV. That is a screen-locked one-texel depth error, and dFdx(P)
+    // below turns it into a wrong normal. Nudge half a full-res texel.
+    const vec2 dUV = vUV + 0.5 / vec2(ub.params1.x, ub.params1.y);
+
+    float depth = texture(depthTex, dUV).r;
     // Sky / far plane: no surface to gather indirect light for.
     if (depth >= 1.0) { outGi = vec4(0.0); return; }
 
-    vec3 P = viewPosFromDepth(vUV, depth);
+    vec3 P = viewPosFromDepth(dUV, depth);
 
     // Reconstruct the view-space geometric normal from screen derivatives of P
     // (no normal buffer — same trick as ssao.frag; stable at half-res on flats).

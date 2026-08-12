@@ -25,6 +25,7 @@
 #include "engine/asset/IModelLoader.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"
+#include "tunnel_corridor.h"    // fix/tunnel-mouth: runTunnelMouthSelfTest
 #include "strata.h"              // R-3 fold: runStrataSelfTest
 #include "elevator_showcase.h"  // R-4 fold: runElevatorShowcaseSelfTest
 #include "inventory.h"          // W9-3 RPG: runInventorySelfTest
@@ -710,6 +711,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running TERRAIN CORRIDOR DEPRESSION self-test (no-regression / "
                     "centreline depth / tile seam / joint continuity / determinism)...");
         return x3::game::runTerrainCorridorSelfTest() ? 0 : 1;
+    }
+    if (tf.testTunnelMouth) {
+        x3::logInfo("running TUNNEL MOUTH self-test (no earth on the roadway / backfill "
+                    "clears the shell / lid-terrain seam / regeneration proof)...");
+        return x3::game::runTunnelMouthSelfTest() ? 0 : 1;
     }
     if (tf.testStreaming) {
         x3::logInfo("running B3 world-streaming self-test (residency ring + async gen)...");

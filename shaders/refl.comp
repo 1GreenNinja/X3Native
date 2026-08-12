@@ -134,7 +134,13 @@ void main() {
     // source -> confidence 0 everywhere, mesh.frag stays on pure IBL specular.
     if (ub.camPos.w < 0.5) { imageStore(reflOut, px, vec4(0.0)); return; }
 
-    vec2 uv = (vec2(px) + 0.5) / vec2(outW, outH);
+    // HALF-RES DISPATCH OVER A FULL-RES DEPTH BUFFER — see ssao.frag. A half-res
+    // texel centre lands exactly on the SEAM between two full-res depth texels and
+    // the NEAREST sampler picks one or the other on the last bit of the UV; the
+    // derivative normal below multiplies that one-texel error into a screen-locked
+    // pinstripe on grazing surfaces. A quarter-output-texel nudge is half a
+    // full-res texel at half res, and a harmless sub-texel offset at full res.
+    vec2 uv = (vec2(px) + 0.5) / vec2(outW, outH) + 0.25 / vec2(outW, outH);
     float depth = texture(depthTex, uv).r;
     if (depth >= 1.0) { imageStore(reflOut, px, vec4(0.0)); return; }   // sky: not a reflector
 

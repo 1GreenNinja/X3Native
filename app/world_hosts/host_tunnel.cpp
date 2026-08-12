@@ -32,6 +32,13 @@ int hostTunnel(HostContext& hc) {
 
     x3::logInfo("--world tunnel: terrain-corridor bore demo");
 
+    // Render-pass A/B (`--set r_ssao 0` etc.) is NOT wired here any more. This
+    // host used to call its own applyWorldHostRenderCVars(); fold-0812 landed
+    // fix/world-host-cvars, which does the same thing for EVERY route from
+    // runRoute() in world_hosts.cpp before the host body runs — with a strict
+    // superset of the cvars (50 vs 37, none dropped) plus the run-long override
+    // latch and the unapplied-cvar report. A per-host call is exactly the trap
+    // that generalization removes, so the local one is gone rather than doubled.
     // ==== STEP 1 — REGISTER THE CORRIDOR, BEFORE ANY HEIGHT CONSUMER =========
     // app/terrain.h's contract: "Register corridors at BOOT, BEFORE the first
     // height query / TerrainStreamer::init()". Everything below (the streamer,
@@ -88,7 +95,12 @@ int hostTunnel(HostContext& hc) {
 
     // ==== STEP 3 — the road, the shell, the portals ==========================
     x3::game::TunnelCorridorWorld tunnel;
-    tunnel.build(scene, *device, *phys, route);
+    // The streamer's ground texture IS the terrain splat MARKER. Handing it to
+    // the tunnel is what lets the BACKFILL LID — the mesh that carries the
+    // hillside back over the cut-and-cover bore — shade through the same
+    // height/slope splat as the streamed tiles instead of reading as a separate
+    // object draped over the hill. Without it the build warns and falls back.
+    tunnel.build(scene, *device, *phys, route, streamer.groundTexture());
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
@@ -144,6 +156,9 @@ int hostTunnel(HostContext& hc) {
                 { 2, "03_far_mouth" },
                 { 3, "04_saddle"    },
                 { 4, "05_portal_detail" },
+                { 5, "06_mouth_headon" },
+                { 6, "07_inside_looking_out" },
+                { 7, "08_exit_portal" },
             };
             for (const Shot& sh : shots) {
                 float cam[5]; tunnel.showcaseCamera(route, sh.which, cam);

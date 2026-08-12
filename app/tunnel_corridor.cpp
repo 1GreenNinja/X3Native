@@ -47,6 +47,28 @@ constexpr float kBoreCut = kTcTubeCrownH + kTcShellThick + kTcMinSoilCover;   //
 
 float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+// Hermite smoothstep, 0 at a, 1 at b, clamped. Same shape the corridor
+// primitive uses for its shoulder, so the lid's blend and the terrain's blend
+// are the same curve and the seam has no kink in the derivative either.
+float sstep(float a, float b, float x) {
+    if (b <= a) return x >= b ? 1.0f : 0.0f;
+    const float t = clampf((x - a) / (b - a), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// The shell's OUTER skin: height above the road datum at lateral offset `lat`.
+// Zero outside the shell's footprint. This is the surface the backfill lid has
+// to clear and the surface the portal's spandrel springs from, so both ask this
+// one function rather than each re-deriving the ellipse.
+float shellOuterTopAt(float lat) {
+    const float a = kTcTubeHalfWidth + kTcShellThick;
+    const float b = (kTcTubeCrownH - kTcTubeWallH) + kTcShellThick;
+    const float al = std::fabs(lat);
+    if (al >= a) return 0.0f;
+    const float q = 1.0f - (al / a) * (al / a);
+    return kTcTubeWallH + b * std::sqrt(q < 0.0f ? 0.0f : q);
+}
+
 // ---------------------------------------------------------------------------
 // Tiny mesh scratch buffer. Everything below emits into one of these and then
 // uploads once — createMesh + (optionally) addStaticMesh from the same triangles.
@@ -289,57 +311,147 @@ float TunnelRoute::roadYAt(float s) const {
 }
 
 void TunnelRoute::posAt(float s, float out[3]) const {
-    // `s` is arc length from node 0, which sits at -kRouteHalfLen about the
-    // scan centre; fold it back to the centre-relative parameter.
-    out[0] = kRouteCX + dirX * (s - kRouteHalfLen);
-    out[2] = kRouteCZ + dirZ * (s - kRouteHalfLen);
+    out[0] = ox + dirX * s;
+    out[2] = oz + dirZ * s;
     out[1] = roadYAt(s);
 }
 
-// ---------------------------------------------------------------------------
-// registerTunnelCorridor — the BOOT step. Sample, grade, register, verify.
-// ---------------------------------------------------------------------------
-const TunnelRoute& registerTunnelCorridor() {
-    static TunnelRoute route;
-    static bool built = false;
-    if (built) return route;
-    built = true;
+void TunnelRoute::worldAt(float s, float lat, float& outX, float& outZ) const {
+    outX = ox + dirX * s + (-dirZ) * lat;
+    outZ = oz + dirZ * s + ( dirX) * lat;
+}
 
-    route.dirX = kRouteDirX; route.dirZ = kRouteDirZ;
-    const float rx = -kRouteDirZ, rz = kRouteDirX;    // unit lateral in XZ
-    const float ds = (2.0f * kRouteHalfLen) / (float)(kRouteNodes - 1);
-    route.totalLen = 2.0f * kRouteHalfLen;
+// ---------------------------------------------------------------------------
+// The PRE-corridor surface. terrainHeightAt() applies the registered corridors
+// LAST (`h + delta`, delta <= 0), so subtracting the delta recovers the natural
+// hillside exactly — and it does so identically before and after registration,
+// which is what lets the derivation below run either side of the boot step
+// without carrying a second copy of the height field.
+// ---------------------------------------------------------------------------
+float tunnelNaturalHeightAt(float x, float z) {
+    return terrainHeightAtWorld(x, z) - terrainCorridorDelta(x, z);
+}
 
-    // --- 1) Sample the NATURAL field on the spine and across the corridor band.
+// ---------------------------------------------------------------------------
+// THE BACKFILL LID surface.
+//
+// Over the ridge this is the natural hillside, untouched — the cut is filled
+// back to the profile it had before anyone dug. Over a cut-and-cover EXTENSION
+// (where the natural bank is lower than the tube) it is a battered mound over
+// the tube, which is what backfill over a false tunnel actually looks like.
+// Laterally the raise is blended out over the corridor's own shoulder curve, so
+// at halfWidth + falloff — where terrainCorridorDelta() is EXACTLY 0 — the lid
+// equals the untouched terrain to the last bit. That is why the outer seam is a
+// property, not a tuning. Past the seam the lid runs on as an apron sunk by
+// kTcLidSink so the streamed tiles (1 m at LOD0, 4 m at Quarter) always win the
+// depth test instead of z-fighting a coincident surface.
+// ---------------------------------------------------------------------------
+float tunnelLidHeightAt(const TunnelRoute& route, float s, float lat) {
+    float x = 0.0f, z = 0.0f;
+    route.worldAt(s, lat, x, z);
+    const float nat = tunnelNaturalHeightAt(x, z);
+    const float al  = std::fabs(lat);
+    const float W0  = kTcCorridorHalfW;
+    const float W1  = kTcCorridorHalfW + kTcCorridorFall;
+    if (al >= W1) return nat - kTcLidSink * sstep(W1, W1 + 1.2f, al);
+
+    const float ry       = route.roadYAt(s);
+    const float crownTot = kTcTubeCrownH + kTcShellThick + kTcLidCover;
+    // Battered mound: flat over the tube, dying to nothing at the seam.
+    float mound = crownTot * (1.0f - sstep(kTcTubeHalfWidth * 0.45f, W1, al));
+    const float shellTop = shellOuterTopAt(al);
+    if (shellTop > 0.0f) mound = std::max(mound, shellTop + kTcLidCover);
+
+    float y = std::max(nat, ry + mound);
+    y = nat + (y - nat) * (1.0f - sstep(W0, W1, al));
+
+    // PORTAL END TAPER. Approaching a mouth, outside the headwall's width, ease
+    // the backfill down onto the cut face. Inside the headwall's width nothing
+    // changes (the shell still has its full cover); at the zero-delta seam
+    // nothing changes either, because there the cut face IS the natural surface.
+    // It only bites on the flanks, which is exactly where the wingwall would
+    // otherwise have to retain full-height ground and would run out across the
+    // hillside as a free-standing fin.
+    if (route.boreValid && al > kTcPortalHalfW) {
+        const float dEnd = std::min(s - route.boreS0, route.boreS1 - s);
+        if (dEnd < kTcPortalTaper) {
+            const float f = (1.0f - sstep(0.0f, kTcPortalTaper, std::max(0.0f, dEnd)))
+                          * sstep(kTcPortalHalfW, kTcPortalHalfW + kTcPortalSplay, al);
+            y += (terrainHeightAtWorld(x, z) - y) * f;
+        }
+    }
+    return y;
+}
+
+// ---------------------------------------------------------------------------
+// THE DERIVATION — sample, grade, CUT TO ROAD LEVEL, then prove it.
+//
+// PURE with respect to the corridor registry: it builds its own stack
+// TerrainCorridor and evaluates it through terrainCorridorDepthAt(), so a whole
+// route can be derived for a hillside that is not (and never will be)
+// registered. --test-tunnelmouth M6 uses exactly that to re-derive the
+// construction on three OTHER hillsides and assert the mouth is still clean.
+// The fix has to be a property of the method, not of this one dome at
+// (-592, -352), because the height field gets regenerated.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct RouteSeed {
+    float cx = kRouteCX, cz = kRouteCZ;
+    float dirX = kRouteDirX, dirZ = kRouteDirZ;
+    float halfLen = kRouteHalfLen;
+};
+
+int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// How far BELOW the road datum the trench floor is driven under the roadway.
+// Not cosmetic: the road slab sits kSlabProud above the datum and its skirt
+// hangs below it, so a floor left exactly AT the datum z-fights the slab for
+// the whole 640 m. A fifth of a metre buys the whole route out of it.
+constexpr float kFloorClear = 0.22f;
+
+void deriveRoute(const RouteSeed& seed, TunnelRoute& route, TerrainCorridor& c) {
+    route = TunnelRoute{};
+    route.dirX = seed.dirX; route.dirZ = seed.dirZ;
+    route.ox = seed.cx - seed.dirX * seed.halfLen;
+    route.oz = seed.cz - seed.dirZ * seed.halfLen;
+    route.totalLen = 2.0f * seed.halfLen;
+    const float ds = route.totalLen / (float)(kRouteNodes - 1);
+
+    // --- 1) Sample the NATURAL field over the corridor's FLOOR FOOTPRINT.
+    // The sampling box is lateral AND longitudinal. The depth profile is
+    // authored at 32 nodes and interpolated linearly along each segment, so a
+    // node that only looked at its own cross-section would miss a bulge sitting
+    // BETWEEN two nodes and leave that bulge standing in the road. Half a node
+    // spacing of longitudinal reach makes the linear interpolation an upper
+    // bound in practice; step 4 then stops arguing and proves it.
     route.st.resize(kRouteNodes);
     for (int i = 0; i < kRouteNodes; ++i) {
         TunnelStation& n = route.st[i];
-        const float sc = -kRouteHalfLen + ds * (float)i;   // centre-relative
-        n.s = ds * (float)i;                               // arc length from node 0
-        n.x = kRouteCX + kRouteDirX * sc;
-        n.z = kRouteCZ + kRouteDirZ * sc;
-        n.ground = terrainHeightAtWorld(n.x, n.z);
+        n.s = ds * (float)i;
+        route.worldAt(n.s, 0.0f, n.x, n.z);
+        n.ground = tunnelNaturalHeightAt(n.x, n.z);
         n.latMin = n.latMax = n.ground;
-        // Across the tube's footprint (+/- outer half-width + margin), because
-        // the DEPTH is constant across the corridor's flat floor but the natural
-        // ground under it is not — the depression follows the hillside's lateral
-        // slope. The open cut must clear the HIGHEST ground in the band and the
-        // bore must keep cover under the LOWEST.
         for (int k = -3; k <= 3; ++k) {
-            if (k == 0) continue;
-            const float off = (float)k * (kTcTubeHalfWidth + kTcShellThick + 0.6f) / 3.0f;
-            const float h = terrainHeightAtWorld(n.x + rx * off, n.z + rz * off);
-            n.latMin = std::min(n.latMin, h);
-            n.latMax = std::max(n.latMax, h);
+            const float off = (float)k * (kTcCorridorHalfW + 0.8f) / 3.0f;
+            for (int m = -1; m <= 1; ++m) {
+                const float sl = clampf(n.s + (float)m * ds * 0.55f, 0.0f, route.totalLen);
+                float qx = 0.0f, qz = 0.0f;
+                route.worldAt(sl, off, qx, qz);
+                const float h = tunnelNaturalHeightAt(qx, qz);
+                n.latMin = std::min(n.latMin, h);
+                n.latMax = std::max(n.latMax, h);
+            }
         }
     }
 
-    // --- 2) Grade the road. Start on the surface (a shallow groove), then apply
-    // a LOWERING-ONLY grade limit: a station may not sit higher than its
-    // neighbour plus kTcMaxGrade*ds. Sweeping both ways to a fixed point yields
-    // the highest profile that respects both the terrain and the grade, which is
-    // exactly a road cutting. (Same shape as EchoRoads' raise-only relaxation,
-    // inverted, because here the ground comes DOWN to the road.)
+    // --- 2) Grade the road. UNCHANGED from the original build and still the
+    // right shape: start on the surface (a shallow groove), then a LOWERING-ONLY
+    // grade limit — a station may not sit higher than its neighbour plus
+    // kTcMaxGrade*ds — swept both ways to a fixed point. That yields the highest
+    // profile respecting both the terrain and the grade, which is exactly what a
+    // road cutting is. (EchoRoads' raise-only relaxation, inverted, because here
+    // the ground comes DOWN to the road.)
     for (int i = 0; i < kRouteNodes; ++i)
         route.st[i].roadY = route.st[i].latMax - kTcMinCut;
     const float rise = kTcMaxGrade * ds;
@@ -349,8 +461,6 @@ const TunnelRoute& registerTunnelCorridor() {
         for (int i = kRouteNodes - 2; i >= 0; --i)
             route.st[i].roadY = std::min(route.st[i].roadY, route.st[i+1].roadY + rise);
     }
-    // Light smoothing so the ribbon has no node-to-node kink, still capped by
-    // the terrain and re-grade-limited afterwards.
     for (int pass = 0; pass < 3; ++pass) {
         std::vector<float> tmp(kRouteNodes);
         for (int i = 0; i < kRouteNodes; ++i) {
@@ -365,113 +475,178 @@ const TunnelRoute& registerTunnelCorridor() {
             route.st[i].roadY = std::min(route.st[i].roadY, route.st[i+1].roadY + rise);
     }
 
-    // --- 3) The DEPTH PROFILE — the two regimes, and the portal step between.
+    // --- 3) CUT TO ROAD LEVEL, EVERYWHERE. THIS IS THE FIX.
+    //
+    // The old build had two regimes and a step between them: cut to the road on
+    // the approaches, cut only to (road + tube + cover) under the ridge so the
+    // TERRAIN was the roof. That step is what buried the first ~9 m of road
+    // inside each mouth, and no amount of sharpening removes it (see the proof
+    // at the top of tunnel_corridor.h). One regime, cut to road level all the
+    // way through the hill, and the ground can never stand on the roadway again
+    // — on this route, or on any route, or after a terrain regeneration.
+    // The hill goes back on top as a mesh (the backfill lid), the way a real
+    // cut-and-cover tunnel is built.
     for (int i = 0; i < kRouteNodes; ++i) {
         TunnelStation& n = route.st[i];
-        const float coverAvail = n.latMin - n.roadY;      // usable cover over the tube
-        if (coverAvail >= kBoreCut) {
-            // BORED reach: take only the surplus above the tube's crown + soil,
-            // and never more than kTcMaxScar — that cap is what keeps the ridge
-            // a dip instead of a canyon (BL_WORLD_PORT.md §4.3b).
-            n.depth = std::min(coverAvail - kBoreCut, kTcMaxScar);
-            n.bore = true;
-        } else {
-            // OPEN CUTTING: clear the HIGHEST ground across the band down to the
-            // road, so the ribbon is never buried on the uphill shoulder.
-            n.depth = std::max(0.0f, n.latMax - n.roadY);
-            n.bore = false;
-        }
+        n.depth = std::max(0.0f, n.latMax - n.roadY + kFloorClear);
+        n.bore  = false;                      // there is no bored regime any more
     }
 
-    // --- 4) Register. One corridor, per the primitive's boot-time contract.
-    TerrainCorridor c{};
+    c = TerrainCorridor{};
     c.nodeCount = kRouteNodes;
     c.halfWidth = kTcCorridorHalfW;
     c.falloff   = kTcCorridorFall;
     for (int i = 0; i < kRouteNodes; ++i) {
         c.x[i] = route.st[i].x; c.z[i] = route.st[i].z; c.depth[i] = route.st[i].depth;
     }
-    const bool ok = registerTerrainCorridor(c);
-    if (!ok) { x3::logError("tunnel corridor: registerTerrainCorridor REJECTED the route"); return route; }
 
-    // --- 5) Find the genuinely ENCLOSED span by re-reading the FINAL field.
-    // The union-of-capsules formulation rounds the depth step over ~halfWidth,
-    // so where the roof actually closes is NOT where the design intent says. Ask
-    // the terrain, at 2 m along the spine and across the tube's footprint.
-    const float needTop = kTcTubeCrownH + kTcShellThick + 1.2f;
-    constexpr float kSampleDs = 2.0f;
-    constexpr float kOpenTol  = 0.9f;   // "the trench floor is still at road level"
-    const int NS = (int)(route.totalLen / kSampleDs) + 1;
-    std::vector<float> clearance((size_t)NS, 0.0f);   // MIN over the tube band
-    std::vector<float> roadBury ((size_t)NS, 0.0f);   // MAX over the ROAD band
-    for (int i = 0; i < NS; ++i) {
-        const float s = kSampleDs * (float)i;
-        const float sc = -kRouteHalfLen + s;
-        const float px = kRouteCX + kRouteDirX * sc, pz = kRouteCZ + kRouteDirZ * sc;
-        const float ry = route.roadYAt(s);
-        float hMin = 1e9f, hRoadMax = -1e9f;
-        for (int k = -2; k <= 2; ++k) {
-            const float off = (float)k * (kTcTubeHalfWidth + kTcShellThick) / 2.0f;
-            hMin = std::min(hMin, terrainHeightAtWorld(px + rx*off, pz + rz*off));
+    // --- 4) CLOSE THE LOOP — sampling boxes and linear interpolation are an
+    // argument, this is a proof. Walk the FULL road width at 1 m against the
+    // corridor just built and push up any node that still lets ground stand on
+    // the roadway. Monotone (depths only rise), so it converges — in practice in
+    // one or two passes — and it is deterministic, which is what makes the
+    // result survive a regenerated height field with no hand-placed fudge.
+    for (int pass = 0; pass < 8; ++pass) {
+        std::vector<float> add((size_t)kRouteNodes, 0.0f);
+        float worst = -1e9f;
+        for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 1.0f) {
+            const float floorWant = route.roadYAt(s) - kFloorClear;
+            for (int k = -4; k <= 4; ++k) {
+                const float lat = (float)k * (kTcRoadHalfWidth + 0.9f) / 4.0f;
+                float qx = 0.0f, qz = 0.0f;
+                route.worldAt(s, lat, qx, qz);
+                const float h = tunnelNaturalHeightAt(qx, qz) - terrainCorridorDepthAt(c, qx, qz);
+                const float over = h - floorWant;
+                if (over > worst) worst = over;
+                if (over <= 0.0f) continue;
+                const int i0 = clampi((int)std::floor(s / ds), 0, kRouteNodes - 1);
+                const int i1 = std::min(i0 + 1, kRouteNodes - 1);
+                add[(size_t)i0] = std::max(add[(size_t)i0], over);
+                add[(size_t)i1] = std::max(add[(size_t)i1], over);
+            }
         }
-        for (int k = -2; k <= 2; ++k) {
-            const float off = (float)k * kTcRoadHalfWidth / 2.0f;
-            hRoadMax = std::max(hRoadMax, terrainHeightAtWorld(px + rx*off, pz + rz*off));
+        if (worst <= 0.0f) break;
+        for (int i = 0; i < kRouteNodes; ++i) {
+            route.st[i].depth += add[(size_t)i];
+            c.depth[i] = route.st[i].depth;
         }
-        clearance[(size_t)i] = hMin - ry;
-        roadBury [(size_t)i] = hRoadMax - ry;
     }
-    // (a) the longest fully-covered run ...
-    int bestA = 0, bestB = 0, runA = -1;
+
+    // --- 5) THE ROOFED SPAN, decided against the NATURAL hillside.
+    // The old build asked the POST-corridor field where the roof closed. Under
+    // cut-and-cover that field is flat by construction, so it has nothing left
+    // to say: the question "is there a tunnel here?" is a question about the
+    // HILL, and the hill is the natural surface. Roof the reach where the
+    // natural ground clears the shell's crown plus its cover, then run out past
+    // each end as far as the bank still stands proud of the road — that
+    // extension is the CUT-AND-COVER EXTENSION (a "false tunnel"), the thing
+    // that puts the mouth out in daylight on a shallow bank instead of dragging
+    // it back inside the hill.
+    const float crownTot = kTcTubeCrownH + kTcShellThick + kTcLidCover;
+    constexpr float kSpanDs = 1.0f;
+    const int NS = (int)(route.totalLen / kSpanDs) + 1;
+    std::vector<float> natCover((size_t)NS, 0.0f);
     for (int i = 0; i < NS; ++i) {
-        const bool closed = clearance[(size_t)i] >= needTop;
-        if (closed && runA < 0) runA = i;
-        if ((!closed || i == NS - 1) && runA >= 0) {
-            const int b = closed ? i : i - 1;
+        const float s = kSpanDs * (float)i;
+        const float ry = route.roadYAt(s);
+        float m = 1e9f;
+        for (int k = -3; k <= 3; ++k) {
+            const float lat = (float)k * (kTcTubeHalfWidth + kTcShellThick) / 3.0f;
+            float qx = 0.0f, qz = 0.0f;
+            route.worldAt(s, lat, qx, qz);
+            m = std::min(m, tunnelNaturalHeightAt(qx, qz) - ry);
+        }
+        natCover[(size_t)i] = m;
+    }
+    int bestA = 0, bestB = -1, runA = -1;
+    for (int i = 0; i < NS; ++i) {
+        const bool full = natCover[(size_t)i] >= crownTot;
+        if (full && runA < 0) runA = i;
+        if ((!full || i == NS - 1) && runA >= 0) {
+            const int b = full ? i : i - 1;
             if (b - runA > bestB - bestA) { bestA = runA; bestB = b; }
             runA = -1;
         }
     }
-    route.coverS0 = kSampleDs * (float)bestA;
-    route.coverS1 = kSampleDs * (float)bestB;
-    route.boreValid = (route.coverS1 - route.coverS0) > 30.0f;
-    // (b) ... grown outward over the PORTAL RAMPS, to the last station where the
-    // ROAD ITSELF is genuinely clear. The test has to be the MAX over the road
-    // band, not the min over the tube band: the corridor removes a constant
-    // depth, so its floor keeps the hillside's lateral tilt, and the downhill
-    // shoulder can be well below the road while the centreline is already
-    // buried. Anything in between must be inside the shell or the driver runs
-    // into a grass bank in front of a concrete portal.
-    int a2 = bestA, b2 = bestB;
-    while (a2 > 0      && (clearance[(size_t)(a2 - 1)] > kOpenTol ||
-                           roadBury [(size_t)(a2 - 1)] > 0.30f)) --a2;
-    while (b2 < NS - 1 && (clearance[(size_t)(b2 + 1)] > kOpenTol ||
-                           roadBury [(size_t)(b2 + 1)] > 0.30f)) ++b2;
-    route.boreS0 = kSampleDs * (float)a2;
-    route.boreS1 = kSampleDs * (float)b2;
-    // How much of the road inside each mouth is still under an earth ramp —
-    // the honest residual of the technique. Reported, not hidden.
-    float buriedIn = 0.0f;
-    // "Under an earth ramp" means the ground is above the road but still inside
-    // the drivable envelope — deeper than that and it is honest soil cover.
-    for (int i = a2; i <= b2; ++i)
-        if (roadBury[(size_t)i] > 0.30f && roadBury[(size_t)i] < kTcTubeCrownH) buriedIn += kSampleDs;
-    route.buriedRoadLen = buriedIn;
+    if (bestB >= bestA) {
+        route.coverS0 = kSpanDs * (float)bestA;
+        route.coverS1 = kSpanDs * (float)bestB;
+        int a2 = bestA, b2 = bestB;
+        const int maxExt = (int)(kTcPortalExtend / kSpanDs);
+        while (a2 > 0 && (bestA - a2) < maxExt &&
+               natCover[(size_t)(a2 - 1)] >= kTcPortalMinBank) --a2;
+        while (b2 < NS - 1 && (b2 - bestB) < maxExt &&
+               natCover[(size_t)(b2 + 1)] >= kTcPortalMinBank) ++b2;
+        // Keep both portals off the very ends of the corridor: a portal needs an
+        // approach cutting in front of it, and the corridor's own end caps round
+        // the depth off over ~halfWidth there.
+        route.boreS0 = clampf(kSpanDs * (float)a2, 24.0f, route.totalLen - 24.0f);
+        route.boreS1 = clampf(kSpanDs * (float)b2, 24.0f, route.totalLen - 24.0f);
+        route.boreValid = (route.boreS1 - route.boreS0) > 40.0f;
+    }
 
-    char b[512];
+    // --- 6) MEASURE THE DEFECT. Full road width, 0.5 m, against the final
+    // field. Under cut-and-cover both numbers come out 0 / negative; they are
+    // logged every boot and asserted by --test-tunnelmouth M1/M2 so a future
+    // change to the grading or the falloff cannot quietly bring the ramp back.
+    route.maxRoadBury = -1e9f;
+    route.buriedRoadLen = 0.0f;
+    for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 0.5f) {
+        const float ry = route.roadYAt(s);
+        float worst = -1e9f;
+        for (int k = -6; k <= 6; ++k) {
+            const float lat = (float)k * kTcRoadHalfWidth / 6.0f;
+            float qx = 0.0f, qz = 0.0f;
+            route.worldAt(s, lat, qx, qz);
+            const float h = tunnelNaturalHeightAt(qx, qz) - terrainCorridorDepthAt(c, qx, qz);
+            worst = std::max(worst, h - ry);
+        }
+        if (worst > 0.0f) route.buriedRoadLen += 0.5f;
+        route.maxRoadBury = std::max(route.maxRoadBury, worst);
+    }
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// registerTunnelCorridor — the BOOT step. Derive, register, report.
+// ---------------------------------------------------------------------------
+const TunnelRoute& registerTunnelCorridor() {
+    static TunnelRoute route;
+    static bool built = false;
+    if (built) return route;
+    built = true;
+
+    RouteSeed seed{};
+    TerrainCorridor c{};
+    deriveRoute(seed, route, c);
+
+    if (!registerTerrainCorridor(c)) {
+        x3::logError("tunnel corridor: registerTerrainCorridor REJECTED the route");
+        route.boreValid = false;
+        return route;
+    }
+
+    float maxCut = 0.0f;
+    for (const auto& n : route.st) maxCut = std::max(maxCut, n.latMax - n.roadY);
+    char b[640];
     std::snprintf(b, sizeof(b),
-        "tunnel corridor: registered 1 corridor, %d nodes, %.0f m, halfWidth %.1f/%.1f | "
-        "road %.1f..%.1f m | max cut %.1f m | SHELL s=%.0f..%.0f (%.0f m), of which "
-        "fully buried s=%.0f..%.0f (%.0f m); %.0f m of road inside the shell still "
-        "carries an earth ramp (the portal-sweep residual)",
+        "tunnel corridor: CUT-AND-COVER — 1 corridor, %d nodes, %.0f m, floor %.1f/%.1f | "
+        "road %.1f..%.1f m | max cut %.1f m | ROOFED s=%.0f..%.0f (%.0f m), of which the "
+        "natural hillside alone covers s=%.0f..%.0f (%.0f m) and the rest is the "
+        "cut-and-cover extension | road under earth: %.1f m (worst ground-above-road "
+        "%.2f m — negative is the trench floor sitting under the slab, which is correct)",
         kRouteNodes, route.totalLen, kTcCorridorHalfW, kTcCorridorFall,
-        route.st.front().roadY, route.st.back().roadY,
-        [&]{ float m = 0; for (auto& n : route.st) m = std::max(m, n.latMax - n.roadY); return m; }(),
+        route.st.front().roadY, route.st.back().roadY, maxCut,
         route.boreS0, route.boreS1, route.boreS1 - route.boreS0,
-        route.coverS0, route.coverS1, route.coverS1 - route.coverS0, route.buriedRoadLen);
+        route.coverS0, route.coverS1, route.coverS1 - route.coverS0,
+        route.buriedRoadLen, route.maxRoadBury);
     x3::logInfo(b);
+    if (route.buriedRoadLen > 0.0f)
+        x3::logError("tunnel corridor: THE MOUTH DEFECT IS BACK — ground is standing on the "
+                     "roadway. Run --test-tunnelmouth.");
     if (!route.boreValid)
-        x3::logWarn("tunnel corridor: no enclosed span found — the demo will be an open cutting only");
+        x3::logWarn("tunnel corridor: no roofed span found — the demo will be an open cutting only");
     return route;
 }
 
@@ -479,7 +654,8 @@ const TunnelRoute& registerTunnelCorridor() {
 // TunnelCorridorWorld::build
 // ---------------------------------------------------------------------------
 bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
-                                x3::phys::IPhysicsWorld& physics, const TunnelRoute& route) {
+                                x3::phys::IPhysicsWorld& physics, const TunnelRoute& route,
+                                x3::rhi::TextureHandle groundTex) {
     if (route.st.size() < 2) return false;
     const float axis[3]  = { route.dirX, 0.0f, route.dirZ };
     const float right[3] = { -route.dirZ, 0.0f, route.dirX };
@@ -513,7 +689,22 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // nothing more; when assets/surface_library is present the concrete is
     // dressed from authored PBR sets (albedo + normal + mr) instead.
     //
-    //   BORE LINING -> cv_shotcrete_break. A road bore is lined with SHOTCRETE
+    //   BORE LINING -> cc_cement_white. c8d28eda picked cv_shotcrete_break here
+    //     on the reasoning that a bore is lined with sprayed concrete, which is
+    //     true, and that it was the only concrete-family set with a real
+    //     multi-channel mr, which was true then. LOOK AT THE SET, though: it is
+    //     shotcrete AFTER A FAILURE - a cracked face with loose rubble in the
+    //     fissures. Swept over 330 m of arch it tiles into a field of scales and
+    //     the bore reads as a lava tube, at every texel density tried (0.30,
+    //     0.62, 1.05 - three passes on that number before the material itself
+    //     turned out to be the problem). cc_cement_white is a smooth pale cement,
+    //     ships the RICHEST maps in the whole library (a 5 MB multi-channel mr
+    //     and a 11.8 MB normal, both far beyond the shotcrete set), and pale is
+    //     also what a road tunnel is actually lined in - the lining is chosen to
+    //     raise interior luminance so drivers adapt faster coming in from
+    //     daylight. It is tinted down slightly because near-white under eight
+    //     point lights clips.
+    //   (kept for the record) cv_shotcrete_break. A road bore is lined with SHOTCRETE
     //     — sprayed concrete straight onto the excavated face — so this is the
     //     literally-correct material, not a lookalike. It is also the only
     //     concrete-family set in the library that ships a REAL multi-channel mr
@@ -540,7 +731,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     //     a pale cement), so the ribbon keeps its procedural low-contrast dark
     //     checker rather than being dressed in something that is not asphalt.
     m_surf.mount(x3::game::assetRoot() + "/surface_library");
-    const SurfaceSet& boreSet   = m_surf.get(device, "cv_shotcrete_break");
+    const SurfaceSet& boreSet   = m_surf.get(device, "cc_cement_white");
     const SurfaceSet& portalSet = m_surf.get(device, "mw_concrete_panels_a");
     if (!boreSet.ok || !portalSet.ok)
         x3::logWarn("tunnel corridor: surface_library set(s) unavailable — "
@@ -662,89 +853,395 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         upload(paint, pm, /*collide*/false);
     }
 
+    // ================= 1b) THE SHOULDERS ===================================
+    // The road slab was ending in mid-air over its own trench. The corridor
+    // removes a CONSTANT depth, so its floor keeps the hillside's lateral tilt
+    // and the downhill shoulder can sit several metres below the road datum;
+    // the slab's skirt reached down into that but read as a black cliff hanging
+    // off the carriageway (c8d28eda called this out and left it). A road does
+    // not end at the white line, so:
+    //   * OUTSIDE the roofed span the shoulder is a graded VERGE, swept from the
+    //     slab edge out to the corridor floor's edge and never allowed to sink
+    //     below the real ground, drawn with the TERRAIN SPLAT MARKER so it is
+    //     the same grass/rock the cutting is made of.
+    //   * INSIDE it is a flat concrete VERGE from the white line to the shell's
+    //     springing, which is what a real bore has and which also closes the
+    //     slab-to-shell gap the driver would otherwise see straight down.
+    {
+        MeshBuf verge, walk;
+        const float lat0 = kTcRoadHalfWidth - 0.05f;      // just inside the slab edge
+        const float latIn = kTcTubeHalfWidth;             // the shell's springing
+        constexpr float kFillBatter = 1.5f;               // 1 down : 1.5 out, a road fill
+        constexpr float kFillStep   = 0.9f;
+        constexpr int   kFillMax    = 26;                 // ~23 m of reach, then give up
+        auto qn = [](const float a[3], const float b[3], const float c[3], float out[3]) {
+            const float e0[3] = { b[0]-a[0], b[1]-a[1], b[2]-a[2] };
+            const float e1[3] = { c[0]-a[0], c[1]-a[1], c[2]-a[2] };
+            out[0] = e0[1]*e1[2] - e0[2]*e1[1];
+            out[1] = e0[2]*e1[0] - e0[0]*e1[2];
+            out[2] = e0[0]*e1[1] - e0[1]*e1[0];
+            if (out[1] < 0.0f) { out[0] = -out[0]; out[1] = -out[1]; out[2] = -out[2]; }
+            const float l = std::sqrt(out[0]*out[0] + out[1]*out[1] + out[2]*out[2]);
+            if (l > 1e-5f) { out[0] /= l; out[1] /= l; out[2] /= l; }
+        };
+        auto ground = [&](float s, float lat) {
+            float x = 0.0f, z = 0.0f; route.worldAt(s, lat, x, z);
+            return terrainHeightAtWorld(x, z);
+        };
+        // Embankment surface at (s, lat): falls away from the slab edge at a road
+        // fill batter and stops the moment it reaches the ground. On the uphill
+        // shoulder the ground is already there and this is one thin quad; on the
+        // downhill shoulder it reaches as far as it has to.
+        auto fillY = [&](float s, float lat, float from) {
+            const float ry = route.roadYAt(s) + 0.14f;
+            return std::max(ry - (lat - from) / kFillBatter, ground(s, lat) + 0.05f);
+        };
+        const bool roofed = route.boreValid;
+        for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
+            const float sa = roadFrames[j].s, sb = roadFrames[j+1].s;
+            const bool inBore = roofed && sa >= route.boreS0 - kTcCanopy
+                                       && sb <= route.boreS1 + kTcCanopy;
+            for (int sgn = -1; sgn <= 1; sgn += 2) {
+                const float g = (float)sgn;
+                auto P = [&](float s, float lat, float y, float out[3]) {
+                    route.worldAt(s, g * lat, out[0], out[2]);
+                    out[1] = y;
+                };
+                const float fillFrom = inBore ? latIn : lat0;
+                if (inBore) {
+                    const float ya = route.roadYAt(sa) + 0.14f;
+                    const float yb = route.roadYAt(sb) + 0.14f;
+                    float p0[3], p1[3], p2[3], p3[3], n[3];
+                    P(sa, lat0,  ya, p0); P(sa, latIn, ya, p1);
+                    P(sb, latIn, yb, p2); P(sb, lat0,  yb, p3);
+                    qn(p0, p1, p2, n);
+                    walk.quad(p0, p1, p2, p3, n, 0.0f, 1.0f, sa * 0.25f, sb * 0.25f);
+                    // and drop its outer edge to the trench floor so nothing is
+                    // ever seen under the verge from inside the bore
+                    float q0[3], q1[3];
+                    P(sa, latIn, ground(sa, latIn) - 0.4f, q0);
+                    P(sb, latIn, ground(sb, latIn) - 0.4f, q1);
+                    const float nf[3] = { g * right[0], 0.0f, g * right[2] };
+                    walk.quad(p1, q0, q1, p2, nf, 0.0f, 1.0f, sa * 0.25f, sb * 0.25f);
+                }
+                {
+                    // THE FILL EMBANKMENT. This is what the corridor cannot do
+                    // for itself: the depression removes a CONSTANT depth, so on
+                    // a side-slope its floor keeps the whole lateral tilt and the
+                    // carriageway ends up on a shelf with a 10 m drop off one
+                    // shoulder (d.png, pass 5 - and c8d28eda already called the
+                    // symptom out as "the slab ends in mid-air"). A real road on a
+                    // side-slope is FILLED out to a toe. So: fall away from the
+                    // slab edge at a road batter and keep going until the ground
+                    // is reached, however far that is.
+                    // It runs on the roofed span too (starting outside the
+                    // concrete verge, where it is buried under the backfill and
+                    // costs only triangles): stopping it at the portal left an
+                    // open wedge at the arch springing where the verge handed
+                    // over to the embankment, and that wedge read as a black
+                    // notch bitten out of the mouth.
+                    for (int k = 0; k < kFillMax; ++k) {
+                        const float l0 = fillFrom + kFillStep * (float)k;
+                        const float l1 = l0 + kFillStep;
+                        float p0[3], p1[3], p2[3], p3[3], n[3];
+                        P(sa, l0, fillY(sa, l0, fillFrom), p0);
+                        P(sa, l1, fillY(sa, l1, fillFrom), p1);
+                        P(sb, l1, fillY(sb, l1, fillFrom), p2);
+                        P(sb, l0, fillY(sb, l0, fillFrom), p3);
+                        qn(p0, p1, p2, n);
+                        verge.quad(p0, p1, p2, p3, n, p0[0]*0.05f, p1[0]*0.05f,
+                                   p0[2]*0.05f, p2[2]*0.05f);
+                        if (fillY(sa, l1, fillFrom) <= ground(sa, l1) + 0.06f &&
+                            fillY(sb, l1, fillFrom) <= ground(sb, l1) + 0.06f) break;
+                    }
+                }
+            }
+        }
+        Material vm;
+        if (groundTex.valid()) vm.alb = groundTex;   // the MARKER: terrain splat
+        else { vm.alb = asphaltTex; vm.mr = roughMR; }
+        upload(verge, vm, /*collide*/true);
+        Material km;
+        if (portalSet.ok) {
+            km.alb = portalSet.albedo; km.mr = portalSet.mr; km.nrm = portalSet.normal;
+            const float v = portalSet.valueTint() * 0.86f;
+            km.tint[0] = km.tint[1] = km.tint[2] = v;
+        } else { km.alb = concreteTex; km.mr = wallMR; }
+        upload(walk, km, /*collide*/true);
+    }
+
     // ================= 2) THE TUNNEL SHELL ==================================
     if (route.boreValid) {
         const Profile inner = makeProfile(kTcTubeHalfWidth, kTcTubeWallH, kTcTubeCrownH);
         const Profile outer = offsetProfile(inner, kTcShellThick);
-        // The tube runs the full enclosed span, plus a short canopy at each end
-        // so the concrete (not the raw terrain step) is what you drive into.
-        constexpr float kCanopy = 1.5f;
-        const float s0 = std::max(0.0f, route.boreS0 - kCanopy);
-        const float s1 = std::min(route.totalLen, route.boreS1 + kCanopy);
+        // The tube runs the full ROOFED span plus a projecting CANOPY at each
+        // end. In a real portal the arch ring stands proud of the headwall face,
+        // and that few centimetres of relief is most of what makes a mouth read
+        // as built rather than punched.
+        const float s0 = std::max(0.0f, route.boreS0 - kTcCanopy);
+        const float s1 = std::min(route.totalLen, route.boreS1 + kTcCanopy);
         std::vector<Frame> bf;
         for (float s = s0; s <= s1 + 0.01f; s += 3.0f) bf.push_back(frameAt(s));
         if (bf.back().s < s1 - 0.01f) bf.push_back(frameAt(s1));
 
         MeshBuf shell;
         // TEXEL DENSITY. 0.14 (one tile per 7.1 m) was set for the procedural
-        // checker, where tile size is arbitrary. On a real 2K shotcrete albedo it
-        // is wrong by about 2x: the set's largest crack spans half the tile, so at
-        // 7.1 m it draws a 3.5 m fissure and the bore reads as a collapsed cavern
-        // rather than a lined tunnel. 0.30 (one tile per 3.3 m) puts that same
-        // crack at ~1.6 m — shotcrete crazing at the scale a driver would see it.
-        const float kBoreUV = boreSet.ok ? 0.30f : 0.14f;
+        // checker, where tile size is arbitrary. c8d28eda moved it to 0.30 (one
+        // tile per 3.3 m) for the real 2K shotcrete set, reasoning the set's
+        // largest crack would then draw at ~1.6 m. On the frames it still did not
+        // read as shotcrete: at 1.6 m the crazing is BOULDER-sized and 300 m of
+        // bore looks like a lava tube, which is what the first pass'
+        // 07_inside_looking_out showed. 0.62 (one tile per 1.6 m) puts the same
+        // crack at ~0.8 m. That STILL read as a repeating motif - fish scales
+        // rather than concrete - and so did 1.05. The number was never the
+        // problem: cv_shotcrete_break is a picture of BROKEN concrete and no
+        // scale makes broken concrete read as a lining. With cc_cement_white the
+        // surface has no motif to give away, so the density goes back to a sane
+        // architectural 0.22 (one tile per 4.5 m) - low enough that the set's
+        // fine detail stops aliasing into a moire on the walls at the grazing
+        // angles a 330 m bore is nearly all made of.
+        const float kBoreUV = boreSet.ok ? 0.22f : 0.14f;
         emitSweep(shell, bf, right, inner, -1.0f, kBoreUV);   // drivable bore surface
         emitSweep(shell, bf, right, outer, +1.0f, kBoreUV);   // buried outer skin
+        // END-CAP ANNULUS at both mouths. Without it the sweep is a pair of
+        // zero-thickness skins seen edge-on from outside and the arch has a
+        // paper edge; with it the ring reads as a 0.9 m concrete section. It is
+        // the cheapest detail on the whole portal and one of the loudest.
+        {
+            const float upv[3] = { 0.0f, 1.0f, 0.0f }; (void)upv;
+            for (int e = 0; e < 2; ++e) {
+                const Frame f = (e == 0) ? bf.front() : bf.back();
+                const float n[3] = { (e == 0 ? -axis[0] : axis[0]), 0.0f,
+                                     (e == 0 ? -axis[2] : axis[2]) };
+                auto W = [&](const Profile& pr, int k, float out[3]) {
+                    out[0] = f.p[0] + right[0] * pr.px[k];
+                    out[1] = f.p[1] + pr.py[k];
+                    out[2] = f.p[2] + right[2] * pr.px[k];
+                };
+                for (int k = 0; k + 1 < Profile::kN; ++k) {
+                    float a[3], b2[3], c2[3], d2[3];
+                    W(inner, k, a); W(inner, k + 1, b2); W(outer, k + 1, c2); W(outer, k, d2);
+                    shell.quad(a, b2, c2, d2, n, 0.0f, 0.35f, 0.0f, 0.35f);
+                }
+            }
+        }
         Material sm;
-        if (boreSet.ok) { sm.alb = boreSet.albedo; sm.mr = boreSet.mr; sm.nrm = boreSet.normal; }
-        else            { sm.alb = concreteTex;    sm.mr = wallMR; }
+        if (boreSet.ok) {
+            sm.alb = boreSet.albedo; sm.mr = boreSet.mr; sm.nrm = boreSet.normal;
+            const float v = boreSet.valueTint() * 0.80f;   // pale lining, kept out of clip
+            sm.tint[0] = sm.tint[1] = sm.tint[2] = v;
+        } else { sm.alb = concreteTex; sm.mr = wallMR; }
         upload(shell, sm, /*collide*/true);
 
-        // ---- Portal headwalls. The corridor's depth step leaves a real earth
-        // face at each mouth; this is what caps it.
+        // ================= 3) THE BACKFILL LID ==============================
+        // The hillside over the tube, put back as geometry.
+        //
+        // This is the deliberate, LOCAL break of the single-value rule, and it
+        // is the whole fix. The heightfield underneath is now a flat-floored
+        // trench for the entire route (see deriveRoute step 3) so it can never
+        // stand on the roadway again; this ONE swept mesh carries the overhang
+        // the heightfield is not allowed to have. Everything that reads h(x,z)
+        // — the streamer, the collision soup, the horizon ring, placeOnTerrain,
+        // worldWaterLevelAt — is untouched and still sees a single-valued field.
+        //
+        // WHY IT IS INVISIBLE AS AN OBJECT: it is drawn with the terrain SPLAT
+        // MARKER handle, so the renderer flags the draw as terrain and runs the
+        // same height/slope grass/rock/snow/sand splat, on the same WORLD-SPACE
+        // UVs, as the streamed tiles (vk_passes.cpp m_terrainMarkerId). It is
+        // not a lookalike material — it is the same shading path.
+        //
+        // WHY THE SEAM IS EXACT: tunnelLidHeightAt() blends its raise out over
+        // the corridor's own shoulder curve, so at halfWidth + falloff — where
+        // terrainCorridorDelta() is EXACTLY 0.0f and the terrain is therefore
+        // bit-identical to the natural field — the lid equals the terrain. Past
+        // that it runs on as an apron sunk by kTcLidSink, so a streamed tile
+        // meshing at 2 m or 4 m (Half/Quarter LOD) still wins the depth test
+        // instead of z-fighting a coincident surface.
+        //
+        // COST: ~2 k quads, one draw, one static collision body. That is the
+        // honest price of the overhang, and it is paid twice per world at most.
+        {
+            MeshBuf lid;
+            const float WA = kTcCorridorHalfW + kTcCorridorFall + kTcLidApron;
+            const int   NL = kTcLidLateral;
+            std::vector<float> lats((size_t)NL);
+            for (int k = 0; k < NL; ++k)
+                lats[(size_t)k] = -WA + 2.0f * WA * (float)k / (float)(NL - 1);
+            std::vector<float> ss;
+            for (float s = route.boreS0; s <= route.boreS1 - 0.01f; s += kTcLidStep) ss.push_back(s);
+            ss.push_back(route.boreS1);
+
+            auto lidP = [&](float s, float lat, float out[3]) {
+                float x = 0.0f, z = 0.0f;
+                route.worldAt(s, lat, x, z);
+                out[0] = x; out[1] = tunnelLidHeightAt(route, s, lat); out[2] = z;
+            };
+            const uint32_t lbase = (uint32_t)lid.v.size();
+            for (size_t j = 0; j < ss.size(); ++j) {
+                for (int k = 0; k < NL; ++k) {
+                    float p[3]; lidP(ss[j], lats[(size_t)k], p);
+                    // Normal from a central difference of the lid surface itself
+                    // (not of the height field), so the lid's shading runs
+                    // continuously into the terrain it is reconstructing — the
+                    // splat keys off the world normal, and a mismatched normal
+                    // is what would make the seam show as a band of rock.
+                    const float e = 0.75f;
+                    float a[3], b2[3], c2[3], d2[3];
+                    lidP(ss[j] - e, lats[(size_t)k], a);
+                    lidP(ss[j] + e, lats[(size_t)k], b2);
+                    lidP(ss[j], lats[(size_t)k] - e, c2);
+                    lidP(ss[j], lats[(size_t)k] + e, d2);
+                    const float t1[3] = { b2[0]-a[0],  b2[1]-a[1],  b2[2]-a[2]  };
+                    const float t2[3] = { d2[0]-c2[0], d2[1]-c2[1], d2[2]-c2[2] };
+                    float n[3] = { t1[1]*t2[2] - t1[2]*t2[1],
+                                   t1[2]*t2[0] - t1[0]*t2[2],
+                                   t1[0]*t2[1] - t1[1]*t2[0] };
+                    if (n[1] < 0.0f) { n[0] = -n[0]; n[1] = -n[1]; n[2] = -n[2]; }
+                    const float nl = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+                    if (nl > 1e-5f) { n[0] /= nl; n[1] /= nl; n[2] /= nl; }
+                    lid.vert(p, n, p[0] * 0.05f, p[2] * 0.05f);
+                }
+            }
+            for (uint32_t j = 0; j + 1 < (uint32_t)ss.size(); ++j) {
+                for (uint32_t k = 0; k + 1 < (uint32_t)NL; ++k) {
+                    const uint32_t a  = lbase + j * (uint32_t)NL + k;
+                    const uint32_t b2 = a + 1;
+                    const uint32_t c2 = b2 + (uint32_t)NL;
+                    const uint32_t d2 = a + (uint32_t)NL;
+                    lid.i.push_back(a); lid.i.push_back(b2); lid.i.push_back(c2);
+                    lid.i.push_back(a); lid.i.push_back(c2); lid.i.push_back(d2);
+                }
+            }
+            Material lm;
+            if (groundTex.valid()) {
+                lm.alb = groundTex;   // the MARKER: shades through the terrain splat
+            } else {
+                x3::logWarn("tunnel corridor: no terrain splat marker passed to build() — "
+                            "the backfill lid falls back to a flat earth tone and will read "
+                            "as a tarpaulin over the hill");
+                lm.alb = tex(x3::prims::makeCheckerRGBA(128, 32, 86, 98, 58, 74, 84, 50), 128, true);
+                lm.mr  = roughMR;
+            }
+            upload(lid, lm, /*collide*/true);
+            char lb[192];
+            std::snprintf(lb, sizeof(lb),
+                "tunnel corridor: backfill lid %.0f m x %.1f m, %u quads, splat=%s",
+                route.boreS1 - route.boreS0, 2.0f * WA,
+                (unsigned)((ss.size() - 1) * (size_t)(NL - 1)),
+                groundTex.valid() ? "TERRAIN MARKER" : "fallback earth");
+            x3::logInfo(lb);
+        }
+
+        // ================= 4) THE PORTALS ===================================
+        // A real road-tunnel portal is three things at once, and the old build
+        // only had the first:
+        //   * a HEADWALL — a slab across the face with the bore cut through its
+        //     spandrel, standing kTcPortalProud above the backfill it retains;
+        //   * WINGWALLS — the same slab tapering out of the headwall and dying
+        //     into the hillside, holding the cut face back on each flank. Here
+        //     they taper to the LID's own surface over kTcPortalSplay and then
+        //     follow it out to the zero-delta seam, where their height goes to
+        //     nothing on its own. Nothing is trimmed to fit; the taper is the
+        //     same function the lid uses, so they cannot disagree.
+        //   * the projecting ARCH RING, already emitted above as the shell's
+        //     canopy + end-cap annulus.
+        // The spandrel's lower edge IS shellOuterTopAt() — the exact ellipse the
+        // shell's outer skin was swept on — so the concrete meets the tube with
+        // no gap and no overlap by construction rather than by tolerance.
         {
             MeshBuf portals;
-            const float rectHalfW = kTcCorridorHalfW + 4.0f;
-            // Deep enough that the headwall's bottom edge is always buried, even
-            // on the downhill shoulder where the trench floor falls away.
-            const float rectBot   = -6.0f;
+            const float aOut = kTcTubeHalfWidth + kTcShellThick;
+            const float W1   = kTcCorridorHalfW + kTcCorridorFall;
+            // Column samples: dense across the arch (so the spandrel follows the
+            // ellipse), coarser out along the wingwalls. ±aOut are sampled
+            // EXACTLY, or a strip would slice across the springing.
+            std::vector<float> lats;
+            for (int k = -12; k <= 12; ++k) lats.push_back(aOut * (float)k / 12.0f);
+            for (int k = 1; k <= 22; ++k) {
+                const float t = aOut + (W1 - aOut) * (float)k / 22.0f;
+                lats.insert(lats.begin(), -t);
+                lats.push_back(t);
+            }
+
             for (int end = 0; end < 2; ++end) {
-                const float sEnd = (end == 0) ? s0 : s1;
-                const float sBack = (end == 0) ? s0 + 1.6f : s1 - 1.6f;
-                // Size the headwall to the GROUND it is capping. A fixed height
-                // either leaves the earth face showing (too short) or stands the
-                // slab proud of the hillside like a billboard (too tall) — the
-                // two ends of this route sit on very different gradients.
-                float rectTop = kTcTubeCrownH + kTcShellThick + 0.8f;
-                {
-                    const Frame fe = frameAt(sEnd);
-                    float hMin = 1e9f;
-                    for (int k = -2; k <= 2; ++k) {
-                        const float off = (float)k * (kTcTubeHalfWidth + kTcShellThick) / 2.0f;
-                        hMin = std::min(hMin, terrainHeightAtWorld(fe.p[0] + right[0]*off,
-                                                                   fe.p[2] + right[2]*off));
-                    }
-                    rectTop = clampf(hMin - fe.p[1] + 1.4f,
-                                     kTcTubeCrownH + kTcShellThick + 0.8f,
-                                     kTcTubeCrownH + kTcShellThick + 3.4f);
+                const float sFace = (end == 0) ? route.boreS0 : route.boreS1;
+                const float sgn   = (end == 0) ? 1.0f : -1.0f;         // inward along s
+                const float sBack = sFace + sgn * kTcPortalThick;
+                const float outN[3] = { -sgn * axis[0], 0.0f, -sgn * axis[2] };
+                const float inN [3] = {  sgn * axis[0], 0.0f,  sgn * axis[2] };
+                const float upN [3] = { 0.0f, 1.0f, 0.0f };
+
+                // The parapet line: the highest backfill the headwall has to
+                // retain across its own width, plus the proud edge.
+                float hwTop = -1e9f;
+                for (int k = 0; k <= 24; ++k) {
+                    const float lat = -kTcPortalHalfW + 2.0f * kTcPortalHalfW * (float)k / 24.0f;
+                    hwTop = std::max(hwTop, tunnelLidHeightAt(route, sFace, lat));
                 }
-                const Frame fa = frameAt(sEnd), fb = frameAt(sBack);
-                const float outN[3] = { (end == 0 ? -axis[0] : axis[0]), 0.0f,
-                                        (end == 0 ? -axis[2] : axis[2]) };
-                const float inN[3]  = { -outN[0], 0.0f, -outN[2] };
-                emitPortalFace(portals, fa.p, right, outN, inner, rectHalfW, rectTop, rectBot);
-                emitPortalFace(portals, fb.p, right, inN,  inner, rectHalfW, rectTop, rectBot);
-                // Rim strip so the slab has thickness from a grazing angle.
-                const float up[3] = { 0, 1, 0 };
-                auto W = [&](const Frame& f, float sx, float sy, float out[3]) {
-                    out[0] = f.p[0] + right[0]*sx + up[0]*sy;
-                    out[1] = f.p[1] + right[1]*sx + up[1]*sy;
-                    out[2] = f.p[2] + right[2]*sx + up[2]*sy;
+                hwTop += kTcPortalProud;
+
+                // The wall's top profile: flat at hwTop across the headwall,
+                // tapering out to the LID over kTcPortalSplay, and NEVER below
+                // the lid, because the lid is the backfill this wall retains.
+                // Pass 2 tried a plain monotone-descending clamp to kill the
+                // ragged top edge; that clamp can drop the wall BELOW the lid on
+                // a rising flank, and where it did you could see straight through
+                // the portal into the void under the backfill (the green slot at
+                // the top right of 08_exit_portal). Taking the max against the
+                // lid is both the smooth-edge fix and the no-gap guarantee, and
+                // it needs no clamp at all: inside the headwall the blend is
+                // exactly hwTop, and hwTop is by definition the highest lid there.
+                std::vector<float> tops(lats.size(), 0.0f);
+                for (size_t k = 0; k < lats.size(); ++k) {
+                    const float al = std::fabs(lats[k]);
+                    const float lidY = tunnelLidHeightAt(route, sFace, lats[k]);
+                    const float w = sstep(kTcPortalHalfW, kTcPortalHalfW + kTcPortalSplay, al);
+                    tops[k] = std::max(hwTop + (lidY - hwTop) * w, lidY);
+                }
+                // Smooth the top edge, then re-assert the no-gap guarantee. The
+                // wingwall inherits the hillside's small-scale noise otherwise
+                // and its coping comes out as a staircase (a.png / e.png, pass 6).
+                for (int it = 0; it < 3; ++it) {
+                    std::vector<float> tmp = tops;
+                    for (size_t k = 1; k + 1 < tops.size(); ++k)
+                        tmp[k] = 0.25f*tops[k-1] + 0.5f*tops[k] + 0.25f*tops[k+1];
+                    tops.swap(tmp);
+                }
+                for (size_t k = 0; k < lats.size(); ++k)
+                    tops[k] = std::max(tops[k], tunnelLidHeightAt(route, sFace, lats[k]));
+                auto colTop = [&](size_t k) { return tops[k]; };
+                auto colBase = [&](float lat, float sAt) {
+                    const float al = std::fabs(lat);
+                    const float ry = route.roadYAt(sAt);
+                    if (al <= aOut) return ry + shellOuterTopAt(al);
+                    float x = 0.0f, z = 0.0f;
+                    route.worldAt(sAt, lat, x, z);
+                    return std::min(terrainHeightAtWorld(x, z), ry) - 1.4f;
                 };
-                const float corner[4][2] = { { -rectHalfW, rectBot }, { rectHalfW, rectBot },
-                                             { rectHalfW, rectTop }, { -rectHalfW, rectTop } };
-                for (int k = 0; k < 4; ++k) {
-                    const int k2 = (k + 1) & 3;
-                    float a[3], b[3], c[3], d[3];
-                    W(fa, corner[k][0],  corner[k][1],  a);
-                    W(fa, corner[k2][0], corner[k2][1], b);
-                    W(fb, corner[k2][0], corner[k2][1], c);
-                    W(fb, corner[k][0],  corner[k][1],  d);
-                    float mx = (corner[k][0] + corner[k2][0]) * 0.5f;
-                    float my = (corner[k][1] + corner[k2][1]) * 0.5f;
-                    const float ml = std::sqrt(mx*mx + my*my); if (ml > 1e-4f) { mx /= ml; my /= ml; }
-                    const float n[3] = { right[0]*mx, my, right[2]*mx };
-                    portals.quad(a, b, c, d, n, 0, 1, 0, 1);
+                auto P = [&](float sAt, float lat, float y, float out[3]) {
+                    route.worldAt(sAt, lat, out[0], out[2]);
+                    out[1] = y;
+                };
+
+                for (size_t k = 0; k + 1 < lats.size(); ++k) {
+                    const float t0 = lats[k], t1 = lats[k + 1];
+                    const float y0 = colTop(k),   y1 = colTop(k + 1);
+                    const float b0 = colBase(t0, sFace), b1 = colBase(t1, sFace);
+                    if (y0 - b0 < 0.06f && y1 - b1 < 0.06f) continue;
+                    float p0[3], p1[3], p2[3], p3[3];
+                    // Front face (the one the driver sees).
+                    P(sFace, t0, b0, p0); P(sFace, t1, b1, p1);
+                    P(sFace, t1, y1, p2); P(sFace, t0, y0, p3);
+                    portals.quad(p0, p1, p2, p3, outN, t0 * 0.16f, t1 * 0.16f, 0.0f, 1.0f);
+                    // Back face, one slab thickness in.
+                    const float c0 = colBase(t0, sBack), c1 = colBase(t1, sBack);
+                    P(sBack, t0, c0, p0); P(sBack, t1, c1, p1);
+                    P(sBack, t1, y1, p2); P(sBack, t0, y0, p3);
+                    portals.quad(p0, p1, p2, p3, inN, t0 * 0.16f, t1 * 0.16f, 0.0f, 1.0f);
+                    // Coping across the top of the slab.
+                    P(sFace, t0, y0, p0); P(sFace, t1, y1, p1);
+                    P(sBack, t1, y1, p2); P(sBack, t0, y0, p3);
+                    portals.quad(p0, p1, p2, p3, upN, 0.0f, 1.0f, 0.0f, 0.3f);
                 }
             }
             Material pm;
@@ -760,6 +1257,159 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 pm.tint[0] = 0.86f; pm.tint[1] = 0.86f; pm.tint[2] = 0.84f;
             }
             upload(portals, pm, /*collide*/true);
+        }
+
+        // ================= 5) THE APPROACH CUTTINGS =========================
+        // "The approach cutting is part of the tunnel." The reason the old build
+        // had earth on the roadway is that the ground was allowed to climb
+        // ACROSS the road; a real road holds it back BESIDE the road instead.
+        // So each shoulder gets a retaining wall standing at the toe of the cut
+        // batter, its top following the natural grade while the road stays flat,
+        // and a BENCH from the wall back to the point where the batter genuinely
+        // reaches that height — found by scanning the real field, so the bench's
+        // back edge lands ON the ground instead of near it. Approaching the
+        // portal the walls splay from the corridor's floor half-width out to the
+        // headwall's, so the cutting funnels into the mouth as one structure.
+        {
+            MeshBuf walls, berm;
+            struct WStat { float s = 0, off = 0, top = 0, base = 0, bench = 0; bool on = false; };
+            const float upN[3] = { 0.0f, 1.0f, 0.0f };
+            uint32_t wallStations = 0;
+
+            for (int side = 0; side < 2; ++side) {
+                const float sg = (side == 0) ? -1.0f : 1.0f;
+                const float nFace[3] = { -sg * right[0], 0.0f, -sg * right[2] };
+                const float nBack[3] = {  sg * right[0], 0.0f,  sg * right[2] };
+                for (int run = 0; run < 2; ++run) {
+                    const float rs0 = (run == 0) ? 8.0f : route.boreS1;
+                    const float rs1 = (run == 0) ? route.boreS0 : route.totalLen - 8.0f;
+                    if (rs1 - rs0 < 10.0f) continue;
+
+                    std::vector<WStat> stn;
+                    for (float s = rs0; s <= rs1 + 0.01f; s += 4.0f) {
+                        WStat w; w.s = std::min(s, rs1);
+                        const float dPortal = (run == 0) ? (rs1 - w.s) : (w.s - rs0);
+                        w.off = kTcCorridorHalfW +
+                                (kTcPortalHalfW - kTcCorridorHalfW) *
+                                (1.0f - sstep(0.0f, kTcWallSplay, dPortal));
+                        const float ry = route.roadYAt(w.s);
+                        float x = 0.0f, z = 0.0f;
+                        // The wall top is taken part-way up the cut batter, but
+                        // capped by how far back the berm behind it is allowed to
+                        // run. Uncapped, a wall on a flank where the batter is
+                        // long produced a 15 m ledge that read as a loading dock
+                        // (08_exit_portal, pass 2). Tall wall and narrow berm are
+                        // in tension; this resolves it by lowering the WALL.
+                        route.worldAt(w.s, sg * (w.off + kTcCorridorFall * kTcWallTopFrac), x, z);
+                        w.top = terrainHeightAtWorld(x, z);
+                        route.worldAt(w.s, sg * (w.off + kTcWallBenchMax), x, z);
+                        w.top = std::min(w.top, terrainHeightAtWorld(x, z));
+                        w.top = std::min(w.top, ry + kTcWallMaxH);
+                        w.on  = (w.top >= ry + kTcWallMinH);
+                        // Where does the batter ACTUALLY reach the wall top?
+                        w.bench = w.off + kTcWallBench;
+                        for (float o = w.off + kTcWallThick + 0.3f;
+                             o <= w.off + kTcWallBenchMax + 0.01f; o += 0.25f) {
+                            route.worldAt(w.s, sg * o, x, z);
+                            if (terrainHeightAtWorld(x, z) >= w.top) { w.bench = o; break; }
+                        }
+                        w.bench = std::min(w.bench, w.off + kTcWallBenchMax);
+                        route.worldAt(w.s, sg * w.off, x, z);
+                        const float toe = terrainHeightAtWorld(x, z);
+                        w.base = std::min(toe, ry) - 1.8f;
+                        // A retaining wall belongs at the toe of a CUTTING. Where
+                        // the shoulder is falling away instead - the fill side of
+                        // a side-slope - there is nothing to retain, and a wall
+                        // put there stands on nothing with its berm hanging in
+                        // the air (the grass-topped slab beside the exit portal,
+                        // passes 3-5). The embankment handles that side.
+                        if (toe < ry - 2.2f) w.on = false;
+                        stn.push_back(w);
+                    }
+                    // Kill runs too short to BE a wall. A one- or two-station
+                    // fragment is a 4 m slab standing on its own in the middle of
+                    // a hillside - the first pass shipped exactly that beside the
+                    // exit portal, and it is the floating lit slab 08 showed.
+                    for (size_t j = 0; j < stn.size(); ) {
+                        if (!stn[j].on) { ++j; continue; }
+                        size_t e = j; while (e < stn.size() && stn[e].on) ++e;
+                        if ((int)(e - j) < kTcWallMinRun)
+                            for (size_t q = j; q < e; ++q) stn[q].on = false;
+                        j = e;
+                    }
+                    for (const WStat& w : stn) if (w.on) ++wallStations;
+
+                    auto P = [&](const WStat& w, float lat, float y, float out[3]) {
+                        route.worldAt(w.s, sg * lat, out[0], out[2]);
+                        out[1] = y;
+                    };
+                    for (size_t j = 0; j + 1 < stn.size(); ++j) {
+                        const WStat& a = stn[j]; const WStat& b = stn[j + 1];
+                        if (!a.on || !b.on) continue;
+                        float p0[3], p1[3], p2[3], p3[3];
+                        // Face.
+                        P(a, a.off, a.base, p0); P(b, b.off, b.base, p1);
+                        P(b, b.off, b.top,  p2); P(a, a.off, a.top,  p3);
+                        walls.quad(p0, p1, p2, p3, nFace, a.s * 0.10f, b.s * 0.10f, 0.0f, 1.0f);
+                        // Coping lip: front, top, back.
+                        P(a, a.off - 0.12f, a.top,         p0); P(b, b.off - 0.12f, b.top,         p1);
+                        P(b, b.off - 0.12f, b.top + 0.20f, p2); P(a, a.off - 0.12f, a.top + 0.20f, p3);
+                        walls.quad(p0, p1, p2, p3, nFace, a.s*0.10f, b.s*0.10f, 0.0f, 0.1f);
+                        P(a, a.off - 0.12f, a.top + 0.20f, p0); P(b, b.off - 0.12f, b.top + 0.20f, p1);
+                        P(b, b.off + kTcWallThick, b.top + 0.20f, p2);
+                        P(a, a.off + kTcWallThick, a.top + 0.20f, p3);
+                        walls.quad(p0, p1, p2, p3, upN, a.s*0.10f, b.s*0.10f, 0.0f, 0.2f);
+                        P(a, a.off + kTcWallThick, a.top + 0.20f, p0);
+                        P(b, b.off + kTcWallThick, b.top + 0.20f, p1);
+                        P(b, b.off + kTcWallThick, b.top, p2);
+                        P(a, a.off + kTcWallThick, a.top, p3);
+                        walls.quad(p0, p1, p2, p3, nBack, a.s*0.10f, b.s*0.10f, 0.0f, 0.1f);
+                        // The CATCH BERM behind the wall, back to where the
+                        // batter genuinely reaches the wall top (found by
+                        // scanning the real field, so its outer edge lands ON the
+                        // ground). It is drawn as GROUND, not concrete: a real
+                        // cutting bench is earth, and a concrete one this wide is
+                        // what made the exit portal read as a loading dock.
+                        P(a, a.off + kTcWallThick, a.top, p0); P(b, b.off + kTcWallThick, b.top, p1);
+                        P(b, b.bench, b.top, p2);              P(a, a.bench, a.top, p3);
+                        berm.quad(p0, p1, p2, p3, upN, p0[0]*0.05f, p1[0]*0.05f, p0[2]*0.05f, p2[2]*0.05f);
+                        // Close the run's ends so the wedge under the bench is
+                        // never open to the camera along the road.
+                        const bool firstOn = (j == 0) || !stn[j - 1].on;
+                        const bool lastOn  = (j + 2 >= stn.size()) || !stn[j + 2].on;
+                        if (firstOn || lastOn) {
+                            const WStat& w = firstOn ? a : b;
+                            const float en[3] = { firstOn ? -axis[0] : axis[0], 0.0f,
+                                                  firstOn ? -axis[2] : axis[2] };
+                            P(w, w.off,   w.base,        p0);
+                            P(w, w.off,   w.top + 0.20f, p1);
+                            P(w, w.bench, w.top,         p2);
+                            P(w, w.bench, w.base,        p3);
+                            walls.quad(p0, p1, p2, p3, en, 0.0f, 0.5f, 0.0f, 0.5f);
+                        }
+                    }
+                }
+            }
+            Material wm;
+            if (portalSet.ok) {
+                wm.alb = portalSet.albedo; wm.mr = portalSet.mr; wm.nrm = portalSet.normal;
+                const float v = portalSet.valueTint() * 0.92f;   // a shade off the headwall pour
+                wm.tint[0] = wm.tint[1] = wm.tint[2] = v;
+            } else {
+                wm.alb = concreteTex; wm.mr = wallMR;
+                wm.tint[0] = 0.78f; wm.tint[1] = 0.78f; wm.tint[2] = 0.76f;
+            }
+            upload(walls, wm, /*collide*/true);
+            Material bm;
+            if (groundTex.valid()) bm.alb = groundTex;   // the MARKER: terrain splat
+            else { bm.alb = concreteTex; bm.mr = wallMR; }
+            upload(berm, bm, /*collide*/true);
+            char wb[160];
+            std::snprintf(wb, sizeof(wb),
+                "tunnel corridor: approach cuttings retained — %u wall stations "
+                "(splaying %.1f -> %.1f m off centre at the portals)",
+                wallStations, kTcCorridorHalfW, kTcPortalHalfW);
+            x3::logInfo(wb);
         }
 
         // ---- DRESSING, deliberately thin (BL_WORLD_PORT.md §3.3 + §4.4).
@@ -794,6 +1444,20 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 pl.color[0] = 2.6f; pl.color[1] = 2.35f; pl.color[2] = 1.75f;
                 m_lights.push_back(pl);
             }
+            // PORTAL LIGHTS. A real mouth is lit harder than the bore: the
+            // threshold is where a driver's eyes have to adapt, so it is where
+            // the lighting is densest. Two lights per mouth, just inside the
+            // headwall, which is 8 of the engine's 64 forward point lights in
+            // total for the whole tunnel.
+            for (int end = 0; end < 2; ++end) {
+                const float se = (end == 0) ? route.boreS0 + 5.0f : route.boreS1 - 5.0f;
+                const Frame f = frameAt(clampf(se, 0.0f, route.totalLen));
+                x3::rhi::PointLight pl{};
+                pl.pos[0] = f.p[0]; pl.pos[1] = f.p[1] + kTcTubeCrownH - 0.9f; pl.pos[2] = f.p[2];
+                pl.range = 30.0f;
+                pl.color[0] = 3.1f; pl.color[1] = 2.9f; pl.color[2] = 2.3f;
+                m_lights.push_back(pl);
+            }
             char b[256];
             std::snprintf(b, sizeof(b),
                 "tunnel corridor: bore %.0f m | %u emissive strips @15 m | %u REAL point lights "
@@ -802,31 +1466,45 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             x3::logInfo(b);
         }
 
-        // ---- HONEST SELF-CHECK: does the ground actually stay off the shell?
-        // The corridor's depth profile is authored at 32 nodes and interpolated;
-        // the natural field between them is not linear, so soil cover can pinch.
-        // Walk the buried reach at 0.5 m against the OUTER arch and report the
-        // worst clearance — a negative number means terrain is inside the tube
-        // and the demo is lying.
+        // ---- HONEST SELF-CHECK, rewritten for cut-and-cover. The old one
+        // asked whether the TERRAIN stayed off the shell; under cut-and-cover
+        // the terrain is a flat trench floor and the question is meaningless.
+        // The two things that can now go wrong are (a) the BACKFILL LID cutting
+        // into the bore and (b) the ground standing on the ROADWAY — the defect
+        // this lane exists to kill. Both are walked at 0.5 m and both are
+        // reported as numbers, not adjectives.
         {
             const float aOut = kTcTubeHalfWidth + kTcShellThick;
-            const float bOut = (kTcTubeCrownH - kTcTubeWallH) + kTcShellThick;
-            float worst = 1e9f, worstS = 0.0f;
-            for (float s = route.coverS0; s <= route.coverS1 + 0.01f; s += 0.5f) {
-                const Frame f = frameAt(s);
-                for (int k = 0; k <= 10; ++k) {
-                    const float lx = -aOut + 2.0f * aOut * (float)k / 10.0f;
-                    const float r2 = 1.0f - (lx / aOut) * (lx / aOut);
-                    const float top = f.p[1] + kTcTubeWallH + bOut * std::sqrt(r2 < 0.0f ? 0.0f : r2);
-                    const float g = terrainHeightAtWorld(f.p[0] + right[0]*lx, f.p[2] + right[2]*lx);
-                    if (g - top < worst) { worst = g - top; worstS = s; }
+            float worstLid = 1e9f, worstLidS = 0.0f;
+            for (float s = route.boreS0; s <= route.boreS1 + 0.01f; s += 0.5f) {
+                const float ry = route.roadYAt(s);
+                for (int k = 0; k <= 12; ++k) {
+                    const float lx = -aOut + 2.0f * aOut * (float)k / 12.0f;
+                    const float top = ry + shellOuterTopAt(lx);
+                    const float g = tunnelLidHeightAt(route, s, lx);
+                    if (g - top < worstLid) { worstLid = g - top; worstLidS = s; }
                 }
             }
-            char cb[256];
+            float worstRoad = -1e9f, worstRoadS = 0.0f, buried = 0.0f;
+            for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 0.5f) {
+                const float ry = route.roadYAt(s);
+                float w = -1e9f;
+                for (int k = -6; k <= 6; ++k) {
+                    const float lx = (float)k * kTcRoadHalfWidth / 6.0f;
+                    float x = 0.0f, z = 0.0f;
+                    route.worldAt(s, lx, x, z);
+                    w = std::max(w, terrainHeightAtWorld(x, z) - ry);
+                }
+                if (w > 0.0f) buried += 0.5f;
+                if (w > worstRoad) { worstRoad = w; worstRoadS = s; }
+            }
+            char cb[420];
             std::snprintf(cb, sizeof(cb),
-                "tunnel corridor: worst soil cover over the shell = %.2f m at s=%.0f "
-                "(negative == terrain inside the bore)", worst, worstS);
-            if (worst < 0.0f) x3::logWarn(cb); else x3::logInfo(cb);
+                "tunnel corridor: backfill cover over the shell = %.2f m worst at s=%.0f "
+                "(negative == lid inside the bore) | GROUND ON THE ROADWAY = %.1f m of "
+                "road, worst %.2f m at s=%.0f (negative == clear, which is the fix)",
+                worstLid, worstLidS, buried, worstRoad, worstRoadS);
+            if (worstLid < 0.0f || buried > 0.0f) x3::logError(cb); else x3::logInfo(cb);
         }
     }
 
@@ -859,12 +1537,19 @@ void TunnelCorridorWorld::showcaseCamera(const TunnelRoute& route, int which, fl
     };
 
     if (which == 3) {
-        // High and back, looking down the whole corridor — the shot that shows
-        // the SADDLE the technique leaves in the ridge. Judge it honestly.
-        const float mid = (route.coverS0 + route.coverS1) * 0.5f;
-        float p[3]; route.posAt(std::max(0.0f, mid - 300.0f), p);
-        cam[0] = p[0]; cam[1] = p[1] + 190.0f; cam[2] = p[2];
-        cam[3] = yawFwd; cam[4] = -0.46f;
+        // High and back, looking down the whole corridor. Under the old build
+        // this was the shot that showed the SADDLE the bore scooped out of the
+        // ridge. Under cut-and-cover the backfill lid puts the ridge back to its
+        // pre-corridor profile, so what this frame is now for is the OPPOSITE
+        // check: is the hill intact, and does the lid read as the same ground as
+        // everything around it? Judge it honestly.
+        // Framed so the lid can actually be JUDGED: 190 m up and 300 m back put
+        // the whole ridge inside a few pixels and showed nothing but streamer
+        // LOD. 85 m up, 210 m back, pitched into the hill.
+        const float mid = (route.boreS0 + route.boreS1) * 0.5f;
+        float p[3]; route.posAt(std::max(0.0f, mid - 210.0f), p);
+        cam[0] = p[0]; cam[1] = p[1] + 85.0f; cam[2] = p[2];
+        cam[3] = yawFwd; cam[4] = -0.30f;
         return;
     }
     if (which == 4) {
@@ -883,17 +1568,229 @@ void TunnelCorridorWorld::showcaseCamera(const TunnelRoute& route, int which, fl
         cam[3] = std::atan2(dz, dx); cam[4] = std::atan2(dy, std::max(0.01f, hl));
         return;
     }
+    if (which == 5) {
+        // HEAD-ON AND CLOSE. The whole portal in one frame: headwall, the
+        // wingwalls tapering out of it, the projecting arch ring, the retaining
+        // walls funnelling in. Close enough that a fudge would show.
+        const float sEye = std::max(3.0f, route.boreS0 - 30.0f);
+        float p[3]; route.posAt(sEye, p);
+        cam[0] = p[0]; cam[1] = p[1] + 3.1f; cam[2] = p[2];
+        cam[3] = yawFwd; cam[4] = 0.09f;
+        return;
+    }
+    if (which == 6) {
+        // INSIDE, LOOKING OUT at the entrance mouth. THIS is the frame the old
+        // build could not survive: the earth ramp filled the bottom of the arch
+        // from in here, and the daylight came through a slot over a dirt bank.
+        // If anything is still wrong with the mouth it shows here first.
+        const float sEye = route.boreS0 + 46.0f;
+        float p[3]; route.posAt(clampf(sEye, 0.0f, route.totalLen), p);
+        cam[0] = p[0]; cam[1] = p[1] + 2.0f; cam[2] = p[2];
+        cam[3] = yawBack; cam[4] = 0.02f;
+        return;
+    }
+    if (which == 7) {
+        // The EXIT portal in three-quarter from up on the bank — the other
+        // mouth, on the other gradient, from an angle that shows how the
+        // wingwalls die into the hillside instead of ending in mid-air.
+        const float sEye = std::min(route.totalLen - 4.0f, route.boreS1 + 40.0f);
+        float e[3]; route.posAt(sEye, e);
+        const float lat = -21.0f;
+        e[0] += -route.dirZ * lat; e[2] += route.dirX * lat; e[1] += 16.0f;
+        float t[3]; route.posAt(route.boreS1 - 4.0f, t);
+        t[1] += 3.5f;
+        const float dx = t[0]-e[0], dy = t[1]-e[1], dz = t[2]-e[2];
+        const float hl = std::sqrt(dx*dx + dz*dz);
+        cam[0] = e[0]; cam[1] = e[1]; cam[2] = e[2];
+        cam[3] = std::atan2(dz, dx); cam[4] = std::atan2(dy, std::max(0.01f, hl));
+        return;
+    }
 
     float s = 0.0f; const float eyeUp = 2.4f; float yaw = yawFwd, pitch = 0.0f;
     switch (which) {
         case 0: s = std::max(6.0f, route.boreS0 - 85.0f);  yaw = yawFwd;  pitch =  gradeAt(s); break;
-        case 1: s = (route.coverS0 + route.coverS1) * 0.5f; yaw = yawFwd; pitch = gradeAt(s); break;
+        case 1: s = (route.boreS0 + route.boreS1) * 0.5f;   yaw = yawFwd; pitch = gradeAt(s); break;
         case 2: s = std::min(route.totalLen - 6.0f, route.boreS1 + 60.0f); yaw = yawBack; pitch = -gradeAt(s); break;
         default: break;
     }
     float p[3]; route.posAt(clampf(s, 0.0f, route.totalLen), p);
     cam[0] = p[0]; cam[1] = p[1] + eyeUp; cam[2] = p[2];
     cam[3] = yaw;  cam[4] = pitch;
+}
+
+// ===========================================================================
+// --test-tunnelmouth — THE DEFECT GATE.
+//
+// Headless, no device, no physics. The bug this file exists to close is a
+// GEOMETRIC one, so the gate is geometric: it asks the real height field, the
+// real corridor and the real lid function the same questions a camera would.
+//
+// M6 is the one that matters most for the long run. The old build's residual
+// was reported as a property of a technique; it was really a property of a
+// construction, and a construction has to survive the terrain being regenerated
+// (inspx/island-regen). So M6 re-derives the ENTIRE route from scratch against
+// three other hillsides — different centres, different headings, different
+// gradients — and re-asserts M1 on each. It never touches the registry: the
+// derivation evaluates its own stack corridor through the pure
+// terrainCorridorDepthAt(), so a failing seed cannot corrupt the live world.
+// ===========================================================================
+bool runTunnelMouthSelfTest() {
+    int pass = 0, fail = 0;
+    auto check = [&](bool ok, const char* name, const char* detail) {
+        if (ok) { ++pass; x3::logInfo(std::string("  [ok]   ") + name + " — " + detail); }
+        else    { ++fail; x3::logError(std::string("  [FAIL] ") + name + " — " + detail); }
+    };
+    char d[512];
+
+    // The gate must see the world the game sees, so it goes through the real
+    // boot entry point rather than a private copy of it.
+    const TunnelRoute& route = registerTunnelCorridor();
+
+    // ---- M0: the corridor registered and there is a tunnel here at all.
+    std::snprintf(d, sizeof(d), "corridors=%u, roofed span %.0f..%.0f m (%.0f m), route %.0f m",
+                  terrainCorridorCount(), route.boreS0, route.boreS1,
+                  route.boreS1 - route.boreS0, route.totalLen);
+    check(terrainCorridorCount() >= 1 && route.boreValid && route.st.size() >= 2,
+          "M0 corridor registered + roofed span found", d);
+
+    // ---- M1: THE DEFECT. Full road width, 0.5 m, against the live field.
+    // Under the old two-regime build this fails by ~18 m of road.
+    {
+        float worst = -1e9f, worstS = 0.0f, buried = 0.0f, buriedInBore = 0.0f;
+        for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 0.5f) {
+            const float ry = route.roadYAt(s);
+            float w = -1e9f;
+            for (int k = -8; k <= 8; ++k) {
+                const float lat = (float)k * kTcRoadHalfWidth / 8.0f;
+                float x = 0.0f, z = 0.0f;
+                route.worldAt(s, lat, x, z);
+                w = std::max(w, terrainHeightAtWorld(x, z) - ry);
+            }
+            if (w > 0.0f) {
+                buried += 0.5f;
+                if (s >= route.boreS0 && s <= route.boreS1) buriedInBore += 0.5f;
+            }
+            if (w > worst) { worst = w; worstS = s; }
+        }
+        std::snprintf(d, sizeof(d),
+            "%.1f m of roadway has ground on it (%.1f m of it inside the shell); "
+            "worst ground-above-road %+.3f m at s=%.0f",
+            buried, buriedInBore, worst, worstS);
+        check(buried == 0.0f && worst <= 0.0f,
+              "M1 NO EARTH ON THE ROADWAY, anywhere on the route", d);
+    }
+
+    // ---- M2: the boot log's own number agrees with M1 (a stale reporter is a
+    // lie the next engineer will believe).
+    std::snprintf(d, sizeof(d), "route.buriedRoadLen=%.1f m, route.maxRoadBury=%+.3f m",
+                  route.buriedRoadLen, route.maxRoadBury);
+    check(route.buriedRoadLen == 0.0f && route.maxRoadBury <= 0.0f,
+          "M2 the reported residual is 0 and honest", d);
+
+    // ---- M3: the backfill lid never cuts into the bore.
+    {
+        const float aOut = kTcTubeHalfWidth + kTcShellThick;
+        float worst = 1e9f, worstS = 0.0f;
+        for (float s = route.boreS0; s <= route.boreS1 + 0.01f; s += 0.5f) {
+            const float ry = route.roadYAt(s);
+            for (int k = 0; k <= 16; ++k) {
+                const float lat = -aOut + 2.0f * aOut * (float)k / 16.0f;
+                const float clr = tunnelLidHeightAt(route, s, lat) - (ry + shellOuterTopAt(lat));
+                if (clr < worst) { worst = clr; worstS = s; }
+            }
+        }
+        std::snprintf(d, sizeof(d), "worst lid-over-shell clearance %.2f m at s=%.0f (want >= %.2f)",
+                      worst, worstS, kTcLidCover * 0.8f);
+        check(worst >= kTcLidCover * 0.8f, "M3 backfill clears the shell everywhere", d);
+    }
+
+    // ---- M4: the lid lands EXACTLY on the untouched terrain at the zero-delta
+    // seam, and dives under it beyond. If this drifts, the hillside grows a
+    // visible scar along both shoulders of every tunnel in the game.
+    {
+        const float W1 = kTcCorridorHalfW + kTcCorridorFall;
+        float worstSeam = 0.0f, worstDelta = 0.0f, worstApron = -1e9f;
+        for (float s = route.boreS0; s <= route.boreS1 + 0.01f; s += 2.0f) {
+            for (int sgn = -1; sgn <= 1; sgn += 2) {
+                const float lat = (float)sgn * W1;
+                float x = 0.0f, z = 0.0f;
+                route.worldAt(s, lat, x, z);
+                worstDelta = std::max(worstDelta, std::fabs(terrainCorridorDelta(x, z)));
+                worstSeam  = std::max(worstSeam,
+                    std::fabs(tunnelLidHeightAt(route, s, lat) - terrainHeightAtWorld(x, z)));
+                const float latA = (float)sgn * (W1 + kTcLidApron);
+                route.worldAt(s, latA, x, z);
+                worstApron = std::max(worstApron,
+                    tunnelLidHeightAt(route, s, latA) - terrainHeightAtWorld(x, z));
+            }
+        }
+        std::snprintf(d, sizeof(d),
+            "|corridor delta| at the seam = %.6f m (must be 0), |lid - terrain| = %.6f m, "
+            "apron sits %+.3f m relative to the terrain (must be negative)",
+            worstDelta, worstSeam, worstApron);
+        check(worstDelta == 0.0f && worstSeam <= 1e-3f && worstApron < 0.0f,
+              "M4 lid meets the untouched terrain exactly, apron tucks under", d);
+    }
+
+    // ---- M5: the road is still a road. The grading is what makes the cut
+    // depth finite; if it stopped limiting, the corridor would gouge.
+    {
+        float worstGrade = 0.0f, maxCut = 0.0f;
+        for (size_t i = 1; i < route.st.size(); ++i) {
+            const float ds = route.st[i].s - route.st[i-1].s;
+            if (ds > 1e-3f)
+                worstGrade = std::max(worstGrade,
+                    std::fabs(route.st[i].roadY - route.st[i-1].roadY) / ds);
+        }
+        for (const auto& n : route.st) maxCut = std::max(maxCut, n.latMax - n.roadY);
+        std::snprintf(d, sizeof(d), "worst grade %.2f%% (limit %.2f%%), deepest cut %.1f m",
+                      worstGrade * 100.0f, kTcMaxGrade * 100.0f, maxCut);
+        check(worstGrade <= kTcMaxGrade * 1.02f && maxCut > 5.0f,
+              "M5 the graded road still respects kTcMaxGrade", d);
+    }
+
+    // ---- M6: REGENERATION PROOF. Re-derive the whole construction on other
+    // hillsides and re-assert M1 on each, entirely off the registry.
+    {
+        const RouteSeed seeds[] = {
+            { -592.0f, -352.0f,  kRouteDirX,  kRouteDirZ, kRouteHalfLen },   // the canonical one, un-registered
+            {  980.0f,  640.0f,  0.70711f,    0.70711f,   280.0f },
+            { -1450.0f, 820.0f,  0.0f,        1.0f,       300.0f },
+            {  240.0f, -1180.0f, 0.38268f,   -0.92388f,   260.0f },
+        };
+        int seedFails = 0;
+        float worstAll = -1e9f;
+        for (const RouteSeed& sd : seeds) {
+            TunnelRoute r; TerrainCorridor c{};
+            deriveRoute(sd, r, c);
+            float worst = -1e9f;
+            for (float s = 0.0f; s <= r.totalLen + 0.01f; s += 1.0f) {
+                const float ry = r.roadYAt(s);
+                for (int k = -6; k <= 6; ++k) {
+                    const float lat = (float)k * kTcRoadHalfWidth / 6.0f;
+                    float x = 0.0f, z = 0.0f;
+                    r.worldAt(s, lat, x, z);
+                    // The live registry still holds the canonical corridor, so
+                    // the natural field is recovered first and only THIS seed's
+                    // own corridor is applied — the seeds never see each other.
+                    const float h = tunnelNaturalHeightAt(x, z) - terrainCorridorDepthAt(c, x, z);
+                    worst = std::max(worst, h - ry);
+                }
+            }
+            worstAll = std::max(worstAll, worst);
+            if (worst > 0.0f || r.buriedRoadLen > 0.0f) ++seedFails;
+        }
+        std::snprintf(d, sizeof(d),
+            "%d re-derived hillsides, %d with ground on the roadway; worst ground-above-road "
+            "across all of them %+.3f m", (int)(sizeof(seeds)/sizeof(seeds[0])), seedFails, worstAll);
+        check(seedFails == 0 && worstAll <= 0.0f,
+              "M6 the construction survives a regenerated terrain", d);
+    }
+
+    char sum[160];
+    std::snprintf(sum, sizeof(sum), "--test-tunnelmouth: %d/%d passed", pass, pass + fail);
+    if (fail) x3::logError(sum); else x3::logInfo(sum);
+    return fail == 0;
 }
 
 } // namespace x3::game

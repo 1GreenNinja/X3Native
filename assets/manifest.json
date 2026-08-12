@@ -649,8 +649,8 @@
     },
     {
       "repo_path": "assets/surface_library/cc_cement_white/normal.png",
-      "sha256": "ade52d505fc8872a8a4dda6c9be3e4fa4f70161290533057378c2f7782e6b5f4",
-      "size": 11868273,
+      "sha256": "1f76a17bda202cec040d569c9b0b82d7eba889b2c4658691c5d2eb76cf3da987",
+      "size": 9813878,
       "source_note": ""
     },
     {
@@ -1066,6 +1066,24 @@
       "sha256": "63303a4464f68b48f73b1174583cb0770cefeb2998beb2328e50686f73e997e1",
       "size": 11903409,
       "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_rock/albedo.png",
+      "sha256": "6cf65a8e1f91fa9ce3ffa5363cc8268f7d7811e96bfb707c81be36a043ebae72",
+      "size": 9329657,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_rock/mr.png",
+      "sha256": "107258dcd44d3d57a79c321973934c86159aab27aac38b11870fc953ce44c85d",
+      "size": 8385731,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_rock/normal.png",
+      "sha256": "791ad3d948440929b547c8204c3c696eb9d26dda3f32c871a7b0b220d932c4aa",
+      "size": 10400037,
+      "source_note": ""
     },
     {
       "repo_path": "assets/surface_library/terrain_sand/albedo.png",

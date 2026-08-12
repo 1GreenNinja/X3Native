@@ -1393,7 +1393,21 @@ bool VulkanRenderDevice::createSampledTexture(const void* rgba8, uint32_t w, uin
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sci.maxLod = VK_LOD_CLAMP_NONE;
         sci.anisotropyEnable = VK_TRUE;   // sharpen grazing-angle surfaces (feature enabled at device init)
-        sci.maxAnisotropy = 8.0f;         // well under the RTX limit (16)
+        // Take the DEVICE MAXIMUM rather than a hardcoded 8. A 330 m tunnel bore
+        // is the worst case in the game for grazing-angle minification: the
+        // along-axis footprint outruns the across-arc one by orders of magnitude,
+        // and every tap of headroom past 8:1 is visible on the lining. 16 is the
+        // limit on every GPU we target, but query it so this can never exceed
+        // the device's real cap (a maxAnisotropy above limits is a VUID error).
+        {
+            static float sMaxAniso = 0.0f;
+            if (sMaxAniso == 0.0f) {
+                VkPhysicalDeviceProperties props{};
+                vkGetPhysicalDeviceProperties(m_dev.physical_device, &props);
+                sMaxAniso = props.limits.maxSamplerAnisotropy;
+            }
+            sci.maxAnisotropy = sMaxAniso;
+        }
         if (vkCreateSampler(m_dev.device, &sci, nullptr, &out.sampler) != VK_SUCCESS) {
             vkDestroyImageView(m_dev.device, out.view, nullptr);
             vmaDestroyImage(m_alloc, out.image, out.alloc); out = Texture{}; return false;

@@ -34,6 +34,12 @@ struct CliOptions {
          // --test-terraincorridor: the corridor (polyline) heightfield
          // depression — the freeway-tunnel primitive. See app/terrain.h.
          testTerrainCorridor = false,
+         // --test-tunnelmouth: the TUNNEL-MOUTH gate. Asserts no ground ever
+         // stands on the roadway (the defect fix/tunnel-mouth closed), that
+         // the backfill lid clears the shell and meets the untouched terrain
+         // exactly at the corridor seam, and re-derives the whole construction
+         // on three other hillsides so it survives a regenerated height field.
+         testTunnelMouth = false,
          testNet = false, testRescue = false, testCompanionCombat = false, testDestruction = false,
          testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testCsm = false, testGeoLod = false,
          testMineFx = false,
