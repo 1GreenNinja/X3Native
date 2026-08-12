@@ -2099,7 +2099,30 @@ void MonsterSystem::spawnDeathRagdoll(x3::phys::IPhysicsWorld& physics,
     // bone's bind-world matrix by the world placement (T*R*S, feet at m_pos). ----
     // Ragdoll authored at scale 1 standing on the floor; place its feet at m_pos and
     // yaw it by the visual heading. The rig's pelvis sits ~ (its authored heights) up.
+    // FEET, NOT PELVIS: makeHumanoidRagdollBones()'s `originY` places the PELVIS —
+    // the legs hang BELOW it (the engine's own --test-ragdoll passes 1.2f to stand
+    // the rig up). Passing 0 therefore buried the whole lower body in the floor at
+    // m_pos.y: at the fixture's scale that is ~0.88 m of the rig under a static
+    // ground plane, and Jolt's penetration recovery then shoves the corpse UPWARD
+    // hard enough to cancel the fall (measured: top bone dropped 0.06 m in 0.5 s
+    // while the pelvis/thighs ROSE). It also mis-registered the skin: the bone->skin
+    // nearest-part mapping saw a rig spanning -0.81..0.80 against a mesh spanning
+    // 0..1.47 in model space. Measure the authored rig's lowest capsule extent and
+    // re-author it lifted by that much, so the ragdoll's FEET land at m_pos exactly
+    // as the placement comment above promises.
     x3::phys::makeHumanoidRagdollBones(/*originY*/0.0f, m_ragdollBones);
+    {
+        float lowest = 0.0f;
+        for (const auto& d : m_ragdollBones) {
+            const float* bw = d.bindWorld;
+            // Capsule runs from the bone origin along its local +Y (column 1) for
+            // 2*halfHeight, with a hemispherical cap of `radius` at each end.
+            const float tipY = bw[13] + bw[5] * (2.0f * d.halfHeight);
+            lowest = std::min(lowest, std::min(bw[13], tipY) - d.radius);
+        }
+        if (lowest < 0.0f)
+            x3::phys::makeHumanoidRagdollBones(/*originY*/-lowest, m_ragdollBones);
+    }
     const uint32_t bn = (uint32_t)m_ragdollBones.size();
     if (bn == 0) { m_ragdollBones.clear(); return; }
 
@@ -3148,6 +3171,9 @@ bool runDeathRagdollSelfTest() {
             for (int k = 0; k < 16; ++k) if (!std::isfinite(w[b*16+k])) finite = false;
         }
     }
+    x3::logInfo("[deathragdoll-test] D2 top bone Y " + std::to_string(topY0) +
+                " -> " + std::to_string(topY1) +
+                " (dropped " + std::to_string(topY0 - topY1) + " m in 0.5 s)");
     drcheck(finite, "D2a ragdoll bone transforms stay finite (no NaN)");
     drcheck(topY1 < topY0 - 0.15f, "D2 ragdoll bones fall under gravity (top bone dropped)");
 
