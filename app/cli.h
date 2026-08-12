@@ -646,6 +646,15 @@ struct CliOptions {
     // fallback is the only thing that can shade their reflection. Needs no GLBs.
     bool        reflVerifyShot = false;
     std::string reflVerifyShotDir = "docs/screenshots/rt-refl-verify";
+    // OFF-SCREEN MATERIAL VERIFY rig (--screenshot-rtmatverify [outDir]): the
+    // gate for "does off-screen geometry contribute its OWN material to RT?".
+    // Everything coloured in the scene sits BEHIND the camera, where the CPU
+    // frustum cull definitely drops it, and is visible ONLY through a mirror
+    // wall (reflection) and as colour bleed on a white wall (DDGI). The first
+    // object drawn is a saturated ORANGE floor, so it owns object-SSBO row 0 —
+    // which is exactly the material a broken instanceCustomIndex resolves to.
+    bool        rtMatVerifyShot = false;
+    std::string rtMatVerifyShotDir = "docs/screenshots/rt-matverify";
     // RT soft-shadow gate-shot proof (--screenshot-rtshadows [outDir]): build a
     // detention-cell rig (a single ceiling lamp + occluders at two distances from
     // the wall), capture lamp-shadow OFF/ON A/Bs (tier 0 vs 2), a sun CSM-vs-RT

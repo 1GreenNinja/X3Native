@@ -1029,9 +1029,10 @@ bool VulkanRenderDevice::ensureReflReady() {
 bool VulkanRenderDevice::createRefl() {
         // ---- Set layouts: 0 = depth sampler, 1 = output storage image, 2 = prev
         // scene (TAA history) sampler, 3 = Refl UBO; the RT variant adds
-        // 4 = TLAS and 5 = the per-frame object SSBO (so an RT hit can read the
-        // hit object's real albedo/emissive via instanceCustomIndex, exactly as
-        // the DDGI ray pass does — replacing refl.comp's old flat-constant fill).
+        // 4 = TLAS and 5 = the stable RT material table (so an RT hit can read
+        // the hit object's real albedo/emissive via instanceCustomIndex, exactly
+        // as the DDGI ray pass does — replacing refl.comp's old flat-constant
+        // fill; a table that is NOT cull-compacted, because the hit is off-screen).
         {
             // NOTE: refl.comp is DELIBERATELY untouched by the reflection-denoise
             // lane. The aux G-buffer the denoiser needs (normal + view distance)
@@ -1306,10 +1307,12 @@ void VulkanRenderDevice::writeReflDescriptors() {
                                             m_taaHistView ? m_taaHistView : m_reflView,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             VkDescriptorBufferInfo ubo{ m_reflUboBuf[i], 0, sizeof(ReflUBO) };
-            // Per-frame object SSBO — RT variant only (binding 5). Lets an RT
+            // STABLE RT MATERIAL TABLE — RT variant only (binding 5). Lets an RT
             // reflection hit read the hit object's real albedo/emissive via the
-            // TLAS instanceCustomIndex (same rows the DDGI ray pass reads).
-            VkDescriptorBufferInfo objInfo{ m_frames[i].objBuf, 0, VK_WHOLE_SIZE };
+            // TLAS instanceCustomIndex (the same table the DDGI ray pass reads).
+            // NOT the object SSBO: that one is compacted by visibility, and an
+            // RT hit is very often on geometry the camera cannot see.
+            VkDescriptorBufferInfo objInfo{ m_frames[i].rtMatBuf, 0, VK_WHOLE_SIZE };
             VkDescriptorSet targets[2] = { m_reflSet[i], m_reflSetRt[i] };
             for (int s = 0; s < 2; ++s) {
                 if (!targets[s]) continue;
@@ -1326,7 +1329,7 @@ void VulkanRenderDevice::writeReflDescriptors() {
                 // RT variant (s == 1) additionally binds the object SSBO at 5.
                 // (Binding 4, the TLAS, is filled by rewriteRtaoTlas() once a
                 // TLAS exists — it may not yet on the first frame.)
-                if (s == 1 && m_frames[i].objBuf) {
+                if (s == 1 && m_frames[i].rtMatBuf) {
                     VkWriteDescriptorSet wo{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
                     wo.dstSet = targets[s]; wo.dstBinding = 5; wo.descriptorCount = 1;
                     wo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; wo.pBufferInfo = &objInfo;
@@ -1613,7 +1616,10 @@ void VulkanRenderDevice::destroyDdgiTargets() {
 
 void VulkanRenderDevice::writeDdgiDescriptors() {
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-            VkDescriptorBufferInfo objInfo{ m_frames[i].objBuf, 0, VK_WHOLE_SIZE };
+            // Binding 1 = the STABLE RT MATERIAL TABLE (one row per draw record),
+            // not the cull-compacted object SSBO: DDGI rays hit off-screen
+            // geometry constantly and it must shade with its own material.
+            VkDescriptorBufferInfo objInfo{ m_frames[i].rtMatBuf, 0, VK_WHOLE_SIZE };
             VkDescriptorBufferInfo rayInfo{ m_ddgiRayBuf, 0, VK_WHOLE_SIZE };
             VkDescriptorBufferInfo uboInfo{ m_ddgiUboBuf[i], 0, sizeof(DdgiUBO) };
             VkDescriptorImageInfo irrSampled{ m_ddgiSampler, m_ddgiIrrView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };

@@ -201,6 +201,18 @@ void VulkanRenderDevice::rtChurnWindow(uint32_t recordCount) {
 // path wrote into the device buffer). A stale row -- the failure mode a
 // partitioned TLAS actually has, and the one no smoketest can see -- is reported
 // as a hard [ERROR] naming the first offending row. Only runs under the env gate.
+//
+// SECOND CHECK (added with the stable material table): the byte-compare above
+// can only prove the partial update matches a repack — and BOTH sides derive
+// instanceCustomIndex the same way, so it is structurally blind to that index
+// being WRONG. It was: every frustum-culled instance carried row 0 and shaded
+// with another object's material, and this harness reported 42/42 byte-identical
+// the whole time. So the material lookup is now verified END TO END, against
+// what the GPU will actually see: take the customIndex out of the instance
+// MIRROR (the image of the device write), resolve it through the material
+// SHADOW (the image of the material-buffer write) exactly as the ray shaders
+// resolve it, and compare the result to the record's own material. A culled
+// instance pointing at row 0 fails this loudly.
 void VulkanRenderDevice::verifyRtInstanceRows(uint32_t instCount) {
         ++m_rtVerifyFrames;
         m_rtRowExpect.clear();
@@ -211,7 +223,7 @@ void VulkanRenderDevice::verifyRtInstanceRows(uint32_t instCount) {
             const VkDeviceAddress a = m_rt.blasAddrOf(dr.meshId);   // no memo: independent
             if (!a) continue;
             if (dr.flags & kFlagGlass) continue;
-            const uint32_t custom = (i < m_recordSsboRow.size()) ? m_recordSsboRow[i] : 0u;
+            const uint32_t custom = i;   // stable RT material row (see buildRtSceneAS)
             VkAccelerationStructureInstanceKHR e{};
             for (int r = 0; r < 3; ++r)
                 for (int c = 0; c < 4; ++c)
@@ -238,6 +250,47 @@ void VulkanRenderDevice::verifyRtInstanceRows(uint32_t instCount) {
                 ++bad;
             }
         }
+        // ---- MATERIAL LOOKUP, END TO END ------------------------------------
+        // Walk the same admitted records in the same order, and for each one ask
+        // the question the ray shaders ask: "what material does my
+        // instanceCustomIndex resolve to?" Answer it through the two CPU images
+        // of the actual device writes, then compare against the record's truth.
+        {
+            const auto& matShadow = m_rtMatShadow[m_frameIdx];
+            uint32_t matBad = 0, firstMatBad = 0, firstMatRec = 0, checked = 0;
+            uint32_t n = 0;
+            for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size() && n < instCount; ++i) {
+                if (i >= m_rtChurnLo && i < m_rtChurnHi) continue;
+                const DrawRecord& dr = m_drawRecords[i];
+                if (!m_rt.blasAddrOf(dr.meshId)) continue;
+                if (dr.flags & kFlagGlass) continue;
+                const uint32_t custom = m_rtRowMirror[n].instanceCustomIndex;
+                ++n; ++checked;
+                if (custom >= matShadow.size()) {   // would read past the table
+                    if (!matBad) { firstMatBad = n - 1; firstMatRec = i; }
+                    ++matBad; continue;
+                }
+                const RtMaterialGpu& got = matShadow[custom];
+                const glm::vec4 wantBase(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
+                const glm::vec4 wantEmis(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
+                if (std::memcmp(&got.baseColorFactor, &wantBase, sizeof(wantBase)) != 0 ||
+                    std::memcmp(&got.emissive,        &wantEmis, sizeof(wantEmis)) != 0) {
+                    if (!matBad) { firstMatBad = n - 1; firstMatRec = i; }
+                    ++matBad;
+                }
+            }
+            if (matBad) {
+                ++m_rtVerifyBad;
+                std::snprintf(b, sizeof(b),
+                    "[rt] TLAS VERIFY FAIL: %u/%u instances resolve to the WRONG MATERIAL "
+                    "via instanceCustomIndex (first instance %u = draw record %u) — every "
+                    "DDGI/reflection ray hitting them shades with another object's albedo",
+                    matBad, checked, firstMatBad, firstMatRec);
+                logError(b);
+            }
+            m_rtVerifyMatChecked = checked;
+            m_rtVerifyMatBad     = matBad;
+        }
         if (bad) {
             ++m_rtVerifyBad;
             std::snprintf(b, sizeof(b),
@@ -246,10 +299,13 @@ void VulkanRenderDevice::verifyRtInstanceRows(uint32_t instCount) {
             logError(b);
         } else if ((m_rtVerifyFrames % 300u) == 1u) {
             std::snprintf(b, sizeof(b),
-                "[rt] TLAS VERIFY ok: %u/%u rows byte-exact vs a full repack "
-                "(%llu frames checked, %llu bad; this frame rewrote %u)",
-                instCount, instCount, (unsigned long long)m_rtVerifyFrames,
-                (unsigned long long)m_rtVerifyBad, m_rtDynamicRows);
+                "[rt] TLAS VERIFY ok: %u/%u rows byte-exact vs a full repack, "
+                "%u/%u instances resolve to their OWN material "
+                "(%llu frames checked, %llu bad; this frame rewrote %u rows, %u materials)",
+                instCount, instCount,
+                m_rtVerifyMatChecked - m_rtVerifyMatBad, m_rtVerifyMatChecked,
+                (unsigned long long)m_rtVerifyFrames,
+                (unsigned long long)m_rtVerifyBad, m_rtDynamicRows, m_rtMatRowsWritten);
             logInfo(b);
         }
     }
@@ -430,6 +486,25 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         // (every EnvArt system fans its instances consecutively), so a one-entry
         // memo collapses almost all of the BLAS-address hash lookups.
         rtChurnWindow((uint32_t)m_drawRecords.size());
+        // ---- THE STABLE RT MATERIAL TABLE, written from THIS walk ------------
+        // One 32-byte row per DRAW RECORD, addressed by instanceCustomIndex (see
+        // RtMaterialGpu). It lives here rather than in prepareFrameData because
+        // this is the only loop in the frame that is BOTH sequential in the
+        // record index AND already streaming the records. Measured, on the
+        // steady-state city (96 k records, ~16 MB of DrawRecord):
+        //   * a standalone loop over m_drawRecords  -> +1.0 ms (a second full
+        //     stream of the record array);
+        //   * folded into emitGroup's walk           -> +1.0 ms (the records are
+        //     hot, but emitGroup visits them in GROUP order, which turns the
+        //     3 MB shadow into a random-access cache miss per record);
+        //   * here                                   -> sequential on both sides.
+        // The shadow is PER FRAME SLOT, so each slot converges on its own buffer
+        // independently and a changed material needs no cross-slot bookkeeping.
+        RtMaterialGpu* rtMatDst = static_cast<RtMaterialGpu*>(m_frames[m_frameIdx].rtMatMapped);
+        std::vector<RtMaterialGpu>& rtMatShadow = m_rtMatShadow[m_frameIdx];
+        if (rtMatDst && rtMatShadow.size() < m_drawRecords.size())
+            rtMatShadow.resize(m_drawRecords.size(), RtMaterialGpu{ glm::vec4(0), glm::vec4(0) });
+        m_rtMatRowsWritten = 0;
         uint32_t        memoMesh    = UINT32_MAX;
         VkDeviceAddress memoAddr    = 0;
         bool            memoSkinned = false;
@@ -452,11 +527,31 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             if (dr.flags & kFlagGlass) continue;
             const uint32_t n = instCount++;
             if (memoSkinned) ++m_skinnedRtInstances;
-            // instanceCustomIndex = the record's SSBO row this frame (filled by
-            // prepareFrameData's grouped write) - the DDGI ray shader's material
-            // lookup. A shift in those rows changes the source key below and so
-            // rewrites the affected instance rows, exactly as it must.
-            const uint32_t custom = (i < m_recordSsboRow.size()) ? m_recordSsboRow[i] : 0u;
+            // This record is going into the TLAS, so its material row must be
+            // current. Compare against the per-slot shadow — NEVER against
+            // rtMatDst, which is host-visible DEVICE memory (write-combined):
+            // reading it costs ~2 us per row, the lesson as.instance_pack
+            // already paid for. One 32-byte store per CHANGED row, and
+            // materials are near-static, so this writes ~nothing per frame.
+            if (rtMatDst) {
+                RtMaterialGpu mt;
+                mt.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
+                mt.emissive        = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
+                if (std::memcmp(&rtMatShadow[i], &mt, sizeof(mt)) != 0) {
+                    rtMatShadow[i] = mt;
+                    std::memcpy(&rtMatDst[i], &mt, sizeof(mt));
+                    ++m_rtMatRowsWritten;
+                }
+            }
+            // instanceCustomIndex = THE DRAW-RECORD INDEX — a row in the stable
+            // RT material table, NOT a row in the cull-compacted object SSBO.
+            // This is the correctness fix: a frustum-culled instance has no
+            // object-SSBO row at all (emitGroup `continue`s before assigning
+            // one), so it used to carry 0 and every DDGI/reflection ray hitting
+            // it read object row 0's material. It is also the churn fix: `i`
+            // does not change when the camera moves, so a static instance's row
+            // now compares equal and is not rewritten.
+            const uint32_t custom = i;
             RtRowSrc& sh = m_rtRowShadow[n];
             // THE STATIC TEST. Everything that feeds a packed row is compared here;
             // if all of it matches, the row already in the buffer IS this frame's
@@ -2391,7 +2486,7 @@ void VulkanRenderDevice::prepareFrameData() {
                         ++cullExpectedCount;
                 }
                 if (dr.texIndex & 0x80000000u) anyCutout = true;
-                m_recordSsboRow[ri] = row;          // DDGI hit-shading lookup row
+                m_recordSsboRow[ri] = row;          // raster row (NOT the RT lookup)
                 const uint32_t velRow = row;        // capture before the post-increment
                 ObjectData& o = objs[row++];
                 std::memcpy(&o.model, dr.model, sizeof(o.model));

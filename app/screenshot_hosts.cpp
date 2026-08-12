@@ -92,6 +92,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool skyShot = hc.skyShot;              const std::string& skyShotPath = hc.skyShotPath;
     const bool ddgiShot = hc.ddgiShot;            const std::string& ddgiShotDir = hc.ddgiShotDir;
     const bool reflVerifyShot = hc.reflVerifyShot; const std::string& reflVerifyShotDir = hc.reflVerifyShotDir;
+    const bool rtMatVerifyShot = hc.rtMatVerifyShot; const std::string& rtMatVerifyShotDir = hc.rtMatVerifyShotDir;
     const bool rtshShot = hc.rtshShot;            const std::string& rtshShotDir = hc.rtshShotDir;
     const bool showroomShot = hc.showroomShot;    const std::string& showroomShotPath = hc.showroomShotPath;
     const bool carShot = hc.carShot;              const std::string& carShotDir = hc.carShotDir;
@@ -825,6 +826,217 @@ int dispatchScreenshotHosts(HostContext& hc) {
         setRefl(true, true, false);   poseMain();  ok &= shoot("edges_ssr_on_rt_on", kSettle);
         setRefl(false, false, false); poseMain();  ok &= shoot("edges_ssr_off", kSettle);
         withPillars = false;
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return ok ? 0 : 1;
+    }
+
+    // ---- OFF-SCREEN MATERIAL VERIFY (--screenshot-rtmatverify [outDir]) -----
+    //
+    // THE QUESTION THIS RIG ANSWERS: when a DDGI or reflection ray hits geometry
+    // the CAMERA CANNOT SEE, does it shade with that geometry's OWN material?
+    //
+    // Why the existing --screenshot-reflverify rig cannot answer it: its bars
+    // hang at y=7 with a ~14 m bounding RADIUS, so although they are off SCREEN
+    // their bounding SPHERE still crosses the frustum and the conservative
+    // sphere test keeps them. Measured: 0 of its 12 TLAS instances carry a bad
+    // instanceCustomIndex. It is a null case for this bug, which is exactly why
+    // the bug survived that verification pass. Here every coloured object is
+    // COMPACT and placed so its whole sphere clears a frustum plane by metres.
+    //
+    // THE ROW-0 BAIT. Group order follows first-draw order, so the FIRST object
+    // drawn owns object-SSBO row 0 — the row a stale instanceCustomIndex of 0
+    // resolves to. In both arms that first object is a saturated ORANGE matte
+    // surface with ZERO emissive. A broken build therefore paints every
+    // off-screen contribution orange-and-unlit; a correct one paints it red /
+    // green / cyan and lets the emissive panels actually glow.
+    if (rtMatVerifyShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(rtMatVerifyShotDir, mkec);
+        x3::logInfo("--screenshot-rtmatverify: writing to " + rtMatVerifyShotDir);
+        x3::logInfo(std::string("--screenshot-rtmatverify: rayTracingSupported=") +
+                    (device->rayTracingSupported() ? "YES" : "NO"));
+
+        auto makeMesh = [&](const x3::prims::PrimMesh& pm) {
+            return device->createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                      pm.index.data(), (uint32_t)pm.index.size());
+        };
+        auto greyPx = x3::prims::makeSolidRGBA(4, 220, 220, 220);
+        x3::rhi::TextureHandle greyTex = device->createTexture(greyPx.data(), 4, 4, /*srgb=*/true);
+        const uint8_t mirrorMrPx[4] = { 0, 5,   255, 255 };  // rough .02, metal 1
+        const uint8_t matteMrPx[4]  = { 0, 235, 0,   255 };  // rough .92, dielectric
+        x3::rhi::TextureHandle mirrorMr = device->createTexture(mirrorMrPx, 1, 1, false);
+        x3::rhi::TextureHandle matteMr  = device->createTexture(matteMrPx,  1, 1, false);
+
+        const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float kOrange[4]  = { 0.95f, 0.42f, 0.04f, 1.0f };   // <- object row 0
+        const float kWhite[4]   = { 0.92f, 0.92f, 0.92f, 1.0f };
+        const float kRedAlb[4]  = { 0.92f, 0.03f, 0.03f, 1.0f };
+        const float kGrnAlb[4]  = { 0.03f, 0.90f, 0.06f, 1.0f };
+        const float kCyanAlb[4] = { 0.05f, 0.85f, 0.95f, 1.0f };
+        const float kNoEmis[4]  = { 0, 0, 0, 0 };
+        const float kRedEmis[4] = { 1.00f, 0.03f, 0.02f, 14.0f };
+        const float kGrnEmis[4] = { 0.04f, 1.00f, 0.08f, 14.0f };
+        const float kCyanEmis[4]= { 0.06f, 0.85f, 1.00f, 14.0f };
+
+        // ===================== ARM 1 — RT REFLECTION =========================
+        // refl.comp fades out any reflection ray heading back TOWARD the camera
+        // (`backFade`, refl.comp:172), so a head-on mirror wall is discarded by
+        // construction and cannot be used here. A GRAZING mirror FLOOR is the
+        // geometry the shader actually supports: pitched 45 deg down, the
+        // reflection ray leaves the floor at 45 deg FORWARD-AND-UP, and
+        // dot(R,V) = 0 keeps backFade at 1.
+        //
+        // So the subjects hang HIGH and AHEAD, where that ray goes. At 45 deg
+        // pitch with a 60 deg vertical fov the frustum's top plane points 15 deg
+        // DOWN, so at the panels' distance (16 m) it has already fallen to
+        // y = 1.7 — while the panels sit at y = 10 with a 5.2 m bounding radius,
+        // clearing it by over 3 m. They are frustum-culled every single frame,
+        // yet the mirror floor must still show them.
+        x3::rhi::MeshHandle mirrorFloor = makeMesh(x3::prims::makeBox(14.0f, 0.25f, 18.0f, 0.0f, -0.25f, -4.0f, 0.5f));
+        // Row-0 bait: a matte ORANGE slab lying on the floor in the near field.
+        x3::rhi::MeshHandle baitSlab    = makeMesh(x3::prims::makeBox(14.0f, 0.03f, 2.0f, 0.0f, 0.03f, 8.5f, 0.5f));
+        // The three off-screen emissive panels (half-extents 5 x 1.5 x 0.3 ->
+        // bounding radius 5.24 m, centres at y = 10, z = -6).
+        x3::rhi::MeshHandle panelR = makeMesh(x3::prims::makeBox(5.0f, 1.5f, 0.3f, -12.0f, 10.0f, -6.0f, 1.0f));
+        x3::rhi::MeshHandle panelG = makeMesh(x3::prims::makeBox(5.0f, 1.5f, 0.3f,   0.0f, 10.0f, -6.0f, 1.0f));
+        x3::rhi::MeshHandle panelC = makeMesh(x3::prims::makeBox(5.0f, 1.5f, 0.3f,  12.0f, 10.0f, -6.0f, 1.0f));
+
+        auto drawMirrorScene = [&](const x3::rhi::FrameContext& f) {
+            // FIRST -> owns SSBO row 0. Every wrong lookup reads THIS orange.
+            device->drawMeshPBR(f, baitSlab, greyTex, x3::rhi::TextureHandle{}, matteMr,
+                                kOrange, kNoEmis, identity);
+            device->drawMeshPBR(f, mirrorFloor, greyTex, x3::rhi::TextureHandle{}, mirrorMr,
+                                kWhite, kNoEmis, identity);
+            device->drawMeshEmissive(f, panelR, greyTex, kRedAlb,  kRedEmis,  identity);
+            device->drawMeshEmissive(f, panelG, greyTex, kGrnAlb,  kGrnEmis,  identity);
+            device->drawMeshEmissive(f, panelC, greyTex, kCyanAlb, kCyanEmis, identity);
+        };
+
+        // ===================== ARM 2 — DDGI COLOUR BLEED ======================
+        // DDGI is the cleaner statement of the same bug: probes trace in EVERY
+        // direction, so off-screen geometry contributes unconditionally — no
+        // grazing angles, no SSR interplay. A saturated green emissive panel
+        // sits BEHIND the camera (bounding radius 4.7 m, centre z = +6, so the
+        // whole sphere is behind the near plane) and bleeds onto a white wall
+        // the camera is looking at. Emissive is read through the SAME material
+        // lookup, so a broken build gets row 0's material — orange albedo with
+        // ZERO emissive, i.e. no glow and no green at all.
+        x3::rhi::MeshHandle roomFloor = makeMesh(x3::prims::makeBox(12.0f, 0.25f, 14.0f, 0.0f, -0.25f, -2.0f, 0.5f));
+        x3::rhi::MeshHandle farWall   = makeMesh(x3::prims::makeBox(8.0f, 4.0f, 0.3f, 0.0f, 4.0f, -10.0f, 1.0f));
+        x3::rhi::MeshHandle sideWall  = makeMesh(x3::prims::makeBox(0.3f, 4.0f, 8.0f, -7.0f, 4.0f, -2.0f, 1.0f));
+        // Row-0 bait for this arm: an orange post standing in view.
+        x3::rhi::MeshHandle baitPost  = makeMesh(x3::prims::makeBox(0.5f, 1.2f, 0.5f, 4.5f, 1.2f, -4.0f, 1.0f));
+        // The off-screen emissive source, behind the camera. Half-extents
+        // 5 x 3 x 0.3 -> bounding radius 5.83 m, centre z = +8 against a camera
+        // at z = -2: a 10 m gap, so the whole sphere clears the near plane by
+        // over 4 m and the frustum test drops it every frame.
+        x3::rhi::MeshHandle bleedPanel = makeMesh(x3::prims::makeBox(5.0f, 3.0f, 0.3f, 0.0f, 3.2f, 8.0f, 1.0f));
+
+        auto drawBleedScene = [&](const x3::rhi::FrameContext& f) {
+            device->drawMeshPBR(f, baitPost, greyTex, x3::rhi::TextureHandle{}, matteMr,
+                                kOrange, kNoEmis, identity);   // FIRST -> row 0
+            device->drawMeshPBR(f, roomFloor, greyTex, x3::rhi::TextureHandle{}, matteMr,
+                                kWhite, kNoEmis, identity);
+            device->drawMeshPBR(f, farWall, greyTex, x3::rhi::TextureHandle{}, matteMr,
+                                kWhite, kNoEmis, identity);
+            device->drawMeshPBR(f, sideWall, greyTex, x3::rhi::TextureHandle{}, matteMr,
+                                kWhite, kNoEmis, identity);
+            device->drawMeshEmissive(f, bleedPanel, greyTex, kGrnAlb, kGrnEmis, identity);
+        };
+
+        bool bleedArm = false;
+        auto drawScene = [&](const x3::rhi::FrameContext& f) {
+            if (bleedArm) drawBleedScene(f); else drawMirrorScene(f);
+        };
+
+        // Dim ambient + a weak sun so the emissive panels, not the sky, decide
+        // what colour the off-screen contribution has.
+        device->setAmbient(0.13f, 0.13f, 0.16f);
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.30f; sp.sunDir[1] = 0.80f; sp.sunDir[2] = 0.52f;
+            device->setSkyParams(sp);
+        }
+        device->setShadowBounds(0.0f, 2.0f, -4.0f, 40.0f);
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+
+        // 45 deg down the -Z axis (yaw atan2(-1,0) is the engine's -Z forward).
+        auto poseMirror = [&]() {
+            device->setCamera(0.0f, 6.0f, 10.0f, std::atan2(-1.0f, 0.0f), -0.785f, 60.0f);
+        };
+        auto poseBleed = [&]() {
+            device->setCamera(0.0f, 2.4f, -2.0f, std::atan2(-1.0f, 0.0f), -0.20f, 62.0f);
+        };
+        // ARM 2 lighting: the bounce has to be the brightest thing in the room,
+        // or auto-exposure buries it under sun + ambient.
+        auto lightBleedArm = [&]() {
+            device->setAmbient(0.03f, 0.03f, 0.04f);
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.30f; sp.sunDir[1] = 0.80f; sp.sunDir[2] = 0.52f;
+            sp.sunIntensity = 0.15f;
+            sp.sunLight     = 0.10f;
+            device->setSkyParams(sp);
+        };
+
+        auto shoot = [&](const std::string& name, int settle) -> bool {
+            const std::string path = rtMatVerifyShotDir + "/" + name + ".png";
+            for (int i = 0; i < settle; ++i) {
+                glfwPollEvents();
+                if (i == settle - 1) device->armCapture(path.c_str());
+                auto f = device->beginFrame();
+                if (f.valid) drawScene(f);
+                device->endFrame(f);
+            }
+            const bool ok = device->captureFrame(path.c_str());
+            x3::logInfo(std::string(ok ? "--screenshot-rtmatverify: wrote "
+                                       : "--screenshot-rtmatverify: FAILED ") + path);
+            return ok;
+        };
+        auto setRefl = [&](bool on, bool rt) {
+            x3::rhi::IRenderDevice::ReflectionParams rf{};
+            rf.ssr = on; rf.rtFallback = rt; rf.fullRes = true; rf.intensity = 1.0f;
+            device->setReflectionParams(rf);
+        };
+        auto setDdgi = [&](bool on) {
+            x3::rhi::IRenderDevice::DdgiParams dg{};
+            dg.enabled = on;
+            if (on) {
+                dg.countX = 16; dg.countY = 8; dg.countZ = 20;
+                dg.originX = -10.0f; dg.originY = -0.5f; dg.originZ = -12.0f;
+                dg.sizeX   =  20.0f; dg.sizeY   =  8.0f; dg.sizeZ   =  24.0f;
+                dg.raysPerProbe = 128;
+                dg.hysteresis   = 0.90f;   // converge faster than the 0.97 default
+                dg.intensity    = 2.0f;    // read the bounce clearly
+            }
+            device->setDdgiParams(dg);
+        };
+
+        bool ok = true;
+        const int kSettle = 90;
+
+        // ---- ARM 1 shots ----------------------------------------------------
+        bleedArm = false; setDdgi(false);
+        // (1) CONTROL: reflections off entirely.
+        setRefl(false, false); poseMirror(); ok &= shoot("mirror_refl_off", kSettle);
+        // (2) CONTROL: SSR on, RT fallback OFF. The panels are off-screen, so
+        //     the screen-space march has nothing to find and MUST show nothing.
+        //     This proves shot (3)'s colour can only have come from the RT path.
+        setRefl(true, false);  poseMirror(); ok &= shoot("mirror_ssr_only", kSettle);
+        // (3) THE GATE SHOT: SSR + RT fallback. Correct = three distinct glowing
+        //     bands, red / green / cyan. Broken = ORANGE, unlit (row 0).
+        setRefl(true, true);   poseMirror(); ok &= shoot("mirror_rt_on", kSettle);
+
+        // ---- ARM 2 shots ----------------------------------------------------
+        bleedArm = true; setRefl(false, false); lightBleedArm();
+        setDdgi(false); poseBleed(); ok &= shoot("bleed_ddgi_off", kSettle);
+        // Probes converge over ~1-2 s of hysteresis -> settle long.
+        setDdgi(true);  poseBleed(); ok &= shoot("bleed_ddgi_on", 420);
 
         device->shutdown();
         if (window) glfwDestroyWindow(window);
