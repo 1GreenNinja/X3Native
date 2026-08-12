@@ -126,6 +126,8 @@ constexpr float kPatchMinR      = 7.0f;
 constexpr float kPatchTuck      = 1.2f;    // ribbons trim to r - tuck (no crack)
 constexpr float kStopBarW       = 0.5f;    // stop-line thickness (along tangent)
 constexpr int   kPatchSides     = 12;      // junction polygon fan
+constexpr float kPatchLift      = 0.04f;   // patch rides PROUD of the ribbons it joins
+constexpr float kPatchDrape     = 0.6f;    // how far the rim may follow the ground DOWN
 
 // V4 REROUTE (the real fix behind the pier-forest saga): the legacy route's
 // west/south legs ((700,420)->(300,430)->(-60,560)) crossed the SHORE BOWL at
@@ -1057,6 +1059,40 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         collectGround(RoadClass::Avenue, kAvenueWidth, 1, av);
     }
 
+    // ---- 1d-bis. THE CROWN GRID (2026-08-12). These five straight lanes were
+    // a SECOND road system EchoRoads knew nothing about: buildCrown placed each
+    // one as a single FLAT 620x15 m road_asphalt.glb slab at ONE probe height
+    // (`kCarY = heightAt(-20,760)`), so measured against the rendered land 78%,
+    // 43%, 95%, 89% and 78% of their length respectively hung more than 2 m in
+    // the air (up to 190 m off the cliff) while the rest was buried — which is
+    // why the crown reads as bare grass. Their six mutual crossings were raw
+    // quad overlaps with no junction geometry at all: Tim's "intersections just
+    // cross", literally. Seeded HERE they become ordinary Avenues — draped on
+    // the terrain, curbed, lane-painted, lamped, and swept by the junction pass
+    // that builds a real patch at every crossing. Same five centrelines; one
+    // mechanism instead of two. (buildCrown's GLB decks are gone with them.)
+    {
+        static const struct { float sx, sz, dx, dz, len; } kCrownLanes[] = {
+            { -330.0f, 702.0f,  1.0f,  0.0f, 620.0f },
+            {  290.0f, 742.0f, -1.0f,  0.0f, 620.0f },
+            { -330.0f, 818.0f,  1.0f,  0.0f, 620.0f },
+            {    2.0f, 560.0f,  0.0f,  1.0f, 400.0f },
+            { -150.0f, 960.0f,  0.0f, -1.0f, 400.0f },
+        };
+        for (const auto& L : kCrownLanes) {
+            std::vector<RoadSample> d2;
+            const int n = (int)(L.len / kSampleStep) + 1;
+            for (int i = 0; i < n; ++i) {
+                const float t = (float)i * kSampleStep;
+                RoadSample s;
+                s.x = L.sx + L.dx * t; s.z = L.sz + L.dz * t;
+                d2.push_back(s);
+            }
+            std::vector<RoadSample> av; resample(d2, kSampleStep, av);
+            collectGround(RoadClass::Avenue, kAvenueWidth, 1, av);
+        }
+    }
+
     // ---- 1e. MINE SPUR (V5 — Tim at the west shoulder: "No COHESIVE
     // ROADS"): rim highway -> gold-mine truck lot (-556,814). Three pieces,
     // all riding the existing machinery:
@@ -1886,6 +1922,17 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     // Junction patches: filled 12-gon per junction (asphalt bucket, visual
     // double-sided fan) + the same fan single-sided into the collision mesh —
     // the patch surface is what a car/player actually stands on at a crossing.
+    //
+    // 2026-08-12 (Tim: "intersections just cross"). The patch used to be a FLAT
+    // disc at `j.y + 0.02` — one height for a 7-15 m radius, and 13 cm BELOW the
+    // kGroundLift the ribbons meeting it ride at. On any grade the uphill half
+    // sank into the terrain and the downhill half hung, so the only thing left
+    // at a crossing was the two ribbons overlapping: a literal cross, no
+    // junction. Now the rim DRAPES on the terrain (same sampler the ribbons use)
+    // and the whole fan is lifted kPatchLift PROUD of the highest ribbon at the
+    // node, so the patch reads as the surface the streets merge into. The rim is
+    // additionally floored at the flat-disc height so a patch can bridge a small
+    // dip instead of folding into it.
     for (const Junc& j : J) {
         const uint32_t base = (uint32_t)m_buckets[kBucketAsphalt].v.size();
         auto pushV = [&](float x, float y, float z, float u, float v) {
@@ -1895,10 +1942,21 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
             mv.uv[0]=u; mv.uv[1]=v;
             m_buckets[kBucketAsphalt].v.push_back(mv);
         };
-        pushV(j.x, j.y + 0.02f, j.z, 0.5f, 0.5f);
+        // Rim heights first: the centre must sit at or above every rim vertex or
+        // the fan turns into a cone poking through the crossing.
+        float ry[kPatchSides];
+        float yTop = j.y + kPatchLift;
         for (int k2 = 0; k2 < kPatchSides; ++k2) {
             const float a = (float)k2 / (float)kPatchSides * 6.2831853f;
-            pushV(j.x + std::cos(a) * j.r, j.y + 0.02f, j.z + std::sin(a) * j.r,
+            const float gx = j.x + std::cos(a) * j.r, gz = j.z + std::sin(a) * j.r;
+            ry[k2] = std::max(hf.heightAt(gx, gz) + kGroundLift, j.y - kPatchDrape)
+                   + kPatchLift;
+            yTop = std::max(yTop, ry[k2]);
+        }
+        pushV(j.x, yTop, j.z, 0.5f, 0.5f);
+        for (int k2 = 0; k2 < kPatchSides; ++k2) {
+            const float a = (float)k2 / (float)kPatchSides * 6.2831853f;
+            pushV(j.x + std::cos(a) * j.r, ry[k2], j.z + std::sin(a) * j.r,
                   0.5f + 0.5f * std::cos(a), 0.5f + 0.5f * std::sin(a));
         }
         const uint32_t cbase = (uint32_t)(m_collision.verts.size() / 3);
