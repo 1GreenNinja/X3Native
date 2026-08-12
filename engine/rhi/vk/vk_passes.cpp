@@ -486,6 +486,25 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         // (every EnvArt system fans its instances consecutively), so a one-entry
         // memo collapses almost all of the BLAS-address hash lookups.
         rtChurnWindow((uint32_t)m_drawRecords.size());
+        // ---- THE STABLE RT MATERIAL TABLE, written from THIS walk ------------
+        // One 32-byte row per DRAW RECORD, addressed by instanceCustomIndex (see
+        // RtMaterialGpu). It lives here rather than in prepareFrameData because
+        // this is the only loop in the frame that is BOTH sequential in the
+        // record index AND already streaming the records. Measured, on the
+        // steady-state city (96 k records, ~16 MB of DrawRecord):
+        //   * a standalone loop over m_drawRecords  -> +1.0 ms (a second full
+        //     stream of the record array);
+        //   * folded into emitGroup's walk           -> +1.0 ms (the records are
+        //     hot, but emitGroup visits them in GROUP order, which turns the
+        //     3 MB shadow into a random-access cache miss per record);
+        //   * here                                   -> sequential on both sides.
+        // The shadow is PER FRAME SLOT, so each slot converges on its own buffer
+        // independently and a changed material needs no cross-slot bookkeeping.
+        RtMaterialGpu* rtMatDst = static_cast<RtMaterialGpu*>(m_frames[m_frameIdx].rtMatMapped);
+        std::vector<RtMaterialGpu>& rtMatShadow = m_rtMatShadow[m_frameIdx];
+        if (rtMatDst && rtMatShadow.size() < m_drawRecords.size())
+            rtMatShadow.resize(m_drawRecords.size(), RtMaterialGpu{ glm::vec4(0), glm::vec4(0) });
+        m_rtMatRowsWritten = 0;
         uint32_t        memoMesh    = UINT32_MAX;
         VkDeviceAddress memoAddr    = 0;
         bool            memoSkinned = false;
@@ -508,10 +527,22 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             if (dr.flags & kFlagGlass) continue;
             const uint32_t n = instCount++;
             if (memoSkinned) ++m_skinnedRtInstances;
-            // instanceCustomIndex = the record's SSBO row this frame (filled by
-            // prepareFrameData's grouped write) - the DDGI ray shader's material
-            // lookup. A shift in those rows changes the source key below and so
-            // rewrites the affected instance rows, exactly as it must.
+            // This record is going into the TLAS, so its material row must be
+            // current. Compare against the per-slot shadow — NEVER against
+            // rtMatDst, which is host-visible DEVICE memory (write-combined):
+            // reading it costs ~2 us per row, the lesson as.instance_pack
+            // already paid for. One 32-byte store per CHANGED row, and
+            // materials are near-static, so this writes ~nothing per frame.
+            if (rtMatDst) {
+                RtMaterialGpu mt;
+                mt.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
+                mt.emissive        = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
+                if (std::memcmp(&rtMatShadow[i], &mt, sizeof(mt)) != 0) {
+                    rtMatShadow[i] = mt;
+                    std::memcpy(&rtMatDst[i], &mt, sizeof(mt));
+                    ++m_rtMatRowsWritten;
+                }
+            }
             // instanceCustomIndex = THE DRAW-RECORD INDEX — a row in the stable
             // RT material table, NOT a row in the cull-compacted object SSBO.
             // This is the correctness fix: a frustum-culled instance has no
@@ -2352,36 +2383,6 @@ void VulkanRenderDevice::prepareFrameData() {
         }
 
         if (m_drawRecords.empty() || !m_meshPipeline) return;
-
-        // ---- THE STABLE RT MATERIAL TABLE -----------------------------------
-        // One row per DRAW RECORD, written BEFORE the grouped/compacted object
-        // write below and completely independent of it. This is what the TLAS
-        // instanceCustomIndex addresses, so an instance the camera cannot see
-        // still resolves to its OWN albedo/emissive in ddgi_rays.comp and
-        // refl.comp. Only CHANGED rows are stored: materials are near-static, so
-        // after the first frame this loop is a compare that writes nothing.
-        m_rtMatRowsWritten = 0;
-        if (fr.rtMatMapped) {
-            auto& shadow = m_rtMatShadow[m_frameIdx];
-            const size_t n = m_drawRecords.size();
-            // A grown record list means the new tail has never been written.
-            if (shadow.size() < n) shadow.resize(n, RtMaterialGpu{ glm::vec4(0), glm::vec4(0) });
-            RtMaterialGpu* dst = static_cast<RtMaterialGpu*>(fr.rtMatMapped);
-            for (size_t i = 0; i < n; ++i) {
-                const DrawRecord& dr = m_drawRecords[i];
-                RtMaterialGpu m;
-                m.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
-                m.emissive        = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
-                // Compare against the CPU shadow, never against dst — dst is
-                // host-visible DEVICE memory (write-combined) and reading it
-                // costs ~2 us per row (the lesson as.instance_pack already paid
-                // for). One 32-byte store per changed row, no read-modify-write.
-                if (std::memcmp(&shadow[i], &m, sizeof(m)) == 0) continue;
-                shadow[i] = m;
-                std::memcpy(&dst[i], &m, sizeof(m));
-                ++m_rtMatRowsWritten;
-            }
-        }
 
         // Group records by mesh (preserve first-seen order for determinism). Reuse
         // a scratch map across frames to avoid per-frame allocation churn.
