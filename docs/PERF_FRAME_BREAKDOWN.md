@@ -235,6 +235,45 @@ frame is now 11 ms shorter while the dominant cost — 2 × `__rdtsc` per `drawM
 
 ## 7. HOW TO USE IT
 
+---
+
+## 7b. M-D FAST BOOT — measured, and it is not what the plan assumed
+
+Nothing was printing a boot total for echotropolis: the `[boot]` marks stop after
+device init (~0.96 s) and **every world host's build blocks are unmarked**, so the
+"~19 s" figure was folklore. This branch adds one mark on the device's first
+`beginFrame`, which is the honest process-start → first-rendered-frame number.
+
+```
+[boot] FIRST FRAME (world build complete)   + 19242.9 ms  (t= 20120.5 ms)
+```
+
+**19.24 s confirmed.** And:
+
+| finding | number |
+|---|---|
+| device init (all `[boot]` marks that existed before) | 0.96 s (5 %) |
+| **glTF loading** | **17.02 s over 1,294 loads (88 % of boot)** |
+| — of which *first* loads | 16.09 s over **877 distinct files**, mean **18.3 ms** |
+| — of which redundant re-loads | 0.27 s over 367 loads (trees re-parsed 34–41× each) |
+| crowd/npc skinning pools | ~3.3 s (overlaps the above) |
+| `ECHO_STREAM=0` vs default | **19.42 s vs 19.24 s — no difference** |
+
+Three consequences that change the M-D plan:
+
+1. **Streaming is not the boot lever it was assumed to be.** The streamer boots
+   `M-A force-resident, 18 regions (ECHO_STREAM=on/wired-not-ticking)` — every region
+   is built at boot either way, so the rollback switch costs nothing and saves nothing.
+   Spawn-region boot only pays off *after* the streamer actually gates residency (M-C),
+   which needs the host tick.
+2. **The cost is a long tail, not a few hero assets.** The 12 slowest files total 3.8 s;
+   the other 865 total 12.3 s. 175 files ≥ 20 ms account for 12.46 s; 702 files < 20 ms
+   account for 3.63 s. There is no single asset to fix — the fix has to be structural:
+   **load fewer files (spawn-region gating), load them in parallel, or stop parsing
+   glTF at boot at all (a baked mesh cache / pak).**
+3. **Deduplicating loads is worth only 0.27 s** — do it for hygiene, not for boot time.
+   The 6 tree GLBs re-parsed ~38× each are cheap files; the mine forest builds one
+   `EnvArtSystem` per tree and each re-parses from disk.
 ```
 X3_PASSDUMP=2        X3Engine.exe --world echotropolis   # log the breakdown every 2 s
 X3_PASSTIMERS=0      X3Engine.exe --world echotropolis   # measurement fully off (A/B)
