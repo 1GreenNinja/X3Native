@@ -202,6 +202,7 @@ void VulkanRenderDevice::postViewport(VkCommandBuffer c, VkExtent2D ext) {
     }
 
 void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imageIndex, bool wantCapture) {
+        X3_CPU_ZONE(Z_GraphRecord);
         // The frame's COLOR target: the acquired swapchain image (windowed) or the
         // single persistent offscreen color image (headless). Both are imported
         // UNDEFINED at entry — the main pass CLEARs them, so prior contents are
@@ -2220,6 +2221,34 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         }
 
         m_graph.execute(cmd);
+
+        // LANE 6: capture pass identity + CPU record cost into THIS ring slot so
+        // the timestamp readback kFramesInFlight frames from now can name what it
+        // is reading. Pass names are string literals owned by the code -> stable.
+        {
+            auto& frTs = m_frames[m_frameIdx];
+            const uint32_t n = std::min(m_graph.timedPassCount(), kMaxTimedPasses);
+            // LANE 6 REPLAY: clamping used to be SILENT. If it ever fires, the
+            // breakdown is missing passes and the pass-sum invariant is void — say so
+            // once, loudly, rather than publish a quietly-truncated measurement.
+            if (m_graph.timedPassCount() > kMaxTimedPasses) {
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    char wb[160];
+                    std::snprintf(wb, sizeof(wb),
+                        "[perf] TIMED-PASS OVERFLOW: %u passes recorded but only %u timed "
+                        "— the r_passdump breakdown is TRUNCATED (raise kMaxTimedPasses)",
+                        m_graph.timedPassCount(), kMaxTimedPasses);
+                    logInfo(wb);
+                }
+            }
+            frTs.tsPassCount = n;
+            for (uint32_t i = 0; i < n; ++i) {
+                frTs.tsPassNames[i] = m_graph.timedPassName(i);
+                frTs.tsPassCpuMs[i] = m_graph.timedPassCpuMs(i);
+            }
+        }
 
         // Persist the shadow map's post-frame state so next frame imports it with
         // the right entry layout (the main pass left it DEPTH_READ_ONLY). After the

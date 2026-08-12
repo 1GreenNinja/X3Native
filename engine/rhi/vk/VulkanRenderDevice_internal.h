@@ -9,6 +9,7 @@
 #include "../VulkanRT.h"          // hardware ray-tracing AS manager (ray-query path)
 #include "../../core/x3_log.h"
 #include "../../core/x3_boot.h"   // [boot] timeline marks (device-init sub-phases)
+#include "../../core/x3_cpuzones.h" // LANE 6: rdtsc CPU-zone attribution (r_speeds)
 #include "../font8x8_basic.h"
 #include "../font_robotomono.h"   // embedded Roboto Mono TTF (Apache-2.0) — modern HUD font
 
@@ -116,6 +117,19 @@ inline CullSphere worldSphere(const glm::mat4& model, const glm::vec3& cLocal, f
 }
 
 constexpr uint32_t kFramesInFlight = 2;
+// ---- LANE 6: per-pass GPU timestamps (r_speeds) ---------------------------
+// The frame's timestamp query pool used to hold exactly TWO queries (frame start
+// + frame end), which is why m_cullGpuMs / m_hzbGpuMs were never assigned and the
+// HUD printed 0.00 on every machine. It now holds the frame bracket PLUS a pair
+// per graph pass. The busiest echotropolis frame records ~30 passes; 48 leaves
+// headroom without making the readback wide.
+// LANE 6 REPLAY ON MAIN (2026-08): main carries clustered lights, CSM, geo-LOD and
+// reflection denoise, all of which add graph passes the 0bc0d482 base never had. 48
+// silently CLAMPED (std::min in vk_graph.cpp) — an over-cap pass would vanish from
+// the breakdown and the "pass sum == frame bracket" invariant would quietly fail.
+// 96 leaves headroom on the widest frame this engine records.
+constexpr uint32_t kMaxTimedPasses = 96;
+constexpr uint32_t kFrameTsQueries = 2 + kMaxTimedPasses * 2;   // = 194
 // Glass frost (M4): number of progressively-downsampled blur levels of the scene
 // copy. Each is a separate single-mip image (the render-graph tracks one layout per
 // image). The glass shader samples the deepest level for the frosted look.
@@ -300,6 +314,9 @@ public:
     void endFrame(const FrameContext& fc) override;
 
     RenderStats stats() const override;
+    void dumpPerfBreakdown(const char* why) override { logPerfBreakdown(why ? why : "manual"); resetPerfWindow(); }
+    void setPassTimers(bool on) override { m_passTimersOn = on; x3::perf::zonesEnabled() = on; }
+    bool passTimers() const override { return m_passTimersOn; }
 
     // ---- ZERO-STUTTER telemetry snapshot (r_frametelemetry / --test-framepacing).
     // Percentiles over the post-warmup ring; the late-creation counters are the
@@ -782,6 +799,15 @@ private:
         // fence has already guaranteed the timestamps are available — no stall).
         VkQueryPool   tsPool = VK_NULL_HANDLE;
         bool          tsPending = false; // a frame's timestamps await readback
+        // ---- LANE 6 per-pass timing (r_speeds) -----------------------------
+        // Queries [0,1] stay the whole-frame bracket. Queries [2 .. 2+2*N) are the
+        // per-pass pairs the RenderGraph writes; tsPassNames/tsPassCpuMs capture
+        // the pass identity + CPU record cost at RECORD time so the readback (which
+        // happens kFramesInFlight frames later, when this slot's fence retires) can
+        // name what it is reading. Pass names are string literals -> stable.
+        uint32_t      tsPassCount = 0;
+        const char*   tsPassNames[kMaxTimedPasses]{};
+        float         tsPassCpuMs[kMaxTimedPasses]{};
 
         // ---- D15 GPU cull per-frame ring (all persistent-mapped) -----------
         //   cullInstBuf : CullInstanceGpu[kMaxDrawsPerFrame] (CPU-written when on)
@@ -3376,9 +3402,36 @@ private:
     // ---- vis-unify: host-injected PVS numbers + per-stage timing -----------
     uint32_t                m_visRoomsCulled = 0;   // setVisHostStats (this frame's room/portal skips)
     float                   m_visPvsMs = 0.0f;      // setVisHostStats (flood-fill ms)
-    float                   m_cullCpuMs = 0.0f;     // device emit/cull walk CPU time (0 = not measured on this base)
-    float                   m_cullGpuMs = 0.0f;     // cull.comp dispatch GPU time (0 = not measured)
-    float                   m_hzbGpuMs = 0.0f;      // HZB reduce GPU time (0 = not measured)
+    float                   m_cullCpuMs = 0.0f;     // device emit/cull walk CPU time (LANE 6: now assigned from cpu zones)
+    float                   m_cullGpuMs = 0.0f;     // cull.comp dispatch GPU time (LANE 6: now assigned from the "gpu-cull" pass timestamp pair)
+    float                   m_hzbGpuMs = 0.0f;      // HZB reduce GPU time (LANE 6: now assigned from the "hzb-build" pass timestamp pair)
+
+    // ---- LANE 6 PER-PASS / PER-ZONE PERF BREAKDOWN ------------------------
+    // Rolling accumulator over a window of frames so a dump is stable instead of
+    // a single noisy frame. Pass identity is the string-literal pointer the
+    // RenderPassDesc carries; passes that appear in only some frames (RT, GI,
+    // capture) are averaged over the frames they actually ran, and `rows[].frames`
+    // records that so the dump can say so.
+    struct PerfPassAccum { const char* name = nullptr; double gpuMs = 0.0; double cpuMs = 0.0; uint32_t frames = 0; };
+    PerfPassAccum           m_perfPass[kMaxTimedPasses]{};
+    uint32_t                m_perfPassCount = 0;
+    uint64_t                m_perfCpuTicks[x3::perf::Z_Count]{};   // summed rdtsc ticks per CPU zone
+    uint32_t                m_perfCpuCalls[x3::perf::Z_Count]{};
+    double                  m_perfFrameCpuMs = 0.0;   // summed wall CPU frame time (endFrame->endFrame)
+    double                  m_perfFrameGpuMs = 0.0;   // summed whole-frame GPU bracket
+    uint32_t                m_perfFrames = 0;         // frames whose per-pass GPU times landed in the window
+    uint32_t                m_perfCpuFrames = 0;      // frames whose CPU zones landed in the window
+    bool                    m_passTimersOn = true;    // X3_PASSTIMERS=0 disables (the A/B for measurement overhead)
+    float                   m_perfAutoDumpS = 0.0f;   // X3_PASSDUMP=<seconds>: auto-log the breakdown (0 = off)
+    double                  m_perfNextDumpS = 0.0;    // next auto-dump time (s since first frame)
+    std::chrono::steady_clock::time_point m_perfT0{};      // first-frame clock origin
+    std::chrono::steady_clock::time_point m_perfLastEnd{}; // endFrame->endFrame wall delta
+    bool                    m_perfHaveLastEnd = false;
+    bool                    m_perfEnvRead = false;
+    void                    accumulatePerfFrame(const Frame& fr, const float* passGpuMs);
+    void                    accumulateCpuZones();
+    void                    logPerfBreakdown(const char* why);
+    void                    resetPerfWindow();
 };
 
 } // namespace x3::rhi

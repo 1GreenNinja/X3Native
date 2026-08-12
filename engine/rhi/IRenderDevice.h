@@ -1365,6 +1365,17 @@ public:
     // for the HUD/console overlay. No Vulkan types cross this boundary.
     virtual RenderStats stats() const = 0;
 
+    // ---- LANE 6: named frame cost breakdown (per-pass GPU + per-zone CPU) ----
+    // dumpPerfBreakdown() logs a sorted table of every render-graph pass's REAL
+    // GPU timestamp cost plus the CPU zone partition of the frame, averaged over
+    // the frames accumulated since the last dump/reset, then resets the window.
+    // `why` is a short tag printed in the header ("console", "auto", ...).
+    // Env: X3_PASSDUMP=<seconds> auto-dumps on an interval; X3_PASSTIMERS=0
+    // disables the timestamps entirely (the A/B for measurement overhead).
+    virtual void dumpPerfBreakdown(const char* why) { (void)why; }
+    virtual void setPassTimers(bool on) { (void)on; }
+    virtual bool passTimers() const { return false; }
+
     // ---- ZERO-STUTTER frame-pacing telemetry (r_frametelemetry / --test-framepacing)
     // Snapshot of the device's frame-time ring buffer + "late creation" audit
     // counters. CPU times are endFrame-to-endFrame wall deltas; GPU times come
