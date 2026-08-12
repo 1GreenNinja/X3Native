@@ -260,20 +260,39 @@ int hostSurfaceStart(HostContext& hc) {
             e.roomId = x3::game::kNoRoom;            // outdoors: always drawn
             scene.add(e);
         };
-        const float zF   = kFacilityZ + wallT + 0.04f;                    // just proud of front glass
-        const float bandHY = 0.85f;                                        // lit-floor band half-height
+        // GEOMETRY LAW for these bands (they used to break all three of these):
+        //  * THIN. The comment above says "thin self-lit quads"; they were boxes
+        //    0.24 m deep, spanning wallT+0.32 .. wallT+0.56. That swallowed the
+        //    glass panes AND punched through the spandrel band quads at +0.45,
+        //    so the emissive slab replaced the white concrete band outright.
+        //  * IN THE GLASS ZONE, NOT ON A SPANDREL. FacilityExterior puts a
+        //    concrete band across every storey line (y = 4f-1.8 .. 4f) and a
+        //    glass strip between them centred at y = 4f+2. The old
+        //    kFacilityHalfH*{0.55,1.05,1.5} = 9.9 / 18.9 / 27.0 landed ON the
+        //    bands at 10.2 / 18.2 / 26.2 — hence "bands blown to pure white".
+        //  * ACES-SAFE. Flat emissive >0.5 clips to white (X3_WORLD_RULES §5);
+        //    at 1.15 these read as blank white strips, not lit office floors.
+        // Depth: the deepest tilt-pushed pane front face is at wallT + 0.0334,
+        // and the concrete spandrel quads are at wallT + 0.05. Sit in between.
+        const float bandZ  = kFacilityZ + wallT + 0.0405f;
+        const float bandHZ = 0.004f;                       // 8 mm, a lit strip
+        // Height: a storey's glass runs y = 4f+0.9 .. 4f+3.1, but the spandrel
+        // above it starts at 4f+2.2, so only 4f+0.9 .. 4f+2.2 is exposed glass.
+        // Centre the lit floor in THAT, or the spandrel eats half of it.
+        const float bandHY = 0.60f;                        // lit-floor half-height
         const float sideW  = (kFacilityHalfW - kBreachHalfW) * 0.5f;
         const float xLc = -(kBreachHalfW + sideW), xRc = (kBreachHalfW + sideW);
         const float warmR=0.95f, warmG=0.72f, warmB=0.40f;
-        const float ys[] = { kFacilityHalfH * 0.55f, kFacilityHalfH * 1.05f, kFacilityHalfH * 1.5f };
+        // Exposed-glass centres (storey f): y = 4f + 1.55. Pick f = 2, 4, 6.
+        const float ys[] = { 9.55f, 17.55f, 25.55f };
         for (float y : ys) {
-            windowBand(xLc, y, zF, sideW - 0.6f, bandHY, 0.12f, warmR, warmG, warmB, 1.15f);
-            windowBand(xRc, y, zF, sideW - 0.6f, bandHY, 0.12f, warmR, warmG, warmB, 1.15f);
+            windowBand(xLc, y, bandZ, sideW - 0.6f, bandHY, bandHZ, warmR, warmG, warmB, 0.45f);
+            windowBand(xRc, y, bandZ, sideW - 0.6f, bandHY, bandHZ, warmR, warmG, warmB, 0.45f);
         }
-        const float xS = kFacilityHalfW + wallT + 0.04f;
+        const float xS = kFacilityHalfW + wallT + 0.0405f;
         const float zC = kFacilityZ - kFacilityHalfD;
-        windowBand(xS, kFacilityHalfH * 0.8f,  zC, 0.12f, bandHY, kFacilityHalfD - 1.0f, 0.80f, 0.86f, 1.00f, 1.05f);
-        windowBand(xS, kFacilityHalfH * 1.3f,  zC, 0.12f, bandHY, kFacilityHalfD - 1.0f, 0.80f, 0.86f, 1.00f, 1.05f);
+        windowBand(xS, 13.55f, zC, bandHZ, bandHY, kFacilityHalfD - 1.0f, 0.80f, 0.86f, 1.00f, 0.42f);
+        windowBand(xS, 21.55f, zC, bandHZ, bandHY, kFacilityHalfD - 1.0f, 0.80f, 0.86f, 1.00f, 0.42f);
         x3::logInfo("--world surface: WAVE-2B - 8 emissive window bands (facility reads occupied)");
     }
 

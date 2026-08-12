@@ -407,7 +407,13 @@ void FacilityExterior::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ---- W8-2: THE GLASS CURTAIN WALL — per-pane translucent glazing with a
     // hashed micro-tilt/tint jitter (the thing that makes the facade read as
     // real glass). Per-pane draws (surface) or merged batches (canon). -------
-    x3::prims::PrimMesh gpm = x3::prims::makeBox(0.5f, 0.5f, 0.015f, 0, 0, 0, 1.0f);
+    // Glazing half-thickness. 6 mm half = 12 mm glass, a real curtain-wall pane;
+    // it was 15 mm half (30 mm), which ate most of the clearance to the backing
+    // wall and left no room for the micro-tilt below. See kPaneClear.
+    constexpr float kPaneHalfT = 0.006f;
+    // Minimum air gap the pane's INNER face keeps off the backing-wall face.
+    constexpr float kPaneClear = 0.003f;
+    x3::prims::PrimMesh gpm = x3::prims::makeBox(0.5f, 0.5f, kPaneHalfT, 0, 0, 0, 1.0f);
     m_glassPanelMesh = device.createMesh(gpm.verts.data(), (uint32_t)gpm.verts.size(),
                                          gpm.index.data(), (uint32_t)gpm.index.size());
     auto glassTexD = x3::prims::makeSolidRGBA(8, 255, 255, 255);
@@ -429,6 +435,23 @@ void FacilityExterior::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float dp = (r1 - 0.5f) * 0.016f;   // pitch tilt
             const float c = std::cos(yaw + dh), s = std::sin(yaw + dh);
             const float cp = std::cos(dp),      sp = std::sin(dp);
+            // ---- THE SHARD FIX --------------------------------------------
+            // The micro-tilt rotates the pane about its own centre, so it dips
+            // the pane's corners TOWARD the backing wall by up to
+            //     halfW*|sin dh| + halfH*|sin dp|
+            // which for a 2.5 x 2.1 m pane at ±0.46° is 18.4 mm — far more than
+            // the 5 mm of clearance the fixed `proud` offset used to leave. 85%
+            // of panes therefore genuinely INTERSECTED the opaque wall, and the
+            // wall clipped each one along the plane/plane intersection line — a
+            // straight cut whose direction is random per pane. That is the
+            // "jagged triangular shards", and being real geometry (not depth
+            // precision) it looked identical at 12 m and at 70 m.
+            // Push every pane out along its face normal by exactly its own
+            // worst-corner dip, so the jitter survives but can never sink in.
+            const float dip = 0.5f * w * std::fabs(std::sin(dh))
+                            + 0.5f * h * std::fabs(std::sin(dp));
+            px += std::sin(yaw) * dip;
+            pz += std::cos(yaw) * dip;
             const float m[16] = {
                 c * w,       0.0f,     -s * w,      0,
                 sp * s * h,  cp * h,    sp * c * h, 0,
@@ -481,7 +504,12 @@ void FacilityExterior::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const float kGap = 0.14f;                     // mullion gap
         const int colsA = std::max(1, (int)std::lround(spanA / 2.64f));   // 20 on the surface tower
         const int colsB = std::max(1, (int)std::lround(spanB / 2.64f));   // 12 on the surface tower
-        const float proud = kWallT + 0.02f;           // panes 2 cm proud (3 cm behind the bands)
+        // Pane CENTRE offset for an untilted pane: its inner face then sits
+        // exactly kPaneClear off the backing wall. pushPane() adds each pane's
+        // own tilt dip on top, so the worst corner still keeps that air gap.
+        // Deepest possible pane front face = kWallT + 2*kPaneHalfT + kPaneClear
+        // + maxDip = 0.433, still 17 mm behind the spandrel band quads at 0.45.
+        const float proud = kWallT + kPaneHalfT + kPaneClear;
         uint32_t seed = 1u;
         for (int f = 0; f < storeys; ++f) {
             const float yc = (yBot[f] + yTop[f]) * 0.5f;
