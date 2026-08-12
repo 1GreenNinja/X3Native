@@ -4134,39 +4134,55 @@ int hostEchotropolis(HostContext& hc) {
 
         zStream.stop();                                  // LANE 6 span boundary
         x3::perf::HostScope zSim(x3::perf::Z_HostSim);
-        syncCVars();   // r_* console cvars -> device (before the atmosphere writes post)
+        // HOST-SIM LANE 2026-08: cpu.host_sim was 52 % of the frame in ONE row. The
+        // X3_HOST_ZONE spans below are EXCLUSIVE (HostScope), nest inside zSim, and
+        // therefore turn zSim itself into the residual. They are all strictly inside
+        // the span — none straddles beginFrame()'s frameAccum().reset(), which would
+        // underflow the subtraction and silently report 0.000 (see zSim.stop() below).
+        {   X3_HOST_ZONE(Z_SimTod);
+            syncCVars();   // r_* console cvars -> device (before the atmosphere writes post)
+        }
         const x3::game::TodSample todS = tod.sample();
-        applyTodSample(device, todS);
-        applyAtmosphere(device, todS);   // ATMOSPHERE: aerial haze + grade + bloom
+        {   X3_HOST_ZONE(Z_SimTod);
+            applyTodSample(device, todS);
+            applyAtmosphere(device, todS);   // ATMOSPHERE: aerial haze + grade + bloom
+        }
 
         // RESIDENTS: the crowd lives every frame (orbit or walk); the skinned layer
         // drains its deferred spawn queue and pose-follows the agents.
         if (residentsBuilt) {
-            residents.update(dt, walkScene);
+            { X3_HOST_ZONE(Z_SimResidents); residents.update(dt, walkScene); }
             if (npcLifeBuilt) {
-                npcLife.update(dt, walkScene);   // living-city schedules advance
-                npcSkin.update(dt, npcLife, walkScene, *device, *phys);   // rigged bodies follow
+                // living-city schedules advance
+                { X3_HOST_ZONE(Z_SimNpcLife); npcLife.update(dt, walkScene); }
+                // rigged bodies follow
+                { X3_HOST_ZONE(Z_SimNpcSkin); npcSkin.update(dt, npcLife, walkScene, *device, *phys); }
             }
-            residentsSkin.update(dt, residents, walkScene, *device, *phys);
+            { X3_HOST_ZONE(Z_SimResSkin); residentsSkin.update(dt, residents, walkScene, *device, *phys); }
         }
         // WD2 HEAT: the city's alert state decays toward calm each frame; the
         // street cops are its eyes (they hear hacks city-wide already).
         {
+            X3_HOST_ZONE(Z_SimAlert);
             float apx = flyX, apy = flyY, apz = flyZ;
             if (walkMode) { float ayw, apt; player.camera(apx, apy, apz, ayw, apt); }
             cityAlert.update(dt, { apx, apy, apz }, nullptr, 0, false);
         }
         if (hackCardT > 0.0f) hackCardT -= dt;
         if (trafficSpoofT > 0.0f) trafficSpoofT -= dt;
-        talkPoll();       // CITIZEN TALK: drain streamed reply tokens (non-blocking, every frame)
-        ambientTick(dt);  // AMBIENT CHATTER: occasionally an idle citizen mutters (opt-in)
-        ambientPoll();
+        {   X3_HOST_ZONE(Z_SimTalk);
+            talkPoll();       // CITIZEN TALK: drain streamed reply tokens (non-blocking, every frame)
+            ambientTick(dt);  // AMBIENT CHATTER: occasionally an idle citizen mutters (opt-in)
+            ambientPoll();
+        }
         if (minersBuilt) {                 // GOLD-MINE crew lives + hauls every frame
+            X3_HOST_ZONE(Z_SimMiners);
             miners.update(dt, walkScene);
             minersSkin.update(dt, miners, walkScene, *device, *phys);
         }
-        if (oh1Built) { flyOh1(oh1, waterTime); oh1.update(dt, walkScene, *phys, oh1.pos()); }
+        if (oh1Built) { X3_HOST_ZONE(Z_SimOh1); flyOh1(oh1, waterTime); oh1.update(dt, walkScene, *phys, oh1.pos()); }
         if (opsBuilt) {                 // CONTROL ROOM: refresh the live dashboard
+            X3_HOST_ZONE(Z_SimOps);
             opsScreen.setLines(opsLines(todS));
             opsScreen.update(dt);
         }
@@ -4174,7 +4190,8 @@ int hostEchotropolis(HostContext& hc) {
         // Ocean + camera + render. WALK MODE poses the first-person eye camera from
         // the physics character; ORBIT MODE keeps the strategic vista camera.
         waterTime += dt;
-        {   // WATER: the Gerstner patch gates on the ACTIVE eye's height (see
+        {   X3_HOST_ZONE(Z_SimOcean);
+            // WATER: the Gerstner patch gates on the ACTIVE eye's height (see
             // applyOcean) — fly camera, walk eye, ride-along, or orbit pivot.
             float wex = 0, wey = 0, wez = 0, wyw = 0, wpt = 0;
             if (flyMode) { wey = flyY; }
@@ -4186,6 +4203,8 @@ int hostEchotropolis(HostContext& hc) {
         }
         // Roll is per-frame device state like setCamera: latch it every frame so
         // leaving fly mode always returns an upright horizon.
+        // (Delimited span — the if/else camera chain below is not a single block.)
+        x3::perf::HostScope zCam(x3::perf::Z_SimCamera);
         device->setCameraRoll(flyMode ? flyRoll : 0.0f);
         if (worldCars.driving()) {
             // NFS VIEW CYCLE: the stock chase boom scaled per view; HOOD rides
@@ -4246,8 +4265,10 @@ int hostEchotropolis(HostContext& hc) {
         } else {
             applyOrbitCamera(device, rig, rig.sYaw, rig.sPitch, opt.fovDeg, opt.minCamHeight);
         }
+        zCam.stop();
         // AUDIO listener rides the active camera so positional hums pan/attenuate.
         if (audioOn) {
+            X3_HOST_ZONE(Z_SimAudio);
             float lx, ly, lz, lyaw, lpit;
             if (followIdx >= 0 && npcLifeBuilt && (uint32_t)followIdx < npcLife.agentCount()) {
                 const auto& a = npcLife.agent((uint32_t)followIdx);
@@ -4375,8 +4396,9 @@ int hostEchotropolis(HostContext& hc) {
 
         // Per-frame state — read once at endFrame (see the headless path note);
         // position vs beginFrame/draws is a no-op. Draw/submit calls are NOT.
-        streetLamps.update(dt, lampScene);                   // flicker machines
+        { X3_HOST_ZONE(Z_SimLamps); streetLamps.update(dt, lampScene); }   // flicker machines
         {
+            X3_HOST_ZONE(Z_SimLights);
             float lx = rig.sFocusX, ly = rig.sPivotY + 20.0f, lz = rig.sFocusZ;
             if (flyMode) { lx = flyX; ly = flyY; lz = flyZ; }
             else if (walkMode && physOk) { float yw, pt; player.camera(lx, ly, lz, yw, pt); }
@@ -4388,6 +4410,7 @@ int hostEchotropolis(HostContext& hc) {
             // (the module bakes no emissive by design — the day/night gate lives
             // here, same as the street lamps; 64-light device cap respected).
             if (roads && tod.sample().cityLightsOn && pls.size() < 64) {
+                X3_HOST_ZONE(Z_SimRoadLights);
                 const auto& rl = roads->lights();
                 std::vector<std::pair<float,const x3::rhi::PointLight*>> near2;
                 near2.reserve(rl.size());

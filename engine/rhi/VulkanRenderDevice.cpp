@@ -1498,6 +1498,27 @@ void VulkanRenderDevice::logPerfBreakdown(const char* why) {
                           x3::perf::zoneName(z), ms, frameCpu > 0.0 ? 100.0 * ms / frameCpu : 0.0,
                           (double)m_perfCpuCalls[z] * invC);
             logInfo(b);
+            // HOST-SIM LANE: the sixteen sim.* zones are EXCLUSIVE spans nested
+            // inside zSim, so cpu.host_sim above is already only the RESIDUAL and
+            // these rows are additional leaves of the same partition. They are
+            // printed here, immediately under their parent, and summed into
+            // leafSum exactly once so cpu.host_outside stays honest.
+            if (z == x3::perf::Z_HostSim) {
+                double simSum = ms;
+                for (uint32_t s = x3::perf::kSimZoneFirst; s <= x3::perf::kSimZoneLast; ++s) {
+                    const double sms = x3::perf::ticksToMs(m_perfCpuTicks[s]) * invC;
+                    leafSum += sms; simSum += sms;
+                    std::snprintf(b, sizeof(b), "[perf]   %-20s %8.3f ms  %5.1f%%   calls/frame %8.1f",
+                                  x3::perf::zoneName(s), sms,
+                                  frameCpu > 0.0 ? 100.0 * sms / frameCpu : 0.0,
+                                  (double)m_perfCpuCalls[s] * invC);
+                    logInfo(b);
+                }
+                std::snprintf(b, sizeof(b),
+                              "[perf]   %-20s %8.3f ms  %5.1f%%   (residual + all sim.* zones)",
+                              "  sim.TOTAL", simSum, frameCpu > 0.0 ? 100.0 * simSum / frameCpu : 0.0);
+                logInfo(b);
+            }
         }
         {
             const double endTot = x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_EndFrameTotal]) * invC;
