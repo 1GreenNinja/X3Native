@@ -12,11 +12,23 @@
 
 #include "engine/rhi/IRenderDevice.h"
 
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace x3::game {
+
+// A/B switch for the setLines dirty guard (see HoloTerminal::setLines). Read once.
+// X3_HOLO_DIRTYGUARD=0 restores the pre-2026-08 always-re-bake behaviour so the
+// optimisation can be measured on a single binary.
+inline bool holoDirtyGuard() {
+    static const bool on = []() {
+        const char* e = std::getenv("X3_HOLO_DIRTYGUARD");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
 
 class HoloTerminal {
 public:
@@ -76,7 +88,23 @@ public:
     // setLines/addLine mark the on-glass texture DIRTY so the next update() re-bakes
     // the readout into the hologram pixels (see regenTexture()). The text lives ON the
     // glass — it tilts with the panel — instead of as a flat camera-facing overlay.
-    void setLines(std::vector<std::string> lines) { m_lines = std::move(lines); m_texDirty = true; }
+    // PERF (host-sim lane, 2026-08). setLines used to dirty the glass
+    // UNCONDITIONALLY. host_echotropolis.cpp calls it EVERY FRAME with a city-ops
+    // dashboard whose text only changes when the time-of-day phase name does (a
+    // handful of times per in-game day) — so regenTexture() re-rasterised a
+    // 1024x1024 RGBA image AND created + destroyed a fresh mipped GPU texture
+    // every single frame for byte-identical pixels. Measured: 13.85 ms/frame,
+    // ~95 % of cpu.host_sim and ~50 % of the whole frame.
+    //
+    // The guard is a pure content-equality check: identical lines produce an
+    // identical bake, so skipping it cannot change a pixel. addLine/setLastLine/
+    // trimBody are untouched — they always change the content by construction.
+    // X3_HOLO_DIRTYGUARD=0 restores the old always-dirty behaviour so the A/B
+    // runs on one binary.
+    void setLines(std::vector<std::string> lines) {
+        if (holoDirtyGuard() && lines == m_lines) return;   // same text -> same bake
+        m_lines = std::move(lines); m_texDirty = true;
+    }
     void addLine(const std::string& s) { m_lines.push_back(s); m_texDirty = true; }
     const std::vector<std::string>& lines() const { return m_lines; }
     // ---- Streaming readout (LLM freeform answers stream onto the glass). ----

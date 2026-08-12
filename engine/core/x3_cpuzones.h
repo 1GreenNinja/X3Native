@@ -82,8 +82,35 @@ enum Zone : uint32_t {
     // so the frame partition stays honest and nobody reads the smaller
     // cpu.rt_as_build as the whole story.
     Z_AsDrain,          // endFrame: vkWaitForFences on the AS batch, pre-submit
+    // ---- SPLIT OF Z_HostSim (host-sim lane 2026-08) ---------------------------
+    // After the TLAS split, cpu.host_sim is 15.1 ms of a 28 ms frame — 52 %, and it
+    // was ONE opaque row. These are EXCLUSIVE HostScopes nested inside zSim, so
+    // Z_HostSim automatically becomes the *residual* ("everything in the sim span
+    // that no named zone covers") and the sixteen rows below join the leaf
+    // partition directly. Same mechanism that split cpu.host_outside; see §3 of
+    // docs/PERF_FRAME_BREAKDOWN.md.
+    Z_SimTod,           // syncCVars + tod.sample + applyTodSample + applyAtmosphere
+    Z_SimResidents,     // residents.update       — CrowdSystem agent steering
+    Z_SimNpcLife,       // npcLife.update         — living-city schedules
+    Z_SimNpcSkin,       // npcSkin.update         — rigged bodies follow npcLife
+    Z_SimResSkin,       // residentsSkin.update   — rigged bodies follow the crowd
+    Z_SimAlert,         // cityAlert.update       — WD2 heat decay + cop senses
+    Z_SimTalk,          // talkPoll + ambientTick + ambientPoll (LLM chatter poll)
+    Z_SimMiners,        // miners.update + minersSkin.update
+    Z_SimOh1,           // OH1 hero helicopter fly + update
+    Z_SimOps,           // opsScreen.setLines + update (control-room dashboard)
+    Z_SimOcean,         // applyOcean (Gerstner patch gate)
+    Z_SimCamera,        // camera pose selection + device->setCamera/-Roll
+    Z_SimAudio,         // listener + living-city audio bed + eaudio->update
+    Z_SimLamps,         // streetLamps.update (flicker machines)
+    Z_SimLights,        // lamp/shop/region light gather + device->setPointLights
+    Z_SimRoadLights,    // ECHO ROADS night lamp sort (full sort of roads->lights())
     Z_Count
 };
+
+// First and last of the sim-split zones, for loops that print them as a group.
+inline constexpr uint32_t kSimZoneFirst = Z_SimTod;
+inline constexpr uint32_t kSimZoneLast  = Z_SimRoadLights;
 
 inline const char* zoneName(uint32_t z) {
     switch (z) {
@@ -111,6 +138,22 @@ inline const char* zoneName(uint32_t z) {
         case Z_AsTlasPack:    return "    as.tlas_pack";
         case Z_AsTlasWait:    return "    as.tlas_wait";
         case Z_AsDrain:       return "cpu.rt_as_wait";
+        case Z_SimTod:        return "  sim.tod_atmos";
+        case Z_SimResidents:  return "  sim.residents";
+        case Z_SimNpcLife:    return "  sim.npclife";
+        case Z_SimNpcSkin:    return "  sim.npcskin";
+        case Z_SimResSkin:    return "  sim.residentskin";
+        case Z_SimAlert:      return "  sim.cityalert";
+        case Z_SimTalk:       return "  sim.talk_llm";
+        case Z_SimMiners:     return "  sim.miners";
+        case Z_SimOh1:        return "  sim.oh1_heli";
+        case Z_SimOps:        return "  sim.opsscreen";
+        case Z_SimOcean:      return "  sim.ocean";
+        case Z_SimCamera:     return "  sim.camera";
+        case Z_SimAudio:      return "  sim.audio";
+        case Z_SimLamps:      return "  sim.streetlamps";
+        case Z_SimLights:     return "  sim.pointlights";
+        case Z_SimRoadLights: return "  sim.roadlights";
         default:              return "cpu.?";
     }
 }

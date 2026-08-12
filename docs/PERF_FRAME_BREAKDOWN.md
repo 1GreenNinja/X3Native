@@ -257,11 +257,15 @@ estimate; `X3_PASSDUMP=2` over 130 s gives 65 of them. Always check for foreign
 
 ## 8. THE REMAINING WORK, IN MEASURED PRIORITY ORDER
 
-1. **`cpu.host_sim` — 15.2 ms (43 %).** The largest cost in the game, entirely outside
-   the renderer, and now *named* but not yet *split*. It is the living city: crowd,
-   npcLife schedules, two skinned pose-follow layers, miners, city alert. Next perf lane:
-   put `X3_HOST_ZONE`s around each `*.update()` inside the span exactly as this lane did
-   to `host_outside`. **This is where the frame is.**
+1. ~~**`cpu.host_sim` — 15.2 ms (43 %).**~~ **SPLIT AND CLOSED 2026-08-12 —
+   see `docs/PERF_HOST_SIM_SPLIT.md`.** It was **not** the living city. **94 % of it
+   (14.77 ms) was `sim.opsscreen`**: the crown-plaza ops dashboard re-rasterising a
+   1024×1024 RGBA image and creating + destroying a fresh mipped GPU texture **every
+   frame** for text that changes a few times per in-game day. Every crowd / npcLife /
+   schedule / alert / audio system **combined** costs **0.79 ms**. A one-line
+   content-equality guard on `HoloTerminal::setLines` takes the shipping frame from
+   **30.61 ms (32.7 FPS) to 21.63 ms (46.2 FPS)** and the frame **stops being
+   CPU-bound** (CPU 21.5 vs GPU 15.0). The residual after the split is **0.001 ms**.
 2. **The 96,076-instance TLAS rebuilt every frame — 6.8 ms, and it exists for DDGI
    alone.** The right fix is a **static/dynamic TLAS split** (or `MODE_UPDATE` refit) so
    the ~96 k static instances are built once and only the ~15 skinned characters and the
@@ -281,9 +285,11 @@ estimate; `X3_PASSDUMP=2` over 130 s gives 65 of them. Always check for foreign
    culled after the fact. Cutting submissions at the source attacks `host_drawfan` +
    `drawmesh` + `preparedata` + `instance_pack` simultaneously: ~10.4 ms of the frame
    scales with this one number.
-6. **GPU work is not a priority at 14.7 ms** against a 35.5 ms CPU frame. If it ever
-   becomes one: `main-color`, `glass`, `shadow-depth`, `depth-prepass`, 3.0–3.5 ms each,
-   87 % of GPU time between them. Everything else is under 0.2 ms.
+6. ~~**GPU work is not a priority at 14.7 ms**~~ — **it is now.** With item 1 closed the
+   CPU frame is 21.5 ms against a **15.0 ms GPU**, and the CPU has started *waiting*
+   (`cpu.endframe_rest` 2.40 → 5.75 ms, `cpu.rt_as_wait` 0.03 → 0.70 ms). `main-color`,
+   `glass`, `shadow-depth`, `depth-prepass` are 3.0–3.5 ms each and 87 % of GPU time
+   between them. Everything else is under 0.2 ms.
 
 ### The DDGI ruling Tim asked for
 
