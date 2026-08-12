@@ -68,6 +68,7 @@
 #include "world_hosts.h"          // x3::apphost::runSurfaceStartSelfTest (--test-surfacestart)
 #include "star_systems.h"         // x3::starsys::runStarSystemsSelfTest (--test-starsystems)
 #include "world_hosts/echo_roads.h"   // x3::game::runCityBlocksSelfTest (--test-cityblocks)
+#include "world_hosts/echo_sea.h"     // x3::game::runSeaLevelSelfTest (--test-sealevel)
 #include "cutscene.h"
 #include "npc_dialog.h"
 #include "chat_tree.h"
@@ -498,6 +499,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running CITY BLOCK / LOT / FRONTAGE self-test (face extraction, frontage, "
                     "non-overlap, road clearance, determinism + the polar-ring negative control)...");
         return x3::game::runCityBlocksSelfTest() ? 0 : 1;
+    }
+    if (tf.testSeaLevel) {
+        x3::logInfo("running SEA-LEVEL CONSISTENCY gate (one datum; wave patch / baked ring / "
+                    "heightfield / bake tool / shipped asset must all agree)...");
+        return x3::game::runSeaLevelSelfTest() ? 0 : 1;
     }
     if (tf.testStrata) {
         x3::logInfo("running STRATA descent self-test (R-3 fold: bands + offshoots + on-foot route + club arrival)...");

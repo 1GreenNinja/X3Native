@@ -27,6 +27,8 @@
 //   - Every feel constant lives in one CameraOptions block (the F1 settings scaffold).
 #include "world_host_common.h"
 #include "echo_heightfield.h"         // TIER-2: shared island terrain sampler (hoisted from this file)
+#include "echo_sea.h"                 // THE sea datum — kEchoSeaLevelY and everything derived from it
+#include "echo_water.h"               // Gerstner swell presets + echoShipPose (LIVING BAY)
 #include "echo_roads.h"               // ROADS: curved banked freeway + boulevard + fanned harbor grids
 #include "../world_cars.h"           // CARS PILLAR: findable, drivable, hackable vehicles
 #include "echo_interiors.h"           // INTERIORS PILLAR: gated cells + vendor stalls
@@ -431,18 +433,29 @@ void applyOcean(x3::rhi::IRenderDevice* device, float t, const x3::game::TodSamp
         return;
     }
     wp.enabled = true; wp.time = t;
-    // WATER WAVE 1b (the black SHARDS freckling the bay): Gerstner troughs
-    // punching below the baked ring (y=-0.4) let the dark ring show through as
-    // triangle shards. 0.26 amplitude still overshot (octave sum); 0.16 + a
-    // +0.10 sea lift gives real margin. Visible swell survives — the LIVING
-    // WATER upgrade (ships rocking on this same function) is the next wave.
-    wp.seaLevel = 0.10f;
-    // Amplitude must stay UNDER the island GLB's baked ocean ring (y=-0.4) or the
-    // Gerstner troughs punch through it and checker with the ring (seen in P2).
-    // NOTE the shader's octave sum overshoots the amplitude param — 0.32 still
-    // punched through at night (bright patch vs black ring = checkerboard). 0.26
-    // leaves real margin.
-    wp.amplitude = 0.16f; wp.steepness = 0.5f; wp.waveLength = 14.0f; wp.speed = 1.0f;
+    // SEA DATUM (2026-08-12, sea-level lane). This used to read
+    // `wp.seaLevel = 0.10f` — a +0.10 lift bought to keep the Gerstner troughs
+    // off the baked ring (the "WATER WAVE 1b" black-shards fight). That lift is
+    // what put the DRAWN water 0.10 m above the sea every seat, road, lane clip
+    // and swim query in the world was measured against, so a cottage at
+    // heightAt = +0.05 passed "above sea level" and then rendered underwater.
+    // The patch now rides kEchoSeaLevelY like everything else, and the ring is
+    // respected by CAPPING AMPLITUDE instead of by lifting the sea — see
+    // echo_sea.h for the full argument and echoMaxAmplitude() for the bound.
+    // These five fields ARE kSwellHarbor; taking them from the preset is what
+    // stops applyOcean and echo_water.h's table from drifting apart again.
+    const x3::game::WaterTuning& swell = x3::game::kSwellHarbor;
+    // A/B LEVER (default-off): ECHO_SEA_LEGACY_Y=<m> lifts the DRAWN patch off
+    // the datum again, so the pre-unification sea (0.10) and the unified sea
+    // can be captured from ONE binary at identical framing. Paired with
+    // ECHO_SHIP_FLATBOB=1 it reproduces the exact before-state.
+    static const float kLegacyLift = [](){ const char* e=std::getenv("ECHO_SEA_LEGACY_Y");
+                                           return e ? (float)std::atof(e) : 0.0f; }();
+    wp.seaLevel  = swell.seaLevel + kLegacyLift;
+    wp.amplitude = swell.amplitude;
+    wp.steepness = swell.steepness;
+    wp.waveLength = swell.waveLength;
+    wp.speed     = swell.speed;
     const float dayness = std::min(1.0f, std::max(0.0f, (s.sunElevation + 0.06f) / 0.30f));
     const float dayF = 0.12f + 0.88f * std::max(0.0f, s.sunElevation);
     wp.deepColor[0]    = 0.015f * dayF; wp.deepColor[1]    = 0.055f * dayF; wp.deepColor[2]    = 0.11f * dayF;
@@ -1012,9 +1025,23 @@ int hostEchotropolis(HostContext& hc) {
         else
             x3::logError("--world echotropolis: island GLB MISSING (" + islandDir +
                          "/island_20260530.glb) — rendering open sea only");
-        if (hf.load(islandDir + "/island_height_20260530.png"))
-            x3::logInfo("--world echotropolis: heightfield loaded — orbit pivot rides the terrain");
-        else
+        if (hf.load(islandDir + "/island_height_20260530.png")) {
+            // TAKEN FROM fix/echo-road-surface (not authored here). The sea
+            // datum is only meaningful against the surface the player SEES:
+            // echo_terrain_gen.py meshes the land at N_MESH=513 while the PNG
+            // is 1025 (or 2048 on the older bake), so reading the raw PNG put
+            // the sampler up to 18.4 m off the rendered mesh. Unifying sea
+            // level against a surface nobody renders would be unifying nothing.
+            // ECHO_RAW_HF=1 restores the pre-fix bilinear sampler (A/B lever).
+            const bool rawHf = [](){ const char* e = std::getenv("ECHO_RAW_HF");
+                                     return e && e[0] && e[0] != '0'; }();
+            if (!rawHf) hf.setMeshGrid(513);
+            x3::logInfo(std::string("--world echotropolis: heightfield loaded ") +
+                        std::to_string(hf.w) + "^2 — sampling " +
+                        (hf.meshN ? "the RENDERED 513^2 land mesh"
+                                  : "the RAW PNG (ECHO_RAW_HF)") +
+                        "; sea datum y=" + std::to_string(x3::game::kEchoSeaLevelY));
+        } else
             x3::logWarn("--world echotropolis: heightfield PNG absent — orbit pivot uses the y=0 plane");
     }
 
@@ -2078,7 +2105,12 @@ int hostEchotropolis(HostContext& hc) {
             glfwPollEvents();
             applyTodSample(device, shotTod);
             applyAtmosphere(device, shotTod);   // ATMOSPHERE: aerial haze + grade + bloom
-            applyOcean(device, (float)i * dt, shotTod, shotCam[1]);   // shot cam height
+            // SAME CLOCK AS THE REGION POSES (see updateAll below, which is fed
+            // `shotT + i*dt`). It used to get `i*dt`, so with ECHO_SHOT_T set
+            // the hulls were posed on a wave surface the frame did not draw —
+            // now that hulls actually ride the surface, that would have made
+            // every ECHO_SHOT_T still a lie about where the boats sit.
+            applyOcean(device, shotT + (float)i * dt, shotTod, shotCam[1]);   // shot cam height
             if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys); }
             if (sMinersBuilt) { sMiners.update(dt, sScene); sMinersSkin.update(dt, sMiners, sScene, *device, *sphys); }
             if (sOh1Built) { flyOh1(sOh1, (float)i * dt); sOh1.update(dt, sScene, *sphys, sOh1.pos()); }
@@ -2394,11 +2426,14 @@ int hostEchotropolis(HostContext& hc) {
             }
         }
 
-        // SWIM: sea + basin surface sits at y=0; anywhere the terrain is below the
-        // waterline the player can wade in and swim (Player runs its swim state off
-        // this feed). Deeply-negative elsewhere = dry land (never swims on land).
+        // SWIM: the surface is kEchoSeaLevelY — the SAME datum the Gerstner
+        // patch is drawn at, so the water you swim in and the water you see are
+        // the same plane (they were 0.10 m apart). The -0.30 threshold is kept
+        // but is now stated as a DEPTH below the datum, not an absolute height:
+        // ankle-deep water is not a swim. Deeply-negative elsewhere = dry land.
         player.setWaterQuery([&hf](float x, float z) -> float {
-            return (hf.ok() && hf.heightAt(x, z) < -0.30f) ? 0.0f : -1.0e30f;
+            return (hf.ok() && hf.heightAt(x, z) < x3::game::echoSwimFloorY())
+                 ? x3::game::kEchoSeaLevelY : -1.0e30f;
         });
         player.spawn(*phys, kWalkX, kWalkGroundY + 1.0f, kWalkZ);
         player.setLook(2.2f, -0.05f);   // face toward the city cluster
@@ -2522,8 +2557,12 @@ int hostEchotropolis(HostContext& hc) {
             return hf.ok() ? hf.heightAt(x, z) : 0.0f;
         });
         worldCars.setWaterQuery([&hf](float x, float z) {
-            // Sea level is y=0; terrain below it means water surface above it.
-            return (hf.ok() && hf.heightAt(x, z) < 0.0f) ? 0.0f : x3::game::kWorldWaterDry;
+            // Terrain below the datum means water surface above it. Same datum
+            // as the swim query and the drawn patch — previously this said 0.0
+            // while the visible sea was at 0.10, so a car could drown in water
+            // it was rendered as driving beside.
+            return (hf.ok() && hf.heightAt(x, z) < x3::game::kEchoSeaLevelY)
+                 ? x3::game::kEchoSeaLevelY : x3::game::kWorldWaterDry;
         });
         worldCars.setHackAlarmHook([&](const x3::phys::Vec3& hp) {
             // A hacked car alarm scatters nearby citizens (crowd + npc cops both

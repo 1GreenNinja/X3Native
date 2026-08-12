@@ -31,6 +31,7 @@
 // Determinism: pure math over authored constants + h01() hash — no rand.
 
 #include "echo_roads.h"
+#include "echo_sea.h"   // kEchoSeaLevelY — land clearances are OFFSETS from the sea, not heights
 
 #include "engine/core/x3_log.h"
 #include "../asset_root.h"     // V7: texture tiles resolve under assetRoot()/roads
@@ -114,7 +115,7 @@ constexpr float kLampHFwy       = 6.0f;
 constexpr float kLampHStr       = 4.2f;
 constexpr float kPoleHalf       = 0.10f;   // lamp pole shaft half-extent
 constexpr float kArmLen         = 0.9f;    // lamp arm reach toward the road
-constexpr float kWaterMinLand   = 1.5f;
+constexpr float kWaterMinLand   = echoWaterMinLand();   // = sea + 1.50 m (echo_sea.h)
 constexpr float kLoopR          = 30.0f;
 constexpr float kLoopSweepDeg   = 250.0f;
 // V3 junctions:
@@ -885,7 +886,7 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
         // y > 0) don't move. The pad target (ex,ez) is unchanged; the gate
         // avenue re-aims from the nudged node.
         {
-            constexpr float kGateLandSafe = 2.0f;
+            constexpr float kGateLandSafe = echoGateLandSafe();   // = sea + 2.00 m
             constexpr float kGateNudge    = 14.0f;
             constexpr int   kGateNudgeMax = 14;
             for (int n2 = 0; n2 < kGateNudgeMax &&
@@ -1152,7 +1153,7 @@ bool EchoRoads::build(x3::rhi::IRenderDevice& device, const Heightfield& hf) {
     constexpr float kBlockGap     = 14.0f;
     constexpr float kCell         = 42.0f;
     constexpr float kCrossPitch   = 52.0f;
-    constexpr float kLandSafe     = 2.5f;
+    constexpr float kLandSafe     = echoLandSafe();        // = sea + 2.50 m
     constexpr float kNudgeStep    = 12.0f;
     constexpr int   kNudgeMax     = 5;
     static const Wp kShoreSeed[] = {
