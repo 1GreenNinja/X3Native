@@ -36,6 +36,7 @@
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
+#include "../core/x3_cpuzones.h"   // as.* CPU sub-zones (fence wait vs pack)
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -196,6 +197,7 @@ public:
             VkCommandBuffer cmd = blasBatchCmd();
             if (cmd) {
                 m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
+                m_blasBatchDirty = true;
                 m_blasBatchScratch.push_back(scratch);
                 VkAccelerationStructureDeviceAddressInfoKHR adi{};
                 adi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
@@ -230,26 +232,72 @@ public:
     // command buffer. endBlasBatch(): submit once + wait the fence + free every
     // pending scratch. A BLAS recorded in the batch is NOT usable until
     // endBlasBatch returns (the caller builds the TLAS after the flush).
-    void beginBlasBatch() { if (m_ready) m_blasBatchWanted = true; }
+    void beginBlasBatch() {
+        if (!m_ready) return;
+        // A batch left in flight from a previous frame must be retired before its
+        // command buffer / fence / scratch are reused. Normally the frame's own
+        // drainBlasBatch() has already done this; this is the belt-and-braces path
+        // for any caller that opens a batch outside the frame loop (asset load).
+        drainBlasBatch();
+        m_blasBatchWanted = true;
+    }
 
-    bool endBlasBatch() {
+    // ---- SUBMIT NOW, WAIT LATER (TLAS-split lane 2026-08-11) ------------------
+    // endBlasBatch() used to submit AND block on the fence in one call, right in
+    // the middle of endFrame — so the CPU sat idle for the whole AS build while
+    // ~1.2 ms of render-graph recording waited its turn behind it.
+    //
+    // It is now split. submitBlasBatch() ends + submits the command buffer and
+    // returns immediately; drainBlasBatch() waits the fence and releases the
+    // batch's resources. The frame calls submit before recording the graph and
+    // drain immediately before the frame's own vkQueueSubmit2, so the AS build
+    // executes on the GPU *while the CPU records the frame*.
+    //
+    // THIS IS NOT the "assume submission order and drop the wait" shortcut. The
+    // wait still happens, on the same thread, in the same frame, BEFORE the submit
+    // that consumes the AS — so every lifetime the old code guaranteed is still
+    // guaranteed: the batch command buffer is not reset while pending, the shared
+    // scratch is not rewritten while in flight, the instance buffer is not
+    // rewritten while the build reads it, and the ray-query passes cannot execute
+    // before the build completes. Only the CPU's idle time moved.
+    bool submitBlasBatch() {
         m_blasBatchWanted = false;
-        if (!m_blasBatchOpen) return true;            // nothing recorded
+        if (!m_blasBatchOpen || m_blasBatchPending) return true;   // nothing recorded
         vkEndCommandBuffer(m_blasBatchCmd);
         VkCommandBufferSubmitInfo cs{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
         cs.commandBuffer = m_blasBatchCmd;
         VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
         submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &cs;
-        VkResult sr = vkQueueSubmit2(m_queue, 1, &submit, m_fence);
-        if (sr == VK_SUCCESS) {
-            vkWaitForFences(m_dev, 1, &m_fence, VK_TRUE, UINT64_MAX);
-            vkResetFences(m_dev, 1, &m_fence);
-        }
+        const VkResult sr = vkQueueSubmit2(m_queue, 1, &submit, m_fence);
         m_blasBatchOpen = false;
+        if (sr != VK_SUCCESS) {
+            // Never submitted: the fence will never signal, so do not arm the wait.
+            vkResetCommandBuffer(m_blasBatchCmd, 0);
+            for (RtBuffer& s : m_blasBatchScratch) destroyBuffer(s);
+            m_blasBatchScratch.clear();
+            return false;
+        }
+        m_blasBatchPending = true;
+        return true;
+    }
+
+    // Wait the pending batch and release its command buffer + scratch. Idempotent.
+    void drainBlasBatch() {
+        if (!m_blasBatchPending) return;
+        X3_CPU_ZONE(Z_AsDrain);
+        vkWaitForFences(m_dev, 1, &m_fence, VK_TRUE, UINT64_MAX);
+        vkResetFences(m_dev, 1, &m_fence);
+        m_blasBatchPending = false;
         vkResetCommandBuffer(m_blasBatchCmd, 0);
         for (RtBuffer& s : m_blasBatchScratch) destroyBuffer(s);
         m_blasBatchScratch.clear();
-        return sr == VK_SUCCESS;
+    }
+
+    // Legacy all-in-one (submit + wait). Kept for the non-frame paths.
+    bool endBlasBatch() {
+        const bool ok = submitBlasBatch();
+        drainBlasBatch();
+        return ok;
     }
 
     bool hasBlas(uint32_t meshId) const {
@@ -344,9 +392,17 @@ public:
             range.primitiveCount = triCount;
             const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
             m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
-            // UPDATE writes the SAME backing the previous build read; serialize
-            // refits within this batch (each reads then writes the AS storage).
-            blasBatchAsBarrier(cmd);
+            // TLAS-SPLIT LANE (2026-08-11): there used to be a FULL
+            // AS_BUILD->AS_BUILD memory barrier here, after EVERY refit. It was
+            // never needed. Each skinned BLAS refit reads+writes ITS OWN backing
+            // through ITS OWN resident scratch — two refits of different meshes
+            // touch disjoint memory and the spec imposes no ordering requirement
+            // between them. The barrier only forced 15 characters' worth of tiny
+            // AS updates to execute strictly one-at-a-time with a pipeline flush
+            // between each. The ONE ordering that IS required — every BLAS write
+            // before the TLAS build reads them — is now a single barrier emitted
+            // by recordTlasBuild() at the end of the batch (see blasBatchBarrier).
+            m_blasBatchDirty = true;
             ++m_skinnedRefits;
             return true;
         }
@@ -390,7 +446,7 @@ public:
         range.primitiveCount = triCount;
         const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
         m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
-        blasBatchAsBarrier(cmd);
+        m_blasBatchDirty = true;
         VkAccelerationStructureDeviceAddressInfoKHR adi{};
         adi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
         adi.accelerationStructure = b.handle;
@@ -439,82 +495,61 @@ public:
         return 0;
     }
 
-    // Rebuild the TLAS from the given instance list (instances whose mesh has no
-    // BLAS are skipped). Recorded as a one-time submit (static-first v1). The TLAS
-    // device address is then bound by the ray-query pass. Returns true on success;
-    // an empty (zero usable instances) list still produces a valid empty TLAS.
+    // ---- PARTIAL INSTANCE-BUFFER UPDATE (TLAS-split lane 2026-08-11) ---------
+    // Reserve room for `maxRows` instance rows and hand back the PERSISTENTLY
+    // MAPPED CPU pointer to the array. The caller writes rows directly into it —
+    // there is no staging vector and no bulk memcpy — and, crucially, writes ONLY
+    // the rows that actually changed since the previous frame: the buffer is
+    // never cleared, so every untouched row keeps the value the last frame left
+    // there. That is the whole static/dynamic split: the STATIC portion of the
+    // instance array is written once and then simply persists, while the DYNAMIC
+    // rows are the only thing the CPU touches per frame.
     //
-    // DOUBLE-BUFFER (#5 PART 1): the TLAS is backed by a RING of kTlasSlots
-    // independent backings + handles, ping-ponged on every build. Frame N+1's build
-    // writes a DIFFERENT slot than the one frame N's in-flight consumers (RTAO,
-    // reflections, DDGI, rt-shadows, rt-acoustics) are still reading, so the build
-    // no longer creates a cross-frame WAR hazard on the TLAS backing — the caller
-    // can therefore drop the per-frame vkDeviceWaitIdle it used as the hazard guard.
-    // The consumer descriptors re-point to tlas() (the freshly-built slot's handle)
-    // each rebuild. With kFramesInFlight=2 in flight, two slots suffice (slot A is
-    // reused only after the frame that read it has retired via its inFlight fence);
-    // we keep kTlasSlots one larger as headroom against a rebuild on consecutive
-    // frames that both stay in flight.
-    bool buildTlas(const std::vector<TlasInstance>& instances) {
+    // `*outInvalidated` is set true when the buffer had to be (re)allocated — its
+    // contents are then undefined and the caller MUST rewrite every row, not just
+    // the changed ones. WRITE-ONLY memory (VMA SEQUENTIAL_WRITE / write-combined
+    // on discrete GPUs): never read through this pointer, keep a CPU-side shadow.
+    VkAccelerationStructureInstanceKHR* beginInstanceWrite(uint32_t maxRows,
+                                                           bool* outInvalidated) {
+        if (outInvalidated) *outInvalidated = false;
+        if (!m_ready) return nullptr;
+        const VkDeviceSize need =
+            (VkDeviceSize)(maxRows ? maxRows : 1) * sizeof(VkAccelerationStructureInstanceKHR);
+        if (m_instBuf.size < need || !m_instMapped) {
+            // Grow (never shrink — a shrink would only trade a realloc for bytes).
+            if (m_instMapped) { vmaUnmapMemory(m_alloc, m_instBuf.alloc); m_instMapped = nullptr; }
+            destroyBuffer(m_instBuf);
+            VkDeviceSize alloc = need + need / 4u;   // 25% headroom against churn
+            if (!createInstanceBuffer(alloc, m_instBuf)) {
+                if (m_logError) m_logError("[rt] TLAS instance buffer alloc failed");
+                return nullptr;
+            }
+            if (vmaMapMemory(m_alloc, m_instBuf.alloc, &m_instMapped) != VK_SUCCESS) {
+                m_instMapped = nullptr;
+                if (m_logError) m_logError("[rt] TLAS instance buffer map failed");
+                return nullptr;
+            }
+            if (outInvalidated) *outInvalidated = true;
+        }
+        return (VkAccelerationStructureInstanceKHR*)m_instMapped;
+    }
+
+    // Record a TLAS build over the first `instCount` rows of the mapped instance
+    // buffer INTO THE OPEN BLAS BATCH command buffer. One submit now carries the
+    // skinned BLAS refits AND the TLAS build (it used to be two submits, each with
+    // its own blocking fence wait). Requires an open beginBlasBatch() window; the
+    // caller calls endBlasBatch() afterwards, which is the single submit + wait.
+    bool recordTlasBuild(uint32_t instCount) {
         if (!m_ready) return false;
         const auto cpuT0 = std::chrono::steady_clock::now();
+        VkCommandBuffer cmd = blasBatchCmd();
+        if (!cmd) return false;
+
+        m_lastInstanceCount = instCount;
         // Advance the ring to the next slot BEFORE building so this build never
         // targets the slot the just-bound previous TLAS occupies.
         m_tlasSlot = (m_tlasSlot + 1u) % kTlasSlots;
-        Tlas& m_tlas = m_tlasRing[m_tlasSlot];
-
-        // Pack the VkAccelerationStructureInstanceKHR rows for every instance whose
-        // BLAS exists. The transform is the top 3 rows of the column-major model,
-        // stored ROW-MAJOR (VkTransformMatrixKHR is a 3x4 row-major matrix).
-        m_instScratch.clear();
-        m_instScratch.reserve(instances.size());
-        for (const TlasInstance& in : instances) {
-            // LANE 6: use the address the caller already resolved; fall back to the
-            // table lookup only for callers that did not pre-resolve one.
-            VkDeviceAddress blasAddr = in.blasAddr;
-            if (!blasAddr) {
-                auto it = m_blas.find(in.meshId);
-                if (it != m_blas.end()) blasAddr = it->second.addr;
-                else {
-                    auto sk = m_skinnedBlas.find(in.meshId);
-                    if (sk != m_skinnedBlas.end()) blasAddr = sk->second.addr;
-                }
-            }
-            if (!blasAddr) continue;
-            VkAccelerationStructureInstanceKHR row{};
-            // column-major model[c*4+r]; row-major transform[r][c] = model[c*4+r].
-            for (int r = 0; r < 3; ++r)
-                for (int c = 0; c < 4; ++c)
-                    row.transform.matrix[r][c] = in.model[c * 4 + r];
-            row.instanceCustomIndex = in.customIndex & 0xFFFFFFu;
-            row.mask = in.mask;
-            row.instanceShaderBindingTableRecordOffset = 0;
-            row.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-            row.accelerationStructureReference = blasAddr;
-            m_instScratch.push_back(row);
-        }
-        const uint32_t instCount = (uint32_t)m_instScratch.size();
-        m_lastInstanceCount = instCount;
-
-        // Upload the instance rows into a device-address instance buffer. A valid
-        // (even empty) TLAS is built so the descriptor binding is always live.
-        const VkDeviceSize instBytes =
-            (VkDeviceSize)(instCount ? instCount : 1) * sizeof(VkAccelerationStructureInstanceKHR);
-        if (m_instBuf.size < instBytes) {
-            destroyBuffer(m_instBuf);
-            if (!createInstanceBuffer(instBytes, m_instBuf)) {
-                if (m_logError) m_logError("[rt] TLAS instance buffer alloc failed");
-                return false;
-            }
-        }
-        if (instCount) {
-            void* mapped = nullptr;
-            if (vmaMapMemory(m_alloc, m_instBuf.alloc, &mapped) != VK_SUCCESS) return false;
-            std::memcpy(mapped, m_instScratch.data(),
-                        (size_t)instCount * sizeof(VkAccelerationStructureInstanceKHR));
-            vmaFlushAllocation(m_alloc, m_instBuf.alloc, 0, instBytes);
-            vmaUnmapMemory(m_alloc, m_instBuf.alloc);
-        }
+        Tlas& tl = m_tlasRing[m_tlasSlot];
 
         VkAccelerationStructureGeometryKHR geo{};
         geo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
@@ -537,45 +572,49 @@ public:
         m_pfnGetASBuildSizes(m_dev, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                              &bgi, &instCount, &sizes);
 
-        // (Re)create the TLAS backing if it must grow. The TLAS handle is recreated
-        // each time the backing changes; for steady same-size rebuilds we reuse it.
-        if (m_tlas.backing.size < sizes.accelerationStructureSize || m_tlas.handle == VK_NULL_HANDLE) {
-            if (m_tlas.handle) { m_pfnDestroyAS(m_dev, m_tlas.handle, nullptr); m_tlas.handle = VK_NULL_HANDLE; }
-            destroyBuffer(m_tlas.backing);
-            if (!createAsBackingBuffer(sizes.accelerationStructureSize, m_tlas.backing)) {
+        if (tl.backing.size < sizes.accelerationStructureSize || tl.handle == VK_NULL_HANDLE) {
+            if (tl.handle) { m_pfnDestroyAS(m_dev, tl.handle, nullptr); tl.handle = VK_NULL_HANDLE; }
+            destroyBuffer(tl.backing);
+            if (!createAsBackingBuffer(sizes.accelerationStructureSize, tl.backing)) {
                 if (m_logError) m_logError("[rt] TLAS backing buffer alloc failed");
                 return false;
             }
             VkAccelerationStructureCreateInfoKHR aci{};
             aci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
-            aci.buffer = m_tlas.backing.buf;
-            aci.offset = 0;
+            aci.buffer = tl.backing.buf; aci.offset = 0;
             aci.size   = sizes.accelerationStructureSize;
             aci.type   = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-            if (m_pfnCreateAS(m_dev, &aci, nullptr, &m_tlas.handle) != VK_SUCCESS) {
+            if (m_pfnCreateAS(m_dev, &aci, nullptr, &tl.handle) != VK_SUCCESS) {
                 if (m_logError) m_logError("[rt] vkCreateAccelerationStructureKHR (TLAS) failed");
                 return false;
             }
         }
 
-        RtBuffer scratch{};
-        if (!createScratchBuffer(sizes.buildScratchSize, scratch)) {
-            if (m_logError) m_logError("[rt] TLAS scratch alloc failed");
-            return false;
+        // PERSISTENT scratch (grow-only). The old code did a vmaCreateBuffer +
+        // vmaDestroyBuffer of a multi-megabyte scratch EVERY FRAME. The buffer is
+        // reused only after the previous build finished — guaranteed by
+        // endBlasBatch()'s fence wait, which is the batch's whole contract.
+        if (m_tlasScratch.size < sizes.buildScratchSize + m_asProps.minAccelerationStructureScratchOffsetAlignment) {
+            destroyBuffer(m_tlasScratch);
+            if (!createScratchBuffer(sizes.buildScratchSize + sizes.buildScratchSize / 4u,
+                                     m_tlasScratch)) {
+                if (m_logError) m_logError("[rt] TLAS scratch alloc failed");
+                return false;
+            }
         }
 
-        bgi.dstAccelerationStructure = m_tlas.handle;
-        bgi.scratchData.deviceAddress = scratch.addr;
+        // THE ONE ORDERING THAT IS REQUIRED: every BLAS build/refit recorded into
+        // this batch must complete before the TLAS build reads their storage.
+        // (Replaces the per-refit barrier that used to serialize all 15 of them.)
+        if (m_blasBatchDirty) { blasBatchAsBarrier(cmd); m_blasBatchDirty = false; }
+
+        bgi.dstAccelerationStructure = tl.handle;
+        bgi.scratchData.deviceAddress = m_tlasScratch.addr;
         VkAccelerationStructureBuildRangeInfoKHR range{};
         range.primitiveCount = instCount;
         range.primitiveOffset = 0; range.firstVertex = 0; range.transformOffset = 0;
         const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
-
-        const bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
-            m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
-        });
-        destroyBuffer(scratch);
-        if (!ok) return false;
+        m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
 
         m_tlasBuilt = true;
         ++m_tlasBuilds;
@@ -583,6 +622,12 @@ public:
                           std::chrono::steady_clock::now() - cpuT0).count();
         return true;
     }
+
+    // (The old std::vector-taking buildTlas() lived here. It has been replaced by
+    // beginInstanceWrite() + recordTlasBuild() above: it packed a 96,076-row
+    // staging vector and bulk-memcpy'd 6.1 MB into the instance buffer EVERY
+    // frame, then paid its OWN submit + blocking fence wait on top of the BLAS
+    // batch's. Both walks and one of the two round trips are gone.
 
     bool tlasBuilt() const { return m_tlasBuilt; }
     // Current (most-recently-built) TLAS handle — what every consumer descriptor
@@ -607,11 +652,14 @@ public:
 
     void shutdown() {
         if (!m_dev) return;
+        drainBlasBatch();   // never destroy resources a pending submit still reads
         for (Tlas& t : m_tlasRing) {
             if (t.handle) { m_pfnDestroyAS(m_dev, t.handle, nullptr); t.handle = VK_NULL_HANDLE; }
             destroyBuffer(t.backing);
         }
+        if (m_instMapped) { vmaUnmapMemory(m_alloc, m_instBuf.alloc); m_instMapped = nullptr; }
         destroyBuffer(m_instBuf);
+        destroyBuffer(m_tlasScratch);
         for (auto& kv : m_blas) {
             if (kv.second.handle) m_pfnDestroyAS(m_dev, kv.second.handle, nullptr);
             destroyBuffer(kv.second.backing);
@@ -759,6 +807,12 @@ private:
     }
     bool            m_blasBatchWanted = false;
     bool            m_blasBatchOpen   = false;
+    bool            m_blasBatchPending = false;  // submitted, fence not yet waited
+    // Set by every BLAS build/refit recorded into the open batch; consumed by
+    // recordTlasBuild, which emits the single AS-write -> AS-read barrier that
+    // orders all of them before the TLAS reads their storage. (This replaces the
+    // barrier that used to fire after EVERY refit and serialized all of them.)
+    bool            m_blasBatchDirty  = false;
     VkCommandBuffer m_blasBatchCmd    = VK_NULL_HANDLE;
     std::vector<RtBuffer> m_blasBatchScratch;
 
@@ -784,8 +838,15 @@ private:
     uint32_t  m_tlasBuilds    = 0;            // TLAS (re)builds since reset (telemetry)
     uint32_t  m_tlasSyncWaits = 0;            // device waits the rebuild path paid (-> 0)
     float     m_tlasCpuMs     = 0.0f;         // CPU ms of the most recent buildTlas
+    // TLAS-SPLIT LANE: the instance buffer is now PERSISTENTLY MAPPED and only
+    // PARTIALLY rewritten each frame (see beginInstanceWrite), so its contents ARE
+    // the static portion of the TLAS input — they survive between frames. The
+    // staging vector + 6.1 MB bulk memcpy that used to sit in front of it are gone.
     RtBuffer  m_instBuf;                          // persistent host-visible instance buffer
-    std::vector<VkAccelerationStructureInstanceKHR> m_instScratch;
+    void*     m_instMapped = nullptr;             // permanent map (write-combined: never read)
+    // Persistent TLAS build scratch (grow-only). The old path created + destroyed a
+    // multi-megabyte scratch buffer on EVERY frame's build.
+    RtBuffer  m_tlasScratch;
 
     // Resolved KHR entry points (the loader import lib does not export these).
     PFN_vkCreateAccelerationStructureKHR            m_pfnCreateAS = nullptr;

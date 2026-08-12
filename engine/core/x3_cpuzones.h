@@ -69,6 +69,19 @@ enum Zone : uint32_t {
     Z_AsBlas,           // BLAS refit record + endBlasBatch's blocking fence wait
     Z_AsInstances,      // repack every draw record into TLAS instance rows + signature
     Z_AsTlas,           // VulkanRT::buildTlas incl. ITS blocking fence wait
+    // ---- LEAF SPLIT of the three above (TLAS-split lane 2026-08) ---------------
+    // The three buckets above each mix O(96k) CPU work with a BLOCKING FENCE WAIT.
+    // Which half dominates decides the whole optimisation, so both halves are named.
+    Z_AsBlasWait,       // endBlasBatch(): submit + vkWaitForFences  (inside as.blas_refit)
+    Z_AsSig,            // tlasSignature() over every instance       (inside as.instance_pack)
+    Z_AsTlasPack,       // buildTlas row pack + memcpy into the instance buffer
+    Z_AsTlasWait,       // buildTlas oneTimeSubmit: submit + vkWaitForFences
+    // ---- LEAF (TLAS-split lane): the AS batch's fence wait, RELOCATED ---------
+    // The AS batch is submitted inside cpu.rt_as_build but WAITED at the end of
+    // endFrame, so its stall is no longer inside that bucket. It gets its own leaf
+    // so the frame partition stays honest and nobody reads the smaller
+    // cpu.rt_as_build as the whole story.
+    Z_AsDrain,          // endFrame: vkWaitForFences on the AS batch, pre-submit
     Z_Count
 };
 
@@ -93,6 +106,11 @@ inline const char* zoneName(uint32_t z) {
         case Z_AsBlas:        return "  as.blas_refit";
         case Z_AsInstances:   return "  as.instance_pack";
         case Z_AsTlas:        return "  as.tlas_build";
+        case Z_AsBlasWait:    return "    as.blas_wait";
+        case Z_AsSig:         return "    as.signature";
+        case Z_AsTlasPack:    return "    as.tlas_pack";
+        case Z_AsTlasWait:    return "    as.tlas_wait";
+        case Z_AsDrain:       return "cpu.rt_as_wait";
         default:              return "cpu.?";
     }
 }
@@ -175,7 +193,7 @@ inline bool zoneIsLeaf(uint32_t z) {
     switch (z) {
         case Z_BeginFrame: case Z_DrawMesh: case Z_Skin: case Z_Hud:
         case Z_Prepare:    case Z_GraphRecord: case Z_Submit:
-        case Z_HostDrawFan:
+        case Z_HostDrawFan: case Z_AsDrain:
             return true;
         default:
             return false;   // host spans self-report via HostScope; composites never

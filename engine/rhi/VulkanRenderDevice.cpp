@@ -1017,6 +1017,12 @@ FrameContext VulkanRenderDevice::beginFrame() {
         // This frame's GPU work has retired (we waited on inFlight): it's safe to
         // overwrite its per-frame object SSBO / camera UBO / indirect rings and to
         // recycle the HUD descriptor pool + HUD vertex ring.
+        // Safety net for the deferred AS-batch drain: endFrame retires the batch
+        // right before its own submit, but endFrame has early-out paths (headless
+        // capture, swapchain loss). A batch left pending must never survive into a
+        // frame that could rewrite the instance buffer or the batch scratch. No-op
+        // in the normal case.
+        m_rt.drainBlasBatch();
         m_drawRecords.clear();
         m_planetDraws.clear();   // planet body draws (FORGE3D port) reset per frame
         // Particle/decal per-frame staging (capacity persists -> no heap churn).
@@ -1268,6 +1274,19 @@ void VulkanRenderDevice::endFrame(const FrameContext& fc) {
         submit.commandBufferInfoCount   = 1;   submit.pCommandBufferInfos = &cmdS;
         submit.signalSemaphoreInfoCount = m_headless ? 0u : 1u;
         submit.pSignalSemaphoreInfos    = m_headless ? nullptr : &signalS;
+        // ---- RETIRE THIS FRAME'S ACCELERATION-STRUCTURE BATCH ------------------
+        // buildRtSceneAS() SUBMITTED the BLAS refits + TLAS build near the top of
+        // endFrame and did NOT block. The GPU has been chewing on it while the CPU
+        // recorded the whole render graph. Wait for it HERE — before the submit
+        // that will trace against it, and before the next frame can rewrite the
+        // instance buffer or reuse the batch's scratch and command buffer.
+        //
+        // Deliberately NOT relying on same-queue submission order to skip the wait:
+        // that trades a measurable stall for a write-after-write hazard class that
+        // standard validation does not report (772bf11b). The wait is kept; only
+        // its position moved, so the AS build now overlaps ~1.2 ms of graph
+        // recording instead of stalling in front of it.
+        m_rt.drainBlasBatch();
         { X3_CPU_ZONE(Z_Submit); vkQueueSubmit2(m_gfxQueue, 1, &submit, fr.inFlight); }
         m_asyncCullThisFrame = false;
 
@@ -1439,6 +1458,16 @@ void VulkanRenderDevice::logPerfBreakdown(const char* why) {
             m_lastStats.objectsSubmitted, (uint32_t)m_groupOrder.size(),
             m_lastStats.objectsDrawn, m_rt.lastInstanceCount(), m_rt.blasCount());
         logInfo(b);
+        // TLAS-SPLIT LANE: the whole point of the change, in one row. `dynamic` is
+        // how many instance rows the CPU actually rewrote on the LAST frame of the
+        // window; `static` is how many it left alone because nothing about them
+        // changed. Before the split both numbers were meaningless: every row was
+        // repacked, every frame.
+        std::snprintf(b, sizeof(b),
+            "[perf]   TLAS instance rows: static %u (untouched)  dynamic %u (rewritten, of which "
+            "%u were pure SSBO-row shifts)  = %u",
+            m_rtStaticRows, m_rtDynamicRows, m_rtRowShifts, m_rtStaticRows + m_rtDynamicRows);
+        logInfo(b);
         if (!m_passTimersOn) {
             logInfo("[perf]   (per-pass timers DISABLED via X3_PASSTIMERS=0 — GPU rows are empty)");
         }
@@ -1454,7 +1483,7 @@ void VulkanRenderDevice::logPerfBreakdown(const char* why) {
         const uint32_t leaves[] = { x3::perf::Z_BeginFrame, x3::perf::Z_DrawMesh,
                                     x3::perf::Z_HostDrawFan,
                                     x3::perf::Z_Skin, x3::perf::Z_Hud,
-                                    x3::perf::Z_Prepare, x3::perf::Z_AsBuild,
+                                    x3::perf::Z_Prepare, x3::perf::Z_AsBuild, x3::perf::Z_AsDrain,
                                     x3::perf::Z_GraphRecord, x3::perf::Z_Submit,
                                     x3::perf::Z_HostInput, x3::perf::Z_HostPhysics,
                                     x3::perf::Z_HostStream, x3::perf::Z_HostSim,
@@ -1475,6 +1504,7 @@ void VulkanRenderDevice::logPerfBreakdown(const char* why) {
             const double endOther = endTot
                 - x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_Prepare]) * invC
                 - x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_AsBuild]) * invC
+                - x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_AsDrain]) * invC
                 - x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_GraphRecord]) * invC
                 - x3::perf::ticksToMs(m_perfCpuTicks[x3::perf::Z_Submit]) * invC;
             std::snprintf(b, sizeof(b), "[perf]   %-20s %8.3f ms  %5.1f%%   (endFrame minus its named children)",
@@ -1492,8 +1522,11 @@ void VulkanRenderDevice::logPerfBreakdown(const char* why) {
         // Nested sub-buckets: these are INSIDE cpu.rt_as_build, printed after the
         // partition so they are never mistaken for additional cost.
         {
-            const uint32_t subs[] = { x3::perf::Z_AsBlas, x3::perf::Z_AsInstances, x3::perf::Z_AsTlas };
-            for (uint32_t si = 0; si < 3; ++si) {
+            const uint32_t subs[] = { x3::perf::Z_AsBlas,     x3::perf::Z_AsBlasWait,
+                                      x3::perf::Z_AsInstances, x3::perf::Z_AsSig,
+                                      x3::perf::Z_AsTlas,      x3::perf::Z_AsTlasPack,
+                                      x3::perf::Z_AsTlasWait };
+            for (uint32_t si = 0; si < sizeof(subs) / sizeof(subs[0]); ++si) {
                 const double ms = x3::perf::ticksToMs(m_perfCpuTicks[subs[si]]) * invC;
                 std::snprintf(b, sizeof(b), "[perf]   %-20s %8.3f ms          (inside cpu.rt_as_build)",
                               x3::perf::zoneName(subs[si]), ms);

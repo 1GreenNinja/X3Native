@@ -1456,9 +1456,6 @@ private:
     // is ready. Called from endFrame BEFORE the graph records the frame.
     bool buildRtSceneAS();
 
-    // Cheap order-sensitive signature of the TLAS instance set (mesh ids + packed
-    // transforms) so a static scene's TLAS is rebuilt only when it actually changes.
-    static uint64_t tlasSignature(const std::vector<VulkanRT::TlasInstance>& inst);
 
     // =====================================================================
     // RT ACOUSTICS — ASYNC batched ray queries against the SAME scene TLAS
@@ -1914,9 +1911,26 @@ private:
     // Apply-pass push constant (matches shaders/rtao_apply.frag).
     struct RtaoApplyPush { float aoTexel[2]; float strength; float pad0; };
     RtaoApplyPush m_rtaoApplyPush{};
-    // Per-frame TLAS-instance scratch (capacity persists; no per-frame heap churn).
-    std::vector<VulkanRT::TlasInstance> m_rtInstScratch;
-    uint64_t m_rtTlasSig = 0;             // signature of the last-built TLAS instance set
+    // ---- STATIC/DYNAMIC TLAS SPLIT (2026-08-11) ---------------------------
+    // CPU-SIDE SHADOW of the TLAS instance buffer: everything that feeds one
+    // packed VkAccelerationStructureInstanceKHR row, in the row's own order.
+    // buildRtSceneAS compares each draw record against its shadow entry and
+    // writes the mapped (write-combined) instance buffer ONLY on a mismatch, so
+    // per frame the CPU touches the handful of rows that MOVED instead of all
+    // 96,076. The mapped buffer is never read back — this is the readable copy.
+    // Layout note: `model` first keeps the 64-byte memcmp 16-byte aligned.
+    struct RtRowSrc {
+        float           model[16];
+        VkDeviceAddress blasAddr = 0;
+        uint32_t        custom   = 0;
+        uint32_t        pad      = 0;
+    };
+    std::vector<RtRowSrc> m_rtRowShadow;
+    uint32_t m_rtLastInstCount = 0;   // instance count of the last-built TLAS
+    uint32_t m_rtStaticRows    = 0;   // rows left untouched this frame (telemetry)
+    uint32_t m_rtDynamicRows   = 0;   // rows actually rewritten this frame (telemetry)
+    uint32_t m_rtRowShifts     = 0;   // of those, ones whose OBJECT did not move -
+                                      // only its compacted object-SSBO row index did
     bool m_rtaoActiveThisFrame = false;   // RT-AO chain added to the graph this frame
     // Stable storage for the RT-AO apply pass's VkRenderingInfo + attachment (the
     // graph holds pointers into these across execute()).
