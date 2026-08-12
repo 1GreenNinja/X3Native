@@ -309,6 +309,28 @@ x3::rhi::TextureHandle loadTerrainAlbedo(x3::rhi::IRenderDevice& device,
     return device.createTexture(fb.data(), kN, kN, /*srgb=*/true);
 }
 
+// Load one surface_library set's NORMAL map as a LINEAR (non-sRGB) texture — a
+// normal map is a vector field, not colour, and sRGB-decoding it would bend every
+// normal toward the surface. There is deliberately NO procedural fallback: an
+// invented normal map is worse than none, because "none" (an invalid handle ->
+// bindless index 0) makes mesh.frag shade that layer from the geometry normal,
+// which is exactly the pre-relief behaviour. Returns an invalid handle if the
+// file is missing.
+x3::rhi::TextureHandle loadTerrainNormal(x3::rhi::IRenderDevice& device,
+                                         const std::string& setName) {
+    const std::string path = x3::game::assetRoot() + "/surface_library/" + setName + "/normal.png";
+    int w = 0, h = 0, comp = 0;
+    stbi_uc* px = stbi_load(path.c_str(), &w, &h, &comp, 4);
+    if (px) {
+        x3::rhi::TextureHandle t = device.createTexture(px, (uint32_t)w, (uint32_t)h, /*srgb=*/false);
+        stbi_image_free(px);
+        if (t.valid()) return t;
+    }
+    x3::logWarn("[terrain] surface set '" + setName + "' has NO normal map at " + path +
+                " -- that layer will shade FLAT (geometry normal only)");
+    return {};
+}
+
 // Build the four ground DETAIL textures (grass / rock / snow / sand), register
 // them as the terrain MATERIAL set, and return the opaque MARKER handle the
 // renderer uses to flag terrain draws for the height+slope splat in mesh.frag.
@@ -341,8 +363,26 @@ x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
     auto rock  = loadTerrainAlbedo(device, "terrain_rock",  2002u, 104, 100,  92, 24); // grey-brown
     auto snow  = loadTerrainAlbedo(device, "terrain_snow",  3003u, 222, 226, 235, 14); // bright white-blue
     auto sand  = loadTerrainAlbedo(device, "terrain_sand",  4004u, 178, 158, 118, 18); // tan
+    // ...and each layer's NORMAL map. This is what turns the splat from four flat
+    // COLOURS into four SURFACES: mesh.frag used to skip its normal path entirely
+    // for terrain, so a cut face got the rock albedo and then lit like plaster.
+    // X3_TERRAIN_NORMALS=0 loads none of them, which is the exact pre-relief
+    // renderer. It exists so the before/after can be captured from ONE build at
+    // ONE viewpoint — an A/B where the only difference is the relief, with no
+    // recompile in between to smuggle in anything else.
+    const char* nrmEnv = std::getenv("X3_TERRAIN_NORMALS");
+    const bool wantNormals = !(nrmEnv && nrmEnv[0] == '0');
+    x3::rhi::TextureHandle grassN, rockN, snowN, sandN;
+    if (wantNormals) {
+        grassN = loadTerrainNormal(device, "terrain_grass");
+        rockN  = loadTerrainNormal(device, "terrain_rock");
+        snowN  = loadTerrainNormal(device, "terrain_snow");
+        sandN  = loadTerrainNormal(device, "terrain_sand");
+    } else {
+        x3::logWarn("[terrain] X3_TERRAIN_NORMALS=0 -- terrain relief DISABLED (albedo only)");
+    }
     x3::rhi::TextureHandle marker =
-        device.registerTerrainMaterial(grass, rock, snow, sand);
+        device.registerTerrainMaterial(grass, rock, snow, sand, grassN, rockN, snowN, sandN);
     // Fallback: if the material set couldn't be registered (no bindless), use the
     // grass tile directly so terrain is at least a believable green, not white.
     return marker.valid() ? marker : grass;

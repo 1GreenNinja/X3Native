@@ -76,6 +76,10 @@ public:
     x3::rhi::TextureHandle registerTerrainMaterial(x3::rhi::TextureHandle,
                                                    x3::rhi::TextureHandle,
                                                    x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle,
                                                    x3::rhi::TextureHandle) override {
         return x3::rhi::TextureHandle{ m_next++ };
     }

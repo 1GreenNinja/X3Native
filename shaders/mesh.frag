@@ -115,6 +115,17 @@ layout(set = 3, binding = 1) uniform SsaoControl {
     vec4 rtsh1;       // x = frame seed (per-frame jitter rotation; 0 when TAA is off), yzw = reserved
     // ---- Underwater caustics (setCaustics; all zero when no host opted in) ----
     vec4 caustics;    // x = enabled (0/1), y = local water surface Y, z = time (s), w = intensity
+    // ---- TERRAIN NORMAL MAPS (registerTerrainMaterial's normal handles) ----
+    // Packed exactly like the per-object terrain ALBEDO pack so the two read the
+    // same way in inc/mesh_terrain.glsl: x = grass<<16|rock, y = snow<<16|sand.
+    // These live here rather than in the object SSBO row because the terrain
+    // material set is DEVICE-GLOBAL — one set per device, identical on every
+    // terrain draw — and there is no free lane in the SSBO row that terrain does
+    // not already spend. APPENDED at the tail so glass.frag, which declares this
+    // same buffer only as far as `caustics`, stays a valid std140 prefix.
+    // All zero (the default) means "no normal maps" -> terrain shades from the
+    // geometry normal, byte-identical to the pre-relief renderer.
+    uvec4 terrainNrm; // xy = the two packs (see above), zw = reserved
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
@@ -255,7 +266,12 @@ void main() {
     const bool alphaBlend  = (vTexIndex & 0x40000000u) != 0u;  // bit30 = BLEND (glass)
     vec4 albedo;
     if ((vFlags & FLAG_TERRAIN) != 0u) {
+        // ORDER MATTERS: the splat picks its layers from the SLOPE, so both the
+        // albedo and the relief must be keyed off the GEOMETRY normal. Perturb N
+        // only after the albedo has been chosen, or a rock face's own bump would
+        // start voting on whether it is a rock face.
         albedo = vec4(terrainAlbedo(vWorldPos, N, vTerrainPack), 1.0) * vFactor;
+        N = terrainNormal(vWorldPos, N, ssao.terrainNrm.xy);
     } else {
         albedo = texture(textures[nonuniformEXT(baseIdx)], vUV) * vFactor;
     }
