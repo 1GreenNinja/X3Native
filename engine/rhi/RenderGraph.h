@@ -187,6 +187,39 @@ public:
     // sanity that the graph is doing the work the hand-code used to).
     uint32_t lastBarrierCount() const { return m_lastBarrierCount; }
 
+    // ---- PER-PASS TIMING (LANE 6 / r_speeds) -----------------------------
+    // Before this existed the engine had exactly TWO GPU timestamps — frame start
+    // and frame end (vk_resources.cpp) — so `m_cullGpuMs` / `m_hzbGpuMs` were
+    // declared, never assigned, and the HUD printed 0.00 forever. EVERY per-pass
+    // millisecond quoted in this repo's docs was therefore a whole-frame delta,
+    // not a pass cost. This is the fix.
+    //
+    // enableTiming() hands the graph a slice of the frame's timestamp query pool:
+    // pass i writes ALL_COMMANDS timestamps into queries [firstQuery + 2i] and
+    // [firstQuery + 2i + 1]. The caller resets the whole pool before recording and
+    // reads the results back kFramesInFlight frames later (no stall), then maps
+    // them onto the pass names captured by timedPassName().
+    //
+    // MEASUREMENT HONESTY: both stamps use ALL_COMMANDS, so pass i's start latches
+    // only after every previously-submitted command has completed. That makes the
+    // per-pass durations non-overlapping and their sum ~= the frame total — which
+    // is exactly what a cost breakdown needs — at the price of discouraging some
+    // inter-pass overlap the GPU might otherwise find. That cost is itself
+    // measurable: r_passtimers 0 turns the whole thing off for the A/B.
+    void enableTiming(VkQueryPool pool, uint32_t firstQuery, uint32_t maxPasses) {
+        m_tsPool = pool; m_tsFirst = firstQuery; m_tsMaxPasses = maxPasses;
+    }
+    void disableTiming() { m_tsPool = VK_NULL_HANDLE; m_tsMaxPasses = 0; }
+
+    // Passes that got a timestamp pair in the LAST execute() (<= maxPasses).
+    uint32_t    timedPassCount() const { return (uint32_t)m_timed.size(); }
+    const char* timedPassName(uint32_t i) const { return m_timed[i].name; }
+    // CPU milliseconds spent INSIDE that pass's record callback (+ its derived
+    // barrier emit). This is the CPU-side half of the breakdown: on a CPU-bound
+    // frame the expensive pass is the one whose record walk is expensive, which is
+    // not necessarily the one whose GPU time is largest.
+    float       timedPassCpuMs(uint32_t i) const { return m_timed[i].cpuMs; }
+
 private:
     struct Resource {
         const char*   name;
@@ -194,9 +227,14 @@ private:
         ResourceState state;
         uint32_t      arrayLayers;   // barriers must span EVERY layer (CSM: 4)
     };
+    struct TimedPass { const char* name; float cpuMs; };
     std::vector<Resource>       m_resources;   // capacity persists across frames
     std::vector<RenderPassDesc> m_passes;      // capacity persists across frames
+    std::vector<TimedPass>      m_timed;       // capacity persists across frames
     uint32_t                    m_lastBarrierCount = 0;
+    VkQueryPool                 m_tsPool = VK_NULL_HANDLE;
+    uint32_t                    m_tsFirst = 0;
+    uint32_t                    m_tsMaxPasses = 0;
 };
 
 // ===========================================================================

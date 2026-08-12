@@ -177,7 +177,87 @@ void VulkanRenderDevice::rewriteRtaoTlas(uint32_t slot) {
         }
     }
 
+// X3_TLAS_VERIFY=2 only. Emulates a streaming region load/unload the ONLY way
+// that matters to a partitioned instance buffer: by withholding a large
+// CONTIGUOUS BLOCK of draw records from the middle of the list, which splices
+// every row index after it. Held for 45 frames, released for 45, block position
+// and size walking each cycle so the splice lands somewhere new every time.
+// Withholding records is exactly what an unloaded region does; re-admitting them
+// is exactly what a load does. Off (window empty) unless the env gate asks.
+void VulkanRenderDevice::rtChurnWindow(uint32_t recordCount) {
+        if (!m_rtChurn || recordCount < 64) { m_rtChurnLo = m_rtChurnHi = 0; return; }
+        const uint32_t phase = (uint32_t)(m_rtChurnFrame++ / 45u);
+        if ((phase & 1u) == 0u) { m_rtChurnLo = m_rtChurnHi = 0; return; }   // "loaded"
+        const uint32_t cycle = phase / 2u;
+        const uint32_t lo    = (uint32_t)(((uint64_t)recordCount * ((cycle * 7u) % 10u)) / 16u);
+        uint32_t hi = lo + recordCount / (4u + (cycle % 5u));
+        if (hi > recordCount) hi = recordCount;
+        m_rtChurnLo = lo; m_rtChurnHi = hi;
+    }
+
+// ---- X3_TLAS_VERIFY: prove the partially-updated instance buffer is exact ----
+// Repacks EVERY instance row from scratch, the naive way the old code did, and
+// byte-compares it against m_rtRowMirror (the exact image of what the partial
+// path wrote into the device buffer). A stale row -- the failure mode a
+// partitioned TLAS actually has, and the one no smoketest can see -- is reported
+// as a hard [ERROR] naming the first offending row. Only runs under the env gate.
+void VulkanRenderDevice::verifyRtInstanceRows(uint32_t instCount) {
+        ++m_rtVerifyFrames;
+        m_rtRowExpect.clear();
+        m_rtRowExpect.reserve(instCount);
+        for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
+            if (i >= m_rtChurnLo && i < m_rtChurnHi) continue;   // "unloaded region"
+            const DrawRecord& dr = m_drawRecords[i];
+            const VkDeviceAddress a = m_rt.blasAddrOf(dr.meshId);   // no memo: independent
+            if (!a) continue;
+            if (dr.flags & kFlagGlass) continue;
+            const uint32_t custom = (i < m_recordSsboRow.size()) ? m_recordSsboRow[i] : 0u;
+            VkAccelerationStructureInstanceKHR e{};
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 4; ++c)
+                    e.transform.matrix[r][c] = dr.model[c * 4 + r];
+            e.instanceCustomIndex = custom & 0xFFFFFFu;
+            e.mask = 0xFFu;
+            e.instanceShaderBindingTableRecordOffset = 0;
+            e.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            e.accelerationStructureReference = a;
+            m_rtRowExpect.push_back(e);
+        }
+        char b[256];
+        if ((uint32_t)m_rtRowExpect.size() != instCount) {
+            std::snprintf(b, sizeof(b),
+                "[rt] TLAS VERIFY FAIL: row count %u but a full repack yields %u",
+                instCount, (uint32_t)m_rtRowExpect.size());
+            logError(b); ++m_rtVerifyBad; return;
+        }
+        uint32_t bad = 0, firstBad = 0;
+        for (uint32_t n = 0; n < instCount; ++n) {
+            if (std::memcmp(&m_rtRowMirror[n], &m_rtRowExpect[n],
+                            sizeof(VkAccelerationStructureInstanceKHR)) != 0) {
+                if (!bad) firstBad = n;
+                ++bad;
+            }
+        }
+        if (bad) {
+            ++m_rtVerifyBad;
+            std::snprintf(b, sizeof(b),
+                "[rt] TLAS VERIFY FAIL: %u/%u instance rows STALE (first row %u) — the "
+                "partial update missed a change", bad, instCount, firstBad);
+            logError(b);
+        } else if ((m_rtVerifyFrames % 300u) == 1u) {
+            std::snprintf(b, sizeof(b),
+                "[rt] TLAS VERIFY ok: %u/%u rows byte-exact vs a full repack "
+                "(%llu frames checked, %llu bad; this frame rewrote %u)",
+                instCount, instCount, (unsigned long long)m_rtVerifyFrames,
+                (unsigned long long)m_rtVerifyBad, m_rtDynamicRows);
+            logInfo(b);
+        }
+    }
+
 bool VulkanRenderDevice::buildRtSceneAS() {
+        // LANE 6: INCLUDES the blocking vkWaitForFences(UINT64_MAX) that VulkanRT.h
+        // pays per frame for the BLAS batch + the TLAS build (VULKAN_ROADMAP.md 2.1).
+        X3_CPU_ZONE(Z_AsBuild);
         // Ensure a BLAS for each distinct mesh referenced this frame — BATCHED
         // (one submit for the whole set; ~8000 per-mesh one-shot submits used to
         // cost ~6.6 s on the legacy tower's first frame, docs/BOOT_TIME.md) and
@@ -187,6 +267,7 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         constexpr uint32_t kBlasFrameBudget = 4096;
         uint32_t built = 0;
         bool     deferred = false;
+        { X3_CPU_ZONE(Z_AsBlas);
         m_rt.beginBlasBatch();
         // ---- SKINNED-CHARACTER TLAS REFIT (#3, r_skinnedrt) -------------------
         // Per-frame, build/refit a BLAS for each visible skinned character from its
@@ -260,13 +341,17 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             if (m_rt.ensureBlas(mid, vbAddr, m.vertexCount, m_vtxStride /* Lane 5: packed vertex stride; POSITION is still float3 @0 */, ibAddr, m.indexCount))
                 ++built;
         }
-        m_rt.endBlasBatch();
+        }   // end Z_AsBlas
+        // NOTE: endBlasBatch() is NOT called here any more. The TLAS build is
+        // recorded into this SAME command buffer below, so BLAS refits + TLAS
+        // build now cost ONE submit and ONE fence wait instead of two.
         // PERF (measured, 33 skinned chars, RT GPU): cold = ~30 ms for 33 full BLAS
         // BUILDS (one-time warm-up, attributed to the batched-AS boundary); steady
         // state = ~2.0-2.6 ms for 33 REFITS incl. the fence wait (~60-75 us/char) —
         // ~12-15x cheaper than rebuilding, which is the whole point of MODE_UPDATE.
         if (deferred) {
             // More BLAS than this frame's budget: raster fallback until complete.
+            m_rt.submitBlasBatch();   // drained in endFrame, just before the frame submit
             char db[128];
             std::snprintf(db, sizeof(db),
                 "[rt] BLAS warm-up: %u built this frame (budget %u) — raster fallback until complete",
@@ -275,68 +360,175 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             return false;
         }
 
-        // Build the TLAS from this frame's instances. hasBlas() now returns true for
-        // skinned meshes too (their per-frame skinned BLAS built above), so skinned
-        // characters enter the TLAS automatically alongside static geometry.
-        m_rtInstScratch.clear();
-        m_rtInstScratch.reserve(m_drawRecords.size());
+        // ==== STATIC / DYNAMIC TLAS SPLIT (2026-08-11) =========================
+        // WHAT CHANGED. This used to be TWO full walks of every draw record
+        // (~96,076 in echotropolis): one packed a TlasInstance staging vector,
+        // then VulkanRT::buildTlas walked THAT and packed a second, 64-byte-row
+        // vector, then bulk-memcpy'd 6.1 MB into the instance buffer. Measured
+        // cost: as.instance_pack 1.15 ms + as.tlas_pack 1.39 ms = 2.55 ms of pure
+        // CPU, every frame, to re-describe a city that did not move.
+        //
+        // WHAT IT IS NOW. ONE walk that writes VkAccelerationStructureInstanceKHR
+        // rows DIRECTLY into the persistently-mapped instance buffer - and writes
+        // only the rows that actually CHANGED. The instance buffer is never
+        // cleared, so an untouched row keeps last frame's value. That makes the
+        // buffer a partitioned TLAS input: a large STATIC region that is written
+        // once and then simply persists, and a small DYNAMIC set of rows the CPU
+        // rewrites per frame.
+        //
+        // WHY ONE TLAS AND NOT TWO. A second, dynamic-only TLAS would force every
+        // ray-query consumer (mesh.frag RT shadows, rtao.comp, the reflection
+        // pass, ddgi_rays.comp, the audio-ray pass) to trace BOTH and merge hits -
+        // closest-hit merging for reflections/DDGI, a second AS binding in five
+        // descriptor sets, and a whole new class of "which structure answered"
+        // bugs, all to save GPU time we are not short of (GPU 14.7 ms vs CPU
+        // 34.3 ms). One TLAS over a partially-updated instance buffer gets the
+        // CPU win with every consumer byte-for-byte unchanged.
+        //
+        // HOW AN INSTANCE IS CLASSIFIED - and why there is no classifier. There is
+        // no persistent "this object is static" flag anywhere, and deliberately so.
+        // The renderer receives a fresh flat list of 96 k draw records every frame
+        // with no object identity; any declarative classification would have to be
+        // maintained by dozens of host call sites and would silently corrupt the
+        // TLAS the first time one of them lied. Instead an instance is dynamic IF
+        // AND ONLY IF its description differs from what is already in the buffer at
+        // that slot. Consequences, all of them good:
+        //   * A parked car that starts driving needs no transition event - it
+        //     simply starts failing the compare. Static->dynamic and back are free.
+        //   * A streaming region loading or unloading changes the row COUNT; every
+        //     row after the splice point compares unequal and is rewritten. That
+        //     costs one frame at roughly the old price and is self-correcting -
+        //     there is no residency bookkeeping to get wrong.
+        //   * If the instance buffer is ever reallocated its contents are undefined,
+        //     so beginInstanceWrite reports that and we rewrite unconditionally.
+        // The compare is against a CPU-side SHADOW (m_rtRowShadow) - never against
+        // the mapped buffer, which is write-combined and must not be read back.
+        uint32_t instCount = 0, dynRows = 0, rowShifts = 0;
+        bool     rowsInvalidated = false;
+        { X3_CPU_ZONE(Z_AsInstances);
+        VkAccelerationStructureInstanceKHR* rows =
+            m_rt.beginInstanceWrite((uint32_t)m_drawRecords.size(), &rowsInvalidated);
+        if (!rows) { m_rt.submitBlasBatch(); return false; }
+        if (!m_rtVerifyChecked) {
+            m_rtVerifyChecked = true;
+            const char* v = std::getenv("X3_TLAS_VERIFY");
+            m_rtVerify = (v && (v[0] == '1' || v[0] == '2'));
+            m_rtChurn  = (v && v[0] == '2');
+            if (m_rtVerify)
+                logInfo("[rt] X3_TLAS_VERIFY — every frame's partially-updated instance "
+                        "buffer is byte-compared against a full naive repack");
+            if (m_rtChurn)
+                logInfo("[rt] X3_TLAS_VERIFY=2 — SYNTHETIC STREAMING CHURN: a large "
+                        "contiguous block of instances is withheld and re-admitted on a "
+                        "cycle, so the region load/unload SPLICE is exercised on demand");
+        }
+        if (rowsInvalidated) { m_rtRowShadow.clear(); m_rtRowMirror.clear(); }
+        m_rtRowShadow.resize(m_drawRecords.size());
+        if (m_rtVerify) m_rtRowMirror.resize(m_drawRecords.size());
         m_skinnedRtInstances = 0;
+        // LANE 6 (measured fix, kept): draw records arrive in runs of the same mesh
+        // (every EnvArt system fans its instances consecutively), so a one-entry
+        // memo collapses almost all of the BLAS-address hash lookups.
+        rtChurnWindow((uint32_t)m_drawRecords.size());
+        uint32_t        memoMesh    = UINT32_MAX;
+        VkDeviceAddress memoAddr    = 0;
+        bool            memoSkinned = false;
         for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
+            if (i >= m_rtChurnLo && i < m_rtChurnHi) continue;   // "unloaded region"
             const DrawRecord& dr = m_drawRecords[i];
-            if (!m_rt.hasBlas(dr.meshId)) continue;
+            if (dr.meshId != memoMesh) {
+                memoMesh = dr.meshId;
+                memoAddr = m_rt.blasAddrOf(dr.meshId, &memoSkinned);
+            }
+            if (!memoAddr) continue;
             // GLASS never enters the TLAS (2026-07-30). A translucent draw as an
-            // RT occluder is a lie the rays can't see through: the street lamps'
+            // RT occluder is a lie the rays cannot see through: the street lamps'
             // fake-volumetric GLOW CONES enveloped their own emitters, so every
             // point-shadow ray from the ground hit the shaft and the whole city
-            // floor read vis=0 — pitch black at night while debugview 2 showed
+            // floor read vis=0 - pitch black at night while debugview 2 showed
             // the light landing (the 2026-07-30 hunt; debugview 7 = the A/B).
             // Refraction/reflection through real panes never used the TLAS
             // anyway (screen-space scene copy), so nothing else changes.
             if (dr.flags & kFlagGlass) continue;
-            VulkanRT::TlasInstance inst{};
-            inst.meshId = dr.meshId;
+            const uint32_t n = instCount++;
+            if (memoSkinned) ++m_skinnedRtInstances;
             // instanceCustomIndex = the record's SSBO row this frame (filled by
-            // prepareFrameData's grouped write) — the DDGI ray shader's material
-            // lookup. Rows are stable while the draw list is stable; any shift
-            // changes the signature below and triggers a rebuild.
-            inst.customIndex = (i < m_recordSsboRow.size()) ? m_recordSsboRow[i] : 0u;
-            // GLASS TRANSMITS THE SUN. Glass records get mask 0x7F (bit 7 clear)
-            // so the RT shadow rays (cullMask 0x80, mesh.frag rtshVisibility)
-            // pass through every glass surface — the WATER above all: a sun ray
-            // from the riverbed used to hit the water ribbon as an OPAQUE TLAS
-            // occluder and zero the entire submerged direct-sun term, silently
-            // undoing the 24371e2 depth/shadow fix on RT-shadow hardware (the
-            // default tier here). This also makes RT shadows CONSISTENT with
-            // the raster CSM, which replays only [0, m_frameCmdOpaque) and has
-            // never drawn glass. AO / reflections / DDGI / acoustics trace with
-            // cullMask 0xFF and still see glass exactly as before.
-            inst.mask = (dr.flags & kFlagGlass) ? 0x7Fu : 0xFFu;
-            std::memcpy(inst.model, dr.model, sizeof(inst.model));
-            m_rtInstScratch.push_back(inst);
-            if (m_rt.hasSkinnedBlas(dr.meshId)) ++m_skinnedRtInstances;
+            // prepareFrameData's grouped write) - the DDGI ray shader's material
+            // lookup. A shift in those rows changes the source key below and so
+            // rewrites the affected instance rows, exactly as it must.
+            const uint32_t custom = (i < m_recordSsboRow.size()) ? m_recordSsboRow[i] : 0u;
+            RtRowSrc& sh = m_rtRowShadow[n];
+            // THE STATIC TEST. Everything that feeds a packed row is compared here;
+            // if all of it matches, the row already in the buffer IS this frame's
+            // row and the write is skipped. blasAddr is included because a skinned
+            // mesh's first full build changes its BLAS address.
+            const bool sameXform = (sh.blasAddr == memoAddr) &&
+                                   std::memcmp(sh.model, dr.model, sizeof(sh.model)) == 0;
+            if (!rowsInvalidated && sameXform && sh.custom == custom)
+                continue;                              // STATIC this frame: no write
+            ++dynRows;
+            if (sameXform) ++rowShifts;   // only the SSBO row moved, not the object
+            sh.blasAddr = memoAddr; sh.custom = custom;
+            std::memcpy(sh.model, dr.model, sizeof(sh.model));
+            // BUILD THE ROW ON THE STACK, THEN STORE IT AS ONE 64-BYTE BURST.
+            // `rows` points into HOST-VISIBLE DEVICE memory (write-combined over
+            // PCIe BAR). Assigning the fields individually there — as the first
+            // cut of this did — issues 4-byte stores AND a read-modify-write for
+            // the 24-bit instanceCustomIndex bitfield and the 8-bit mask. Reading
+            // WC memory costs ~2 us per row; it turned as.instance_pack into
+            // 51 ms. VkAccelerationStructureInstanceKHR is exactly 64 bytes and
+            // the buffer base is 64-byte aligned, so one memcpy per changed row is
+            // a single full write-combine burst with no read at all.
+            VkAccelerationStructureInstanceKHR tmp{};
+            // column-major model[c*4+r]; row-major transform[r][c] = model[c*4+r].
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 4; ++c)
+                    tmp.transform.matrix[r][c] = dr.model[c * 4 + r];
+            tmp.instanceCustomIndex = custom & 0xFFFFFFu;
+            // GLASS TRANSMITS THE SUN - but glass never reaches here (skipped
+            // above), so every admitted instance carries the full 0xFF mask. RT
+            // shadow rays trace cullMask 0x80, AO/refl/DDGI/acoustics 0xFF; both
+            // see every opaque instance, which is the pre-existing behaviour.
+            tmp.mask = 0xFFu;
+            tmp.instanceShaderBindingTableRecordOffset = 0;
+            tmp.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            tmp.accelerationStructureReference = memoAddr;
+            std::memcpy(&rows[n], &tmp, sizeof(tmp));
+            if (m_rtVerify) m_rtRowMirror[n] = tmp;   // mirror the device write
         }
+        // The shadow must describe EXACTLY the rows the build will read, or a later
+        // frame would compare index n against a stale entry from a longer list.
+        m_rtRowShadow.resize(instCount);
+        m_rtStaticRows  = (instCount > dynRows) ? (instCount - dynRows) : 0u;
+        m_rtDynamicRows = dynRows;
+        m_rtRowShifts   = rowShifts;
+        if (m_rtVerify) verifyRtInstanceRows(instCount);
+        }   // end Z_AsInstances
 
-        // Decide whether to (re)build the TLAS this frame. Rebuilding into the SAME
-        // backing buffer while a previous frame's RT-AO compute may still be READING
-        // it is a cross-frame WAR hazard. To stay correct + cheap:
-        //   * STATIC-FIRST (default, rebuildTlasEachFrame=false): build only when the
-        //     instance set CHANGES (a cheap signature over mesh ids + transforms). A
-        //     change is rare, so we idle the device before that rare rebuild — no
-        //     in-flight reader can touch the backing. The common static frame does NO
-        //     build (and thus no hazard, no stall).
-        //   * rebuildTlasEachFrame=true (moving geometry): rebuild every frame, idling
-        //     first so the prior frame's compute has retired before the backing is
-        //     overwritten. Correct (if heavier) — for dynamic scenes.
-        const uint64_t sig = tlasSignature(m_rtInstScratch);
+        // Decide whether to (re)build the TLAS this frame. The old code hashed all
+        // ~96 k instances (FNV over 18 words each) to answer "did anything move?".
+        // The partial-update walk above answers it EXACTLY and for free: dynRows is
+        // the number of instances that changed. The signature is gone.
+        //   * dynRows == 0 and the count is unchanged -> nothing moved.
+        //   * m_skinnedRtThisFrame -> a skinned BLAS was refit in place: its handle
+        //     and its row are unchanged but its GEOMETRY moved, so the top-level
+        //     bounds are stale and the TLAS must be rebuilt anyway.
         const bool firstBuild = !m_rt.tlasBuilt();
-        const bool changed    = (sig != m_rtTlasSig);
+        const bool changed    = (dynRows != 0u) || (instCount != m_rtLastInstCount)
+                             || rowsInvalidated;
+        m_rtLastInstCount = instCount;
         // SKINNED: a refit BLAS keeps its handle/address but its geometry (and thus
         // its bounds) moved this frame, so the TLAS must be rebuilt to refresh the
-        // top-level bounding volumes — even if the instance set/transforms (the
-        // signature) are unchanged. Only forces a rebuild on frames that actually
-        // touched a skinned BLAS; a static frame still hits the no-build fast path.
-        if (!firstBuild && !changed && !m_skinnedRtThisFrame && !m_rtao.rebuildTlasEachFrame)
+        // top-level bounding volumes — even if every instance ROW is unchanged.
+        // Only forces a rebuild on frames that actually touched a skinned BLAS; a
+        // static frame still hits the no-build fast path (and, now, does not even
+        // pay for a submit, because the batch below is skipped too).
+        if (!firstBuild && !changed && !m_skinnedRtThisFrame && !m_rtao.rebuildTlasEachFrame) {
+            // Nothing to build — but BLAS work may still have been recorded (a new
+            // static mesh streamed in), so the batch must be closed either way.
+            m_rt.submitBlasBatch();   // drained in endFrame, just before the frame submit
             return m_rt.tlas() != VK_NULL_HANDLE;   // unchanged static TLAS: reuse as-is
+        }
 
         // A real (re)build follows.
         //
@@ -360,8 +552,18 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         // steady-state per-frame wait is zero.
         ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (TLAS (re)build)
         const VkAccelerationStructureKHR before = m_rt.tlas();
-        if (!m_rt.buildTlas(m_rtInstScratch)) return false;
-        m_rtTlasSig = sig;
+        // ONE SUBMIT FOR THE WHOLE FRAME'S AS WORK. recordTlasBuild appends the TLAS
+        // build (preceded by the single BLAS-write -> TLAS-read barrier) to the very
+        // command buffer the skinned BLAS refits were recorded into; endBlasBatch
+        // then submits it ONCE and waits ONE fence. Before this, the BLAS batch and
+        // the TLAS build were two separate submits with two blocking round trips
+        // (as.blas_wait 3.25 ms + as.tlas_wait 0.47 ms, measured).
+        { X3_CPU_ZONE(Z_AsTlas);
+          if (!m_rt.recordTlasBuild(instCount)) {
+              m_rt.submitBlasBatch(); return false;
+          }
+        }
+        if (!m_rt.submitBlasBatch()) return false;
         // SKINNED-RT telemetry/proof (one-shot edge log): the first frame any skinned
         // character actually enters the TLAS, report how many + the BLAS build/refit
         // split (the cheap-refit budget at work). Proof the feature is live without
@@ -404,20 +606,8 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         return m_rt.tlasBuilt() && m_rt.tlas() != VK_NULL_HANDLE;
     }
 
-uint64_t VulkanRenderDevice::tlasSignature(const std::vector<VulkanRT::TlasInstance>& inst) {
-        uint64_t h = 1469598103934665603ull;        // FNV-1a 64
-        auto mix = [&](uint64_t v){ h ^= v; h *= 1099511628211ull; };
-        mix(inst.size());
-        for (const auto& in : inst) {
-            mix(in.meshId);
-            mix(in.customIndex);   // SSBO-row shifts must trigger a TLAS rebuild
-            for (int k = 0; k < 16; ++k) {
-                uint32_t bits; std::memcpy(&bits, &in.model[k], sizeof(bits));
-                mix(bits);
-            }
-        }
-        return h;
-    }
+// tlasSignature() REMOVED (TLAS-split lane 2026-08-11): the per-row shadow
+// compare in buildRtSceneAS answers "did anything move?" exactly and for free.
 
 bool VulkanRenderDevice::traceAudioRaysSubmit(const AudioRay* rays, int count) {
         if (!m_rtSupported || !rays || count <= 0 ||
@@ -1114,6 +1304,13 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
                       uint32_t extraFlags, const GlassMaterial* glass,
                       float clearcoat , float clearcoatRough , float selfLight ,
                       float metallicScale , float foliage ) {
+        // LANE 6: this walk is the cost `docs/screenshots/gpucull/RESULTS.md:46-54`
+        // names ("dominated by the immediate-mode drawMesh() submission walk") but
+        // never measured against the rest of the frame. Now it is a named bucket —
+        // and DrawScope ALSO charges the gap since the previous drawMesh returned
+        // to cpu.host_drawfan, which is how the host's per-instance work becomes
+        // visible without editing a single host file (see x3_cpuzones.h).
+        ::x3::perf::DrawScope _x3draw;
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1253,6 +1450,7 @@ void VulkanRenderDevice::drawPlanet(const FrameContext& fc, MeshHandle mesh, con
 
 void VulkanRenderDevice::drawHudQuad(const FrameContext& fc, float xPx, float yPx,
                  float wPx, float hPx, const float rgba[4]) {
+        X3_CPU_ZONE(Z_Hud);
         if (!fc.valid || !m_hudPipeline) return;
         const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
                              rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
@@ -1441,6 +1639,7 @@ void VulkanRenderDevice::emitQuad(HudVertex out[6], float xPx, float yPx, float 
     }
 
 void VulkanRenderDevice::prepareFrameData() {
+        X3_CPU_ZONE(Z_Prepare);
         if (m_framePrepared) return;
         m_framePrepared = true;
         m_frameCmdCount = 0; m_frameCmdOpaque = 0;

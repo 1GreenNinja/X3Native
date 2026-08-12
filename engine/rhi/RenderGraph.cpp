@@ -15,6 +15,7 @@
 #include "RenderGraph.h"
 #include "../core/x3_log.h"
 #include <cassert>
+#include <chrono>
 
 namespace x3::rhi {
 
@@ -33,6 +34,7 @@ void RenderGraph::beginFrame() {
     // shadow-map state in a member and feeds it back in via importImage.)
     m_resources.clear();
     m_passes.clear();
+    m_timed.clear();
     m_lastBarrierCount = 0;
 }
 
@@ -61,12 +63,24 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
     // loop, consumed by the state-advance loop below so the two agree.
     bool continuesRead[kMaxUsesPerPass];
 
+    // LANE 6: per-pass GPU timestamps + CPU record time. See RenderGraph.h.
+    const bool timing = (m_tsPool != VK_NULL_HANDLE) && (m_tsMaxPasses > 0);
+    uint32_t   timedIdx = 0;
+
     for (RenderPassDesc& pass : m_passes) {
         uint32_t bcount = 0;
         // Clear the whole array (not just the iterations reached): the batch-cap
         // guard below can `break` out early, which would otherwise leave stale
         // flags from the previous pass driving this pass's state advance.
         for (uint32_t i = 0; i < kMaxUsesPerPass; ++i) continuesRead[i] = false;
+
+        const bool timeThis = timing && (timedIdx < m_tsMaxPasses);
+        std::chrono::steady_clock::time_point cpu0;
+        if (timeThis) {
+            vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                 m_tsPool, m_tsFirst + timedIdx * 2u);
+            cpu0 = std::chrono::steady_clock::now();
+        }
 
         // ---- Derive the barriers for this pass from its declared resource uses.
         // For each used resource compare the required (layout,stage,access) with
@@ -205,6 +219,15 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
             pass.record(pass.recordCtx, cmd);
         if (pass.usesDynamicRendering)
             vkCmdEndRendering(cmd);
+
+        if (timeThis) {
+            const float cpuMs = (float)std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - cpu0).count();
+            vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                 m_tsPool, m_tsFirst + timedIdx * 2u + 1u);
+            m_timed.push_back(TimedPass{ pass.name, cpuMs });
+            ++timedIdx;
+        }
     }
 }
 
