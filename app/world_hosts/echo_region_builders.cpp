@@ -830,19 +830,33 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
             "Building 36","Building 38","Building 39","Building 40","Building 41",
             "Building 43",
         };
-        int towersBuilt = 0, reseated = 0;
+        int towersBuilt = 0, reseated = 0, onRoad = 0;
         for (const char* b : kBld) {
             auto t = std::make_unique<EnvArtSystem>();
             if (!t->buildFromGlbAt(ctx.device, cdir, std::string(b) + ".glb", M)) continue;
             float mn[3], mx[3]; t->worldBounds(mn, mx);
-            // V8: the corridorHitsAABB VETO that stood here is GONE. What it
-            // was actually compensating for was that all 36 towers shared ONE
-            // baked transform seated from ONE heightAt() probe at (tcx,tcz) —
-            // so every tower away from that probe was floating or buried, and
-            // deleting the ones over a road was the only lever anyone had.
-            // Each tower is now RE-SEATED on its own ground: read where the
-            // load actually put it, probe THAT footprint's corners, and slide
-            // the instance in Y. One probe for downtown becomes one per tower.
+            // V8 removed the corridorHitsAABB VETO from this site, on the V8
+            // rationale that "a building now comes from a LOT or a FRONTAGE
+            // POINT, both outside every road corridor by construction". THESE 36
+            // TOWERS COME FROM NEITHER. They are one BAKED Unity layout dropped
+            // through a single scene transform `M`; nothing in that layout has
+            // ever heard of the road graph, so removing the veto removed the
+            // only thing keeping them off it — Tim's "buildings are still ON the
+            // freeway". (Re-seating each tower in Y, which the V8 note is really
+            // about, is a different axis and is kept below: it fixes float/bury,
+            // not footprint overlap.) The veto is BACK, and it tests the FULL
+            // road set — Freeway and Ramp included, which the lot system never
+            // sees because buildCityPlan is called with kRcGround.
+            {
+                const float bcx = (mn[0] + mx[0]) * 0.5f, bcz = (mn[2] + mx[2]) * 0.5f;
+                const float hx = (mx[0] - mn[0]) * 0.5f, hz = (mx[2] - mn[2]) * 0.5f;
+                bool hit = false;
+                for (int cx = -1; cx <= 1 && !hit; ++cx)
+                    for (int cz = -1; cz <= 1 && !hit; ++cz)
+                        hit = legacyCorridorHit(ctx.roads, bcx + hx * (float)cx,
+                                                bcz + hz * (float)cz, 0.0f);
+                if (hit) { ++onRoad; continue; }
+            }
             if (ctx.hf.ok() && mx[0] >= mn[0]) {
                 const float bcx = (mn[0] + mx[0]) * 0.5f, bcz = (mn[2] + mx[2]) * 0.5f;
                 const float hx = std::max(4.0f, (mx[0] - mn[0]) * 0.5f);
@@ -875,8 +889,8 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
         }
         x3::logInfo("[region] DOWNTOWN SKYLINE — " +
                     std::to_string(towersBuilt) + " Urban Night City towers on the crown (" +
-                    std::to_string(reseated) + " re-seated on their own terrain; "
-                    "the one-probe-for-all-downtown seat is gone)");
+                    std::to_string(reseated) + " re-seated on their own terrain; " +
+                    std::to_string(onRoad) + " REFUSED — footprint in a road/freeway corridor)");
     }
 
     // ===================== CITY INFRASTRUCTURE — crown portion ===== (host ~1511-1638)
@@ -898,17 +912,17 @@ void buildCrown(EchoRegion& region, EchoRegionCtx& ctx) {
         auto pp = [&](float x, float z, float topY, float w) {
             if (placePillar(region, ctx, x, z, topY, w, kCarY)) ++infraBuilt;
         };
-        // STREETS: asphalt + neon curbs down each of the 5 car lanes.
-        const struct { float sx,sz,dx,dz,len; } rlanes[] = {
-            {-330,702,1,0,620},{290,742,-1,0,620},{-330,818,1,0,620},{2,560,0,1,400},{-150,960,0,-1,400},
-        };
-        for (auto& L : rlanes) {
-            const float yaw = std::atan2(L.dx, L.dz);
-            const float mx = L.sx + L.dx*L.len*0.5f, mz = L.sz + L.dz*L.len*0.5f;
-            const float ry = kCarY + 0.06f;
-            pd("road_asphalt.glb", mx, mz, ry,        yaw, 15.0f, L.len);
-            pd("road_curbs.glb",   mx, mz, ry + 0.02f, yaw, 15.0f, L.len);
-        }
+        // STREETS: the five crown car lanes used to be placed HERE as flat
+        // 620x15 m road_asphalt/road_curbs slabs at the single probe height
+        // `kCarY + 0.06`. One height for 620 m of rolling mesa left 78-95% of
+        // each lane hanging over the grass (190 m of it off the cliff) and gave
+        // their six mutual crossings no junction geometry whatsoever — the
+        // "streets are bare strips on grass / intersections just cross" report.
+        // The SAME five centrelines are now seeded into EchoRoads (see
+        // echo_roads.cpp "1d-bis. THE CROWN GRID"), which drapes them on the
+        // terrain, curbs and paints them, and builds a real junction patch at
+        // every crossing. The car lanes are unchanged in plan; only who owns
+        // them moved, so there is one road system on the crown instead of two.
         // METRO: elevated N-S rail line crossing the crown at +11m (over the freeway).
         const float mgx=-60.0f, mz0=540.0f, mz1=980.0f, mlen=mz1-mz0, mmz=(mz0+mz1)*0.5f;
         const float mgy = ctx.hf.ok()?ctx.hf.heightAt(mgx,mmz):kCarY;

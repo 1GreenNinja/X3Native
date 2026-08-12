@@ -913,9 +913,23 @@ int hostEchotropolis(HostContext& hc) {
         else
             x3::logError("--world echotropolis: island GLB MISSING (" + islandDir +
                          "/island_20260530.glb) — rendering open sea only");
-        if (hf.load(islandDir + "/island_height_20260530.png"))
-            x3::logInfo("--world echotropolis: heightfield loaded — orbit pivot rides the terrain");
-        else
+        if (hf.load(islandDir + "/island_height_20260530.png")) {
+            // TERRAIN/CONTENT SYNC (2026-08-12): bind the sampler to the LAND
+            // MESH the GLB above actually draws — tools/echo_terrain_gen.py
+            // meshes at N_MESH=513 regardless of whether the PNG is 1025 (the
+            // committed regen bake) or 2048 (the older authoring-box bake), so
+            // reading the raw PNG meant every road ribbon, junction patch and
+            // building seat was placed on a surface nobody renders. See
+            // echo_heightfield.h's MESH-MATCHED SAMPLING note. ECHO_RAW_HF=1
+            // restores the pre-fix bilinear sampler (A/B lever).
+            const bool rawHf = [](){ const char* e = std::getenv("ECHO_RAW_HF");
+                                     return e && e[0] && e[0] != '0'; }();
+            if (!rawHf) hf.setMeshGrid(513);
+            x3::logInfo(std::string("--world echotropolis: heightfield loaded ") +
+                        std::to_string(hf.w) + "^2 — sampling " +
+                        (hf.meshN ? "the RENDERED 513^2 land mesh (terrain/content in sync)"
+                                  : "the RAW PNG (ECHO_RAW_HF — pre-fix, content sits off the mesh)"));
+        } else
             x3::logWarn("--world echotropolis: heightfield PNG absent — orbit pivot uses the y=0 plane");
     }
 
