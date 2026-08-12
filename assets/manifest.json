@@ -295,63 +295,63 @@
     },
     {
       "repo_path": "assets/converted_glb/mine/barrel.glb",
-      "sha256": "7ea1972e40336940d6e692469e347c0d8119c78f472fb76636535bb137d345fd",
-      "size": 162956,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "596451a948aafdca91c458e5de48b6c6396f6a9c7e5a4460961a87c52135307f",
+      "size": 161980,
+      "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/converted_glb/mine/boulder_a.glb",
-      "sha256": "c020b45833d7a5670d6c518a3d428cfbee4b6cf369a76a7a9bb8e6bc7e305376",
-      "size": 2264180,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "31fb0f73a1318f62262bf973d17f6c62b31ab44e006d8e7361376bb2ece1961c",
+      "size": 1294112,
+      "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/converted_glb/mine/boulder_b.glb",
-      "sha256": "f04e7d7bb799e0ce900b1aebcffbde12450f46daa0a84b84900b31552ec40419",
-      "size": 2218256,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "d4f136e4e37858ea1676eacaa3e3b649b3c309c2090df09f8ef4b7f54be6675b",
+      "size": 1446864,
+      "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/converted_glb/mine/cliff_a.glb",
-      "sha256": "0427c394db3005dc3533f75eb5560e0554b8be7cad6f81902ece8eb6cf54d867",
-      "size": 245304,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "50e7e3c445ecf69e84133658dec44b44f1c6e70c42dd0c1033d2effc34446e7c",
+      "size": 245020,
+      "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/converted_glb/mine/cliff_b.glb",
-      "sha256": "dbaa2b26c7961e5b556777139ec5a49012098bcb69b2f6073d131658dbaf82c4",
-      "size": 64500,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "20ea3558f7111b260e17020302183609912e5770732d668d7ee325efe0aa0dfa",
+      "size": 64268,
+      "source_note": "mines lane: cliff_b re-exported standing (long axis vertical) so the skyline spire reads as in the approved build"
     },
     {
       "repo_path": "assets/converted_glb/mine/crate.glb",
-      "sha256": "d97ddb6fca37174f374163316c22e89e15fc497498b2c9df8bbb3ab6fae097b9",
-      "size": 27232,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "21ba283f3c48d3224713ac8003eba03f74f2a588dec46707f99cd98301421e26",
+      "size": 26948,
+      "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/converted_glb/mine/ore_a.glb",
-      "sha256": "83777e9a69a2ec948a4679af46fdea994031353fe17f53833ffbfcd23af708df",
-      "size": 3811456,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "9e938c5687fc8e6c62a43f1c3c89f3ca85b51b3b50016604b36e49211ca4f170",
+      "size": 3896588,
+      "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/converted_glb/mine/ore_b.glb",
-      "sha256": "2c5430372fc24fab42b447db35df528b4d40bdf074ad4b778db6260733ef874a",
-      "size": 3789624,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "3e35c96e9990f676baf0a82d58dad6101751caf24db993c9d07573cd201e4d4b",
+      "size": 4271064,
+      "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/converted_glb/mine/ore_c.glb",
-      "sha256": "0b34394dee770181bea84e51a4aee2a9674cf2caf09a2c950ebfbbd0720bf12b",
-      "size": 3808184,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "261579fe043c9c9941bbd9b9fbe1b1bd1ed519237a2b81f55643a8978a6671d9",
+      "size": 4571876,
+      "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/converted_glb/mine/rocks_group.glb",
-      "sha256": "4effe729904bdc0b430b6f095393e55cc8087aedb79608204c40e6d6f32bc9f4",
-      "size": 3924812,
-      "source_note": "mines lane: Armory mine kit (FireWatchTower/CaveOfHiddenTomb/ShatterStone/1900sIndustrial, Draco-decoded) + FW wood/rock PBR sets"
+      "sha256": "567d63b5bb4cb13ea691afe30bca8bf88c44c74e2955e06ad7fc46f891ad3c5a",
+      "size": 2354008,
+      "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaBodySuit.glb",
