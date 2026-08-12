@@ -25,9 +25,10 @@ namespace fs = std::filesystem;
 namespace {
 
 // Supported track extensions (case-insensitive). miniaudio decodes MP3 (bundled
-// dr_mp3) + WAV natively; both ride the same streamed playMusic path.
+// dr_mp3) + WAV natively, and OGG VORBIS via the stb_vorbis path enabled in
+// engine/audio/MiniaudioSystem.cpp; all ride the same streamed playMusic path.
 bool isTrackExt(const std::string& extLower) {
-    return extLower == ".mp3" || extLower == ".wav";
+    return extLower == ".mp3" || extLower == ".wav" || extLower == ".ogg";
 }
 
 std::string toLower(std::string s) {
@@ -176,7 +177,7 @@ void Jukebox::scan() {
 
     if (m_tracks.empty()) {
         x3::logInfo("[jukebox] no user tracks found in club_music — the club keeps "
-                    "its built-in track (drop MP3/WAV files to override)");
+                    "its built-in track (drop MP3/WAV/OGG files to override)");
         return;
     }
 
@@ -307,6 +308,17 @@ bool writeTinyWav(const fs::path& path, int ms, bool corrupt = false) {
     return (bool)f;
 }
 
+// A stub .ogg used ONLY to prove the extension filter accepts Vorbis. The scanner
+// is extension-only (it never opens the file), so this deliberately contains just
+// an OggS capture pattern rather than a real Vorbis stream — real .ogg DECODING is
+// proven separately by --test-audio against a genuine encoded file.
+void writeOggStub(const fs::path& path) {
+    std::ofstream f(path, std::ios::binary);
+    f.write("OggS", 4);
+    const char rest[28] = { 0 };
+    f.write(rest, sizeof(rest));
+}
+
 void writeSidecar(const fs::path& path, float bpm) {
     std::ofstream f(path);
     f << "{ \"bpm\": " << bpm << " }\n";
@@ -328,23 +340,26 @@ bool runJukeboxSelfTest() {
     fs::create_directories(tmp, ec);
 
     // Tracks: alpha.wav (no sidecar), bravo.wav (+ bravo.wav.json 100), charlie.wav
-    // (+ charlie.json 140), plus a non-audio notes.txt that must be ignored.
+    // (+ charlie.json 140), delta.ogg (Vorbis is an accepted container), plus a
+    // non-audio notes.txt that must be ignored.
     writeTinyWav(tmp / "bravo.wav", 60);
     writeTinyWav(tmp / "alpha.wav", 60);
     writeTinyWav(tmp / "charlie.wav", 60);
+    writeOggStub(tmp / "delta.ogg");
     writeSidecar(tmp / "bravo.wav.json", 100.0f);          // full-name sidecar
     writeSidecar(tmp / "charlie.json", 140.0f);            // stem sidecar
     { std::ofstream(tmp / "notes.txt") << "not audio\n"; }
 
-    // (T1) Folder scan: 3 tracks, alphabetical, .txt ignored, extension filter.
+    // (T1) Folder scan: 4 tracks, alphabetical, .txt ignored, extension filter.
     {
         Jukebox jb;
         jb.configure({ tmp.string() }, /*defaultBpm*/120.0f, /*shuffle*/false,
                      /*vol*/0.75f, /*musicOn*/true);
         const auto& tr = jb.tracks();
-        const bool ok = tr.size() == 3 &&
-                        tr[0].name == "alpha" && tr[1].name == "bravo" && tr[2].name == "charlie";
-        check(ok, "folder scan finds 3 tracks alphabetically, ignores non-audio");
+        const bool ok = tr.size() == 4 &&
+                        tr[0].name == "alpha" && tr[1].name == "bravo" &&
+                        tr[2].name == "charlie" && tr[3].name == "delta";
+        check(ok, "folder scan finds 4 tracks alphabetically (wav+ogg), ignores non-audio");
 
         // (T2) Sidecar parse: bravo=100 (full-name), charlie=140 (stem), alpha=cvar 120.
         const bool bpmOk = !tr[0].hasSidecar && std::fabs(tr[0].bpm - 120.0f) < 0.01f &&

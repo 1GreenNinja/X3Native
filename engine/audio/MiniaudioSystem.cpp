@@ -23,6 +23,35 @@
 #include "engine/audio/IAudioSystem.h"
 #include "engine/core/x3_log.h"
 
+// OGG VORBIS decode. miniaudio bundles dr_wav / dr_mp3 / dr_flac but deliberately
+// does NOT bundle a Vorbis decoder — its Vorbis path is compiled in only when
+// stb_vorbis's header guard (STB_VORBIS_INCLUDE_STB_VORBIS_H) is already defined
+// at the point miniaudio's implementation is expanded, which is what flips
+// MA_HAS_VORBIS on. stb is ALREADY a vcpkg dependency of this repo (it is how
+// ModelLoader decodes images) and the port ships stb_vorbis.c on the same include
+// dir, so this costs no new dependency and no custom ma_decoding_backend vtable.
+//
+// This is miniaudio's documented two-stage include: declarations BEFORE
+// MINIAUDIO_IMPLEMENTATION so the Vorbis path both enables and compiles, and the
+// stb_vorbis implementation itself at the very BOTTOM of this file (see the end
+// of the TU). Bottom placement is deliberate: stb_vorbis.c's implementation half
+// introduces unprefixed global typedefs (uint8/int16/float32/...) and macros, and
+// keeping it after all of our code means none of that can collide with engine
+// types. The warning pragmas are because stb_vorbis is C written in 2007 and this
+// repo builds at /W4.
+//
+// NOTE (scope): this only makes .ogg DECODABLE. No asset was converted and no
+// existing .wav reference was changed by this lane.
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4244 4245 4267 4456 4457 4701 4703 4996)
+#endif
+#define STB_VORBIS_HEADER_ONLY
+#include <stb_vorbis.c>
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
+
 #define MINIAUDIO_IMPLEMENTATION
 // We use the high-level engine + decoding; disable capture/encoding we don't need
 // to keep the build lean and avoid pulling in unused backends' symbols.
@@ -30,11 +59,24 @@
 #define MA_NO_GENERATION
 #include <miniaudio.h>
 
+static_assert(
+#if defined(MA_HAS_VORBIS)
+    true,
+#else
+    false,
+#endif
+    "MA_HAS_VORBIS is off: stb_vorbis.c did not reach miniaudio's implementation, "
+    "so .ogg would silently fail to decode at runtime. Check the include order above.");
+
 #include <atomic>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <vector>
 
@@ -694,6 +736,35 @@ constexpr const char* kTestWav =
     "G:/Unity_Projects/EscapeFromLabZero/Assets/Sci-Fi_Guns_Game-Of-Weapons/"
     "Audio/SFX/Wave/Single_Gunshots/Single_Gunshot_Sci-Fi_Gun-01.wav";
 
+// CONTAINER DECODE PROBE (opt-in, X3_AUDIO_TEST_DIR=<folder>).
+//
+// Decodes one file with THIS TU's miniaudio build — the same decoder set the
+// running game uses, not a side probe — and reports channels/rate/frames so an
+// ".ogg decodes" claim is backed by numbers instead of an absence of errors.
+// Off by default so the CI ladder needs no fixtures; committed because it is the
+// only way to re-verify the decoder set after a miniaudio or stb bump.
+bool probeDecode(const std::string& path, ma_uint32& ch, ma_uint32& rate, ma_uint64& frames) {
+    ch = rate = 0; frames = 0;
+    ma_decoder dec{};
+    // f32 output, but channels/rate left at 0 = "keep the file's own" so the
+    // reported ch/rate describe the SOURCE (a stereo .ogg must report ch=2).
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
+    if (ma_decoder_init_file(path.c_str(), &cfg, &dec) != MA_SUCCESS) return false;
+    ch = dec.outputChannels;
+    rate = dec.outputSampleRate;
+    // Pull the whole stream through the decoder — a header-only success would
+    // otherwise pass while the codec body fails.
+    std::vector<float> buf(4096 * (ch ? ch : 1));
+    for (;;) {
+        ma_uint64 got = 0;
+        const ma_result r = ma_decoder_read_pcm_frames(&dec, buf.data(), 4096, &got);
+        frames += got;
+        if (r != MA_SUCCESS || got == 0) break;
+    }
+    ma_decoder_uninit(&dec);
+    return frames > 0;
+}
+
 } // namespace
 
 bool runAudioSelfTest() {
@@ -713,6 +784,48 @@ bool runAudioSelfTest() {
     // T3: loading a deliberately-missing file must be a graceful invalid handle.
     SoundHandle missing = audio->load("G:/__x3_no_such_audio_file__.wav");
     check(!missing.valid(), "T3 missing file -> invalid handle (graceful)");
+
+    // T3b (opt-in): CONTAINER COVERAGE. Point X3_AUDIO_TEST_DIR at a folder of
+    // fixtures; every .wav/.mp3/.flac/.ogg in it must decode to a non-zero frame
+    // count through this TU's miniaudio AND load through the real IAudioSystem.
+    // This is what proves OGG VORBIS is actually wired (MA_HAS_VORBIS): without
+    // the stb_vorbis include at the top of this file, .ogg returns
+    // MA_INVALID_FILE (-10) here while wav/mp3/flac still pass.
+    if (const char* dir = std::getenv("X3_AUDIO_TEST_DIR"); dir && *dir) {
+        std::error_code fec;
+        int probed = 0, failed = 0;
+        for (const auto& de : std::filesystem::directory_iterator(dir, fec)) {
+            if (fec) break;
+            if (!de.is_regular_file(fec)) continue;
+            std::string ext = de.path().extension().string();
+            for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+            if (ext != ".wav" && ext != ".mp3" && ext != ".flac" && ext != ".ogg") continue;
+
+            const std::string p = de.path().string();
+            ma_uint32 ch = 0, rate = 0;
+            ma_uint64 frames = 0;
+            const bool decoded = probeDecode(p, ch, rate, frames);
+            ++probed;
+            if (!decoded) ++failed;
+            x3::logInfo(std::string("[audio-test]   ") + (decoded ? "DECODE OK   " : "DECODE FAIL ") +
+                        de.path().filename().string() +
+                        "  ch=" + std::to_string(ch) +
+                        " rate=" + std::to_string(rate) +
+                        " frames=" + std::to_string(frames));
+
+            // ...and the same file through the REAL public API + both play paths
+            // (2D bed and 3D positional). No device -> graceful invalid, no crash.
+            SoundHandle fh = audio->load(p);
+            audio->playSound2D(fh, 0.4f, 1.0f);
+            audio->playSound3D(fh, 3.0f, 0.0f, 0.0f, 0.4f, 1.0f);
+            audio->update(1.0f / 60.0f);
+            x3::logInfo(std::string("[audio-test]     engine load -> ") +
+                        (fh.valid() ? "valid handle, 2D+3D voices started"
+                                    : "invalid handle (silent/no-device)"));
+        }
+        check(probed > 0 && failed == 0,
+              "T3b every fixture container decodes (wav/mp3/flac/ogg) + loads via IAudioSystem");
+    }
 
     // T4: play + spatial play + listener + update do not crash (no-ops if silent
     // or if the handle is invalid).
@@ -828,3 +941,19 @@ bool runAudioSelfTest() {
 }
 
 } // namespace x3::audio
+
+// ===========================================================================
+// stb_vorbis IMPLEMENTATION — must be at global scope, AFTER miniaudio's
+// implementation (which only needs the declarations included at the top of this
+// file) and after all engine code, so its unprefixed globals cannot collide.
+// See the include-order note at the top of this file.
+// ===========================================================================
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4244 4245 4267 4456 4457 4701 4703 4996)
+#endif
+#undef STB_VORBIS_HEADER_ONLY
+#include <stb_vorbis.c>
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
