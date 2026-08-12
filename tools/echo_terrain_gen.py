@@ -452,7 +452,25 @@ class HF:
         return (hn - SEANORM) * HSCALE
 
 # ============================================================== albedo splat
-def build_albedo(h, res):
+def build_albedo(h, res, surface=1):
+    """surface=1 -> the 2026-08-03 bake, BIT-EXACT (do not touch: main's
+    island_mesa GLB hashes to it). surface=2 -> LANE 7 surface pass; HEIGHTS
+    ARE UNTOUCHED either way (the heightfield PNG is identical, every --verify
+    anchor still holds) — only the baked albedo differs:
+      (a) the shore band was a 2.5 m-wide (172,156,118) sand ramp laid straight
+          over (84,102,56) grass, which at 1 m/texel reads as a LIME HIGHLIGHTER
+          LINE tracing every waterline (visible in every sea-level capture);
+          v2 narrows it, cools it toward wet grey-tan, and jitters its width so
+          it stops being a uniform ribbon.
+      (b) DESERT BED for the NE frontier corridor (task #33): the free band at
+          x 1300..1900, z -1950..250 (600 m+ clear of crown/mine/URBAN/RECIFE/
+          HIVEMIND — see the free-land scan in docs/plans/LANE7_WORLD_FRAME.md)
+          retints to sand/caliche so the corridor READS as desert before any
+          prop lands on it.
+      (c) cliff rock gets a finer octave so 190 m walls are not flat mush at
+          boat range. This does NOT fix the real problem (there is no detail/
+          tiling texture — 1 m/texel is the cap); it only takes the edge off.
+    """
     N = h.shape[0]
     H = _upsample(h, res)
     gy, gx = np.gradient(H, FRAME / (res - 1))
@@ -471,8 +489,19 @@ def build_albedo(h, res):
 
     lay(np.ones_like(H), (46, 66, 70))                                   # seabed
     lay(smoothstep((H + 6.0) / 5.0), (92, 104, 88))                      # shallows
-    lay(smoothstep((H + 1.0) / 2.5) * smoothstep((0.30 - slope) / 0.20),
-        (172, 156, 118))                                                 # sand
+    if surface >= 2:
+        # (a) narrower, cooler, width-jittered shore band — no highlighter line.
+        band_w = 1.1 + 0.9 * n2
+        shore = smoothstep((H + 0.6) / band_w) * (1.0 - smoothstep((H - band_w) / 1.4)) \
+                * smoothstep((0.30 - slope) / 0.20)
+        wet = np.array((126, 122, 108), float)[None, None, :]
+        dryc = np.array((158, 146, 120), float)[None, None, :]
+        t = np.clip(H / 2.0, 0, 1)[..., None]
+        img[...] = img * (1 - shore[..., None] * 0.85) \
+                   + (wet * (1 - t) + dryc * t) * (shore[..., None] * 0.85)
+    else:
+        lay(smoothstep((H + 1.0) / 2.5) * smoothstep((0.30 - slope) / 0.20),
+            (172, 156, 118))                                             # sand
     grass_m = smoothstep((H - 2.5) / 3.0) * smoothstep((0.45 - slope) / 0.25)
     dry = smoothstep((1500.0 - np.hypot(X + 1800.0, Z + 1000.0)) / 900.0)
     grass_col = (np.array((84, 102, 56), float)[None, None, :] * (1 - dry[..., None])
@@ -483,8 +512,25 @@ def build_albedo(h, res):
     lay(forest * 0.9, (40, 60, 36))                                      # pines
     plateau_green = smoothstep((H - 165.0) / 12.0) * smoothstep((0.4 - slope) / 0.2)
     lay(plateau_green * (0.55 + 0.35 * (n1 - 0.5)), (58, 74, 44))        # crown moor
+    if surface >= 2:
+        # (b) DESERT BED — the NE frontier corridor (#33). Soft-edged box so the
+        # transition out of the green plateau is a gradient, not a paint line.
+        dx = (np.abs(X - 1600.0) - 300.0) / 260.0
+        dz = (np.abs(Z + 850.0) - 1100.0) / 300.0
+        desert = (1.0 - smoothstep(dx)) * (1.0 - smoothstep(dz))
+        desert *= smoothstep((H - 2.0) / 6.0)          # never paint the water
+        sand_a = np.array((176, 152, 112), float)[None, None, :]   # dune sand
+        sand_b = np.array((146, 122,  92), float)[None, None, :]   # caliche/dirt
+        mix = np.clip(0.5 + 1.3 * (n1 - 0.5), 0, 1)[..., None]
+        dcol = sand_a * mix + sand_b * (1 - mix)
+        img[...] = img * (1 - desert[..., None] * 0.92) + dcol * (desert[..., None] * 0.92)
+
     rock = smoothstep((slope - 0.55) / 0.30)
     band = 0.5 + 0.5 * np.sin(H * 0.55 + 4.0 * n2)
+    if surface >= 2:
+        # (c) finer octave on the cliff rock so 190 m walls carry some break-up.
+        n3 = _upsample(fbm(res // 4, SEED + 13, octaves=6, base_cells=64), res)
+        band = np.clip(0.55 * band + 0.45 * (0.5 + 0.5 * np.sin(H * 1.7 + 7.0 * n3)), 0, 1)
     rock_col = (np.array((78, 70, 62), float)[None, None, :] * (1 - band[..., None] * 0.4)
                 + np.array((52, 48, 46), float)[None, None, :] * (band[..., None] * 0.4))
     img[...] = img * (1 - rock[..., None]) + rock_col * rock[..., None]
@@ -883,6 +929,11 @@ def main():
     ap.add_argument("--albedo-res", type=int, default=4096)
     ap.add_argument("--png-only", action="store_true")
     ap.add_argument("--verify", action="store_true")
+    ap.add_argument("--surface", type=int, default=1, choices=(1, 2),
+                    help="1 = the bit-exact 2026-08-03 albedo (default; keeps "
+                         "main's island_mesa hashes). 2 = Lane 7 surface pass "
+                         "(shore band, desert bed, cliff detail). Heights and "
+                         "the heightfield PNG are IDENTICAL either way.")
     args = ap.parse_args()
 
     print("[gen] building height field (seed %d, %dx%d, frame %.0f m)..."
@@ -906,7 +957,7 @@ def main():
 
     if not args.png_only:
         print("[gen] baking %dx%d albedo splat..." % (args.albedo_res, args.albedo_res))
-        alb = build_albedo(h, args.albedo_res)
+        alb = build_albedo(h, args.albedo_res, surface=args.surface)
         import io
         buf = io.BytesIO()
         Image.fromarray(alb, "RGB").save(buf, format="PNG", optimize=False)
