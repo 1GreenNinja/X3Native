@@ -12,6 +12,12 @@ void parseCli(int argc, char** argv, CliOptions& o) {
     (void)o.loadedWinSize;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
+        // [--set AUDIT] Record WHICH capture host this run is, in ONE place, by
+        // prefix — not a hand-kept list that drifts. dispatchScreenshotHosts needs
+        // to know a capture owns the run BEFORE it runs, so `--set` can reach it
+        // (see app/world_hosts/world_host_common.h). Falls through: this only
+        // observes, the real flag parsing below is untouched.
+        if (a.starts_with("--screenshot-")) o.captureHost = std::string(a);
         // DDGI flags handled OUTSIDE the big else-if chain below (MSVC C1061:
         // every `else if` nests a block; the chain is at the compiler's limit).
         if (a == "--test-ddgi") { o.smoketest = true; o.testDdgi = true; continue; }

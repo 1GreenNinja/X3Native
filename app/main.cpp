@@ -830,6 +830,10 @@ int main(int argc, char** argv) {
         // silently rendered the default. Moved ahead of the dispatch; the
         // default host still gets the same value further down.
         _hc.cliCVars        = o.cliCVars;
+        // Which --screenshot-* capture host this run is (see cli.h). MUST be set
+        // before the dispatch below, for the same reason noTaa/noRefl/cliCVars
+        // above must: the screenshot hosts cannot read what arrives after them.
+        _hc.captureHost     = o.captureHost;
 
         int _shotRc = x3::apphost::dispatchScreenshotHosts(_hc);
         if (_shotRc >= 0) return _shotRc;

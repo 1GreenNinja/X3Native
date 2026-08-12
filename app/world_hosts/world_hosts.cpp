@@ -22,7 +22,7 @@
 // dispatchable. See app/world_hosts/world_host_common.h.
 #include "../host_context.h"
 #include "../world_hosts.h"
-#include "world_host_common.h"   // applyWorldHostRenderCVars / reportUnappliedWorldHostCVars
+#include "world_host_common.h"   // applyHostRenderCVars / reportUnappliedHostCVars
 
 namespace x3 { namespace apphost {
 
@@ -96,9 +96,10 @@ namespace {
 //            ignored a flag says so in its own output instead of quietly
 //            producing a plausible-looking lie.
 int runRoute(int (*host)(HostContext&), const char* flag, HostContext& hc) {
-    if (hc.device) applyWorldHostRenderCVars(hc, *hc.device, flag);
+    const std::string who = std::string("--world ") + flag;
+    if (hc.device) applyHostRenderCVars(hc, *hc.device, who);
     const int rc = host(hc);
-    reportUnappliedWorldHostCVars(hc, flag);
+    reportUnappliedHostCVars(hc, who);
     return rc;
 }
 } // namespace

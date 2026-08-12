@@ -29,23 +29,25 @@ namespace x3::apphost {
 // ===========================================================================
 // THE `--set` AUDIT — "silence is what made this expensive".
 //
-// Every cvar that ACTUALLY reached the device on a --world run claims its name
-// here. dispatchWorldHost() then reports, LOUDLY, every `--set` on the command
-// line that nothing claimed — because the failure mode this whole file exists
-// to kill is a run that quietly ignores `--set` and produces a plausible-looking
-// frame that proves nothing.
+// Every cvar that ACTUALLY reached the device claims its name here. The two
+// host dispatches — dispatchWorldHost() for `--world`, dispatchScreenshotHosts()
+// for `--screenshot-*` — then report, LOUDLY, every `--set` on the command line
+// that nothing claimed, because the failure mode this whole file exists to kill
+// is a run that quietly ignores `--set` and produces a plausible-looking frame
+// that proves nothing. BOTH families run INSTEAD of runDefaultHost's per-frame
+// cvar sync hub, so both had the identical hole.
 // ===========================================================================
-inline std::vector<std::string>& worldHostClaimedCVars() {
+inline std::vector<std::string>& claimedHostCVars() {
     static std::vector<std::string> claimed;
     return claimed;
 }
-inline void claimWorldHostCVar(const std::string& name) {
-    auto& v = worldHostClaimedCVars();
+inline void claimHostCVar(const std::string& name) {
+    auto& v = claimedHostCVars();
     for (const auto& s : v) if (s == name) return;
     v.push_back(name);
 }
-inline bool worldHostCVarClaimed(const std::string& name) {
-    for (const auto& s : worldHostClaimedCVars()) if (s == name) return true;
+inline bool hostCVarClaimed(const std::string& name) {
+    for (const auto& s : claimedHostCVars()) if (s == name) return true;
     return false;
 }
 
@@ -89,7 +91,7 @@ inline void applyOutdoorCsm(const HostContext& hc, x3::rhi::IRenderDevice& devic
     // `--set r_csm 1` genuinely IS ignored — and now says so.)
     for (const char* n : { "r_csm", "r_csm_lambda", "r_csm_dist", "r_csm_blend",
                            "r_shadowforward", "r_csm_debug" }) {
-        for (const auto& kv : hc.cliCVars) if (kv.first == n) claimWorldHostCVar(n);
+        for (const auto& kv : hc.cliCVars) if (kv.first == n) claimHostCVar(n);
     }
     x3::logInfo(std::string("[csm] --world ") + who + ": cascades " +
                 (c.enabled ? "ON" : "OFF (r_csm 0 -- legacy single 45 m box)") +
@@ -133,8 +135,8 @@ inline void applyOutdoorCsm(const HostContext& hc, x3::rhi::IRenderDevice& devic
 // anything on the --set list that is NOT here (or claimed by applyOutdoorCsm)
 // gets a LOUD end-of-run report from reportUnappliedWorldHostCVars().
 // ===========================================================================
-inline void applyWorldHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDevice& device,
-                                      const char* who = "") {
+inline void applyHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDevice& device,
+                                 const std::string& who) {
     if (hc.cliCVars.empty()) return;
     auto has = [&](const char* n) {
         for (const auto& kv : hc.cliCVars) if (kv.first == n) return true;
@@ -150,9 +152,8 @@ inline void applyWorldHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDev
     // Claim + announce one cvar. Returns true when it was on the command line.
     auto take = [&](const char* n) {
         if (!has(n)) return false;
-        claimWorldHostCVar(n);
-        x3::logInfo(std::string("[cvar] --world ") + who + ": APPLIED  --set " + n +
-                    " " + s(n, ""));
+        claimHostCVar(n);
+        x3::logInfo("[cvar] " + who + ": APPLIED  --set " + n + " " + s(n, ""));
         return true;
     };
 
@@ -227,7 +228,7 @@ inline void applyWorldHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDev
     // host write, including per-frame ones). Announce it, so the run says what
     // it pinned.
     device.setCVarOverrides(ov);
-    x3::logInfo(std::string("[cvar] --world ") + who +
+    x3::logInfo("[cvar] " + who +
                 ": override latch ARMED — the values above are pinned for the whole "
                 "run and cannot be undone by a later host write");
 
@@ -331,21 +332,21 @@ inline void applyWorldHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDev
 // means. Silence is the thing that cost a lane its conclusions; a run that
 // ignored a flag must SAY SO in its own output.
 // ===========================================================================
-inline void reportUnappliedWorldHostCVars(const HostContext& hc, const char* who) {
+inline void reportUnappliedHostCVars(const HostContext& hc, const std::string& who) {
     if (hc.cliCVars.empty()) return;
     std::vector<std::string> unapplied;
     for (const auto& kv : hc.cliCVars)
-        if (!worldHostCVarClaimed(kv.first)) unapplied.push_back(kv.first + " " + kv.second);
+        if (!hostCVarClaimed(kv.first)) unapplied.push_back(kv.first + " " + kv.second);
     if (unapplied.empty()) {
-        x3::logInfo(std::string("[cvar] --world ") + who + ": all " +
-                    std::to_string(hc.cliCVars.size()) + " --set override(s) were applied");
+        x3::logInfo("[cvar] " + who + ": all " + std::to_string(hc.cliCVars.size()) +
+                    " --set override(s) were applied");
         return;
     }
     x3::logError("[cvar] ================================================================");
     for (const auto& u : unapplied)
-        x3::logError(std::string("[cvar] !!! --set ") + u + "  was NOT APPLIED on --world " + who);
+        x3::logError("[cvar] !!! --set " + u + "  was NOT APPLIED on " + who);
     x3::logError("[cvar] !!! THIS RUN DID NOT TEST THOSE. Any A/B conclusion resting on");
-    x3::logError("[cvar] !!! them is VOID. Either add the cvar to applyWorldHostRenderCVars");
+    x3::logError("[cvar] !!! them is VOID. Either add the cvar to applyHostRenderCVars");
     x3::logError("[cvar] !!! (app/world_hosts/world_host_common.h) or run the A/B on the");
     x3::logError("[cvar] !!! default host, which syncs the full cvar set every frame.");
     x3::logError("[cvar] ================================================================");
