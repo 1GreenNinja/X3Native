@@ -183,6 +183,66 @@ unaffected until §6.
 - **NOT done in Phase A (by design):** the 46 files still sit in LFS too —
   removal from the index is Phase B; quota refund is §6.
 
+### 4.6 Content integrity — the normal-map audit (2026-08-11)
+
+The store guarantees the bytes you get are the bytes that were published. It
+says nothing about whether those bytes were *correct*. Two normal maps were
+published corrupt and nobody noticed for weeks:
+
+| set | B mean | healthy | outcome |
+|---|---|---|---|
+| `cc_porous_cement` | **8.1** | ~252 | repaired 2026-08-11 |
+| `cc_cement_white`  | **14.8** | ~252 | repaired on `fix/tunnel-mouth` |
+
+Both had the **blue channel INVERTED** (`B_stored = 255 - B_true`, correlation
+&minus;0.999). A tangent-space normal has `z >= 0`, so an inverted B decodes to
+`z < 0` — the normal points *into* the surface and N·L is garbage. On
+`cc_cement_white` this surfaced as "cloud-grey blotching" in the tunnel bore and
+was initially misdiagnosed as broken anisotropic filtering; the real fix was one
+texture. R/G were intact in both, so `z = sqrt(1 - x^2 - y^2)` recovered them
+exactly.
+
+**`tools/audit_normal_maps.py`** — pixel statistics for every set. No engine, no
+GPU, runs in about a second per 2K map.
+
+```
+python tools/audit_normal_maps.py                  # table + findings for the library
+python tools/audit_normal_maps.py --gate           # exit 1 if any ERROR (CI)
+python tools/audit_normal_maps.py --json out.json  # machine-readable
+python tools/audit_normal_maps.py --paths a/normal.png b/normal.png
+```
+
+Checks: `B_LOW` (blue mean below 128 = provably broken), `NOT_UNIT`
+(`z != sqrt(1-x^2-y^2)` — the real corruption discriminator), `OVER_UNIT`
+(`x^2+y^2 > 1`, meaning XY itself is damaged and the set must be **re-exported or
+retired**, not repaired), `XY_BIAS` (R/G off 127.5 = baked-in directional bias),
+`XY_STD` (map much louder than the library median). Only `B_LOW`/`OVER_UNIT` are
+ERRORs; the rest are judgement calls for a human.
+
+`NOT_UNIT` matters because a low blue mean is **not** by itself a defect: a very
+steep map legitimately has a lower mean z. `terrain_grass` sits at B=196 yet is
+unit-length (`|n| = 1.004 ± 0.002`) — loud, not broken. Corruption shows up as
+the channels *disagreeing*.
+
+**`tools/repair_normal_map.py`** — reconstructs B from R/G, and **refuses** to
+run unless R/G are provably intact (neutral means, `x^2+y^2 <= 1` everywhere).
+When the damage was an inversion it cross-checks the geometric reconstruction
+against `255 - B_stored`; on `cc_porous_cement` the two agreed within one grey
+level for 100% of texels. The original is kept as `*.corrupt.bak`.
+
+```
+python tools/repair_normal_map.py <path> --dry-run    # analyse, write nothing
+python tools/repair_normal_map.py <path>              # repair in place
+python tools/repair_normal_map.py <path> --xy-scale 0.45   # also tame loudness
+```
+
+**Gate — `asset_store.py publish` refuses corrupt normal maps.** The pre-commit
+hook cannot catch this: `assets/surface_library/` is gitignored, so these files
+are never staged and publishing is the only moment they enter distribution. Any
+`normal.png` passed to `publish` is audited first; an ERROR aborts the whole
+publish with the manifest unchanged. Override with `--skip-audit` if you can
+explain why.
+
 ## 5. What this buys
 
 - LFS growth → ~0 MB/week; the 168 MB headroom stops mattering.
