@@ -329,7 +329,7 @@ x3::rhi::TextureHandle loadTerrainAlbedo(x3::rhi::IRenderDevice& device,
 //            substitute and is used deliberately, not by oversight)
 x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
     auto grass = loadTerrainAlbedo(device, "terrain_grass", 1001u,  78, 116,  56, 18); // green
-    auto rock  = loadTerrainAlbedo(device, "sr_concrete_01", 2002u, 104, 100,  92, 24); // grey-brown
+    auto rock  = loadTerrainAlbedo(device, "fw_rock_cliff",  2002u, 104, 100,  92, 24); // real cliff rock
     auto snow  = loadTerrainAlbedo(device, "terrain_snow",  3003u, 222, 226, 235, 14); // bright white-blue
     auto sand  = loadTerrainAlbedo(device, "terrain_sand",  4004u, 178, 158, 118, 18); // tan
     x3::rhi::TextureHandle marker =
@@ -402,7 +402,8 @@ struct RangeDef {
 // Native compass: +Z = north (regions.json / world_regions gazetteer). Band
 // placement + peak heights follow the Babylon map (N z~8300 to 480 m snow /
 // E x~9200 to 500 m volcanic / S z~-9000 mesas ~200 m / W x~-8600 rolling 350 m).
-const RangeDef kRanges[4] = {
+constexpr int kRangeCount = 5;
+const RangeDef kRanges[kRangeCount] = {
     { -2200.0f,  8300.0f,  2800.0f,  8300.0f, 500.0f, 2200.0f, 380.0f, 2.2f, 45.0f,   0.0f }, // N snow
     {  9200.0f, -2000.0f,  9200.0f,  2500.0f, 550.0f, 2300.0f, 460.0f, 2.0f, 45.0f,   0.0f }, // E volcanic
     { -2800.0f, -9000.0f,  3500.0f, -9000.0f, 500.0f, 2100.0f, 230.0f, 1.1f,  0.0f, 195.0f }, // S mesa
@@ -723,7 +724,7 @@ float authoredLandforms(float h, float x, float z) {
 
 float mountainHeight(float x, float z, uint32_t seed) {
     float h = 0.0f;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kRangeCount; ++i) {
         const RangeDef& r = kRanges[i];
         const float d = segDist(x, z, r.ax, r.az, r.bx, r.bz);
         if (d >= r.outW) continue;
