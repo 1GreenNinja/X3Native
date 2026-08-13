@@ -201,3 +201,30 @@ show a spin axis. Do not claim this fixed from a screenshot.
 
 ALSO FROM THE SAME SESSION: physics feel got a thumbs-up — "Physics FEELS kind of
 FUN though!!!! I feel gravity!" Whatever the drift lane does, do not regress it.
+
+## 6. YOU CANNOT SEE IN THE TUNNEL (interactive only) — 2026-08-13
+
+Headless captures of the bore are lit; DRIVING through it is dark. That split is
+the clue: the difference is not the tunnel, it is the frame loop.
+
+host_tunnel.cpp:92 submits the bore's 6 real point lights EXACTLY ONCE, at boot,
+before the `if (headless)` branch:
+
+    device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
+
+A headless capture renders a handful of frames with nothing else touching the
+light set, so they survive and the bore is lit. The interactive loop re-submits
+its OWN light list every frame (street lamps, region lights, etc.), which
+overwrites those 6 on frame 2 and leaves the bore black from then on.
+
+FIX DIRECTION: the tunnel's lights must be re-submitted every frame along with
+whatever else the host is drawing, or appended to the host's per-frame list
+rather than set once. Check how host_echotropolis merges streetLamps.selectLights
++ regionSet.appendNearLights into one array per frame — the same pattern applies.
+
+Note the 20 emissive strips are GEOMETRY, not lights, so they should still glow
+even with the point lights gone; if the bore is TOTALLY black, check whether the
+strips are being drawn at all in the interactive path as well.
+
+Related and worth having anyway: the car has no HEADLIGHTS. In a 450 m bore that
+is the difference between a tunnel and a cave.
