@@ -288,6 +288,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.driftFxShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.driftFxShotDir = argv[++i];
         }
+        else if (a == "--screenshot-vehlook") {
+            o.vehLookShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.vehLookShotDir = argv[++i];
+        }
         else if (a == "--set") {
             // Generic CLI cvar override: --set <cvar> <value> (repeatable).
             // Applied right after the console registers its cvars — the headless

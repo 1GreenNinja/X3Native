@@ -164,6 +164,9 @@ public:
     // lazy-build trap the tuning path documents above.
     DriftGrip& driftGrip() { return m_drive.driftGrip(); }
     void setSprayEnabled(bool on) { m_drive.setSprayEnabled(on); }
+    void setAppearance(const vehcosmetics::VehicleAppearance& a) { m_drive.setAppearance(a); }
+    // Underglow light for the host's per-frame light assembly (false = none).
+    bool underglowLight(x3::rhi::PointLight& out) const { return m_drive.underglowLight(out); }
 
     // Deep-water read on the LIVE car (engine-kill condition): water present
     // AND >= ~1.3 m deep over the local ground AND the hull is actually in it.

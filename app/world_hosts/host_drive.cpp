@@ -9,6 +9,7 @@
 #include "../terrain.h"
 #include "../vehicle.h"
 #include "../vehparts.h"
+#include "../vehcosmetics.h"
 #include "../perfshop.h"
 #include "../asset_root.h"
 #include "../audio_root.h"
@@ -165,6 +166,25 @@ int hostDrive(HostContext& hc) {
             }
             car.setSprayEnabled(vehCvBool("veh_spray", true));
         }
+        // ---- COSMETIC LOOK (Lane 7). vehlook.json beside vehbuild.json; the
+        // composed appearance is applied per draw. `--set veh_cosmetics 0`
+        // keeps the authored GLB byte-identical.
+        x3::game::vehcosmetics::CosmeticCatalog cosCat;
+        x3::game::vehcosmetics::CosmeticBuild cosBuild;
+        if (isDrive) {
+            claimHostCVar("veh_cosmetics");
+            auto vehCvBool2 = [&](const char* name, bool dflt) {
+                for (const auto& kv : hc.cliCVars) if (kv.first == name) return kv.second != "0";
+                return dflt;
+            };
+            if (cosCat.loadFile(x3::game::vehparts::defaultCatalogPath())) {
+                const bool haveLook = cosBuild.loadFile(x3::game::vehcosmetics::defaultLookSavePath());
+                if (vehCvBool2("veh_cosmetics", true) && haveLook) {
+                    car.setAppearance(x3::game::vehcosmetics::composeVisual(cosCat, cosBuild));
+                    x3::logInfo("--world drive: cosmetic look applied from vehlook.json");
+                }
+            }
+        }
         vphys->optimizeBroadphase();
 
         const float dt = 1.0f / 60.0f;
@@ -282,6 +302,84 @@ int hostDrive(HostContext& hc) {
                 allOk &= takeShot(cam, "perfshop_dyno.png");
             }
             shop.shutdown(vscene, *device, *vphys);
+            car.shutdown(); vstream.shutdown(vscene, *device, *vphys);
+            vphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return allOk ? 0 : 1;
+        }
+
+        // ===== Headless COSMETIC-LOOK proof (--screenshot-vehlook <dir>). ======
+        // Three frames, same parked pose + camera: (1) stock authored paint,
+        // (2) candy blue + limo tint + chrome-ish rims, (3) the same custom
+        // look at dusk with the underglow doing the ground splash.
+        if (hc.vehLookShot && isDrive) {
+            std::error_code vlec;
+            std::filesystem::create_directories(hc.vehLookShotDir, vlec);
+            // Park the car on open ground ahead of spawn and settle it.
+            vphys->setBodyPosition(car.chassis(), { spawnX + 4.0f, spawnY + 0.4f, spawnZ - 18.0f });
+            { const float v0[3] = { 0, 0, 0 };
+              vphys->setBodyLinearVelocity(car.chassis(), v0);
+              vphys->setBodyAngularVelocity(car.chassis(), v0); }
+            { const float yaw = 0.65f;
+              const float q0[4] = { 0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f) };
+              vphys->setBodyRotation(car.chassis(), q0); }
+            for (int i = 0; i < 150; ++i) {
+                glfwPollEvents();
+                x3::phys::VehicleInput in{}; in.handBrake = 1.0f;
+                car.setInput(in); car.preStep(dt);
+                float cp[3]; car.chassisPos(cp);
+                vstream.update(vscene, *device, *vphys, cp[0], cp[2]);
+                vphys->step(dt); car.postStep(dt);
+            }
+            float cp[3]; car.chassisPos(cp);
+            auto lookShot = [&](const std::string& file, bool night) -> bool {
+                const std::string path = hc.vehLookShotDir + "/" + file;
+                for (int i = 0; i < 12; ++i) {
+                    glfwPollEvents();
+                    x3::phys::VehicleInput in{}; in.handBrake = 1.0f;
+                    car.setInput(in); car.preStep(dt); vphys->step(dt); car.postStep(dt);
+                    std::vector<x3::rhi::PointLight> pls;
+                    x3::rhi::PointLight ug;
+                    if (car.underglowLight(ug)) pls.push_back(ug);
+                    device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
+                    const float cxs = cp[0] + 4.6f, cys = cp[1] + 1.7f, czs = cp[2] + 5.6f;
+                    const float ddx = cp[0] - cxs, ddy = (cp[1] + 0.25f) - cys, ddz = cp[2] - czs;
+                    device->setCamera(cxs, cys, czs, std::atan2(ddz, ddx),
+                                      std::atan2(ddy, std::sqrt(ddx*ddx + ddz*ddz)), 52.0f);
+                    if (i == 11) device->armCapture(path.c_str());
+                    auto frame = device->beginFrame();
+                    if (frame.valid) vrender(frame);
+                    device->endFrame(frame);
+                }
+                const bool ok = device->captureFrame(path.c_str());
+                x3::logInfo(std::string("--screenshot-vehlook: ") + (ok ? "wrote " : "FAILED ") + path);
+                (void)night;
+                return ok;
+            };
+            bool allOk = true;
+            car.clearAppearance();
+            allOk &= lookShot("vehlook_stock.png", false);
+            {
+                x3::game::vehcosmetics::CosmeticBuild look;
+                look.install("paint", "paint_candy");
+                look.paintRGB[0] = 0.04f; look.paintRGB[1] = 0.22f; look.paintRGB[2] = 0.85f;
+                look.install("tint", "tint_limo");
+                look.install("wheels", "rim_polish");
+                look.install("lighting", "glow_basic");
+                look.underglowRGB[0] = 0.15f; look.underglowRGB[1] = 0.5f; look.underglowRGB[2] = 1.0f;
+                car.setAppearance(x3::game::vehcosmetics::composeVisual(cosCat, look));
+            }
+            allOk &= lookShot("vehlook_custom.png", false);
+            {   // dusk: drop the sun low + dim so the underglow reads.
+                x3::rhi::IRenderDevice::SkyParams sp{};
+                sp.enabled = true;
+                sp.sunDir[0] = 0.9f; sp.sunDir[1] = 0.08f; sp.sunDir[2] = 0.2f;
+                sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.55f; sp.sunColor[2] = 0.30f;
+                sp.sunIntensity = 0.25f; sp.haze = 0.5f; sp.exposure = 0.9f;
+                device->setSkyParams(sp);
+            }
+            allOk &= lookShot("vehlook_dusk_glow.png", true);
+            if (shopBuilt) shop.shutdown(vscene, *device, *vphys);
             car.shutdown(); vstream.shutdown(vscene, *device, *vphys);
             vphys->shutdown(); device->shutdown();
             if (window) glfwDestroyWindow(window); glfwTerminate();
@@ -711,11 +809,18 @@ int hostDrive(HostContext& hc) {
             vaudio->setListener(cx, cy, cz, viewYaw, viewPitch);
             int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
             if (cw != lastWd || ch != lastHd) { lastWd=cw; lastHd=ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
-            // Shop point lights nearest the eye (interior work lights + neon wash).
-            if (isDrive && shopBuilt) {
+            // Shop point lights nearest the eye (interior work lights + neon wash)
+            // + the car underglow (one budget slot, per the spec's light-budget
+            // note). Only pushed when either source exists, so a stock car in a
+            // world without the shop keeps the exact legacy light state.
+            if (isDrive) {
                 std::vector<x3::rhi::PointLight> pls;
-                shop.selectLights(cx, cy, cz, pls, 16);
-                device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
+                if (shopBuilt) shop.selectLights(cx, cy, cz, pls, 16);
+                x3::rhi::PointLight ug;
+                const bool haveGlow = car.underglowLight(ug);
+                if (haveGlow) pls.push_back(ug);
+                if (shopBuilt || haveGlow)
+                    device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
             }
             // ---- BANKING chase cam: lean the view into the turn (CAR ONLY). ----
             // A roll-capable basis (setCameraBasis) banks the camera up-vector by an

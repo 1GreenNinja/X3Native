@@ -113,7 +113,8 @@
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
-#include "world_cars.h"                    // WORLD CARS: findable/drivable/hackable cars (canonlevel)
+#include "world_cars.h"
+#include "vehcosmetics.h"                    // WORLD CARS: findable/drivable/hackable cars (canonlevel)
 #include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
@@ -3542,6 +3543,21 @@ int runDefaultHost(HostContext& hc) {
                     x3::logInfo("[vehparts] canon car drift layer ON (veh_drift 0 = legacy)");
                 }
                 worldCars.setSprayEnabled(vehSprayOn);
+                // COSMETIC LOOK on the canon rig (same vehlook.json the shop
+                // writes). veh_cosmetics 0 keeps the authored/per-car paint.
+                bool vehCosOn = true;
+                for (const auto& kv : hc.cliCVars)
+                    if (kv.first == "veh_cosmetics") vehCosOn = kv.second != "0";
+                if (vehCosOn) {
+                    x3::game::vehcosmetics::CosmeticCatalog cosCat;
+                    x3::game::vehcosmetics::CosmeticBuild cosLook;
+                    if (cosCat.loadFile(x3::game::vehparts::defaultCatalogPath()) &&
+                        cosLook.loadFile(x3::game::vehcosmetics::defaultLookSavePath())) {
+                        worldCars.setAppearance(
+                            x3::game::vehcosmetics::composeVisual(cosCat, cosLook));
+                        x3::logInfo("[vehparts] canon car cosmetic look applied");
+                    }
+                }
             }
         }
         x3::boot::mark("WORLD CARS (host set parked)");

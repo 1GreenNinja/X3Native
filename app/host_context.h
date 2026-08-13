@@ -106,6 +106,7 @@ struct HostContext {
     bool        elevShot = false;           std::string elevShotDir = "docs/screenshots/elevator";
     bool        perfshopShot = false;       std::string perfshopShotDir;
     bool        driftFxShot = false;        std::string driftFxShotDir;
+    bool        vehLookShot = false;        std::string vehLookShotDir;
     bool        ecologyShot = false;        std::string ecologyShotPath;
     bool        crowdShot = false;          std::string crowdShotPath;
     bool        complexShot = false;        std::string complexShotDir = "docs/screenshots/complex";

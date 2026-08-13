@@ -20,6 +20,7 @@
 #include "engine/asset/IAssetSource.h"
 #include "mesh_prims.h"
 #include "driftgrip.h"                   // drift feel + surface traction layer
+#include "vehcosmetics.h"                // VehicleAppearance (cosmetic layer)
 
 #include <cstdint>
 #include <memory>
@@ -117,6 +118,20 @@ public:
     }
     void clearPaintTint() { m_tintOn = false; }
 
+    // ---- COSMETIC APPEARANCE (app/vehcosmetics.h) ---------------------------
+    // The composed look: paint (baseColor + the two-layer clearcoat params +
+    // metallic clamp on the car-paint panels), glass tint, rim finish, and
+    // underglow. Off by default -- the authored GLB, byte-identical (the
+    // veh_cosmetics cvar gates the hosts' calls). Takes precedence over the
+    // simpler WORLD-CARS paint tint when both are set.
+    void setAppearance(const vehcosmetics::VehicleAppearance& a) { m_look = a; m_lookOn = true; }
+    void clearAppearance() { m_lookOn = false; }
+    bool appearanceOn() const { return m_lookOn; }
+    // Underglow as ONE point light for the host's light list (the spec's
+    // light-budget note -- v1 spends a single slot). False when no glow is
+    // installed / cosmetics off. Pulse mode breathes the color.
+    bool underglowLight(x3::rhi::PointLight& out) const;
+
     // ---- TYRE SPRAY (dirt kicked from the contact patch on loose surfaces) --
     // Driven by DriftGrip::spray() (surface x slip x speed), so it only exists
     // where the surface layer says the ground is loose. DETERMINISTIC: spawn
@@ -156,7 +171,13 @@ private:
     std::vector<x3::asset::ModelDrawable> m_bodyDraw;     // everything but the wheels
     std::vector<x3::asset::ModelDrawable> m_wheelDraw[4]; // per physics wheel slot
     void drawDrawable(const x3::rhi::FrameContext& f,
-                      const x3::asset::ModelDrawable& d, const float world[16]) const;
+                      const x3::asset::ModelDrawable& d, const float world[16],
+                      bool isWheel = false) const;
+    void renderUnderglow(const x3::rhi::FrameContext& frame) const;
+
+    // ---- Cosmetic appearance state (see setAppearance) ----------------------
+    bool m_lookOn = false;
+    vehcosmetics::VehicleAppearance m_look;
 
     // ---- Tyre-spray particle state (see setSprayEnabled) --------------------
     struct SprayParticle {

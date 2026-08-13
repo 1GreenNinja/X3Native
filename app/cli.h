@@ -133,6 +133,10 @@ struct CliOptions {
     // same frame with the Lane-7 layer OFF and ON (A/B, same camera).
     bool        driftFxShot = false;
     std::string driftFxShotDir = "docs/screenshots/veh-cosmetics";
+    // --screenshot-vehlook [dir]: headless COSMETIC-LOOK proof (stock vs
+    // custom paint/tint/rims, plus a dusk underglow frame).
+    bool        vehLookShot = false;
+    std::string vehLookShotDir = "docs/screenshots/veh-cosmetics";
     // --screenshot-ecology [path]: LIVING-WORLD proof shot. Builds the valley
     // open biome + the ambient ecology, stages the predator-strike moment at the
     // grazer herd, settles, and captures from a herd vantage. Implies

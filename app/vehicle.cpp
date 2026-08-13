@@ -228,15 +228,49 @@ bool DriveDemo::skin(x3::rhi::IRenderDevice& device, std::string_view glbDir,
 }
 
 void DriveDemo::drawDrawable(const x3::rhi::FrameContext& f,
-                             const x3::asset::ModelDrawable& d, const float world[16]) const {
+                             const x3::asset::ModelDrawable& d, const float world[16],
+                             bool isWheel) const {
     const bool matEmis = d.emissiveTexId != 0 ||
         d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f || d.emissiveFactor[2] > 0.001f;
     float emis[4] = { d.emissiveFactor[0], d.emissiveFactor[1], d.emissiveFactor[2],
                       matEmis ? 1.0f : 0.0f };
-    // WORLD CARS paint tint: repaint the clearcoat (car-paint) panels only.
     float bc[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
                     d.baseColorFactor[2], d.baseColorFactor[3] };
+    float clearcoat = d.clearcoat, ccRough = d.clearcoatRough, metScale = 1.0f;
+    // WORLD CARS paint tint: repaint the clearcoat (car-paint) panels only.
     if (m_tintOn && d.clearcoat > 0.01f) { bc[0] = m_tint[0]; bc[1] = m_tint[1]; bc[2] = m_tint[2]; }
+    // COSMETIC APPEARANCE (takes precedence over the simple tint):
+    if (m_lookOn) {
+        if (m_look.paintOn && d.clearcoat > 0.01f && !isWheel) {
+            // The authored clearcoat flag marks the CAR-PAINT panels; the look
+            // replaces base color AND the whole clearcoat response (matte kills
+            // the lobe, candy deepens it) + the metallic clamp (matte reads
+            // dielectric).
+            bc[0] = m_look.paintRGB[0]; bc[1] = m_look.paintRGB[1]; bc[2] = m_look.paintRGB[2];
+            clearcoat = m_look.clearcoat;
+            ccRough   = m_look.clearcoatRough;
+            metScale  = m_look.metallicScale;
+        }
+        if (m_look.tintOn && d.alphaBlend) {
+            // Glass: darken + solidify with tint depth (X3_WORLD_RULES glass
+            // alpha discipline -- near-clear stays low; limo glass climbs
+            // toward opaque smoke).
+            const float k = m_look.tintDark;
+            bc[0] *= (1.0f - 0.9f * k); bc[1] *= (1.0f - 0.9f * k); bc[2] *= (1.0f - 0.9f * k);
+            bc[3] = bc[3] + (0.92f - bc[3]) * k;
+        }
+        if (m_look.rimOn && isWheel) {
+            // Rim finish. The wheel node carries both tire and rim drawables;
+            // the tire is near-black albedo -- leave anything dark alone so
+            // rubber never turns chrome. (Honest v1 heuristic; a rim material
+            // tag in the GLB would replace it.)
+            const float lum = 0.2126f*bc[0] + 0.7152f*bc[1] + 0.0722f*bc[2];
+            if (lum > 0.22f) {
+                bc[0] = m_look.rimRGB[0]; bc[1] = m_look.rimRGB[1]; bc[2] = m_look.rimRGB[2];
+                metScale = std::max(0.25f, m_look.rimMetallic);
+            }
+        }
+    }
     m_device->drawMeshPBR(f,
                           x3::rhi::MeshHandle{ d.meshId },
                           x3::rhi::TextureHandle{ d.baseColorTexId },
@@ -246,7 +280,50 @@ void DriveDemo::drawDrawable(const x3::rhi::FrameContext& f,
                           d.alphaMask, d.alphaBlend,
                           x3::rhi::TextureHandle{ d.emissiveTexId },
                           x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
-                          d.clearcoat, d.clearcoatRough);   // car-paint clearcoat lobe
+                          clearcoat, ccRough,               // car-paint clearcoat lobe
+                          0.0f, metScale);
+}
+
+// Underglow: one point light under the floor pan + a dim emissive wash panel
+// (the light does the ground splash; the panel just makes the source read).
+bool DriveDemo::underglowLight(x3::rhi::PointLight& out) const {
+    if (!m_lookOn || !m_look.glowOn || !m_physics || !m_chassis.valid()) return false;
+    const x3::phys::Vec3 p = m_physics->getBodyPosition(m_chassis);
+    float pulse = 1.0f;
+    if (m_look.glowPulse) {
+        const float t = (float)(m_tick % 120u) / 120.0f;   // 2 s cycle, tick-driven
+        pulse = 0.62f + 0.38f * std::sin(t * 6.2831853f);
+    }
+    out.pos[0] = p.x; out.pos[1] = p.y - 0.55f; out.pos[2] = p.z;
+    out.range  = 4.0f + 0.35f * m_look.glowIntensity;
+    const float k = 1.1f * m_look.glowIntensity * pulse;
+    out.color[0] = m_look.glowRGB[0] * k;
+    out.color[1] = m_look.glowRGB[1] * k;
+    out.color[2] = m_look.glowRGB[2] * k;
+    return true;
+}
+
+void DriveDemo::renderUnderglow(const x3::rhi::FrameContext& frame) const {
+    if (!m_lookOn || !m_look.glowOn || !m_device || !m_physics || !m_sprayMesh.valid()) return;
+    x3::phys::Vec3 p = m_physics->getBodyPosition(m_chassis);
+    float q[4]; m_physics->getBodyRotation(m_chassis, q);
+    float pulse = 1.0f;
+    if (m_look.glowPulse) {
+        const float t = (float)(m_tick % 120u) / 120.0f;
+        pulse = 0.62f + 0.38f * std::sin(t * 6.2831853f);
+    }
+    // Thin wash panel just under the floor pan, riding the chassis pose. Flat
+    // emissive stays MODEST (X3_WORLD_RULES: flat emissive above ~0.5 clips
+    // white under ACES and loses the hue) -- the point light carries the throw.
+    const float pos[3] = { p.x, p.y - 0.52f, p.z };
+    // Thin strip INSIDE the car footprint (composeTRS scales a unit cube, so a
+    // scale S spans +-S/2): ~1.4 m wide x ~3.5 m long, 2 cm tall.
+    float m[16]; composeTRS(pos, q, m_hx * 1.7f, 0.02f, m_hz * 1.8f, m);
+    const float e = 0.45f * pulse;
+    const float col[4]  = { 0.02f, 0.02f, 0.02f, 1.0f };   // near-black substrate
+    const float emis[4] = { m_look.glowRGB[0] * e, m_look.glowRGB[1] * e, m_look.glowRGB[2] * e, 0.0f };
+    m_device->drawMeshPBR(frame, m_sprayMesh, m_sprayTex, {}, {},
+                          col, emis, m, false, false);
 }
 
 bool DriveDemo::allWheelsInContact() const {
@@ -387,6 +464,7 @@ void DriveDemo::chassisPos(float out[3]) const {
 void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     if (!m_device || !m_ctl) return;
     renderSpray(frame);
+    renderUnderglow(frame);
 
     x3::phys::Vec3 p = m_physics->getBodyPosition(m_chassis);
     float q[4]; m_physics->getBodyRotation(m_chassis, q);
@@ -415,7 +493,7 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
             }
             for (const auto& d : m_wheelDraw[s]) {
                 x3::asset::mulMat4(P, d.nodeTransform, fin);   // nodeTransform = axisFix * authored scale
-                drawDrawable(frame, d, fin);
+                drawDrawable(frame, d, fin, /*isWheel=*/true);
             }
         }
         return;
