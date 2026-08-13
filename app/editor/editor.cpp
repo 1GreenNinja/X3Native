@@ -9,12 +9,70 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
 
 namespace x3::editor {
+
+// ---------------------------------------------------------------------------
+// Level Architect 11.0 — feature gates + shared rotation math (see editor.h).
+// ---------------------------------------------------------------------------
+bool rot3Enabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("X3_EDITOR_ROT3");
+        return !(v && v[0] == '0');          // default ON; "0" restores yaw-only
+    }();
+    return on;
+}
+
+bool portalsEnabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("X3_EDITOR_PORTAL");
+        return !(v && v[0] == '0');          // default ON; "0" restores markers
+    }();
+    return on;
+}
+
+// R = Ry(yaw) * Rx(pitch) * Rz(roll), column-major (out[col*3 + row]). Built by
+// an explicit 3x3 multiply of the three primitive rotations rather than a hand-
+// expanded closed form — harder to transpose-typo, and Ry alone is bit-identical
+// to the 10.x yaw matrix (c,0,-s / 0,1,0 / s,0,c in columns).
+void rotYPR(float yaw, float pitch, float roll, float R[9]) {
+    const float cy = std::cos(yaw),   sy = std::sin(yaw);
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    const float cr = std::cos(roll),  sr = std::sin(roll);
+    const float Ry[9] = { cy,0,-sy,  0,1,0,   sy,0,cy };
+    const float Rx[9] = { 1,0,0,     0,cp,sp, 0,-sp,cp };
+    const float Rz[9] = { cr,sr,0,  -sr,cr,0, 0,0,1 };
+    auto mul = [](const float A[9], const float B[9], float C[9]) {
+        for (int c = 0; c < 3; ++c)
+            for (int r = 0; r < 3; ++r)
+                C[c*3+r] = A[0*3+r]*B[c*3+0] + A[1*3+r]*B[c*3+1] + A[2*3+r]*B[c*3+2];
+    };
+    float T[9];
+    mul(Ry, Rx, T);
+    mul(T, Rz, R);
+}
+
+// Same composite as a quaternion: q = qy * qx * qz (xyzw, Hamilton product) —
+// matches rotYPR because quaternion composition mirrors matrix composition.
+void yprToQuat(float yaw, float pitch, float roll, float q[4]) {
+    auto qmul = [](const float a[4], const float b[4], float o[4]) {
+        o[0] = a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1];
+        o[1] = a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0];
+        o[2] = a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3];
+        o[3] = a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2];
+    };
+    const float qy[4] = { 0, std::sin(yaw*0.5f), 0, std::cos(yaw*0.5f) };
+    const float qx[4] = { std::sin(pitch*0.5f), 0, 0, std::cos(pitch*0.5f) };
+    const float qz[4] = { 0, 0, std::sin(roll*0.5f), std::cos(roll*0.5f) };
+    float t[4];
+    qmul(qy, qx, t);
+    qmul(t, qz, q);
+}
 
 // ---------------------------------------------------------------------------
 // Lab Architect content palette (room/entity types + legend colors, transcribed
@@ -37,10 +95,13 @@ const PaletteItem* editorPalette() {
         { "item",      "Item / Pickup",   { 1.0f,  0.82f, 0.30f, 1.0f } },
         { "light",     "Light",           { 1.0f,  0.95f, 0.70f, 1.0f } },
         { "prop",      "Prop",            { 0.80f, 0.55f, 0.20f, 1.0f } },
+        // 11.0: hand-placed portal plane (the tunnel-lane payoff). See the
+        // LEVELDOC PORTAL CONTRACT on EditorEntity::type.
+        { "portal",    "Portal",          { 0.30f, 0.90f, 1.0f,  1.0f } },
     };
     return k;
 }
-uint32_t editorPaletteCount() { return 15; }
+uint32_t editorPaletteCount() { return 16; }
 
 // ---------------------------------------------------------------------------
 // Feature 1 — curated built-in surface MATERIALS (click-a-wall texturing). The
@@ -140,8 +201,18 @@ uint32_t editorMenuBarCount() { return 4; }
 // ---------------------------------------------------------------------------
 namespace {
 std::string num(float f) {
+    // %.9g: 9 significant digits round-trip ANY float bit-exactly (FLT_DECIMAL_DIG).
+    // The previous %.4g was a real defect: a brush at x = 123.4567 saved as "123.5"
+    // — every save/reload cycle nudged far-from-origin geometry by centimetres, and
+    // no rotation angle could survive a round trip. Values already exact in 4
+    // digits ("2", "0.5", "3.5") print identically, so most files do not change.
+    // Fallback (house rule): X3_LEVELDOC_NUM4=1 restores the old %.4g exactly.
+    static const bool legacy = [] {
+        const char* v = std::getenv("X3_LEVELDOC_NUM4");
+        return v && v[0] == '1';
+    }();
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.4g", (double)f);
+    std::snprintf(buf, sizeof(buf), legacy ? "%.4g" : "%.9g", (double)f);
     return buf;
 }
 std::string vec3(const float v[3]) {
@@ -169,8 +240,12 @@ std::string LevelDoc::toJson() const {
         o << "    { \"name\": \"" << esc(e.name) << "\""
           << ", \"type\": \"" << esc(e.type) << "\""
           << ", \"pos\": " << vec3(e.pos)
-          << ", \"yaw\": " << num(e.yaw)
-          << ", \"scale\": " << num(e.scale)
+          << ", \"yaw\": " << num(e.yaw);
+        // 11.0 third rotation axis — emitted only when set (and rot3 on), so every
+        // existing yaw-only file round-trips byte-identical.
+        if (rot3Enabled() && e.pitch != 0.0f) o << ", \"pitch\": " << num(e.pitch);
+        if (rot3Enabled() && e.roll  != 0.0f) o << ", \"roll\": "  << num(e.roll);
+        o << ", \"scale\": " << num(e.scale)
           << ", \"tint\": " << vec3(e.tint)
           << ", \"size\": " << vec3(e.size)
           << ", \"model\": \"" << esc(e.model) << "\""
@@ -192,8 +267,10 @@ std::string LevelDoc::toJson() const {
           << ", \"type\": " << (int)b.type
           << ", \"pos\": " << vec3(b.pos)
           << ", \"size\": " << vec3(b.size)
-          << ", \"yaw\": " << num(b.yaw)
-          << ", \"tint\": " << vec3(b.tint)
+          << ", \"yaw\": " << num(b.yaw);
+        if (rot3Enabled() && b.pitch != 0.0f) o << ", \"pitch\": " << num(b.pitch);
+        if (rot3Enabled() && b.roll  != 0.0f) o << ", \"roll\": "  << num(b.roll);
+        o << ", \"tint\": " << vec3(b.tint)
           << ", \"material\": \"" << esc(b.material) << "\""
           << ", \"collide\": " << (b.collide ? "1" : "0") << " }";
         if (i + 1 < brushes.size()) o << ",";
@@ -249,6 +326,34 @@ struct JParse {
     }
     // Read a key string followed by ':'.
     std::string key() { std::string k = str(); eat(':'); return k; }
+
+    // Skip ONE value of any kind (string / number / array / object / literal).
+    // The old skip called str() unconditionally, which set ok=false on a numeric
+    // value — meaning any FUTURE numeric key would hard-fail an older parser.
+    // Fixed so unknown keys are genuinely tolerated (depth-bounded recursion).
+    void skipValue(int depth = 0) {
+        if (depth > 16) { ok = false; return; }
+        const char c = peek();
+        if (c == '"') { str(); return; }
+        if (c == '[') {
+            eat('[');
+            while (ok && peek() && peek() != ']') skipValue(depth + 1);
+            eat(']');
+            return;
+        }
+        if (c == '{') {
+            eat('{');
+            while (ok && peek() && peek() != '}') { key(); skipValue(depth + 1); }
+            eat('}');
+            return;
+        }
+        if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.') { number(); return; }
+        // Bare literal (true/false/null): consume the identifier run.
+        ws();
+        const char* s = p;
+        while (p < end && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))) ++p;
+        if (p == s) ok = false;   // nothing recognizable — a real parse error
+    }
 };
 } // namespace
 
@@ -273,13 +378,17 @@ bool LevelDoc::fromJson(const std::string& json) {
                     else if (ek == "type")  e.type = j.str();
                     else if (ek == "pos")   j.vec3(e.pos);
                     else if (ek == "yaw")   e.yaw = j.number();
+                    // 11.0 third axis. ALWAYS consumed (the doc may carry them);
+                    // applied only when rot3 is enabled (fallback = yaw-only).
+                    else if (ek == "pitch") { float v = j.number(); if (rot3Enabled()) e.pitch = v; }
+                    else if (ek == "roll")  { float v = j.number(); if (rot3Enabled()) e.roll  = v; }
                     else if (ek == "scale") e.scale = j.number();
                     else if (ek == "tint")  j.vec3(e.tint);
                     else if (ek == "size")  j.vec3(e.size);
                     else if (ek == "model") e.model = j.str();
                     else if (ek == "script") e.script = j.str();
                     else if (ek == "emissive") j.vec4(e.emissive);
-                    else { /* skip unknown scalar */ j.str(); }
+                    else { j.skipValue(); }   // unknown key: skip any value kind
                 }
                 j.eat('}');
                 entities.push_back(e);
@@ -297,17 +406,19 @@ bool LevelDoc::fromJson(const std::string& json) {
                     else if (bk == "pos")    j.vec3(b.pos);
                     else if (bk == "size")   j.vec3(b.size);
                     else if (bk == "yaw")    b.yaw = j.number();
+                    else if (bk == "pitch")  { float v = j.number(); if (rot3Enabled()) b.pitch = v; }
+                    else if (bk == "roll")   { float v = j.number(); if (rot3Enabled()) b.roll  = v; }
                     else if (bk == "tint")   j.vec3(b.tint);
                     else if (bk == "material") b.material = j.str();
                     else if (bk == "collide") b.collide = (j.number() != 0.0f);
-                    else { /* skip unknown scalar */ j.str(); }
+                    else { j.skipValue(); }   // unknown key: skip any value kind
                 }
                 j.eat('}');
                 brushes.push_back(b);
             }
             j.eat(']');
         } else {
-            j.str();   // skip unknown string value
+            j.skipValue();   // unknown top-level key: skip any value kind
         }
     }
     j.eat('}');
@@ -411,16 +522,25 @@ int EditorState::pickBrushRay(const float origin[3], const float dir[3], float p
     int best = -1; float bestT = 1e30f;
     for (size_t i = 0; i < m_doc.brushes.size(); ++i) {
         const BlockoutBrush& b = m_doc.brushes[i];
-        // Transform the ray into the brush's LOCAL frame (un-yaw about +Y, translate to
-        // origin) so the OBB becomes an axis-aligned box [-h, +h] and we run a slab test.
-        const float c = std::cos(b.yaw), s = std::sin(b.yaw);
+        // Transform the ray into the brush's LOCAL frame (full inverse rotation,
+        // translate to origin) so the OBB becomes an axis-aligned box [-h, +h] and
+        // we run a slab test. R maps local->world; the inverse is the transpose:
+        // (R^T v)[i] = dot(column i of R, v). Yaw-only brushes take the exact same
+        // path as before (rotYPR with pitch=roll=0 IS the old yaw matrix).
+        float R[9];
+        rotYPR(b.yaw, b.pitch, b.roll, R);
         const float rx0 = origin[0]-b.pos[0], ry0 = origin[1]-b.pos[1], rz0 = origin[2]-b.pos[2];
-        // brushMatrix maps local->world by R(yaw): world = [c,0,s; 0,1,0; -s,0,c]*local.
-        // The inverse (world->local) is the transpose: [c,0,-s; 0,1,0; s,0,c].
-        const float lox = c*rx0 - s*rz0, loy = ry0, loz = s*rx0 + c*rz0;
-        const float ldx = c*dx  - s*dz,  ldy = dy,  ldz = s*dx  + c*dz;
+        const float ro[3] = {
+            R[0]*rx0 + R[1]*ry0 + R[2]*rz0,
+            R[3]*rx0 + R[4]*ry0 + R[5]*rz0,
+            R[6]*rx0 + R[7]*ry0 + R[8]*rz0,
+        };
+        const float rd[3] = {
+            R[0]*dx + R[1]*dy + R[2]*dz,
+            R[3]*dx + R[4]*dy + R[5]*dz,
+            R[6]*dx + R[7]*dy + R[8]*dz,
+        };
         const float h[3] = { b.size[0]*0.5f + pad, b.size[1]*0.5f + pad, b.size[2]*0.5f + pad };
-        const float ro[3] = { lox, loy, loz }, rd[3] = { ldx, ldy, ldz };
         float tmin = 0.0f, tmax = 1e30f; bool hit = true;
         for (int a = 0; a < 3; ++a) {
             if (std::fabs(rd[a]) < 1e-8f) {
@@ -478,6 +598,18 @@ bool EditorState::moveSelectedBrush(Axis axis, float delta) {
     return true;
 }
 
+bool EditorState::rotateSelectedBrush(Axis axis, float delta) {
+    if (!hasBrushSelection() || axis == Axis::None || delta == 0.0f) return false;
+    // 11.0: X = pitch, Y = yaw (the 10.9 axis), Z = roll. With rot3 disabled only
+    // yaw operates — the prior behaviour, exactly.
+    if (!rot3Enabled() && axis != Axis::Y) return false;
+    BlockoutBrush& b = m_doc.brushes[m_selIndex];
+    float& a = (axis == Axis::X) ? b.pitch : (axis == Axis::Y) ? b.yaw : b.roll;
+    const float before = a;
+    a = snapAngle(a + delta);
+    return std::fabs(a - before) > 1e-7f;
+}
+
 bool EditorState::deleteSelectedBrush() {
     if (!hasBrushSelection()) return false;
     m_doc.brushes.erase(m_doc.brushes.begin() + m_selIndex);
@@ -498,6 +630,15 @@ bool brushNeedsRespawn(const BlockoutBrush& a, const BlockoutBrush& b) {
         if (std::fabs(a.size[i] - b.size[i]) > 1e-5f) return true;
     for (int i = 0; i < 3; ++i)
         if (std::fabs(a.tint[i] - b.tint[i]) > 1e-5f) return true;
+    // 11.0: a ROTATION change on a mesh-collision brush (anything but a Box)
+    // must rebuild the Jolt static mesh — its triangles are baked in world space,
+    // so setBodyRotation cannot fix it up. A rotated Box stays a cheap SyncXform
+    // (the box body takes a quat), preserving the yaw-drag feel Tim already has.
+    if (rot3Enabled() && a.type != 0u && (a.collide || b.collide)) {
+        if (std::fabs(a.yaw   - b.yaw)   > 1e-5f ||
+            std::fabs(a.pitch - b.pitch) > 1e-5f ||
+            std::fabs(a.roll  - b.roll)  > 1e-5f) return true;
+    }
     return a.material != b.material;
 }
 } // namespace
@@ -570,6 +711,8 @@ void EditorState::commitBrushEdit() {
     const bool unchanged = v3eq(m_editBefore.pos, now.pos) &&
                            v3eq(m_editBefore.size, now.size) &&
                            std::fabs(m_editBefore.yaw - now.yaw) < 1e-5f &&
+                           std::fabs(m_editBefore.pitch - now.pitch) < 1e-5f &&
+                           std::fabs(m_editBefore.roll - now.roll) < 1e-5f &&
                            v3eq(m_editBefore.tint, now.tint) &&
                            m_editBefore.material == now.material;
     if (unchanged) return;
@@ -861,7 +1004,8 @@ bool runEditorSelfTest() {
 
     // ---- E6: theme/palette/menu data are present + well-formed. ----
     {
-        bool pal = editorPaletteCount() == 15 && editorPalette()[0].type != nullptr;
+        bool pal = editorPaletteCount() == 16 && editorPalette()[0].type != nullptr &&
+                   std::string(editorPalette()[15].type) == "portal";   // 11.0
         bool men = editorMenuBarCount() == 4 &&
                    std::string(editorMenuBar()[2].title) == "Tools" &&
                    editorMenuBar()[2].items[1].id == Cmd::ToolMove &&      // W = Move
@@ -1128,6 +1272,89 @@ bool runEditorSelfTest() {
                      kb.actionForKey(kFoo) == NudgeAction::Count;
         check(dflt && rebound && steal && reset,
               "E18 keybind table: defaults + actionForKey<->keyFor + rebind steals + reset");
+    }
+
+    // ---- E19 (11.0): rotateSelectedBrush — three axes, 5-degree angle snap,
+    // NEGATIVE-CONTROLLED (the same input with snap off gives a DIFFERENT angle,
+    // so a broken snap cannot pass both arms). ----
+    {
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(true, 0.5f);
+        float p[3] = { 0, 0, 0 };
+        ed.addBrushCmd(0u, p);
+        ed.selectBrush(0);
+        // X (pitch): +0.10 rad snaps to one 5-deg step (0.0872665).
+        bool px = ed.rotateSelectedBrush(Axis::X, 0.10f) &&
+                  feq(d.brushes[0].pitch, kAngleSnapRad, 1e-5f);
+        // Y (yaw, Tim's axis): -0.16 rad snaps to two steps down (-0.1745329).
+        bool py = ed.rotateSelectedBrush(Axis::Y, -0.16f) &&
+                  feq(d.brushes[0].yaw, -2.0f * kAngleSnapRad, 1e-5f);
+        // Z (roll): +0.04 rad snaps BACK to zero -> no change, returns false.
+        bool pzSnap = !ed.rotateSelectedBrush(Axis::Z, 0.04f) &&
+                      d.brushes[0].roll == 0.0f;
+        // NEGATIVE CONTROL: snap OFF, the identical nudge lands raw at 0.04.
+        ed.setSnap(false);
+        bool pzRaw = ed.rotateSelectedBrush(Axis::Z, 0.04f) &&
+                     feq(d.brushes[0].roll, 0.04f, 1e-6f) &&
+                     d.brushes[0].roll != 0.0f;
+        check(px && py && pzSnap && pzRaw,
+              "E19 rotateSelectedBrush: X/Y/Z + 5-deg snap (negative control: raw when off)");
+    }
+
+    // ---- E20 (11.0): pickBrushRay honors the THIRD axis. A flat slab is hit from
+    // above; ROLLED 90 deg it becomes a thin vertical wall and the same ray MUST
+    // miss (this check fails outright if pitch/roll are ignored by the pick). ----
+    {
+        LevelDoc d; EditorState ed(d);
+        { BlockoutBrush b; b.pos[0]=0; b.pos[1]=0; b.pos[2]=0;
+          b.size[0]=4.0f; b.size[1]=0.5f; b.size[2]=4.0f; d.brushes.push_back(b); }
+        const float dn[3] = { 0, -1, 0 };
+        const float oA[3] = { 1.5f, 10.0f, 0.0f };
+        int hitFlat = ed.pickBrushRay(oA, dn);          // x=1.5 inside the 4 m slab
+        d.brushes[0].roll = 1.5707963f;                 // roll 90 deg about +Z
+        int missRolled = ed.pickBrushRay(oA, dn);       // slab now 0.5 m wide in X
+        const float oB[3] = { 0.1f, 10.0f, 0.0f };
+        int hitRolled = ed.pickBrushRay(oB, dn);        // x=0.1 still inside
+        check(hitFlat == 0 && missRolled == -1 && hitRolled == 0,
+              "E20 OBB pick honors roll (flat slab hits; rolled wall misses off-axis)");
+    }
+
+    // ---- E21 (11.0): pitch/roll round-trip the JSON BIT-EXACTLY, and a zero
+    // rotation emits NO pitch/roll keys (existing files stay byte-identical —
+    // the presence probe is the negative control: it fails if we start always-
+    // emitting). ----
+    {
+        LevelDoc d;
+        { BlockoutBrush b; b.name = "tiltwall";
+          b.pos[0]=123.4567f; b.pos[1]=-0.125f; b.pos[2]=42.42f;
+          b.yaw = 0.78539816f; b.pitch = 0.12345679f; b.roll = -1.1071487f;
+          d.brushes.push_back(b); }
+        { EditorEntity e; e.name = "gate"; e.type = "portal";
+          e.pos[0]=5; e.pos[1]=2; e.pos[2]=1;
+          e.yaw = 0.9f; e.pitch = 0.25f; e.roll = -0.1f;
+          e.size[0]=3; e.size[1]=3; e.size[2]=0.4f; e.script = "tunnel_a_west";
+          d.entities.push_back(e); }
+        LevelDoc rt; bool parsed = rt.fromJson(d.toJson());
+        // BIT-exact: float == float, no epsilon. %.9g + strtod guarantees this.
+        bool brushExact = parsed && rt.brushes.size() == 1 &&
+                          rt.brushes[0].yaw   == d.brushes[0].yaw &&
+                          rt.brushes[0].pitch == d.brushes[0].pitch &&
+                          rt.brushes[0].roll  == d.brushes[0].roll &&
+                          rt.brushes[0].pos[0] == d.brushes[0].pos[0];
+        bool portalExact = parsed && rt.entities.size() == 1 &&
+                           rt.entities[0].type == "portal" &&
+                           rt.entities[0].yaw   == d.entities[0].yaw &&
+                           rt.entities[0].pitch == d.entities[0].pitch &&
+                           rt.entities[0].roll  == d.entities[0].roll &&
+                           rt.entities[0].size[0] == 3.0f &&
+                           rt.entities[0].script == "tunnel_a_west";
+        // Zero-rotation docs must not grow the new keys.
+        LevelDoc plain; { BlockoutBrush b; b.name="box"; plain.brushes.push_back(b); }
+        const std::string js = plain.toJson();
+        bool clean = js.find("\"pitch\"") == std::string::npos &&
+                     js.find("\"roll\"")  == std::string::npos;
+        check(brushExact && portalExact && clean,
+              "E21 third-axis rotation + portal round-trip bit-exact; zero rot emits no keys");
     }
 
     x3::logInfo(std::string("[editor-test] ") + std::to_string(g_pass) + " passed, " +
