@@ -158,6 +158,12 @@ public:
     // PERF SHOP (NFS layer): the live rig for tuning/nitrous — PerfShop takes
     // a DriveDemo* and tolerates null (no car spawned yet / not driving).
     DriveDemo* liveCar() { return m_driveBuilt ? &m_drive : nullptr; }
+    // DRIFT/SURFACE layer (Lane 7): safe to configure BEFORE the lazy rig
+    // builds — the DriveDemo member exists by value from construction and the
+    // layer only reads the controller inside update(); nothing here trips the
+    // lazy-build trap the tuning path documents above.
+    DriftGrip& driftGrip() { return m_drive.driftGrip(); }
+    void setSprayEnabled(bool on) { m_drive.setSprayEnabled(on); }
 
     // Deep-water read on the LIVE car (engine-kill condition): water present
     // AND >= ~1.3 m deep over the local ground AND the hull is actually in it.

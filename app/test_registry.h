@@ -98,6 +98,7 @@ struct TestFlags {
     bool testMeshlet = false, testGpuCull = false, testCollapse = false, testNav = false;
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)
     bool testWeapons = false, testScript = false, testVehicle = false, testVehParts = false;
+    bool testDriftGrip = false;   // Lane 7: drift + surface traction
     bool testCsm = false;   // Lane 3: cascaded shadow maps (splits, snapping, rotation invariance)
     bool testGeoLod = false;// Lane 5: mesh LOD (screen-space error, hysteresis) + vertex compression
     bool testMineFx = false;// mines lane: Armory mine entrance census + glow bake

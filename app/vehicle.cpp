@@ -160,6 +160,14 @@ bool DriveDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& p
     m_chassisTex = device.createTexture(cTex.data(), 8, 8, true);
     auto wTex = x3::prims::makeSolidRGBA(8, 30, 30, 35);     // dark tires
     m_wheelTex = device.createTexture(wTex.data(), 8, 8, true);
+
+    // Tyre-spray particles: one tiny unit cube + a dirt-tone texture, drawn N
+    // times. Chunky debris reads as "dirt spat out" without any billboarding.
+    std::vector<x3::rhi::MeshVertex> sv; std::vector<uint32_t> si;
+    x3::prims::makeCube(0.5f, sv, si);
+    m_sprayMesh = device.createMesh(sv.data(), (uint32_t)sv.size(), si.data(), (uint32_t)si.size());
+    auto sTex = x3::prims::makeSolidRGBA(8, 118, 94, 66);    // dry earth
+    m_sprayTex = device.createTexture(sTex.data(), 8, 8, true);
     return true;
 }
 
@@ -273,10 +281,103 @@ void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
             eff.throttle *= std::clamp(trim, 0.15f, 1.0f);
         }
     }
-    m_ctl->setInput(eff);
+    // The effective (post-TC) input is DELIVERED in preStep, after the drift/
+    // surface layer has had its per-tick look at it (it may add countersteer
+    // assist and needs the step dt for its grip blending). Same-tick delivery
+    // as before — nothing reads the controller input between here and preStep.
+    m_effIn = eff;
 }
-void DriveDemo::preStep(float dt)  { if (m_ctl) m_ctl->preStep(dt); }
-void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
+void DriveDemo::preStep(float dt)  {
+    if (!m_ctl) return;
+    x3::phys::VehicleInput eff = m_effIn;
+    m_grip.update(*m_ctl, dt, eff);   // inert (never touches the controller) when off
+    m_ctl->setInput(eff);
+    m_ctl->preStep(dt);
+}
+void DriveDemo::postStep(float dt) {
+    if (m_ctl) m_ctl->postStep(dt);
+    ++m_tick;
+    updateSpray(dt);
+}
+
+namespace {
+// Deterministic integer hash -> [0,1) (spray jitter; never rand()).
+inline uint32_t sprayHash(uint32_t x) {
+    x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16;
+    return x;
+}
+inline float sprayH01(uint32_t seed) { return (sprayHash(seed) & 0xffffffu) / 16777216.0f; }
+} // namespace
+
+void DriveDemo::updateSpray(float dt) {
+    // Integrate existing particles even when disabled (so a live cvar flip
+    // lets the last puffs finish instead of freezing them mid-air).
+    for (uint32_t k = 0; k < kSprayMax; ++k) {
+        SprayParticle& sp = m_sprayP[k];
+        if (sp.life <= 0.0f) continue;
+        sp.age += dt;
+        if (sp.age >= sp.life) { sp.life = 0.0f; continue; }
+        sp.vel[1] -= 9.81f * dt;
+        sp.pos[0] += sp.vel[0] * dt;
+        sp.pos[1] += sp.vel[1] * dt;
+        sp.pos[2] += sp.vel[2] * dt;
+    }
+    if (!m_sprayOn || !m_ctl || !m_physics) return;
+    float cvel[3] = { 0, 0, 0 };
+    m_physics->getBodyLinearVelocity(m_chassis, cvel);
+    const uint32_t n = m_ctl->wheelCount();
+    for (uint32_t i = 0; i < n && i < DriftGrip::kMaxWheels; ++i) {
+        const float s = m_grip.spray(i);
+        if (s < 0.15f) continue;
+        x3::phys::WheelState ws;
+        if (!m_ctl->wheelState(i, ws) || !ws.hasContact) continue;
+        const int count = 1 + (s > 0.45f ? 1 : 0) + (s > 0.8f ? 1 : 0);
+        for (int c = 0; c < count; ++c) {
+            SprayParticle& sp = m_sprayP[m_sprayNext++ % kSprayMax];
+            const uint32_t seed = (m_tick * 7919u) ^ (i * 131u) ^ (uint32_t)c * 977u;
+            const float j0 = sprayH01(seed) - 0.5f;
+            const float j1 = sprayH01(seed + 1) - 0.5f;
+            const float j2 = sprayH01(seed + 2);
+            // Contact patch: wheel center dropped by ~radius.
+            sp.pos[0] = ws.worldTransform[12] + j0 * 0.25f;
+            sp.pos[1] = ws.worldTransform[13] - ws.radius * 0.8f;
+            sp.pos[2] = ws.worldTransform[14] + j1 * 0.25f;
+            // Thrown back along the car velocity + up + lateral scatter.
+            const float back = 2.0f + 4.0f * s;
+            const float vlen = std::sqrt(cvel[0]*cvel[0] + cvel[2]*cvel[2]);
+            const float bx = vlen > 0.5f ? -cvel[0] / vlen : 0.0f;
+            const float bz = vlen > 0.5f ? -cvel[2] / vlen : 0.0f;
+            sp.vel[0] = cvel[0] * 0.20f + bx * back + j0 * 2.6f;
+            sp.vel[1] = 1.8f + 2.6f * j2 * s;
+            sp.vel[2] = cvel[2] * 0.20f + bz * back + j1 * 2.6f;
+            sp.age  = 0.0f;
+            sp.life = 0.45f + 0.35f * j2;
+            sp.size = 0.055f + 0.075f * sprayH01(seed + 3) * (0.5f + s);
+        }
+    }
+}
+
+uint32_t DriveDemo::sprayAliveCount() const {
+    uint32_t n = 0;
+    for (uint32_t k = 0; k < kSprayMax; ++k)
+        if (m_sprayP[k].life > 0.0f && m_sprayP[k].age < m_sprayP[k].life) ++n;
+    return n;
+}
+
+void DriveDemo::renderSpray(const x3::rhi::FrameContext& frame) const {
+    if (!m_device || !m_sprayMesh.valid()) return;
+    for (uint32_t k = 0; k < kSprayMax; ++k) {
+        const SprayParticle& sp = m_sprayP[k];
+        if (sp.life <= 0.0f || sp.age >= sp.life) continue;
+        const float t = sp.age / sp.life;
+        const float sc = sp.size * (1.0f - 0.55f * t);   // chunks shed mass
+        float m[16] = { sc,0,0,0, 0,sc,0,0, 0,0,sc,0,
+                        sp.pos[0], sp.pos[1], sp.pos[2], 1.0f };
+        const float shade = 1.0f - 0.35f * t;
+        const float col[4] = { shade, shade, shade, 1.0f };
+        m_device->drawMesh(frame, m_sprayMesh, m_sprayTex, col, m);
+    }
+}
 
 void DriveDemo::chassisPos(float out[3]) const {
     x3::phys::Vec3 p = m_physics ? m_physics->getBodyPosition(m_chassis) : x3::phys::Vec3{};
@@ -285,6 +386,7 @@ void DriveDemo::chassisPos(float out[3]) const {
 
 void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     if (!m_device || !m_ctl) return;
+    renderSpray(frame);
 
     x3::phys::Vec3 p = m_physics->getBodyPosition(m_chassis);
     float q[4]; m_physics->getBodyRotation(m_chassis, q);
@@ -342,6 +444,8 @@ void DriveDemo::shutdown() {
         if (m_wheelMesh.valid())   m_device->destroyMesh(m_wheelMesh);
         if (m_chassisTex.valid())  m_device->destroyTexture(m_chassisTex);
         if (m_wheelTex.valid())    m_device->destroyTexture(m_wheelTex);
+        if (m_sprayMesh.valid())   m_device->destroyMesh(m_sprayMesh);
+        if (m_sprayTex.valid())    m_device->destroyTexture(m_sprayTex);
     }
     // GLB skin: the loader frees the model's GPU handles (meshes/textures).
     if (m_skinned && m_skinLoader) m_skinLoader->unload(m_skinModel);

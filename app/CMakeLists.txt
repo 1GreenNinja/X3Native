@@ -173,6 +173,8 @@ add_executable(X3Engine WIN32
     street_lights.cpp
     mine_fx.cpp         # the mine-entrance family (Armory rock + glowing mouth)
     vehparts.cpp
+    driftgrip.cpp       # Lane 7: drift feel + surface-dependent traction
+    driftgrip_test.cpp  # Lane 7: --test-driftgrip
     csm_test.cpp
     mesh_lod.cpp        # Lane 5: screen-space-error discrete LOD selection
     mesh_decimate.cpp   # Lane 5: QEM edge-collapse decimation (builds LOD chains)

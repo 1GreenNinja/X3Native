@@ -79,6 +79,7 @@
 #include "ragdoll.h"
 #include "ragdoll_demo.h"   // x3::game::runRagdollBlendCheck (--test-ragdoll)
 #include "vehicle.h"        // x3::game::runDriveEnterExitSelfTest (--test-vehicle)
+#include "driftgrip.h"      // x3::game::runDriftGripSelfTest (--test-driftgrip)
 #include "world_cars.h"     // x3::game::runCanonVehicleSelfTest (--test-canonvehicle)
 #include "editor/editor.h"
 #include "editor/editor_ai.h"
@@ -1054,6 +1055,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "
                     "(catalog parse + composition math + REAL Jolt physics deltas + dyno pop thresholds)...");
         return x3::game::vehparts::runVehPartsSelfTest() ? 0 : 1;
+    }
+    if (tf.testDriftGrip) {
+        x3::logInfo("running DRIFT + SURFACE-TRACTION self-test "
+                    "(off-is-inert + controllable oversteer/recovery + anti-spin NEGATIVE CONTROL + "
+                    "countersteer assist + dirt-vs-asphalt deltas + the corridor DITCH climb)...");
+        return x3::game::runDriftGripSelfTest() ? 0 : 1;
     }
     if (tf.testCsm) {
         x3::logInfo("running CASCADED SHADOW MAPS self-test "

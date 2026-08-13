@@ -220,6 +220,28 @@ struct WheeledTuning {
     float brakeTorque     = 0.0f;
 };
 
+// ---------------------------------------------------------------------------
+// Per-wheel GRIP MODULATION — the DYNAMIC layer over the static tire tuning.
+// WheeledTuning::gripScale is a property of the INSTALLED tire (set at the
+// shop, rarely); this is a property of THIS TICK (what surface the wheel is
+// standing on, whether the drift layer is holding the rear loose). The final
+// friction curve for a wheel is
+//     authored WheelDesc baseline  x  tuning gripScale  x  this modulation
+// so the three layers compose multiplicatively and never fight. All fields at
+// their defaults (1,1,0) leave the curves bit-identical to the tuned state —
+// a controller that never receives a modulation behaves exactly as before.
+// ---------------------------------------------------------------------------
+struct WheelGripMod {
+    float longScale   = 1.0f;   // longitudinal friction multiplier
+    float latScale    = 1.0f;   // lateral friction multiplier
+    // 0..1: raise the longitudinal curve's high-slip plateau toward its peak.
+    // The loose-surface (dirt/gravel) term: a granular bed keeps yielding and
+    // throwing material under a spinning wheel, so friction past peak slip
+    // does not fall off the way it does for a tire polishing asphalt. 0 keeps
+    // the authored curve shape exactly.
+    float longFlatten = 0.0f;
+};
+
 // Per-wheel render state (for drawing the wheel meshes at the right place). The
 // transform is a column-major 4x4 in WORLD space that maps a unit cylinder
 // aligned with +Y (radius 1, height 1) to the wheel — i.e. it already includes
@@ -277,6 +299,23 @@ public:
     // max(|vehicleSpeed|, 1). ~0 = rolling in sync, >> 0 = wheelspin (burnout),
     // < 0 = locked under braking. Used by the game-layer traction control.
     virtual float longitudinalSlip(uint32_t i) const { (void)i; return 0.0f; }
+
+    // Chassis speed along the local RIGHT axis (m/s; + = sliding right). With
+    // forwardSpeed() this gives the body slip angle atan2(lateral, forward) —
+    // the drift layer's primary signal. 0 for non-wheeled controllers.
+    virtual float lateralSpeed() const { return 0.0f; }
+    // Yaw rate about the chassis's local up axis (rad/s, + = nose swinging
+    // right when viewed from above). 0 for non-wheeled controllers.
+    virtual float yawRate() const { return 0.0f; }
+
+    // Apply a per-wheel grip modulation (see WheelGripMod): the surface-
+    // traction + drift layer's per-tick hook. Composes multiplicatively onto
+    // the authored baseline and the live tuning's gripScale. Cheap when the
+    // value is unchanged (compared and skipped). Returns false for non-wheeled
+    // controllers or an out-of-range wheel index (default).
+    virtual bool setWheelGripMod(uint32_t i, const WheelGripMod& m) {
+        (void)i; (void)m; return false;
+    }
 
     // Apply a live performance tuning (see WheeledTuning). Mutates the running
     // Jolt engine/wheel settings + the chassis mass IN PLACE — no constraint

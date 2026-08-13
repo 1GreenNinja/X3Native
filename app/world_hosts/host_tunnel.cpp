@@ -115,6 +115,40 @@ int hostTunnel(HostContext& hc) {
     } else {
         x3::logWarn("--world tunnel: car build failed — walk/fly only");
     }
+    // ---- DRIFT + SURFACE TRACTION + TYRE SPRAY (Lane 7 / inspx/veh-cosmetics).
+    // The 2026-08-13 ditch bug: grip was uniform regardless of surface. The
+    // route IS the surface map here: |lat| <= road half-width = asphalt, the
+    // corridor floor/batter = dirt (less grip, but a spinning wheel still
+    // pushes — and spits dust), beyond the falloff = grass. Every gate
+    // defaults ON; `--set veh_drift 0` / `veh_surfgrip 0` / `veh_spray 0`
+    // restore the previous behaviour exactly.
+    claimHostCVar("veh_drift");
+    claimHostCVar("veh_surfgrip");
+    claimHostCVar("veh_spray");
+    if (carBuilt) {
+        auto vehCvBool = [&](const char* name, bool dflt) {
+            for (const auto& kv : hc.cliCVars) if (kv.first == name) return kv.second != "0";
+            return dflt;
+        };
+        if (vehCvBool("veh_drift", true))
+            car.driftGrip().setDriftEnabled(true);
+        if (vehCvBool("veh_surfgrip", true)) {
+            car.driftGrip().setSurfaceEnabled(true);
+            car.driftGrip().setSurfaceQuery([&route](float x, float z) {
+                const float rx = x - route.ox, rz = z - route.oz;
+                const float s = rx * route.dirX + rz * route.dirZ;
+                const float lat = std::fabs(-rx * route.dirZ + rz * route.dirX);
+                if (s >= 0.0f && s <= route.totalLen) {
+                    if (lat <= x3::game::kTcRoadHalfWidth) return x3::game::DriveSurface::Road;
+                    if (lat <= x3::game::kTcCorridorHalfW + x3::game::kTcCorridorFall)
+                        return x3::game::DriveSurface::Dirt;
+                }
+                return x3::game::DriveSurface::Grass;
+            });
+        }
+        car.setSprayEnabled(vehCvBool("veh_spray", true));
+        x3::logInfo("--world tunnel: drift/surface/spray layer armed (veh_* cvars gate)");
+    }
     phys->optimizeBroadphase();
 
     const float dt = 1.0f / 60.0f;

@@ -41,7 +41,7 @@ struct CliOptions {
          // on three other hillsides so it survives a regenerated height field.
          testTunnelMouth = false,
          testNet = false, testRescue = false, testCompanionCombat = false, testDestruction = false,
-         testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testCsm = false, testGeoLod = false,
+         testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testDriftGrip = false, testCsm = false, testGeoLod = false,
          testMineFx = false,
          testFootIk = false,
          testScript = false,
@@ -128,6 +128,11 @@ struct CliOptions {
     // <dir>/perfshop_{bay,parts,dyno}.png. Implies --world drive.
     bool        perfshopShot = false;
     std::string perfshopShotDir = "docs/screenshots/perfshop";
+    // --screenshot-driftfx [dir]: headless DRIFT + TYRE-SPRAY proof — the drive
+    // world stages a scripted burnout on a forced-dirt surface and captures the
+    // same frame with the Lane-7 layer OFF and ON (A/B, same camera).
+    bool        driftFxShot = false;
+    std::string driftFxShotDir = "docs/screenshots/veh-cosmetics";
     // --screenshot-ecology [path]: LIVING-WORLD proof shot. Builds the valley
     // open biome + the ambient ecology, stages the predator-strike moment at the
     // grazer herd, settles, and captures from a herd vantage. Implies

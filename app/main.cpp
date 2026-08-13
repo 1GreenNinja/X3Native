@@ -390,6 +390,7 @@ int main(int argc, char** argv) {
         _tf.testVehicle = o.testVehicle;
         _tf.testCanonVehicle = o.testCanonVehicle;
         _tf.testVehParts = o.testVehParts;
+        _tf.testDriftGrip = o.testDriftGrip;
         _tf.testCsm      = o.testCsm;
         _tf.testGeoLod   = o.testGeoLod;
         _tf.testReflDenoise = o.testReflDenoise;   // reflection DENOISE filter (no GPU needed)
@@ -532,10 +533,11 @@ int main(int argc, char** argv) {
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
     if (o.perfshopShot) o.worldMode = "drive";   // the shop lives in the drive world
+    if (o.driftFxShot)  o.worldMode = "drive";   // drift/spray proof stages in the drive world
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.rtMatVerifyShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.rtMatVerifyShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.driftFxShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -820,6 +822,7 @@ int main(int argc, char** argv) {
         _hc.showroomGalleryShot = o.showroomGalleryShot; _hc.showroomGalleryShotPath = o.showroomGalleryShotPath;
         _hc.showroomCivShot  = o.showroomCivShot;  _hc.showroomCivShotPath = o.showroomCivShotPath;
         _hc.perfshopShot     = o.perfshopShot;     _hc.perfshopShotDir  = o.perfshopShotDir;
+        _hc.driftFxShot      = o.driftFxShot;      _hc.driftFxShotDir   = o.driftFxShotDir;
         _hc.ecologyShot      = o.ecologyShot;      _hc.ecologyShotPath  = o.ecologyShotPath;
         _hc.crowdShot        = o.crowdShot;        _hc.crowdShotPath    = o.crowdShotPath;
         _hc.complexShot      = o.complexShot;      _hc.complexShotDir   = o.complexShotDir;

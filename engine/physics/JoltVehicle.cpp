@@ -136,10 +136,14 @@ public:
             m_wheelSettings.push_back(ws);
             m_baseSuspMin.push_back(w.suspensionMin);
             m_baseSuspMax.push_back(w.suspensionMax);
-            if (i == 0) {
-                m_baseLongFriction = ws->mLongitudinalFriction;
-                m_baseLatFriction  = ws->mLateralFriction;
-            }
+            // PER-WHEEL baseline friction capture (post-gripScale). Tuning used
+            // to rebuild every wheel from wheel 0's baseline; with identical
+            // per-wheel gripScale (every current caller) the values are the
+            // same, and the per-wheel capture stays correct if a future caller
+            // ever authors mixed compounds.
+            m_baseLong.push_back(ws->mLongitudinalFriction);
+            m_baseLat.push_back(ws->mLateralFriction);
+            m_gripMod.push_back(WheelGripMod{});
         }
 
         // ---- Controller (engine + transmission + 1 differential) ----
@@ -291,14 +295,10 @@ public:
         // Per-wheel: tires / suspension / ride height / brakes. All scale or offset
         // from the AUTHORED baseline captured in build(), so re-application after a
         // parts change is idempotent.
+        if (t.gripScale > 0.0f) m_tunedGrip = t.gripScale;
         for (size_t i = 0; i < m_wheelSettings.size(); ++i) {
             JPH::WheelSettingsWV* ws = m_wheelSettings[i];
-            if (t.gripScale > 0.0f) {
-                ws->mLongitudinalFriction = m_baseLongFriction;
-                for (auto& p : ws->mLongitudinalFriction.mPoints) p.mY *= t.gripScale;
-                ws->mLateralFriction = m_baseLatFriction;
-                for (auto& p : ws->mLateralFriction.mPoints) p.mY *= t.gripScale;
-            }
+            if (t.gripScale > 0.0f) refreshWheelFriction(i);
             if (t.suspensionFreq > 0.0f) ws->mSuspensionSpring.mFrequency = t.suspensionFreq;
             if (t.suspensionDamp > 0.0f) ws->mSuspensionSpring.mDamping   = t.suspensionDamp;
             if (t.rideHeightDelta != WheeledTuning::kRideHeightLeave) {
@@ -323,7 +323,60 @@ public:
     }
     float torqueBoost() const override { return m_boost; }
 
+    // ---- Drift / surface layer hooks (see IVehicle.h WheelGripMod) ----------
+    float lateralSpeed() const override {
+        if (!m_chassis) return 0.0f;
+        const JPH::Vec3 v = m_chassis->GetLinearVelocity();
+        const JPH::Vec3 rightW = m_chassis->GetRotation() * m_localForward.Cross(m_localUp);
+        return v.Dot(rightW);
+    }
+    float yawRate() const override {
+        if (!m_chassis) return 0.0f;
+        const JPH::Vec3 upW = m_chassis->GetRotation() * m_localUp;
+        return m_chassis->GetAngularVelocity().Dot(upW);
+    }
+    bool setWheelGripMod(uint32_t i, const WheelGripMod& m) override {
+        if (i >= m_gripMod.size()) return false;
+        WheelGripMod& cur = m_gripMod[i];
+        if (cur.longScale == m.longScale && cur.latScale == m.latScale &&
+            cur.longFlatten == m.longFlatten)
+            return true;    // unchanged — skip the curve rebuild entirely
+        cur = m;
+        refreshWheelFriction(i);
+        return true;
+    }
+
 private:
+    // Rebuild wheel i's friction curves from its authored baseline x the live
+    // tuning's gripScale x the per-wheel modulation. Composition invariant:
+    // with the modulation at its defaults this produces EXACTLY the values the
+    // old tuning path produced (y * grip * 1.0f is bit-identical to y * grip),
+    // and a controller whose grip was never tuned nor modulated is never
+    // touched at all.
+    void refreshWheelFriction(size_t i) {
+        JPH::WheelSettingsWV* ws = m_wheelSettings[i];
+        const WheelGripMod& gm = m_gripMod[i];
+        const bool modActive = gm.longScale != 1.0f || gm.latScale != 1.0f ||
+                               gm.longFlatten != 0.0f;
+        if (m_tunedGrip <= 0.0f && !modActive) {
+            // Nothing ever asked for a change; restore the exact baseline (a
+            // previous modulation may have scaled the curves).
+            ws->mLongitudinalFriction = m_baseLong[i];
+            ws->mLateralFriction      = m_baseLat[i];
+            return;
+        }
+        const float tuned = (m_tunedGrip > 0.0f) ? m_tunedGrip : 1.0f;
+        ws->mLongitudinalFriction = m_baseLong[i];
+        float peak = 0.0f;
+        for (const auto& p : ws->mLongitudinalFriction.mPoints) peak = std::max(peak, p.mY);
+        const float flat = std::clamp(gm.longFlatten, 0.0f, 1.0f);
+        for (auto& p : ws->mLongitudinalFriction.mPoints)
+            p.mY = (p.mY + (peak - p.mY) * flat) * tuned * gm.longScale;
+        ws->mLateralFriction = m_baseLat[i];
+        for (auto& p : ws->mLateralFriction.mPoints)
+            p.mY = p.mY * tuned * gm.latScale;
+    }
+
     JPH::PhysicsSystem* m_system = nullptr;
     JPH::Body*          m_chassis = nullptr;
     JPH::Ref<JPH::VehicleConstraint>          m_constraint;   // we hold a Ref
@@ -338,7 +391,9 @@ private:
     // ---- Live-tuning bookkeeping (applyWheeledTuning / setTorqueBoost) ----
     std::vector<JPH::WheelSettingsWV*> m_wheelSettings; // owned by the constraint's Refs
     std::vector<float> m_baseSuspMin, m_baseSuspMax;    // authored suspension lengths
-    JPH::LinearCurve m_baseLongFriction, m_baseLatFriction; // default tire curves
+    std::vector<JPH::LinearCurve> m_baseLong, m_baseLat; // per-wheel baseline curves
+    std::vector<WheelGripMod> m_gripMod;                // per-wheel live modulation
+    float m_tunedGrip = 0.0f;                           // last tuning gripScale (<=0 = untouched)
     float m_baseMaxTorque = 600.0f;                     // tuned baseline (boost multiplies)
     float m_boost = 1.0f;                               // nitrous multiplier (1 = none)
 };

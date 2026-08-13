@@ -256,6 +256,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
                 o.shotChatter = (int)std::strtol(argv[++i], nullptr, 10);
         }
         else if (a == "--test-vehparts") o.testVehParts = true;
+        else if (a == "--test-driftgrip") o.testDriftGrip = true;   // Lane 7: drift feel + surface traction (no GPU needed)
         else if (a == "--test-csm") o.testCsm = true;   // Lane 3: cascaded shadow maps (no GPU needed)
         else if (a == "--test-minefx") o.testMineFx = true;   // mines lane: entrance census + glow bake (no GPU needed)
         else if (a == "--test-geolod") o.testGeoLod = true;   // Lane 5: mesh LOD + vertex compression (no GPU needed)
@@ -281,6 +282,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--screenshot-perfshop") {
             o.perfshopShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.perfshopShotDir = argv[++i];
+        }
+        else if (a == "--screenshot-driftfx") {
+            o.driftFxShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.driftFxShotDir = argv[++i];
         }
         else if (a == "--set") {
             // Generic CLI cvar override: --set <cvar> <value> (repeatable).

@@ -19,6 +19,7 @@
 #include "engine/asset/IModelLoader.h"   // hero-car GLB skin (ModelDrawable)
 #include "engine/asset/IAssetSource.h"
 #include "mesh_prims.h"
+#include "driftgrip.h"                   // drift feel + surface traction layer
 
 #include <cstdint>
 #include <memory>
@@ -98,6 +99,14 @@ public:
     void  setTractionControl(bool on) { m_tcEnabled = on; }
     bool  tractionControl() const { return m_tcEnabled; }
 
+    // ---- Drift feel + surface traction (app/driftgrip.h) --------------------
+    // Disabled by default: with both sub-systems off the layer never touches
+    // the controller and the handling is bit-identical to the pre-lane build
+    // (the veh_drift / veh_surfgrip cvars gate it in the hosts). The host
+    // configures the params (driftParamsFor) + the surface query.
+    DriftGrip&       driftGrip()       { return m_grip; }
+    const DriftGrip& driftGrip() const { return m_grip; }
+
     // ---- Per-instance paint tint (WORLD CARS variants) ----------------------
     // Replaces the CLEARCOAT drawables' baseColor RGB (the car-paint panels;
     // glass/tires/trim keep their authored look) so the one live rig matches
@@ -108,6 +117,16 @@ public:
     }
     void clearPaintTint() { m_tintOn = false; }
 
+    // ---- TYRE SPRAY (dirt kicked from the contact patch on loose surfaces) --
+    // Driven by DriftGrip::spray() (surface x slip x speed), so it only exists
+    // where the surface layer says the ground is loose. DETERMINISTIC: spawn
+    // jitter comes from an integer hash of (tick, wheel, slot), never rand(),
+    // so captures are reproducible. Off by default (veh_spray cvar in the
+    // hosts); off = no particles, byte-identical frames.
+    void setSprayEnabled(bool on) { m_sprayOn = on; }
+    bool sprayEnabled() const     { return m_sprayOn; }
+    uint32_t sprayAliveCount() const;   // live particles (test/HUD)
+
 private:
     x3::rhi::IRenderDevice*  m_device  = nullptr;
     x3::phys::IPhysicsWorld* m_physics = nullptr;
@@ -117,7 +136,9 @@ private:
     float m_hx = 0.84f, m_hy = 0.5f, m_hz = 1.95f;
 
     x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD/audio)
+    x3::phys::VehicleInput m_effIn;      // post-TC input, delivered in preStep
     bool m_tcEnabled = true;             // traction control (see setInput)
+    DriftGrip m_grip;                    // drift + surface grip layer (off = inert)
     bool  m_tintOn = false;              // paint tint (see setPaintTint)
     float m_tint[3] = { 1, 1, 1 };
 
@@ -136,6 +157,23 @@ private:
     std::vector<x3::asset::ModelDrawable> m_wheelDraw[4]; // per physics wheel slot
     void drawDrawable(const x3::rhi::FrameContext& f,
                       const x3::asset::ModelDrawable& d, const float world[16]) const;
+
+    // ---- Tyre-spray particle state (see setSprayEnabled) --------------------
+    struct SprayParticle {
+        float pos[3] = { 0, 0, 0 };
+        float vel[3] = { 0, 0, 0 };
+        float age = 0.0f, life = 0.0f;   // life <= 0 = dead slot
+        float size = 0.08f;
+    };
+    static constexpr uint32_t kSprayMax = 96;   // ring buffer, all wheels
+    bool m_sprayOn = false;
+    SprayParticle m_sprayP[kSprayMax];
+    uint32_t m_sprayNext = 0;                   // ring cursor
+    uint32_t m_tick = 0;                        // fixed-step counter (hash seed)
+    x3::rhi::MeshHandle    m_sprayMesh;         // tiny unit cube
+    x3::rhi::TextureHandle m_sprayTex;
+    void updateSpray(float dt);                 // called from postStep
+    void renderSpray(const x3::rhi::FrameContext& frame) const;
 };
 
 // Headless game-layer DRIVE self-test (--test-vehicle): spawn the car on a flat

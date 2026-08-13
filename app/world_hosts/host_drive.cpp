@@ -146,6 +146,24 @@ int hostDrive(HostContext& hc) {
             } else {
                 x3::logError("--world drive: parts catalog missing — shop disabled");
             }
+            // ---- DRIFT FEEL (Lane 7 / inspx/veh-cosmetics). `--set veh_drift 0`
+            // restores the pre-lane handling EXACTLY (the layer never touches the
+            // controller when disabled). Params derive from the INSTALLED parts,
+            // so tires/suspension bought in the shop change the drift character
+            // (re-derived below on every build change). veh_spray gates the dirt
+            // kick VFX (inert here until this world grows a surface query).
+            claimHostCVar("veh_drift");
+            claimHostCVar("veh_spray");
+            auto vehCvBool = [&](const char* name, bool dflt) {
+                for (const auto& kv : hc.cliCVars) if (kv.first == name) return kv.second != "0";
+                return dflt;
+            };
+            if (vehCvBool("veh_drift", true)) {
+                car.driftGrip().setDriftEnabled(true);
+                car.driftGrip().setParams(x3::game::driftParamsFor(partsCat, carBuild));
+                x3::logInfo("--world drive: drift layer ON (veh_drift 0 restores legacy handling)");
+            }
+            car.setSprayEnabled(vehCvBool("veh_spray", true));
         }
         vphys->optimizeBroadphase();
 
@@ -264,6 +282,81 @@ int hostDrive(HostContext& hc) {
                 allOk &= takeShot(cam, "perfshop_dyno.png");
             }
             shop.shutdown(vscene, *device, *vphys);
+            car.shutdown(); vstream.shutdown(vscene, *device, *vphys);
+            vphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return allOk ? 0 : 1;
+        }
+
+        // ===== Headless DRIFT + TYRE-SPRAY proof (--screenshot-driftfx <dir>). ==
+        // A/B pair, scripted identically: accelerate, then yank throttle+steer+
+        // handbrake. A = Lane-7 layer OFF (pre-lane handling, no particles);
+        // B = drift + surface + spray ON over a FORCED-DIRT surface (this world
+        // has no authored surface map; the frame is about the slide + the
+        // spray). Chase camera framed off the car so both variants stay in
+        // shot even though their trajectories legitimately differ.
+        if (hc.driftFxShot && isDrive) {
+            std::error_code dfec;
+            std::filesystem::create_directories(hc.driftFxShotDir, dfec);
+            auto stage = [&](bool fxOn, const std::string& file) -> bool {
+                vphys->setBodyPosition(car.chassis(), { spawnX, spawnY + 0.5f, spawnZ });
+                { const float v0[3] = { 0, 0, 0 };
+                  vphys->setBodyLinearVelocity(car.chassis(), v0);
+                  vphys->setBodyAngularVelocity(car.chassis(), v0); }
+                { const float q0[4] = { 0, 0, 0, 1 };
+                  vphys->setBodyRotation(car.chassis(), q0); }
+                car.driftGrip().setDriftEnabled(fxOn);
+                car.driftGrip().setSurfaceEnabled(fxOn);
+                if (fxOn)
+                    car.driftGrip().setSurfaceQuery([](float, float) { return x3::game::DriveSurface::Dirt; });
+                car.setSprayEnabled(fxOn);
+                auto sim = [&](int ticks, float th, float st, float hb) {
+                    for (int i = 0; i < ticks; ++i) {
+                        glfwPollEvents();
+                        x3::phys::VehicleInput in{};
+                        in.throttle = th; in.steer = st; in.handBrake = hb;
+                        car.setInput(in); car.preStep(dt);
+                        float cp[3]; car.chassisPos(cp);
+                        vstream.update(vscene, *device, *vphys, cp[0], cp[2]);
+                        vphys->step(dt); car.postStep(dt);
+                    }
+                };
+                sim(120, 0.0f, 0.0f, 0.0f);        // settle
+                sim(170, 1.0f, 0.0f, 0.0f);        // build speed
+                sim(50, 1.0f, 1.0f, 1.0f);         // the yank
+                // Hold the slide while the capture frames render (keeps the
+                // spray ring-buffer alive in the shot).
+                const std::string path = hc.driftFxShotDir + "/" + file;
+                bool wrote = false;
+                for (int i = 0; i < 14; ++i) {
+                    glfwPollEvents();
+                    x3::phys::VehicleInput in{};
+                    in.throttle = 0.85f; in.steer = 0.45f;
+                    car.setInput(in); car.preStep(dt);
+                    float cp[3]; car.chassisPos(cp);
+                    vstream.update(vscene, *device, *vphys, cp[0], cp[2]);
+                    vphys->step(dt); car.postStep(dt);
+                    // Rear three-quarter chase framing, low enough to see the
+                    // contact patches.
+                    const float cx = cp[0] + 5.2f, cy = cp[1] + 2.1f, cz = cp[2] + 6.4f;
+                    const float ddx = cp[0] - cx, ddy = (cp[1] + 0.4f) - cy, ddz = cp[2] - cz;
+                    device->setCamera(cx, cy, cz, std::atan2(ddz, ddx),
+                                      std::atan2(ddy, std::sqrt(ddx*ddx + ddz*ddz)), 58.0f);
+                    if (i == 13) device->armCapture(path.c_str());
+                    auto frame = device->beginFrame();
+                    if (frame.valid) vrender(frame);
+                    device->endFrame(frame);
+                }
+                wrote = device->captureFrame(path.c_str());
+                x3::logInfo(std::string("--screenshot-driftfx: ") + (wrote ? "wrote " : "FAILED ") + path +
+                            " (slip=" + std::to_string(car.driftGrip().slipAngleDeg()) +
+                            " deg, sprayAlive=" + std::to_string(car.sprayAliveCount()) + ")");
+                return wrote;
+            };
+            bool allOk = true;
+            allOk &= stage(false, "driftfx_off.png");
+            allOk &= stage(true,  "driftfx_on.png");
+            if (shopBuilt) shop.shutdown(vscene, *device, *vphys);
             car.shutdown(); vstream.shutdown(vscene, *device, *vphys);
             vphys->shutdown(); device->shutdown();
             if (window) glfwDestroyWindow(window); glfwTerminate();
@@ -577,6 +670,9 @@ int hostDrive(HostContext& hc) {
                 if (shop.consumeNeedSave()) {
                     if (carBuild.saveFile(x3::game::vehparts::defaultBuildSavePath()))
                         x3::logInfo("--world drive: VehicleBuild saved");
+                    // Parts changed -> the drift character follows the build.
+                    if (car.driftGrip().driftEnabled())
+                        car.driftGrip().setParams(x3::game::driftParamsFor(partsCat, carBuild));
                 }
             }
 

@@ -3526,6 +3526,22 @@ int runDefaultHost(HostContext& hc) {
                     x3::logInfo(std::string("[vehparts] canon car tuned from ") +
                                 (haveSave ? "saved build" : "stock baseline"));
                 }
+                // DRIFT FEEL (Lane 7): params follow the same saved build the
+                // tuning came from. `--set veh_drift 0` restores the pre-lane
+                // handling exactly (disabled = the layer never touches the
+                // controller). No surface query in the canon world yet, so the
+                // surface half (and therefore spray) stays inert here.
+                bool vehDriftOn = true, vehSprayOn = true;
+                for (const auto& kv : hc.cliCVars) {
+                    if (kv.first == "veh_drift") vehDriftOn = kv.second != "0";
+                    if (kv.first == "veh_spray") vehSprayOn = kv.second != "0";
+                }
+                if (vehDriftOn) {
+                    worldCars.driftGrip().setDriftEnabled(true);
+                    worldCars.driftGrip().setParams(x3::game::driftParamsFor(cat, vb));
+                    x3::logInfo("[vehparts] canon car drift layer ON (veh_drift 0 = legacy)");
+                }
+                worldCars.setSprayEnabled(vehSprayOn);
             }
         }
         x3::boot::mark("WORLD CARS (host set parked)");
