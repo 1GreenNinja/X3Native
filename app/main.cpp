@@ -391,6 +391,7 @@ int main(int argc, char** argv) {
         _tf.testCanonVehicle = o.testCanonVehicle;
         _tf.testVehParts = o.testVehParts;
         _tf.testDriftGrip = o.testDriftGrip;
+        _tf.testVehCosmetics = o.testVehCosmetics;
         _tf.testCsm      = o.testCsm;
         _tf.testGeoLod   = o.testGeoLod;
         _tf.testReflDenoise = o.testReflDenoise;   // reflection DENOISE filter (no GPU needed)

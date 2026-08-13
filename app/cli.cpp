@@ -257,6 +257,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--test-vehparts") o.testVehParts = true;
         else if (a == "--test-driftgrip") o.testDriftGrip = true;   // Lane 7: drift feel + surface traction (no GPU needed)
+        else if (a == "--test-vehcosmetics") o.testVehCosmetics = true;   // Lane 7: cosmetic catalog/compose (no GPU needed)
         else if (a == "--test-csm") o.testCsm = true;   // Lane 3: cascaded shadow maps (no GPU needed)
         else if (a == "--test-minefx") o.testMineFx = true;   // mines lane: entrance census + glow bake (no GPU needed)
         else if (a == "--test-geolod") o.testGeoLod = true;   // Lane 5: mesh LOD + vertex compression (no GPU needed)

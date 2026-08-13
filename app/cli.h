@@ -41,7 +41,7 @@ struct CliOptions {
          // on three other hillsides so it survives a regenerated height field.
          testTunnelMouth = false,
          testNet = false, testRescue = false, testCompanionCombat = false, testDestruction = false,
-         testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testDriftGrip = false, testCsm = false, testGeoLod = false,
+         testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testDriftGrip = false, testVehCosmetics = false, testCsm = false, testGeoLod = false,
          testMineFx = false,
          testFootIk = false,
          testScript = false,

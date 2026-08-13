@@ -143,5 +143,50 @@
           "nitrousMult": 1.6, "tankSeconds": 5.0, "refillCost": 400 }
       ]
     }
+  ],
+  "cosmetic": [
+    { "id": "paint", "label": "Paint", "kind": "material",
+      "parts": [
+        { "id": "paint_solid", "name": "Solid Gloss", "tier": 1, "price": 900,
+          "paintType": "solid", "clearcoat": 0.55, "clearcoatRough": 0.10, "metallicScale": 1.0 },
+        { "id": "paint_matte", "name": "Matte Wrap", "tier": 1, "price": 1400,
+          "paintType": "matte", "clearcoat": 0.0, "clearcoatRough": 0.6, "metallicScale": 0.6 },
+        { "id": "paint_metallic", "name": "Metallic", "tier": 2, "price": 2600,
+          "paintType": "metallic", "clearcoat": 0.85, "clearcoatRough": 0.06, "metallicScale": 1.0 },
+        { "id": "paint_pearl", "name": "Pearlescent", "tier": 3, "price": 5200,
+          "paintType": "pearlescent", "clearcoat": 1.0, "clearcoatRough": 0.04, "metallicScale": 1.0 },
+        { "id": "paint_candy", "name": "Candy Deep-Gloss", "tier": 4, "price": 7800,
+          "paintType": "candy", "clearcoat": 1.0, "clearcoatRough": 0.02, "metallicScale": 1.0 },
+        { "id": "paint_chrome", "name": "Chrome", "tier": 4, "price": 9500,
+          "paintType": "chrome", "clearcoat": 1.0, "clearcoatRough": 0.02, "metallicScale": 1.0, "chrome": 1 }
+      ]
+    },
+    { "id": "tint", "label": "Window Tint", "kind": "material",
+      "parts": [
+        { "id": "tint_light", "name": "Light Smoke", "tier": 1, "price": 250, "tintDark": 0.35 },
+        { "id": "tint_smoke", "name": "Deep Smoke", "tier": 2, "price": 550, "tintDark": 0.65 },
+        { "id": "tint_limo", "name": "Limo Black", "tier": 3, "price": 1100, "tintDark": 0.88 }
+      ]
+    },
+    { "id": "lighting", "label": "Lighting", "kind": "light",
+      "parts": [
+        { "id": "glow_basic", "name": "Underglow Kit", "tier": 2, "price": 1600,
+          "glowIntensity": 6.0, "glowMode": "static" },
+        { "id": "glow_pulse", "name": "Underglow Pro (pulse)", "tier": 3, "price": 3200,
+          "glowIntensity": 9.0, "glowMode": "pulse" }
+      ]
+    },
+    { "id": "wheels", "label": "Wheel Finish", "kind": "material",
+      "parts": [
+        { "id": "rim_gloss", "name": "Gloss Black Rims", "tier": 1, "price": 800,
+          "rimColor": [0.06, 0.06, 0.07], "rimMetallic": 0.4 },
+        { "id": "rim_polish", "name": "Polished Alloy", "tier": 2, "price": 1800,
+          "rimColor": [0.82, 0.82, 0.85], "rimMetallic": 0.9 },
+        { "id": "rim_chrome", "name": "Chrome Rims", "tier": 3, "price": 3400,
+          "rimColor": [0.95, 0.95, 0.97], "rimMetallic": 1.0 },
+        { "id": "rim_match", "name": "Color-Match", "tier": 2, "price": 1500,
+          "rimMatchPaint": 1, "rimMetallic": 0.7 }
+      ]
+    }
   ]
 }
