@@ -150,3 +150,50 @@ or a named capture. No condition is "looks good".
    or reuse an existing canon code? (kShowroomHatchCode 2742 is taken.)
 3. How deep does the underground complex go before it links to the task #9
    elevator work — one landing, or a real shaft?
+
+---
+
+## TIM'S INTERIOR BRIEF — verbatim, 2026-08-13
+
+Captured directly. The plan above was written from a second-hand summary; this is
+the source. Where the two disagree, THIS wins.
+
+> "sidewalks, access points, doors with keypads and rooms and stairs and
+>  underground complex access.. lighting.. some LED, some burned out... some
+>  video screens like CP2077"
+
+and, expanded later the same day:
+
+> "Sidewalks... metal railings.. doors... command consoles in rooms behind keypad
+>  access doors... down halls.. shoulders you can pull off on.. maintenance
+>  sections"
+
+### The full element list, as given
+* **Sidewalks** — a walkway, both sides.
+* **Metal railings** — along the walkway. Not decorative: this is what makes a
+  tunnel read as infrastructure rather than a tube.
+* **Doors**, with **keypad access**.
+* **Command consoles IN THE ROOMS behind those doors.** The rooms are not empty
+  volume — they have a purpose and something to interact with. Reuse the existing
+  HoloTerminal + KeypadEntry chain (`--test-keypad` KP1-KP6, `--test-hatch`).
+* **Halls** — the rooms lead DOWN HALLS, not straight into a single box. There is
+  depth behind the door.
+* **Stairs**, and **underground complex access** — the halls go somewhere. This is
+  where the tunnel meets the elevator/free-flight easter-egg work (GAME_BACKLOG §3).
+* **SHOULDERS YOU CAN PULL OFF ON** — breakdown/lay-by bays wide enough to leave
+  the running lane and park. NOT in the earlier summary and easy to miss: this is
+  a DRIVING feature, not set dressing. It needs real width in the bore
+  cross-section and drivable collision, so it affects the tube profile itself —
+  decide it before the shell geometry is finalised, not after.
+* **Maintenance sections** — stretches that read as service areas rather than
+  running tunnel: plant, cabling, equipment bays.
+* **Lighting: some LED, some BURNED OUT.** Deterministic hash of position, never
+  random, or captures stop being reproducible.
+* **Video screens, CP2077-style.** Emissive panels with content; the
+  `membrane_flipbook*` surface_library sets can drive animation.
+
+### The one that changes the geometry
+Everything else is dressing inside the existing tube. **The pull-off shoulders are
+not** — they widen the bore. Size them against the vehicle (the drive test rig is
+the measure) and settle the cross-section BEFORE building walkways and railings
+against a profile that is about to change.
