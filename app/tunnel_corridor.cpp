@@ -399,7 +399,20 @@ const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
             // BORED reach: take only the surplus above the tube's crown + soil,
             // and never more than kTcMaxScar — that cap is what keeps the ridge
             // a dip instead of a canyon (BL_WORLD_PORT.md §4.3b).
-            n.depth = std::min(coverAvail - kBoreCut, kTcMaxScar);
+            // NOTHING TO REMOVE. The tube already fits under the natural ground
+            // here, so the corridor must not excavate at all.
+            //
+            // This previously took `min(coverAvail - kBoreCut, kTcMaxScar)`,
+            // reasoning that the surplus above the crown should be shaved and the
+            // cap would keep "the ridge a dip instead of a canyon". That holds for
+            // a 55 m hummock, where coverAvail is small. Under a 124 m mountain
+            // coverAvail is enormous, so the term pinned at kTcMaxScar and the
+            // corridor gouged a kTcMaxScar-deep ROAD-SHAPED TRENCH along the
+            // summit — visible as a cutout across the mountain top, with its own
+            // walls and tile skirts showing as dark strips down the slope.
+            //
+            // A tunnel does not carve the mountain above it. Depth 0.
+            n.depth = 0.0f;
             n.bore = true;
         } else {
             // OPEN CUTTING: clear the HIGHEST ground across the band down to the
@@ -738,6 +751,24 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
                 for (int side = -1; side <= 1; side += 2) {
                     const float sg = (float)side;
+                    // FILL ONLY — never in a cutting. The batter exists to bridge
+                    // road level DOWN to a shoulder that has fallen away. Each step
+                    // clamps with max(y, ground) so it cannot sink below grade,
+                    // which is correct on a downhill fill and catastrophic in a
+                    // CUT: under the mountain the ground beside the road is ~100 m
+                    // higher, so that max() drove the strip straight up the
+                    // hillside and drew two concrete rails climbing the slope
+                    // above the portal. Where the ground is already at or above
+                    // the road, there is nothing to fill — the cutting face IS
+                    // the terrain.
+                    {
+                        const float latTest = sg * (hw + kShoulderW);
+                        const float gA = terrainHeightAtWorld(a.p[0] + right[0]*latTest,
+                                                              a.p[2] + right[2]*latTest);
+                        const float gB = terrainHeightAtWorld(b.p[0] + right[0]*latTest,
+                                                              b.p[2] + right[2]*latTest);
+                        if (gA >= a.p[1] && gB >= b.p[1]) continue;
+                    }
                     // Track the running height of the batter on each rail.
                     float ya = a.p[1] + kSlabProud, yb = b.p[1] + kSlabProud;
                     float oa = 0.0f;

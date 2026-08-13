@@ -127,6 +127,38 @@ any code. Captured here so the request is not lost.
 
 ---
 
+## 4. TIM'S DEFECT LIST (2026-08-13, approach_mountain.png)
+
+Seven called out. Status after 8537fbed + the follow-up:
+
+- [x] **Strips up the slope — DELETED.** Not tile skirts (my earlier guess) and not
+      the summit trench. It was MY OWN embankment from e0edbfcd: the batter clamps
+      each step with `max(y, ground)` so it cannot sink below grade, which is right
+      for a downhill FILL and catastrophic in a CUT. Under the mountain the ground
+      beside the road is ~100 m higher, so that max() drove the shoulder strip
+      straight up the hillside — two rails, two strips. Now guarded: no batter
+      where the ground is already at or above the road, because a cutting face IS
+      the terrain.
+- [x] **Road-shaped cutout across the mountain top — FIXED.** The bored branch took
+      `min(coverAvail - kBoreCut, kTcMaxScar)`. Fine for a 55 m hummock; under a
+      124 m mountain coverAvail is enormous so it pinned at kTcMaxScar and gouged a
+      trench along the summit. A tunnel does not carve the mountain above it —
+      depth is now 0 on a bored reach.
+- [ ] **NEW: dark angular wedge on the upper-left slope.** Appeared once the summit
+      trench was removed. Suspect the FAR portal's headwall/wing wall now poking
+      through the hill that covers it. Not investigated.
+- [ ] **Car is too small and faces the wrong way.** Showcase prop in host_tunnel.
+- [ ] **Mountain is too smooth** — needs jagged peaks, not a dune. `ridgeExp` and
+      `jagAmp` on the tunnel-ridge RangeDef are the levers (currently 1.7 / 26).
+- [ ] **Mountain has no MOUNTAIN COLOURS** — wants bluish dark rock, snow caps,
+      trees. The splat blends by height/slope; snow exists as a layer
+      (`terrain_snow`) but the ridge tops out ~124 m, far below wherever the snow
+      band starts. Needs the splat bands retuned for a peak this height, plus
+      vegetation scatter on the flanks.
+- [ ] **Strange non-concrete artifact at the roadside** — may be resolved by the
+      fill-only guard above; needs a fresh look.
+- [ ] **Grass or rock ON the road** — unconfirmed, needs a close capture.
+
 ## Sources
 * The Need for Speed — https://en.wikipedia.org/wiki/The_Need_for_Speed
 * Old School Gamer Magazine — https://www.oldschoolgamermagazine.com/the-need-for-speed-3do/
