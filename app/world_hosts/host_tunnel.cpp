@@ -181,6 +181,13 @@ int hostTunnel(HostContext& hc) {
     x3::logInfo("--world tunnel: WASD drives, Space handbrake, mouse orbits the chase cam, Esc quits");
 
     while (!glfwWindowShouldClose(window)) {
+        // RE-SUBMIT THE BORE LIGHTS EVERY FRAME. They were set exactly ONCE at boot
+        // (setPointLights above), which is why the tunnel is lit in headless captures
+        // — those render a few frames with nothing else touching the light set — and
+        // PITCH BLACK the moment you drive it, both from inside and looking in through
+        // the portal from outside. The interactive loop streams tiles and draws other
+        // content, and the light array does not survive that. Cheap: 6 cached lights.
+        device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
         glfwPollEvents();
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
         const double now = glfwGetTime();

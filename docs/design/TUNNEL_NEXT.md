@@ -228,3 +228,45 @@ strips are being drawn at all in the interactive path as well.
 
 Related and worth having anyway: the car has no HEADLIGHTS. In a 450 m bore that
 is the difference between a tunnel and a cave.
+
+## 7. THE TUNNEL IS PLUGGED WITH EARTH — the real "can't see in" (2026-08-13)
+
+Tim drove to the mouth and found it PACKED WITH GRASS: "The road... doesnt go IN",
+"we need to cut out the tunnel". The bore is not dark because of lighting. It is
+dark because there is a dirt ramp across the carriageway and nothing to see past.
+
+I CHASED LIGHTING TWICE BEFORE LOOKING AT THIS, and the log had been telling me
+every single run:
+
+    18 m of road inside the shell still carries an earth ramp (the portal-sweep residual)
+
+I read that line repeatedly and classified it as an accepted limitation, because
+the module reports it honestly and its own comment calls it "the technique's
+irreducible residual". It is not cosmetic. It WALLS THE TUNNEL OFF. Lesson: a
+number the code volunteers about itself is not automatically benign.
+
+WHY IT HAPPENS. A single-valued heightfield cannot step vertically, so at each
+mouth the ground must sweep continuously from road level up past the crown. Where
+that sweep happens, it crosses the bore.
+
+WHAT DID NOT WORK (tried, measured, keep for the record): requiring surplus cover
+(kBoreCutMargin = 14 m) before excavation stops, so the transition sits deeper
+under the hill. Residual only moved 18 m -> 16 m. The ramp is not caused by WHERE
+the depth profile switches; it is caused by the corridor FIELD being smoothed by
+the union-of-capsules end caps over ~halfWidth. Moving the switch just moves the
+gradient, it does not steepen it.
+
+WHAT TO TRY NEXT, in order:
+1. FORCE A FULL CUT for a fixed run past each portal — depth = latMax - roadY
+   (the open-cutting formula) for the first ~40 m inside the shell regardless of
+   cover, so the carriageway is guaranteed clear and the sweep is pushed out
+   beyond the tube. Cheapest, most likely to work.
+2. SHARPEN THE FIELD near the mouth: a smaller corridor halfWidth/falloff there
+   makes the union's end cap tighter, so the transition happens over metres
+   instead of tens of metres.
+3. If neither is enough, the tube's floor is the honest fallback: emit the road
+   ribbon INSIDE the shell at the tube floor and let the shell's own geometry
+   exclude the terrain, rather than relying on the heightfield to get out of the
+   way.
+
+DO NOT ship a tunnel you cannot drive through and call the lane done.

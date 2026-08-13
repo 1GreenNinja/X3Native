@@ -178,7 +178,19 @@ constexpr float kBodyDropY = -0.76f;
 const float kBodySkin[16] = { -1,0,0,0,  0,1,0,0,  0,0,-1,0,  0,kBodyDropY,0,1 };
 // Mesh-local wheel axis is +-X (car lateral); the physics wheel pose maps a unit
 // Y-cylinder (axis = axle). Rotate mesh X onto pose Y (Rz +90deg, column-major).
-const float kWheelAxisFix[16] = { 0,1,0,0,  -1,0,0,0,  0,0,1,0,  0,0,0,1 };
+// EXPERIMENT (Tim live-testing 2026-08-13): the Rz+90 below assumes the GLB's
+// wheels are authored with their axle on mesh-local +-X. On THIS car they spin
+// sideways like a gyroscope, i.e. 90 degrees off their axle — which is what this
+// matrix would cause if the wheels were ALREADY axle-aligned. Identity tests
+// exactly that. X3_WHEELFIX=1 restores the old matrix for an instant A/B.
+//   const float kWheelAxisFixRz90[16] = { 0,1,0,0, -1,0,0,0, 0,0,1,0, 0,0,0,1 };
+const float kWheelAxisFix[16] = { 1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
+const float kWheelAxisFixRz90[16] = { 0,1,0,0,  -1,0,0,0,  0,0,1,0,  0,0,0,1 };
+inline const float* wheelAxisFix() {
+    static const bool oldWay = [](){ const char* e = std::getenv("X3_WHEELFIX");
+                                     return e && e[0] == '1'; }();
+    return oldWay ? kWheelAxisFixRz90 : kWheelAxisFix;
+}
 } // namespace
 
 bool DriveDemo::skin(x3::rhi::IRenderDevice& device, std::string_view glbDir,

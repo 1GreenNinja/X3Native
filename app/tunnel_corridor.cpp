@@ -46,6 +46,12 @@ constexpr int   kRouteNodes   = TerrainCorridor::kMaxNodes;      // 32
 // The bore threshold: how much natural cover a station needs before the reach
 // may be roofed instead of left as an open cutting.
 constexpr float kBoreCut = kTcTubeCrownH + kTcShellThick + kTcMinSoilCover;   // 12.0 m
+// Surplus cover required BEFORE the corridor stops excavating. Without it the
+// cut ends the moment cover is barely adequate, and the ground's unavoidable
+// sweep from road level up over the crown then happens INSIDE the bore — an
+// earth ramp across the carriageway that blocks the tunnel outright. Pushing the
+// transition this much deeper buries the sweep under real hill instead.
+constexpr float kBoreCutMargin = 14.0f;
 
 float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
@@ -395,7 +401,19 @@ const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
     for (int i = 0; i < kRouteNodes; ++i) {
         TunnelStation& n = route.st[i];
         const float coverAvail = n.latMin - n.roadY;      // usable cover over the tube
-        if (coverAvail >= kBoreCut) {
+        // KEEP CUTTING PAST THE POINT OF ADEQUACY. Switching to zero excavation
+        // the instant cover is barely sufficient is what plugs the mouth: the
+        // ground still has to sweep from road level up over the crown, and if the
+        // corridor stops cutting right there, that sweep lands INSIDE the bore.
+        // The result is a drivable road with an earth ramp across it — the
+        // "portal-sweep residual" this file has been reporting all along (18-24 m
+        // of buried road). It is not cosmetic: it WALLS THE TUNNEL OFF. Tim drove
+        // to the mouth and found it packed with grass.
+        //
+        // Requiring a MARGIN of surplus cover before excavation stops pushes that
+        // transition deeper under the hill, where the sweep is buried by real
+        // mountain instead of crossing the carriageway.
+        if (coverAvail >= kBoreCut + kBoreCutMargin) {
             // BORED reach: take only the surplus above the tube's crown + soil,
             // and never more than kTcMaxScar — that cap is what keeps the ridge
             // a dip instead of a canyon (BL_WORLD_PORT.md §4.3b).
