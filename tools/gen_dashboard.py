@@ -504,9 +504,13 @@ def rel_from_out(repo_rel: str, out_path: Path) -> str:
         rel = target.relative_to(out_path.parent)
         return rel.as_posix()
     except ValueError:
-        # out sits deeper/elsewhere; fall back to walking up.
+        # out sits deeper/elsewhere; fall back to walking up, and to an
+        # absolute file:// URI when out is on a different drive entirely.
         import os
-        return Path(os.path.relpath(target, out_path.parent)).as_posix()
+        try:
+            return Path(os.path.relpath(target, out_path.parent)).as_posix()
+        except ValueError:
+            return target.resolve().as_uri()
 
 
 def render(out_path: Path) -> str:
