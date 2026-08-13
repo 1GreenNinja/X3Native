@@ -590,6 +590,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     const SurfaceSet& boreSet   = m_surf.get(device, boreSetName);
     const SurfaceSet& portalSet = m_surf.get(device, "mw_concrete_panels_a");
     const SurfaceSet& roadSet   = m_surf.get(device, "rd_asphalt_01");
+    const SurfaceSet& shoulderSet = m_surf.get(device, "cc_porous_cement");
     if (!boreSet.ok || !portalSet.ok)
         x3::logWarn("tunnel corridor: surface_library set(s) unavailable — "
                     "falling back to the procedural checker concrete");
@@ -660,6 +661,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     {
         constexpr float kSlabProud = 0.14f;
         MeshBuf mb;
+        MeshBuf shoulder;   // hard shoulder + graded batter (own material)
         const float up[3] = { 0.0f, 1.0f, 0.0f };
         auto P = [&](const Frame& f, float r, float u, float out[3]) {
             out[0] = f.p[0] + right[0]*r + up[0]*u;
@@ -699,6 +701,81 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float nD[3] = { 0, -1, 0 };
             mb.quad(aLd, aRd, bRd, bLd, nD, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
         }
+
+        // ---- SHOULDER + EMBANKMENT ------------------------------------------
+        // MEASURED FIRST, and it killed my own theory: I thought the hanging
+        // edge was the skirt failing to reach the ground past a 16 m clamp.
+        // Instrumenting edgeBottom said otherwise — 640 edge samples, ZERO
+        // clamped, worst shoulder drop 0.00 m. The ground at the road edge is
+        // never below the road, so the skirt is always buried and can't be what
+        // is showing.
+        //
+        // The void is FURTHER OUT. The corridor's flat floor runs to
+        // kTcCorridorHalfW (8.8 m) but the ribbon is only kTcRoadHalfWidth
+        // (6 m), and the corridor only ever LOWERS ground — so on a downhill
+        // shoulder the natural terrain sits below the floor and nothing covers
+        // the step between them. That gap is the triangular void.
+        //
+        // Roads do not end in a vertical face. They carry a concrete shoulder
+        // and then a graded EMBANKMENT battered down to meet grade. That is
+        // what this emits: a hard shoulder strip at road level, then a batter
+        // marched outward at kBatter until it reaches the real ground.
+        {
+            constexpr float kShoulderW = 1.5f;   // concrete hard shoulder
+            constexpr float kBatter    = 0.80f;  // fall per metre out (~1:1.25, tighter)
+            constexpr int   kSteps     = 5;
+            constexpr float kStepOut   = 1.5f;
+            auto embankEdge = [&](const Frame& f, float sideSign, float outM, float& y) {
+                const float lat = sideSign * (hw + outM);
+                const float ex = f.p[0] + right[0]*lat, ez = f.p[2] + right[2]*lat;
+                const float g = terrainHeightAtWorld(ex, ez);
+                y = std::max(y, g);            // never sink below real ground
+                float o[3] = { ex, y, ez };
+                (void)o; return std::pair<float,float>(ex, ez);
+            };
+            (void)embankEdge;
+            for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
+                const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
+                for (int side = -1; side <= 1; side += 2) {
+                    const float sg = (float)side;
+                    // Track the running height of the batter on each rail.
+                    float ya = a.p[1] + kSlabProud, yb = b.p[1] + kSlabProud;
+                    float oa = 0.0f;
+                    for (int st = 0; st <= kSteps; ++st) {
+                        const float o2 = (st == 0) ? kShoulderW
+                                                   : kShoulderW + (float)st * kStepOut;
+                        // Shoulder is flat; past it the batter falls away.
+                        const float dy = (st == 0) ? 0.0f : kBatter * kStepOut;
+                        const float ya2 = ya - dy, yb2 = yb - dy;
+                        const float latA = sg * (hw + oa),  latB = sg * (hw + o2);
+                        auto gAt = [&](const Frame& f, float lat) {
+                            return terrainHeightAtWorld(f.p[0] + right[0]*lat,
+                                                        f.p[2] + right[2]*lat);
+                        };
+                        // Clamp to grade: the batter stops where it meets ground.
+                        const float y0a = std::max(ya, gAt(a, latA)), y0b = std::max(yb, gAt(b, latA));
+                        const float y1a = std::max(ya2, gAt(a, latB)), y1b = std::max(yb2, gAt(b, latB));
+                        float p0[3] = { a.p[0] + right[0]*latA, y0a, a.p[2] + right[2]*latA };
+                        float p1[3] = { a.p[0] + right[0]*latB, y1a, a.p[2] + right[2]*latB };
+                        float p2[3] = { b.p[0] + right[0]*latB, y1b, b.p[2] + right[2]*latB };
+                        float p3[3] = { b.p[0] + right[0]*latA, y0b, b.p[2] + right[2]*latA };
+                        const float nUp[3] = { 0, 1, 0 };
+                        if (side < 0) shoulder.quad(p3, p2, p1, p0, nUp, 0,1, a.s*0.09f, b.s*0.09f);
+                        else          shoulder.quad(p0, p1, p2, p3, nUp, 0,1, a.s*0.09f, b.s*0.09f);
+                        ya = y1a; yb = y1b; oa = o2;
+                        // STOP AT GRADE. The batter exists to bridge road level
+                        // down to the ground; once it has met the ground there is
+                        // nothing left to bridge, and marching on just lays
+                        // concrete sheets flat over the hillside (which is what
+                        // the first version did — a quarry apron instead of a
+                        // shoulder). Both rails must have landed before we quit,
+                        // or one side of the strip tears.
+                        if (st > 0 && y1a <= gAt(a, latB) + 1e-3f
+                                   && y1b <= gAt(b, latB) + 1e-3f) break;
+                    }
+                }
+            }
+        }
         // REAL ASPHALT. The note above ("NOT WIRED, and honestly: the ROAD") is
         // now resolved: rd_asphalt_01 is a 2K albedo + tangent normal + MR set
         // built from a purchased pack, with the source's Unity HDRP maskmap
@@ -709,6 +786,16 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         if (roadSet.ok) { m.alb = roadSet.albedo; m.mr = roadSet.mr; m.nrm = roadSet.normal; }
         else            { m.alb = asphaltTex;     m.mr = roughMR; }
         upload(mb, m, /*collide*/true);
+        // The shoulder/batter is its own draw so it can be CONCRETE against the
+        // asphalt — the edge has to read as a hard shoulder easing into dirt,
+        // not as more road. Collides: it is walkable/driveable-onto ground.
+        {
+            Material sm2;
+            if (shoulderSet.ok) { sm2.alb = shoulderSet.albedo; sm2.mr = shoulderSet.mr;
+                                  sm2.nrm = shoulderSet.normal; }
+            else                { sm2.alb = concreteTex; sm2.mr = wallMR; }
+            upload(shoulder, sm2, /*collide*/true);
+        }
 
         // ---- Lane markings. BL §3.4 as DATA: solid white edge lines at
         // +/-(w/2 - 0.5) every segment, dashed centre on a 5 m grid (dash 60 %).
