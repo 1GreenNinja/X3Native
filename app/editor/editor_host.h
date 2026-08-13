@@ -160,6 +160,16 @@ private:
     void drawKeybindOverlay();
     void drawRebindPanel();
 
+    // ---- 11.0 PORTAL authoring (the tunnel-lane payoff) ---------------------
+    // Place a "portal" entity at the fly-cam focus (default 3x3 m plane facing the
+    // camera's yaw) and select it. Returns the entity index.
+    int  placePortal();
+    // Draw every portal entity as an oriented wireframe frame + facing-normal arrow
+    // on the ImGui foreground list (worldToScreen only — engine stays pure). This is
+    // how a hand-placed portal is SEEN in the editor (portals spawn no scene mesh
+    // here; the LevelDoc loader spawns the in-game marker slab).
+    void drawPortalOverlays(x3::rhi::IRenderDevice& device);
+
     LevelDoc    m_doc;
     EditorState m_state;
     HostMode    m_mode = HostMode::Edit;
@@ -280,9 +290,10 @@ private:
     bool  m_dragging  = false;
     float m_dragStartS = 0.0f;           // screen-space param at grab
     float m_dragBaseM  = 0.0f;           // brush coord (pos OR size) on the axis at grab
-    // Feature 2 ROTATE drag: the brush yaw + the cursor's angle about the gizmo origin
-    // at grab time, so a Rotate drag adds (current angle - start angle) to the base yaw.
-    float m_dragBaseYaw  = 0.0f;
+    // Feature 2 ROTATE drag: the grabbed angle FIELD's base value (11.0: pitch, yaw
+    // or roll per m_dragAxis) + the cursor's angle about the gizmo origin at grab
+    // time, so a Rotate drag adds (current angle - start angle) to the base.
+    float m_dragBaseRot  = 0.0f;
     float m_dragStartAng = 0.0f;
     bool  m_lmbPrev    = false;          // LMB held last frame (rising/falling edge)
     // Last gizmo HistoryEffect produced by a commit, applied next frame by draw().

@@ -29,13 +29,21 @@ namespace {
 const float kGridSteps[] = { 1.0f, 0.5f, 0.25f };
 const char* kGridLabels[] = { "1 m", "0.5 m", "0.25 m" };
 
-// Build a column-major model matrix from an origin-centered brush's pos + yaw.
+// Build a column-major model matrix from an origin-centered brush's pos + full
+// 11.0 rotation (rotYPR with pitch=roll=0 is bit-identical to the old yaw path).
 void brushMatrix(const BlockoutBrush& b, float m[16]) {
-    const float c = std::cos(b.yaw), s = std::sin(b.yaw);
-    m[0]=c;    m[1]=0; m[2]=-s;   m[3]=0;
-    m[4]=0;    m[5]=1; m[6]=0;    m[7]=0;
-    m[8]=s;    m[9]=0; m[10]=c;   m[11]=0;
+    float R[9];
+    rotYPR(b.yaw, b.pitch, b.roll, R);
+    m[0]=R[0];  m[1]=R[1];  m[2]=R[2];   m[3]=0;
+    m[4]=R[3];  m[5]=R[4];  m[6]=R[5];   m[7]=0;
+    m[8]=R[6];  m[9]=R[7];  m[10]=R[8];  m[11]=0;
     m[12]=b.pos[0]; m[13]=b.pos[1]; m[14]=b.pos[2]; m[15]=1;
+}
+
+// True iff the brush carries any rotation at all (drives the body-orientation path).
+bool brushRotated(const BlockoutBrush& b) {
+    return std::fabs(b.yaw) > 1e-6f || std::fabs(b.pitch) > 1e-6f ||
+           std::fabs(b.roll) > 1e-6f;
 }
 } // namespace
 
@@ -383,13 +391,31 @@ void EditorHost::spawnBrush(int idx, x3::rhi::IRenderDevice& device,
             x3::phys::Vec3 he{ b.size[0]*0.5f, b.size[1]*0.5f, b.size[2]*0.5f };
             x3::phys::BodyId bid = physics.addBox(he, pos, 0.0f, x3::phys::Layer::Static);
             b.body = bid.id;
+            // 11.0: orient the box body to the brush (before this, even a yawed box
+            // collided axis-aligned — the render lied about the walls). Fallback
+            // X3_EDITOR_ROT3=0 restores the old axis-aligned bodies exactly.
+            if (rot3Enabled() && brushRotated(b)) {
+                float q[4];
+                yprToQuat(b.yaw, b.pitch, b.roll, q);
+                physics.setBodyRotation(bid, q);
+            }
         } else {
-            // The collision verts are origin-centered (local); offset them to the brush
-            // world position so the static mesh sits under the rendered solid.
-            // (Yaw on a mesh brush is a P3 refinement; axis-aligned is the P2 core.)
+            // The collision verts are origin-centered (local); rotate them by the
+            // brush orientation (11.0 — previously axis-aligned even under yaw),
+            // then offset to the brush world position.
             std::vector<float> cv = pm.cverts;
+            const bool rot = rot3Enabled() && brushRotated(b);
+            float R[9];
+            if (rot) rotYPR(b.yaw, b.pitch, b.roll, R);
             for (size_t i = 0; i + 2 < cv.size(); i += 3) {
-                cv[i+0] += b.pos[0]; cv[i+1] += b.pos[1]; cv[i+2] += b.pos[2];
+                float x = cv[i+0], y = cv[i+1], z = cv[i+2];
+                if (rot) {
+                    const float wx = R[0]*x + R[3]*y + R[6]*z;
+                    const float wy = R[1]*x + R[4]*y + R[7]*z;
+                    const float wz = R[2]*x + R[5]*y + R[8]*z;
+                    x = wx; y = wy; z = wz;
+                }
+                cv[i+0] = x + b.pos[0]; cv[i+1] = y + b.pos[1]; cv[i+2] = z + b.pos[2];
             }
             x3::phys::BodyId bid = physics.addStaticMesh(
                 cv.data(), (uint32_t)(cv.size()/3),
@@ -421,8 +447,18 @@ void EditorHost::syncBrushTransform(int idx, x3::game::Scene& scene,
     BlockoutBrush& b = m_doc.brushes[idx];
     if (b.sceneEntity != 0xFFFFFFFFu && b.sceneEntity < scene.size())
         brushMatrix(b, scene.get(b.sceneEntity).transform);
-    if (b.body) physics.setBodyPosition(x3::phys::BodyId{ b.body },
-                                        x3::phys::Vec3{ b.pos[0], b.pos[1], b.pos[2] });
+    if (b.body) {
+        physics.setBodyPosition(x3::phys::BodyId{ b.body },
+                                x3::phys::Vec3{ b.pos[0], b.pos[1], b.pos[2] });
+        // 11.0: keep a Box body's orientation in step with the brush (mesh-collision
+        // brushes bake rotation into their triangles instead — a rotation change on
+        // those routes through Respawn, see brushNeedsRespawn).
+        if (rot3Enabled() && b.type == 0u) {
+            float q[4];
+            yprToQuat(b.yaw, b.pitch, b.roll, q);
+            physics.setBodyRotation(x3::phys::BodyId{ b.body }, q);
+        }
+    }
 }
 
 void EditorHost::teardownLinks(uint32_t sceneEntity, uint32_t body,
@@ -1125,7 +1161,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         BlockoutBrush& b = m_doc.brushes[si];
         ImGui::Text("Selected: %s  [%s]", b.name.c_str(), EditorState::brushTypeName(b.type));
         const float step = kGridSteps[m_gridSel];
-        bool moved = false, resized = false;
+        bool moved = false, resized = false, rotated = false;
 
         // Tool readout (drives the viewport gizmo). Q select / W move.
         ImGui::TextDisabled("Tool: %s  (Q select, W move, Ctrl+Z/Y undo/redo)",
@@ -1149,13 +1185,28 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
         if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
 
-        // Rotation (yaw degrees in UI, radians in doc).
+        // Rotation (degrees in UI, radians in doc). 11.0: yaw keeps its row; pitch
+        // and roll join it — same widget, same undo bracketing, same drag feel.
         float yawDeg = b.yaw * 57.29578f;
         if (ImGui::DragFloat("Yaw", &yawDeg, 1.0f)) {
-            b.yaw = yawDeg * 0.0174533f; moved = true;
+            b.yaw = yawDeg * 0.0174533f; rotated = true;
         }
         if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
         if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+        if (rot3Enabled()) {
+            float pitchDeg = b.pitch * 57.29578f;
+            if (ImGui::DragFloat("Pitch", &pitchDeg, 1.0f)) {
+                b.pitch = pitchDeg * 0.0174533f; rotated = true;
+            }
+            if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
+            if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+            float rollDeg = b.roll * 57.29578f;
+            if (ImGui::DragFloat("Roll", &rollDeg, 1.0f)) {
+                b.roll = rollDeg * 0.0174533f; rotated = true;
+            }
+            if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
+            if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+        }
 
         // Scale = full extents (m), snapped + clamped. A change rebuilds the mesh.
         float size[3] = { b.size[0], b.size[1], b.size[2] };
@@ -1352,7 +1403,18 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
     if (m_dragging) {
         if (!lmb || si < 0) {
             m_state.commitBrushEdit();
-            if (si >= 0) syncBrushTransform(si, scene, physics);
+            if (si >= 0) {
+                const BlockoutBrush& b = m_doc.brushes[si];
+                // 11.0: a rotate drag on a MESH-collision brush (Ramp/Cylinder/
+                // Stairs) must rebake the world-space collision triangles at
+                // release. During the drag only the render transform tracks (a
+                // per-frame static-mesh rebuild would hitch); the body catches up
+                // here. Boxes stay a cheap quat sync.
+                if (m_tool == Tool::Rotate && rot3Enabled() && b.type != 0u && b.collide)
+                    respawnBrush(si, device, scene, physics);
+                else
+                    syncBrushTransform(si, scene, physics);
+            }
             m_dragging = false; m_dragAxis = Axis::None;
         } else {
             BlockoutBrush& b = m_doc.brushes[si];
@@ -1385,19 +1447,26 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
             }
             // Rotate uses a SEPARATE mapping (angle from cursor about the screen origin),
             // handled here so it doesn't depend on a single axis arm projection.
+            // 11.0: the grabbed RING picks the field — X ring = pitch, Y = yaw (Tim's
+            // 10.9 axis, mapping unchanged), Z = roll. Same 5-degree snap as yaw had.
             if (m_tool == Tool::Rotate) {
                 ImVec2 oc;
                 if (project(b.pos[0], b.pos[1], b.pos[2], oc)) {
                     const float ang = std::atan2(mouse.y - oc.y, mouse.x - oc.x);
-                    float dyaw = ang - m_dragStartAng;
-                    float newYaw = m_dragBaseYaw + dyaw;
-                    // Snap yaw to 5-degree increments when grid-snap is on.
-                    if (m_state.snapEnabled()) {
-                        const float step = 5.0f * 0.0174533f;
-                        newYaw = std::round(newYaw / step) * step;
-                    }
-                    if (std::fabs(newYaw - b.yaw) > 1e-5f) {
-                        b.yaw = newYaw;
+                    float dAng = ang - m_dragStartAng;
+                    // The screen sweep reverses when the rotation axis points AWAY
+                    // from the camera. Y keeps the legacy fixed mapping so the yaw
+                    // drag feels exactly as it always did.
+                    if (m_dragAxis == Axis::X && (m_camX - b.pos[0]) < 0.0f) dAng = -dAng;
+                    if (m_dragAxis == Axis::Z && (m_camZ - b.pos[2]) < 0.0f) dAng = -dAng;
+                    float* field = (m_dragAxis == Axis::X) ? &b.pitch
+                                 : (m_dragAxis == Axis::Z) ? &b.roll : &b.yaw;
+                    float target = m_dragBaseRot + dAng;
+                    // Snap to 5-degree increments when grid-snap is on.
+                    if (m_state.snapEnabled())
+                        target = std::round(target / kAngleSnapRad) * kAngleSnapRad;
+                    if (std::fabs(target - *field) > 1e-5f) {
+                        *field = target;
                         syncBrushTransform(si, scene, physics);
                     }
                 }
@@ -1414,14 +1483,46 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
             const Axis  axes[3] = { Axis::X, Axis::Y, Axis::Z };
             float grabBest = 14.0f; Axis grab = Axis::None; float grabS = 0.0f;
 
-            if (m_tool == Tool::Rotate) {
-                // A single yaw ring (about +Y) in the brush's tool-accent pink.
+            if (m_tool == Tool::Rotate && !rot3Enabled()) {
+                // Legacy (rot3 off): the single yaw ring (about +Y) in tool-accent pink.
                 dl->AddCircle(o, std::max(24.0f, kAxisLen * 22.0f), IM_COL32(255,136,170,255), 48, 2.5f);
                 // Grab anywhere near the ring band.
                 if (!m_dragging) {
                     const float rad = std::max(24.0f, kAxisLen * 22.0f);
                     const float dd = std::sqrt((mouse.x-o.x)*(mouse.x-o.x) + (mouse.y-o.y)*(mouse.y-o.y));
                     if (std::fabs(dd - rad) < 12.0f) grab = Axis::Y;
+                }
+            } else if (m_tool == Tool::Rotate) {
+                // 11.0: THREE world-plane rings — X red, Y green, Z blue (the same
+                // axis colors as the move arms). Each ring is a true 3D circle in
+                // the plane perpendicular to its axis, projected point-by-point
+                // through worldToScreen, so it foreshortens correctly at any camera
+                // angle. Grab = nearest ring vertex within the pick radius.
+                const float r = kAxisLen * 0.85f;
+                const int   N = 40;
+                for (int a = 0; a < 3; ++a) {
+                    float u[3] = { 0, 0, 0 }, v[3] = { 0, 0, 0 };
+                    if (a == 0)      { u[1] = 1; v[2] = 1; }   // X ring: YZ plane
+                    else if (a == 1) { u[0] = 1; v[2] = 1; }   // Y ring: XZ plane
+                    else             { u[0] = 1; v[1] = 1; }   // Z ring: XY plane
+                    const bool active = m_dragging && m_dragAxis == axes[a];
+                    ImVec2 prev; bool prevOk = false;
+                    for (int k = 0; k <= N; ++k) {
+                        const float t  = (float)k / (float)N * 6.2831853f;
+                        const float ct = std::cos(t), st = std::sin(t);
+                        ImVec2 pt;
+                        const bool okp = project(b.pos[0] + (u[0]*ct + v[0]*st) * r,
+                                                 b.pos[1] + (u[1]*ct + v[1]*st) * r,
+                                                 b.pos[2] + (u[2]*ct + v[2]*st) * r, pt);
+                        if (okp && prevOk)
+                            dl->AddLine(prev, pt, cols[a], active ? 3.5f : 2.0f);
+                        if (okp && !m_dragging) {
+                            const float d = std::sqrt((mouse.x-pt.x)*(mouse.x-pt.x) +
+                                                      (mouse.y-pt.y)*(mouse.y-pt.y));
+                            if (d < grabBest) { grabBest = d; grab = axes[a]; }
+                        }
+                        prev = pt; prevOk = okp;
+                    }
                 }
             } else {
                 // Move / Scale: three axis arms. Scale draws a box at the tip, Move a dot.
@@ -1454,7 +1555,10 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
                 m_dragging = true; m_dragAxis = grab; m_dragStartS = grabS;
                 const int a = (grab == Axis::X) ? 0 : (grab == Axis::Y) ? 1 : 2;
                 m_dragBaseM   = (m_tool == Tool::Scale) ? b.size[a] : b.pos[a];
-                m_dragBaseYaw = b.yaw;
+                // Rotate: base the drag on the grabbed ring's angle field (11.0).
+                m_dragBaseRot = (m_tool != Tool::Rotate) ? b.yaw
+                              : (grab == Axis::X) ? b.pitch
+                              : (grab == Axis::Z) ? b.roll : b.yaw;
                 m_dragStartAng = std::atan2(mouse.y - o.y, mouse.x - o.x);
                 m_state.beginBrushEdit(si);     // group the drag into one undo step
             }
@@ -1487,12 +1591,17 @@ Axis EditorHost::facedAxis(int brushIdx) const {
     const float fz = std::cos(m_camPitch) * std::sin(m_camYaw);
     if (brushIdx >= 0 && brushIdx < (int)m_doc.brushes.size()) {
         const BlockoutBrush& b = m_doc.brushes[brushIdx];
-        const float c = std::cos(b.yaw), s = std::sin(b.yaw);
-        // world->local (transpose of R(yaw)); translate to the brush center.
+        // world->local: transpose of the full 11.0 rotation (dot with R's columns);
+        // translate to the brush center. Yaw-only brushes behave exactly as before.
+        float R[9];
+        rotYPR(b.yaw, b.pitch, b.roll, R);
         const float ox = m_camX-b.pos[0], oy = m_camY-b.pos[1], oz = m_camZ-b.pos[2];
-        const float lox = c*ox - s*oz, loy = oy, loz = s*ox + c*oz;
-        const float ldx = c*fx - s*fz, ldy = fy, ldz = s*fx + c*fz;
-        const float ro[3] = { lox, loy, loz }, rd[3] = { ldx, ldy, ldz };
+        const float ro[3] = { R[0]*ox + R[1]*oy + R[2]*oz,
+                              R[3]*ox + R[4]*oy + R[5]*oz,
+                              R[6]*ox + R[7]*oy + R[8]*oz };
+        const float rd[3] = { R[0]*fx + R[1]*fy + R[2]*fz,
+                              R[3]*fx + R[4]*fy + R[5]*fz,
+                              R[6]*fx + R[7]*fy + R[8]*fz };
         const float h[3] = { b.size[0]*0.5f, b.size[1]*0.5f, b.size[2]*0.5f };
         float tmin = 0.0f, tmax = 1e30f; int entryAxis = -1; bool hit = true;
         for (int a = 0; a < 3; ++a) {
