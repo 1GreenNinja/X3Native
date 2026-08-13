@@ -179,9 +179,12 @@ int hostDrive(HostContext& hc) {
             };
             if (cosCat.loadFile(x3::game::vehparts::defaultCatalogPath())) {
                 const bool haveLook = cosBuild.loadFile(x3::game::vehcosmetics::defaultLookSavePath());
-                if (vehCvBool2("veh_cosmetics", true) && haveLook) {
-                    car.setAppearance(x3::game::vehcosmetics::composeVisual(cosCat, cosBuild));
-                    x3::logInfo("--world drive: cosmetic look applied from vehlook.json");
+                if (vehCvBool2("veh_cosmetics", true)) {
+                    if (haveLook)
+                        car.setAppearance(x3::game::vehcosmetics::composeVisual(cosCat, cosBuild));
+                    if (shopBuilt) shop.setCosmetics(&cosCat, &cosBuild);   // STYLE page
+                    x3::logInfo(std::string("--world drive: cosmetics ") +
+                                (haveLook ? "applied from vehlook.json" : "catalog ready (stock look)"));
                 }
             }
         }
@@ -300,6 +303,29 @@ int hostDrive(HostContext& hc) {
                 const float cam[5] = { sOrg[0] - 2.8f, sOrg[1] + 2.3f, sOrg[2] - 3.3f,
                                        -1.5708f, 0.0f };
                 allOk &= takeShot(cam, "perfshop_dyno.png");
+            }
+            // SHOT 4 — the STYLE page (Lane 7): fit a look so the page and
+            // the car both show it, tab DYNO -> STYLE, capture the glass, then
+            // the bay again with the custom paint on the lift (the "visual
+            // bay" preview of the spec, v1: the real car under the shop
+            // lights IS the preview).
+            {
+                cosBuild.install("paint", "paint_candy");
+                cosBuild.paintRGB[0] = 0.04f; cosBuild.paintRGB[1] = 0.22f; cosBuild.paintRGB[2] = 0.85f;
+                cosBuild.install("tint", "tint_smoke");
+                cosBuild.install("wheels", "rim_polish");
+                cosBuild.install("lighting", "glow_basic");
+                car.setAppearance(x3::game::vehcosmetics::composeVisual(cosCat, cosBuild));
+                shop.uiTab();                       // DYNO -> STYLE (re-bakes)
+                shop.update(dt, &car, nullptr, {});
+                const float cam[5] = { sOrg[0] - 2.8f, sOrg[1] + 2.3f, sOrg[2] - 3.3f,
+                                       -1.5708f, 0.0f };
+                allOk &= takeShot(cam, "perfshop_style.png");
+                const float cx = sOrg[0] + 2.1f, cy = sOrg[1] + 2.6f, cz = sOrg[2] + 14.5f;
+                const float dx = lift[0] - cx, dy2 = (sOrg[1] + 2.6f) - cy, dz = lift[2] - cz;
+                const float cam2[5] = { cx, cy, cz, std::atan2(dz, dx),
+                                        std::atan2(dy2, std::sqrt(dx*dx + dz*dz)) };
+                allOk &= takeShot(cam2, "perfshop_style_bay.png");
             }
             shop.shutdown(vscene, *device, *vphys);
             car.shutdown(); vstream.shutdown(vscene, *device, *vphys);
@@ -771,6 +797,10 @@ int hostDrive(HostContext& hc) {
                     // Parts changed -> the drift character follows the build.
                     if (car.driftGrip().driftEnabled())
                         car.driftGrip().setParams(x3::game::driftParamsFor(partsCat, carBuild));
+                }
+                if (shop.consumeNeedLookSave()) {
+                    if (cosBuild.saveFile(x3::game::vehcosmetics::defaultLookSavePath()))
+                        x3::logInfo("--world drive: CosmeticBuild saved (vehlook.json)");
                 }
             }
 

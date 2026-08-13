@@ -25,6 +25,7 @@
 
 #include "scene.h"
 #include "vehparts.h"
+#include "vehcosmetics.h"
 #include "vehicle.h"
 #include "leveldoc_world.h"
 
@@ -64,6 +65,17 @@ public:
     void setShopMode(bool on);
     // Orbit camera while in shop mode: returns pos+yaw+pitch looking at the lift.
     void orbitCam(float out5[5]) const;
+
+    // ---- COSMETICS (the STYLE page; Lane 7) ---------------------------------
+    // Borrowed host-owned catalog + look build (both may be null: the STYLE
+    // tab then reports itself unavailable and everything else is unchanged).
+    // Purchases share the ONE wallet (vehparts::VehicleBuild::credits).
+    void setCosmetics(vehcosmetics::CosmeticCatalog* cat,
+                      vehcosmetics::CosmeticBuild* look) {
+        m_cosCatalog = cat; m_cosBuild = look;
+    }
+    // Look changed since the last consume (host persists vehlook.json).
+    bool consumeNeedLookSave() { const bool b = m_needLookSave; m_needLookSave = false; return b; }
 
     // ---- UI input (rising-edge calls from the host) -------------------------
     void uiUp();
@@ -105,8 +117,9 @@ public:
     float pullProgress() const { return m_pullT; }
 
 private:
-    enum class Mode { Parts, Dyno };
+    enum class Mode { Parts, Dyno, Style };
     enum class Focus { Categories, Parts };
+    void applyLook(DriveDemo* car);   // recompose visual + set on the car
 
     void markUiDirty() { m_texDirty = true; }
     void bakeTerminal(x3::rhi::IRenderDevice& device);   // re-bake + re-upload the glass
@@ -116,6 +129,13 @@ private:
     vehparts::Catalog*      m_catalog = nullptr;
     vehparts::VehicleBuild* m_build   = nullptr;
     vehparts::ComposedBuild m_composed;
+    // Cosmetics (STYLE page).
+    vehcosmetics::CosmeticCatalog* m_cosCatalog = nullptr;
+    vehcosmetics::CosmeticBuild*   m_cosBuild   = nullptr;
+    int  m_styleCat = 0, m_stylePart = 0;
+    int  m_paintSwatch = 0, m_glowSwatch = 0;
+    bool m_needLookSave = false;
+    bool m_lookDirty    = false;   // re-apply appearance on next update()
 
     // Site + doc world.
     LevelDocWorld m_world;

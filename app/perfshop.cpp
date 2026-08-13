@@ -502,7 +502,34 @@ void PerfShop::orbitCam(float out5[5]) const {
 }
 
 // ---- UI input --------------------------------------------------------------
+// STYLE page color swatches (player-picked color, spec: "not a fixed list" —
+// v1 ships a curated wheel; a full RGB picker is a UI project of its own).
+namespace {
+struct Swatch { const char* name; float r, g, b; };
+constexpr Swatch kPaintSwatches[] = {
+    { "RACE RED",   0.72f, 0.05f, 0.08f }, { "SUNSET ORG", 0.86f, 0.32f, 0.04f },
+    { "ACID YEL",   0.85f, 0.78f, 0.05f }, { "IRISH GRN",  0.05f, 0.48f, 0.12f },
+    { "OCEAN TEAL", 0.03f, 0.45f, 0.48f }, { "CANDY BLU",  0.04f, 0.22f, 0.85f },
+    { "ROYAL PRP",  0.30f, 0.06f, 0.60f }, { "HOT PINK",   0.85f, 0.08f, 0.45f },
+    { "PEARL WHT",  0.90f, 0.90f, 0.92f }, { "PHANTOM BLK",0.03f, 0.03f, 0.04f },
+};
+constexpr Swatch kGlowSwatches[] = {
+    { "ELECTRIC BLU", 0.10f, 0.55f, 1.00f }, { "TOXIC GRN",  0.15f, 1.00f, 0.25f },
+    { "MAGENTA",      1.00f, 0.10f, 0.60f }, { "AMBER",      1.00f, 0.55f, 0.10f },
+    { "CYAN",         0.10f, 1.00f, 0.90f }, { "PURE WHITE", 1.00f, 1.00f, 1.00f },
+    { "BLOOD RED",    1.00f, 0.08f, 0.08f }, { "VIOLET",     0.55f, 0.15f, 1.00f },
+};
+constexpr int kPaintSwatchN = (int)(sizeof(kPaintSwatches) / sizeof(kPaintSwatches[0]));
+constexpr int kGlowSwatchN  = (int)(sizeof(kGlowSwatches)  / sizeof(kGlowSwatches[0]));
+} // namespace
+
 void PerfShop::uiUp() {
+    if (m_mode == Mode::Style) {
+        if (m_focus == Focus::Categories) m_styleCat = std::max(0, m_styleCat - 1);
+        else                              m_stylePart = std::max(0, m_stylePart - 1);
+        markUiDirty();
+        return;
+    }
     if (m_mode != Mode::Parts) return;
     if (m_focus == Focus::Categories) m_catCursor = std::max(0, m_catCursor - 1);
     else                              m_partCursor = std::max(0, m_partCursor - 1);
@@ -510,6 +537,17 @@ void PerfShop::uiUp() {
 }
 
 void PerfShop::uiDown() {
+    if (m_mode == Mode::Style) {
+        if (!m_cosCatalog) return;
+        if (m_focus == Focus::Categories)
+            m_styleCat = std::min((int)m_cosCatalog->categories().size() - 1, m_styleCat + 1);
+        else {
+            const auto parts = m_cosCatalog->inCategory(m_cosCatalog->categories()[m_styleCat].id);
+            m_stylePart = std::min((int)parts.size() - 1, m_stylePart + 1);
+        }
+        markUiDirty();
+        return;
+    }
     if (m_mode != Mode::Parts || !m_catalog) return;
     if (m_focus == Focus::Categories)
         m_catCursor = std::min((int)m_catalog->categories().size() - 1, m_catCursor + 1);
@@ -521,6 +559,46 @@ void PerfShop::uiDown() {
 }
 
 void PerfShop::uiSelect() {
+    if (m_mode == Mode::Style) {
+        // Buy / sell-back cosmetics — same wallet, same 70% trade-in rule as
+        // the performance page, so the economy has ONE set of laws.
+        if (!m_cosCatalog || !m_cosBuild || !m_build) return;
+        if (m_focus == Focus::Categories) {
+            m_focus = Focus::Parts; m_stylePart = 0; markUiDirty();
+            return;
+        }
+        const auto& cats = m_cosCatalog->categories();
+        if (m_styleCat < 0 || m_styleCat >= (int)cats.size()) return;
+        const auto parts = m_cosCatalog->inCategory(cats[m_styleCat].id);
+        if (m_stylePart < 0 || m_stylePart >= (int)parts.size()) return;
+        const vehcosmetics::CosPart* p = parts[m_stylePart];
+        const std::string* cur = m_cosBuild->installedIn(p->category);
+        char sb[96];
+        if (cur && *cur == p->id) {
+            const int back = (p->price * 7) / 10;
+            m_cosBuild->removeFrom(p->category);
+            m_build->credits += back;
+            std::snprintf(sb, sizeof(sb), "REMOVED %s  +%d CR", p->name.c_str(), back);
+            m_status = sb;
+        } else if (m_build->credits < p->price) {
+            m_status = "INSUFFICIENT CREDITS";
+            markUiDirty();
+            return;
+        } else {
+            m_build->credits -= p->price;
+            if (cur)
+                if (const vehcosmetics::CosPart* old = m_cosCatalog->find(*cur))
+                    m_build->credits += (old->price * 7) / 10;
+            m_cosBuild->install(p->category, p->id);
+            std::snprintf(sb, sizeof(sb), "FITTED %s  -%d CR", p->name.c_str(), p->price);
+            m_status = sb;
+        }
+        m_needSave = true;       // credits moved (vehbuild.json)
+        m_needLookSave = true;   // look changed (vehlook.json)
+        m_lookDirty = true;      // live preview on next update()
+        markUiDirty();
+        return;
+    }
     if (m_mode != Mode::Parts || !m_catalog || !m_build) return;
     if (m_focus == Focus::Categories) {
         m_focus = Focus::Parts; m_partCursor = 0; markUiDirty();
@@ -558,19 +636,43 @@ void PerfShop::uiSelect() {
 }
 
 void PerfShop::uiBack() {
-    if (m_mode == Mode::Parts && m_focus == Focus::Parts) {
+    if ((m_mode == Mode::Parts || m_mode == Mode::Style) && m_focus == Focus::Parts) {
         m_focus = Focus::Categories;
         markUiDirty();
     }
 }
 
 void PerfShop::uiTab() {
-    m_mode = (m_mode == Mode::Parts) ? Mode::Dyno : Mode::Parts;
+    // PARTS -> DYNO -> STYLE -> PARTS.
+    m_mode = (m_mode == Mode::Parts) ? Mode::Dyno
+           : (m_mode == Mode::Dyno)  ? Mode::Style : Mode::Parts;
     m_focus = Focus::Categories;
     markUiDirty();
 }
 
 void PerfShop::adjustTune(int slider, int dir) {
+    // STYLE page reuse: slider 0 cycles the PAINT color swatch, slider 1 the
+    // UNDERGLOW color (the same physical keys as the dyno sliders).
+    if (m_mode == Mode::Style) {
+        if (!m_cosBuild) return;
+        if (slider == 0) {
+            m_paintSwatch = (m_paintSwatch + dir + kPaintSwatchN) % kPaintSwatchN;
+            const Swatch& sw = kPaintSwatches[m_paintSwatch];
+            m_cosBuild->paintRGB[0] = sw.r; m_cosBuild->paintRGB[1] = sw.g; m_cosBuild->paintRGB[2] = sw.b;
+            m_status = std::string("PAINT: ") + sw.name;
+        } else if (slider == 1) {
+            m_glowSwatch = (m_glowSwatch + dir + kGlowSwatchN) % kGlowSwatchN;
+            const Swatch& sw = kGlowSwatches[m_glowSwatch];
+            m_cosBuild->underglowRGB[0] = sw.r; m_cosBuild->underglowRGB[1] = sw.g; m_cosBuild->underglowRGB[2] = sw.b;
+            m_status = std::string("GLOW: ") + sw.name;
+        } else {
+            return;
+        }
+        m_needLookSave = true;
+        m_lookDirty = true;
+        markUiDirty();
+        return;
+    }
     if (!m_build || !m_catalog) return;
     if (m_composed.ecuMaxBoost <= 0.0f) { m_status = "INSTALL AN ECU TO TUNE"; markUiDirty(); return; }
     vehparts::EcuTune& t = m_build->tune;
@@ -621,6 +723,11 @@ void PerfShop::recompose(DriveDemo* car) {
     if (car) car->applyTuning(m_composed.tuning);
 }
 
+void PerfShop::applyLook(DriveDemo* car) {
+    if (!m_cosCatalog || !m_cosBuild || !car) return;
+    car->setAppearance(vehcosmetics::composeVisual(*m_cosCatalog, *m_cosBuild));
+}
+
 void PerfShop::applyAndSave(DriveDemo* car) {
     recompose(car);
     m_needSave = true;
@@ -633,6 +740,8 @@ void PerfShop::update(float dt, DriveDemo* car,
 
     // Deferred tuning application (UI handlers don't hold the car pointer).
     if (m_carDirty && car) { car->applyTuning(m_composed.tuning); m_carDirty = false; }
+    // Deferred LOOK application — the live paint-bay preview.
+    if (m_lookDirty && car) { applyLook(car); m_lookDirty = false; }
 
     // ---- Dyno pull sweep. ----
     if (m_pullT >= 0.0f) {
@@ -702,12 +811,86 @@ void PerfShop::bakeTerminal(x3::rhi::IRenderDevice& device) {
     char hb[96];
     if (m_build) std::snprintf(hb, sizeof(hb), "CREDITS %d", m_build->credits);
     else         std::snprintf(hb, sizeof(hb), "CREDITS ----");
-    drawText(c, m_mode == Mode::Parts ? "LATE NIGHT SPEED // PARTS" : "LATE NIGHT SPEED // DYNO",
+    drawText(c, m_mode == Mode::Parts ? "LATE NIGHT SPEED // PARTS"
+              : m_mode == Mode::Dyno   ? "LATE NIGHT SPEED // DYNO"
+                                       : "LATE NIGHT SPEED // STYLE",
              P(0.06f), P(0.045f), P(0.038f), WT[0],WT[1],WT[2], 1.0f);
     drawText(c, hb, P(0.94f) - textWidth(hb, P(0.030f)), P(0.050f), P(0.030f), AM[0],AM[1],AM[2], 1.0f);
     line(c, P(0.05f), P(0.105f), P(0.95f), P(0.105f), WT[0],WT[1],WT[2], 0.9f, th*1.3f);
 
-    if (m_mode == Mode::Parts && m_catalog) {
+    if (m_mode == Mode::Style) {
+        // ====================== STYLE (cosmetics) ======================
+        if (!m_cosCatalog || m_cosCatalog->categories().empty()) {
+            drawText(c, "NO COSMETIC CATALOG", P(0.30f), P(0.45f), P(0.04f), MG[0],MG[1],MG[2], 1.0f);
+        } else {
+            const auto& cats = m_cosCatalog->categories();
+            float y = P(0.14f);
+            const float rowH = P(0.066f);
+            for (int i = 0; i < (int)cats.size(); ++i) {
+                const bool cur = (i == m_styleCat);
+                if (cur) rectFill(c, P(0.045f), y - P(0.006f), P(0.345f), y + rowH - P(0.020f),
+                                  MG[0]*0.16f, MG[1]*0.16f, MG[2]*0.16f, 1.0f);
+                const std::string* inst = m_cosBuild ? m_cosBuild->installedIn(cats[i].id) : nullptr;
+                if (inst) plot(c, P(0.062f), y + rowH*0.34f, AM[0],AM[1],AM[2], 6.0f);
+                const float* col = cur && m_focus == Focus::Categories ? WT : MG;
+                drawText(c, cats[i].label, P(0.085f), y, P(0.030f), col[0],col[1],col[2],
+                         cur ? 1.0f : 0.75f);
+                y += rowH;
+            }
+            // Current player colors, as swatch chips under the category list.
+            if (m_cosBuild) {
+                drawText(c, "PAINT  1/2", P(0.06f), P(0.62f), P(0.024f), CY[0],CY[1],CY[2], 0.8f);
+                rectFill(c, P(0.20f), P(0.615f), P(0.30f), P(0.655f),
+                         m_cosBuild->paintRGB[0]*1.4f, m_cosBuild->paintRGB[1]*1.4f,
+                         m_cosBuild->paintRGB[2]*1.4f, 1.0f);
+                drawText(c, "GLOW   3/4", P(0.06f), P(0.685f), P(0.024f), CY[0],CY[1],CY[2], 0.8f);
+                rectFill(c, P(0.20f), P(0.680f), P(0.30f), P(0.720f),
+                         m_cosBuild->underglowRGB[0]*1.4f, m_cosBuild->underglowRGB[1]*1.4f,
+                         m_cosBuild->underglowRGB[2]*1.4f, 1.0f);
+            }
+            line(c, P(0.36f), P(0.13f), P(0.36f), P(0.86f), MG[0],MG[1],MG[2], 0.3f, th);
+            if (m_styleCat >= 0 && m_styleCat < (int)cats.size()) {
+                const auto parts = m_cosCatalog->inCategory(cats[m_styleCat].id);
+                float py = P(0.14f);
+                const float prowH = P(0.095f);
+                for (int i = 0; i < (int)parts.size(); ++i) {
+                    const vehcosmetics::CosPart* pp = parts[i];
+                    const bool cur = (m_focus == Focus::Parts && i == m_stylePart);
+                    if (cur) rectFill(c, P(0.385f), py - P(0.008f), P(0.955f), py + prowH - P(0.024f),
+                                      MG[0]*0.18f, MG[1]*0.18f, MG[2]*0.18f, 1.0f);
+                    const std::string* inst = m_cosBuild ? m_cosBuild->installedIn(pp->category) : nullptr;
+                    const bool isInstalled = inst && *inst == pp->id;
+                    const float* col = isInstalled ? AM : (cur ? WT : MG);
+                    drawText(c, tierTag(pp->tier) + "  " + pp->name, P(0.40f), py, P(0.030f),
+                             col[0],col[1],col[2], cur || isInstalled ? 1.0f : 0.8f);
+                    char pr[48];
+                    if (isInstalled) std::snprintf(pr, sizeof(pr), "[FITTED]");
+                    else             std::snprintf(pr, sizeof(pr), "%d CR", pp->price);
+                    drawText(c, pr, P(0.94f) - textWidth(pr, P(0.026f)), py + P(0.002f), P(0.026f),
+                             isInstalled ? AM[0] : MG[0], isInstalled ? AM[1] : MG[1],
+                             isInstalled ? AM[2] : MG[2], 0.95f);
+                    // one-line descriptor
+                    char dl[96];
+                    if (!pp->paintType.empty())
+                        std::snprintf(dl, sizeof(dl), "%s  clearcoat %.2f  rough %.2f",
+                                      pp->paintType.c_str(), pp->clearcoat, pp->clearcoatRough);
+                    else if (pp->tintDark > 0.0f)
+                        std::snprintf(dl, sizeof(dl), "glass darkness %.0f%%", pp->tintDark * 100.0f);
+                    else if (pp->glowIntensity > 0.0f)
+                        std::snprintf(dl, sizeof(dl), "underglow x%.0f  %s", pp->glowIntensity,
+                                      pp->glowMode.c_str());
+                    else
+                        std::snprintf(dl, sizeof(dl), "rim finish  metallic %.1f", pp->rimMetallic);
+                    drawText(c, dl, P(0.42f), py + P(0.040f), P(0.022f), MG[0],MG[1],MG[2], 0.55f);
+                    py += prowH;
+                }
+            }
+            drawText(c, m_focus == Focus::Categories
+                         ? "ARROWS pick  ENTER open  1/2 paint  3/4 glow  TAB parts"
+                         : "ARROWS pick  ENTER fit/remove  BKSP back  TAB parts",
+                     P(0.06f), P(0.915f), P(0.024f), MG[0],MG[1],MG[2], 0.7f);
+        }
+    } else if (m_mode == Mode::Parts && m_catalog) {
         // ---- LEFT: categories. ----
         const auto& cats = m_catalog->categories();
         float y = P(0.14f);
