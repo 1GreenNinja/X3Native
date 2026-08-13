@@ -729,6 +729,15 @@ float authoredLandforms(float h, float x, float z) {
     return h;
 }
 
+// Bluff terracing (see mountainHeight). Band height is the vertical spacing of
+// the cliff/shelf pairs; strength 1 would be a full staircase, which reads as
+// machined — 0.55 leaves the fractal relief still visible through the benches.
+constexpr float kBluffStart    = 55.0f;   // m of range height before benching starts
+constexpr float kBluffFull     = 90.0f;   // m over which it reaches full strength
+constexpr float kBluffBandH    = 26.0f;   // vertical spacing of the bluffs
+constexpr float kBluffStrength = 0.55f;
+inline float clampf01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+
 float mountainHeight(float x, float z, uint32_t seed) {
     float h = 0.0f;
     for (int i = 0; i < kRangeCount; ++i) {
@@ -766,6 +775,23 @@ float mountainHeight(float x, float z, uint32_t seed) {
             // modest extra bite on top.
             const float bite = 0.55f + 0.45f * ridge;
             hm += mask * bite * r.jagAmp * (0.85f * (c1 - 0.5f) + 0.45f * (c2 - 0.5f));
+            // JAGGED BLUFFS ON CRAGGY CLIFFS. Fractal relief alone gives a rough
+            // but CONTINUOUS slope. Real massifs are not continuous: harder strata
+            // stand out as near-vertical risers with shelves between them, which
+            // is what reads as "bluffs" and "crags" rather than "rough hill".
+            // Terracing does that with the height it already has — quantise into
+            // bands and push each sample toward its band top, so the riser
+            // steepens and the tread flattens. The smoothstep IS the cliff: a
+            // linear ramp would just re-draw the slope it replaced.
+            // Strength rises with altitude so the foot stays a natural talus
+            // slope and only the upper massif breaks into benches.
+            if (hm > kBluffStart) {
+                const float up01 = clampf01((hm - kBluffStart) / kBluffFull);
+                const float band = hm / kBluffBandH;
+                const float f    = band - std::floor(band);
+                const float shaped = sstep(0.42f, 0.92f, f);
+                hm += kBluffBandH * (shaped - f) * kBluffStrength * up01 * mask;
+            }
         }
         if (r.capY > 0.0f && hm > r.capY) hm = r.capY;           // mesa flat tops
         if (hm > 0.0f) h += hm;

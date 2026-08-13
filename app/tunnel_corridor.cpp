@@ -751,6 +751,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
                 for (int side = -1; side <= 1; side += 2) {
                     const float sg = (float)side;
+                    bool inCut = false;
                     // FILL ONLY — never in a cutting. The batter exists to bridge
                     // road level DOWN to a shoulder that has fallen away. Each step
                     // clamps with max(y, ground) so it cannot sink below grade,
@@ -767,7 +768,14 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                                               a.p[2] + right[2]*latTest);
                         const float gB = terrainHeightAtWorld(b.p[0] + right[0]*latTest,
                                                               b.p[2] + right[2]*latTest);
-                        if (gA >= a.p[1] && gB >= b.p[1]) continue;
+                        // IN A CUTTING: skip the descending BATTER (there is
+                        // nothing to fill) but still lay the flat concrete
+                        // SHOULDER. The first version `continue`d out of both,
+                        // which deleted the hard shoulder everywhere the road
+                        // runs in a cut — i.e. most of this approach. The apron
+                        // is what the driver's eye follows; it belongs on cut and
+                        // fill alike. Only the batter is fill-only.
+                        if (gA >= a.p[1] && gB >= b.p[1]) { inCut = true; }
                     }
                     // Track the running height of the batter on each rail.
                     float ya = a.p[1] + kSlabProud, yb = b.p[1] + kSlabProud;
@@ -776,7 +784,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                         const float o2 = (st == 0) ? kShoulderW
                                                    : kShoulderW + (float)st * kStepOut;
                         // Shoulder is flat; past it the batter falls away.
-                        const float dy = (st == 0) ? 0.0f : kBatter * kStepOut;
+                        const float dy = (st == 0 || inCut) ? 0.0f : kBatter * kStepOut;
                         const float ya2 = ya - dy, yb2 = yb - dy;
                         const float latA = sg * (hw + oa),  latB = sg * (hw + o2);
                         auto gAt = [&](const Frame& f, float lat) {
@@ -784,8 +792,17 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                                         f.p[2] + right[2]*lat);
                         };
                         // Clamp to grade: the batter stops where it meets ground.
-                        const float y0a = std::max(ya, gAt(a, latA)), y0b = std::max(yb, gAt(b, latA));
-                        const float y1a = std::max(ya2, gAt(a, latB)), y1b = std::max(yb2, gAt(b, latB));
+                        // The max() clamp keeps a FILL batter from sinking below
+                        // grade. In a CUT it does the opposite of what is wanted:
+                        // the ground beside the road is higher, so clamping drags
+                        // the apron UP the rock face — that is what drew the two
+                        // strips climbing the mountain. A hard shoulder in a
+                        // cutting is FLAT at road level; the cutting face rises
+                        // beyond its outer edge, it does not lift the apron.
+                        const float y0a = inCut ? ya  : std::max(ya,  gAt(a, latA));
+                        const float y0b = inCut ? yb  : std::max(yb,  gAt(b, latA));
+                        const float y1a = inCut ? ya2 : std::max(ya2, gAt(a, latB));
+                        const float y1b = inCut ? yb2 : std::max(yb2, gAt(b, latB));
                         float p0[3] = { a.p[0] + right[0]*latA, y0a, a.p[2] + right[2]*latA };
                         float p1[3] = { a.p[0] + right[0]*latB, y1a, a.p[2] + right[2]*latB };
                         float p2[3] = { b.p[0] + right[0]*latB, y1b, b.p[2] + right[2]*latB };
@@ -801,6 +818,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                         // the first version did — a quarry apron instead of a
                         // shoulder). Both rails must have landed before we quit,
                         // or one side of the strip tears.
+                        if (inCut && st >= 1) break;   // shoulder only, no batter
                         if (st > 0 && y1a <= gAt(a, latB) + 1e-3f
                                    && y1b <= gAt(b, latB) + 1e-3f) break;
                     }

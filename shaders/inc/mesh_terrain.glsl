@@ -33,7 +33,14 @@ const float kSandTop     = 16.0;   // beach fades out by here (near the basin on
 const float kSnowBottom  = 180.0;  // snow begins (mountain shoulders)
 const float kSnowFull    = 265.0;  // fully snow by here (high peaks)
 const float kAlpineLo    = 75.0;   // grass starts yielding to rock
-const float kAlpineHi    = 140.0;  // fully rock by here (below the snow line)
+const float kAlpineHi    = 140.0;
+// Alpine rock TINT band (independent of the grass->rock blend above): where the
+// one shared rock set stops reading as warm roadside cutting and becomes cold
+// mountain stone.
+const float kAlpineTintLo = 90.0;
+const float kAlpineTintHi = 210.0;
+const vec3  kAlpineRock   = vec3(0.52, 0.58, 0.72);   // darker, cooler
+const vec3  kAlpineVein   = vec3(0.62, 0.78, 1.15);   // blue in the crevices  // fully rock by here (below the snow line)
 const float kSlopeRockLo = 0.90;   // normal.y at/below this -> full rock (steep)
 const float kSlopeRockHi = 0.965;  // normal.y at/above this -> no rock (flat)
 const float kDetailScale = 0.18;   // world-space detail tiling (cycles / meter)
@@ -112,6 +119,28 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
     rock  = mix(rock, rock * vec3(0.42, 0.34, 0.32), volc);
     rock  = mix(rock, rock * vec3(1.15, 0.92, 0.68), mesa);
     grass = mix(grass, grass * vec3(0.80, 1.08, 0.72), moss);
+
+    // ---- ALPINE ROCK: darker, with cold blue veining, above the treeline ----
+    // The splat has exactly ONE rock slot, shared by the road cuttings at ~15 m
+    // and the massif at 200+ m. Swapping the SET to something bluish would drag
+    // the cuttings cold with it, so the altitude difference is expressed as a
+    // TINT on the one set instead: warm tan where the road is, dark blue-grey up
+    // the mountain. No second texture, no second sampler.
+    //
+    // The veining is the rock's own luminance re-mapped, not added noise: dark
+    // crevices in the albedo are pushed COOL while the lit faces stay neutral,
+    // so the mineral streaks the texture already has read as blue veins in the
+    // shadowed relief. Adding a separate vein noise would fight the normal map.
+    {
+        float alt = smoothstep(kAlpineTintLo, kAlpineTintHi, hN);
+        if (alt > 0.0) {
+            float lum  = dot(rock, vec3(0.299, 0.587, 0.114));
+            float dark = 1.0 - smoothstep(0.18, 0.55, lum);   // 1 in the crevices
+            vec3  cold = rock * kAlpineRock;                  // overall darker + cooler
+            cold = mix(cold, cold * kAlpineVein, dark);       // veins in the recesses
+            rock = mix(rock, cold, alt);
+        }
+    }
 
     // ---- Height bands (smoothstep transitions, never hard) ----
     // Start as grass everywhere, then layer beach sand at the basin shoreline,
