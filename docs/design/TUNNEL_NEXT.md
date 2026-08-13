@@ -144,9 +144,9 @@ Seven called out. Status after 8537fbed + the follow-up:
       124 m mountain coverAvail is enormous so it pinned at kTcMaxScar and gouged a
       trench along the summit. A tunnel does not carve the mountain above it —
       depth is now 0 on a bored reach.
-- [ ] **NEW: dark angular wedge on the upper-left slope.** Appeared once the summit
-      trench was removed. Suspect the FAR portal's headwall/wing wall now poking
-      through the hill that covers it. Not investigated.
+- [x] **Dark angular wedge on the upper-left slope — NOT A DEFECT.** Tim identified
+      it as the cliff face where the cutting wraps around the hill. My headwall
+      guess was wrong; the terrain is behaving.
 - [ ] **Car is too small and faces the wrong way.** Showcase prop in host_tunnel.
 - [ ] **Mountain is too smooth** — needs jagged peaks, not a dune. `ridgeExp` and
       `jagAmp` on the tunnel-ridge RangeDef are the levers (currently 1.7 / 26).

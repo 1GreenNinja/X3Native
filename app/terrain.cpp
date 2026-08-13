@@ -414,7 +414,7 @@ const RangeDef kRanges[kRangeCount] = {
     // tunnel needs a mountain. Runs PERPENDICULAR to the route heading so the bore
     // crosses it square, and is short enough that outW does not reach the
     // Scrapyard City pad at (-600,500).
-    {  -753.0f,  -740.0f,  -431.0f,    36.0f, 110.0f,  240.0f, 165.0f, 1.7f, 26.0f,   0.0f }, // tunnel ridge
+    {  -753.0f,  -740.0f,  -431.0f,    36.0f, 110.0f,  240.0f, 285.0f, 2.5f, 58.0f,   0.0f }, // tunnel ridge
 };
 
 // Flat pads: blend the field toward padY inside r, fully the field by r*1.7.
@@ -744,6 +744,28 @@ float mountainHeight(float x, float z, uint32_t seed) {
         if (r.jagAmp > 0.0f) {
             const float j = fbm(x, z, 0.006f, 3, seed + 9000u + (uint32_t)i * 197u);
             hm += mask * (j - 0.5f) * 2.0f * r.jagAmp * ridge;   // jag rides the peaks
+            // ROCK-SCALE RELIEF. The two terms above are a ~900 m ridge shape and
+            // a ~166 m jag: both are LANDFORM frequencies, so a range built from
+            // them alone reads as a smooth dune no matter how tall it is made.
+            // Raising amp just makes a bigger dune. What was missing is relief at
+            // the scale of an actual rock face — ~45 m and ~15 m features — which
+            // is what the eye reads as "mountainous" rather than "hill".
+            // Ridged (1 - |2n-1|) rather than plain fBm so it makes CRESTS and
+            // gullies instead of lumps, and it rides `ridge` so the flanks stay
+            // calmer than the crests, as real erosion leaves them.
+            const float r1 = fbm(x, z, 0.022f, 3, seed + 11000u + (uint32_t)i * 271u);
+            const float r2 = fbm(x, z, 0.061f, 2, seed + 13000u + (uint32_t)i * 331u);
+            const float c1 = 1.0f - std::fabs(2.0f * r1 - 1.0f);
+            const float c2 = 1.0f - std::fabs(2.0f * r2 - 1.0f);
+            // NOT gated on `ridge`. The first cut multiplied this by it, which was
+            // self-defeating: ridge = pow(1-|2n-1|, ridgeExp) with ridgeExp 2.5 is
+            // near ZERO over most of the flanks, so the rock detail was suppressed
+            // exactly where the mountain reads as a smooth dune. A real massif is
+            // broken everywhere, not only along its crest line — the crest is
+            // merely MORE broken. So apply it everywhere and let `ridge` add a
+            // modest extra bite on top.
+            const float bite = 0.55f + 0.45f * ridge;
+            hm += mask * bite * r.jagAmp * (0.85f * (c1 - 0.5f) + 0.45f * (c2 - 0.5f));
         }
         if (r.capY > 0.0f && hm > r.capY) hm = r.capY;           // mesa flat tops
         if (hm > 0.0f) h += hm;
