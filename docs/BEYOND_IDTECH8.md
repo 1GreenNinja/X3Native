@@ -2,7 +2,7 @@
 
 > **Status:** strategy / architecture analysis. Started 2026-05-22 (13700K clean-room rig).
 > **Audience:** Tim (owner) + every parallel agent, as a roadmap input.
-> **Companion doc:** `docs/IDTECH8_ROADMAP.md` (the parity north-star + §9 "T3 beyond" set). This doc is the *strategic why* behind that §9 list.
+> **Companion doc:** `docs/X3NATIVE_ROADMAP.md` (the parity north-star + §9 "T3 beyond" set). This doc is the *strategic why* behind that §9 list.
 
 ## 0. Read this first — the honest framing
 
@@ -66,7 +66,7 @@ So almost every "X3Native does better" in this doc is one of two things, and the
 
 **WHY (the tradeoff).** This is a clear-eyed bet by id: RT-capable hardware crossed a market threshold, and making RT mandatory **removes the entire cost of a non-RT fallback path** — no second lighting pipeline to author, tune, QA, or keep at parity. That fallback removal is a real engineering and art-pipeline win, and it's *why* they can ship fully-dynamic GI with no bake step. For id's audience and ship date, dropping pre-RTX cards was the right call.
 
-**How X3Native does better (genuine axis improvement — broader hardware envelope).** X3Native's clean-room build machine is a **GTX 1080 Ti (Pascal) with zero hardware RT cores** (`docs/IDTECH8_ROADMAP.md` §2). Copying "RT required, no fallback" would orphan the dev box *and* a large slice of real players. So the locked decision **D-RT** makes lighting **hybrid and hardware-gated**:
+**How X3Native does better (genuine axis improvement — broader hardware envelope).** X3Native's clean-room build machine is a **GTX 1080 Ti (Pascal) with zero hardware RT cores** (`docs/X3NATIVE_ROADMAP.md` §2). Copying "RT required, no fallback" would orphan the dev box *and* a large slice of real players. So the locked decision **D-RT** makes lighting **hybrid and hardware-gated**:
 
 - **GPU-driven *raster/compute* path is the floor** and runs *everywhere*, including the 1080 Ti — bindless + multidraw-indirect + compute culling are **BUILT** (`engine/rhi/`, confirmed in `docs/NOTE_TO_14900K.md` and `RENDERING_SPEED.md`), plus directional shadows, analytic sky, 16 point lights, HDR/bloom/emissive, and **SSAO**.
 - **GI is split:** a **compute-based irradiance/probe GI** (Sousa-style cascaded grids — runs on the 1080 Ti, *no RT cores needed*) is the cross-hardware tier (subsystem **F**); a **hardware-RT reflections / path-tracing tier** (subsystem **G**) is enabled *only* on RT-capable GPUs (5090). RT is a **quality tier, never the foundation.**
@@ -185,7 +185,7 @@ This is the one axis where X3Native is honestly *broader* than id Tech 8 by cons
 | 8c | Save-anywhere / persistence | broader scope | checkpoint/level | server-authoritative serializable world | implied (not specced) |
 | 8d | Cross-play / dedicated topology | broader scope | SP-focused | transport-agnostic dedicated servers | SPEC |
 
-> Cross-reference: this maps onto `docs/IDTECH8_ROADMAP.md` **§9 (T3 "beyond")** for the J/K subsystem features (motion matching, full-body IK, GPU crowd ragdolls, structural-connectivity destruction, 1M+ debris, deterministic replay). §9 is the *subsystem-level* beyond set; this table is the *engine-strategy-level* one.
+> Cross-reference: this maps onto `docs/X3NATIVE_ROADMAP.md` **§9 (T3 "beyond")** for the J/K subsystem features (motion matching, full-body IK, GPU crowd ragdolls, structural-connectivity destruction, 1M+ debris, deterministic replay). §9 is the *subsystem-level* beyond set; this table is the *engine-strategy-level* one.
 
 ---
 
@@ -247,6 +247,6 @@ Effort is rough (S/M/L/XL = days / weeks / months / quarters of solo-dev time). 
 - Tiago Sousa, *"Fast as Hell: idTech 8 Global Illumination,"* SIGGRAPH 2025 (Advances in Real-Time Rendering in Games) — public slides + recording: cascaded light grids, irradiance volumes / Ambient Probes, real-time path-traced irradiance cache, 60 Hz; used in Indiana Jones & The Great Circle (early) and DOOM: The Dark Ages.
 - Digital Foundry — *Doom: The Dark Ages* DF deep-dive (id Tech 8: RT, physics, virtualized geometry; level-based fast-paced design; 60 fps).
 - XDA, *"Exploring the gory brilliance of id Tech 8 in Doom: The Dark Ages"* — hands-on engine overview.
-- **X3Native internal:** `docs/IDTECH8_ROADMAP.md` (pillars, D-RT/D-PHYS/D-JOB, §9 T3 set), `docs/RENDERING_SPEED.md`, `docs/NOTE_TO_14900K.md`, `docs/CONVENTIONS.md`, `docs/EFLZ_DESIGN.md`, `specs/NETCODE-architecture.spec.md`, `specs/K-gpu-destruction.spec.md`, `specs/J-character-animation.spec.md`, `specs/M4-script-vm.spec.md`, `app/terrain.h`/`app/terrain.cpp`, `engine/rhi/IRenderDevice.h`, `engine/physics/`, `PROVENANCE.md`, `README.md`.
+- **X3Native internal:** `docs/X3NATIVE_ROADMAP.md` (pillars, D-RT/D-PHYS/D-JOB, §9 T3 set), `docs/RENDERING_SPEED.md`, `docs/NOTE_TO_14900K.md`, `docs/CONVENTIONS.md`, `docs/EFLZ_DESIGN.md`, `specs/NETCODE-architecture.spec.md`, `specs/K-gpu-destruction.spec.md`, `specs/J-character-animation.spec.md`, `specs/M4-script-vm.spec.md`, `app/terrain.h`/`app/terrain.cpp`, `engine/rhi/IRenderDevice.h`, `engine/physics/`, `PROVENANCE.md`, `README.md`.
 
 > *No game-engine source code was read or referenced in producing this document. All id Tech 8 statements derive from the public sources above; all X3Native statements derive from this repository's own specs, docs, and code.*
