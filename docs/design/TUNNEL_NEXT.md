@@ -164,3 +164,40 @@ Seven called out. Status after 8537fbed + the follow-up:
 * Old School Gamer Magazine — https://www.oldschoolgamermagazine.com/the-need-for-speed-3do/
 * Texturing a race track (Polycount) — https://polycount.com/discussion/48473/texturing-a-race-track
 * Lou's Pseudo 3D Page — https://www.extentofthejam.com/pseudo/
+
+---
+
+## 5. THE CAR — gyroscope wheels + facing left (2026-08-13, Tim driving)
+
+Tim drove it in `--world tunnel`: "the car moves, the wheels spin, but they spin
+SIDEWAYS, lookin like a gyroscope" and "it moves forward when I accelerate".
+
+THAT LAST PART IS THE DIAGNOSIS. Physics forward is CORRECT — the rig drives the
+way it faces. So nothing is wrong with the vehicle sim or the tuning; this is
+purely the SKIN transform, i.e. two hard-coded constants in app/vehicle.cpp that
+encode assumptions about how the GLB was authored:
+
+    // "Mesh-local wheel axis is +-X (car lateral); the physics wheel pose maps a
+    //  unit Y-cylinder (axis = axle). Rotate mesh X onto pose Y (Rz +90deg)."
+    kWheelAxisFix[16] = { 0,1,0,0, -1,0,0,0, 0,0,1,0, 0,0,0,1 };
+    kBodySkin[16]     = { -1,0,0,0, 0,1,0,0, 0,0,-1,0, 0,kBodyDropY,0,1 };  // 180 deg nose flip
+
+If THIS car's wheels are not authored with the axle on +-X, that Rz+90 rotates
+them OFF the axle rather than onto it — a wheel spinning about an axis 90 deg
+from its axle is precisely a gyroscope. Same class for the body: the 180 deg flip
+assumes a nose direction this model may not share, which is the "pointed left".
+
+NEXT STEPS, cheapest first:
+1. Inspect the car GLB's node axes directly (which local axis is the wheel
+   cylinder on, which way does the body nose point). Do NOT guess — the whole bug
+   is a guess about authoring that turned out wrong for this asset.
+2. Try kWheelAxisFix = identity. If the wheels then spin correctly, the GLB's
+   wheels are already axle-aligned and the "fix" was the defect.
+3. The body flip and the wheel fix are INDEPENDENT — verify them separately or a
+   wrong pair can look right from one angle.
+
+Verification needs a human at the wheel or an animated capture; a still cannot
+show a spin axis. Do not claim this fixed from a screenshot.
+
+ALSO FROM THE SAME SESSION: physics feel got a thumbs-up — "Physics FEELS kind of
+FUN though!!!! I feel gravity!" Whatever the drift lane does, do not regress it.
