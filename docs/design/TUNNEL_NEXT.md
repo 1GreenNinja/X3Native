@@ -99,6 +99,12 @@ Requested: "sidewalks, access points, doors with keypads and rooms and stairs an
 underground complex access, lighting — some LED, some burned out, some video
 screens like CP2077".
 
+> STATUS 2026-08-13 (later): the acceptance conditions now EXIST, written
+> before any code as required — see `TUNNEL_INTERIOR_PLAN.md` (verified
+> constraints incl. the exact 1.0 m walkway band and the <=0.55 m niche depth,
+> W/D/L/S/B/E conditions with negative controls, execution order, and the open
+> questions for Tim). The sketch below is superseded by that plan.
+
 This is a SUBSYSTEM, not dressing, and needs its own acceptance conditions before
 any code. Captured here so the request is not lost.
 
@@ -150,14 +156,20 @@ Seven called out. Status after 8537fbed + the follow-up:
 - [ ] **Car is too small and faces the wrong way.** Showcase prop in host_tunnel.
 - [ ] **Mountain is too smooth** — needs jagged peaks, not a dune. `ridgeExp` and
       `jagAmp` on the tunnel-ridge RangeDef are the levers (currently 1.7 / 26).
-- [ ] **Mountain has no MOUNTAIN COLOURS** — wants bluish dark rock, snow caps,
-      trees. The splat blends by height/slope; snow exists as a layer
-      (`terrain_snow`) but the ridge tops out ~124 m, far below wherever the snow
-      band starts. Needs the splat bands retuned for a peak this height, plus
-      vegetation scatter on the flanks.
+- [x] **Mountain has no MOUNTAIN COLOURS** — DONE (f33daf0e) except trees. The
+      splat gained an optional FIFTH texture slot: `terrain_rock_dark`
+      (UniStorm Rock_2, dark blue-grey craggy slate) crossfades in over
+      70..150 m with the blue-vein luminance remap on top, and snow was
+      retuned 180/265 -> 118/185 because the ridge peaks ~162 m — UNDER the
+      old snow floor. Saddle capture shows dark craggy summit stone with snow
+      pockets. The stale WARNING that the altitude tint "changes ZERO pixels"
+      was disproven by a garish-red probe: the x3shaders copy-fix had already
+      cured the stale-spv trap. Trees still open (vegetation scatter).
 - [ ] **Strange non-concrete artifact at the roadside** — may be resolved by the
       fill-only guard above; needs a fresh look.
-- [ ] **Grass or rock ON the road** — unconfirmed, needs a close capture.
+- [x] **Grass or rock ON the road** — CONFIRMED and FIXED: it was §7's earth
+      ramp (the portal-sweep residual). Cut by the portal plugs + mesh portal
+      holes; see §7's outcome note.
 
 ## Sources
 * The Need for Speed — https://en.wikipedia.org/wiki/The_Need_for_Speed
@@ -270,3 +282,35 @@ WHAT TO TRY NEXT, in order:
    way.
 
 DO NOT ship a tunnel you cannot drive through and call the lane done.
+
+### OUTCOME (2026-08-13, a7f83138) — CUT, and PROVEN by driving
+
+Options 1+2 combined, plus a third mechanism the list above missed:
+
+* PORTAL PLUG per mouth — a short 4-node full-cut corridor, falloff 2.5 m,
+  face pushed past the main corridor's 18.8 m end-cap reach. Key measured
+  find: the capsule end cap FREEZES the last node's depth for halfWidth
+  (8.8 m) while the mountain keeps rising ~1.2-2 m/m, so a locally-sampled
+  final depth still left a 5 m ramp at the natural slope. The final node now
+  samples its depth one cap-length ahead (over-cutting a scoop just outside
+  the portal), which collapses the rise into the 2.5 m falloff band.
+* PORTAL HOLE (new, terrain.h) — the part NO field change can ever fix: the
+  tile mesher joins road-level verts to lid verts with a continuous CURTAIN
+  of triangles that has collision, however steep the field steps. The mesher
+  now drops surface triangles whose centroid is in the mouth prism and whose
+  lowest vertex dips into the tube envelope — render AND collision. Skirts
+  get the same predicate.
+* Fallback: X3_TUNNEL_PORTAL_CUT=0 restores the old field + mesh exactly.
+
+MEASURED: field residual 16 m -> 0 m. PROVEN by `--test-tunneldrive` (11
+checks): the real Jolt rig drives the real streamed-tile collision end to
+end — negative control (cut disabled) stalls at the ramp at s=107, enabled
+run exits past the far portal at road level (worst |dY| 1.0 m). The same
+test also surveys the ditch-to-road mount step (Lane 7's skirt-wall defect,
+fixed by the ~19 deg scree fillet in f33daf0e): worst step 0.14 m vs the
+0.45 m chassis clearance.
+
+Honest debts: the mouth cliff faces render with stretched terrain triangles
+and a few floating shard triangles (torn hole rim / coarse LOD); the
+headwall is small against the new ~40 m rock face. Cosmetic — the drive is
+clean.
