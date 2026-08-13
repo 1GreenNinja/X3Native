@@ -1,5 +1,5 @@
 // Engine-wide Job System implementation — Subsystem A (idTech 8 perf spine).
-// Spec: docs/IDTECH8_ROADMAP.md decision D-JOB.
+// Spec: docs/X3NATIVE_ROADMAP.md decision D-JOB.
 //
 // SHIPPED PATH: work-stealing thread pool with a "help-while-waiting" wait().
 //

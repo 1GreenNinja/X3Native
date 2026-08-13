@@ -1,6 +1,6 @@
 #pragma once
 // Engine-wide Job System interface — Subsystem A (idTech 8 perf spine).
-// Spec: docs/IDTECH8_ROADMAP.md decision D-JOB.
+// Spec: docs/X3NATIVE_ROADMAP.md decision D-JOB.
 //
 // Clean interface: plain function pointers + an opaque Counter. NO platform
 // (Win32 fiber) or std::thread/atomic types leak through this header; the whole
