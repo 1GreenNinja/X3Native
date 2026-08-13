@@ -408,6 +408,13 @@ const RangeDef kRanges[kRangeCount] = {
     {  9200.0f, -2000.0f,  9200.0f,  2500.0f, 550.0f, 2300.0f, 460.0f, 2.0f, 45.0f,   0.0f }, // E volcanic
     { -2800.0f, -9000.0f,  3500.0f, -9000.0f, 500.0f, 2100.0f, 230.0f, 1.1f,  0.0f, 195.0f }, // S mesa
     { -8600.0f, -2000.0f, -8600.0f,  1800.0f, 600.0f, 2400.0f, 320.0f, 1.3f,  0.0f,   0.0f }, // W crystal hills
+    // TUNNEL RIDGE. The four ranges above sit 8-9 km out, so the corridor route
+    // at (-592,-352) bored through the BASE rolling field (heightScale 55 m) —
+    // which is why the worst soil cover over the shell was only 2.46 m. A freeway
+    // tunnel needs a mountain. Runs PERPENDICULAR to the route heading so the bore
+    // crosses it square, and is short enough that outW does not reach the
+    // Scrapyard City pad at (-600,500).
+    {  -753.0f,  -740.0f,  -431.0f,    36.0f, 110.0f,  240.0f, 165.0f, 1.7f, 26.0f,   0.0f }, // tunnel ridge
 };
 
 // Flat pads: blend the field toward padY inside r, fully the field by r*1.7.
