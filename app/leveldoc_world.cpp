@@ -18,12 +18,16 @@ namespace x3::game {
 
 namespace {
 
-// Column-major model matrix from pos + yaw about +Y (mirrors editor_host).
-void yawMatrix(const float pos[3], float yaw, float m[16], float scale = 1.0f) {
-    const float c = std::cos(yaw) * scale, s = std::sin(yaw) * scale;
-    m[0]=c;    m[1]=0;     m[2]=-s;   m[3]=0;
-    m[4]=0;    m[5]=scale; m[6]=0;    m[7]=0;
-    m[8]=s;    m[9]=0;     m[10]=c;   m[11]=0;
+// Column-major model matrix from pos + the full 11.0 rotation (mirrors
+// editor_host::brushMatrix — one convention, editor::rotYPR, for the whole round
+// trip; pitch = roll = 0 reproduces the old yaw-only matrix bit-identically).
+void objMatrix(const float pos[3], float yaw, float pitch, float roll,
+               float m[16], float scale = 1.0f) {
+    float R[9];
+    x3::editor::rotYPR(yaw, pitch, roll, R);
+    m[0]=R[0]*scale;  m[1]=R[1]*scale;  m[2]=R[2]*scale;   m[3]=0;
+    m[4]=R[3]*scale;  m[5]=R[4]*scale;  m[6]=R[5]*scale;   m[7]=0;
+    m[8]=R[6]*scale;  m[9]=R[7]*scale;  m[10]=R[8]*scale;  m[11]=0;
     m[12]=pos[0]; m[13]=pos[1]; m[14]=pos[2]; m[15]=1;
 }
 
@@ -134,23 +138,44 @@ void LevelDocWorld::spawnBrush(const x3::editor::BlockoutBrush& b, Scene& scene,
     e.baseColor[0] = b.tint[0]*matTint[0]; e.baseColor[1] = b.tint[1]*matTint[1];
     e.baseColor[2] = b.tint[2]*matTint[2]; e.baseColor[3] = 1.0f;
     e.tag = (uint32_t)Tag::Static;
-    yawMatrix(b.pos, b.yaw, e.transform);
+    objMatrix(b.pos, b.yaw, b.pitch, b.roll, e.transform);
     Built rec; rec.slot = claimSlot(scene, e); rec.ownsMesh = true;
     m_builtObjects.push_back(rec);
     ++m_brushEntities;
 
     if (b.collide) {
+        using x3::editor::rot3Enabled;
+        const bool rotated = rot3Enabled() &&
+            (std::fabs(b.yaw) > 1e-6f || std::fabs(b.pitch) > 1e-6f ||
+             std::fabs(b.roll) > 1e-6f);
         x3::phys::Vec3 pos{ b.pos[0], b.pos[1], b.pos[2] };
         x3::phys::BodyId bid{};
         if (type == x3::prims::BrushType::Box) {
             x3::phys::Vec3 he{ b.size[0]*0.5f, b.size[1]*0.5f, b.size[2]*0.5f };
             bid = physics.addBox(he, pos, 0.0f, x3::phys::Layer::Static);
+            // 11.0: orient the box body to the brush (mirrors EditorHost::spawnBrush;
+            // X3_EDITOR_ROT3=0 restores the old axis-aligned bodies exactly).
+            if (bid.id && rotated) {
+                float q[4];
+                x3::editor::yprToQuat(b.yaw, b.pitch, b.roll, q);
+                physics.setBodyRotation(bid, q);
+            }
         } else {
             // Ramp / Cylinder / Stairs: a static MESH of the brush's own triangles (an AABB
             // would make the slope, the round wall and the treads all read as one block).
-            std::vector<float> cv = pm.cverts;   // local -> world (axis-aligned)
+            // 11.0: rotate the local verts by the brush orientation before translating.
+            std::vector<float> cv = pm.cverts;   // local -> world
+            float R[9];
+            if (rotated) x3::editor::rotYPR(b.yaw, b.pitch, b.roll, R);
             for (size_t i = 0; i + 2 < cv.size(); i += 3) {
-                cv[i+0] += b.pos[0]; cv[i+1] += b.pos[1]; cv[i+2] += b.pos[2];
+                float x = cv[i+0], y = cv[i+1], z = cv[i+2];
+                if (rotated) {
+                    const float wx = R[0]*x + R[3]*y + R[6]*z;
+                    const float wy = R[1]*x + R[4]*y + R[7]*z;
+                    const float wz = R[2]*x + R[5]*y + R[8]*z;
+                    x = wx; y = wy; z = wz;
+                }
+                cv[i+0] = x + b.pos[0]; cv[i+1] = y + b.pos[1]; cv[i+2] = z + b.pos[2];
             }
             bid = physics.addStaticMesh(cv.data(), (uint32_t)(cv.size()/3),
                                         pm.cindex.data(), (uint32_t)pm.cindex.size());
@@ -195,11 +220,37 @@ void LevelDocWorld::spawnEntity(uint32_t entityIdx, const x3::editor::EditorEnti
         if (!e.script.empty()) m_triggerScripts.emplace_back(entityIdx, e.script);
         return;
     }
+    if (e.type == "portal" && x3::editor::portalsEnabled()) {
+        // 11.0 PORTAL (see the LEVELDOC PORTAL CONTRACT in editor.h): spawn a
+        // NON-COLLIDING oriented marker slab (W x H x thickness) so a hand- or
+        // generator-placed portal is visible in-game exactly where and how it
+        // faces. Consumers (the tunnel system) read pos/yaw/pitch/roll/size and
+        // the `script` link id from the doc — this marker implies nothing else.
+        // X3_EDITOR_PORTAL=0 falls through to the generic marker (prior behaviour).
+        const float w = e.size[0] > 0 ? e.size[0] : 3.0f;
+        const float h = e.size[1] > 0 ? e.size[1] : 3.0f;
+        const float t = e.size[2] > 0 ? e.size[2] : 0.4f;
+        const float slab[3] = { w, h, t };
+        x3::prims::PrimMesh pm =
+            x3::prims::buildBrushMesh(x3::prims::BrushType::Box, slab);
+        Entity se;
+        se.mesh = device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                    pm.index.data(), (uint32_t)pm.index.size());
+        se.baseColor[0] = e.tint[0]; se.baseColor[1] = e.tint[1];
+        se.baseColor[2] = e.tint[2]; se.baseColor[3] = 1.0f;
+        for (int i = 0; i < 4; ++i) se.emissive[i] = e.emissive[i];
+        se.tag = (uint32_t)Tag::Prop;
+        objMatrix(e.pos, e.yaw, e.pitch, e.roll, se.transform);
+        Built rec; rec.slot = claimSlot(scene, se); rec.ownsMesh = true;
+        m_builtObjects.push_back(rec);
+        ++m_propEntities;
+        return;
+    }
     if (!e.model.empty()) {
         const LoadedModel* lm = loadModelCached(e.model, device);
         if (lm && lm->ok) {
             float obj[16];
-            yawMatrix(e.pos, e.yaw, obj, e.scale);
+            objMatrix(e.pos, e.yaw, e.pitch, e.roll, obj, e.scale);
             for (const auto& d : lm->drawables) {
                 if (!d.meshId) continue;
                 Entity se;
@@ -231,7 +282,7 @@ void LevelDocWorld::spawnEntity(uint32_t entityIdx, const x3::editor::EditorEnti
     se.baseColor[0] = e.tint[0]; se.baseColor[1] = e.tint[1];
     se.baseColor[2] = e.tint[2]; se.baseColor[3] = 1.0f;
     se.tag = (uint32_t)Tag::Prop;
-    yawMatrix(e.pos, e.yaw, se.transform);
+    objMatrix(e.pos, e.yaw, e.pitch, e.roll, se.transform);
     Built rec; rec.slot = claimSlot(scene, se); rec.ownsMesh = true;
     m_builtObjects.push_back(rec);
     ++m_propEntities;
@@ -435,7 +486,7 @@ x3::editor::LevelDoc makeSampleLevelDoc() {
 const char* defaultLevelDocPath() { return "build/proof/architect_level.json"; }
 
 // ===========================================================================
-// Headless self-test (--test-loader). L0-L7. No window / Vulkan.
+// Headless self-test (--test-loader). L0-L10. No window / Vulkan.
 // ===========================================================================
 namespace {
 
@@ -477,7 +528,7 @@ public:
 
 bool runLevelDocLoaderSelfTest() {
     g_pass = g_fail = 0;
-    x3::logInfo("running LevelDoc data-driven loader self-test (L0-L7)...");
+    x3::logInfo("running LevelDoc data-driven loader self-test (L0-L10)...");
 
     // ---- The authored doc: 4 brushes (one hazard material, one no-collide ramp),
     // 1 graybox item marker, 1 missing-GLB model entity (fallback marker), 2 lights,
@@ -499,6 +550,13 @@ bool runLevelDocLoaderSelfTest() {
     brush("wall",   0, 0,  1.5f, -5, 10, 3,    0.4f, "wall", true);
     brush("pillar", 0, 3,  1.0f,  3, 1,  2,    1,   "hazard", true);
     brush("ramp",   1, -2, 0.75f, 0, 3,  1.5f, 4,   "",      false);
+    // 11.0: a THREE-AXIS-rotated, colliding, GENERATOR-stamped box (index 4) —
+    // the rotation + provenance round-trip subject for L7.
+    brush("tilt",   0, 0,  3.0f,  0, 2,  1,    1,   "",      true);
+    doc.brushes[4].yaw = 0.52359879f;    // 30 deg
+    doc.brushes[4].pitch = 0.78539816f;  // 45 deg
+    doc.brushes[4].roll = -0.26179939f;  // -15 deg
+    doc.brushes[4].gen = "test:tilt:0";
     { x3::editor::EditorEntity e; e.name="item"; e.type="item";
       e.pos[0]=2; e.pos[1]=0.5f; e.pos[2]=1; e.yaw=0.5f;
       e.tint[0]=1.0f; e.tint[1]=0.82f; e.tint[2]=0.3f; doc.entities.push_back(e); }
@@ -512,6 +570,15 @@ bool runLevelDocLoaderSelfTest() {
     { x3::editor::EditorEntity e; e.name="tz"; e.type="trigger";
       e.pos[0]=3; e.pos[1]=1; e.pos[2]=3; e.size[0]=2; e.size[1]=2; e.size[2]=2;
       e.script="secret_door"; doc.entities.push_back(e); }
+    // 11.0: a hand-orientable PORTAL with a link id + generator provenance —
+    // the L8 subject (spawns an oriented non-colliding marker slab).
+    { x3::editor::EditorEntity e; e.name="gate_a"; e.type="portal";
+      e.pos[0]=5; e.pos[1]=2; e.pos[2]=1;
+      e.yaw=0.9f; e.pitch=0.25f; e.roll=-0.1f;
+      e.size[0]=3; e.size[1]=3; e.size[2]=0.4f;
+      e.tint[0]=0.3f; e.tint[1]=0.9f; e.tint[2]=1.0f;
+      e.script="tunnel_a_west"; e.gen="tunnel:portal:a_west";
+      doc.entities.push_back(e); }
 
     // ---- L0: the EXTENDED format (script + size) survives the JSON round-trip. ----
     {
@@ -541,14 +608,15 @@ bool runLevelDocLoaderSelfTest() {
         bool loaded = saved && world.loadFromFile(path, scene, device, *physics);
         float ps[3] = { 0, 0, 0 };
         if (loaded) world.playerStart(ps);
-        // 4 brush entities; 2 prop entities (item marker + missing-GLB fallback marker);
-        // 3 bodies (the ramp is collide=false); 2 lights; 1 trigger.
+        // 5 brush entities; 3 prop entities (item marker + missing-GLB fallback
+        // marker + portal marker slab); 4 bodies (the ramp is collide=false and the
+        // PORTAL adds NO body); 2 lights; 1 trigger.
         check(loaded && world.built() &&
-              world.brushEntityCount() == 4 && world.propEntityCount() == 2 &&
-              world.bodyCount() == 3 && world.lightCount() == 2 &&
+              world.brushEntityCount() == 5 && world.propEntityCount() == 3 &&
+              world.bodyCount() == 4 && world.lightCount() == 2 &&
               world.triggerCount() == 1 &&
               feq(ps[0], 1.0f) && feq(ps[1], 0.5f) && feq(ps[2], 2.0f),
-              "L1 save -> loadFromFile builds 4 brushes / 2 props / 3 bodies / 2 lights / 1 trigger");
+              "L1 save -> loadFromFile builds 5 brushes / 3 props / 4 bodies / 2 lights / 1 trigger");
     }
 
     // ---- L2: transforms + material tint applied to the built scene entities. ----
@@ -588,9 +656,9 @@ bool runLevelDocLoaderSelfTest() {
           e.pos[0]=-4; e.pos[1]=2; e.pos[2]=-4; mod.entities.push_back(e); }
         bool saved = mod.saveJson(path);
         bool reloaded = saved && world.reloadNow(scene, device, *physics);
-        // New shape: 3 brushes / 2 bodies / 3 lights; pillar (now slot order [1]) at x=6.
-        bool counts = reloaded && world.brushEntityCount() == 3 &&
-                      world.bodyCount() == 2 && world.lightCount() == 3 &&
+        // New shape: 4 brushes / 3 bodies / 3 lights; pillar (now slot order [1]) at x=6.
+        bool counts = reloaded && world.brushEntityCount() == 4 &&
+                      world.bodyCount() == 3 && world.lightCount() == 3 &&
                       world.triggerCount() == 1;
         bool moved = counts && world.ownedSlots().size() >= 2 &&
                      feq(scene.get(world.ownedSlots()[1]).transform[12], 6.0f);
@@ -601,8 +669,8 @@ bool runLevelDocLoaderSelfTest() {
     // by exactly the dropped brush (old objects gone, nothing duplicated). ----
     {
         const bool slotsReused = world.totalSlotsClaimed() == slotsBefore;
-        // One fewer owned mesh is alive (5 owned before: 4 brush + ... wait —
-        // brushes 4 + 2 markers = 6 owned meshes before; after: 3 + 2 = 5).
+        // One fewer owned mesh is alive (before: 5 brushes + 2 markers + 1 portal
+        // slab = 8 owned meshes; after the wall drop: 7).
         const bool ledger = device.liveMeshes() == meshLiveBefore - 1;
         check(slotsReused && ledger,
               "L5 reload recycles scene slots (no growth) + mesh ledger shrinks by the delta");
@@ -610,17 +678,155 @@ bool runLevelDocLoaderSelfTest() {
 
     // ---- L6: mtime hot-reload poll picks up an on-disk change. ----
     {
-        x3::editor::LevelDoc mod2 = doc;                     // back to the 4-brush shape
+        x3::editor::LevelDoc mod2 = doc;                     // back to the 5-brush shape
         bool saved = mod2.saveJson(path);
         // Poll at t=10 (past any interval); mtime changed -> reload applies.
         bool hot = saved && world.pollHotReload(10.0, scene, device, *physics);
         // Immediately polling again finds no change.
         bool quiet = !world.pollHotReload(11.0, scene, device, *physics);
-        check(hot && quiet && world.brushEntityCount() == 4 && world.bodyCount() == 3,
+        check(hot && quiet && world.brushEntityCount() == 5 && world.bodyCount() == 4,
               "L6 mtime poll hot-reloads the changed file once");
     }
 
-    // ---- L7: shutdown balances every ledger to zero (the no-leak gate). ----
+    // ---- L7 (11.0): the ROTATED brush survived file save -> load BIT-exactly and
+    // its built scene transform carries the FULL three-axis rotation. The negative
+    // control: the yaw-only matrix must NOT match — this check fails outright if
+    // the loader (or the JSON) drops pitch/roll. ----
+    {
+        const x3::editor::LevelDoc& d = world.doc();
+        bool docExact = d.brushes.size() == 5 &&
+                        d.brushes[4].yaw   == 0.52359879f &&
+                        d.brushes[4].pitch == 0.78539816f &&
+                        d.brushes[4].roll  == -0.26179939f &&
+                        d.brushes[4].gen   == "test:tilt:0" &&
+                        d.brushes[4].genEdited == false;
+        bool xfOk = false, notYawOnly = false;
+        if (world.ownedSlots().size() >= 5) {
+            const Entity& tilt = scene.get(world.ownedSlots()[4]);
+            float R[9];
+            x3::editor::rotYPR(0.52359879f, 0.78539816f, -0.26179939f, R);
+            xfOk = true;
+            const int map[9] = { 0,1,2, 4,5,6, 8,9,10 };   // 4x4 col-major -> 3x3
+            for (int k = 0; k < 9; ++k)
+                xfOk = xfOk && feq(tilt.transform[map[k]], R[k], 1e-6f);
+            xfOk = xfOk && feq(tilt.transform[12], 0.0f) &&
+                   feq(tilt.transform[13], 3.0f) && feq(tilt.transform[14], 0.0f);
+            // Negative control: a yaw-only build of the same brush differs.
+            float Ry[9];
+            x3::editor::rotYPR(0.52359879f, 0.0f, 0.0f, Ry);
+            for (int k = 0; k < 9; ++k)
+                if (std::fabs(Ry[k] - tilt.transform[map[k]]) > 0.01f) notYawOnly = true;
+        }
+        check(docExact && xfOk && notYawOnly,
+              "L7 rotated brush: bit-exact doc round-trip + full 3-axis scene transform");
+    }
+
+    // ---- L8 (11.0): the PORTAL spawned as an ORIENTED marker slab (no body), and
+    // its link id + provenance survived the file round trip. ----
+    {
+        const x3::editor::LevelDoc& d = world.doc();
+        const x3::editor::EditorEntity* gate = nullptr;
+        for (const auto& e : d.entities) if (e.name == "gate_a") gate = &e;
+        bool docOk = gate && gate->type == "portal" &&
+                     gate->yaw == 0.9f && gate->pitch == 0.25f && gate->roll == -0.1f &&
+                     gate->script == "tunnel_a_west" &&
+                     gate->gen == "tunnel:portal:a_west" && !gate->genEdited;
+        // Spawn order: 5 brushes (slots [0..4]), item marker [5], ghost fallback
+        // [6], portal slab [7]. Lights/triggers claim no slots.
+        bool xfOk = false;
+        if (world.ownedSlots().size() == 8) {
+            const Entity& slab = scene.get(world.ownedSlots()[7]);
+            float R[9];
+            x3::editor::rotYPR(0.9f, 0.25f, -0.1f, R);
+            xfOk = feq(slab.transform[12], 5.0f) && feq(slab.transform[13], 2.0f) &&
+                   feq(slab.transform[14], 1.0f);
+            const int map[9] = { 0,1,2, 4,5,6, 8,9,10 };
+            for (int k = 0; k < 9; ++k)
+                xfOk = xfOk && feq(slab.transform[map[k]], R[k], 1e-6f);
+        }
+        // The portal must add NO collision body (bodies are the 4 colliding brushes).
+        check(docOk && xfOk && world.bodyCount() == 4 && world.propEntityCount() == 3,
+              "L8 portal: oriented marker slab, link id + provenance kept, NO body");
+    }
+
+    // ---- L9 (11.0 handoff): a GENERATED doc — authored in a loop the way a
+    // generator would emit it, every object gen-stamped and three-axis-rotated —
+    // survives file save -> load with NOTHING dropped (field-for-field, floats
+    // bit-exact), builds, and tears down leak-free. The comparator itself is
+    // negative-controlled: a single perturbed float must make it fail. ----
+    {
+        x3::editor::LevelDoc gdoc;
+        gdoc.name = "gen_ring"; gdoc.biome = "facility";
+        for (int i = 0; i < 12; ++i) {
+            const float a = (float)i * 0.5235988f;           // 30-deg arc steps
+            x3::editor::BlockoutBrush b;
+            b.name = "seg_" + std::to_string(i);
+            b.type = 0u;
+            b.pos[0] = 20.0f * std::cos(a); b.pos[1] = 0.5f + 0.3f * (float)i;
+            b.pos[2] = 20.0f * std::sin(a);
+            b.size[0] = 4; b.size[1] = 0.5f; b.size[2] = 3;
+            b.yaw = a; b.pitch = 0.08f * (float)(i % 3); b.roll = -0.05f * (float)(i % 2);
+            b.gen = "gen:ring:seg:" + std::to_string(i);
+            gdoc.brushes.push_back(b);
+        }
+        for (int i = 0; i < 3; ++i) {
+            x3::editor::EditorEntity e;
+            e.name = "gen_gate_" + std::to_string(i); e.type = "portal";
+            e.pos[0] = (float)(i * 7); e.pos[1] = 2; e.pos[2] = -10;
+            e.yaw = 0.3f * (float)i; e.pitch = 0.1f; e.roll = 0.0f;
+            e.size[0] = 3; e.size[1] = 3; e.size[2] = 0.4f;
+            e.script = "gen_link_" + std::to_string(i);
+            e.gen = "gen:ring:gate:" + std::to_string(i);
+            gdoc.entities.push_back(e);
+        }
+        const std::string gpath = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : ".")
+                                  + "/x3_loader_gen_test.json";
+        auto docEquals = [](const x3::editor::LevelDoc& a, const x3::editor::LevelDoc& b) {
+            if (a.name != b.name || a.brushes.size() != b.brushes.size() ||
+                a.entities.size() != b.entities.size()) return false;
+            for (size_t i = 0; i < a.brushes.size(); ++i) {
+                const auto& x = a.brushes[i]; const auto& y = b.brushes[i];
+                if (x.name != y.name || x.type != y.type || x.material != y.material ||
+                    x.collide != y.collide || x.gen != y.gen || x.genEdited != y.genEdited)
+                    return false;
+                for (int k = 0; k < 3; ++k)
+                    if (x.pos[k] != y.pos[k] || x.size[k] != y.size[k] ||
+                        x.tint[k] != y.tint[k]) return false;
+                if (x.yaw != y.yaw || x.pitch != y.pitch || x.roll != y.roll) return false;
+            }
+            for (size_t i = 0; i < a.entities.size(); ++i) {
+                const auto& x = a.entities[i]; const auto& y = b.entities[i];
+                if (x.name != y.name || x.type != y.type || x.model != y.model ||
+                    x.script != y.script || x.gen != y.gen || x.genEdited != y.genEdited)
+                    return false;
+                for (int k = 0; k < 3; ++k)
+                    if (x.pos[k] != y.pos[k] || x.size[k] != y.size[k] ||
+                        x.tint[k] != y.tint[k]) return false;
+                if (x.yaw != y.yaw || x.pitch != y.pitch || x.roll != y.roll ||
+                    x.scale != y.scale) return false;
+            }
+            return true;
+        };
+        x3::editor::LevelDoc rt;
+        bool lossless = gdoc.saveJson(gpath) && rt.loadJson(gpath) && docEquals(gdoc, rt);
+        // NEGATIVE CONTROL: perturb one float by one grid cell — must NOT compare equal.
+        x3::editor::LevelDoc bad = rt;
+        bad.brushes[7].pitch += 0.5f;
+        bool comparatorBites = !docEquals(gdoc, bad);
+        // Build it, then tear it down: the device ledgers must return exactly to
+        // their pre-build level (the generated-doc no-leak gate).
+        const int meshesBefore = device.liveMeshes();
+        LevelDocWorld gworld;
+        bool built = gworld.loadFromFile(gpath, scene, device, *physics) &&
+                     gworld.brushEntityCount() == 12 && gworld.propEntityCount() == 3 &&
+                     gworld.bodyCount() == 12;
+        gworld.shutdown(scene, device, *physics);
+        bool balanced = device.liveMeshes() == meshesBefore;
+        check(lossless && comparatorBites && built && balanced,
+              "L9 GENERATED doc: lossless save->load (bit-exact), builds, tears down leak-free");
+    }
+
+    // ---- L10: shutdown balances every ledger to zero (the no-leak gate). ----
     {
         world.shutdown(scene, device, *physics);
         const bool meshes   = device.liveMeshes() == 0;
@@ -632,7 +838,7 @@ bool runLevelDocLoaderSelfTest() {
             device.meshCreated, device.meshDestroyed, device.texCreated, device.texDestroyed);
         x3::logInfo(msg);
         check(meshes && textures && bodies && !world.built(),
-              "L7 shutdown: mesh/texture/body ledgers balance to ZERO (no leaks)");
+              "L10 shutdown: mesh/texture/body ledgers balance to ZERO (no leaks)");
     }
 
     physics->shutdown();

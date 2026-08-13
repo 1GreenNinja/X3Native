@@ -948,6 +948,28 @@ int EditorHost::placeModel(const std::string& relPath, x3::rhi::IRenderDevice& d
     return idx;
 }
 
+// ---------------------------------------------------------------------------
+// 11.0 PORTAL authoring — place a "portal" entity at the fly-cam focus. The
+// portal faces BACK at the camera (yaw = camera yaw + pi), which is what you
+// want when you fly to a wall and stamp a door on it. Default 3x3 m plane,
+// 0.4 m marker slab. See the LEVELDOC PORTAL CONTRACT in editor.h.
+// ---------------------------------------------------------------------------
+int EditorHost::placePortal() {
+    float focus[3] = {
+        m_state.snapValue(m_camX + std::cos(m_camPitch)*std::cos(m_camYaw) * 6.0f),
+        m_state.snapValue(m_camY + std::sin(m_camPitch) * 6.0f),
+        m_state.snapValue(m_camZ + std::cos(m_camPitch)*std::sin(m_camYaw) * 6.0f),
+    };
+    int idx = m_state.addEntity("portal", focus);
+    if (idx < 0) return idx;
+    EditorEntity& e = m_doc.entities[idx];
+    e.name = "portal_" + std::to_string(idx);
+    e.yaw  = m_camYaw + 3.14159265f;              // local +Z (the facing) toward the camera
+    e.size[0] = 3.0f; e.size[1] = 3.0f; e.size[2] = 0.4f;
+    e.tint[0] = 0.30f; e.tint[1] = 0.90f; e.tint[2] = 1.0f;   // the palette portal cyan
+    return idx;
+}
+
 void EditorHost::renderModels(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) {
     if (m_doc.entities.empty()) return;
     const float white[4] = { 1, 1, 1, 1 };
@@ -955,12 +977,15 @@ void EditorHost::renderModels(x3::rhi::IRenderDevice& device, const x3::rhi::Fra
         if (e.model.empty()) continue;
         const LoadedModel* lm = loadModelCached(e.model, device);
         if (!lm || !lm->ok) continue;
-        // Object transform: yaw about +Y, uniform scale, translate to pos (column-major).
-        const float c = std::cos(e.yaw), s = std::sin(e.yaw), k = e.scale;
+        // Object transform: full 11.0 rotation, uniform scale, translate (column-
+        // major). rotYPR with pitch=roll=0 reproduces the old yaw-only matrix.
+        float R[9];
+        rotYPR(e.yaw, e.pitch, e.roll, R);
+        const float k = e.scale;
         float obj[16] = {
-            c*k, 0, -s*k, 0,
-            0,   k, 0,    0,
-            s*k, 0, c*k,  0,
+            R[0]*k, R[1]*k, R[2]*k, 0,
+            R[3]*k, R[4]*k, R[5]*k, 0,
+            R[6]*k, R[7]*k, R[8]*k, 0,
             e.pos[0], e.pos[1], e.pos[2], 1
         };
         for (const auto& d : lm->drawables) {
@@ -1149,6 +1174,19 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
 
     ImGui::Separator();
     ImGui::TextDisabled("Add buttons are undoable (Ctrl+Z / Ctrl+Y).");
+
+    // ---- 11.0: PORTAL placement (the tunnel-lane payoff). Places a portal
+    // entity facing the camera; orient it with the Details rows / see it via the
+    // cyan overlay frame. (Entities have no undo stack yet — same as models.)
+    if (portalsEnabled()) {
+        ImGui::Separator();
+        if (ImGui::Button("Add Portal")) {
+            int idx = placePortal();
+            if (idx >= 0) m_state.select(idx);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(faces the camera)");
+    }
     ImGui::End();
 
     // ---- Details panel (P3): two-way-synced pos/yaw/size for the selection, each
@@ -1229,6 +1267,45 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
             if (resized) respawnBrush(si, device, scene, physics);   // rebuild mesh+body
             else if (moved) syncBrushTransform(si, scene, physics);  // transform-only
         }
+    } else if (portalsEnabled() && m_state.selKind() != SelKind::Brush &&
+               m_state.hasSelection() &&
+               m_doc.entities[m_state.selected()].type == "portal") {
+        // ---- 11.0: PORTAL details — position, full 3-axis orientation, plane
+        // size, and the LINK id (the contract consumers pair portals by). Portals
+        // are pure doc data in the editor (the overlay draws them), so edits need
+        // no scene/body sync. Degrees in UI, radians in doc, like the brush rows.
+        int ei = m_state.selected();
+        EditorEntity& e = m_doc.entities[ei];
+        ImGui::Text("Portal: %s", e.name.c_str());
+        if (!e.gen.empty())
+            ImGui::TextDisabled("generated: %s%s", e.gen.c_str(),
+                                e.genEdited ? "  (hand-edited)" : "");
+        ImGui::PushItemWidth(-ImGui::GetFontSize() * 6.0f);
+        float pos[3] = { e.pos[0], e.pos[1], e.pos[2] };
+        if (ImGui::DragFloat3("Pos##ptl", pos, kGridSteps[m_gridSel])) {
+            for (int a = 0; a < 3; ++a) e.pos[a] = m_state.snapValue(pos[a]);
+            if (!e.gen.empty()) e.genEdited = true;
+        }
+        float ypr[3] = { e.yaw * 57.29578f, e.pitch * 57.29578f, e.roll * 57.29578f };
+        const bool r3 = rot3Enabled();
+        bool rot = false;
+        if (ImGui::DragFloat("Yaw##ptl", &ypr[0], 1.0f)) { e.yaw = ypr[0]*0.0174533f; rot = true; }
+        if (r3 && ImGui::DragFloat("Pitch##ptl", &ypr[1], 1.0f)) { e.pitch = ypr[1]*0.0174533f; rot = true; }
+        if (r3 && ImGui::DragFloat("Roll##ptl", &ypr[2], 1.0f))  { e.roll = ypr[2]*0.0174533f; rot = true; }
+        if (rot && !e.gen.empty()) e.genEdited = true;
+        float wh[2] = { e.size[0], e.size[1] };
+        if (ImGui::DragFloat2("W x H##ptl", wh, 0.25f, 0.25f, 200.0f)) {
+            e.size[0] = std::max(0.25f, wh[0]); e.size[1] = std::max(0.25f, wh[1]);
+            if (!e.gen.empty()) e.genEdited = true;
+        }
+        char link[96];
+        std::snprintf(link, sizeof(link), "%s", e.script.c_str());
+        if (ImGui::InputText("Link id##ptl", link, sizeof(link))) {
+            e.script = link;
+            if (!e.gen.empty()) e.genEdited = true;
+        }
+        ImGui::PopItemWidth();
+        if (ImGui::Button("Delete portal")) m_state.deleteSelected();
     } else {
         ImGui::TextDisabled("(no brush selected — pick one in the viewport or Outliner)");
     }
@@ -1352,6 +1429,10 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     }
     // The unobtrusive floating cheat-sheet (corner, faint) — H toggles it.
     drawKeybindOverlay();
+
+    // ---- 11.0 portal overlays (before the gizmo so a selected brush's gizmo
+    // draws on top of a portal frame behind it). ----
+    drawPortalOverlays(device);
 
     // ---- Viewport gizmo + click-pick (P3). Drawn last so it overlays the scene. ----
     {
@@ -1577,6 +1658,61 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
     }
 
     m_lmbPrev = lmb;
+}
+
+// ---------------------------------------------------------------------------
+// 11.0 — PORTAL overlays. Every "portal" entity is drawn as an oriented wire
+// frame (its W x H plane, cross-braced) + a facing-normal arrow + its name, on
+// the ImGui foreground list via worldToScreen. This is the editor-side visual;
+// the LevelDoc loader spawns the in-game marker slab. Pure overlay: no scene
+// entities, no meshes, nothing to leak or tear down.
+// ---------------------------------------------------------------------------
+void EditorHost::drawPortalOverlays(x3::rhi::IRenderDevice& device) {
+    if (!portalsEnabled()) return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    auto project = [&](const float w[3], ImVec2& out) -> bool {
+        float sx = 0, sy = 0;
+        if (!device.worldToScreen(w[0], w[1], w[2], sx, sy)) return false;
+        out = ImVec2(sx, sy); return true;
+    };
+    for (int i = 0; i < (int)m_doc.entities.size(); ++i) {
+        const EditorEntity& e = m_doc.entities[i];
+        if (e.type != "portal") continue;
+        const bool sel = (m_state.selKind() != SelKind::Brush && m_state.selected() == i);
+        const ImU32 col = sel ? IM_COL32(255, 209, 46, 255)      // selection amber
+                              : IM_COL32(77, 230, 255, 220);     // portal cyan
+        float R[9];
+        rotYPR(e.yaw, e.pitch, e.roll, R);
+        const float hw = (e.size[0] > 0 ? e.size[0] : 3.0f) * 0.5f;
+        const float hh = (e.size[1] > 0 ? e.size[1] : 3.0f) * 0.5f;
+        // The plane is LOCAL X (width) x LOCAL Y (height); facing is LOCAL +Z.
+        auto toWorld = [&](float lx, float ly, float lz, float out[3]) {
+            out[0] = e.pos[0] + R[0]*lx + R[3]*ly + R[6]*lz;
+            out[1] = e.pos[1] + R[1]*lx + R[4]*ly + R[7]*lz;
+            out[2] = e.pos[2] + R[2]*lx + R[5]*ly + R[8]*lz;
+        };
+        float c0[3], c1[3], c2[3], c3[3], n0[3], n1[3];
+        toWorld(-hw, -hh, 0, c0); toWorld(hw, -hh, 0, c1);
+        toWorld(hw, hh, 0, c2);   toWorld(-hw, hh, 0, c3);
+        toWorld(0, 0, 0, n0);     toWorld(0, 0, 1.2f, n1);
+        ImVec2 p0, p1, p2, p3, a0, a1;
+        if (project(c0, p0) && project(c1, p1) && project(c2, p2) && project(c3, p3)) {
+            dl->AddLine(p0, p1, col, sel ? 3.0f : 2.0f);
+            dl->AddLine(p1, p2, col, sel ? 3.0f : 2.0f);
+            dl->AddLine(p2, p3, col, sel ? 3.0f : 2.0f);
+            dl->AddLine(p3, p0, col, sel ? 3.0f : 2.0f);
+            dl->AddLine(p0, p2, col, 1.0f);              // cross-brace: reads as a
+            dl->AddLine(p1, p3, col, 1.0f);              // plane, not a box face
+            char lbl[96];
+            std::snprintf(lbl, sizeof(lbl), "%s%s%s", e.name.c_str(),
+                          e.script.empty() ? "" : " -> ", e.script.c_str());
+            dl->AddText(ImVec2((p0.x+p2.x)*0.5f + 6, (p0.y+p2.y)*0.5f - 18), col, lbl);
+        }
+        if (project(n0, a0) && project(n1, a1)) {
+            dl->AddLine(a0, a1, col, 2.0f);
+            dl->AddCircleFilled(a1, 4.0f, col);          // arrow tip = the facing side
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
