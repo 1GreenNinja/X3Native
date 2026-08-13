@@ -253,6 +253,9 @@ std::string LevelDoc::toJson() const {
         // Self-lit emissive (canon glow) — emitted only when set, so every
         // existing level file round-trips byte-identical.
         if (e.emissive[3] > 0.0f) o << ", \"emissive\": " << vec4(e.emissive);
+        // Generator provenance — emitted only when set (same byte-stability rule).
+        if (!e.gen.empty()) o << ", \"gen\": \"" << esc(e.gen) << "\"";
+        if (e.genEdited)    o << ", \"genEdited\": 1";
         o << " }";
         if (i + 1 < entities.size()) o << ",";
         o << "\n";
@@ -272,7 +275,10 @@ std::string LevelDoc::toJson() const {
         if (rot3Enabled() && b.roll  != 0.0f) o << ", \"roll\": "  << num(b.roll);
         o << ", \"tint\": " << vec3(b.tint)
           << ", \"material\": \"" << esc(b.material) << "\""
-          << ", \"collide\": " << (b.collide ? "1" : "0") << " }";
+          << ", \"collide\": " << (b.collide ? "1" : "0");
+        if (!b.gen.empty()) o << ", \"gen\": \"" << esc(b.gen) << "\"";
+        if (b.genEdited)    o << ", \"genEdited\": 1";
+        o << " }";
         if (i + 1 < brushes.size()) o << ",";
         o << "\n";
     }
@@ -388,6 +394,8 @@ bool LevelDoc::fromJson(const std::string& json) {
                     else if (ek == "model") e.model = j.str();
                     else if (ek == "script") e.script = j.str();
                     else if (ek == "emissive") j.vec4(e.emissive);
+                    else if (ek == "gen")       e.gen = j.str();
+                    else if (ek == "genEdited") e.genEdited = (j.number() != 0.0f);
                     else { j.skipValue(); }   // unknown key: skip any value kind
                 }
                 j.eat('}');
@@ -411,6 +419,8 @@ bool LevelDoc::fromJson(const std::string& json) {
                     else if (bk == "tint")   j.vec3(b.tint);
                     else if (bk == "material") b.material = j.str();
                     else if (bk == "collide") b.collide = (j.number() != 0.0f);
+                    else if (bk == "gen")       b.gen = j.str();
+                    else if (bk == "genEdited") b.genEdited = (j.number() != 0.0f);
                     else { j.skipValue(); }   // unknown key: skip any value kind
                 }
                 j.eat('}');
@@ -702,7 +712,7 @@ void EditorState::commitBrushEdit() {
     m_editing = false;
     const int idx = m_editIndex; m_editIndex = -1;
     if (idx < 0 || idx >= (int)m_doc.brushes.size()) return;
-    const BlockoutBrush& now = m_doc.brushes[idx];
+    BlockoutBrush& now = m_doc.brushes[idx];
     // Drop a no-op edit (e.g. a click that didn't drag) — only push if something moved.
     auto v3eq = [](const float a[3], const float b[3]) {
         return std::fabs(a[0]-b[0]) < 1e-5f && std::fabs(a[1]-b[1]) < 1e-5f &&
@@ -716,6 +726,10 @@ void EditorState::commitBrushEdit() {
                            v3eq(m_editBefore.tint, now.tint) &&
                            m_editBefore.material == now.material;
     if (unchanged) return;
+    // Generator provenance: a HUMAN edit on a generated brush marks it edited —
+    // BEFORE the after-snapshot, so undoing the edit also restores the unedited
+    // mark (the regeneration rule sees the truth either way).
+    if (!now.gen.empty()) now.genEdited = true;
     BrushCmd c; c.kind = CmdKind::Transform; c.index = idx;
     c.before = m_editBefore; c.after = now;
     pushCmd(c);
@@ -1355,6 +1369,42 @@ bool runEditorSelfTest() {
                      js.find("\"roll\"")  == std::string::npos;
         check(brushExact && portalExact && clean,
               "E21 third-axis rotation + portal round-trip bit-exact; zero rot emits no keys");
+    }
+
+    // ---- E22 (11.0 handoff): generator PROVENANCE round-trips, a hand edit marks
+    // genEdited (and undo un-marks it), and a hand-authored doc emits NEITHER key
+    // (the presence probe is the negative control). ----
+    {
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(false);
+        float p[3] = { 0, 0, 0 };
+        ed.addBrushCmd(0u, p);
+        d.brushes[0].gen = "tunnel:portal:a_west";       // as a generator would stamp
+        // Round-trip: gen survives, genEdited stays false.
+        LevelDoc rt; bool parsed = rt.fromJson(d.toJson());
+        bool kept = parsed && rt.brushes.size() == 1 &&
+                    rt.brushes[0].gen == "tunnel:portal:a_west" &&
+                    rt.brushes[0].genEdited == false;
+        // A human edit through the ordinary command path marks it edited...
+        ed.selectBrush(0);
+        ed.beginBrushEdit(0);
+        d.brushes[0].pos[0] = 3.0f;
+        ed.commitBrushEdit();
+        bool marked = d.brushes[0].genEdited == true;
+        LevelDoc rt2; rt2.fromJson(d.toJson());
+        bool markedRt = rt2.brushes.size() == 1 && rt2.brushes[0].genEdited == true;
+        // ...and UNDOING the edit restores the unedited mark (the regeneration
+        // rule must see the truth after a Ctrl+Z too).
+        ed.undo();
+        bool unmarked = d.brushes[0].genEdited == false &&
+                        feq(d.brushes[0].pos[0], 0.0f);
+        // Hand-authored docs must not grow the keys (negative control).
+        LevelDoc plain; { BlockoutBrush b; b.name = "hand"; plain.brushes.push_back(b); }
+        const std::string js = plain.toJson();
+        bool clean = js.find("\"gen\"") == std::string::npos &&
+                     js.find("\"genEdited\"") == std::string::npos;
+        check(kept && marked && markedRt && unmarked && clean,
+              "E22 provenance: gen key round-trips, edit marks genEdited, undo un-marks, hand docs clean");
     }
 
     x3::logInfo(std::string("[editor-test] ") + std::to_string(g_pass) + " passed, " +

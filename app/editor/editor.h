@@ -78,6 +78,16 @@ struct EditorEntity {
     // light (a fusion core, a solar cell face, a neon strip). Default {0,0,0,0}
     // == no glow, so every existing entity round-trips + renders unchanged.
     float emissive[4] = { 0, 0, 0, 0 };
+    // ---- GENERATOR PROVENANCE (the generator -> LevelDoc handoff, 11.0) -----
+    // `gen` is a STABLE provenance key stamped by whatever generator emitted this
+    // entity ("tunnel:portal:a_west", "city:lot:12/crate:3"). Empty = hand-
+    // authored. `genEdited` flips to true the moment a human edits a generated
+    // object. REGENERATION RULE (docs/design/LEVELDOC_HANDOFF.md): a re-run may
+    // replace only objects whose gen key it owns AND genEdited == false; edited
+    // objects are kept and the generator's replacement for that key is skipped.
+    // Both serialize ONLY when set, so hand-authored docs stay byte-identical.
+    std::string gen;
+    bool genEdited = false;
     // Live link to the Scene entity id while editing (not serialized). kNoLink-ish
     // sentinel = not spawned in the live scene.
     uint32_t sceneEntity = 0xFFFFFFFFu;
@@ -106,6 +116,10 @@ struct BlockoutBrush {
     // Round-trips through the brushes[] JSON so a textured blockout reloads as-authored.
     std::string material;
     bool  collide   = true;              // add a static Jolt body
+    // Generator provenance (see the EditorEntity note): stable key + edited flag.
+    // commitBrushEdit()/nudgeBrush() stamp genEdited on a gen-tagged brush.
+    std::string gen;
+    bool genEdited = false;
     // Live links (NOT serialized): the Scene entity id + Jolt body id while editing.
     uint32_t sceneEntity = 0xFFFFFFFFu;
     uint32_t body        = 0;            // x3::phys::BodyId.id (0 == none)
