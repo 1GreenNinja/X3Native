@@ -7,7 +7,7 @@
 
 - **Ledger ID:** subsystem **K** (roadmap) — extends `IPhysicsWorld` + adds `IDestructionSystem` / `IGpuDebrisWorld`
 - **Implements interface:** `IDestructionSystem` (`engine/physics/IDestructionSystem.h`) + `IPhysicsWorld` extensions + a compute path in the renderer
-- **Status:** SEED→SPEC. Downstream of the renderer core (needs compute pipelines, SSBOs, buffer/texture API, indirect draw) and the job system. Per `IDTECH8_ROADMAP.md` decision **D-PHYS**, priority after A (jobs), C/D (GPU-driven renderer), and H (streaming).
+- **Status:** SEED→SPEC. Downstream of the renderer core (needs compute pipelines, SSBOs, buffer/texture API, indirect draw) and the job system. Per `X3NATIVE_ROADMAP.md` decision **D-PHYS**, priority after A (jobs), C/D (GPU-driven renderer), and H (streaming).
 - **Spec author machine:** 14900K · **Clean-room target machine:** 13700K (compute OK on 1080 Ti; async *overlap* weak on Pascal — full win on the 5090)
 
 ## 0. Feature tiers (idTech 8 pillar #4 parity → beyond)

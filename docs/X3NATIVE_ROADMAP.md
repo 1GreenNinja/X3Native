@@ -1,4 +1,4 @@
-# X3Native — idTech 8-Aligned Architecture Roadmap
+# X3Native — Architecture Roadmap
 
 **Status:** living document. Started 2026-05-20.
 **Purpose:** X3Native targets the architectural philosophy of **id Tech 8** (Doom: The Dark Ages) — same stack as us (**C++ + Vulkan**) — as its north star, and where it's cheap to exceed it, goes **beyond** (the **T3** features in §9). This doc records the decisions, the subsystem decomposition, the build sequence, and the per-machine hardware constraints so every session (and every parallel agent) shares one plan.
