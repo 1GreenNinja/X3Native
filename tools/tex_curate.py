@@ -79,6 +79,43 @@ SETS = {
     "terrain_snow":        (ADT,  "MarbleWhite00",         0.00, 0.88),
 }
 
+# ---------------------------------------------------------------------------
+# EXPLICIT-PATH sets (mountain variation, 2026-08-13). Two reasons these are
+# not rows in SETS: (1) D:\Assets has since become the content-addressed store
+# (the named roots above are STALE — those sets are already published and only
+# re-curate from a restored library); the browsable-by-name library now lives
+# on Z:\. (2) the source packs use suffixes find() doesn't know (_D/_A/_BC,
+# .tif/.tga/.jpg), so the files are named explicitly. Albedo-only sources are
+# fine here: the terrain splat (mesh_terrain.glsl) samples ONLY the albedo;
+# mr is synthesized flat, normal.png written only when the pack ships one.
+#
+# Picked by eyeballing a contact sheet of every rock/cliff candidate on Z:
+# (UniStorm terrain, Top Down Post Apocalyptic terrain, Shatter Stone,
+# Landscape Ground Pack 3, HQ Big Rock). Rejected: HQ Big Rock (a baked model
+# skin, not tileable), Shatter Stone T_Stone_* (ground-with-chunks, reads as
+# scatter not surface). Seam check: opposite-edge delta ~= interior delta for
+# all five (worst lgp3_clay3 top/bottom 18.2 vs 7.4 interior — acceptable at
+# splat tiling scales).
+UNIST = r"Z:\UniStorm - Volumetric Clouds Sky Modular Weather and Cloud Shadows\UniStorm Weather System\Textures\Terrain"
+TDPA  = r"Z:\Top Down Post Apocalyptic Pack\Top_Down_Post-Apocalyptic_Pack\Textures\Terrain"
+LGP3Z = r"Z:\Landscape Ground Pack 3 Desert Dry Land Beach Sea Islands Coast\NatureManufacture Assets\Coast Environment\Ground\Textures"
+
+# name -> (albedo path, normal-or-bump path or None, metal, rough)
+SETS_EXPLICIT = {
+    # THE second rock band: dark blue-grey craggy slate for the high mountain
+    # (terrain.cpp registerTerrainMaterial rockHigh slot; the alpine vein tint
+    # in mesh_terrain.glsl cools its crevices further).
+    "terrain_rock_dark":  (os.path.join(UNIST, "Rock_2_D.tif"),  None, 0.00, 0.92),
+    "terrain_rock_grey":  (os.path.join(UNIST, "Rock_1_D.jpg"),
+                           os.path.join(UNIST, "Rock_1_Bump.png"), 0.00, 0.90),
+    "terrain_scree":      (os.path.join(TDPA, "TD_Rocks_Ground_02_A.tga"),
+                           os.path.join(TDPA, "TD_Rocks_Ground_02_N.tga"), 0.00, 0.90),
+    "terrain_bluff_clay": (os.path.join(LGP3Z, "T_cliff_clay_01_BC.png"),
+                           os.path.join(LGP3Z, "T_cliff_clay_01_N.png"), 0.00, 0.85),
+    "terrain_bluff_dark": (os.path.join(LGP3Z, "T_cliff_clay_03_BC.png"),
+                           os.path.join(LGP3Z, "T_cliff_clay_03_N.png"), 0.00, 0.85),
+}
+
 def load_rgb(p, maxdim=2048):
     im = Image.open(p).convert("RGB")
     if max(im.size) > maxdim:
@@ -93,8 +130,28 @@ def load_rgba(p, maxdim=2048):
 
 def main():
     os.makedirs(LIB, exist_ok=True)
+    # Optional set-name args curate selectively (the historical SETS roots are
+    # stale now that D:\Assets is content-addressed, so a full run reports
+    # them MISSING — that is expected, not an error).
+    only = set(sys.argv[1:])
     report = []
+    for name, (albp, nrmp, fm, fr) in SETS_EXPLICIT.items():
+        if only and name not in only:
+            continue
+        if not os.path.exists(albp):
+            report.append((name, "MISSING", albp)); continue
+        outd = os.path.join(LIB, name); os.makedirs(outd, exist_ok=True)
+        alb = load_rgb(albp); alb.save(os.path.join(outd, "albedo.png"))
+        if nrmp and os.path.exists(nrmp):
+            load_rgb(nrmp, maxdim=alb.width).save(os.path.join(outd, "normal.png"))
+        w, hgt = alb.size
+        out = np.zeros((hgt, w, 3), np.float32); out[..., 0] = 1.0; out[..., 1] = fr; out[..., 2] = fm
+        Image.fromarray((out * 255).astype(np.uint8)).save(os.path.join(outd, "mr.png"))
+        report.append((name, f"{alb.width}px flat R={fr} M={fm}"
+                             + ("" if (nrmp and os.path.exists(nrmp)) else " (albedo-only)"), None))
     for name, (root, stem, fm, fr) in SETS.items():
+        if only and name not in only:
+            continue
         h = find(root, stem)
         if "albedo" not in h or "normal" not in h:
             report.append((name, "MISSING", h)); continue

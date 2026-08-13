@@ -779,6 +779,10 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     const SurfaceSet& portalSet = m_surf.get(device, "mw_concrete_panels_a");
     const SurfaceSet& roadSet   = m_surf.get(device, "rd_asphalt_01");
     const SurfaceSet& shoulderSet = m_surf.get(device, "cc_porous_cement");
+    // The embankment FILLET is graded rubble, not poured concrete — terrain_scree
+    // (Top Down Post Apocalyptic terrain set, curated 2026-08-13) so the slope
+    // from the shoulder down to the trench floor reads as earthworks.
+    const SurfaceSet& screeSet  = m_surf.get(device, "terrain_scree");
     if (!boreSet.ok || !portalSet.ok)
         x3::logWarn("tunnel corridor: surface_library set(s) unavailable — "
                     "falling back to the procedural checker concrete");
@@ -849,7 +853,8 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     {
         constexpr float kSlabProud = 0.14f;
         MeshBuf mb;
-        MeshBuf shoulder;   // hard shoulder + graded batter (own material)
+        MeshBuf shoulder;   // flat concrete hard shoulder (own material)
+        MeshBuf fillet;     // drivable embankment down to the trench floor (scree)
         const float up[3] = { 0.0f, 1.0f, 0.0f };
         auto P = [&](const Frame& f, float r, float u, float out[3]) {
             out[0] = f.p[0] + right[0]*r + up[0]*u;
@@ -890,112 +895,77 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             mb.quad(aLd, aRd, bRd, bLd, nD, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
         }
 
-        // ---- SHOULDER + EMBANKMENT ------------------------------------------
-        // MEASURED FIRST, and it killed my own theory: I thought the hanging
-        // edge was the skirt failing to reach the ground past a 16 m clamp.
-        // Instrumenting edgeBottom said otherwise — 640 edge samples, ZERO
-        // clamped, worst shoulder drop 0.00 m. The ground at the road edge is
-        // never below the road, so the skirt is always buried and can't be what
-        // is showing.
+        // ---- SHOULDER + DRIVABLE EMBANKMENT FILLET --------------------------
+        // History, because this block has now been wrong twice in opposite
+        // directions: v1 battered concrete over the hillside (quarry apron),
+        // v2 restricted the batter to FILL only — which stopped the apron
+        // climbing cutting faces, but left the road edge in a CUT as a bare
+        // VERTICAL face wherever the trench floor sits below the road (the
+        // corridor removes a constant depth, so the downhill half of the floor
+        // is below the datum). Lane 7 SURVEYED that face: 0.45 m min, 2.65 m
+        // mean, 6.81 m max, against ~0.43 m of chassis clearance — the road
+        // was unmountable from the ditch along its whole length. v2's batter
+        // was also 0.80 m/m (~39 deg), unclimbable even where it did run.
         //
-        // The void is FURTHER OUT. The corridor's flat floor runs to
-        // kTcCorridorHalfW (8.8 m) but the ribbon is only kTcRoadHalfWidth
-        // (6 m), and the corridor only ever LOWERS ground — so on a downhill
-        // shoulder the natural terrain sits below the floor and nothing covers
-        // the step between them. That gap is the triangular void.
-        //
-        // Roads do not end in a vertical face. They carry a concrete shoulder
-        // and then a graded EMBANKMENT battered down to meet grade. That is
-        // what this emits: a hard shoulder strip at road level, then a batter
-        // marched outward at kBatter until it reaches the real ground.
+        // v3, this version: a flat concrete hard shoulder (cut and fill
+        // alike), then a FILLET that always bridges the shoulder edge down to
+        // whatever ground is below it — fill slope or over-cut trench floor —
+        // at kFilletSlope (~19 deg; Lane 7 proved 20 deg climbable with the
+        // current tyres, so this is a measured bound, not taste). The fillet
+        // never climbs: the moment the ground at its inner edge has risen to
+        // meet the rail (a cutting face), it stops — that guard is what keeps
+        // v1's strips-up-the-mountain dead.
         {
-            constexpr float kShoulderW = 1.5f;   // concrete hard shoulder
-            constexpr float kBatter    = 0.80f;  // fall per metre out (~1:1.25, tighter)
-            constexpr int   kSteps     = 5;
-            constexpr float kStepOut   = 1.5f;
-            auto embankEdge = [&](const Frame& f, float sideSign, float outM, float& y) {
-                const float lat = sideSign * (hw + outM);
-                const float ex = f.p[0] + right[0]*lat, ez = f.p[2] + right[2]*lat;
-                const float g = terrainHeightAtWorld(ex, ez);
-                y = std::max(y, g);            // never sink below real ground
-                float o[3] = { ex, y, ez };
-                (void)o; return std::pair<float,float>(ex, ez);
-            };
-            (void)embankEdge;
+            constexpr float kShoulderW    = 1.5f;    // concrete hard shoulder
+            constexpr float kFilletSlope  = 0.34f;   // fall per metre out (~19 deg, drivable)
+            constexpr float kFilletStep   = 1.6f;
+            constexpr int   kFilletSteps  = 18;      // reach 28.8 m, drop capacity ~9.8 m
             for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
                 const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
+                auto gAt = [&](const Frame& f, float lat) {
+                    return terrainHeightAtWorld(f.p[0] + right[0]*lat,
+                                                f.p[2] + right[2]*lat);
+                };
                 for (int side = -1; side <= 1; side += 2) {
                     const float sg = (float)side;
-                    bool inCut = false;
-                    // FILL ONLY — never in a cutting. The batter exists to bridge
-                    // road level DOWN to a shoulder that has fallen away. Each step
-                    // clamps with max(y, ground) so it cannot sink below grade,
-                    // which is correct on a downhill fill and catastrophic in a
-                    // CUT: under the mountain the ground beside the road is ~100 m
-                    // higher, so that max() drove the strip straight up the
-                    // hillside and drew two concrete rails climbing the slope
-                    // above the portal. Where the ground is already at or above
-                    // the road, there is nothing to fill — the cutting face IS
-                    // the terrain.
-                    {
-                        const float latTest = sg * (hw + kShoulderW);
-                        const float gA = terrainHeightAtWorld(a.p[0] + right[0]*latTest,
-                                                              a.p[2] + right[2]*latTest);
-                        const float gB = terrainHeightAtWorld(b.p[0] + right[0]*latTest,
-                                                              b.p[2] + right[2]*latTest);
-                        // IN A CUTTING: skip the descending BATTER (there is
-                        // nothing to fill) but still lay the flat concrete
-                        // SHOULDER. The first version `continue`d out of both,
-                        // which deleted the hard shoulder everywhere the road
-                        // runs in a cut — i.e. most of this approach. The apron
-                        // is what the driver's eye follows; it belongs on cut and
-                        // fill alike. Only the batter is fill-only.
-                        if (gA >= a.p[1] && gB >= b.p[1]) { inCut = true; }
-                    }
-                    // Track the running height of the batter on each rail.
-                    float ya = a.p[1] + kSlabProud, yb = b.p[1] + kSlabProud;
-                    float oa = 0.0f;
-                    for (int st = 0; st <= kSteps; ++st) {
-                        const float o2 = (st == 0) ? kShoulderW
-                                                   : kShoulderW + (float)st * kStepOut;
-                        // Shoulder is flat; past it the batter falls away.
-                        const float dy = (st == 0 || inCut) ? 0.0f : kBatter * kStepOut;
-                        const float ya2 = ya - dy, yb2 = yb - dy;
-                        const float latA = sg * (hw + oa),  latB = sg * (hw + o2);
-                        auto gAt = [&](const Frame& f, float lat) {
-                            return terrainHeightAtWorld(f.p[0] + right[0]*lat,
-                                                        f.p[2] + right[2]*lat);
-                        };
-                        // Clamp to grade: the batter stops where it meets ground.
-                        // The max() clamp keeps a FILL batter from sinking below
-                        // grade. In a CUT it does the opposite of what is wanted:
-                        // the ground beside the road is higher, so clamping drags
-                        // the apron UP the rock face — that is what drew the two
-                        // strips climbing the mountain. A hard shoulder in a
-                        // cutting is FLAT at road level; the cutting face rises
-                        // beyond its outer edge, it does not lift the apron.
-                        const float y0a = inCut ? ya  : std::max(ya,  gAt(a, latA));
-                        const float y0b = inCut ? yb  : std::max(yb,  gAt(b, latA));
-                        const float y1a = inCut ? ya2 : std::max(ya2, gAt(a, latB));
-                        const float y1b = inCut ? yb2 : std::max(yb2, gAt(b, latB));
+                    auto emitQuad = [&](MeshBuf& buf, float latA, float y0a, float y0b,
+                                        float latB, float y1a, float y1b) {
                         float p0[3] = { a.p[0] + right[0]*latA, y0a, a.p[2] + right[2]*latA };
                         float p1[3] = { a.p[0] + right[0]*latB, y1a, a.p[2] + right[2]*latB };
                         float p2[3] = { b.p[0] + right[0]*latB, y1b, b.p[2] + right[2]*latB };
                         float p3[3] = { b.p[0] + right[0]*latA, y0b, b.p[2] + right[2]*latA };
                         const float nUp[3] = { 0, 1, 0 };
-                        if (side < 0) shoulder.quad(p3, p2, p1, p0, nUp, 0,1, a.s*0.09f, b.s*0.09f);
-                        else          shoulder.quad(p0, p1, p2, p3, nUp, 0,1, a.s*0.09f, b.s*0.09f);
+                        if (side < 0) buf.quad(p3, p2, p1, p0, nUp, 0,1, a.s*0.09f, b.s*0.09f);
+                        else          buf.quad(p0, p1, p2, p3, nUp, 0,1, a.s*0.09f, b.s*0.09f);
+                    };
+                    // The flat hard shoulder, cut and fill alike.
+                    emitQuad(shoulder, sg * hw,               a.p[1] + kSlabProud, b.p[1] + kSlabProud,
+                                       sg * (hw + kShoulderW), a.p[1] + kSlabProud, b.p[1] + kSlabProud);
+                    // The fillet: march outward, descending at kFilletSlope,
+                    // clamped up to ground (a fill must not tunnel under grade),
+                    // stopping when the ground has met the rail.
+                    float ya = a.p[1] + kSlabProud, yb = b.p[1] + kSlabProud;
+                    float oa = kShoulderW;
+                    for (int st = 1; st <= kFilletSteps; ++st) {
+                        const float o2   = kShoulderW + (float)st * kFilletStep;
+                        const float latA = sg * (hw + oa), latB = sg * (hw + o2);
+                        // LANDED (or a cutting face): the ground at the current
+                        // edge is at/above the rail. Emitting further would climb
+                        // the face — the v1 bug. Stop before emitting.
+                        if (gAt(a, latA) >= ya - 0.05f && gAt(b, latA) >= yb - 0.05f) break;
+                        const float drop = kFilletSlope * kFilletStep;
+                        // Clamp UP to ground (a fill must not tunnel under
+                        // grade) but never ABOVE the rail: where the far wall
+                        // of a trench rises through the fillet mid-step, an
+                        // unclamped max() emits a vertical sheet up the wall —
+                        // the survey measured it at 4.48 m. Capped at the rail
+                        // the last quad runs level into the wall and is buried.
+                        const float y1a = std::min(ya, std::max(ya - drop, gAt(a, latB)));
+                        const float y1b = std::min(yb, std::max(yb - drop, gAt(b, latB)));
+                        emitQuad(fillet, latA, ya, yb, latB, y1a, y1b);
                         ya = y1a; yb = y1b; oa = o2;
-                        // STOP AT GRADE. The batter exists to bridge road level
-                        // down to the ground; once it has met the ground there is
-                        // nothing left to bridge, and marching on just lays
-                        // concrete sheets flat over the hillside (which is what
-                        // the first version did — a quarry apron instead of a
-                        // shoulder). Both rails must have landed before we quit,
-                        // or one side of the strip tears.
-                        if (inCut && st >= 1) break;   // shoulder only, no batter
-                        if (st > 0 && y1a <= gAt(a, latB) + 1e-3f
-                                   && y1b <= gAt(b, latB) + 1e-3f) break;
+                        if (y1a <= gAt(a, latB) + 1e-3f &&
+                            y1b <= gAt(b, latB) + 1e-3f) break;   // both rails at grade
                     }
                 }
             }
@@ -1010,7 +980,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         if (roadSet.ok) { m.alb = roadSet.albedo; m.mr = roadSet.mr; m.nrm = roadSet.normal; }
         else            { m.alb = asphaltTex;     m.mr = roughMR; }
         upload(mb, m, /*collide*/true);
-        // The shoulder/batter is its own draw so it can be CONCRETE against the
+        // The shoulder is its own draw so it can be CONCRETE against the
         // asphalt — the edge has to read as a hard shoulder easing into dirt,
         // not as more road. Collides: it is walkable/driveable-onto ground.
         {
@@ -1019,6 +989,17 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                   sm2.nrm = shoulderSet.normal; }
             else                { sm2.alb = concreteTex; sm2.mr = wallMR; }
             upload(shoulder, sm2, /*collide*/true);
+        }
+        // The fillet collides too — it exists so a car in the ditch can DRIVE
+        // back onto the road (Lane 7's road-mount acceptance), not just to
+        // close the visual gap.
+        {
+            Material fm;
+            if (screeSet.ok) { fm.alb = screeSet.albedo; fm.mr = screeSet.mr;
+                               fm.nrm = screeSet.normal; }
+            else             { fm.alb = concreteTex; fm.mr = wallMR;
+                               fm.tint[0] = 0.62f; fm.tint[1] = 0.58f; fm.tint[2] = 0.52f; }
+            upload(fillet, fm, /*collide*/true);
         }
 
         // ---- Lane markings. BL §3.4 as DATA: solid white edge lines at
@@ -1379,6 +1360,12 @@ struct TunnelDriveResult {
     float residual = 0.0f;      // route.buriedRoadLen (the FIELD-level number)
     float boreS0 = 0.0f, boreS1 = 0.0f, coverS0 = 0.0f, totalLen = 0.0f;
     uint32_t holeCount = 0;
+    // ROAD-MOUNT survey (Lane 7's defect, measured here too): walking laterally
+    // from the ditch toward the road across the real collision, the largest
+    // single upward step between adjacent samples. A vertical skirt face shows
+    // up as its full height; the ~19 deg fillet shows as ~0.14 m per 0.4 m.
+    float maxMountStep = 0.0f;
+    float maxMountStepS = 0.0f;
 };
 
 TunnelDriveResult driveTheDemoRoute(bool cutOn) {
@@ -1420,6 +1407,55 @@ TunnelDriveResult driveTheDemoRoute(bool cutOn) {
         phys->setBodyRotation(car.chassis(), q);
     }
     phys->optimizeBroadphase();
+
+    // ---- ROAD-MOUNT SURVEY (the ditch-to-road step) -------------------------
+    // Raycast the REAL static collision (terrain tiles + ribbon + shoulder +
+    // fillet) downward along lateral walks from 18 m out to the centreline,
+    // 0.4 m apart, every 12 m of open route (the bore is skipped: the ray
+    // would hit the lid). The metric is the largest single UPWARD step walking
+    // toward the road — a vertical skirt face reads as its full height. Only
+    // the streamed ring near the car start is resident, so survey the s-range
+    // the streamer actually covers.
+    {
+        const float n0x = route->cx - route->dirX * route->halfLen;
+        const float n0z = route->cz - route->dirZ * route->halfLen;
+        const float rxl = -route->dirZ, rzl = route->dirX;
+        const float sStart = std::max(8.0f, route->boreS0 - 60.0f);
+        const float sLo = std::max(10.0f, sStart - 50.0f);
+        const float sHi = std::min(route->boreS0 - 10.0f, sStart + 50.0f);
+        for (float s = sLo; s <= sHi; s += 12.0f) {
+            const float px = n0x + route->dirX * s, pz = n0z + route->dirZ * s;
+            for (int side = -1; side <= 1; side += 2) {
+                float prevH = 0.0f; bool have = false;
+                // 17.93, not 18.00: every emitted seam here is a constant-lat
+                // line swept along the route (slab edge 6.0, shoulder edge 7.5,
+                // fillet steps 7.5+1.6k), and a vertical ray EXACTLY in such a
+                // seam plane threads between the two meshes and reports the
+                // trench floor — the survey measured its own grid, not a wall
+                // (4.48 m "step" at lat 6.0 where the shoulder provably is).
+                // An off-round grid never lands on an exact seam.
+                for (float lat = 17.93f; lat >= 0.0f; lat -= 0.4f) {
+                    const float wx = px + rxl * lat * (float)side;
+                    const float wz = pz + rzl * lat * (float)side;
+                    x3::phys::RayHit rh = phys->rayCastStrict(
+                        { wx, route->roadYAt(s) + 120.0f, wz }, { 0.0f, -1.0f, 0.0f },
+                        400.0f, x3::phys::Layer::Static);
+                    if (!rh.hit) { have = false; continue; }
+                    // Road-MOUNT means climbing from BELOW the road onto it, so
+                    // only steps whose foot is at/below road level count —
+                    // otherwise the metric reports craggy natural hillside high
+                    // above the carriageway (measured: a 1.1 m rock knob 5 m
+                    // over the road at lat 17.5), which no car needs to climb
+                    // to reach the road.
+                    if (have && prevH < route->roadYAt(s) + 0.5f) {
+                        const float step = rh.point.y - prevH;   // + = up toward road
+                        if (step > res.maxMountStep) { res.maxMountStep = step; res.maxMountStepS = s; }
+                    }
+                    prevH = rh.point.y; have = true;
+                }
+            }
+        }
+    }
 
     const float dt = 1.0f / 60.0f;
     for (int i = 0; i < 90 && res.built; ++i) {   // settle onto the suspension
@@ -1476,12 +1512,14 @@ bool runTunnelDriveSelfTest() {
         else    { ++failN; x3::logError(std::string("[tunneldrive] FAIL ") + name); }
     };
     auto report = [&](const char* tag, const TunnelDriveResult& r) {
-        char b[320];
+        char b[380];
         std::snprintf(b, sizeof(b),
             "[tunneldrive]   %s: maxS=%.0f m (shell %.0f..%.0f, route %.0f m) | "
-            "field residual %.0f m | portal holes %u | worst bore |dY| %.2f m",
+            "field residual %.0f m | portal holes %u | worst bore |dY| %.2f m | "
+            "worst mount step %.2f m at s=%.0f",
             tag, r.maxS, r.boreS0, r.boreS1, r.totalLen,
-            r.residual, r.holeCount, r.worstBoreDy);
+            r.residual, r.holeCount, r.worstBoreDy,
+            r.maxMountStep, r.maxMountStepS);
         x3::logInfo(b);
     };
 
@@ -1505,6 +1543,15 @@ bool runTunnelDriveSelfTest() {
           "B3 DRIVE-THROUGH: the car exits past the far portal");
     check(b.worstBoreDy < 5.0f,
           "B4 through the bore at road level (not over the hill)");
+    // Lane 7's ditch-to-road defect, kept dead: their survey measured skirt
+    // faces of 0.45..6.81 m against ~0.43 m chassis clearance. With the ~19 deg
+    // fillet, no adjacent-sample step on the approach may exceed clearance.
+    // (Surveyed on BOTH phases' geometry — the fillet is not part of the portal
+    // cut and has no env gate, so this is a threshold check, not A/B.)
+    check(b.maxMountStep > 0.01f,
+          "B5a mount survey saw real geometry (a zero survey would be a broken probe)");
+    check(b.maxMountStep <= 0.45f,
+          "B5b ROAD-MOUNT: worst ditch-to-road step within chassis clearance (0.45 m)");
 
     // Registry + env hygiene: leave the process at defaults.
     clearTerrainCorridors();

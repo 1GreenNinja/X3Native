@@ -607,13 +607,23 @@ public:
     // byte-for-byte as before.
     //
     // This is a thin, additive boundary: it reuses the existing bindless array
-    // (the four textures keep their own bindless slots) and the existing draw
+    // (the textures keep their own bindless slots) and the existing draw
     // path; only a previously-reserved pad field in the SSBO row is now used to
-    // carry the terrain flag + the four packed detail-texture indices. Passing
-    // any invalid handle returns an invalid marker (terrain falls back to flat).
-    // Each of grass/rock/snow/sand should be a small seamless RGBA8 sRGB tile.
+    // carry the terrain flag + the packed detail-texture indices. Passing
+    // any invalid handle (of the required four) returns an invalid marker
+    // (terrain falls back to flat).
+    // Each texture should be a small seamless RGBA8 sRGB tile.
+    //
+    // `rockHigh` is the OPTIONAL fifth slot: a second rock set the splat blends
+    // in with altitude, so the high massif reads as different stone from the
+    // road cuttings. Invalid/omitted = absent; the shader then falls back to
+    // tinting the one rock set and the result is identical to the 4-texture
+    // era. Its bindless index rides the spare top nibbles of the two existing
+    // pack lanes (indices are < 4096 = 12 bits in 16-bit lanes), so the SSBO
+    // row layout — and every shader that mirrors it — is unchanged.
     virtual TextureHandle registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
-                                                  TextureHandle snow,  TextureHandle sand) = 0;
+                                                  TextureHandle snow,  TextureHandle sand,
+                                                  TextureHandle rockHigh = {}) = 0;
 
     // Submit a draw between beginFrame/endFrame. An invalid baseColor falls back
     // to the built-in 1x1 white texture, so baseColorFactor alone gives a flat

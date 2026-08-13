@@ -379,7 +379,8 @@ public:
     // indices into the previously-reserved pad fields. No GPU resource is created
     // here (the marker is purely a CPU sentinel), so there is nothing to destroy.
     TextureHandle registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
-                                          TextureHandle snow,  TextureHandle sand) override;
+                                          TextureHandle snow,  TextureHandle sand,
+                                          TextureHandle rockHigh) override;
 
     void drawMesh(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                   const float baseColorFactor[4], const float model[16]) override;
@@ -2226,10 +2227,11 @@ private:
     VkDescriptorSet       m_bindlessSet    = VK_NULL_HANDLE;
     uint32_t              m_nextBindless   = 0;   // next free bindless slot
     // Terrain material splat: the marker handle id returned by
-    // registerTerrainMaterial() + the four resolved detail bindless indices
-    // (grass, rock, snow, sand). 0 marker id == no terrain material registered.
+    // registerTerrainMaterial() + the five resolved detail bindless indices
+    // (grass, rock, snow, sand, high-altitude rock — [4] optional, 0 = absent).
+    // 0 marker id == no terrain material registered.
     uint32_t              m_terrainMarkerId = 0;
-    uint32_t              m_terrainTexIdx[4] = { 0, 0, 0, 0 };
+    uint32_t              m_terrainTexIdx[5] = { 0, 0, 0, 0, 0 };
     VkDescriptorSetLayout m_objSetLayout   = VK_NULL_HANDLE;
     VkDescriptorPool      m_objPool        = VK_NULL_HANDLE;
 

@@ -416,7 +416,8 @@ void VulkanRenderDevice::destroyTexture(TextureHandle h) {
     }
 
 TextureHandle VulkanRenderDevice::registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
-                                      TextureHandle snow,  TextureHandle sand) {
+                                      TextureHandle snow,  TextureHandle sand,
+                                      TextureHandle rockHigh) {
         auto idxOf = [this](TextureHandle h) -> uint32_t {
             if (!h.valid()) return 0;
             auto it = m_textures.find(h.id);
@@ -428,6 +429,10 @@ TextureHandle VulkanRenderDevice::registerTerrainMaterial(TextureHandle grass, T
         m_terrainTexIdx[1] = idxOf(rock);
         m_terrainTexIdx[2] = idxOf(snow);
         m_terrainTexIdx[3] = idxOf(sand);
+        // OPTIONAL 5th slot (high-altitude rock). 0 = absent; the shader then
+        // falls back to tinting the one rock set, so a 4-texture caller is
+        // byte-identical to the pre-slot behaviour.
+        m_terrainTexIdx[4] = idxOf(rockHigh);
         // Allocate a marker id that can never collide with a real texture id
         // (createTexture hands out m_nextTexId++ starting at 1). A high reserved
         // value keeps the two id spaces disjoint without touching m_nextTexId.

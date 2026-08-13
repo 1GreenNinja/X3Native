@@ -363,8 +363,16 @@ x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
     auto rock  = loadTerrainAlbedo(device, "fw_rock_cliff",  2002u, 104, 100,  92, 24); // real cliff rock
     auto snow  = loadTerrainAlbedo(device, "terrain_snow",  3003u, 222, 226, 235, 14); // bright white-blue
     auto sand  = loadTerrainAlbedo(device, "terrain_sand",  4004u, 178, 158, 118, 18); // tan
+    // THE SECOND ROCK BAND (Tim: "you NEED more than one texture thats for
+    // SURE"). The low rock slot stays the warm tan cliff — it textures the
+    // road cuttings — and this darker blue-grey craggy slate takes over with
+    // ALTITUDE (mesh_terrain.glsl kAlpineTint band), so the massif reads as
+    // different stone from the roadside without dragging the cuttings cold.
+    // terrain_rock_dark = UniStorm Rock_2 (see tools/tex_curate.py
+    // SETS_EXPLICIT for provenance + the contact-sheet rationale).
+    auto rockHi = loadTerrainAlbedo(device, "terrain_rock_dark", 5005u, 84, 88, 98, 20); // dark craggy
     x3::rhi::TextureHandle marker =
-        device.registerTerrainMaterial(grass, rock, snow, sand);
+        device.registerTerrainMaterial(grass, rock, snow, sand, rockHi);
     // Fallback: if the material set couldn't be registered (no bindless), use the
     // grass tile directly so terrain is at least a believable green, not white.
     return marker.valid() ? marker : grass;
