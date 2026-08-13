@@ -15,7 +15,32 @@ Tim's brief:
 
 > racing takes place *"on the streets of the planet where the freeways go in tunnels over rivers and under mountains — the BL version"*
 
-### 0.1 "the BL version" — NEEDS TIM'S CLARIFICATION
+### 0.1 "the BL version" — ANSWERED BY TIM (2026-08-13)
+
+**BL = BABYLON. It is the X3BabylonJS version — the world X3Babylon was built in.**
+
+Tim, verbatim: *"BL BL is Babylon3d Version, wichi s what X3Babylon's world had been
+made in!!"* and *"Yeah, you may even fin screeenshots of it.. thgey looked good, but
+were a slide show, which is why we made X3Native."*
+
+So "the BL version" of the freeway network means THE BABYLON WORLD'S ROAD LAYOUT —
+the authored ring and its tunnels/bridges — not a code lineage. That world looked
+right and ran like a slide show; X3Native exists to run it properly. This also
+resolves the `BL_WORLD_PORT.md` provenance notes, which cite BL as the source of
+the corridor-depression technique and the tunnel cross-sections.
+
+DECIDED STRATEGY (Tim, same session): port the AUTHORED ROAD RING, REGENERATE the
+buildings. Do not port BL's building placement.
+
+KNOWN BL-ERA DEFECTS not to reproduce: a huge white tank popping in and out near
+the city centre; interiors existed but were lit badly; the elevator shaft never
+rendered correctly.
+
+The search below is left in place as the record of how the question stood open,
+and as a caution: the answer was never discoverable from the repo. It had to come
+from Tim.
+
+<details><summary>Original investigation (nothing in the repo could answer it)</summary>
 
 **I could not determine what BL refers to. Do not let anyone guess it into the design.**
 
@@ -28,6 +53,8 @@ What I searched and what I found:
 | `BL` on `origin/echotropolis` | `origin/echotropolis:app/world_hosts/echo_region_builders.cpp:1022` — `struct BL { float sx,sz,dx,dz,len,speed; int n; };`, a local **Boat Lane** struct for the harbour fleet |
 | All 1615 commit subjects **and bodies**, every ref (`git log --all --format='%H|%s|%b'`) | **zero** occurrences of `BL` as a word |
 | All branch names and tags | zero (`feat/world-blueprint` and `origin/docs/public-fleetcommand` match only as substrings) |
+
+</details>
 | Level / world / region / asset names (`assets/levels/`, `assets/world/`, `app/world_hosts/`) | zero |
 
 The nearest-looking artefact is **not** a world: `Escape48BLN`, a folder in Tim's OneDrive that holds the Task9D Spire model (`docs/design/X3_WORLD_BLUEPRINT.md:14`, `app/level_loader.cpp:1032`, `docs/KNOWN_BUGS.md:18`). `BLN` ≠ `BL`, and it names a *directory*, not a place in the game.
