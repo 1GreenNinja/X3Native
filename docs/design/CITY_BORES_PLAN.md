@@ -96,11 +96,31 @@ line, or a named capture. No condition is "looks good".
 - Delete the graybox boxes only AFTER a tunnel dresses successfully at that
   location, so there is never a frame with neither.
 
+## Answered
+
+1. LINING: realistic AGED concrete (Tim, 2026-08-13). The city bores read older
+   and more weathered than the fresh demo tunnel. `mw_concrete_panels_b` is the
+   board-formed base; prefer the more weathered of the available concrete sets
+   for the city, and say which was chosen and why.
+
 ## Open questions for Tim
 
-1. Should the four city bores use the same lining set as the demo
-   (`mw_concrete_panels_b`), or should the city read differently — older, more
-   weathered — than a fresh highway tunnel?
 2. Light budget: 24 of 64 for tunnels is a lot in a city that also wants street
    lighting. Prefer fewer real lights per bore and lean harder on the emissive
    strips?
+
+## Adjacent finding — NOT part of this plan, worth its own lane
+
+The terrain's ROCK splat layer is `sr_concrete_01` (terrain.cpp
+`makeGroundTexture`). The cliffs and cuttings are textured with CONCRETE, not
+rock — which is why they streak with form-lines and panel joints under the
+triplanar blend. `mesh_terrain.glsl` is not at fault; it triplanars rock
+specifically so cliffs are not stretched. The material is simply wrong.
+
+The repo already carries real rock: `cv_rock_wet` (4.8 MB) and `cv_rock_flume`
+(4.4 MB). This was invisible until the assetRoot fix (7ed2ed56), because every
+set fell back to procedural noise and nobody could see that rock was concrete.
+
+Swapping it affects EVERY outdoor scene in the game, not just the tunnels, so it
+does not belong in this lane. It should be its own change with its own before/
+after captures.
