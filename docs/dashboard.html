@@ -1,0 +1,841 @@
+<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>X3Native Dashboard</title>
+<style>
+:root {
+  --bg: #0e1216; --surface: #171d24; --surface2: #1e2630;
+  --ink: #e6edf3; --muted: #94a3b1; --line: #2b3640;
+  --accent: #58a6ff; --accent-dim: #274a75;
+  --good: #3fb950; --warn: #d29922; --bad: #f85149;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+main { max-width: 1200px; margin: 0 auto; padding: 24px 28px 80px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 19px; margin: 40px 0 12px; border-bottom: 1px solid var(--line);
+     padding-bottom: 6px; }
+h3 { font-size: 15px; margin: 18px 0 8px; color: var(--ink); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.meta { color: var(--muted); font-size: 13px; }
+code, .mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; }
+
+.tiles { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; }
+.tile { background: var(--surface); border: 1px solid var(--line);
+        border-radius: 8px; padding: 12px 18px; min-width: 150px; }
+.tile .num { font-size: 28px; font-weight: 600; line-height: 1.1; }
+.tile .lbl { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.tile.warn .num { color: var(--warn); }
+
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line);
+          border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 7px 12px; border-top: 1px solid var(--line);
+         white-space: nowrap; vertical-align: top; }
+thead th { border-top: none; color: var(--muted); font-weight: 600; font-size: 12.5px; }
+td.subj { white-space: normal; min-width: 260px; color: var(--muted); }
+tr:hover td { background: var(--surface2); }
+
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px;
+         font-size: 11.5px; font-weight: 600; border: 1px solid; }
+.badge.unmerged { color: var(--warn); border-color: var(--warn); }
+.badge.merged { color: var(--good); border-color: var(--good); }
+.badge.local { color: var(--accent); border-color: var(--accent-dim); }
+.badge.defect { color: var(--bad); border-color: var(--bad); }
+.badge.kind { color: var(--muted); border-color: var(--line); }
+
+.barwrap { display: inline-block; width: 140px; height: 10px;
+           background: var(--surface2); border-radius: 4px; vertical-align: middle;
+           margin-right: 8px; }
+.bar { height: 10px; background: var(--accent); border-radius: 4px 0 0 4px; }
+
+.panel { background: var(--surface); border: 1px solid var(--line);
+         border-radius: 8px; padding: 14px 18px; margin: 10px 0; }
+.panel.alert { border-left: 4px solid var(--warn); }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+@media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+ul.checks { list-style: none; padding: 0; margin: 6px 0; }
+ul.checks li { padding: 4px 0 4px 26px; position: relative; font-size: 13.5px; }
+ul.checks li::before { position: absolute; left: 2px; font-family: Consolas, monospace; }
+ul.checks li.done { color: var(--muted); }
+ul.checks li.done::before { content: "[x]"; color: var(--good); }
+ul.checks li.todo::before { content: "[ ]"; color: var(--warn); }
+.gcount { color: var(--muted); font-weight: 400; font-size: 12.5px; }
+
+.openwork li { margin: 6px 0; }
+.openwork .sum { color: var(--muted); font-size: 13.5px; }
+
+details { margin: 10px 0; }
+summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
+.shotdir { margin: 14px 0; }
+.shotrow { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line);
+         border-radius: 8px; padding: 6px; max-width: 300px; }
+figure img { max-width: 100%; display: block; border-radius: 4px; }
+figcaption { font-size: 11.5px; color: var(--muted); padding: 4px 2px 0;
+             word-break: break-all; }
+.na { color: var(--muted); font-style: italic; }
+footer { margin-top: 48px; color: var(--muted); font-size: 12.5px;
+         border-top: 1px solid var(--line); padding-top: 12px; }
+</style></head><body><main>
+<h1>X3Native — project dashboard</h1>
+<p class='meta'>Generated 2026-08-13 14:29 from <code>inspx/dashboard</code>@<code>57faf756</code> · origin/main @ <code>57faf756</code> (2026-08-13) · regenerate with <code>python tools/gen_dashboard.py</code> — everything below is derived from the repo at generation time.</p>
+<h2>Unmerged work — what is parked, and how much</h2>
+<div class='tiles'>
+<div class='tile warn'><div class='num'>8</div><div class='lbl'>unmerged lanes</div></div>
+<div class='tile warn'><div class='num'>142</div><div class='lbl'>commits parked off main</div></div>
+<div class='tile'><div class='num'>+52</div><div class='lbl'>largest: <span class='mono'>origin/integration/v003</span></div></div>
+<div class='tile'><div class='num'>36</div><div class='lbl'>lanes already merged</div></div>
+</div>
+<div class='scroll'><table><thead><tr><th>branch</th><th>status</th><th>ahead of main</th><th>behind</th><th>last commit</th><th>subject</th></tr></thead><tbody>
+<tr><td class='mono'>origin/integration/v003</td><td><span class='badge unmerged'>unmerged</span></td><td><span class='barwrap'><span class='bar' style='width:140px'></span></span>+52</td><td>897</td><td>2026-07-02</td><td class='subj'>Merge remote-tracking branch &#x27;origin/feat/tower-white-concrete&#x27; into integration/v003</td></tr>
+<tr><td class='mono'>origin/integration/v002</td><td><span class='badge unmerged'>unmerged</span></td><td><span class='barwrap'><span class='bar' style='width:110px'></span></span>+41</td><td>897</td><td>2026-07-01</td><td class='subj'>fix(weapons/v002): pistol viewmodel stays ANCHORED — clip guard no longer floats it</td></tr>
+<tr><td class='mono'>origin/inspx/mountain-tunnels</td><td><span class='badge unmerged'>unmerged</span></td><td><span class='barwrap'><span class='bar' style='width:40px'></span></span>+15</td><td>62</td><td>2026-08-13</td><td class='subj'>fix(tunnels): the bore is PLUGGED WITH EARTH — diagnosis + a partial cut</td></tr>
+<tr><td class='mono'>origin/integration/intro-composite</td><td><span class='badge unmerged'>unmerged</span></td><td><span class='barwrap'><span class='bar' style='width:32px'></span></span>+12</td><td>986</td><td>2026-06-24</td><td class='subj'>docs(intro): composite fold report — union, cvars, all-off==base md5, gates</td></tr>
+<tr><td class='mono'>origin/integration/playable-build</td><td><span class='badge unmerged'>unmerged</span></td><td><span class='barwrap'><span class='bar' style='width:27px'></span></span>+10</td><td>331</td><td>2026-07-30</td><td class='subj'>feat(anim): saurian_forge -- Meshy-named skeleton+skin for canon_saurian (asset swap DEFERRED)</td></tr>
+<tr><td class='mono'>origin/integration/playtest-launch</td><td><span class='badge unmerged'>unmerged</span></td><td><span class='barwrap'><span class='bar' style='width:16px'></span></span>+6</td><td>898</td><td>2026-07-01</td><td class='subj'>merge feat/strata-descent: STRATA geological descent (facility base -&gt; Club 1127)</td></tr>
+<tr><td class='mono'>origin/integration/unified-launch</td><td><span class='badge unmerged'>unmerged</span></td><td><span class='barwrap'><span class='bar' style='width:13px'></span></span>+5</td><td>897</td><td>2026-07-01</td><td class='subj'>proof: STRATA descent bore — layered bands + glowing depths (unified set complete)</td></tr>
+<tr><td class='mono'>origin/inspx/wetness</td><td><span class='badge unmerged'>unmerged</span></td><td><span class='barwrap'><span class='bar' style='width:3px'></span></span>+1</td><td>62</td><td>2026-08-05</td><td class='subj'>feat(wetness): rain — wet surfaces, ice, and what both do to tire grip</td></tr>
+</tbody></table></div>
+<details><summary>36 merged branches (history)</summary>
+<div class='scroll'><table><thead><tr><th>branch</th><th>status</th><th>last commit</th><th>subject</th></tr></thead><tbody>
+<tr><td class='mono'>inspx/dashboard</td><td><span class='badge merged'>merged</span></td><td>2026-08-13</td><td class='subj'>docs(roadmap): reconcile subsystem status against the tree</td></tr>
+<tr><td class='mono'>inspx/level-architect</td><td><span class='badge merged'>merged</span></td><td>2026-08-13</td><td class='subj'>docs(roadmap): reconcile subsystem status against the tree</td></tr>
+<tr><td class='mono'>inspx/veh-cosmetics</td><td><span class='badge merged'>merged</span></td><td>2026-08-13</td><td class='subj'>docs(roadmap): reconcile subsystem status against the tree</td></tr>
+<tr><td class='mono'>origin/integration/fold-0812</td><td><span class='badge merged'>merged</span></td><td>2026-08-12</td><td class='subj'>merge(lane7/terrain-frontier): fold-0812 wave 6</td></tr>
+<tr><td class='mono'>origin/integration/inspx-all</td><td><span class='badge merged'>merged</span></td><td>2026-08-03</td><td class='subj'>Merge branch &#x27;inspx/island-regen&#x27; into integration/inspx-all</td></tr>
+<tr><td class='mono'>inspx/content-wiring</td><td><span class='badge merged'>merged</span></td><td>2026-08-03</td><td class='subj'>feat(content): WIRE the shipped engine features into the shipping worlds</td></tr>
+<tr><td class='mono'>inspx/island-regen</td><td><span class='badge merged'>merged</span></td><td>2026-08-03</td><td class='subj'>fix(city): reject cliff-edge lots — the crown rim grew 190 m pedestals to the sea</td></tr>
+<tr><td class='mono'>inspx/lift-roads</td><td><span class='badge merged'>merged</span></td><td>2026-08-03</td><td class='subj'>feat(roads): LIFT A — port the EchoRoads ROAD GRAPH onto the main lineage</td></tr>
+<tr><td class='mono'>inspx/mines</td><td><span class='badge merged'>merged</span></td><td>2026-08-03</td><td class='subj'>feat(mines): ARMORY REBUILD -- real rock, recessed bore, the glowing mouth at night</td></tr>
+<tr><td class='mono'>inspx/city-blocks</td><td><span class='badge merged'>merged</span></td><td>2026-08-02</td><td class='subj'>feat(city): CITY BLOCK / LOT / FRONTAGE GENERATOR — placement by construction</td></tr>
+<tr><td class='mono'>inspx/clustered-lights</td><td><span class='badge merged'>merged</span></td><td>2026-08-02</td><td class='subj'>feat(lighting): CLUSTERED (froxel) forward lighting -- 64 lights -&gt; 1024, r_clusterlights</td></tr>
+<tr><td class='mono'>inspx/csm</td><td><span class='badge merged'>merged</span></td><td>2026-08-02</td><td class='subj'>fix(csm): r_csm 0 is BIT-EXACT again -- scope the GLM depth define to Csm.h</td></tr>
+<tr><td class='mono'>inspx/geo-lod</td><td><span class='badge merged'>merged</span></td><td>2026-08-02</td><td class='subj'>feat(geo): VERTEX COMPRESSION -- 32B -&gt; 24B/20B behind a format version</td></tr>
+<tr><td class='mono'>inspx/refl-denoise</td><td><span class='badge merged'>merged</span></td><td>2026-08-02</td><td class='subj'>feat(refl): DENOISE STAGE -- the missing gather/temporal/denoise/apply equivalent</td></tr>
+<tr><td class='mono'>inspx/rt-reflections</td><td><span class='badge merged'>merged</span></td><td>2026-08-02</td><td class='subj'>verify(rt-refl): the CLEARCOAT CAR case, on the real CTR.glb</td></tr>
+<tr><td class='mono'>inspx/terrain-corridor</td><td><span class='badge merged'>merged</span></td><td>2026-08-02</td><td class='subj'>art(tunnel): dress the bore + portals from real surface_library sets</td></tr>
+<tr><td class='mono'>origin/integration/tonight</td><td><span class='badge merged'>merged</span></td><td>2026-07-28</td><td class='subj'>Merge remote-tracking branch &#x27;origin/fix/qa-upper-floors&#x27; into integration/tonight</td></tr>
+<tr><td class='mono'>origin/integration/unified5</td><td><span class='badge merged'>merged</span></td><td>2026-07-28</td><td class='subj'>unified5: cave-river + veined-rock + fall proof screenshots</td></tr>
+<tr><td class='mono'>origin/integration/unified3</td><td><span class='badge merged'>merged</span></td><td>2026-07-27</td><td class='subj'>unified3: integration-proof screenshots (laser floor + axis heads + blue earth crystals)</td></tr>
+<tr><td class='mono'>origin/integration/unified4</td><td><span class='badge merged'>merged</span></td><td>2026-07-27</td><td class='subj'>unified4: fold cave-atmosphere (+descent-fall) onto the promotion line</td></tr>
+<tr><td class='mono'>origin/integration/unified</td><td><span class='badge merged'>merged</span></td><td>2026-07-26</td><td class='subj'>unified: per-area washout-audit screenshots (GUARDRAIL 2)</td></tr>
+<tr><td class='mono'>origin/integration/unified2</td><td><span class='badge merged'>merged</span></td><td>2026-07-26</td><td class='subj'>unified2: consolidation validation screenshots (club 1127 sign+beams, solid-earth noclip, complex/elevator/facility areas)</td></tr>
+<tr><td class='mono'>origin/integration/gamma-fold</td><td><span class='badge merged'>merged</span></td><td>2026-07-25</td><td class='subj'>gamma-fold: per-area validation captures (club/complex/elevator) under corrected sRGB curve</td></tr>
+<tr><td class='mono'>origin/integration/converge-lines</td><td><span class='badge merged'>merged</span></td><td>2026-07-18</td><td class='subj'>Merge commit &#x27;285bfd2&#x27; into integration/converge-lines</td></tr>
+<tr><td class='mono'>origin/integration/playtest-consolidated</td><td><span class='badge merged'>merged</span></td><td>2026-07-18</td><td class='subj'>Merge commit &#x27;285bfd2&#x27; into integration/converge-lines</td></tr>
+<tr><td class='mono'>origin/integration/land-lighting</td><td><span class='badge merged'>merged</span></td><td>2026-07-12</td><td class='subj'>Merge fix/prim-point-light into land-lighting — R4: the second ambient was a BLUE SKY</td></tr>
+<tr><td class='mono'>origin/integration/land-mirror</td><td><span class='badge merged'>merged</span></td><td>2026-07-12</td><td class='subj'>Merge remote-tracking branch &#x27;origin/art/rifthub-canon&#x27; into integration/land-mirror</td></tr>
+<tr><td class='mono'>origin/integration/one-main</td><td><span class='badge merged'>merged</span></td><td>2026-07-12</td><td class='subj'>merge: ONE MAIN — fold the last line in, with every commit and every fix</td></tr>
+<tr><td class='mono'>origin/integration/honor-fable-final</td><td><span class='badge merged'>merged</span></td><td>2026-07-07</td><td class='subj'>FOLD COMPLETE: absorb the pre-split playable-build monolith line</td></tr>
+<tr><td class='mono'>origin/integration/space-stack-folded</td><td><span class='badge merged'>merged</span></td><td>2026-06-18</td><td class='subj'>feat(space): fold the space-combat stack onto the split base (Intro P2)</td></tr>
+<tr><td class='mono'>origin/integration/combat-consolidated</td><td><span class='badge merged'>merged</span></td><td>2026-06-16</td><td class='subj'>merge: reconcile weapons-polish onto DamageType+enemy base</td></tr>
+<tr><td class='mono'>origin/integration/damagetype-gated</td><td><span class='badge merged'>merged</span></td><td>2026-06-16</td><td class='subj'>feat(combat): gate + re-home fleet DamageType system onto split base</td></tr>
+<tr><td class='mono'>origin/integration/honor-fable</td><td><span class='badge merged'>merged</span></td><td>2026-06-16</td><td class='subj'>Merge remote-tracking branch &#x27;origin/feat/dlss-velocity&#x27; into integration/honor-fable</td></tr>
+<tr><td class='mono'>origin/integration/empire-fold</td><td><span class='badge merged'>merged</span></td><td>2026-06-13</td><td class='subj'>fold(report): THE GREAT FOLD integration report</td></tr>
+<tr><td class='mono'>origin/integration/culling-glass</td><td><span class='badge merged'>merged</span></td><td>2026-05-26</td><td class='subj'>Merge remote-tracking branch &#x27;origin/feat/doors-death-anim&#x27;</td></tr>
+<tr><td class='mono'>origin/integration/main-plus-session</td><td><span class='badge merged'>merged</span></td><td>2026-05-24</td><td class='subj'>fix(physics): unify the two constraint APIs without a crash/regression</td></tr>
+</tbody></table></div></details>
+<h2>Warnings — docs vs git</h2>
+<div class='panel alert'><code>docs/design/CITY_BORES_PLAN.md</code> is <b>not in this checkout / not on origin/main</b> — read from unmerged branch <code>origin/inspx/mountain-tunnels</code>. The plan of record currently lives only on that lane.</div>
+<div class='panel alert'><code>docs/design/TUNNEL_NEXT.md</code> is <b>not in this checkout / not on origin/main</b> — read from unmerged branch <code>origin/inspx/mountain-tunnels</code>. The plan of record currently lives only on that lane.</div>
+<div class='panel alert'><b>Doc claims done, git says unmerged:</b> <code>docs/design/TUNNEL_NEXT.md</code> cites <code>2d488fd2</code> (&ldquo;fix(terrain): the ROCK splat layer was a concrete texture; add a tunnel ridge (INERT — see below)&rdquo;) in a line that reads as resolved, but that commit is <b>not on origin/main</b>.<br><span class='meta mono'>3. **Rock splat.** DONE (2d488fd2) — was `sr_concrete_01`, now `fw_rock_cliff`.</span></div>
+<div class='two-col'>
+<div><h2>Acceptance conditions — city bores</h2>
+<p class='meta'><b>0/15</b> conditions met · from <code>docs/design/CITY_BORES_PLAN.md</code> · source: <code>origin/inspx/mountain-tunnels</code></p>
+<h3>Correctness <span class='gcount'>0/4</span></h3>
+<ul class='checks'>
+<li class='todo'>C1. All four bores dress without error; log reports 4/4 dressed.</li>
+<li class='todo'>C2. Each dressed tunnel&#x27;s shell length is within 5 % of the bore length its route reported at registration (144/306/128/84 m).</li>
+<li class='todo'>C3. The road ribbon is continuous from approach through bore to far portal: no gap &gt; 0.5 m in arc length between emitted road segments.</li>
+<li class='todo'>C4. The tunnels COLLIDE — a capsule dropped at the bore midpoint rests on the road, it does not fall through.</li>
+</ul>
+<h3>Geometry quality (the three defects, as conditions) <span class='gcount'>0/3</span></h3>
+<ul class='checks'>
+<li class='todo'>G1. No terrain visible inside any portal arch opening.</li>
+<li class='todo'>G2. No emitted wing-wall segment stands more than <code>kWingProud</code> above the ground beneath it. Assert in code, not by eye.</li>
+<li class='todo'>G3. The shoulder batter terminates at grade on every rail; zero quads emitted after both rails have landed.</li>
+</ul>
+<h3>Budget <span class='gcount'>0/3</span></h3>
+<ul class='checks'>
+<li class='todo'>B1. Total point lights across all four bores &lt;= 32 (half the 64 budget). Log the number; if it exceeds, reduce per-bore lights before proceeding.</li>
+<li class='todo'>B2. Region build time for the city does not regress by more than 50 ms. <code>--test-worldstream</code> already prints per-region realize time.</li>
+<li class='todo'>B3. The four bores share ONE <code>SurfaceLibrary</code>; texture uploads for the second, third and fourth tunnel are zero.</li>
+</ul>
+<h3>No regressions <span class='gcount'>0/3</span></h3>
+<ul class='checks'>
+<li class='todo'>N1. <code>--test-worldstream</code> texture ledger does not get WORSE than the current 76/112. If dressing adds to the double-free, say so explicitly.</li>
+<li class='todo'>N2. <code>--test-city</code> stays 20/20; <code>--test-terraincorridor</code> stays 9/9.</li>
+<li class='todo'>N3. <code>X3_FREEWAY_TUNNELS=0</code> still restores the pre-corridor field exactly.</li>
+</ul>
+<h3>Evidence <span class='gcount'>0/2</span></h3>
+<ul class='checks'>
+<li class='todo'>E1. One capture per tunnel mouth (4), plus one interior. Committed.</li>
+<li class='todo'>E2. Any defect found during iteration is committed as a DEFECT_ frame alongside the fixed one, as with the wing walls and the shoulder.</li>
+</ul>
+</div>
+<div><h2>Tim's defect list — tunnels</h2>
+<p class='meta'><b>3/8</b> resolved · from <code>docs/design/TUNNEL_NEXT.md</code> §4 · source: <code>origin/inspx/mountain-tunnels</code></p>
+<ul class='checks'>
+<li class='done'><strong>Strips up the slope — DELETED.</strong> Not tile skirts (my earlier guess) and not the summit trench. It was MY OWN embankment from e0edbfcd: the batter clamps each step with <code>max(y, ground)</code> so it cannot sink below grade, which is right for a downhill FILL and catastrophic in a CUT. Under the mountain…</li>
+<li class='done'><strong>Road-shaped cutout across the mountain top — FIXED.</strong> The bored branch took <code>min(coverAvail - kBoreCut, kTcMaxScar)</code>. Fine for a 55 m hummock; under a 124 m mountain coverAvail is enormous so it pinned at kTcMaxScar and gouged a trench along the summit. A tunnel does not carve the mountain above…</li>
+<li class='done'><strong>Dark angular wedge on the upper-left slope — NOT A DEFECT.</strong> Tim identified it as the cliff face where the cutting wraps around the hill. My headwall guess was wrong; the terrain is behaving.</li>
+<li class='todo'><strong>Car is too small and faces the wrong way.</strong> Showcase prop in host_tunnel.</li>
+<li class='todo'><strong>Mountain is too smooth</strong> — needs jagged peaks, not a dune. <code>ridgeExp</code> and <code>jagAmp</code> on the tunnel-ridge RangeDef are the levers (currently 1.7 / 26).</li>
+<li class='todo'><strong>Mountain has no MOUNTAIN COLOURS</strong> — wants bluish dark rock, snow caps, trees. The splat blends by height/slope; snow exists as a layer (<code>terrain_snow</code>) but the ridge tops out ~124 m, far below wherever the snow band starts. Needs the splat bands retuned for a peak this height, plus vegetation sc…</li>
+<li class='todo'><strong>Strange non-concrete artifact at the roadside</strong> — may be resolved by the fill-only guard above; needs a fresh look.</li>
+<li class='todo'><strong>Grass or rock ON the road</strong> — unconfirmed, needs a close capture.</li>
+</ul>
+</div></div>
+<h2>Open work — narrative sections</h2>
+<h3>TUNNEL_NEXT.md</h3>
+<p class='meta'>source: <code>origin/inspx/mountain-tunnels</code> (not in this checkout — no local link)</p>
+<ul class='openwork'>
+<li><b>1. THE MOUNTAIN — why it is inert, and how to fix it</b><div class='sum'>A fifth <code>RangeDef</code> (the &quot;tunnel ridge&quot;) is committed in <code>terrain.cpp</code> and has NO effect on the corridor route.</div></li>
+<li><b>2. NFS RESEARCH (1994) — what they did, what we still lack</b><div class='sum'>Tim: &quot;if NFS could do it in 1992/1994/1996, research HOW and do the same or better.&quot; Researched 2026-08-13.</div></li>
+<li><b>3. TUNNEL INTERIOR PROGRAM (Tim, 2026-08-13)</b><div class='sum'>Requested: &quot;sidewalks, access points, doors with keypads and rooms and stairs and underground complex access, lighting — some LED, some burned out, some video screens like CP2077&quot;.</div></li>
+<li><b>4. TIM&#x27;S DEFECT LIST (2026-08-13, approach_mountain.png)</b><div class='sum'>Seven called out. Status after 8537fbed + the follow-up:</div></li>
+<li><b>5. THE CAR — gyroscope wheels + facing left (2026-08-13, Tim driving)</b><div class='sum'>Tim drove it in <code>--world tunnel</code>: &quot;the car moves, the wheels spin, but they spin SIDEWAYS, lookin like a gyroscope&quot; and &quot;it moves forward when I accelerate&quot;.</div></li>
+<li><b>6. YOU CANNOT SEE IN THE TUNNEL (interactive only) — 2026-08-13</b><div class='sum'>Headless captures of the bore are lit; DRIVING through it is dark.</div></li>
+<li><b>7. THE TUNNEL IS PLUGGED WITH EARTH — the real &quot;can&#x27;t see in&quot; (2026-08-13)</b><div class='sum'>Tim drove to the mouth and found it PACKED WITH GRASS: &quot;The road...</div></li>
+</ul>
+<h3>CITY_BORES_PLAN.md</h3>
+<p class='meta'>source: <code>origin/inspx/mountain-tunnels</code> (not in this checkout — no local link)</p>
+<ul class='openwork'>
+<li><b>Why this document exists</b><div class='sum'>The three portal defects in this lane (grass in the arch, floating wing walls, sprawling shoulder) were each found by building the thing, capturing it, and looking.</div></li>
+<li><b>Goal</b><div class='sum'><code>registerCityFreewayTunnels()</code> already registers four real corridors and all four find hills (North 144 m, East 306 m, South 128 m, West 84 m bores).</div></li>
+<li><b>Known constraints (verified, not assumed)</b><div class='sum'>1. <strong>Boot order.</strong> Corridors must register before the first terrain height query.</div></li>
+<li><b>Acceptance conditions</b><div class='sum'>Execution iterates until ALL of these hold.</div></li>
+<li><b>Execution notes</b><div class='sum'>- Do the SHARED-LIBRARY refactor (B3) first.</div></li>
+<li><b>Answered</b><div class='sum'>1. LINING: realistic AGED concrete (Tim, 2026-08-13).</div></li>
+<li><b>Open questions for Tim</b><div class='sum'>2. Light budget: 24 of 64 for tunnels is a lot in a city that also wants street lighting.</div></li>
+<li><b>Adjacent finding — NOT part of this plan, worth its own lane</b><div class='sum'>The terrain&#x27;s ROCK splat layer is <code>sr_concrete_01</code> (terrain.cpp <code>makeGroundTexture</code>).</div></li>
+</ul>
+<h2>Screenshot progression</h2>
+<p class='meta'>Walked from <code>docs/screenshots/</code>. <span class='badge defect'>DEFECT</span> frames are deliberately kept &ldquo;this was wrong&rdquo; records paired with their fixed versions — evidence, not failures. Directories without progression pairs are listed compactly.</p>
+<div class='shotdir'><h3>(top level) <span class='gcount'>7 captures</span></h3>
+<p class='meta'>Visual reference / regression baselines of the engine layer (1280×720, captured headless on the 13700K / GTX 1080 Ti). <a href='screenshots/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/keypad_security_closeup.png'><img src='screenshots/keypad_security_closeup.png' loading='lazy' alt='keypad_security_closeup.png'></a><figcaption>keypad_security_closeup.png</figcaption></figure>
+<figure><a href='screenshots/keypad_security_door.png'><img src='screenshots/keypad_security_door.png' loading='lazy' alt='keypad_security_door.png'></a><figcaption>keypad_security_door.png</figcaption></figure>
+<figure><a href='screenshots/level1_corridor.png'><img src='screenshots/level1_corridor.png' loading='lazy' alt='level1_corridor.png'></a><figcaption>level1_corridor.png</figcaption></figure>
+<figure><a href='screenshots/monster_ai.gif'><img src='screenshots/monster_ai.gif' loading='lazy' alt='monster_ai.gif'></a><figcaption>monster_ai.gif</figcaption></figure>
+</div>
+<p class='meta'>+3 more in <code>docs/screenshots/(top level)/</code></p>
+</div>
+<div class='shotdir'><h3>animpolish <span class='gcount'>11 captures</span></h3>
+<p class='meta'>Grounded pose QA for the two fixes in this polish pass. <a href='screenshots/animpolish/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/animpolish/alien_grey_attack_BEFORE_weakbow.png'><img src='screenshots/animpolish/alien_grey_attack_BEFORE_weakbow.png' loading='lazy' alt='alien_grey_attack_BEFORE_weakbow.png'></a><figcaption><span class='badge kind'>BEFORE</span> alien_grey_attack_BEFORE_weakbow.png</figcaption></figure>
+<figure><a href='screenshots/animpolish/alien_grey_attack_AFTER_lunge.png'><img src='screenshots/animpolish/alien_grey_attack_AFTER_lunge.png' loading='lazy' alt='alien_grey_attack_AFTER_lunge.png'></a><figcaption><span class='badge kind'>AFTER</span> alien_grey_attack_AFTER_lunge.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/animpolish/alien_grey_hitreact_BEFORE_subtle.png'><img src='screenshots/animpolish/alien_grey_hitreact_BEFORE_subtle.png' loading='lazy' alt='alien_grey_hitreact_BEFORE_subtle.png'></a><figcaption><span class='badge kind'>BEFORE</span> alien_grey_hitreact_BEFORE_subtle.png</figcaption></figure>
+<figure><a href='screenshots/animpolish/alien_grey_hitreact_AFTER_peak.png'><img src='screenshots/animpolish/alien_grey_hitreact_AFTER_peak.png' loading='lazy' alt='alien_grey_hitreact_AFTER_peak.png'></a><figcaption><span class='badge kind'>AFTER</span> alien_grey_hitreact_AFTER_peak.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/animpolish/alien_saurian_hitreact_AFTER_peak.png'><img src='screenshots/animpolish/alien_saurian_hitreact_AFTER_peak.png' loading='lazy' alt='alien_saurian_hitreact_AFTER_peak.png'></a><figcaption><span class='badge kind'>AFTER</span> alien_saurian_hitreact_AFTER_peak.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/animpolish/chief_hitreact_BEFORE_nearknockdown.png'><img src='screenshots/animpolish/chief_hitreact_BEFORE_nearknockdown.png' loading='lazy' alt='chief_hitreact_BEFORE_nearknockdown.png'></a><figcaption><span class='badge kind'>BEFORE</span> chief_hitreact_BEFORE_nearknockdown.png</figcaption></figure>
+<figure><a href='screenshots/animpolish/chief_hitreact_AFTER_peak.png'><img src='screenshots/animpolish/chief_hitreact_AFTER_peak.png' loading='lazy' alt='chief_hitreact_AFTER_peak.png'></a><figcaption><span class='badge kind'>AFTER</span> chief_hitreact_AFTER_peak.png</figcaption></figure>
+<figure><a href='screenshots/animpolish/chief_hitreact_AFTER_settle.png'><img src='screenshots/animpolish/chief_hitreact_AFTER_settle.png' loading='lazy' alt='chief_hitreact_AFTER_settle.png'></a><figcaption><span class='badge kind'>AFTER</span> chief_hitreact_AFTER_settle.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/animpolish/marcus_hitreact_AFTER_peak.png'><img src='screenshots/animpolish/marcus_hitreact_AFTER_peak.png' loading='lazy' alt='marcus_hitreact_AFTER_peak.png'></a><figcaption><span class='badge kind'>AFTER</span> marcus_hitreact_AFTER_peak.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/animpolish/crowd_sit_seat_INENGINE.png'><img src='screenshots/animpolish/crowd_sit_seat_INENGINE.png' loading='lazy' alt='crowd_sit_seat_INENGINE.png'></a><figcaption>crowd_sit_seat_INENGINE.png</figcaption></figure>
+<figure><a href='screenshots/animpolish/crowd_sit_seat_blender.png'><img src='screenshots/animpolish/crowd_sit_seat_blender.png' loading='lazy' alt='crowd_sit_seat_blender.png'></a><figcaption>crowd_sit_seat_blender.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>anims <span class='gcount'>10 captures</span></h3>
+<p class='meta'>In-engine (Vulkan) captures + Blender close-up pose QA for the combat/gesture clips added this wave. <a href='screenshots/anims/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/anims/closeup_alien_grey_attack.png'><img src='screenshots/anims/closeup_alien_grey_attack.png' loading='lazy' alt='closeup_alien_grey_attack.png'></a><figcaption>closeup_alien_grey_attack.png</figcaption></figure>
+<figure><a href='screenshots/anims/closeup_alien_grey_death.png'><img src='screenshots/anims/closeup_alien_grey_death.png' loading='lazy' alt='closeup_alien_grey_death.png'></a><figcaption>closeup_alien_grey_death.png</figcaption></figure>
+<figure><a href='screenshots/anims/closeup_anna_converse.png'><img src='screenshots/anims/closeup_anna_converse.png' loading='lazy' alt='closeup_anna_converse.png'></a><figcaption>closeup_anna_converse.png</figcaption></figure>
+<figure><a href='screenshots/anims/closeup_anna_sit.png'><img src='screenshots/anims/closeup_anna_sit.png' loading='lazy' alt='closeup_anna_sit.png'></a><figcaption>closeup_anna_sit.png</figcaption></figure>
+</div>
+<p class='meta'>+6 more in <code>docs/screenshots/anims/</code></p>
+</div>
+<div class='shotdir'><h3>cave_atmosphere <span class='gcount'>9 captures</span></h3>
+<p class='meta'>The 800 m fall-shaft + side-shoot cave system as a crystal-lit, eerie underworld (feat/cave-atmosphere). <a href='screenshots/cave_atmosphere/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/cave_atmosphere/cache.png'><img src='screenshots/cave_atmosphere/cache.png' loading='lazy' alt='cache.png'></a><figcaption>cache.png</figcaption></figure>
+<figure><a href='screenshots/cave_atmosphere/collapse.png'><img src='screenshots/cave_atmosphere/collapse.png' loading='lazy' alt='collapse.png'></a><figcaption>collapse.png</figcaption></figure>
+<figure><a href='screenshots/cave_atmosphere/fog_godray.png'><img src='screenshots/cave_atmosphere/fog_godray.png' loading='lazy' alt='fog_godray.png'></a><figcaption>fog_godray.png</figcaption></figure>
+<figure><a href='screenshots/cave_atmosphere/hero_singing_cave.png'><img src='screenshots/cave_atmosphere/hero_singing_cave.png' loading='lazy' alt='hero_singing_cave.png'></a><figcaption>hero_singing_cave.png</figcaption></figure>
+</div>
+<p class='meta'>+5 more in <code>docs/screenshots/cave_atmosphere/</code></p>
+</div>
+<div class='shotdir'><h3>cave_river <span class='gcount'>4 captures</span></h3>
+<p class='meta'>A mildly-luminescent, SELF-EMISSIVE blue stream threading the low side-shoot cave tubes of the descent (feat/cave-river). <a href='screenshots/cave_river/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/cave_river/river_cache.png'><img src='screenshots/cave_river/river_cache.png' loading='lazy' alt='river_cache.png'></a><figcaption>river_cache.png</figcaption></figure>
+<figure><a href='screenshots/cave_river/river_collapse.png'><img src='screenshots/cave_river/river_collapse.png' loading='lazy' alt='river_collapse.png'></a><figcaption>river_collapse.png</figcaption></figure>
+<figure><a href='screenshots/cave_river/river_landmark.png'><img src='screenshots/cave_river/river_landmark.png' loading='lazy' alt='river_landmark.png'></a><figcaption>river_landmark.png</figcaption></figure>
+<figure><a href='screenshots/cave_river/river_pool.png'><img src='screenshots/cave_river/river_pool.png' loading='lazy' alt='river_pool.png'></a><figcaption>river_pool.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>city-blocks <span class='gcount'>6 captures</span></h3>
+<p class='meta'>Headless captures (`--world echotropolis --screenshot ... <a href='screenshots/city-blocks/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/city-blocks/aerial_crown_before.png'><img src='screenshots/city-blocks/aerial_crown_before.png' loading='lazy' alt='aerial_crown_before.png'></a><figcaption><span class='badge kind'>BEFORE</span> aerial_crown_before.png</figcaption></figure>
+<figure><a href='screenshots/city-blocks/aerial_crown_after.png'><img src='screenshots/city-blocks/aerial_crown_after.png' loading='lazy' alt='aerial_crown_after.png'></a><figcaption><span class='badge kind'>AFTER</span> aerial_crown_after.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/city-blocks/aerial_harbor_before.png'><img src='screenshots/city-blocks/aerial_harbor_before.png' loading='lazy' alt='aerial_harbor_before.png'></a><figcaption><span class='badge kind'>BEFORE</span> aerial_harbor_before.png</figcaption></figure>
+<figure><a href='screenshots/city-blocks/aerial_harbor_after.png'><img src='screenshots/city-blocks/aerial_harbor_after.png' loading='lazy' alt='aerial_harbor_after.png'></a><figcaption><span class='badge kind'>AFTER</span> aerial_harbor_after.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/city-blocks/street_before.png'><img src='screenshots/city-blocks/street_before.png' loading='lazy' alt='street_before.png'></a><figcaption><span class='badge kind'>BEFORE</span> street_before.png</figcaption></figure>
+<figure><a href='screenshots/city-blocks/street_after.png'><img src='screenshots/city-blocks/street_after.png' loading='lazy' alt='street_after.png'></a><figcaption><span class='badge kind'>AFTER</span> street_after.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>csm <span class='gcount'>20 captures</span></h3>
+<p class='meta'>Regenerate everything here with, from the worktree root: <a href='screenshots/csm/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/csm/ab_mid_csm0.png'><img src='screenshots/csm/ab_mid_csm0.png' loading='lazy' alt='ab_mid_csm0.png'></a><figcaption><span class='badge kind'>MID</span> ab_mid_csm0.png</figcaption></figure>
+<figure><a href='screenshots/csm/ab_mid_csm1.png'><img src='screenshots/csm/ab_mid_csm1.png' loading='lazy' alt='ab_mid_csm1.png'></a><figcaption><span class='badge kind'>MID</span> ab_mid_csm1.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+<div class='shotrow'>
+<figure><a href='screenshots/csm/ab_far_csm0.png'><img src='screenshots/csm/ab_far_csm0.png' loading='lazy' alt='ab_far_csm0.png'></a><figcaption>ab_far_csm0.png</figcaption></figure>
+<figure><a href='screenshots/csm/ab_far_csm1.png'><img src='screenshots/csm/ab_far_csm1.png' loading='lazy' alt='ab_far_csm1.png'></a><figcaption>ab_far_csm1.png</figcaption></figure>
+<figure><a href='screenshots/csm/ab_near_csm0.png'><img src='screenshots/csm/ab_near_csm0.png' loading='lazy' alt='ab_near_csm0.png'></a><figcaption>ab_near_csm0.png</figcaption></figure>
+<figure><a href='screenshots/csm/ab_near_csm1.png'><img src='screenshots/csm/ab_near_csm1.png' loading='lazy' alt='ab_near_csm1.png'></a><figcaption>ab_near_csm1.png</figcaption></figure>
+</div>
+<p class='meta'>+14 more in <code>docs/screenshots/csm/</code></p>
+</div>
+<div class='shotdir'><h3>ddgi <span class='gcount'>12 captures</span></h3>
+<p class='meta'>Classic DDGI (Majercik, McGuire et al., JCGT 2019 — built from the public paper) on the shared ray-query TLAS: per-frame probe rays, octahedral irradiance + Chebyshev visibility atlases, hysteresis convergence, mesh.frag replaces the ambient DIFFUSE term (flat ambient / IBL irra… <a href='screenshots/ddgi/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/ddgi/ddgi_corridor_off.png'><img src='screenshots/ddgi/ddgi_corridor_off.png' loading='lazy' alt='ddgi_corridor_off.png'></a><figcaption>ddgi_corridor_off.png</figcaption></figure>
+<figure><a href='screenshots/ddgi/ddgi_corridor_on.png'><img src='screenshots/ddgi/ddgi_corridor_on.png' loading='lazy' alt='ddgi_corridor_on.png'></a><figcaption>ddgi_corridor_on.png</figcaption></figure>
+<figure><a href='screenshots/ddgi/ddgi_emissive_only.png'><img src='screenshots/ddgi/ddgi_emissive_only.png' loading='lazy' alt='ddgi_emissive_only.png'></a><figcaption>ddgi_emissive_only.png</figcaption></figure>
+<figure><a href='screenshots/ddgi/ddgi_leak_off.png'><img src='screenshots/ddgi/ddgi_leak_off.png' loading='lazy' alt='ddgi_leak_off.png'></a><figcaption>ddgi_leak_off.png</figcaption></figure>
+</div>
+<p class='meta'>+8 more in <code>docs/screenshots/ddgi/</code></p>
+</div>
+<div class='shotdir'><h3>doors <span class='gcount'>10 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/doors/motion_mid.png'><img src='screenshots/doors/motion_mid.png' loading='lazy' alt='motion_mid.png'></a><figcaption><span class='badge kind'>MID</span> motion_mid.png</figcaption></figure>
+<figure><a href='screenshots/doors/motion_open.png'><img src='screenshots/doors/motion_open.png' loading='lazy' alt='motion_open.png'></a><figcaption><span class='badge kind'>FIXED</span> motion_open.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/doors/f0_closed.png'><img src='screenshots/doors/f0_closed.png' loading='lazy' alt='f0_closed.png'></a><figcaption>f0_closed.png</figcaption></figure>
+<figure><a href='screenshots/doors/f1_closed.png'><img src='screenshots/doors/f1_closed.png' loading='lazy' alt='f1_closed.png'></a><figcaption>f1_closed.png</figcaption></figure>
+<figure><a href='screenshots/doors/f2_closed.png'><img src='screenshots/doors/f2_closed.png' loading='lazy' alt='f2_closed.png'></a><figcaption>f2_closed.png</figcaption></figure>
+<figure><a href='screenshots/doors/f3_closed.png'><img src='screenshots/doors/f3_closed.png' loading='lazy' alt='f3_closed.png'></a><figcaption>f3_closed.png</figcaption></figure>
+</div>
+<p class='meta'>+4 more in <code>docs/screenshots/doors/</code></p>
+</div>
+<div class='shotdir'><h3>echo-road-surface <span class='gcount'>10 captures</span></h3>
+<p class='meta'>Tim, flying <code>--world echotropolis</code> on <code>dc9757fa</code>: *&quot;freeways look GREAT! Buildings are still ON them, and neon roads look rough.. <a href='screenshots/echo-road-surface/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/echo-road-surface/after_crown_hi.png'><img src='screenshots/echo-road-surface/after_crown_hi.png' loading='lazy' alt='after_crown_hi.png'></a><figcaption>after_crown_hi.png</figcaption></figure>
+<figure><a href='screenshots/echo-road-surface/after_crown_lane.png'><img src='screenshots/echo-road-surface/after_crown_lane.png' loading='lazy' alt='after_crown_lane.png'></a><figcaption>after_crown_lane.png</figcaption></figure>
+<figure><a href='screenshots/echo-road-surface/after_crown_vista.png'><img src='screenshots/echo-road-surface/after_crown_vista.png' loading='lazy' alt='after_crown_vista.png'></a><figcaption>after_crown_vista.png</figcaption></figure>
+<figure><a href='screenshots/echo-road-surface/after_freeway_streets.png'><img src='screenshots/echo-road-surface/after_freeway_streets.png' loading='lazy' alt='after_freeway_streets.png'></a><figcaption>after_freeway_streets.png</figcaption></figure>
+</div>
+<p class='meta'>+6 more in <code>docs/screenshots/echo-road-surface/</code></p>
+</div>
+<div class='shotdir'><h3>echo-sea-level <span class='gcount'>8 captures</span></h3>
+<p class='meta'>Base: <code>origin/fix/echo-sea-lanes</code> @ <code>ba7dd0fc</code>. <a href='screenshots/echo-sea-level/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/echo-sea-level/AFTER_fleet.png'><img src='screenshots/echo-sea-level/AFTER_fleet.png' loading='lazy' alt='AFTER_fleet.png'></a><figcaption>AFTER_fleet.png</figcaption></figure>
+<figure><a href='screenshots/echo-sea-level/AFTER_hull.png'><img src='screenshots/echo-sea-level/AFTER_hull.png' loading='lazy' alt='AFTER_hull.png'></a><figcaption>AFTER_hull.png</figcaption></figure>
+<figure><a href='screenshots/echo-sea-level/AFTER_waterline.png'><img src='screenshots/echo-sea-level/AFTER_waterline.png' loading='lazy' alt='AFTER_waterline.png'></a><figcaption>AFTER_waterline.png</figcaption></figure>
+<figure><a href='screenshots/echo-sea-level/BEFORE_fleet.png'><img src='screenshots/echo-sea-level/BEFORE_fleet.png' loading='lazy' alt='BEFORE_fleet.png'></a><figcaption>BEFORE_fleet.png</figcaption></figure>
+</div>
+<p class='meta'>+4 more in <code>docs/screenshots/echo-sea-level/</code></p>
+</div>
+<div class='shotdir'><h3>elevator <span class='gcount'>15 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/elevator/cab_before_win.png'><img src='screenshots/elevator/cab_before_win.png' loading='lazy' alt='cab_before_win.png'></a><figcaption><span class='badge kind'>BEFORE</span> cab_before_win.png</figcaption></figure>
+<figure><a href='screenshots/elevator/cab_after_win.png'><img src='screenshots/elevator/cab_after_win.png' loading='lazy' alt='cab_after_win.png'></a><figcaption><span class='badge kind'>AFTER</span> cab_after_win.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/elevator/elevator_arrival.png'><img src='screenshots/elevator/elevator_arrival.png' loading='lazy' alt='elevator_arrival.png'></a><figcaption>elevator_arrival.png</figcaption></figure>
+<figure><a href='screenshots/elevator/elevator_concert_pa.png'><img src='screenshots/elevator/elevator_concert_pa.png' loading='lazy' alt='elevator_concert_pa.png'></a><figcaption>elevator_concert_pa.png</figcaption></figure>
+<figure><a href='screenshots/elevator/elevator_descent.png'><img src='screenshots/elevator/elevator_descent.png' loading='lazy' alt='elevator_descent.png'></a><figcaption>elevator_descent.png</figcaption></figure>
+<figure><a href='screenshots/elevator/elevator_holo.png'><img src='screenshots/elevator/elevator_holo.png' loading='lazy' alt='elevator_holo.png'></a><figcaption>elevator_holo.png</figcaption></figure>
+</div>
+<p class='meta'>+9 more in <code>docs/screenshots/elevator/</code></p>
+</div>
+<div class='shotdir'><h3>fish <span class='gcount'>4 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/fish/fish_after.png'><img src='screenshots/fish/fish_after.png' loading='lazy' alt='fish_after.png'></a><figcaption><span class='badge kind'>AFTER</span> fish_after.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/fish/fish_perch.png'><img src='screenshots/fish/fish_perch.png' loading='lazy' alt='fish_perch.png'></a><figcaption>fish_perch.png</figcaption></figure>
+<figure><a href='screenshots/fish/fish_pike.png'><img src='screenshots/fish/fish_pike.png' loading='lazy' alt='fish_pike.png'></a><figcaption>fish_pike.png</figcaption></figure>
+<figure><a href='screenshots/fish/fish_shoal.png'><img src='screenshots/fish/fish_shoal.png' loading='lazy' alt='fish_shoal.png'></a><figcaption>fish_shoal.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>flinch2 <span class='gcount'>11 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/flinch2/chief_Hitreaction_BEFORE_f3.png'><img src='screenshots/flinch2/chief_Hitreaction_BEFORE_f3.png' loading='lazy' alt='chief_Hitreaction_BEFORE_f3.png'></a><figcaption><span class='badge kind'>BEFORE</span> chief_Hitreaction_BEFORE_f3.png</figcaption></figure>
+<figure><a href='screenshots/flinch2/chief_Hitreaction_AFTER_f2.png'><img src='screenshots/flinch2/chief_Hitreaction_AFTER_f2.png' loading='lazy' alt='chief_Hitreaction_AFTER_f2.png'></a><figcaption><span class='badge kind'>AFTER</span> chief_Hitreaction_AFTER_f2.png</figcaption></figure>
+<figure><a href='screenshots/flinch2/chief_Hitreaction_AFTER_f3.png'><img src='screenshots/flinch2/chief_Hitreaction_AFTER_f3.png' loading='lazy' alt='chief_Hitreaction_AFTER_f3.png'></a><figcaption><span class='badge kind'>AFTER</span> chief_Hitreaction_AFTER_f3.png</figcaption></figure>
+<figure><a href='screenshots/flinch2/chief_Hitreaction_AFTER_f5.png'><img src='screenshots/flinch2/chief_Hitreaction_AFTER_f5.png' loading='lazy' alt='chief_Hitreaction_AFTER_f5.png'></a><figcaption><span class='badge kind'>AFTER</span> chief_Hitreaction_AFTER_f5.png</figcaption></figure>
+<figure><a href='screenshots/flinch2/chief_Hitreaction_AFTER_f7_settled.png'><img src='screenshots/flinch2/chief_Hitreaction_AFTER_f7_settled.png' loading='lazy' alt='chief_Hitreaction_AFTER_f7_settled.png'></a><figcaption><span class='badge kind'>AFTER</span> chief_Hitreaction_AFTER_f7_settled.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/flinch2/marcus_Hitreaction_AFTER_f3.png'><img src='screenshots/flinch2/marcus_Hitreaction_AFTER_f3.png' loading='lazy' alt='marcus_Hitreaction_AFTER_f3.png'></a><figcaption><span class='badge kind'>AFTER</span> marcus_Hitreaction_AFTER_f3.png</figcaption></figure>
+<figure><a href='screenshots/flinch2/marcus_Hitreaction_AFTER_f5.png'><img src='screenshots/flinch2/marcus_Hitreaction_AFTER_f5.png' loading='lazy' alt='marcus_Hitreaction_AFTER_f5.png'></a><figcaption><span class='badge kind'>AFTER</span> marcus_Hitreaction_AFTER_f5.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/flinch2/chief_Idle.png'><img src='screenshots/flinch2/chief_Idle.png' loading='lazy' alt='chief_Idle.png'></a><figcaption>chief_Idle.png</figcaption></figure>
+<figure><a href='screenshots/flinch2/crowd_Sit_on_crate_BLENDER.png'><img src='screenshots/flinch2/crowd_Sit_on_crate_BLENDER.png' loading='lazy' alt='crowd_Sit_on_crate_BLENDER.png'></a><figcaption>crowd_Sit_on_crate_BLENDER.png</figcaption></figure>
+<figure><a href='screenshots/flinch2/crowd_Sit_on_crate_INENGINE.png'><img src='screenshots/flinch2/crowd_Sit_on_crate_INENGINE.png' loading='lazy' alt='crowd_Sit_on_crate_INENGINE.png'></a><figcaption>crowd_Sit_on_crate_INENGINE.png</figcaption></figure>
+<figure><a href='screenshots/flinch2/marcus_Idle.png'><img src='screenshots/flinch2/marcus_Idle.png' loading='lazy' alt='marcus_Idle.png'></a><figcaption>marcus_Idle.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>gamma_recal <span class='gcount'>14 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/gamma_recal/hall_camA_BEFORE_newcurve_noflash.png'><img src='screenshots/gamma_recal/hall_camA_BEFORE_newcurve_noflash.png' loading='lazy' alt='hall_camA_BEFORE_newcurve_noflash.png'></a><figcaption><span class='badge kind'>BEFORE</span> hall_camA_BEFORE_newcurve_noflash.png</figcaption></figure>
+<figure><a href='screenshots/gamma_recal/hall_camA_AFTER_newcurve_noflash.png'><img src='screenshots/gamma_recal/hall_camA_AFTER_newcurve_noflash.png' loading='lazy' alt='hall_camA_AFTER_newcurve_noflash.png'></a><figcaption><span class='badge kind'>AFTER</span> hall_camA_AFTER_newcurve_noflash.png</figcaption></figure>
+<figure><a href='screenshots/gamma_recal/hall_camA_AFTER_torchON.png'><img src='screenshots/gamma_recal/hall_camA_AFTER_torchON.png' loading='lazy' alt='hall_camA_AFTER_torchON.png'></a><figcaption><span class='badge kind'>AFTER</span> hall_camA_AFTER_torchON.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/gamma_recal/hall_camB_BEFORE_newcurve_noflash.png'><img src='screenshots/gamma_recal/hall_camB_BEFORE_newcurve_noflash.png' loading='lazy' alt='hall_camB_BEFORE_newcurve_noflash.png'></a><figcaption><span class='badge kind'>BEFORE</span> hall_camB_BEFORE_newcurve_noflash.png</figcaption></figure>
+<figure><a href='screenshots/gamma_recal/hall_camB_AFTER_newcurve_noflash.png'><img src='screenshots/gamma_recal/hall_camB_AFTER_newcurve_noflash.png' loading='lazy' alt='hall_camB_AFTER_newcurve_noflash.png'></a><figcaption><span class='badge kind'>AFTER</span> hall_camB_AFTER_newcurve_noflash.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/gamma_recal/hall_camC_BEFORE_newcurve_noflash.png'><img src='screenshots/gamma_recal/hall_camC_BEFORE_newcurve_noflash.png' loading='lazy' alt='hall_camC_BEFORE_newcurve_noflash.png'></a><figcaption><span class='badge kind'>BEFORE</span> hall_camC_BEFORE_newcurve_noflash.png</figcaption></figure>
+<figure><a href='screenshots/gamma_recal/hall_camC_AFTER_newcurve_noflash.png'><img src='screenshots/gamma_recal/hall_camC_AFTER_newcurve_noflash.png' loading='lazy' alt='hall_camC_AFTER_newcurve_noflash.png'></a><figcaption><span class='badge kind'>AFTER</span> hall_camC_AFTER_newcurve_noflash.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/gamma_recal/cell_A_door_recal.png'><img src='screenshots/gamma_recal/cell_A_door_recal.png' loading='lazy' alt='cell_A_door_recal.png'></a><figcaption>cell_A_door_recal.png</figcaption></figure>
+<figure><a href='screenshots/gamma_recal/cell_B_bunk_recal.png'><img src='screenshots/gamma_recal/cell_B_bunk_recal.png' loading='lazy' alt='cell_B_bunk_recal.png'></a><figcaption>cell_B_bunk_recal.png</figcaption></figure>
+<figure><a href='screenshots/gamma_recal/cell_D_corner_recal.png'><img src='screenshots/gamma_recal/cell_D_corner_recal.png' loading='lazy' alt='cell_D_corner_recal.png'></a><figcaption>cell_D_corner_recal.png</figcaption></figure>
+<figure><a href='screenshots/gamma_recal/cell_hero_recal.png'><img src='screenshots/gamma_recal/cell_hero_recal.png' loading='lazy' alt='cell_hero_recal.png'></a><figcaption>cell_hero_recal.png</figcaption></figure>
+</div>
+<p class='meta'>+3 more in <code>docs/screenshots/gamma_recal/</code></p>
+</div>
+<div class='shotdir'><h3>geo-lod <span class='gcount'>9 captures</span></h3>
+<p class='meta'>Regenerate with: <a href='screenshots/geo-lod/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/geo-lod/far_diff_x8.png'><img src='screenshots/geo-lod/far_diff_x8.png' loading='lazy' alt='far_diff_x8.png'></a><figcaption>far_diff_x8.png</figcaption></figure>
+<figure><a href='screenshots/geo-lod/far_lod_off.png'><img src='screenshots/geo-lod/far_lod_off.png' loading='lazy' alt='far_lod_off.png'></a><figcaption>far_lod_off.png</figcaption></figure>
+<figure><a href='screenshots/geo-lod/far_lod_on.png'><img src='screenshots/geo-lod/far_lod_on.png' loading='lazy' alt='far_lod_on.png'></a><figcaption>far_lod_on.png</figcaption></figure>
+<figure><a href='screenshots/geo-lod/mid_diff_x8.png'><img src='screenshots/geo-lod/mid_diff_x8.png' loading='lazy' alt='mid_diff_x8.png'></a><figcaption>mid_diff_x8.png</figcaption></figure>
+</div>
+<p class='meta'>+5 more in <code>docs/screenshots/geo-lod/</code></p>
+</div>
+<div class='shotdir'><h3>guardanim <span class='gcount'>15 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/guardanim/ingame_sec_BEFORE_t270.png'><img src='screenshots/guardanim/ingame_sec_BEFORE_t270.png' loading='lazy' alt='ingame_sec_BEFORE_t270.png'></a><figcaption><span class='badge kind'>BEFORE</span> ingame_sec_BEFORE_t270.png</figcaption></figure>
+<figure><a href='screenshots/guardanim/ingame_sec_BEFORE_t300.png'><img src='screenshots/guardanim/ingame_sec_BEFORE_t300.png' loading='lazy' alt='ingame_sec_BEFORE_t300.png'></a><figcaption><span class='badge kind'>BEFORE</span> ingame_sec_BEFORE_t300.png</figcaption></figure>
+<figure><a href='screenshots/guardanim/ingame_sec_t270.png'><img src='screenshots/guardanim/ingame_sec_t270.png' loading='lazy' alt='ingame_sec_t270.png'></a><figcaption><span class='badge kind'>FIXED</span> ingame_sec_t270.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/guardanim/chief_martinez_Idle_f30.png'><img src='screenshots/guardanim/chief_martinez_Idle_f30.png' loading='lazy' alt='chief_martinez_Idle_f30.png'></a><figcaption>chief_martinez_Idle_f30.png</figcaption></figure>
+<figure><a href='screenshots/guardanim/chief_martinez_Run_f9.png'><img src='screenshots/guardanim/chief_martinez_Run_f9.png' loading='lazy' alt='chief_martinez_Run_f9.png'></a><figcaption>chief_martinez_Run_f9.png</figcaption></figure>
+<figure><a href='screenshots/guardanim/chief_martinez_Walk_f20.png'><img src='screenshots/guardanim/chief_martinez_Walk_f20.png' loading='lazy' alt='chief_martinez_Walk_f20.png'></a><figcaption>chief_martinez_Walk_f20.png</figcaption></figure>
+<figure><a href='screenshots/guardanim/chief_martinez_Walk_f8.png'><img src='screenshots/guardanim/chief_martinez_Walk_f8.png' loading='lazy' alt='chief_martinez_Walk_f8.png'></a><figcaption>chief_martinez_Walk_f8.png</figcaption></figure>
+</div>
+<p class='meta'>+8 more in <code>docs/screenshots/guardanim/</code></p>
+</div>
+<div class='shotdir'><h3>island-regen <span class='gcount'>10 captures</span></h3>
+<p class='meta'>The lost <code>assets/island_mesa</code> bake (GLB + 16-bit heightfield PNG) is REGENERATED in-repo by <code>tools/echo_terrain_gen.py</code> — one deterministic script, one height array, both artifacts, so mesh and heightfield can never drift and the asset can never be &quot;lost&quot; again. <a href='screenshots/island-regen/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/island-regen/harbor_wall_BEFORE_cliffreject.png'><img src='screenshots/island-regen/harbor_wall_BEFORE_cliffreject.png' loading='lazy' alt='harbor_wall_BEFORE_cliffreject.png'></a><figcaption><span class='badge kind'>BEFORE</span> harbor_wall_BEFORE_cliffreject.png</figcaption></figure>
+<figure><a href='screenshots/island-regen/harbor_wall_from_sea.png'><img src='screenshots/island-regen/harbor_wall_from_sea.png' loading='lazy' alt='harbor_wall_from_sea.png'></a><figcaption><span class='badge kind'>FIXED</span> harbor_wall_from_sea.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/island-regen/aerial_city.png'><img src='screenshots/island-regen/aerial_city.png' loading='lazy' alt='aerial_city.png'></a><figcaption>aerial_city.png</figcaption></figure>
+<figure><a href='screenshots/island-regen/aerial_full.png'><img src='screenshots/island-regen/aerial_full.png' loading='lazy' alt='aerial_full.png'></a><figcaption>aerial_full.png</figcaption></figure>
+<figure><a href='screenshots/island-regen/crown_edge_vista.png'><img src='screenshots/island-regen/crown_edge_vista.png' loading='lazy' alt='crown_edge_vista.png'></a><figcaption>crown_edge_vista.png</figcaption></figure>
+<figure><a href='screenshots/island-regen/freeway_climb.png'><img src='screenshots/island-regen/freeway_climb.png' loading='lazy' alt='freeway_climb.png'></a><figcaption>freeway_climb.png</figcaption></figure>
+</div>
+<p class='meta'>+4 more in <code>docs/screenshots/island-regen/</code></p>
+</div>
+<div class='shotdir'><h3>knobs <span class='gcount'>6 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/knobs/lighting_alert_before.png'><img src='screenshots/knobs/lighting_alert_before.png' loading='lazy' alt='lighting_alert_before.png'></a><figcaption><span class='badge kind'>BEFORE</span> lighting_alert_before.png</figcaption></figure>
+<figure><a href='screenshots/knobs/lighting_alert_after.png'><img src='screenshots/knobs/lighting_alert_after.png' loading='lazy' alt='lighting_alert_after.png'></a><figcaption><span class='badge kind'>AFTER</span> lighting_alert_after.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/knobs/lighting_normal_before.png'><img src='screenshots/knobs/lighting_normal_before.png' loading='lazy' alt='lighting_normal_before.png'></a><figcaption><span class='badge kind'>BEFORE</span> lighting_normal_before.png</figcaption></figure>
+<figure><a href='screenshots/knobs/lighting_normal_after.png'><img src='screenshots/knobs/lighting_normal_after.png' loading='lazy' alt='lighting_normal_after.png'></a><figcaption><span class='badge kind'>AFTER</span> lighting_normal_after.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/knobs/lightning_before.png'><img src='screenshots/knobs/lightning_before.png' loading='lazy' alt='lightning_before.png'></a><figcaption><span class='badge kind'>BEFORE</span> lightning_before.png</figcaption></figure>
+<figure><a href='screenshots/knobs/lightning_after.png'><img src='screenshots/knobs/lightning_after.png' loading='lazy' alt='lightning_after.png'></a><figcaption><span class='badge kind'>AFTER</span> lightning_after.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>lane7-fjord <span class='gcount'>13 captures</span></h3>
+<p class='meta'>All shots: <code>EchoHarbor.exe --world echotropolis --screenshot &lt;png&gt; --shot-cam &lt;x,y,z,yaw,pitch&gt;</code> with <code>ECHO_ISLAND_DIR=&lt;repo&gt;/assets/island_fjord_v2 ECHO_CITY_PROXY=1 ECHO_TOD=noon</code>. <a href='screenshots/lane7-fjord/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/lane7-fjord/desert_01_corridor.png'><img src='screenshots/lane7-fjord/desert_01_corridor.png' loading='lazy' alt='desert_01_corridor.png'></a><figcaption>desert_01_corridor.png</figcaption></figure>
+<figure><a href='screenshots/lane7-fjord/desert_02_grade.png'><img src='screenshots/lane7-fjord/desert_02_grade.png' loading='lazy' alt='desert_02_grade.png'></a><figcaption>desert_02_grade.png</figcaption></figure>
+<figure><a href='screenshots/lane7-fjord/sea_01_mouth.png'><img src='screenshots/lane7-fjord/sea_01_mouth.png' loading='lazy' alt='sea_01_mouth.png'></a><figcaption>sea_01_mouth.png</figcaption></figure>
+<figure><a href='screenshots/lane7-fjord/sea_01_mouth_v2.png'><img src='screenshots/lane7-fjord/sea_01_mouth_v2.png' loading='lazy' alt='sea_01_mouth_v2.png'></a><figcaption>sea_01_mouth_v2.png</figcaption></figure>
+</div>
+<p class='meta'>+9 more in <code>docs/screenshots/lane7-fjord/</code></p>
+</div>
+<div class='shotdir'><h3>livingworld <span class='gcount'>3 captures</span></h3>
+<p class='meta'>Branch <code>feat/living-world</code>. Three pillars, each with a headless capture flag. <a href='screenshots/livingworld/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/livingworld/alert3_lockdown.png'><img src='screenshots/livingworld/alert3_lockdown.png' loading='lazy' alt='alert3_lockdown.png'></a><figcaption>alert3_lockdown.png</figcaption></figure>
+<figure><a href='screenshots/livingworld/club_crowd.png'><img src='screenshots/livingworld/club_crowd.png' loading='lazy' alt='club_crowd.png'></a><figcaption>club_crowd.png</figcaption></figure>
+<figure><a href='screenshots/livingworld/ecology_herd_predator.png'><img src='screenshots/livingworld/ecology_herd_predator.png' loading='lazy' alt='ecology_herd_predator.png'></a><figcaption>ecology_herd_predator.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>misc-polish <span class='gcount'>7 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/misc-polish/club_before.png'><img src='screenshots/misc-polish/club_before.png' loading='lazy' alt='club_before.png'></a><figcaption><span class='badge kind'>BEFORE</span> club_before.png</figcaption></figure>
+<figure><a href='screenshots/misc-polish/club_after.png'><img src='screenshots/misc-polish/club_after.png' loading='lazy' alt='club_after.png'></a><figcaption><span class='badge kind'>AFTER</span> club_after.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/misc-polish/ocean_before.png'><img src='screenshots/misc-polish/ocean_before.png' loading='lazy' alt='ocean_before.png'></a><figcaption><span class='badge kind'>BEFORE</span> ocean_before.png</figcaption></figure>
+<figure><a href='screenshots/misc-polish/ocean_after.png'><img src='screenshots/misc-polish/ocean_after.png' loading='lazy' alt='ocean_after.png'></a><figcaption><span class='badge kind'>AFTER</span> ocean_after.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/misc-polish/terrain_before.png'><img src='screenshots/misc-polish/terrain_before.png' loading='lazy' alt='terrain_before.png'></a><figcaption><span class='badge kind'>BEFORE</span> terrain_before.png</figcaption></figure>
+<figure><a href='screenshots/misc-polish/terrain_after.png'><img src='screenshots/misc-polish/terrain_after.png' loading='lazy' alt='terrain_after.png'></a><figcaption><span class='badge kind'>AFTER</span> terrain_after.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/misc-polish/fparms_hero_f2.png'><img src='screenshots/misc-polish/fparms_hero_f2.png' loading='lazy' alt='fparms_hero_f2.png'></a><figcaption>fparms_hero_f2.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>monster_behavior <span class='gcount'>5 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/monster_behavior/attack_midswing.png'><img src='screenshots/monster_behavior/attack_midswing.png' loading='lazy' alt='attack_midswing.png'></a><figcaption><span class='badge kind'>MID</span> attack_midswing.png</figcaption></figure>
+<figure><a href='screenshots/monster_behavior/attack_windup.png'><img src='screenshots/monster_behavior/attack_windup.png' loading='lazy' alt='attack_windup.png'></a><figcaption><span class='badge kind'>FIXED</span> attack_windup.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/monster_behavior/death_collapse.png'><img src='screenshots/monster_behavior/death_collapse.png' loading='lazy' alt='death_collapse.png'></a><figcaption>death_collapse.png</figcaption></figure>
+<figure><a href='screenshots/monster_behavior/hit_react.png'><img src='screenshots/monster_behavior/hit_react.png' loading='lazy' alt='hit_react.png'></a><figcaption>hit_react.png</figcaption></figure>
+<figure><a href='screenshots/monster_behavior/idle_reference.png'><img src='screenshots/monster_behavior/idle_reference.png' loading='lazy' alt='idle_reference.png'></a><figcaption>idle_reference.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>normal-maps <span class='gcount'>3 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/normal-maps/cc_porous_cement_BEFORE.png'><img src='screenshots/normal-maps/cc_porous_cement_BEFORE.png' loading='lazy' alt='cc_porous_cement_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> cc_porous_cement_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/normal-maps/cc_porous_cement_AFTER.png'><img src='screenshots/normal-maps/cc_porous_cement_AFTER.png' loading='lazy' alt='cc_porous_cement_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> cc_porous_cement_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/normal-maps/cc_porous_cement_crop_before_after.png'><img src='screenshots/normal-maps/cc_porous_cement_crop_before_after.png' loading='lazy' alt='cc_porous_cement_crop_before_after.png'></a><figcaption><span class='badge kind'>BEFORE</span> cc_porous_cement_crop_before_after.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+</div>
+<div class='shotdir'><h3>oled <span class='gcount'>6 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/oled/A_club_BEFORE.png'><img src='screenshots/oled/A_club_BEFORE.png' loading='lazy' alt='A_club_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> A_club_BEFORE.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+<div class='shotrow'>
+<figure><a href='screenshots/oled/B_club_AFTER.png'><img src='screenshots/oled/B_club_AFTER.png' loading='lazy' alt='B_club_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> B_club_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/oled/C_club_bar_oled_BEFORE.png'><img src='screenshots/oled/C_club_bar_oled_BEFORE.png' loading='lazy' alt='C_club_bar_oled_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> C_club_bar_oled_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/oled/C_club_bar_oled_AFTER.png'><img src='screenshots/oled/C_club_bar_oled_AFTER.png' loading='lazy' alt='C_club_bar_oled_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> C_club_bar_oled_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/oled/D_club_dj_tv_BEFORE.png'><img src='screenshots/oled/D_club_dj_tv_BEFORE.png' loading='lazy' alt='D_club_dj_tv_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> D_club_dj_tv_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/oled/D_club_dj_tv_AFTER.png'><img src='screenshots/oled/D_club_dj_tv_AFTER.png' loading='lazy' alt='D_club_dj_tv_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> D_club_dj_tv_AFTER.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>opening_flow <span class='gcount'>5 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/opening_flow/hall_before_dark.png'><img src='screenshots/opening_flow/hall_before_dark.png' loading='lazy' alt='hall_before_dark.png'></a><figcaption><span class='badge kind'>BEFORE</span> hall_before_dark.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+<div class='shotrow'>
+<figure><a href='screenshots/opening_flow/cell_wake.png'><img src='screenshots/opening_flow/cell_wake.png' loading='lazy' alt='cell_wake.png'></a><figcaption>cell_wake.png</figcaption></figure>
+<figure><a href='screenshots/opening_flow/hall_sconces_east.png'><img src='screenshots/opening_flow/hall_sconces_east.png' loading='lazy' alt='hall_sconces_east.png'></a><figcaption>hall_sconces_east.png</figcaption></figure>
+<figure><a href='screenshots/opening_flow/hall_sconces_west.png'><img src='screenshots/opening_flow/hall_sconces_west.png' loading='lazy' alt='hall_sconces_west.png'></a><figcaption>hall_sconces_west.png</figcaption></figure>
+<figure><a href='screenshots/opening_flow/hud_chip_fixed.png'><img src='screenshots/opening_flow/hud_chip_fixed.png' loading='lazy' alt='hud_chip_fixed.png'></a><figcaption>hud_chip_fixed.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>polish <span class='gcount'>4 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/polish/swim_fp_before_control.png'><img src='screenshots/polish/swim_fp_before_control.png' loading='lazy' alt='swim_fp_before_control.png'></a><figcaption><span class='badge kind'>BEFORE</span> swim_fp_before_control.png</figcaption></figure>
+<figure><a href='screenshots/polish/swim_fp_weapon_lowered.png'><img src='screenshots/polish/swim_fp_weapon_lowered.png' loading='lazy' alt='swim_fp_weapon_lowered.png'></a><figcaption><span class='badge kind'>FIXED</span> swim_fp_weapon_lowered.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/polish/alert_canon_lockdown.png'><img src='screenshots/polish/alert_canon_lockdown.png' loading='lazy' alt='alert_canon_lockdown.png'></a><figcaption>alert_canon_lockdown.png</figcaption></figure>
+<figure><a href='screenshots/polish/swim_3p_prone.png'><img src='screenshots/polish/swim_3p_prone.png' loading='lazy' alt='swim_3p_prone.png'></a><figcaption>swim_3p_prone.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>refl-denoise <span class='gcount'>4 captures</span></h3>
+<p class='meta'>Lane <code>inspx/refl-denoise</code>, cut from <code>inspx/rt-reflections</code>. <a href='screenshots/refl-denoise/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/refl-denoise/zoom_door_profile.png'><img src='screenshots/refl-denoise/zoom_door_profile.png' loading='lazy' alt='zoom_door_profile.png'></a><figcaption>zoom_door_profile.png</figcaption></figure>
+<figure><a href='screenshots/refl-denoise/zoom_door_rear34.png'><img src='screenshots/refl-denoise/zoom_door_rear34.png' loading='lazy' alt='zoom_door_rear34.png'></a><figcaption>zoom_door_rear34.png</figcaption></figure>
+<figure><a href='screenshots/refl-denoise/zoom_floor_mirror.png'><img src='screenshots/refl-denoise/zoom_floor_mirror.png' loading='lazy' alt='zoom_floor_mirror.png'></a><figcaption>zoom_floor_mirror.png</figcaption></figure>
+<figure><a href='screenshots/refl-denoise/zoom_silhouette_contribution.png'><img src='screenshots/refl-denoise/zoom_silhouette_contribution.png' loading='lazy' alt='zoom_silhouette_contribution.png'></a><figcaption>zoom_silhouette_contribution.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>reflections <span class='gcount'>16 captures</span></h3>
+<p class='meta'>All captures from the SAME <code>feat/reflections</code> Release build. <a href='screenshots/reflections/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/reflections/deck_refl_off.png'><img src='screenshots/reflections/deck_refl_off.png' loading='lazy' alt='deck_refl_off.png'></a><figcaption>deck_refl_off.png</figcaption></figure>
+<figure><a href='screenshots/reflections/deck_refl_on.png'><img src='screenshots/reflections/deck_refl_on.png' loading='lazy' alt='deck_refl_on.png'></a><figcaption>deck_refl_on.png</figcaption></figure>
+<figure><a href='screenshots/reflections/floor2_refl_off.png'><img src='screenshots/reflections/floor2_refl_off.png' loading='lazy' alt='floor2_refl_off.png'></a><figcaption>floor2_refl_off.png</figcaption></figure>
+<figure><a href='screenshots/reflections/floor2_refl_off_crop.png'><img src='screenshots/reflections/floor2_refl_off_crop.png' loading='lazy' alt='floor2_refl_off_crop.png'></a><figcaption>floor2_refl_off_crop.png</figcaption></figure>
+</div>
+<p class='meta'>+12 more in <code>docs/screenshots/reflections/</code></p>
+</div>
+<div class='shotdir'><h3>rifthub <span class='gcount'>89 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/G_1_floor_mid.png'><img src='screenshots/rifthub/G_1_floor_mid.png' loading='lazy' alt='G_1_floor_mid.png'></a><figcaption><span class='badge kind'>MID</span> G_1_floor_mid.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/H_2_floor_BEFORE.png'><img src='screenshots/rifthub/H_2_floor_BEFORE.png' loading='lazy' alt='H_2_floor_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> H_2_floor_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/H_2_floor_AFTER.png'><img src='screenshots/rifthub/H_2_floor_AFTER.png' loading='lazy' alt='H_2_floor_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> H_2_floor_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/J_0_probe_BEFORE_1.png'><img src='screenshots/rifthub/J_0_probe_BEFORE_1.png' loading='lazy' alt='J_0_probe_BEFORE_1.png'></a><figcaption><span class='badge kind'>BEFORE</span> J_0_probe_BEFORE_1.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_0_probe_BEFORE_2.png'><img src='screenshots/rifthub/J_0_probe_BEFORE_2.png' loading='lazy' alt='J_0_probe_BEFORE_2.png'></a><figcaption><span class='badge kind'>BEFORE</span> J_0_probe_BEFORE_2.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_0_probe_BEFORE_3.png'><img src='screenshots/rifthub/J_0_probe_BEFORE_3.png' loading='lazy' alt='J_0_probe_BEFORE_3.png'></a><figcaption><span class='badge kind'>BEFORE</span> J_0_probe_BEFORE_3.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_0_probe_BEFORE_4.png'><img src='screenshots/rifthub/J_0_probe_BEFORE_4.png' loading='lazy' alt='J_0_probe_BEFORE_4.png'></a><figcaption><span class='badge kind'>BEFORE</span> J_0_probe_BEFORE_4.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_0_probe_BEFORE_5.png'><img src='screenshots/rifthub/J_0_probe_BEFORE_5.png' loading='lazy' alt='J_0_probe_BEFORE_5.png'></a><figcaption><span class='badge kind'>BEFORE</span> J_0_probe_BEFORE_5.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_0_probe_AFTER_1.png'><img src='screenshots/rifthub/J_0_probe_AFTER_1.png' loading='lazy' alt='J_0_probe_AFTER_1.png'></a><figcaption><span class='badge kind'>AFTER</span> J_0_probe_AFTER_1.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_0_probe_AFTER_2.png'><img src='screenshots/rifthub/J_0_probe_AFTER_2.png' loading='lazy' alt='J_0_probe_AFTER_2.png'></a><figcaption><span class='badge kind'>AFTER</span> J_0_probe_AFTER_2.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_0_probe_AFTER_3.png'><img src='screenshots/rifthub/J_0_probe_AFTER_3.png' loading='lazy' alt='J_0_probe_AFTER_3.png'></a><figcaption><span class='badge kind'>AFTER</span> J_0_probe_AFTER_3.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_0_probe_AFTER_4.png'><img src='screenshots/rifthub/J_0_probe_AFTER_4.png' loading='lazy' alt='J_0_probe_AFTER_4.png'></a><figcaption><span class='badge kind'>AFTER</span> J_0_probe_AFTER_4.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_0_probe_AFTER_5.png'><img src='screenshots/rifthub/J_0_probe_AFTER_5.png' loading='lazy' alt='J_0_probe_AFTER_5.png'></a><figcaption><span class='badge kind'>AFTER</span> J_0_probe_AFTER_5.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/J_1_gate_BEFORE_side.png'><img src='screenshots/rifthub/J_1_gate_BEFORE_side.png' loading='lazy' alt='J_1_gate_BEFORE_side.png'></a><figcaption><span class='badge kind'>BEFORE</span> J_1_gate_BEFORE_side.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_1_gate_BEFORE_wide.png'><img src='screenshots/rifthub/J_1_gate_BEFORE_wide.png' loading='lazy' alt='J_1_gate_BEFORE_wide.png'></a><figcaption><span class='badge kind'>BEFORE</span> J_1_gate_BEFORE_wide.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/J_2_gate_AFTER_hero.png'><img src='screenshots/rifthub/J_2_gate_AFTER_hero.png' loading='lazy' alt='J_2_gate_AFTER_hero.png'></a><figcaption><span class='badge kind'>AFTER</span> J_2_gate_AFTER_hero.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_2_gate_AFTER_side.png'><img src='screenshots/rifthub/J_2_gate_AFTER_side.png' loading='lazy' alt='J_2_gate_AFTER_side.png'></a><figcaption><span class='badge kind'>AFTER</span> J_2_gate_AFTER_side.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_2_gate_AFTER_wide.png'><img src='screenshots/rifthub/J_2_gate_AFTER_wide.png' loading='lazy' alt='J_2_gate_AFTER_wide.png'></a><figcaption><span class='badge kind'>AFTER</span> J_2_gate_AFTER_wide.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/J_3_ships_BEFORE.png'><img src='screenshots/rifthub/J_3_ships_BEFORE.png' loading='lazy' alt='J_3_ships_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> J_3_ships_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_3_ships_AFTER.png'><img src='screenshots/rifthub/J_3_ships_AFTER.png' loading='lazy' alt='J_3_ships_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> J_3_ships_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/J_4_level1_BEFORE.png'><img src='screenshots/rifthub/J_4_level1_BEFORE.png' loading='lazy' alt='J_4_level1_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> J_4_level1_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/J_4_level1_AFTER.png'><img src='screenshots/rifthub/J_4_level1_AFTER.png' loading='lazy' alt='J_4_level1_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> J_4_level1_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/L_0_console_BEFORE_blue_slab.png'><img src='screenshots/rifthub/L_0_console_BEFORE_blue_slab.png' loading='lazy' alt='L_0_console_BEFORE_blue_slab.png'></a><figcaption><span class='badge kind'>BEFORE</span> L_0_console_BEFORE_blue_slab.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/L_1_console_AFTER_black_glass_text.png'><img src='screenshots/rifthub/L_1_console_AFTER_black_glass_text.png' loading='lazy' alt='L_1_console_AFTER_black_glass_text.png'></a><figcaption><span class='badge kind'>AFTER</span> L_1_console_AFTER_black_glass_text.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/L_2_hall_AFTER_retune.png'><img src='screenshots/rifthub/L_2_hall_AFTER_retune.png' loading='lazy' alt='L_2_hall_AFTER_retune.png'></a><figcaption><span class='badge kind'>AFTER</span> L_2_hall_AFTER_retune.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/L_3_hall_midfloor_AFTER.png'><img src='screenshots/rifthub/L_3_hall_midfloor_AFTER.png' loading='lazy' alt='L_3_hall_midfloor_AFTER.png'></a><figcaption><span class='badge kind'>MID</span> L_3_hall_midfloor_AFTER.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub/A_membrane_v2_close.png'><img src='screenshots/rifthub/A_membrane_v2_close.png' loading='lazy' alt='A_membrane_v2_close.png'></a><figcaption>A_membrane_v2_close.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/A_membrane_v2_wide.png'><img src='screenshots/rifthub/A_membrane_v2_wide.png' loading='lazy' alt='A_membrane_v2_wide.png'></a><figcaption>A_membrane_v2_wide.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/B_ring_v2_close.png'><img src='screenshots/rifthub/B_ring_v2_close.png' loading='lazy' alt='B_ring_v2_close.png'></a><figcaption>B_ring_v2_close.png</figcaption></figure>
+<figure><a href='screenshots/rifthub/B_ring_v2_wide.png'><img src='screenshots/rifthub/B_ring_v2_wide.png' loading='lazy' alt='B_ring_v2_wide.png'></a><figcaption>B_ring_v2_wide.png</figcaption></figure>
+</div>
+<p class='meta'>+59 more in <code>docs/screenshots/rifthub/</code></p>
+</div>
+<div class='shotdir'><h3>rifthub_r9 <span class='gcount'>7 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub_r9/R9_BEFORE_gate_hero.png'><img src='screenshots/rifthub_r9/R9_BEFORE_gate_hero.png' loading='lazy' alt='R9_BEFORE_gate_hero.png'></a><figcaption><span class='badge kind'>BEFORE</span> R9_BEFORE_gate_hero.png</figcaption></figure>
+<figure><a href='screenshots/rifthub_r9/R9_AFTER_console.png'><img src='screenshots/rifthub_r9/R9_AFTER_console.png' loading='lazy' alt='R9_AFTER_console.png'></a><figcaption><span class='badge kind'>AFTER</span> R9_AFTER_console.png</figcaption></figure>
+<figure><a href='screenshots/rifthub_r9/R9_AFTER_gate_hero.png'><img src='screenshots/rifthub_r9/R9_AFTER_gate_hero.png' loading='lazy' alt='R9_AFTER_gate_hero.png'></a><figcaption><span class='badge kind'>AFTER</span> R9_AFTER_gate_hero.png</figcaption></figure>
+<figure><a href='screenshots/rifthub_r9/R9_AFTER_gate_quarter.png'><img src='screenshots/rifthub_r9/R9_AFTER_gate_quarter.png' loading='lazy' alt='R9_AFTER_gate_quarter.png'></a><figcaption><span class='badge kind'>AFTER</span> R9_AFTER_gate_quarter.png</figcaption></figure>
+<figure><a href='screenshots/rifthub_r9/R9_AFTER_hub_wide.png'><img src='screenshots/rifthub_r9/R9_AFTER_hub_wide.png' loading='lazy' alt='R9_AFTER_hub_wide.png'></a><figcaption><span class='badge kind'>AFTER</span> R9_AFTER_hub_wide.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/rifthub_r9/R9_PROOF_120int_light_tube_still_black.png'><img src='screenshots/rifthub_r9/R9_PROOF_120int_light_tube_still_black.png' loading='lazy' alt='R9_PROOF_120int_light_tube_still_black.png'></a><figcaption>R9_PROOF_120int_light_tube_still_black.png</figcaption></figure>
+<figure><a href='screenshots/rifthub_r9/R9_PROOF_glbcube_lit_tube_black.png'><img src='screenshots/rifthub_r9/R9_PROOF_glbcube_lit_tube_black.png' loading='lazy' alt='R9_PROOF_glbcube_lit_tube_black.png'></a><figcaption>R9_PROOF_glbcube_lit_tube_black.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>rt-refl-verify <span class='gcount'>0 captures</span></h3>
+<p class='meta'>Evidence for the three commits on <code>inspx/rt-reflections</code>: <a href='screenshots/rt-refl-verify/README.md'>README</a></p>
+</div>
+<div class='shotdir'><h3>rtshadows <span class='gcount'>11 captures</span></h3>
+<p class='meta'>Per-pixel inline ray-query shadows in the mesh fragment stage (mesh_rt.frag.spv, the refl_rt two-variant pattern), traced against the SAME scene TLAS RT-AO / RT-reflections / DDGI share. <a href='screenshots/rtshadows/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/rtshadows/lamp_motion_f0.png'><img src='screenshots/rtshadows/lamp_motion_f0.png' loading='lazy' alt='lamp_motion_f0.png'></a><figcaption>lamp_motion_f0.png</figcaption></figure>
+<figure><a href='screenshots/rtshadows/lamp_motion_f1.png'><img src='screenshots/rtshadows/lamp_motion_f1.png' loading='lazy' alt='lamp_motion_f1.png'></a><figcaption>lamp_motion_f1.png</figcaption></figure>
+<figure><a href='screenshots/rtshadows/lamp_motion_f2.png'><img src='screenshots/rtshadows/lamp_motion_f2.png' loading='lazy' alt='lamp_motion_f2.png'></a><figcaption>lamp_motion_f2.png</figcaption></figure>
+<figure><a href='screenshots/rtshadows/lamp_rtshadows_off.png'><img src='screenshots/rtshadows/lamp_rtshadows_off.png' loading='lazy' alt='lamp_rtshadows_off.png'></a><figcaption>lamp_rtshadows_off.png</figcaption></figure>
+</div>
+<p class='meta'>+7 more in <code>docs/screenshots/rtshadows/</code></p>
+</div>
+<div class='shotdir'><h3>sea-fix <span class='gcount'>12 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/sea-fix/fleet_BEFOREMAT.png'><img src='screenshots/sea-fix/fleet_BEFOREMAT.png' loading='lazy' alt='fleet_BEFOREMAT.png'></a><figcaption><span class='badge kind'>BEFORE</span> fleet_BEFOREMAT.png</figcaption></figure>
+<figure><a href='screenshots/sea-fix/fleet_AFTER.png'><img src='screenshots/sea-fix/fleet_AFTER.png' loading='lazy' alt='fleet_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> fleet_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/sea-fix/horizon_BEFORE.png'><img src='screenshots/sea-fix/horizon_BEFORE.png' loading='lazy' alt='horizon_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> horizon_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/sea-fix/horizon_AFTER.png'><img src='screenshots/sea-fix/horizon_AFTER.png' loading='lazy' alt='horizon_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> horizon_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/sea-fix/sea_BEFORE.png'><img src='screenshots/sea-fix/sea_BEFORE.png' loading='lazy' alt='sea_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> sea_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/sea-fix/sea_AFTER.png'><img src='screenshots/sea-fix/sea_AFTER.png' loading='lazy' alt='sea_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> sea_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/sea-fix/ship_BEFORE.png'><img src='screenshots/sea-fix/ship_BEFORE.png' loading='lazy' alt='ship_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> ship_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/sea-fix/ship_AFTER.png'><img src='screenshots/sea-fix/ship_AFTER.png' loading='lazy' alt='ship_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> ship_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/sea-fix/track_grid_AFTER.png'><img src='screenshots/sea-fix/track_grid_AFTER.png' loading='lazy' alt='track_grid_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> track_grid_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/sea-fix/village_BEFORE.png'><img src='screenshots/sea-fix/village_BEFORE.png' loading='lazy' alt='village_BEFORE.png'></a><figcaption><span class='badge kind'>BEFORE</span> village_BEFORE.png</figcaption></figure>
+<figure><a href='screenshots/sea-fix/village_AFTER.png'><img src='screenshots/sea-fix/village_AFTER.png' loading='lazy' alt='village_AFTER.png'></a><figcaption><span class='badge kind'>AFTER</span> village_AFTER.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/sea-fix/NOT-MINE_infra_deck_over_water.png'><img src='screenshots/sea-fix/NOT-MINE_infra_deck_over_water.png' loading='lazy' alt='NOT-MINE_infra_deck_over_water.png'></a><figcaption>NOT-MINE_infra_deck_over_water.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>spire_core <span class='gcount'>23 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/spire_core/STAIR_long_run_mid.png'><img src='screenshots/spire_core/STAIR_long_run_mid.png' loading='lazy' alt='STAIR_long_run_mid.png'></a><figcaption><span class='badge kind'>MID</span> STAIR_long_run_mid.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+<div class='shotrow'>
+<figure><a href='screenshots/spire_core/AFTER_45_entry_platform_down.png'><img src='screenshots/spire_core/AFTER_45_entry_platform_down.png' loading='lazy' alt='AFTER_45_entry_platform_down.png'></a><figcaption>AFTER_45_entry_platform_down.png</figcaption></figure>
+<figure><a href='screenshots/spire_core/AFTER_45_entry_platform_down_albedo.png'><img src='screenshots/spire_core/AFTER_45_entry_platform_down_albedo.png' loading='lazy' alt='AFTER_45_entry_platform_down_albedo.png'></a><figcaption>AFTER_45_entry_platform_down_albedo.png</figcaption></figure>
+<figure><a href='screenshots/spire_core/AFTER_45_over_access_down.png'><img src='screenshots/spire_core/AFTER_45_over_access_down.png' loading='lazy' alt='AFTER_45_over_access_down.png'></a><figcaption>AFTER_45_over_access_down.png</figcaption></figure>
+<figure><a href='screenshots/spire_core/AFTER_45_tier5_down.png'><img src='screenshots/spire_core/AFTER_45_tier5_down.png' loading='lazy' alt='AFTER_45_tier5_down.png'></a><figcaption>AFTER_45_tier5_down.png</figcaption></figure>
+</div>
+<p class='meta'>+18 more in <code>docs/screenshots/spire_core/</code></p>
+</div>
+<div class='shotdir'><h3>stairs <span class='gcount'>4 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/stairs/02_mid_flight.png'><img src='screenshots/stairs/02_mid_flight.png' loading='lazy' alt='02_mid_flight.png'></a><figcaption><span class='badge kind'>MID</span> 02_mid_flight.png</figcaption></figure>
+</div>
+<p class='meta'>no paired fixed frame found by naming for the group above</p>
+<div class='shotrow'>
+<figure><a href='screenshots/stairs/01_top_down.png'><img src='screenshots/stairs/01_top_down.png' loading='lazy' alt='01_top_down.png'></a><figcaption>01_top_down.png</figcaption></figure>
+<figure><a href='screenshots/stairs/03_bottom_up.png'><img src='screenshots/stairs/03_bottom_up.png' loading='lazy' alt='03_bottom_up.png'></a><figcaption>03_bottom_up.png</figcaption></figure>
+<figure><a href='screenshots/stairs/04_past_45_sealed.png'><img src='screenshots/stairs/04_past_45_sealed.png' loading='lazy' alt='04_past_45_sealed.png'></a><figcaption>04_past_45_sealed.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>taa <span class='gcount'>11 captures</span></h3>
+<p class='meta'>All captures from the SAME <code>feat/taa</code> Release build. <a href='screenshots/taa/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/taa/checker_horizon_off.png'><img src='screenshots/taa/checker_horizon_off.png' loading='lazy' alt='checker_horizon_off.png'></a><figcaption>checker_horizon_off.png</figcaption></figure>
+<figure><a href='screenshots/taa/checker_horizon_on.png'><img src='screenshots/taa/checker_horizon_on.png' loading='lazy' alt='checker_horizon_on.png'></a><figcaption>checker_horizon_on.png</figcaption></figure>
+<figure><a href='screenshots/taa/level1_legacypost_taabuild.png'><img src='screenshots/taa/level1_legacypost_taabuild.png' loading='lazy' alt='level1_legacypost_taabuild.png'></a><figcaption>level1_legacypost_taabuild.png</figcaption></figure>
+<figure><a href='screenshots/taa/level1_taa_off.png'><img src='screenshots/taa/level1_taa_off.png' loading='lazy' alt='level1_taa_off.png'></a><figcaption>level1_taa_off.png</figcaption></figure>
+</div>
+<p class='meta'>+7 more in <code>docs/screenshots/taa/</code></p>
+</div>
+<div class='shotdir'><h3>terrain_normals <span class='gcount'>0 captures</span></h3>
+<p class='meta'><code>shaders/mesh.frag</code> gated its ENTIRE normal-map path behind <code>(vFlags &amp; FLAG_TERRAIN) == 0u</code>. <a href='screenshots/terrain_normals/README.md'>README</a></p>
+</div>
+<div class='shotdir'><h3>unified4 <span class='gcount'>4 captures</span></h3>
+<p class='meta'>integration/unified4 = integration/unified3 + <code>git merge --no-ff feat/cave-atmosphere</code> (which brings feat/descent-fall stacked underneath). <a href='screenshots/unified4/README.md'>README</a></p>
+<div class='shotrow'>
+<figure><a href='screenshots/unified4/1_club_at_-800.png'><img src='screenshots/unified4/1_club_at_-800.png' loading='lazy' alt='1_club_at_-800.png'></a><figcaption>1_club_at_-800.png</figcaption></figure>
+<figure><a href='screenshots/unified4/2_the_fall.png'><img src='screenshots/unified4/2_the_fall.png' loading='lazy' alt='2_the_fall.png'></a><figcaption>2_the_fall.png</figcaption></figure>
+<figure><a href='screenshots/unified4/3_dark_room.png'><img src='screenshots/unified4/3_dark_room.png' loading='lazy' alt='3_dark_room.png'></a><figcaption>3_dark_room.png</figcaption></figure>
+<figure><a href='screenshots/unified4/4_singing_cave.png'><img src='screenshots/unified4/4_singing_cave.png' loading='lazy' alt='4_singing_cave.png'></a><figcaption>4_singing_cave.png</figcaption></figure>
+</div>
+</div>
+<div class='shotdir'><h3>zap <span class='gcount'>4 captures</span></h3>
+<div class='shotrow'>
+<figure><a href='screenshots/zap/zap_aftermath.png'><img src='screenshots/zap/zap_aftermath.png' loading='lazy' alt='zap_aftermath.png'></a><figcaption><span class='badge kind'>AFTER</span> zap_aftermath.png</figcaption></figure>
+</div>
+<div class='shotrow'>
+<figure><a href='screenshots/zap/fish_school_under.png'><img src='screenshots/zap/fish_school_under.png' loading='lazy' alt='fish_school_under.png'></a><figcaption>fish_school_under.png</figcaption></figure>
+<figure><a href='screenshots/zap/zap_discharge.png'><img src='screenshots/zap/zap_discharge.png' loading='lazy' alt='zap_discharge.png'></a><figcaption>zap_discharge.png</figcaption></figure>
+<figure><a href='screenshots/zap/zap_punish_halfhealth.png'><img src='screenshots/zap/zap_punish_halfhealth.png' loading='lazy' alt='zap_punish_halfhealth.png'></a><figcaption>zap_punish_halfhealth.png</figcaption></figure>
+</div>
+</div>
+<details><summary>79 more capture directories (no README / no progression pairs)</summary><ul>
+<li class='mono'>docs/screenshots/abyssal <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/alienart <span class='gcount'>12 captures</span></li>
+<li class='mono'>docs/screenshots/aliens <span class='gcount'>6 captures</span></li>
+<li class='mono'>docs/screenshots/animlib <span class='gcount'>97 captures</span></li>
+<li class='mono'>docs/screenshots/beauty <span class='gcount'>9 captures</span></li>
+<li class='mono'>docs/screenshots/cast <span class='gcount'>12 captures</span></li>
+<li class='mono'>docs/screenshots/cave_rock_material <span class='gcount'>8 captures</span></li>
+<li class='mono'>docs/screenshots/cell <span class='gcount'>5 captures</span></li>
+<li class='mono'>docs/screenshots/cellfix <span class='gcount'>10 captures</span></li>
+<li class='mono'>docs/screenshots/chatter <span class='gcount'>4 captures</span></li>
+<li class='mono'>docs/screenshots/club1127 <span class='gcount'>13 captures</span></li>
+<li class='mono'>docs/screenshots/club1127_polish <span class='gcount'>6 captures</span></li>
+<li class='mono'>docs/screenshots/club1127_port <span class='gcount'>11 captures</span></li>
+<li class='mono'>docs/screenshots/club_bar <span class='gcount'>2 captures</span></li>
+<li class='mono'>docs/screenshots/club_beams <span class='gcount'>6 captures</span></li>
+<li class='mono'>docs/screenshots/club_bedrock <span class='gcount'>6 captures</span></li>
+<li class='mono'>docs/screenshots/club_gamma <span class='gcount'>4 captures</span></li>
+<li class='mono'>docs/screenshots/club_lasers <span class='gcount'>8 captures</span></li>
+<li class='mono'>docs/screenshots/club_lns <span class='gcount'>10 captures</span></li>
+<li class='mono'>docs/screenshots/club_lns_polish <span class='gcount'>5 captures</span></li>
+<li class='mono'>docs/screenshots/club_npcs <span class='gcount'>4 captures</span></li>
+<li class='mono'>docs/screenshots/club_sign <span class='gcount'>2 captures</span></li>
+<li class='mono'>docs/screenshots/club_sky <span class='gcount'>1 captures</span></li>
+<li class='mono'>docs/screenshots/clustered-lights <span class='gcount'>7 captures</span></li>
+<li class='mono'>docs/screenshots/coldopen <span class='gcount'>11 captures</span></li>
+<li class='mono'>docs/screenshots/coldopen_dp <span class='gcount'>20 captures</span></li>
+<li class='mono'>docs/screenshots/complex <span class='gcount'>8 captures</span></li>
+<li class='mono'>docs/screenshots/consolidated <span class='gcount'>2 captures</span></li>
+<li class='mono'>docs/screenshots/descent_fall <span class='gcount'>7 captures</span></li>
+<li class='mono'>docs/screenshots/dialog <span class='gcount'>1 captures</span></li>
+<li class='mono'>docs/screenshots/earth_tunnels <span class='gcount'>4 captures</span></li>
+<li class='mono'>docs/screenshots/editor_ai <span class='gcount'>7 captures</span></li>
+<li class='mono'>docs/screenshots/editor_polish <span class='gcount'>4 captures</span></li>
+<li class='mono'>docs/screenshots/emissive <span class='gcount'>4 captures</span></li>
+<li class='mono'>docs/screenshots/facade_fix <span class='gcount'>12 captures</span></li>
+<li class='mono'>docs/screenshots/faccombat <span class='gcount'>7 captures</span></li>
+<li class='mono'>docs/screenshots/fold_lightning <span class='gcount'>6 captures</span></li>
+<li class='mono'>docs/screenshots/freeway <span class='gcount'>8 captures</span></li>
+<li class='mono'>docs/screenshots/gallery <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/gpucull <span class='gcount'>5 captures</span></li>
+<li class='mono'>docs/screenshots/holo <span class='gcount'>6 captures</span></li>
+<li class='mono'>docs/screenshots/honest <span class='gcount'>8 captures</span></li>
+<li class='mono'>docs/screenshots/jakecrowd <span class='gcount'>9 captures</span></li>
+<li class='mono'>docs/screenshots/lightning <span class='gcount'>2 captures</span></li>
+<li class='mono'>docs/screenshots/llm <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/loader <span class='gcount'>1 captures</span></li>
+<li class='mono'>docs/screenshots/mines <span class='gcount'>12 captures</span></li>
+<li class='mono'>docs/screenshots/mirror_sweep <span class='gcount'>6 captures</span></li>
+<li class='mono'>docs/screenshots/muzzle <span class='gcount'>15 captures</span></li>
+<li class='mono'>docs/screenshots/opening_enemies <span class='gcount'>5 captures</span></li>
+<li class='mono'>docs/screenshots/perfshop <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/post_stack <span class='gcount'>11 captures</span></li>
+<li class='mono'>docs/screenshots/qa_mainlevel <span class='gcount'>29 captures</span></li>
+<li class='mono'>docs/screenshots/qa_upperfloors <span class='gcount'>7 captures</span></li>
+<li class='mono'>docs/screenshots/rift_network <span class='gcount'>5 captures</span></li>
+<li class='mono'>docs/screenshots/rifthub_r10 <span class='gcount'>10 captures</span></li>
+<li class='mono'>docs/screenshots/sarah <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/sealife <span class='gcount'>4 captures</span></li>
+<li class='mono'>docs/screenshots/seam2 <span class='gcount'>5 captures</span></li>
+<li class='mono'>docs/screenshots/space <span class='gcount'>31 captures</span></li>
+<li class='mono'>docs/screenshots/streaming <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/streetlight <span class='gcount'>5 captures</span></li>
+<li class='mono'>docs/screenshots/swim <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/tunnel <span class='gcount'>8 captures</span></li>
+<li class='mono'>docs/screenshots/unified <span class='gcount'>6 captures</span></li>
+<li class='mono'>docs/screenshots/unified2 <span class='gcount'>17 captures</span></li>
+<li class='mono'>docs/screenshots/unified3 <span class='gcount'>4 captures</span></li>
+<li class='mono'>docs/screenshots/unified5 <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/upper_floors <span class='gcount'>6 captures</span></li>
+<li class='mono'>docs/screenshots/uwlight <span class='gcount'>1 captures</span></li>
+<li class='mono'>docs/screenshots/vehicles <span class='gcount'>14 captures</span></li>
+<li class='mono'>docs/screenshots/version <span class='gcount'>1 captures</span></li>
+<li class='mono'>docs/screenshots/w8_floorlife <span class='gcount'>10 captures</span></li>
+<li class='mono'>docs/screenshots/w8world <span class='gcount'>9 captures</span></li>
+<li class='mono'>docs/screenshots/water <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/weapon_textures_0711 <span class='gcount'>5 captures</span></li>
+<li class='mono'>docs/screenshots/weapons_overhaul <span class='gcount'>3 captures</span></li>
+<li class='mono'>docs/screenshots/wolf <span class='gcount'>49 captures</span></li>
+<li class='mono'>docs/screenshots/worldmap <span class='gcount'>6 captures</span></li>
+</ul></details>
+<footer>Derived: branch table (git), checklists and open-work summaries (parsed from the two design docs), contradiction checks (doc SHAs vs origin/main), screenshot walk (filesystem). Nothing on this page is hand-typed; if a source could not be read it says &ldquo;not available&rdquo;. Page is a snapshot — regenerate after fetching.</footer>
+</main></body></html>
