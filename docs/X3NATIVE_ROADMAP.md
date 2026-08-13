@@ -1,6 +1,6 @@
 # X3Native — Architecture Roadmap
 
-**Status:** living document. Started 2026-05-20.
+**Status:** living document. Started 2026-05-20. **Status table verified against the tree 2026-08-13.**
 **Purpose:** X3Native targets the architectural philosophy of **id Tech 8** (Doom: The Dark Ages) — same stack as us (**C++ + Vulkan**) — as its north star, and where it's cheap to exceed it, goes **beyond** (the **T3** features in §9). This doc records the decisions, the subsystem decomposition, the build sequence, and the per-machine hardware constraints so every session (and every parallel agent) shares one plan.
 
 > **Spec tiering:** subsystem specs now use explicit tiers — **T0** shipped · **T1** near-term · **T2** idTech 8 parity · **T3** beyond. See `specs/J-character-animation.spec.md` and `specs/K-gpu-destruction.spec.md` for the first two fully-tiered specs; §9 collects the cross-engine T3 "beyond" set.
@@ -49,22 +49,29 @@ See `RENDERING_SPEED.md` for the concrete frame-rate technique stack (bindless, 
 
 Each is its own spec → plan → build cycle. Status: ✅ done · 🔜 next · ⛔ blocked (dependency).
 
-| ID | Subsystem | Status | Depends on | Hardware notes |
+> **Status verified against the tree 2026-08-13.** This table had gone badly stale: ten of the
+> eleven subsystems were still marked ⛔ blocked or 🔜 next while their implementations were
+> already committed under `engine/`. Because this doc is what every session and every parallel
+> agent reads first, that staleness was actively misdirecting work. Each row below now cites the
+> file that proves its status. **Only I (CSG editor) remains genuinely unstarted.**
+
+| ID | Subsystem | Status | Proof in tree | Hardware notes |
 |---|---|---|---|---|
-| **A** | **Job system** (`IJobSystem`, fiber) | 🔜 **designing now** | — | CPU-only; the spine. Bridges Jolt's pool (Slice 41). |
-| **B** | Frame/render graph (declarative passes, auto-barriers, async-compute) | ⛔ after A + render core | A | — |
-| **C** | Mesh + PBR material pipeline + VMA buffers (D2) | 🔜 (current renderer next-step) | — | runs on 1080 Ti |
-| **D** | Bindless + multidraw-indirect + GPU-driven culling | ⛔ after C | C, A | descriptorIndexing already on (D1) |
-| **E** | Shadows (D3) + depth pre-pass | ⛔ after C/D | C | — |
-| **F** | Compute irradiance/probe GI (Sousa hybrid) | ⛔ after C/D | C, D | **runs on 1080 Ti (compute, no RT)** |
-| **G** | Hardware-RT reflections / path-tracing tier | ⛔ after F | F | **5090 only** (no 1080 Ti) |
-| **H** | Streaming + LOD (vista LODs, contribution culling) | ⛔ after D | D, A | I/O on the job system's I/O pool |
-| **I** | CSG brush + patch editor → mesh/collision bake (M8) | ⛔ later | C, M3 | — |
-| **J** | Character anim / GPU skinning / IK / **active ragdoll** (D8) — *v2 spec tiered T0→T3* | 🔜 **J1 (CPU skin + Idle) shipping** | C, D | `specs/J-character-animation.spec.md`; glTF skins from M2 feed this |
-| **K** | **GPU destruction physics** (compute debris world) — *v2 spec tiered T0→T3* | ⛔ after render core | C, D, A, M3 | `specs/K-gpu-destruction.spec.md`; compute on 1080 Ti OK, async overlap weak on Pascal |
-| — | M3 Jolt physics (CPU authoritative) | ✅ done | — | single-precision port (see Open Decisions) |
-| — | M2 glTF/GLB loader | ✅ done | D5 | GPU upload deferred (opaque-handle seam) |
+| **A** | **Job system** (`IJobSystem`, fiber) | ✅ **shipped** | `engine/core/IJobSystem.h`, `JobSystem.cpp` | CPU-only; the spine. Jolt bridged — see §7.3. |
+| **B** | Frame/render graph (declarative passes, auto-barriers, async-compute) | ✅ **shipped** | `engine/rhi/RenderGraph.{h,cpp}`, `rhi/vk/vk_graph.cpp` | — |
+| **C** | Mesh + PBR material pipeline + VMA buffers (D2) | ✅ **shipped** | `rhi/vma_impl.cpp`, `rhi/VertexPack.h`, `vk/vk_resources.cpp`, `vk/vk_pipelines.cpp` | runs on 1080 Ti |
+| **D** | Bindless + multidraw-indirect + GPU-driven culling | ✅ **shipped** | `rhi/GpuCull.{h,cpp}`, `rhi/FrustumCull.h`, `rhi/Visibility.{h,cpp}` | descriptorIndexing on |
+| **E** | Shadows (D3) + depth pre-pass | ✅ **shipped** | `rhi/Csm.{h,cpp}` (cascaded shadow maps), `vk/vk_passes.cpp` | — |
+| **F** | Compute irradiance/probe GI (Sousa hybrid) | ✅ **shipped** | `rhi/vk/vk_gi_rt.cpp`, `rhi/ClusterLights.{h,cpp}` | **runs on 1080 Ti (compute, no RT)** |
+| **G** | Hardware-RT reflections / path-tracing tier | ✅ **shipped** | `rhi/VulkanRT.h`, `rhi/ReflDenoise.{h,cpp}` | **5090 only** (no 1080 Ti) |
+| **H** | Streaming + LOD (vista LODs, contribution culling) | ✅ **shipped** | `app/world_stream.{h,cpp}`, `app/world_hosts/host_streamed.cpp` | I/O on the job system's I/O pool |
+| **I** | CSG brush + patch editor → mesh/collision bake (M8) | ⛔ **genuinely not started** | *(no `csg`/`brush` sources exist)* | the one real gap in this table |
+| **J** | Character anim / GPU skinning / IK / **active ragdoll** (D8) — *v2 spec tiered T0→T3* | ✅ **past J1** | `app/anim.cpp`, `physics/Ragdoll.{h,cpp}`, GPU skin path in `rhi/IRenderDevice.h` | `specs/J-character-animation.spec.md` |
+| **K** | **GPU destruction physics** (compute debris world) — *v2 spec tiered T0→T3* | ✅ **shipped, incl. one T3** | `physics/Destruction.{h,cpp}`, `physics/StructuralCollapse.{h,cpp}` | `specs/K-gpu-destruction.spec.md`; async overlap still weak on Pascal |
+| — | M3 Jolt physics (CPU authoritative) | ✅ done | `physics/JoltPhysicsWorld.cpp` | single-precision port (see §7.1 — still open) |
+| — | M2 glTF/GLB loader | ✅ done | `engine/asset/ModelLoader.cpp` | — |
 | — | KTX2 bake tool (`tools/ktx2bake`) | ✅ done | — | toktx v4.4.2 |
+| — | Vehicles | ✅ done | `physics/IVehicle.h`, `physics/JoltVehicle.cpp` | not previously on this roadmap |
 
 ---
 
@@ -94,21 +101,42 @@ The pasted Jolt/GPU references checked against the M3 implementation (`d830dfe`)
 
 ---
 
-## 7. Open decisions (need a call before the relevant subsystem)
+## 7. Open decisions
 
-1. **Jolt precision (before large-world content).** vcpkg `joltphysics` is **single-precision**; idTech-scale worlds (~30,000 units; Babylon ran `WORLD_RADIUS=15000`) jitter far from origin. Options: (a) switch port to `USE_DOUBLE_PRECISION` (perf cost), or (b) keep single + **camera-relative origin rebasing** (cheaper; renderer wants it anyway). *Lean: (b).*
-2. **`IPhysicsWorld` shape additions (before destruction).** Add `addConvexHull` + compound-shape support so pre-fractured destruction (and richer collision) works. Currently only box/sphere/static-mesh.
-3. **Job-system bridge timing (Slice 41).** When A lands, bridge `JPH::JobSystem` onto it so physics stops running its own pool.
+*Verified 2026-08-13. Two of the three original decisions are resolved in code.*
+
+1. **Jolt precision (before large-world content).** 🔴 **STILL OPEN — the only unresolved decision here.**
+   vcpkg `joltphysics` is **single-precision**; large worlds (~30,000 units; Babylon ran
+   `WORLD_RADIUS=15000`) jitter far from origin. Options: (a) switch port to `USE_DOUBLE_PRECISION`
+   (perf cost), or (b) keep single + **camera-relative origin rebasing** (cheaper; renderer wants it
+   anyway). *Lean: (b).* **No world-origin rebasing exists in the tree yet** — the "camera-relative"
+   code in `app/` is viewmodel posing, not world rebasing. `specs/NETCODE-architecture.spec.md` §5
+   independently reaches the same conclusion (replicate positions per-region, not absolute), so
+   netcode and physics now both want this. Deciding it unblocks both.
+2. **`IPhysicsWorld` shape additions.** ✅ **RESOLVED.** `addConvexHull(const float* pts, uint32_t n)`
+   and `addCompound(...)` both ship in `engine/physics/IPhysicsWorld.h` (→ `JPH::ConvexHullShape` /
+   `JPH::StaticCompoundShape`). Pre-fractured destruction is unblocked.
+3. **Job-system bridge timing (Slice 41).** ✅ **RESOLVED.** `engine/physics/JoltJobBridge.h`
+   implements `JPH::JobSystem` on top of `x3::jobs::IJobSystem`; physics no longer runs a private
+   `JobSystemThreadPool`. The header self-documents as "Subsystem A, Slice 41 (D-JOB / roadmap §7.3)".
 
 ---
 
-## 8. Build sequence (near-term)
+## 8. Build sequence
 
-1. **A — Job system** (designing now) → spec → plan → build. Bridge Jolt (Slice 41).
-2. **C — Mesh + PBR + VMA buffers** (renderer core) — also unblocks M2's real GPU upload.
-3. **D — Bindless + multidraw + GPU culling** on top of C.
-4. **B — Frame graph** to formalize passes + async compute.
-5. Then the multipliers: **E** shadows, **F** compute GI, **H** streaming, **K** GPU destruction, **G** RT tier (5090), **J** animation, **I** editor.
+*Rewritten 2026-08-13 — the original sequence (A → C → D → B → multipliers) is **complete** except I.*
+
+Everything that sequence ordered has shipped. What's actually next:
+
+1. **§7.1 — call the Jolt precision decision.** Cheapest unblock on the board; gates both large-world
+   content and netcode replication. Lean (b), camera-relative origin rebasing.
+2. **I — CSG brush + patch editor** → mesh/collision bake (M8). The one unstarted subsystem.
+3. **Harden what shipped fast.** B/D/E/F/G/H/K all landed without appearing on this roadmap as done —
+   worth an acceptance-test pass against each spec's §12 rather than new construction.
+4. **T3 selection (§9).** Structural-connectivity destruction already shipped; pick the next T3
+   deliberately instead of by drift.
+5. **Document the undocumented (§10).** Netcode, LLM NPCs and RT acoustics are load-bearing systems
+   no plan mentions.
 
 ---
 
@@ -122,9 +150,32 @@ idTech 8 parity is the **T2** bar in each spec. These **T3** features intentiona
 | **Full-body IK pass** | J | pelvis + spine + look-at + hand-to-weapon solved together for grounded, gun-aware posing | CPU + jobs |
 | **GPU-skinned crowd ragdolls** | J | hundreds of dying actors skinned + ragdolled on the GPU at once | 5090 best; 1080 Ti compute OK |
 | **Deterministic anim replay** | J | fixed-dt pose stream reproducible across runs (replays/netcode foundation) | any |
-| **Structural-connectivity destruction** | K | support-graph → unsupported chunks wake & collapse; progressive building collapse (Red Faction Geo-Mod / Teardown tier) | compute |
+| ✅ **Structural-connectivity destruction** — **SHIPPED** | K | support-graph → unsupported chunks wake & collapse; progressive building collapse (Red Faction Geo-Mod / Teardown tier). Lives in `engine/physics/StructuralCollapse.{h,cpp}`, which self-labels "Subsystem K, tier T3". *This roadmap previously listed it as far-future while it was already in the tree.* | compute |
 | **Nested / hierarchical fracture** | K | chunks re-fracture on later impacts, depth-limited | compute |
 | **1M+ debris** | K | mega-scale persistent debris with smart sleep/wake | **5090** |
 | **Deterministic GPU sim (opt-in)** | K | reproducible GPU debris for replay | any (perf cost) |
 
 **Discipline:** each T3 item ships only after its subsystem's T2 (idTech 8 parity) is stable and acceptance-tested. T3 is where X3Native earns "...AND BEYOND." Full contracts + acceptance tests live in the per-subsystem specs.
+
+---
+
+## 10. Shipped but undocumented
+
+*Added 2026-08-13.* These are load-bearing systems that exist in `engine/` and appear in **no**
+planning document — this roadmap included. They are recorded here so sessions and parallel agents
+stop rebuilding or ignoring them. Each deserves its own spec.
+
+| System | Where | What it is |
+|---|---|---|
+| **Netcode stack** | `engine/net/` | Client-side prediction (`ClientPredictor.cpp`), snapshot interpolation (`SnapshotInterpolator.cpp`), state replication (`Replication.cpp`), `SimClock.h`, `PlayerSimStep.h`, `NetworkSystem.cpp`, `LoopbackTransport.cpp` behind `INetTransport`. Spec exists (`specs/NETCODE-architecture.spec.md`) but the roadmap never tracked it. |
+| **Local-LLM NPC dialogue** | `engine/llm/` | `ILlmSystem` with a llama.cpp backend (`LlamaLlmSystem.cpp`), a mock for tests, and `LlmSelfTest.cpp`. |
+| **Ray-traced acoustics** | `engine/audio/RtAcoustics.{h,cpp}` | RT-driven audio propagation alongside `MiniaudioSystem`. |
+| **Navigation / AI** | `engine/ai/` | `INavigation.h`, `Navigation.cpp`. |
+| **ECS** | `engine/ecs/Ecs.{h,cpp}` | Entity/component storage. |
+| **Script VM** | `engine/script/` | `IScriptSystem` + `LuaScriptSystem.cpp` (see `specs/M4-script-vm.spec.md`). |
+| **Asset layer** | `engine/asset/` | `PakAssetSource.cpp` (.x3pak), `ModelLoader.cpp`, `IAssetSource`/`IModelLoader` seams. |
+| **Vehicles** | `engine/physics/IVehicle.h`, `JoltVehicle.cpp` | Jolt-backed vehicle physics. |
+
+**Why this section exists.** The 2026-08-13 audit found the pattern that produced it: subsystems get
+built faster than the plan gets updated, so the plan understates the engine and then misdirects the
+next session. Adding a row here is cheaper than rediscovering the system.
