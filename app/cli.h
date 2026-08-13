@@ -34,6 +34,10 @@ struct CliOptions {
          // --test-terraincorridor: the corridor (polyline) heightfield
          // depression — the freeway-tunnel primitive. See app/terrain.h.
          testTerrainCorridor = false,
+         // --test-tunneldrive: DRIVE-THROUGH acceptance for the tunnel demo —
+         // the real rig must exit the far portal; negative-controlled against
+         // X3_TUNNEL_PORTAL_CUT=0. See app/tunnel_corridor.h.
+         testTunnelDrive = false,
          testNet = false, testRescue = false, testCompanionCombat = false, testDestruction = false,
          testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testCsm = false, testGeoLod = false,
          testMineFx = false,

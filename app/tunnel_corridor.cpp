@@ -7,6 +7,9 @@
 #include <cstdlib>
 #include "mesh_prims.h"
 #include "asset_root.h"        // assetRoot() — the surface_library mount point
+#include "vehicle.h"           // DriveDemo — the drive-through self-test rig
+#include "headless_device.h"   // HeadlessRenderDevice — self-test, no Vulkan
+#include <memory>
 
 #include "engine/core/x3_log.h"
 
@@ -52,6 +55,45 @@ constexpr float kBoreCut = kTcTubeCrownH + kTcShellThick + kTcMinSoilCover;   //
 // earth ramp across the carriageway that blocks the tunnel outright. Pushing the
 // transition this much deeper buries the sweep under real hill instead.
 constexpr float kBoreCutMargin = 14.0f;
+
+// --- THE PORTAL CUT (plug corridors + mesh portal holes) -------------------
+// The margin above measurably did NOT clear the mouth (residual 18 m -> 16 m):
+// the ramp is not made by WHERE the depth profile switches but by the corridor
+// FIELD itself. Two mechanisms, both irreducible at the main corridor's scale:
+//   1. Along the spine the depth interpolates node-to-node (~20 m apart), and
+//      the union's rounded END CAPS hold full depth for halfWidth (8.8 m) past
+//      a segment end and then decay over falloff (10 m) — so the ground's
+//      sweep from road level up past the crown is smeared over ~19 m however
+//      the node depths step.
+//   2. Even a PERFECTLY vertical field step cannot be driven through: the tile
+//      mesher joins road-level vertices to lid-level vertices with a
+//      continuous CURTAIN of triangles, and that curtain has collision.
+// The fix is therefore also two-part, registered per mouth:
+//   * a PORTAL PLUG — a short full-cut corridor with a TIGHT falloff whose end
+//     cap reaches past the main corridor's (so the sweep happens over
+//     kTcPlugFall metres at a face the headwall dresses, not over 19 m of
+//     carriageway);
+//   * a PORTAL HOLE (app/terrain.h) — the mesher drops the curtain triangles
+//     inside the tube envelope at the mouth, render and collision both. The
+//     shell + headwall stand in the gap.
+// X3_TUNNEL_PORTAL_CUT=0 disables both and restores the previous behaviour
+// EXACTLY: no plug => the corridor field is bit-identical to the pre-cut
+// build; no hole => the tile mesher emits the exact pre-hole triangle set.
+constexpr float kTcPlugFall = 2.5f;   // the mouth transition happens over this
+constexpr float kTcPlugBack = 8.0f;   // plug spine overlap back into the open cut
+// Run past the last open-cut node. The plug's end cap holds full depth for
+// kTcCorridorHalfW past its last node, so the actual face sits at
+// kTcPlugRun + 8.8 m — which must exceed the MAIN corridor's influence reach
+// (halfWidth + falloff = 18.8 m past the same node) or the main's gentle tail
+// re-creates the shallow ramp beyond the plug's sharp face.
+constexpr float kTcPlugRun  = 14.0f;
+static_assert(kTcPlugRun + kTcCorridorHalfW > kTcCorridorHalfW + kTcCorridorFall,
+              "the plug face must clear the main corridor's end-cap reach");
+
+bool portalCutOn() {
+    const char* e = std::getenv("X3_TUNNEL_PORTAL_CUT");
+    return !(e && e[0] == '0');
+}
 
 float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
@@ -451,6 +493,63 @@ const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
     const bool ok = registerTerrainCorridor(c);
     if (!ok) { x3::logError("tunnel corridor: registerTerrainCorridor REJECTED the route"); return &route; }
 
+    // --- 4b) PORTAL PLUGS — one tight full-cut corridor per mouth. ----------
+    // See the block comment at kTcPlugFall for why the main corridor cannot do
+    // this itself. Depths are authored against the same NATURAL samples the
+    // main profile used (latMax interpolated between stations), never against
+    // the already-cut field — corridor depths are relative to the natural
+    // surface and combine by deepest-wins.
+    uint32_t plugs = 0;
+    if (portalCutOn()) {
+        auto latMaxAt = [&](float s) {
+            if (s <= route.st.front().s) return route.st.front().latMax;
+            if (s >= route.st.back().s)  return route.st.back().latMax;
+            for (size_t i = 1; i < route.st.size(); ++i)
+                if (s <= route.st[i].s) {
+                    const float t = (s - route.st[i-1].s) /
+                                    std::max(1e-4f, route.st[i].s - route.st[i-1].s);
+                    return route.st[i-1].latMax + (route.st[i].latMax - route.st[i-1].latMax) * t;
+                }
+            return route.st.back().latMax;
+        };
+        auto registerPlug = [&](float sOpen, float inward) {
+            TerrainCorridor plug{};
+            plug.nodeCount = 4;
+            plug.halfWidth = kTcCorridorHalfW;
+            plug.falloff   = kTcPlugFall;
+            const float sA = sOpen - inward * kTcPlugBack;
+            const float sB = sOpen + inward * kTcPlugRun;
+            for (int k = 0; k < plug.nodeCount; ++k) {
+                const float t = (float)k / (float)(plug.nodeCount - 1);
+                const float s = sA + (sB - sA) * t;
+                const float sc = -kRouteHalfLen + s;
+                plug.x[k] = kRouteCX + kRouteDirX * sc;
+                plug.z[k] = kRouteCZ + kRouteDirZ * sc;
+                // The union's rounded end cap FREEZES the final node's depth
+                // for halfWidth metres past it, while the mountain's natural
+                // surface keeps rising — measured at ~1.2-2 m per metre on this
+                // flank — so a locally-sampled final depth leaves the floor
+                // rising at the natural slope across the whole cap zone (that
+                // was the 118..124 m shallow ramp in the probe). The FINAL node
+                // therefore anticipates: its depth is sampled at the FACE (one
+                // cap-length further in), which over-cuts a scoop just outside
+                // the portal but pins the floor at/below road level right up to
+                // the face, collapsing the rise into the 2.5 m falloff band.
+                const float sProbe = (k == plug.nodeCount - 1)
+                                         ? s + inward * plug.halfWidth : s;
+                plug.depth[k] = std::max(0.0f, latMaxAt(sProbe) - route.roadYAt(s));
+            }
+            if (registerTerrainCorridor(plug)) ++plugs;
+            else x3::logWarn(std::string("tunnel corridor: '") + route.name +
+                             "' portal plug REJECTED (registry full?) — the mouth will ramp");
+        };
+        for (int i = 0; i + 1 < kRouteNodes; ++i) {
+            if (route.st[i].bore == route.st[i+1].bore) continue;
+            if (!route.st[i].bore) registerPlug(route.st[i].s,     +1.0f);   // entry mouth
+            else                   registerPlug(route.st[i+1].s,   -1.0f);   // exit mouth
+        }
+    }
+
     // --- 5) Find the genuinely ENCLOSED span by re-reading the FINAL field.
     // The union-of-capsules formulation rounds the depth step over ~halfWidth,
     // so where the roof actually closes is NOT where the design intent says. Ask
@@ -511,16 +610,70 @@ const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
     float buriedIn = 0.0f;
     // "Under an earth ramp" means the ground is above the road but still inside
     // the drivable envelope — deeper than that and it is honest soil cover.
-    for (int i = a2; i <= b2; ++i)
-        if (roadBury[(size_t)i] > 0.30f && roadBury[(size_t)i] < kTcTubeCrownH) buriedIn += kSampleDs;
+    {
+        std::string runs;
+        int runStart = -1;
+        for (int i = a2; i <= b2 + 1; ++i) {
+            const bool buried = i <= b2 && roadBury[(size_t)i] > 0.30f &&
+                                roadBury[(size_t)i] < kTcTubeCrownH;
+            if (buried) { buriedIn += kSampleDs; if (runStart < 0) runStart = i; }
+            else if (runStart >= 0) {
+                char rb[64];
+                std::snprintf(rb, sizeof(rb), " s=%.0f..%.0f(max %.1f m)",
+                              kSampleDs * (float)runStart, kSampleDs * (float)(i - 1),
+                              [&]{ float m = 0; for (int k = runStart; k < i; ++k)
+                                       m = std::max(m, roadBury[(size_t)k]); return m; }());
+                runs += rb;
+                runStart = -1;
+            }
+        }
+        if (!runs.empty())
+            x3::logInfo(std::string("tunnel corridor: earth-ramp runs inside the shell:") + runs);
+    }
     route.buriedRoadLen = buriedIn;
+
+    // --- 5b) PORTAL HOLES — clear the residual curtain from the tile MESH. --
+    // Whatever residual the field still carries (the plug shrinks it to a few
+    // metres; it can never be zero — see terrain.h TerrainPortalHole), the
+    // mesher must not emit those triangles: they are terrain collision across
+    // the carriageway. The hole spans the measured sweep at each mouth, from
+    // just outside the shell start to just past full cover, capped so a
+    // pathological measurement can't tear a hole down half the bore.
+    uint32_t holes = 0;
+    if (portalCutOn() && route.boreValid) {
+        auto registerHole = [&](float sH0, float sH1) {
+            if (sH1 - sH0 < 1.0f) return;
+            TerrainPortalHole h{};
+            const float scA = -kRouteHalfLen + sH0, scB = -kRouteHalfLen + sH1;
+            h.x0 = kRouteCX + kRouteDirX * scA; h.z0 = kRouteCZ + kRouteDirZ * scA;
+            h.x1 = kRouteCX + kRouteDirX * scB; h.z1 = kRouteCZ + kRouteDirZ * scB;
+            h.halfWidth = kTcTubeHalfWidth + kTcShellThick + 0.15f;
+            float ryMax = -1e9f;
+            for (float s = sH0; s <= sH1 + 0.01f; s += 2.0f)
+                ryMax = std::max(ryMax, route.roadYAt(s));
+            h.yTop = ryMax + kTcTubeCrownH + kTcShellThick + 0.4f;
+            if (registerTerrainPortalHole(h)) ++holes;
+            else x3::logWarn(std::string("tunnel corridor: '") + route.name +
+                             "' portal hole REJECTED (registry full?) — the mouth curtain stays");
+        };
+        constexpr float kHoleCap = 30.0f;   // never tear further than this
+        registerHole(std::max(0.0f, route.boreS0 - 6.0f),
+                     std::min(route.boreS0 + kHoleCap, route.coverS0 + 3.0f));
+        registerHole(std::max(route.boreS1 - kHoleCap, route.coverS1 - 3.0f),
+                     std::min(route.totalLen, route.boreS1 + 6.0f));
+        if (route.coverS0 - route.boreS0 > kHoleCap || route.boreS1 - route.coverS1 > kHoleCap)
+            x3::logWarn(std::string("tunnel corridor: '") + route.name +
+                        "' mouth sweep exceeds the portal-hole cap — part of the ramp keeps its mesh");
+    }
 
     char b[512];
     std::snprintf(b, sizeof(b),
-        "tunnel corridor: registered 1 corridor, %d nodes, %.0f m, halfWidth %.1f/%.1f | "
-        "road %.1f..%.1f m | max cut %.1f m | SHELL s=%.0f..%.0f (%.0f m), of which "
-        "fully buried s=%.0f..%.0f (%.0f m); %.0f m of road inside the shell still "
-        "carries an earth ramp (the portal-sweep residual)",
+        "tunnel corridor: registered %u corridor(s) (%u portal plug(s)) + %u portal hole(s), "
+        "%d nodes, %.0f m, halfWidth %.1f/%.1f | road %.1f..%.1f m | max cut %.1f m | "
+        "SHELL s=%.0f..%.0f (%.0f m), of which fully buried s=%.0f..%.0f (%.0f m); "
+        "%.0f m of road inside the shell still carries an earth ramp in the FIELD "
+        "(the portal-sweep residual; the portal holes clear it from the MESH)",
+        1u + plugs, plugs, holes,
         kRouteNodes, route.totalLen, kTcCorridorHalfW, kTcCorridorFall,
         route.st.front().roadY, route.st.back().roadY,
         [&]{ float m = 0; for (auto& n : route.st) m = std::max(m, n.latMax - n.roadY); return m; }(),
@@ -535,15 +688,19 @@ const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
 
 // The original single-tunnel demo (--world tunnel). Same authored hill, same
 // constants, so the demo's geometry is unchanged by the generalisation.
-const TunnelRoute& registerTunnelCorridor() {
-    static const TunnelRoute* cached = nullptr;
-    if (cached) return *cached;
+TunnelSpec demoTunnelSpec() {
     TunnelSpec demo;
     demo.name = "demo ridge";
     demo.cx = kRouteCX;   demo.cz = kRouteCZ;
     demo.dirX = kRouteDirX; demo.dirZ = kRouteDirZ;
     demo.halfLen = kRouteHalfLen;
-    cached = registerTunnelCorridorFor(demo);
+    return demo;
+}
+
+const TunnelRoute& registerTunnelCorridor() {
+    static const TunnelRoute* cached = nullptr;
+    if (cached) return *cached;
+    cached = registerTunnelCorridorFor(demoTunnelSpec());
     if (!cached) { static TunnelRoute empty; return empty; }
     return *cached;
 }
@@ -1165,10 +1322,13 @@ void TunnelCorridorWorld::showcaseCamera(const TunnelRoute& route, int which, fl
     if (which == 4) {
         // Three-quarter close-up of the entrance mouth: the junction between the
         // concrete portal and the raw terrain is the seam this whole technique
-        // lives or dies on, so it gets its own frame.
-        const float sEye = std::max(4.0f, route.boreS0 - 26.0f);
+        // lives or dies on, so it gets its own frame. The lateral offset used
+        // to be 15 m, which the portal cut's near-vertical trench walls
+        // (full depth beyond ~8.8 m) now put INSIDE solid rock — stay on the
+        // trench floor, off the centreline but inside the cutting.
+        const float sEye = std::max(4.0f, route.boreS0 - 30.0f);
         float e[3]; route.posAt(sEye, e);
-        const float lat = 15.0f;
+        const float lat = 5.5f;
         e[0] += -route.dirZ * lat; e[2] += route.dirX * lat; e[1] += 5.0f;
         float t[3]; route.posAt(route.boreS0 + 2.0f, t);
         t[1] += 4.0f;
@@ -1189,6 +1349,170 @@ void TunnelCorridorWorld::showcaseCamera(const TunnelRoute& route, int which, fl
     float p[3]; route.posAt(clampf(s, 0.0f, route.totalLen), p);
     cam[0] = p[0]; cam[1] = p[1] + eyeUp; cam[2] = p[2];
     cam[3] = yaw;  cam[4] = pitch;
+}
+
+// ===========================================================================
+// runTunnelDriveSelfTest (--test-tunneldrive) — see tunnel_corridor.h.
+//
+// The whole point is that a SCREENSHOT cannot prove traversability: the bore
+// looked finished in every capture while an earth ramp walled it off. This
+// drives the real Jolt wheeled rig through the real streamed-terrain collision
+// (the very tile mesher the game uses, portal holes and all) and the real
+// road/shell collision, twice: once with X3_TUNNEL_PORTAL_CUT=0 as the
+// NEGATIVE CONTROL (the ramp must STOP the car — a control that cannot fail
+// is not a control) and once enabled (the car must come out the far portal).
+// ===========================================================================
+namespace {
+
+void setPortalCutEnv(bool on) {
+#ifdef _WIN32
+    _putenv_s("X3_TUNNEL_PORTAL_CUT", on ? "1" : "0");
+#else
+    setenv("X3_TUNNEL_PORTAL_CUT", on ? "1" : "0", 1);
+#endif
+}
+
+struct TunnelDriveResult {
+    bool  built = false;
+    float maxS = 0.0f;          // furthest arc-length progress along the spine
+    float worstBoreDy = 0.0f;   // max |carY - roadY| while inside the bore span
+    float residual = 0.0f;      // route.buriedRoadLen (the FIELD-level number)
+    float boreS0 = 0.0f, boreS1 = 0.0f, coverS0 = 0.0f, totalLen = 0.0f;
+    uint32_t holeCount = 0;
+};
+
+TunnelDriveResult driveTheDemoRoute(bool cutOn) {
+    TunnelDriveResult res;
+    setPortalCutEnv(cutOn);
+    // The test owns both boot registries for its duration (the same contract
+    // --test-terraincorridor uses); each phase re-registers the SAME route
+    // against its own field.
+    clearTerrainCorridors();
+    clearTerrainPortalHoles();
+    const TunnelRoute* route = registerTunnelCorridorFor(demoTunnelSpec());
+    if (!route || !route->boreValid) return res;
+    res.residual = route->buriedRoadLen;
+    res.boreS0 = route->boreS0; res.boreS1 = route->boreS1;
+    res.coverS0 = route->coverS0; res.totalLen = route->totalLen;
+    res.holeCount = terrainPortalHoleCount();
+
+    HeadlessRenderDevice dev;
+    Scene scene;
+    std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
+    if (!phys->init()) return res;
+
+    float start[3];
+    route->posAt(std::max(8.0f, route->boreS0 - 60.0f), start);
+    TerrainStreamer streamer;
+    // jobs == nullptr => fully synchronous generation (the documented headless
+    // path), so collision under the car is never still in flight.
+    streamer.init(scene, dev, *phys, nullptr, worldTerrainConfig(),
+                  start[0], start[2], /*radius=*/2);
+    TunnelCorridorWorld world;
+    world.build(scene, dev, *phys, *route);
+
+    DriveDemo car;
+    res.built = car.buildPhysics(*phys, start[0], start[1] + 1.4f, start[2]);
+    if (res.built) {
+        // Point it down the corridor (host_tunnel's exact quaternion).
+        const float yaw = std::atan2(route->dirZ, route->dirX);
+        const float q[4] = { 0.0f, std::sin(-yaw * 0.5f), 0.0f, std::cos(-yaw * 0.5f) };
+        phys->setBodyRotation(car.chassis(), q);
+    }
+    phys->optimizeBroadphase();
+
+    const float dt = 1.0f / 60.0f;
+    for (int i = 0; i < 90 && res.built; ++i) {   // settle onto the suspension
+        x3::phys::VehicleInput in{};
+        car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+    }
+
+    // Route frame for progress/steering: arc length s + signed lateral offset.
+    const float n0x = route->cx - route->dirX * route->halfLen;
+    const float n0z = route->cz - route->dirZ * route->halfLen;
+    const float rxl = -route->dirZ, rzl = route->dirX;
+    float prevLat = 0.0f; bool havePrev = false;
+    float stallRef = -1e9f; int stallTicks = 0;
+    const int kMaxTicks = 60 * 120;               // 120 s of sim, hard cap
+    for (int i = 0; i < kMaxTicks && res.built; ++i) {
+        float p[3]; car.chassisPos(p);
+        const float s   = (p[0] - n0x) * route->dirX + (p[2] - n0z) * route->dirZ;
+        const float lat = (p[0] - n0x) * rxl + (p[2] - n0z) * rzl;
+        const float latVel = havePrev ? (lat - prevLat) / dt : 0.0f;
+        prevLat = lat; havePrev = true;
+        res.maxS = std::max(res.maxS, s);
+        if (s > route->boreS0 + 5.0f && s < route->boreS1 - 5.0f)
+            res.worstBoreDy = std::max(res.worstBoreDy,
+                                       std::fabs(p[1] - route->roadYAt(s)));
+        if (s > route->boreS1 + 25.0f) break;     // through and out — done
+        // Stall detection: the negative control's expected exit (the ramp).
+        if (s > stallRef + 0.5f) { stallRef = s; stallTicks = 0; }
+        else if (++stallTicks > 60 * 6) break;
+
+        x3::phys::VehicleInput in{};
+        in.throttle = car.forwardSpeed() < 18.0f ? 1.0f : 0.1f;
+        // Centreline follower: lat is the signed offset toward the car's OWN
+        // right (route right == chassis right when pointed down the spine), so
+        // drifting right (lat rising) steers left. Damped by the lateral rate.
+        in.steer = clampf(-(0.10f * lat + 0.45f * latVel), -0.6f, 0.6f);
+        car.setInput(in); car.preStep(dt);
+        streamer.update(scene, dev, *phys, p[0], p[2]);
+        phys->step(dt); car.postStep(dt);
+    }
+
+    if (res.built) car.shutdown();
+    world.shutdown(dev, *phys);
+    streamer.shutdown(scene, dev, *phys);
+    phys->shutdown();
+    return res;
+}
+
+} // namespace
+
+bool runTunnelDriveSelfTest() {
+    int passN = 0, failN = 0;
+    auto check = [&](bool ok, const char* name) {
+        if (ok) { ++passN; x3::logInfo(std::string("[tunneldrive] PASS ") + name); }
+        else    { ++failN; x3::logError(std::string("[tunneldrive] FAIL ") + name); }
+    };
+    auto report = [&](const char* tag, const TunnelDriveResult& r) {
+        char b[320];
+        std::snprintf(b, sizeof(b),
+            "[tunneldrive]   %s: maxS=%.0f m (shell %.0f..%.0f, route %.0f m) | "
+            "field residual %.0f m | portal holes %u | worst bore |dY| %.2f m",
+            tag, r.maxS, r.boreS0, r.boreS1, r.totalLen,
+            r.residual, r.holeCount, r.worstBoreDy);
+        x3::logInfo(b);
+    };
+
+    x3::logInfo("[tunneldrive] PHASE A — portal cut DISABLED (the negative control)...");
+    const TunnelDriveResult a = driveTheDemoRoute(false);
+    report("A(cut off)", a);
+    check(a.built, "A0 rig + world built");
+    check(a.holeCount == 0, "A1 disabled => zero portal holes (the fallback is exact)");
+    check(a.residual > 8.0f, "A2 the defect is real: field residual > 8 m without the cut");
+    check(a.maxS < a.coverS0,
+          "A3 NEGATIVE CONTROL: the earth ramp stops the car before full cover");
+
+    x3::logInfo("[tunneldrive] PHASE B — portal cut ENABLED...");
+    const TunnelDriveResult b = driveTheDemoRoute(true);
+    report("B(cut on)", b);
+    check(b.built, "B0 rig + world built");
+    check(b.holeCount == 2, "B1 one portal hole per mouth registered");
+    check(b.residual <= 6.0f && b.residual < a.residual - 6.0f,
+          "B2 plug collapses the field residual (<= 6 m, and > 6 m better than control)");
+    check(b.maxS > b.boreS1 + 20.0f,
+          "B3 DRIVE-THROUGH: the car exits past the far portal");
+    check(b.worstBoreDy < 5.0f,
+          "B4 through the bore at road level (not over the hill)");
+
+    // Registry + env hygiene: leave the process at defaults.
+    clearTerrainCorridors();
+    clearTerrainPortalHoles();
+    setPortalCutEnv(true);
+    x3::logInfo("[tunneldrive] " + std::to_string(passN) + " passed, " +
+                std::to_string(failN) + " failed");
+    return failN == 0;
 }
 
 } // namespace x3::game

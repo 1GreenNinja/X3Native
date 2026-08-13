@@ -143,7 +143,8 @@ x3::rhi::MeshVertex makeTerrainVertex(const TerrainConfig& cfg,
 void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
                       TerrainLod lod,
                       std::vector<x3::rhi::MeshVertex>& outVerts,
-                      std::vector<uint32_t>& outIdx) {
+                      std::vector<uint32_t>& outIdx,
+                      uint32_t* outSurfIdxCount = nullptr) {
     outVerts.clear();
     outIdx.clear();
 
@@ -169,15 +170,38 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
             outVerts.push_back(makeTerrainVertex(cfg, wx, wz, u, v, eps));
         }
     }
+    // PORTAL HOLES (see terrain.h): with none registered this is the exact
+    // pre-hole index build. With holes, each surface triangle is tested by XZ
+    // centroid + lowest vertex — the tunnel-mouth CURTAIN (triangles reaching
+    // down into the bore) is skipped from render AND, because the collision
+    // soup reuses these indices, from collision too.
+    const bool anyHole = (terrainPortalHoleCount() > 0);
+    auto pushTri = [&](uint32_t a, uint32_t b, uint32_t c) {
+        if (anyHole) {
+            const x3::rhi::MeshVertex& va = outVerts[a];
+            const x3::rhi::MeshVertex& vb = outVerts[b];
+            const x3::rhi::MeshVertex& vc = outVerts[c];
+            const float cx = (va.pos[0] + vb.pos[0] + vc.pos[0]) * (1.0f / 3.0f);
+            const float cz = (va.pos[2] + vb.pos[2] + vc.pos[2]) * (1.0f / 3.0f);
+            const float mY = std::min(va.pos[1], std::min(vb.pos[1], vc.pos[1]));
+            if (terrainPortalHoleDrops(cx, cz, mY)) return;
+        }
+        outIdx.insert(outIdx.end(), { a, b, c });
+    };
     for (uint32_t j = 0; j < quads; ++j) {
         for (uint32_t i = 0; i < quads; ++i) {
             const uint32_t a = j * vpe + i;
             const uint32_t b = a + 1;
             const uint32_t c = a + vpe;
             const uint32_t d = c + 1;
-            outIdx.insert(outIdx.end(), { a, c, b,  b, c, d });
+            pushTri(a, c, b);
+            pushTri(b, c, d);
         }
     }
+    // The surface/skirt boundary is no longer a fixed quads*quads*6 once holes
+    // drop triangles — report it so the collision soup can take exactly the
+    // surface prefix.
+    if (outSurfIdxCount) *outSurfIdxCount = (uint32_t)outIdx.size();
 
     // ---- Crack-hiding SKIRT (not in the collision surface) ---------------
     // Features worlds carry real mountains (slopes far steeper than the base
@@ -202,9 +226,16 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
         const x3::rhi::MeshVertex& va = outVerts[topA];
         const x3::rhi::MeshVertex& vb = outVerts[topB];
         float depth = skirtDepth;
+        const float mx = (va.pos[0] + vb.pos[0]) * 0.5f;
+        const float mz = (va.pos[2] + vb.pos[2]) * 0.5f;
+        // A skirt is ALSO a curtain: inside a portal hole it would hang exactly
+        // where the surface triangles were just dropped and wall the bore off
+        // again wherever a tile border crosses a mouth. Same predicate, same
+        // seam-consistency argument (midpoint is identical from both sides).
+        if (anyHole &&
+            terrainPortalHoleDrops(mx, mz, std::min(va.pos[1], vb.pos[1]) - depth))
+            return;
         if (anyCorridor) {
-            const float mx = (va.pos[0] + vb.pos[0]) * 0.5f;
-            const float mz = (va.pos[2] + vb.pos[2]) * 0.5f;
             if (terrainCorridorDelta(mx, mz) < -0.25f) depth = std::min(depth, 2.5f);
         }
         x3::rhi::MeshVertex la = va, lb = vb;
@@ -942,6 +973,71 @@ void clearTerrainCorridors() { corridorRegistry().count = 0; }
 
 uint32_t terrainCorridorCount() { return corridorRegistry().count; }
 
+// ---------------------------------------------------------------------------
+// Portal holes — the mesh-level mouth exclusion (see app/terrain.h). Same
+// fixed-capacity boot-registered shape as the corridor registry, with a
+// precomputed XZ bounding box per hole for the universal early-out.
+// ---------------------------------------------------------------------------
+namespace {
+struct PortalHoleRec {
+    TerrainPortalHole h;
+    float minX = 0, maxX = 0, minZ = 0, maxZ = 0;
+};
+struct PortalHoleRegistry {
+    PortalHoleRec rec[kMaxTerrainPortalHoles];
+    uint32_t      count = 0;
+};
+PortalHoleRegistry& portalHoleRegistry() {
+    static PortalHoleRegistry kReg;
+    return kReg;
+}
+} // namespace
+
+bool registerTerrainPortalHole(const TerrainPortalHole& h) {
+    PortalHoleRegistry& reg = portalHoleRegistry();
+    if (reg.count >= kMaxTerrainPortalHoles) return false;
+    if (!std::isfinite(h.x0) || !std::isfinite(h.z0) ||
+        !std::isfinite(h.x1) || !std::isfinite(h.z1) ||
+        !std::isfinite(h.halfWidth) || !std::isfinite(h.yTop)) return false;
+    if (!(h.halfWidth > 0.0f)) return false;
+    const float dx = h.x1 - h.x0, dz = h.z1 - h.z0;
+    if (dx * dx + dz * dz < 1e-6f) return false;      // zero-length spine
+    PortalHoleRec& r = reg.rec[reg.count];
+    r.h = h;
+    r.minX = std::min(h.x0, h.x1) - h.halfWidth;
+    r.maxX = std::max(h.x0, h.x1) + h.halfWidth;
+    r.minZ = std::min(h.z0, h.z1) - h.halfWidth;
+    r.maxZ = std::max(h.z0, h.z1) + h.halfWidth;
+    ++reg.count;
+    return true;
+}
+
+void clearTerrainPortalHoles() { portalHoleRegistry().count = 0; }
+
+uint32_t terrainPortalHoleCount() { return portalHoleRegistry().count; }
+
+bool terrainPortalHoleDrops(float cx, float cz, float minY) {
+    const PortalHoleRegistry& reg = portalHoleRegistry();
+    if (reg.count == 0) return false;                 // the universal fast path
+    for (uint32_t i = 0; i < reg.count; ++i) {
+        const PortalHoleRec& r = reg.rec[i];
+        if (cx < r.minX || cx > r.maxX || cz < r.minZ || cz > r.maxZ) continue;
+        if (minY >= r.h.yTop) continue;               // whole tri above the tube
+        // Inside the prism? Project onto the spine segment; RECTANGULAR ends
+        // (t clamped to [0,1] would round them; a mouth wants a hard edge so
+        // the kept lid resumes exactly where the shell no longer covers).
+        const float ax = r.h.x0, az = r.h.z0;
+        const float abx = r.h.x1 - ax, abz = r.h.z1 - az;
+        const float len2 = abx * abx + abz * abz;
+        const float t = ((cx - ax) * abx + (cz - az) * abz) / len2;
+        if (t < 0.0f || t > 1.0f) continue;
+        const float px = ax + abx * t, pz = az + abz * t;
+        const float dx = cx - px, dz = cz - pz;
+        if (dx * dx + dz * dz <= r.h.halfWidth * r.h.halfWidth) return true;
+    }
+    return false;
+}
+
 float terrainCorridorDelta(float x, float z) {
     const CorridorRegistry& reg = corridorRegistry();
     if (reg.count == 0) return 0.0f;               // the universal fast path
@@ -1250,13 +1346,16 @@ void Terrain::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 if (m_lodIndexCount[l] == 0) m_lodIndexCount[l] = (uint32_t)idx.size();
             }
 
-            // Collision: LOD0 top surface only (skirts excluded).
+            // Collision: LOD0 top surface only (skirts excluded). The surface
+            // index count comes from the builder — it is only quads*quads*6
+            // when no portal hole dropped any triangle.
             {
-                buildTileMeshAbs(m_cfg, t.originX, t.originZ, TerrainLod::Full, verts, idx);
+                uint32_t surfIdx = 0;
+                buildTileMeshAbs(m_cfg, t.originX, t.originZ, TerrainLod::Full, verts, idx,
+                                 &surfIdx);
                 const uint32_t quads = (m_cfg.tileVerts - 1);
                 const uint32_t vpe   = quads + 1;
                 const uint32_t surfVerts = vpe * vpe;
-                const uint32_t surfIdx   = quads * quads * 6;
                 std::vector<float> cverts;
                 cverts.reserve((size_t)surfVerts * 3);
                 for (uint32_t i = 0; i < surfVerts; ++i) {
@@ -1364,16 +1463,17 @@ void TerrainStreamer::generate(const TerrainConfig& cfg, int32_t gx, int32_t gz,
     out.centerX = out.originX + cfg.tileSize * 0.5f;
     out.centerZ = out.originZ + cfg.tileSize * 0.5f;
 
+    uint32_t surfIdx = 0;   // LOD0 surface index count (holes may shrink it)
     for (int l = 0; l < (int)TerrainLod::Count; ++l) {
         buildTileMeshAbs(cfg, out.originX, out.originZ, (TerrainLod)l,
-                         out.lodVerts[l], out.lodIdx[l]);
+                         out.lodVerts[l], out.lodIdx[l],
+                         l == 0 ? &surfIdx : nullptr);
     }
 
-    // Collision: LOD0 top surface only (first vpe*vpe verts / quads*quads*6 idx).
+    // Collision: LOD0 top surface only (first vpe*vpe verts / surfIdx indices).
     const uint32_t quads = (cfg.tileVerts - 1);
     const uint32_t vpe   = quads + 1;
     const uint32_t surfVerts = vpe * vpe;
-    const uint32_t surfIdx   = quads * quads * 6;
     out.collVerts.clear();
     out.collVerts.reserve((size_t)surfVerts * 3);
     float lo = 1e30f, hi = -1e30f;

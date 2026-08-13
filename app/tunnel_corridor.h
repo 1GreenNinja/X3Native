@@ -172,6 +172,22 @@ const TunnelRoute* tunnelRouteAt(uint32_t i);
 // cached route without touching the registry.
 const TunnelRoute& registerTunnelCorridor();
 
+// The demo route's spec (the authored hill at (-592,-352), heading 157.5 deg).
+// Exposed so the drive-through self-test can register the SAME route more than
+// once against different portal-cut settings — the cached entry point above
+// can't, by design.
+TunnelSpec demoTunnelSpec();
+
+// DRIVE-THROUGH self-test (--test-tunneldrive). The acceptance for this module
+// is not a screenshot — it is that a vehicle can drive in one portal and out
+// the other. Registers the demo route TWICE: once with the portal cut disabled
+// (X3_TUNNEL_PORTAL_CUT=0 — the NEGATIVE CONTROL, where the earth ramp at the
+// mouth must STOP the car) and once enabled (the car must reach the far
+// portal, staying at road level through the bore — through it, not over it).
+// Streams the real terrain (headless device), builds the real road/shell
+// collision, drives the real Jolt wheeled rig. No window/Vulkan.
+bool runTunnelDriveSelfTest();
+
 // The built world: road ribbon, tunnel shell, portals, markings, lights.
 class TunnelCorridorWorld {
 public:

@@ -225,7 +225,12 @@ float terrainCorridorDepthAt(const TerrainCorridor& c, float x, float z);
 // run, which is what keeps generation on worker threads race-free. Mutating it
 // while tiles are generating is NOT supported (tiles already built would keep
 // the old field — the same rule as setKeepOut()).
-constexpr uint32_t kMaxTerrainCorridors = 8;
+// 16, not 8: a dressed tunnel now registers up to THREE corridors (the main
+// route + one tight PORTAL PLUG per mouth — see app/tunnel_corridor.cpp), so
+// the city's four freeway tunnels alone want 12. The early-out is 4 float
+// compares per registered corridor, so doubling the cap costs nothing where
+// no corridor is near.
+constexpr uint32_t kMaxTerrainCorridors = 16;
 
 // Returns false if the registry is full or the corridor is degenerate
 // (nodeCount < 2 or > kMaxNodes, non-finite halfWidth/falloff, negative width).
@@ -238,6 +243,47 @@ uint32_t terrainCorridorCount();
 // or the point is outside every corridor's bounding box — so with no corridors
 // registered terrainHeightAt() is BIT-IDENTICAL to the pre-corridor field.
 float    terrainCorridorDelta(float x, float z);
+
+// ---- PORTAL HOLES ---------------------------------------------------------
+// Mesh-level exclusion for tunnel mouths. The corridor primitive can steepen
+// the ground's sweep at a portal but can never REMOVE it: h(x,z) is single-
+// valued, so somewhere at each mouth the surface must pass from road level up
+// over the tube's crown — and the tile mesher then emits a continuous CURTAIN
+// of triangles (with collision) straight across the bore. No depth profile
+// fixes that; the MESHER has to skip those triangles. That curtain is why the
+// demo tunnel was "packed with grass": the field's portal-sweep residual is
+// terrain collision across the carriageway.
+//
+// A registered hole is an oriented prism along a route spine: a terrain
+// SURFACE triangle is dropped (from the render mesh AND the collision soup)
+// when its XZ centroid lies inside the prism and its LOWEST vertex dips under
+// `yTop` (the tube envelope's top). Lid triangles above the tube keep their
+// full height and survive; the curtain — whose triangles all reach down toward
+// road level — does not. The tunnel shell + portal headwall stand in the gap,
+// so what shows is concrete, not a torn edge.
+//
+// Same contract as the corridors: register at BOOT, before the first tile is
+// generated; read-only afterwards (worker-thread safe). Purely a function of
+// world coordinates, so adjacent tiles agree and generation stays
+// deterministic.
+struct TerrainPortalHole {
+    float x0 = 0.0f, z0 = 0.0f;    // spine segment start (world XZ)
+    float x1 = 0.0f, z1 = 0.0f;    // spine segment end   (world XZ)
+    float halfWidth = 8.0f;        // lateral half-width of the prism (m)
+    float yTop = 0.0f;             // world Y of the tube envelope top
+};
+constexpr uint32_t kMaxTerrainPortalHoles = 16;
+
+// Returns false when the registry is full or the hole is degenerate
+// (zero-length spine, non-positive width, non-finite anything).
+bool     registerTerrainPortalHole(const TerrainPortalHole& h);
+void     clearTerrainPortalHoles();
+uint32_t terrainPortalHoleCount();
+
+// True when a terrain surface triangle (XZ centroid + lowest vertex Y) falls
+// inside a registered hole and must not be emitted. Exactly false when no hole
+// is registered — tile meshes are then BIT-IDENTICAL to the pre-hole build.
+bool terrainPortalHoleDrops(float cx, float cz, float minY);
 
 // ---------------------------------------------------------------------------
 // W8-3 — HORIZON RING (the far-terrain stitch). A single static polar-grid mesh

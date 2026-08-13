@@ -552,12 +552,19 @@ bool runCitySelfTest() {
     // driven through. Now each plan registers a real TerrainCorridor.
     {
         clearTerrainCorridors();
+        clearTerrainPortalHoles();
         const uint32_t before = terrainCorridorCount();
         const uint32_t bored  = registerCityFreewayTunnels();
         const uint32_t after  = terrainCorridorCount();
-        check(before == 0 && after == kFreewayTunnelCount,
+        // Each route registers ONE main corridor plus up to TWO portal plugs
+        // per mouth (the portal cut — see app/tunnel_corridor.cpp), so the
+        // count is now a range, not an equality: at least one per tunnel,
+        // at most three.
+        check(before == 0 && after >= kFreewayTunnelCount &&
+              after <= kFreewayTunnelCount * 3u,
               "C3b every freeway tunnel registered a terrain corridor (" +
-              std::to_string(after) + "/" + std::to_string(kFreewayTunnelCount) + ")");
+              std::to_string(after) + " corridors incl. portal plugs for " +
+              std::to_string(kFreewayTunnelCount) + " tunnels)");
         // The corridors must be DISTINCT — the singleton builder this replaced
         // could only ever hold one route, so four calls yielded one tunnel.
         bool distinct = tunnelRouteCount() >= kFreewayTunnelCount;
@@ -582,6 +589,7 @@ bool runCitySelfTest() {
                                       : std::string("open cutting (no hill on this heading)")));
         }
         clearTerrainCorridors();
+        clearTerrainPortalHoles();   // registered alongside the plugs — same hygiene
     }
 
     // ---- Props placed. ----

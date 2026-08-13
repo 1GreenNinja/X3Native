@@ -107,6 +107,7 @@
 #include "world_stream.h"
 #include "world_map.h"
 #include "city.h"
+#include "tunnel_corridor.h"   // x3::game::runTunnelDriveSelfTest (--test-tunneldrive)
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
@@ -704,6 +705,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running TERRAIN CORRIDOR DEPRESSION self-test (no-regression / "
                     "centreline depth / tile seam / joint continuity / determinism)...");
         return x3::game::runTerrainCorridorSelfTest() ? 0 : 1;
+    }
+    if (tf.testTunnelDrive) {
+        x3::logInfo("running TUNNEL DRIVE-THROUGH self-test (real rig through the demo "
+                    "bore; earth-ramp NEGATIVE CONTROL with X3_TUNNEL_PORTAL_CUT=0)...");
+        return x3::game::runTunnelDriveSelfTest() ? 0 : 1;
     }
     if (tf.testStreaming) {
         x3::logInfo("running B3 world-streaming self-test (residency ring + async gen)...");
