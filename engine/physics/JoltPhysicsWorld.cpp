@@ -25,6 +25,7 @@
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>   // vehicle CoM offset
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
@@ -405,7 +406,8 @@ public:
         return createBody(res.Get(), Vec3{}, 0.0f, Layer::Static);
     }
 
-    BodyId addBox(Vec3 halfExtents, Vec3 pos, float mass, Layer layer) override {
+    BodyId addBox(Vec3 halfExtents, Vec3 pos, float mass, Layer layer,
+                  Vec3 comOffset = Vec3{}) override {
         JPH::Vec3 he(halfExtents.x, halfExtents.y, halfExtents.z);
         // Box convex radius must be < smallest half-extent.
         float minHe = std::min({ he.GetX(), he.GetY(), he.GetZ() });
@@ -414,6 +416,19 @@ public:
         ss.SetEmbedded();
         auto res = ss.Create();
         if (res.HasError()) { x3::logError(std::string("[phys] box: ") + res.GetError().c_str()); return {}; }
+        // CENTRE-OF-MASS OFFSET (see IPhysicsWorld.h). Zero offset takes the plain
+        // box so every existing caller is bit-identical to before.
+        if (comOffset.x != 0.0f || comOffset.y != 0.0f || comOffset.z != 0.0f) {
+            JPH::OffsetCenterOfMassShapeSettings os(
+                JPH::Vec3(comOffset.x, comOffset.y, comOffset.z), res.Get());
+            os.SetEmbedded();
+            auto ores = os.Create();
+            if (ores.HasError()) {
+                x3::logError(std::string("[phys] box com-offset: ") + ores.GetError().c_str());
+            } else {
+                return createBody(ores.Get(), pos, mass, layer);
+            }
+        }
         return createBody(res.Get(), pos, mass, layer);
     }
 

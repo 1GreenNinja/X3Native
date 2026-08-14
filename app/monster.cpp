@@ -2701,7 +2701,10 @@ public:
         return m_w.addStaticMesh(v, vc, i, ic);
     }
     x3::phys::BodyId addBox(x3::phys::Vec3 h, x3::phys::Vec3 p, float m,
-                            x3::phys::Layer l) override { return m_w.addBox(h, p, m, l); }
+                            x3::phys::Layer l,
+                            x3::phys::Vec3 com = x3::phys::Vec3{}) override {
+        return m_w.addBox(h, p, m, l, com);
+    }
     x3::phys::BodyId addSphere(float r, x3::phys::Vec3 p, float m,
                                x3::phys::Layer l) override { return m_w.addSphere(r, p, m, l); }
     void removeBody(x3::phys::BodyId b) override { m_w.removeBody(b); }

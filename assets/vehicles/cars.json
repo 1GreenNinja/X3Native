@@ -1,0 +1,88 @@
+{
+  "_comment": [
+    "CAR ROSTER — simulation targets. Tim, 2026-08-14.",
+    "",
+    "These are APPROXIMATIONS, not licensed data. Figures are public manufacturer",
+    "specs rounded to what the sim can actually express, and the names are here so",
+    "the handling targets are legible — ship them under original names.",
+    "",
+    "UNITS: torque Nm at the crank, mass kg, dims metres (feet in the comment),",
+    "track = full axle width, comHeight = centre of mass above ground (the new",
+    "IPhysicsWorld::addBox comOffset param; rollover threshold ~ atan(halfTrack /",
+    "comHeight)).",
+    "",
+    "WHY comHeight MATTERS MOST: it is the single parameter that separates these",
+    "cars in feel. The Plaid's floor battery is why it corners flat; the Cobra's",
+    "iron blower motor sitting high is why it leans. Torque alone will not do it.",
+    "",
+    "gripScale multiplies Jolt's default (economy) tyre curve — 1.0 is a road",
+    "tyre, ~1.7 the current sports baseline, ~2.1 a modern performance compound.",
+    "Electric torque is instant, so evPowerband flattens the curve and the box",
+    "runs a single ratio."
+  ],
+
+  "cars": [
+    {
+      "id": "ctr",
+      "name": "CTR (current hero car)",
+      "glb": "Vehicles/CTR.glb",
+      "layout": "RWD",
+      "massKg": 1300,
+      "maxEngineTorque": 700,
+      "maxEngineRPM": 6500,
+      "gripScale": 1.7,
+      "halfExtents": [0.84, 0.50, 1.95],
+      "dimsFeet": "5.5 W x 3.3 H x 12.8 L",
+      "trackM": 1.354,
+      "comHeight": 0.46,
+      "note": "The 993-shaped baseline. comHeight lowered from 0.76 on 2026-08-14 to stop it rolling."
+    },
+    {
+      "id": "plaid",
+      "name": "Model S Plaid-alike",
+      "layout": "AWD, tri-motor",
+      "massKg": 2162,
+      "maxEngineTorque": 1050,
+      "maxEngineRPM": 20000,
+      "singleSpeed": true,
+      "evPowerband": true,
+      "gripScale": 2.0,
+      "halfExtents": [0.98, 0.72, 2.51],
+      "dimsFeet": "6.4 W x 4.7 H x 16.5 L",
+      "trackM": 1.68,
+      "comHeight": 0.44,
+      "zeroToSixtySec": 2.0,
+      "note": "Heaviest and lowest. Full torque from 0 rpm, ONE ratio, no shift points. AWD launch is why it beats the others off the line despite the mass. Floor-mounted battery = the flattest cornering in the roster."
+    },
+    {
+      "id": "nsx_types",
+      "name": "NSX Type S-alike",
+      "layout": "AWD hybrid, twin-turbo V6 + 3 motors",
+      "massKg": 1725,
+      "maxEngineTorque": 667,
+      "maxEngineRPM": 7500,
+      "gripScale": 2.1,
+      "halfExtents": [0.99, 0.60, 2.28],
+      "dimsFeet": "6.5 W x 3.9 H x 15.0 L",
+      "trackM": 1.66,
+      "comHeight": 0.42,
+      "zeroToSixtySec": 2.9,
+      "note": "Mid-engine, so the lowest comHeight and the widest track relative to length — the corner-carver of the three. Electric front axle fills torque below boost; approximate with a flat low-rpm floor rather than a turbo dip."
+    },
+    {
+      "id": "cobra_03",
+      "name": "'03 Cobra-alike (Terminator)",
+      "layout": "RWD, supercharged V8, 6-speed manual",
+      "massKg": 1690,
+      "maxEngineTorque": 529,
+      "maxEngineRPM": 6500,
+      "gripScale": 1.35,
+      "halfExtents": [0.94, 0.71, 2.36],
+      "dimsFeet": "6.2 W x 4.7 H x 15.5 L",
+      "trackM": 1.55,
+      "comHeight": 0.58,
+      "zeroToSixtySec": 4.8,
+      "note": "The character car. Highest comHeight (tall iron blower motor up front), narrowest track for its mass, and the lowest grip — it should feel like it wants to step out and roll onto its outside wheel. Do NOT sanitise this one; the contrast against the Plaid is the point."
+    }
+  ]
+}
