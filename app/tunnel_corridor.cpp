@@ -817,16 +817,20 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     //     layer (terrain.cpp makeGroundTexture), so using it here would make the
     //     concrete and the rock cutting the same surface and erase the portal.
     //
-    //   NOT WIRED, and honestly: the ROAD. There is no asphalt set in the
-    //     library (sr_rubberfloor is studded rubber matting, cc_porous_cement is
-    //     a pale cement), so the ribbon keeps its procedural low-contrast dark
-    //     checker rather than being dressed in something that is not asphalt.
+    //   ROAD -> rd_asphalt_01. This comment used to read "NOT WIRED, and
+    //     honestly: the ROAD. There is no asphalt set in the library" — true
+    //     when it was written, and false now: rd_asphalt_01 landed on
+    //     2026-08-10 with a full albedo/mr/normal set. The ribbon was still
+    //     wearing a 128 px procedural checker for four days because nobody
+    //     re-read the premise after the library grew. Falls back to that same
+    //     checker when the set is absent, so a bare checkout is unchanged.
     m_surf.mount(x3::game::assetRoot() + "/surface_library");
     const SurfaceSet& boreSet   = m_surf.get(device, "cc_cement_white");
     const SurfaceSet& portalSet = m_surf.get(device, "mw_concrete_panels_a");
-    if (!boreSet.ok || !portalSet.ok)
+    const SurfaceSet& roadSet   = m_surf.get(device, "rd_asphalt_01");
+    if (!boreSet.ok || !portalSet.ok || !roadSet.ok)
         x3::logWarn("tunnel corridor: surface_library set(s) unavailable — "
-                    "falling back to the procedural checker concrete");
+                    "falling back to the procedural checker concrete/asphalt");
 
     auto upload = [&](MeshBuf& mb, const Material& mat, bool collide) {
         if (mb.empty()) return;
@@ -913,7 +917,13 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float nD[3] = { 0, -1, 0 };
             mb.quad(aLd, aRd, bRd, bLd, nD, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
         }
-        Material m; m.alb = asphaltTex; m.mr = roughMR;
+        // REAL ASPHALT when the library has it, the procedural checker when it
+        // does not — same shape as the bore/portal sets above. The road is the
+        // surface the player stares at for the entire drive, so a 128 px
+        // two-tone checker was the most-looked-at placeholder in the game.
+        Material m;
+        if (roadSet.ok) { m.alb = roadSet.albedo; m.mr = roadSet.mr; m.nrm = roadSet.normal; }
+        else            { m.alb = asphaltTex;     m.mr = roughMR; }
         upload(mb, m, /*collide*/true);
 
         // ---- Lane markings. BL §3.4 as DATA: solid white edge lines at
@@ -1050,6 +1060,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
         Material vm;
         if (groundTex.valid()) vm.alb = groundTex;   // the MARKER: terrain splat
+        else if (roadSet.ok) { vm.alb = roadSet.albedo; vm.mr = roadSet.mr; vm.nrm = roadSet.normal; }
         else { vm.alb = asphaltTex; vm.mr = roughMR; }
         upload(verge, vm, /*collide*/true);
         Material km;
