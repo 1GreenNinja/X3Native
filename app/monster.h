@@ -551,6 +551,15 @@ public:
         // keeps every existing monster/prop identical. ----
         bool  noBody              = false;
 
+        // ---- GROUNDING OPT-OUT (app/grounding.h). Every non-flyer character is
+        // seated on the surface under it at build time, so authored Y constants
+        // can no longer put feet inside a floor. Set this ONLY for a character
+        // that is deliberately not standing on the ground and whose intended
+        // height is within 2 m of a surface (beyond that groundCharacter already
+        // refuses to move it): suspended pods, a body on a slab, a rider. Default
+        // false — every existing row is grounded, which is the point. ----
+        bool  skipGrounding       = false;
+
         // ---- Adaptive Hide (canon-aliens SaurianWarlord). Boss-style "rotate
         // damage type" rhythm: after taking damage of type T, gain `adaptiveHideResist`
         // reduction on ALL further damage of type T for `adaptiveHideDurationSec`
