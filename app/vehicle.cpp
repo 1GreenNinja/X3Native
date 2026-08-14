@@ -175,6 +175,10 @@ namespace {
 // (chassis center = wheel attach (-0.15) + rest suspension (~0.28) + wheel
 // radius 0.33 above the ground plane => drop the skin by the sum.)
 constexpr float kBodyDropY = -0.76f;
+// NOTE (2026-08-14): the skin matrix is CORRECT — verified by Tim driving. The
+// mesh and the physics rig agree ("controls make the car behave as it should").
+// The car merely SPAWNS pointing the wrong way, which is a host-side yaw bug,
+// not a skin bug. See host_tunnel.cpp's spawn yaw. Do not "fix" this matrix.
 const float kBodySkin[16] = { -1,0,0,0,  0,1,0,0,  0,0,-1,0,  0,kBodyDropY,0,1 };
 // Mesh-local wheel axis is +-X (car lateral); the physics wheel pose maps a unit
 // Y-cylinder (axis = axle). Rotate mesh X onto pose Y (Rz +90deg, column-major).

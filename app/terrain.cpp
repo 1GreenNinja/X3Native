@@ -134,6 +134,10 @@ x3::rhi::MeshVertex makeTerrainVertex(const TerrainConfig& cfg,
     return out;
 }
 
+} // namespace — buildTileMeshAbs below is EXPORTED (terrain.h): self-tests
+  //             survey the real emitted mesh through it. Helpers above stay
+  //             internal; it may still call them (same TU, defined earlier).
+
 // ---------------------------------------------------------------------------
 // Build one tile's render mesh at a given LOD from ABSOLUTE (signed) tile coords.
 // originX/originZ are the tile's min-corner world position. Fills outVerts with
@@ -144,7 +148,7 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
                       TerrainLod lod,
                       std::vector<x3::rhi::MeshVertex>& outVerts,
                       std::vector<uint32_t>& outIdx,
-                      uint32_t* outSurfIdxCount = nullptr) {
+                      uint32_t* outSurfIdxCount /*= nullptr, see terrain.h*/) {
     outVerts.clear();
     outIdx.clear();
 
@@ -235,9 +239,18 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
         if (anyHole &&
             terrainPortalHoleDrops(mx, mz, std::min(va.pos[1], vb.pos[1]) - depth))
             return;
-        if (anyCorridor) {
-            if (terrainCorridorDelta(mx, mz) < -0.25f) depth = std::min(depth, 2.5f);
-        }
+        // Short skirts over the corridor FOOTPRINT — by containment, not by
+        // delta. The old test (`terrainCorridorDelta < -0.25`) was blind to
+        // BORED reaches, whose depth is 0 by design ("a tunnel does not carve
+        // the mountain above it"): over the bore the lid is natural ground, the
+        // delta is exactly 0, and a full ~55 m skirt at a tile border hung from
+        // the lid STRAIGHT THROUGH THE TUBE — measured 74 full-LOD skirt
+        // triangles inside the demo bore, reaching to 0.3 m above the road: a
+        // render-only rock wall across the carriageway (skirts carry no
+        // collision, so the car drove through it). Containment sees the tube
+        // under the lid; delta cannot.
+        if (anyCorridor && terrainCorridorContains(mx, mz))
+            depth = std::min(depth, 2.5f);
         x3::rhi::MeshVertex la = va, lb = vb;
         la.pos[1] -= depth; lb.pos[1] -= depth;
         float ex = vb.pos[0] - va.pos[0], ez = vb.pos[2] - va.pos[2];
@@ -260,6 +273,8 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
     for (uint32_t j = 0; j < quads; ++j) addSkirtEdge(0, j + 1, 0, j);
     for (uint32_t j = 0; j < quads; ++j) addSkirtEdge(vpe - 1, j, vpe - 1, j + 1);
 }
+
+namespace {   // internal helpers resume
 
 // ---------------------------------------------------------------------------
 // Procedural ground DETAIL texture: a small seamless RGBA8 tile around a base
@@ -1059,6 +1074,23 @@ float terrainCorridorDelta(float x, float z) {
         if (d > deepest) deepest = d;              // deepest wins; never a sum
     }
     return -deepest;
+}
+
+bool terrainCorridorContains(float x, float z) {
+    const CorridorRegistry& reg = corridorRegistry();
+    if (reg.count == 0) return false;              // the universal fast path
+    for (uint32_t i = 0; i < reg.count; ++i) {
+        const CorridorRec& r = reg.rec[i];
+        if (x < r.minX || x > r.maxX || z < r.minZ || z > r.maxZ) continue;
+        const TerrainCorridor& c = r.c;
+        const float reach2 = (c.halfWidth + c.falloff) * (c.halfWidth + c.falloff);
+        for (int s = 0; s + 1 < c.nodeCount; ++s) {
+            float d2, depth;
+            corridorSegment(c, s, x, z, d2, depth);
+            if (d2 < reach2) return true;          // depth deliberately ignored
+        }
+    }
+    return false;
 }
 
 namespace {

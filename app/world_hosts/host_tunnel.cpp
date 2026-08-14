@@ -97,8 +97,18 @@ int hostTunnel(HostContext& hc) {
     if (carBuilt) {
         car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
         // Point it down the corridor.
-        const float yaw = std::atan2(route.dirZ, route.dirX);
-        const float q[4] = { 0.0f, std::sin(-yaw * 0.5f), 0.0f, std::cos(-yaw * 0.5f) };
+        // SPAWN YAW — engine forward at rest is -Z (CLAUDE.md AXES / CONVENTIONS
+        // §3), so rotating the rest forward (0,0,-1) about +Y by theta yields
+        // (-sin theta, 0, -cos theta). Facing the corridor direction (dirX, dirZ)
+        // is therefore theta = atan2(-dirX, -dirZ).
+        // The previous form measured atan2(dirZ, dirX) — an angle from +X, not
+        // from -Z — and then negated it, which placed the car 90 deg off the road.
+        // Tim, 2026-08-14: "The car is PLACED facing the wrong way. I have to TURN
+        // it to drive it forward. Controls make the car behave as it should." That
+        // last sentence is the proof this is a spawn-orientation bug and NOT the
+        // vehicle skin or the rig — see the note on kBodySkin in app/vehicle.cpp.
+        const float theta = std::atan2(-route.dirX, -route.dirZ);
+        const float q[4] = { 0.0f, std::sin(theta * 0.5f), 0.0f, std::cos(theta * 0.5f) };
         phys->setBodyRotation(car.chassis(), q);
     } else {
         x3::logWarn("--world tunnel: car build failed — walk/fly only");
@@ -178,7 +188,9 @@ int hostTunnel(HostContext& hc) {
     double prevTime = glfwGetTime();
     float camYaw = std::atan2(route.dirZ, route.dirX), camPitch = -0.10f;
     int lastW = (int)W, lastH = (int)H;
-    x3::logInfo("--world tunnel: WASD drives, Space handbrake, mouse orbits the chase cam, Esc quits");
+    bool paused = false, escWasDown = false;
+    x3::logInfo("--world tunnel: WASD drives, Space handbrake, mouse orbits the chase cam, "
+                "Esc PAUSES (close the window to quit)");
 
     while (!glfwWindowShouldClose(window)) {
         // RE-SUBMIT THE BORE LIGHTS EVERY FRAME. They were set exactly ONCE at boot
@@ -189,7 +201,18 @@ int hostTunnel(HostContext& hc) {
         // content, and the light array does not survive that. Cheap: 6 cached lights.
         device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        // ESC PAUSES, it does not quit. Tim was losing the session mid-screenshot
+        // because ESC broke the loop. Close the window (or Alt+F4) to exit.
+        // Edge-triggered so holding the key does not strobe the state.
+        {
+            const bool escNow = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            if (escNow && !escWasDown) {
+                paused = !paused;
+                x3::logInfo(paused ? "[tunnel] PAUSED (ESC to resume; close the window to quit)"
+                                   : "[tunnel] resumed");
+            }
+            escWasDown = escNow;
+        }
         const double now = glfwGetTime();
         float fdt = (float)(now - prevTime); prevTime = now;
         if (fdt > 0.1f) fdt = 0.1f;
@@ -201,8 +224,13 @@ int hostTunnel(HostContext& hc) {
         if (camPitch < -1.2f) camPitch = -1.2f;
         auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
 
+        // PAUSED: the camera still orbits (so you can frame a shot from any angle
+        // while the world holds still) but nothing simulates — no input, no
+        // physics step, no streaming churn.
+        if (paused) fdt = 0.0f;
+
         x3::phys::VehicleInput in;
-        if (carBuilt) {
+        if (carBuilt && !paused) {
             in.throttle = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
             in.steer    = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
             if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
@@ -212,10 +240,12 @@ int hostTunnel(HostContext& hc) {
         }
         float vp[3] = { startPos[0], startPos[1], startPos[2] };
         if (carBuilt) car.chassisPos(vp);
-        streamer.update(scene, *device, *phys, vp[0], vp[2]);
-        phys->step(fdt);
-        if (carBuilt) car.postStep(fdt);
-        scene.update(*phys);
+        if (!paused) {
+            streamer.update(scene, *device, *phys, vp[0], vp[2]);
+            phys->step(fdt);
+            if (carBuilt) car.postStep(fdt);
+            scene.update(*phys);
+        }
 
         // Chase camera.
         const float dx = std::cos(camPitch) * std::cos(camYaw);

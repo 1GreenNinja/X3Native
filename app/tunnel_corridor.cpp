@@ -89,6 +89,37 @@ constexpr float kTcPlugBack = 8.0f;   // plug spine overlap back into the open c
 constexpr float kTcPlugRun  = 14.0f;
 static_assert(kTcPlugRun + kTcCorridorHalfW > kTcCorridorHalfW + kTcCorridorFall,
               "the plug face must clear the main corridor's end-cap reach");
+// CAP THE PLUG'S CARVE — the torn-mountain fix. The plug's node depths are
+// authored as (latMax at the probe) - road: "cut the natural surface down to
+// road level". Under the original 55 m hummock that difference was modest;
+// under the rock-relief massif (RangeDef amp 285 / jagAmp 58, ~162 m peak)
+// the FINAL node's face-anticipation probe (one cap-length deeper in) read
+// 44.6 m above the road at the entry mouth, and the unclamped plug slashed a
+// road-width canyon straight down through the mountain face — a vertical
+// gash above the portal (floor up to 19 m BELOW road), with stalactite
+// shards where the portal hole then dropped the canyon-wall triangles (a
+// wall triangle's LOWEST vertex dips under yTop however high its top
+// reaches). Same failure shape as the road-shaped summit trench
+// (TUNNEL_NEXT.md §4, fixed by depth 0 on bored reaches), same cure as
+// kTcMaxScar: a hard cap on removal.
+//
+// THE VALUE IS MEASURED, NOT TASTE, and it is a compromise between two
+// owner-verified defects:
+//   * too high (unclamped, 44.6) => the torn mountain;
+//   * too low (first cut, 14.0) => the mouth zone (measured s=104..110 entry,
+//     s=526..532 exit) keeps up to 7.6 m of field ABOVE the road — the
+//     concrete apron/shoulder and the fillet at each mouth are buried under
+//     grass ("the concrete aprons are gone"), and the trench look of the
+//     approach cutting dies at the portal instead of running into it.
+// The genuine cut-to-road needs through the mouth zones on this route are
+// 12.7 / 17.8 / 25.6 (entry) and 7.5 / 10.9 / 18.2 (exit) over the corridor
+// band, and <= 21.6 over the ROAD band — the same scale as the open cut's
+// own deepest station need (18.2 m). 24 clears the road band and the aprons
+// to the face and binds ONLY the face-anticipation overshoot (44.6 -> 24),
+// so the portal face is a cutting wall of the scale the approach already
+// shows, not a canyon. The residual sweep past the cap lands inside the
+// portal holes' reach (B2 asserts it).
+constexpr float kTcPlugMaxCut = 24.0f;
 
 bool portalCutOn() {
     const char* e = std::getenv("X3_TUNNEL_PORTAL_CUT");
@@ -537,8 +568,19 @@ const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
                 // the face, collapsing the rise into the 2.5 m falloff band.
                 const float sProbe = (k == plug.nodeCount - 1)
                                          ? s + inward * plug.halfWidth : s;
-                plug.depth[k] = std::max(0.0f, latMaxAt(sProbe) - route.roadYAt(s));
+                // Clamped: cut to road level, but never remove more than
+                // kTcPlugMaxCut of mountain — see the constant for the tear
+                // this cap exists to prevent (measured unclamped: 44.6 m at
+                // the entry face under the massif).
+                plug.depth[k] = clampf(latMaxAt(sProbe) - route.roadYAt(s),
+                                       0.0f, kTcPlugMaxCut);
             }
+            char pb[192];
+            std::snprintf(pb, sizeof(pb),
+                "tunnel corridor: portal plug @s=%.0f (inward %+.0f) node depths "
+                "%.1f / %.1f / %.1f / %.1f m",
+                sOpen, inward, plug.depth[0], plug.depth[1], plug.depth[2], plug.depth[3]);
+            x3::logInfo(pb);
             if (registerTerrainCorridor(plug)) ++plugs;
             else x3::logWarn(std::string("tunnel corridor: '") + route.name +
                              "' portal plug REJECTED (registry full?) — the mouth will ramp");
@@ -1358,8 +1400,22 @@ struct TunnelDriveResult {
     float maxS = 0.0f;          // furthest arc-length progress along the spine
     float worstBoreDy = 0.0f;   // max |carY - roadY| while inside the bore span
     float residual = 0.0f;      // route.buriedRoadLen (the FIELD-level number)
-    float boreS0 = 0.0f, boreS1 = 0.0f, coverS0 = 0.0f, totalLen = 0.0f;
+    float boreS0 = 0.0f, boreS1 = 0.0f, coverS0 = 0.0f, coverS1 = 0.0f, totalLen = 0.0f;
     uint32_t holeCount = 0;
+    // MOUNTAIN-INTACT survey (the torn-mountain regression guard): the deepest
+    // excavation the registered corridors apply anywhere across the route band,
+    // vs the deepest the OPEN-CUT profile legitimately asks for. An unclamped
+    // portal plug shows up here as a carve far beyond any open-cut need
+    // (measured 44.6 m vs 18.2 m open-cut max when the tear shipped).
+    float maxCarve = 0.0f;
+    float maxOpenNeed = 0.0f;
+    // TUBE-INTRUSION survey (defect: the drivable rock wall). Triangles of the
+    // REAL tile meshes (surface / skirt, per LOD) whose face reaches into the
+    // tube interior. Skirts carry no collision, so an intruding skirt is a
+    // render-only wall across the carriageway — invisible to every field-level
+    // and drive-level check, which is exactly how it shipped.
+    uint32_t intrSurf[3]  = { 0, 0, 0 };
+    uint32_t intrSkirt[3] = { 0, 0, 0 };
     // ROAD-MOUNT survey (Lane 7's defect, measured here too): walking laterally
     // from the ditch toward the road across the real collision, the largest
     // single upward step between adjacent samples. A vertical skirt face shows
@@ -1380,8 +1436,96 @@ TunnelDriveResult driveTheDemoRoute(bool cutOn) {
     if (!route || !route->boreValid) return res;
     res.residual = route->buriedRoadLen;
     res.boreS0 = route->boreS0; res.boreS1 = route->boreS1;
-    res.coverS0 = route->coverS0; res.totalLen = route->totalLen;
+    res.coverS0 = route->coverS0; res.coverS1 = route->coverS1;
+    res.totalLen = route->totalLen;
     res.holeCount = terrainPortalHoleCount();
+    // MOUNTAIN-INTACT survey. terrainCorridorDelta IS the excavation, so no
+    // "natural" re-derivation is needed: walk the spine at 2 m across the full
+    // influence band and record the deepest cut anywhere; compare against the
+    // deepest cut the open-cut profile itself asks for (station depths — bored
+    // stations are 0 by §4's fix, so this is exactly the open-cut max).
+    {
+        const float n0x = route->cx - route->dirX * route->halfLen;
+        const float n0z = route->cz - route->dirZ * route->halfLen;
+        const float rx = -route->dirZ, rz = route->dirX;
+        const float latReach = kTcCorridorHalfW + kTcCorridorFall + 2.0f;
+        for (float s = 0.0f; s <= route->totalLen + 0.01f; s += 2.0f) {
+            const float px = n0x + route->dirX * s, pz = n0z + route->dirZ * s;
+            for (float lat = -latReach; lat <= latReach + 0.01f; lat += 2.0f)
+                res.maxCarve = std::max(res.maxCarve,
+                                        -terrainCorridorDelta(px + rx * lat, pz + rz * lat));
+        }
+        for (const TunnelStation& n : route->st)
+            res.maxOpenNeed = std::max(res.maxOpenNeed, n.depth);
+    }
+    // ---- TUBE-INTRUSION probe (defect A diagnosis) --------------------------
+    // Build the real tile meshes over the bore at every LOD and report any
+    // triangle whose surface reaches into the tube interior. Classifies the
+    // emitter (surface vs skirt) — measurement, not hypothesis.
+    if (route->boreValid) {
+        const x3::game::TerrainConfig& tcfg = worldTerrainConfig();
+        const float ts = tcfg.tileSize;
+        const float n0x = route->cx - route->dirX * route->halfLen;
+        const float n0z = route->cz - route->dirZ * route->halfLen;
+        const float rx = -route->dirZ, rz = route->dirX;
+        std::vector<std::pair<float,float>> origins;
+        auto addTile = [&](float wx, float wz) {
+            const float ox = std::floor(wx / ts) * ts, oz = std::floor(wz / ts) * ts;
+            for (auto& o : origins) if (o.first == ox && o.second == oz) return;
+            origins.push_back({ ox, oz });
+        };
+        for (float s = std::max(0.0f, route->boreS0 - 40.0f);
+             s <= std::min(route->totalLen, route->boreS1 + 40.0f); s += 8.0f)
+            for (float lat = -24.0f; lat <= 24.0f; lat += 8.0f)
+                addTile(n0x + route->dirX * s + rx * lat, n0z + route->dirZ * s + rz * lat);
+        std::vector<x3::rhi::MeshVertex> tv; std::vector<uint32_t> ti;
+        for (int lod = 0; lod < 3; ++lod) {
+            uint32_t nSurf = 0, nSkirt = 0;
+            float sLo = 1e9f, sHi = -1e9f, worstDy = 1e9f, worstLat = 0, worstS = 0;
+            for (auto& o : origins) {
+                uint32_t surfIdx = 0;
+                buildTileMeshAbs(tcfg, o.first, o.second, (TerrainLod)lod, tv, ti, &surfIdx);
+                for (size_t t = 0; t + 2 < ti.size(); t += 3) {
+                    const bool skirt = t >= surfIdx;
+                    // Sample verts + edge midpoints + centroid: a large coarse
+                    // triangle can slice the tube with no vertex inside it.
+                    float px[7], py[7], pz[7];
+                    for (int k = 0; k < 3; ++k) {
+                        const auto& v = tv[ti[t + k]];
+                        px[k] = v.pos[0]; py[k] = v.pos[1]; pz[k] = v.pos[2];
+                    }
+                    for (int k = 0; k < 3; ++k) {
+                        const int k2 = (k + 1) % 3;
+                        px[3+k] = (px[k]+px[k2])*0.5f; py[3+k] = (py[k]+py[k2])*0.5f; pz[3+k] = (pz[k]+pz[k2])*0.5f;
+                    }
+                    px[6] = (px[0]+px[1]+px[2])/3.0f; py[6] = (py[0]+py[1]+py[2])/3.0f; pz[6] = (pz[0]+pz[1]+pz[2])/3.0f;
+                    for (int k = 0; k < 7; ++k) {
+                        const float s   = (px[k]-n0x)*route->dirX + (pz[k]-n0z)*route->dirZ;
+                        const float lat = (px[k]-n0x)*rx + (pz[k]-n0z)*rz;
+                        if (s < route->boreS0 + 2.0f || s > route->boreS1 - 2.0f) continue;
+                        if (std::fabs(lat) > kTcTubeHalfWidth) continue;
+                        const float dy = py[k] - route->roadYAt(s);
+                        if (dy < 0.2f || dy > kTcTubeCrownH) continue;
+                        (skirt ? nSkirt : nSurf)++;
+                        sLo = std::min(sLo, s); sHi = std::max(sHi, s);
+                        if (dy < worstDy) { worstDy = dy; worstLat = lat; worstS = s; }
+                        break;
+                    }
+                }
+            }
+            res.intrSurf[lod]  = nSurf;
+            res.intrSkirt[lod] = nSkirt;
+            char ib[240];
+            if (nSurf + nSkirt > 0)
+                std::snprintf(ib, sizeof(ib),
+                    "[tunneldrive]   tube intrusion LOD%d: %u surface + %u skirt tris, "
+                    "s=%.0f..%.0f, lowest dy=%.1f m at s=%.0f lat=%.1f",
+                    lod, nSurf, nSkirt, sLo, sHi, worstDy, worstS, worstLat);
+            else
+                std::snprintf(ib, sizeof(ib), "[tunneldrive]   tube intrusion LOD%d: none", lod);
+            x3::logInfo(ib);
+        }
+    }
 
     HeadlessRenderDevice dev;
     Scene scene;
@@ -1516,10 +1660,10 @@ bool runTunnelDriveSelfTest() {
         std::snprintf(b, sizeof(b),
             "[tunneldrive]   %s: maxS=%.0f m (shell %.0f..%.0f, route %.0f m) | "
             "field residual %.0f m | portal holes %u | worst bore |dY| %.2f m | "
-            "worst mount step %.2f m at s=%.0f",
+            "worst mount step %.2f m at s=%.0f | max carve %.1f m (open-cut need %.1f)",
             tag, r.maxS, r.boreS0, r.boreS1, r.totalLen,
             r.residual, r.holeCount, r.worstBoreDy,
-            r.maxMountStep, r.maxMountStepS);
+            r.maxMountStep, r.maxMountStepS, r.maxCarve, r.maxOpenNeed);
         x3::logInfo(b);
     };
 
@@ -1537,8 +1681,25 @@ bool runTunnelDriveSelfTest() {
     report("B(cut on)", b);
     check(b.built, "B0 rig + world built");
     check(b.holeCount == 2, "B1 one portal hole per mouth registered");
-    check(b.residual <= 6.0f && b.residual < a.residual - 6.0f,
-          "B2 plug collapses the field residual (<= 6 m, and > 6 m better than control)");
+    // B2 — THE TORN-MOUNTAIN GUARD. This check used to demand the PLUG collapse
+    // the FIELD residual to <= 6 m. That contract is impossible over a massif:
+    // the natural rise at these mouths is ~1.2 m/m, so a field floor can only
+    // cross the 0.3..7.6 m drivable band in <= ~3 m per mouth if it is pinned
+    // at road level right up to a sharp face past the main corridor's 18.8 m
+    // end-cap reach — which means carving latMax - roadY ~22.8 m in: 44.6 m of
+    // mountain, the very tear this branch exists to fix (a road-width canyon
+    // above the portal, sky through the peak, shard triangles on the rim). The
+    // capped plug leaves that last sweep to the PORTAL HOLES, which clear it
+    // from the MESH — drivability is proven by B3/B4 against real collision.
+    // What the FIELD must now guarantee instead, and what this asserts:
+    //   (i)  the carver never digs deeper anywhere than the open cut's own
+    //        deepest need (+ the plug cap, + slack) — a bounded, mountain-
+    //        preserving carve. Unclamped plugs fail this at 44.6 vs 18.2 m.
+    //   (ii) each mouth's sweep (bore..full-cover) fits the portal holes' 30 m
+    //        reach, so every buried metre the field keeps is inside a hole.
+    check(b.maxCarve <= std::max(b.maxOpenNeed, kTcPlugMaxCut) + 0.5f &&
+          (b.coverS0 - b.boreS0) <= 30.0f && (b.boreS1 - b.coverS1) <= 30.0f,
+          "B2 BOUNDED CARVE: no deeper than the open cut needs, mouth sweeps inside the holes' reach");
     check(b.maxS > b.boreS1 + 20.0f,
           "B3 DRIVE-THROUGH: the car exits past the far portal");
     check(b.worstBoreDy < 5.0f,
@@ -1552,6 +1713,19 @@ bool runTunnelDriveSelfTest() {
           "B5a mount survey saw real geometry (a zero survey would be a broken probe)");
     check(b.maxMountStep <= 0.45f,
           "B5b ROAD-MOUNT: worst ditch-to-road step within chassis clearance (0.45 m)");
+    // B6 — THE DRIVABLE ROCK WALL, kept dead. Skirts at tile borders over the
+    // BORE used to hang ~55 m from the lid straight through the tube (delta is
+    // 0 on a bored reach, so the old delta-gated skirt clamp never fired):
+    // measured 74 full-LOD skirt triangles inside the demo tube, down to 0.3 m
+    // above the road — a render-only wall (skirts have no collision) that no
+    // field query and no drive-through could ever see. The mesher now clamps
+    // skirts by corridor CONTAINMENT (terrainCorridorContains). Full-LOD mesh
+    // must be completely clean; skirts must be clean at every LOD. Coarse-LOD
+    // SURFACE slivers (decimation over the mouth trench, drawn only beyond
+    // ~192 m) are reported by the survey but not gated here.
+    check(b.intrSurf[0] == 0 && b.intrSkirt[0] == 0 &&
+          b.intrSkirt[1] == 0 && b.intrSkirt[2] == 0,
+          "B6 NOTHING IN THE TUBE: full-LOD mesh clean + no skirt intrusion at any LOD");
 
     // Registry + env hygiene: leave the process at defaults.
     clearTerrainCorridors();
