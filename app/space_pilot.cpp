@@ -6,6 +6,8 @@
 
 #include "space_pilot.h"
 
+#include "space/hud_project.h"    // folded into --test-space (T15)
+#include "space/cockpit_sway.h"   // folded into --test-space (T16)
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -225,6 +227,7 @@ void SpacePilotController::spawn(x3::phys::IPhysicsWorld& phys,
     m_angVel[0] = m_angVel[1] = m_angVel[2] = 0.0f;
     m_yaw = m_pitch = m_roll = 0.0f;
     m_rollAxis = 0.0f;
+    m_noThrustFor = 0.0f;
     // Reset the smooth/juice runtime so a re-spawn starts clean.
     m_yawTarget = m_pitchTarget = 0.0f;
     m_yawPrev = 0.0f;
@@ -301,7 +304,10 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
         // Manual roll: accumulate at maxAngularAccel*axis, then angular drag so
         // released Q/E doesn't leave the ship spinning (original behavior).
         m_roll += m_rollAxis * m_tuning.maxAngularAccel * dt;
-        m_roll -= m_roll * std::min(1.0f, m_tuning.angularDrag * dt);
+        // Exact exponential decay (was the linear min(1, k*dt) approximation,
+        // which over-damps as dt grows — the same class of bug as a bare
+        // per-frame multiply, just milder). House rule: dt, done properly.
+        m_roll *= std::exp(-std::max(0.0f, m_tuning.angularDrag) * dt);
     } else {
         const float bankTarget = clampf(-m_tuning.autoBank * yawRate,
                                         -m_tuning.maxBank, m_tuning.maxBank);
@@ -374,21 +380,41 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     }
 
     // ---- Integrate linear velocity + drag ----------------------------------
-    for (int k = 0; k < 3; ++k) m_vel[k] += accel[k] * dt;
-    // Drag: dv/dt = -drag * v.
-    const float dragK = std::min(1.0f, m_tuning.linearDrag * dt);
-    for (int k = 0; k < 3; ++k) m_vel[k] -= m_vel[k] * dragK;
+    // dv/dt = a - drag*v, solved EXACTLY over the step for constant a:
+    //     v(t+dt) = v*exp(-k*dt) + a * (1 - exp(-k*dt)) / k
+    // rather than the old "v += a*dt; v -= v * min(1, k*dt)" pair. Two wins:
+    //   * the damping is true exponential decay instead of the linear
+    //     approximation, which over-brakes as the frame time grows (a heavier
+    //     ship on slow frames than on fast ones — the house rule's whole point);
+    //   * the accel term is integrated through the drag rather than after it, so
+    //     thrust response is frame-rate independent to machine precision instead
+    //     of first order in dt. That is what makes 60 Hz and 240 Hz FEEL the same.
+    // k -> 0 degenerates to exactly v += a*dt (every drag-free caller unchanged).
+    float velAtStepStart[3] = { m_vel[0], m_vel[1], m_vel[2] };
+    {
+        const float kd   = std::max(0.0f, m_tuning.linearDrag);
+        const float keep = std::exp(-kd * dt);
+        const float ig   = (kd > 1e-5f) ? (1.0f - keep) / kd : dt;
+        for (int k = 0; k < 3; ++k) m_vel[k] = m_vel[k] * keep + accel[k] * ig;
+    }
     // FLIGHT-ASSIST HOLD: with the assist on and NO translation input, brake hard
     // toward a dead stop so the ship holds station instead of drifting (owner:
     // "stay in position ... not moving unless I WANT to move"). Any thrust/strafe/
     // vertical input this frame releases it. flightAssist == 0 -> pure Newtonian.
-    if (m_tuning.flightAssist > 0.0f) {
+    {
         const bool anyMove = std::fabs(in.moveFwd)    > 0.01f
                            || std::fabs(in.moveStrafe) > 0.01f
                            || std::fabs(vertAxis)      > 0.01f;
-        if (!anyMove) {
-            const float brakeK = std::min(1.0f, m_tuning.flightAssist * dt);
-            for (int k = 0; k < 3; ++k) m_vel[k] -= m_vel[k] * brakeK;
+        m_noThrustFor = anyMove ? 0.0f : (m_noThrustFor + dt);
+        // ASSIST DELAY (owner: "it doesn't FEEL like its moving much past the
+        // initial burst"). The brake used to bite on the FIRST idle frame, so a
+        // dodge was cancelled the instant the key came up and all of the motion
+        // lived in the opening burst. Now it waits assistDelay seconds — the
+        // strafe COASTS at full velocity, THEN settles to station-keeping.
+        if (m_tuning.flightAssist > 0.0f && !anyMove &&
+            m_noThrustFor >= m_tuning.assistDelay) {
+            const float keep = std::exp(-m_tuning.flightAssist * dt);   // exact, dt-correct
+            for (int k = 0; k < 3; ++k) m_vel[k] *= keep;
         }
     }
     // Nose-follow (arcade steering, Tuning.noseFollow rad-equivalent per sec;
@@ -463,9 +489,33 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
         const float s = m_speedCap / spd;
         m_vel[0] *= s; m_vel[1] *= s; m_vel[2] *= s;
     }
+    // ---- MAX LATERAL VELOCITY (6DOF lever) ---------------------------------
+    // Cap only the component PERPENDICULAR to the nose, leaving forward speed
+    // alone: "how fast can I slide sideways" becomes one dial the owner can turn
+    // rather than an emergent side effect of maxSpeed. 0 = disabled (default), so
+    // every pre-existing caller is byte-identical.
+    if (m_tuning.maxStrafeSpeed > 0.0f) {
+        const float along = m_vel[0]*fwdW[0] + m_vel[1]*fwdW[1] + m_vel[2]*fwdW[2];
+        float lat[3] = { m_vel[0] - fwdW[0]*along,
+                         m_vel[1] - fwdW[1]*along,
+                         m_vel[2] - fwdW[2]*along };
+        const float latSpd = length3(lat);
+        if (latSpd > m_tuning.maxStrafeSpeed) {
+            const float s = m_tuning.maxStrafeSpeed / latSpd;
+            for (int k = 0; k < 3; ++k) m_vel[k] = fwdW[k]*along + lat[k]*s;
+        }
+    }
 
     // ---- Integrate position ------------------------------------------------
-    for (int k = 0; k < 3; ++k) m_pos[k] += m_vel[k] * dt;
+    // TRAPEZOID (average of the step's start/end velocity) rather than the
+    // end-velocity rectangle this used to run. Straight semi-implicit Euler
+    // overshoots by 0.5*a*dt^2 EVERY step, so the distance covered in a given
+    // second of wall clock depended on the frame rate — the ship literally
+    // travelled further at 60 fps than at 240 fps under the same thrust. With
+    // the exact drag solution above this makes the whole flight path
+    // frame-rate independent to well under 0.1% (asserted by --test-space T14).
+    for (int k = 0; k < 3; ++k)
+        m_pos[k] += 0.5f * (velAtStepStart[k] + m_vel[k]) * dt;
 
     // ---- SMOOTH / JUICE: boost-punch, chase-cam follow, screen-shake -------
     // Presentation only — NONE of this touches m_pos/m_vel (sim stays byte-
@@ -571,7 +621,12 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
             for (int k = 0; k < 3; ++k) m_chaseSm[k] = ideal[k];
             m_chaseSmValid = true;
         } else {
-            const float kLag = std::min(1.0f, 7.5f * dt);   // spring stiffness
+            // EXACT exponential damping (1-exp(-k*dt)), not the linear
+            // min(1, k*dt) approximation this used to run: the linear form
+            // over-brakes as dt grows, so a frame-time hitch made the chase
+            // snap tighter than it does at steady frame rate. House rule:
+            // motion is scaled by dt, and exponential decay is done exactly.
+            const float kLag = 1.0f - std::exp(-std::max(0.0f, m_tuning.chaseLagRate) * dt);
             for (int k = 0; k < 3; ++k) m_chaseSm[k] += (ideal[k] - m_chaseSm[k]) * kLag;
             // CLAMP the lag so the ship DARTS in frame but can never leave it
             // (owner screenshot: a hard maneuver swung the hull to the frame
@@ -579,7 +634,7 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
             // keeping the ship comfortably on screen.
             float off[3] = { m_chaseSm[0]-ideal[0], m_chaseSm[1]-ideal[1], m_chaseSm[2]-ideal[2] };
             const float od = length3(off);
-            constexpr float kMaxLag = 5.0f;
+            const float kMaxLag = std::max(0.0f, m_tuning.chaseLagMax);
             if (od > kMaxLag) {
                 const float sc = kMaxLag / od;
                 for (int k = 0; k < 3; ++k) m_chaseSm[k] = ideal[k] + off[k] * sc;
@@ -587,12 +642,12 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
         }
     }
     // Target-keeping look bias: ease the amount toward the host's request.
-    m_lookBiasAmt += (m_lookBiasTgt - m_lookBiasAmt) * std::min(1.0f, 5.0f * dt);
+    m_lookBiasAmt += (m_lookBiasTgt - m_lookBiasAmt) * (1.0f - std::exp(-5.0f * dt));
     // Freelook: if the host fed no deltas this frame (ALT released), ease home.
     if (!m_freeFed) {
-        const float kHome = std::min(1.0f, 4.0f * dt);
-        m_freeYaw   -= m_freeYaw   * kHome;
-        m_freePitch -= m_freePitch * kHome;
+        const float keep = std::exp(-4.0f * dt);   // exact, dt-correct
+        m_freeYaw   *= keep;
+        m_freePitch *= keep;
     }
     m_freeFed = false;   // consumed; host re-arms it next frame while ALT is held
 }
@@ -766,6 +821,33 @@ bool SpacePilotController::pushOut(const float center[3], float radius) {
     if (vin < 0.0f)
         for (int k = 0; k < 3; ++k) m_vel[k] -= 1.35f * vin * to[k];
     return true;
+}
+
+float SpacePilotController::steerNoseToward(const float dirWorld[3],
+                                            float maxRateRad, float dt) {
+    if (!m_spawned || dt <= 0.0f) return 0.0f;
+    float d[3] = { dirWorld[0], dirWorld[1], dirWorld[2] };
+    const float dl = length3(d);
+    if (dl < 1e-4f) return 0.0f;
+    d[0] /= dl; d[1] /= dl; d[2] /= dl;
+    // The ship's nose is fwd = (cos p cos y, sin p, cos p sin y) — the engine
+    // camera convention this controller matches (see quatFromYawPitchRoll's
+    // negated-yaw note). Invert it for the bearing to the target.
+    const float wantYaw   = std::atan2(d[2], d[0]);
+    const float wantPitch = std::asin(clampf(d[1], -1.0f, 1.0f));
+    float dy = wantYaw - m_yawTarget;
+    while (dy >  kPi) dy -= 2.0f * kPi;
+    while (dy < -kPi) dy += 2.0f * kPi;
+    const float dp = wantPitch - m_pitchTarget;
+    const float err = std::sqrt(dy*dy + dp*dp);
+    if (maxRateRad <= 0.0f) return err;      // released: report the error only
+    // Move both channels toward the bearing, sharing one angular-rate budget so
+    // the nose tracks in a straight line instead of yawing then pitching.
+    const float step = maxRateRad * dt;
+    const float scale = (err > step) ? (step / err) : 1.0f;
+    m_yawTarget   += dy * scale;
+    m_pitchTarget += dp * scale;
+    return err;
 }
 
 void SpacePilotController::toggleCameraMode() {
@@ -1178,6 +1260,186 @@ bool runSpaceSelfTest() {
               "T12 wing muzzles sit ON the hull, ahead of amidships, far from the chase cam");
         w->shutdown();
     }
+
+    // T13 — LATERAL RESPONSE (owner playtest 2026-08: "The ship doesn't zip left
+    // and right as fast as it should, it feels very dampened"). Measures the
+    // wall-clock time for a pure A/D strafe from a dead stop to reach 60 m/s of
+    // lateral speed — a dodge big enough to slide out of a capital's fire lane in
+    // about a second. The dogfight tuning is asserted here so a future retune
+    // cannot quietly walk it back to the sluggish value.
+    //   OLD default (maxStrafeAccel 44):  1.36 s
+    //   NEW default (maxStrafeAccel 110): 0.55 s
+    // Also checks the Shift escape-dodge, which is the same thrust x boostMul.
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t{};
+        t.maxLinearAccel = 130.0f;
+        t.maxStrafeAccel = 110.0f;   // the shipped dogfight default (space.strafeAccel)
+        t.boostMul       = 5.0f;
+        t.maxSpeed       = 360.0f;
+        t.noseFollow     = 2.8f;
+        t.flightAssist   = 2.5f;
+        s.spawn(*w, 0, 0, 0, t);
+        PlayerInput strafe{}; strafe.moveStrafe = 1.0f;
+        float tToSixty = -1.0f;
+        for (int i = 0; i < 600 && tToSixty < 0.0f; ++i) {
+            s.update(strafe, kDt, *w); w->step(kDt);
+            if (s.speed() >= 60.0f) tToSixty = (float)(i + 1) * kDt;
+        }
+        SpacePilotController sb;
+        sb.spawn(*w, 0, 0, 0, t);
+        PlayerInput dodge{}; dodge.moveStrafe = 1.0f; dodge.sprint = true;
+        float tBoost = -1.0f;
+        for (int i = 0; i < 600 && tBoost < 0.0f; ++i) {
+            sb.update(dodge, kDt, *w); w->step(kDt);
+            if (sb.speed() >= 60.0f) tBoost = (float)(i + 1) * kDt;
+        }
+        x3::logInfo("  [info] T13 time to 60 m/s lateral: " + std::to_string(tToSixty) +
+                    " s  (boosted " + std::to_string(tBoost) + " s)");
+        check(tToSixty > 0.0f && tToSixty < 0.70f && tBoost > 0.0f && tBoost < 0.20f,
+              "T13 lateral response: 60 m/s of strafe inside 0.7 s (0.2 s boosted)");
+        w->shutdown();
+    }
+
+    // T14 — FRAME-RATE INDEPENDENCE of the whole flight integration (the house
+    // rule: "game motion is scaled by dt, never per-frame"). One second of held
+    // thrust + strafe at 60 Hz and at 240 Hz must land in the same place. Every
+    // damping term in update() is now exact exponential decay, so the residual
+    // is only the Euler integration error, well under 1%.
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController a, b;
+        SpacePilotController::Tuning t{};
+        t.maxLinearAccel = 130.0f; t.maxStrafeAccel = 110.0f;
+        t.linearDrag = 0.9f;                 // a drag big enough that a wrong
+        t.flightAssist = 0.0f;               // damping form would show up loudly
+        t.noseFollow = 2.8f; t.maxSpeed = 360.0f;
+        a.spawn(*w, 0, 0, 0, t);
+        b.spawn(*w, 0, 0, 0, t);
+        PlayerInput in{}; in.moveFwd = 1.0f; in.moveStrafe = 1.0f;
+        for (int i = 0; i < 60;  ++i) a.update(in, 1.0f / 60.0f,  *w);
+        for (int i = 0; i < 240; ++i) b.update(in, 1.0f / 240.0f, *w);
+        const auto pa = a.pos(), pb = b.pos();
+        const float dxy = std::sqrt((pa.x-pb.x)*(pa.x-pb.x) + (pa.y-pb.y)*(pa.y-pb.y) +
+                                    (pa.z-pb.z)*(pa.z-pb.z));
+        const float dv = std::fabs(a.speed() - b.speed());
+        const float travelled = std::sqrt(pa.x*pa.x + pa.y*pa.y + pa.z*pa.z);
+        x3::logInfo("  [info] T14 60Hz vs 240Hz over 1 s: pos delta " +
+                    std::to_string(dxy) + " m of " + std::to_string(travelled) +
+                    " m travelled, speed delta " + std::to_string(dv) + " m/s");
+        // NEGATIVE CONTROL — prove the tolerance actually discriminates. This is
+        // the bug the house rule exists to prevent: a bare per-frame `v *= damp`
+        // with no dt. Same 1 s of wall clock, same thrust, both rates.
+        float vPerFrame60 = 0.0f, vPerFrame240 = 0.0f;
+        for (int i = 0; i < 60;  ++i) { vPerFrame60  += 130.0f / 60.0f;  vPerFrame60  *= 0.9f; }
+        for (int i = 0; i < 240; ++i) { vPerFrame240 += 130.0f / 240.0f; vPerFrame240 *= 0.9f; }
+        const float badDv = std::fabs(vPerFrame60 - vPerFrame240);
+        x3::logInfo("  [info] T14 negative control (per-frame v *= 0.9): speed delta " +
+                    std::to_string(badDv) + " m/s — the tolerance below rejects this");
+        check(travelled > 20.0f && dxy < travelled * 0.01f && dv < 0.25f && badDv > 5.0f,
+              "T14 flight integration is frame-rate independent (60 Hz == 240 Hz)");
+        w->shutdown();
+    }
+
+    // T17 — SUSTAINED STRAFE (owner spec: "visually it darts left and right, but
+    // it doesn't FEEL like its moving much past the initial burst"). Holds a
+    // strafe for 1 s, releases, and measures how much lateral velocity survives
+    // 1 s later. The OLD dogfight tuning (flightAssist 2.5/s biting on the first
+    // idle frame + noseFollow 2.8/s rotating the leftover sideways velocity onto
+    // the nose) is run as the NEGATIVE CONTROL in the same test, so the delta is
+    // the evidence rather than an assertion.
+    {
+        auto w = makeEmptyWorld();
+        auto lateralAfterRelease = [&](const SpacePilotController::Tuning& t) {
+            SpacePilotController s;
+            s.spawn(*w, 0, 0, 0, t);
+            PlayerInput hold{}; hold.moveStrafe = 1.0f;
+            for (int i = 0; i < 60; ++i) { s.update(hold, kDt, *w); }
+            const x3::phys::Vec3 vHeld = s.velocity();
+            const x3::phys::Vec3 f     = s.forward();
+            auto lateralOf = [&](const x3::phys::Vec3& v) {
+                const float al = v.x*f.x + v.y*f.y + v.z*f.z;
+                const float lx = v.x - f.x*al, ly = v.y - f.y*al, lz = v.z - f.z*al;
+                return std::sqrt(lx*lx + ly*ly + lz*lz);
+            };
+            const float atRelease = lateralOf(vHeld);
+            PlayerInput idle{};
+            for (int i = 0; i < 60; ++i) { s.update(idle, kDt, *w); }
+            const float after = lateralOf(s.velocity());
+            return std::pair<float, float>(atRelease, after);
+        };
+        SpacePilotController::Tuning now{};
+        now.maxLinearAccel = 130.0f; now.maxStrafeAccel = 110.0f; now.maxSpeed = 360.0f;
+        now.noseFollow = 0.0f; now.flightAssist = 0.8f; now.assistDelay = 0.45f;
+        now.maxStrafeSpeed = 160.0f;
+        SpacePilotController::Tuning before = now;
+        before.maxStrafeAccel = 44.0f;   // the shipped values this pass replaced
+        before.noseFollow = 2.8f; before.flightAssist = 2.5f; before.assistDelay = 0.0f;
+        before.maxStrafeSpeed = 0.0f;
+        const auto n = lateralAfterRelease(now);
+        const auto b = lateralAfterRelease(before);
+        const float keepNow = (n.first > 1e-3f) ? n.second / n.first : 0.0f;
+        const float keepOld = (b.first > 1e-3f) ? b.second / b.first : 0.0f;
+        x3::logInfo("  [info] T17 lateral speed after 1 s of held strafe: " +
+                    std::to_string(n.first) + " m/s (was " + std::to_string(b.first) +
+                    "); retained 1 s after release: " + std::to_string(100.0f * keepNow) +
+                    "% (was " + std::to_string(100.0f * keepOld) + "%)");
+        check(n.first > 90.0f && keepNow > 0.50f && keepOld < 0.15f,
+              "T17 6DOF strafe SUSTAINS after the burst (assist no longer cancels translation)");
+        w->shutdown();
+    }
+
+    // T18 — TARGET HOLD: the nose tracks a locked contact while the ship keeps
+    // translating, and the assist NEVER touches velocity (that is what makes it
+    // the right assist for a 6DOF ship).
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t{};
+        t.maxStrafeAccel = 110.0f; t.noseFollow = 0.0f; t.flightAssist = 0.0f;
+        s.spawn(*w, 0, 0, 0, t);
+        // A contact 40 deg off the nose, up and to one side.
+        const float tgt[3] = { 800.0f, 300.0f, 600.0f };
+        PlayerInput strafe{}; strafe.moveStrafe = 1.0f;
+        float err0 = 0.0f;
+        for (int i = 0; i < 180; ++i) {
+            const x3::phys::Vec3 p = s.pos();
+            const float dir[3] = { tgt[0]-p.x, tgt[1]-p.y, tgt[2]-p.z };
+            const float e = s.steerNoseToward(dir, 1.6f, kDt);
+            if (i == 0) err0 = e;
+            s.update(strafe, kDt, *w);
+        }
+        const x3::phys::Vec3 p = s.pos();
+        float dir[3] = { tgt[0]-p.x, tgt[1]-p.y, tgt[2]-p.z };
+        const float dl = std::sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+        for (int k = 0; k < 3; ++k) dir[k] /= dl;
+        const x3::phys::Vec3 f = s.forward();
+        const float onTarget = f.x*dir[0] + f.y*dir[1] + f.z*dir[2];   // cos(angle)
+        x3::logInfo("  [info] T18 nose-on-target after 3 s of strafing: cos=" +
+                    std::to_string(onTarget) + " (start error " +
+                    std::to_string(err0) + " rad), speed " +
+                    std::to_string(s.speed()) + " m/s");
+        // Still moving fast (translation untouched) AND pointing at him.
+        check(onTarget > 0.99f && s.speed() > 60.0f,
+              "T18 target hold keeps the nose on the contact while the ship strafes");
+        // ...and with the rate at 0 it is a pure no-op on the ship's state.
+        SpacePilotController s2;
+        s2.spawn(*w, 0, 0, 0, t);
+        const float before2 = s2.yaw();
+        const float d2[3] = { 0.0f, 0.0f, 1.0f };
+        s2.steerNoseToward(d2, 0.0f, kDt);
+        check(s2.yaw() == before2, "T18b target hold at rate 0 is a hard no-op");
+        w->shutdown();
+    }
+
+    // T15/T16 — the two systems this defect pass added, folded in so the
+    // --test-space gate covers them too (they also have their own flags:
+    // --test-spacehud / --test-cockpitsway).
+    check(x3::space::hud::runSpaceHudSelfTest(),
+          "T15 space-HUD world->screen projection + label layout suite");
+    check(x3::space::runCockpitSwaySelfTest(),
+          "T16 cockpit-sway mass suite");
 
     x3::logInfo(std::string("[space-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

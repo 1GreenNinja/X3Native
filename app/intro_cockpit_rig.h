@@ -73,6 +73,46 @@ void setIntroCockpitLook(x3::rhi::IRenderDevice& device);
 void poseIntroCockpit(IntroCockpitRig& rig,
                       float cx, float cy, float cz, float yaw, float pitch);
 
+// ROLL-CAPABLE + MASS-AWARE cockpit pose (owner playtest 2026-08: "The cockpit
+// stays put when the player ship moves"). The Euler poseIntroCockpit above is
+// roll-LESS, so when the fighter banks (auto-bank / Q-E / a loop) the camera
+// basis rolls with the hull while the canopy does NOT — the cabin visibly
+// counter-rotates, reading as a painted backdrop bolted to your face.
+//
+// This variant takes the ship's FULL orthonormal basis (fwd/up straight off the
+// quaternion — right is derived as fwd x up), so the cabin banks with the hull,
+// PLUS small ship-local offsets from x3::space::CockpitSway so the interior lags
+// the hull under acceleration and rolls into turns.
+//
+//   eyePos   — where the pilot's eye is in world space (the camera position).
+//   fwd, up  — the SHIP's basis (NOT the camera gaze: the cabin is bolted to the
+//              hull, so freelook/look-bias must not rotate it).
+//   swayLocal— {surge, sway, heave} in metres along {fwd, right, up}. Displaces
+//              the cockpit MESH relative to the eye; the camera never moves, so
+//              the gun boresight and every HUD marker stay true to the hull.
+//   swayPitch/swayYaw/swayRoll — radians, applied in the ship's frame.
+// All the sway inputs default to 0, which reproduces a roll-capable but
+// perfectly rigid cockpit.
+void poseIntroCockpitBasis(IntroCockpitRig& rig,
+                           const float eyePos[3], const float fwd[3], const float up[3],
+                           const float swayLocal[3] = nullptr,
+                           float swayPitch = 0.0f, float swayYaw = 0.0f,
+                           float swayRoll = 0.0f);
+
+// Hide (visible=false) or restore (visible=true) every cockpit entity by
+// zeroing / re-filling its transform basis. The rig's Scene is rendered as a
+// unit, so this is how a host that draws the EXTERIOR ship (3P chase) keeps the
+// interior out of the frame.
+//
+// WHY THIS EXISTS: the intro orchestrator posed the cockpit only in 1P but
+// rendered its Scene UNCONDITIONALLY — so in the default 3P chase the whole
+// two-seat interior sat at its authored base transforms (the world origin) and
+// never moved. Owner, live: "That module is the ship INTERIOR!!!!" — a room-sized
+// box of interior wall backfaces and glowing MFD screens floating in the
+// starfield next to the fighters. Callers should ALSO skip scene.render(), but
+// this makes the invariant observable (and testable).
+void setIntroCockpitVisible(IntroCockpitRig& rig, bool visible);
+
 // Load the beat combat art (enemy fighter SpaceShip.glb + capital SpaceShip4.glb
 // from rigged_glb) through the rig's own loader. Best-effort: a missing model
 // just isn't drawn. Returns true if at least the enemy fighter loaded.

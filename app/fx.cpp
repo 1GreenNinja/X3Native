@@ -98,7 +98,7 @@ int CombatFx::spawnParticle(const Particle& p) {
 // spawn the muzzle-flash particle burst (so every shot reads with juice).
 // ---------------------------------------------------------------------------
 void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to, WeaponFxKind kind,
-                         float widthOverride) {
+                         float widthOverride, const x3::phys::Vec3* carrierVel) {
     Tracer& t = m_tracers[m_nextTracer];
     t.from = from;
     t.to   = to;
@@ -106,6 +106,9 @@ void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to, W
     t.age  = 0.0f;        // Lightning bolt grows from the muzzle over time
     t.width = widthOverride;
     t.kind = kind;
+    // The beam rides the shooter's velocity (see addTracer's note in fx.h): zero
+    // for every on-foot caller, the ship's velocity for space combat.
+    t.vel  = carrierVel ? *carrierVel : x3::phys::Vec3{ 0.0f, 0.0f, 0.0f };
     m_nextTracer = (m_nextTracer + 1) % kMaxTracers;
 
     m_muzzlePos   = from;
@@ -604,12 +607,14 @@ void CombatFx::spawnShipEmber(const x3::phys::Vec3& pos, const x3::phys::Vec3& v
     }
 }
 
-void CombatFx::spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir) {
+void CombatFx::spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir,
+                               const x3::phys::Vec3* carrierVel) {
     x3::phys::Vec3 d = normalize(dir);
+    const x3::phys::Vec3 cv = carrierVel ? *carrierVel : x3::phys::Vec3{ 0.0f, 0.0f, 0.0f };
     // One bright core flash at the hardpoint...
     Particle f;
     f.pos = pos;
-    f.vel = x3::phys::Vec3{ d.x * 2.0f, d.y * 2.0f, d.z * 2.0f };
+    f.vel = x3::phys::Vec3{ d.x * 2.0f + cv.x, d.y * 2.0f + cv.y, d.z * 2.0f + cv.z };
     f.life = f.maxLife = 0.07f;
     f.size0 = 0.85f; f.size1 = 0.15f;
     f.r = 5.5f; f.g = 4.2f; f.b = 2.2f;        // hot yellow-white (HDR -> bloom)
@@ -619,9 +624,9 @@ void CombatFx::spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& 
     for (int i = 0; i < 3; ++i) {
         Particle p;
         p.pos = x3::phys::Vec3{ pos.x + d.x * 0.8f, pos.y + d.y * 0.8f, pos.z + d.z * 0.8f };
-        p.vel = x3::phys::Vec3{ d.x * (14.0f + frand() * 10.0f) + frandSym() * 2.0f,
-                                d.y * (14.0f + frand() * 10.0f) + frandSym() * 2.0f,
-                                d.z * (14.0f + frand() * 10.0f) + frandSym() * 2.0f };
+        p.vel = x3::phys::Vec3{ d.x * (14.0f + frand() * 10.0f) + frandSym() * 2.0f + cv.x,
+                                d.y * (14.0f + frand() * 10.0f) + frandSym() * 2.0f + cv.y,
+                                d.z * (14.0f + frand() * 10.0f) + frandSym() * 2.0f + cv.z };
         p.life = p.maxLife = 0.10f + frand() * 0.08f;
         p.size0 = 0.25f; p.size1 = 0.05f;
         p.r = 4.5f; p.g = 3.0f; p.b = 1.2f;
@@ -735,6 +740,10 @@ void CombatFx::update(float dt) {
         if (t.life > 0.0f) {
             t.life -= dt;
             t.age  += dt;   // drives the Lightning bolt's propagation reach
+            // Carry the beam along with the shooter (dt-scaled, never per-frame).
+            // vel is zero for stationary shooters, so this is a no-op there.
+            t.from.x += t.vel.x * dt; t.from.y += t.vel.y * dt; t.from.z += t.vel.z * dt;
+            t.to.x   += t.vel.x * dt; t.to.y   += t.vel.y * dt; t.to.z   += t.vel.z * dt;
             if (t.life < 0.0f) t.life = 0.0f;
         }
     }
