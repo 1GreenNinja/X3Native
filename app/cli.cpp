@@ -330,6 +330,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
                 o.benchFrames = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
         }
         else if (a == "--editor") o.editorMode = true;
+        else if (a == "--print-assetroot") o.printAssetRoot = true;
         else if (a == "--screenshot-editor") {
             o.editorShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.editorShotPath = argv[++i];

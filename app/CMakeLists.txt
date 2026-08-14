@@ -1,4 +1,19 @@
-add_executable(X3Engine WIN32
+# ---------------------------------------------------------------------------
+# x3app — THE HOST LAYER, as a shared library.
+#
+# This used to be `add_executable(X3Engine WIN32 ...)`. It is now a DLL with two
+# thin executables over it (X3Engine.exe, X3LevelArchitect.exe), so the game and
+# the Level Architect physically cannot run different host code.
+#
+# The boundary is drawn around app/ and NOT just engine/ on purpose: both of the
+# bugs that motivated this were host-layer divergence (the tunnel lit in headless
+# capture but black when driven; assetRoot() resolving differently per build
+# layout). An engine-only DLL split would have caught neither.
+# See docs/design/LEVEL_ARCHITECT_EXE_PLAN.md.
+#
+# main.cpp stays HERE, in the DLL — it defines x3AppMain(), not main().
+# ---------------------------------------------------------------------------
+add_library(x3app SHARED
     main.cpp
     bindings.cpp
     self_tests.cpp
@@ -213,21 +228,21 @@ add_executable(X3Engine WIN32
     rpg_ui.cpp
     ui.cpp)
 
-target_link_libraries(X3Engine PRIVATE x3core glfw)
+target_link_libraries(x3app PUBLIC x3core PRIVATE glfw)
 
 # Dear ImGui (docking) — EDITOR-ONLY. The Level Architect host (app/editor/
 # editor_host.cpp) submits its panels with the CORE ImGui widget API directly; the
 # GLFW/Vulkan backends still live (PRIVATE) in the engine device. Linking the imgui
 # core lib here is additive — the game path never calls these unless --editor is set.
 find_package(imgui CONFIG REQUIRED)
-target_link_libraries(X3Engine PRIVATE imgui::imgui)
+target_link_libraries(x3app PRIVATE imgui::imgui)
 
 # holo_terminal.cpp rasterizes its on-glass readout text into the hologram
 # texture with stb_truetype (the same single-header lib the engine font atlas
 # uses). The implementation lives in the engine TU, so the app only needs the
 # header on its include path (declarations, no STB_TRUETYPE_IMPLEMENTATION here).
 find_package(Stb REQUIRED)
-target_include_directories(X3Engine PRIVATE ${Stb_INCLUDE_DIR})
+target_include_directories(x3app PRIVATE ${Stb_INCLUDE_DIR})
 
 # CLUB LISTEN MODE (club_listen.cpp) includes <miniaudio.h> for DECLARATIONS ONLY
 # (no MINIAUDIO_IMPLEMENTATION — the impl + full WASAPI/loopback backend lives in
@@ -235,16 +250,40 @@ target_include_directories(X3Engine PRIVATE ${Stb_INCLUDE_DIR})
 # header, so locate it and put it on the app's private include path (same pattern
 # as Stb above).
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
-target_include_directories(X3Engine PRIVATE ${MINIAUDIO_INCLUDE_DIRS})
+target_include_directories(x3app PRIVATE ${MINIAUDIO_INCLUDE_DIRS})
+
+# ---------------------------------------------------------------------------
+# THE TWO FRONT-ENDS.
+#
+# Both are thin launchers over x3app.dll (app/app_entry.h). X3LevelArchitect
+# differs from X3Engine ONLY by injecting "--editor" into argv — it has no host,
+# world or editor code of its own, and must never grow any: the editor has to
+# boot through the shipping path or the split buys us nothing.
+# ---------------------------------------------------------------------------
+add_executable(X3Engine         entry_game.cpp)
+add_executable(X3LevelArchitect entry_editor.cpp)
+target_link_libraries(X3Engine         PRIVATE x3app)
+target_link_libraries(X3LevelArchitect PRIVATE x3app)
+
+# MSVC: auto-export every symbol from the host DLL rather than annotating ~200
+# TUs with __declspec(dllexport). Templates instantiated across the boundary are
+# NOT covered by this and will surface as link errors if any appear.
+set_target_properties(x3app PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 # WIN32 subsystem but we want a console for logs during dev:
 if(MSVC)
-    set_target_properties(X3Engine PROPERTIES
+    set_target_properties(X3Engine X3LevelArchitect PROPERTIES
         LINK_FLAGS "/SUBSYSTEM:CONSOLE")
 endif()
 
-set_target_properties(X3Engine PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+# Exes AND the DLLs land in bin/ together — on Windows the loader resolves
+# dependent DLLs from the exe's own directory, so co-locating them is what makes
+# both front-ends launch without a PATH dance. It is also what makes acceptance
+# condition D1 (both exes resolve the SAME asset root) true by construction:
+# assetRoot() walks up from the exe, and both exes sit in the same place.
+set_target_properties(X3Engine X3LevelArchitect x3app PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 # NOTE (fold merge/flight-modes-to-main): feat/flight-modes-neon carried an
 # `OUTPUT_NAME "SpaceEngine"` here to keep that branch's exe/window/process
 # namespace off Snake's X3Engine.exe dev builds. That rename is intentionally
@@ -261,8 +300,8 @@ add_custom_target(x3version ALL
         -P ${CMAKE_SOURCE_DIR}/cmake/gen_version.cmake
     BYPRODUCTS ${CMAKE_BINARY_DIR}/version_gen.h
     COMMENT "Stamping build version (git hash + timestamp)")
-add_dependencies(X3Engine x3version)
-target_include_directories(X3Engine PRIVATE ${CMAKE_BINARY_DIR})
+add_dependencies(x3app x3version)
+target_include_directories(x3app PRIVATE ${CMAKE_BINARY_DIR})
 
 # ---- Compile GLSL shaders to SPIR-V (glslc from the Vulkan SDK) ----
 set(SHADER_SRCS
@@ -429,10 +468,10 @@ add_custom_target(x3shaders
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${SPV_DIR} ${CMAKE_BINARY_DIR}/bin/shaders
     DEPENDS ${SPV_FILES}
     COMMENT "copy compiled SPIR-V -> bin/shaders")
-add_dependencies(X3Engine x3shaders)
+add_dependencies(x3app x3shaders)
 
 # Belt and braces for multi-config generators, where the exe may not live in
 # ${CMAKE_BINARY_DIR}/bin: relink-time copy as well (cheap, idempotent).
-add_custom_command(TARGET X3Engine POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:X3Engine>/shaders
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${SPV_DIR} $<TARGET_FILE_DIR:X3Engine>/shaders)
+add_custom_command(TARGET x3app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:x3app>/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${SPV_DIR} $<TARGET_FILE_DIR:x3app>/shaders)

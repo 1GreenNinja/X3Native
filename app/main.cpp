@@ -240,10 +240,32 @@ using x3::apphost::runGpuSkinSelfTest;
 using x3::apphost::runHatchChainSelfTest;
 
 
-int main(int argc, char** argv) {
+// ENTRY POINT — lives in x3app.dll, NOT in either exe (see docs/design/
+// LEVEL_ARCHITECT_EXE_PLAN.md). X3Engine.exe and X3LevelArchitect.exe are both
+// thin launchers that call straight through to here, so there is physically ONE
+// copy of the host layer and the two front-ends cannot drift apart. The editor
+// exe differs only by the argv it injects before calling in.
+//
+// Declared in app/app_entry.h.
+int x3AppMain(int argc, char** argv) {
     // ---- CLI: parse argv into CliOptions (app/cli.{h,cpp}; #28 Phase D) ----
     x3::apphost::CliOptions o;
     x3::apphost::parseCli(argc, argv, o);
+
+    // --print-assetroot: resolve the asset root, print it, exit. Deliberately
+    // FIRST — before the manifest check, before any logging — so the output is
+    // exactly one line and both front-ends can be diffed byte-for-byte.
+    //
+    // This is the regression test for the worst bug of 2026-08-13: assetRoot()
+    // assumed a 3-deep build layout, overshot to an unrelated D:\Assets (which
+    // matched case-insensitively on Windows), and made every committed asset in
+    // the repo invisible with no error anywhere. Now that X3Engine.exe and
+    // X3LevelArchitect.exe ship side by side, "both exes see the same assets" is
+    // a thing that gets MEASURED, not assumed.
+    if (o.printAssetRoot) {
+        std::printf("%s\n", x3::game::assetRoot().c_str());
+        return 0;
+    }
 
     // Fleet asset-store manifest check (Phase A, docs/ASSET_DISTRIBUTION.md):
     // auto-fetch any manifest asset missing locally (D: cache -> G: share), or

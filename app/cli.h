@@ -464,6 +464,14 @@ struct CliOptions {
     // dockspace + the ImGui demo window (proof the integration renders); Phase 1 hosts
     // the real panels.
     bool        editorMode = false;
+    // --print-assetroot: print the resolved assetRoot() and exit 0, touching
+    // nothing else. This exists as a REGRESSION TEST, not a convenience: a
+    // silently-wrong asset root once made every committed asset in the repo
+    // invisible (assetRoot() overshot to an unrelated D:\Assets, which matched
+    // case-insensitively). With two front-ends now shipping side by side, the
+    // two exes MUST resolve the same root — this flag is how that gets checked
+    // instead of assumed. See docs/design/LEVEL_ARCHITECT_EXE_PLAN.md, D1.
+    bool        printAssetRoot = false;
     // Headless editor proof (--screenshot-editor [path.png]): init ImGui in a headless
     // device, render ONE frame with the dockspace + demo window, and capture a PNG that
     // shows the ImGui window — proves the Phase-0 integration actually rasterizes.
