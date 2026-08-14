@@ -26,6 +26,7 @@
 //     way, velocity-based (tau=0.11s accel/glide), radius-scaled, off while dragging;
 //   - Every feel constant lives in one CameraOptions block (the F1 settings scaffold).
 #include "world_host_common.h"
+#include "../capture_manifest.h"      // CAPTURE MANIFEST: declare/tick what a still does NOT show
 #include "echo_heightfield.h"         // TIER-2: shared island terrain sampler (hoisted from this file)
 #include "echo_sea.h"                 // THE sea datum — kEchoSeaLevelY and everything derived from it
 #include "echo_water.h"               // Gerstner swell presets + echoShipPose (LIVING BAY)
@@ -1980,6 +1981,23 @@ int hostEchotropolis(HostContext& hc) {
         // (verify/showcase the living city in a still). Extra settle frames let the
         // deferred skin spawns drain. Local instances (headless never runs the loop).
         const bool shotResidents = [](){ const char* e = std::getenv("ECHO_RESIDENTS"); return e && e[0]=='1'; }();
+        // [CAPTURE MANIFEST] Declared UNCONDITIONALLY, on purpose. These four are
+        // opt-in (ECHO_RESIDENTS=1) and are therefore NOT CONSTRUCTED in a default
+        // capture — so declaring them at their build site would leave a default
+        // still with an empty street and a silent log, which is the exact failure
+        // this whole change exists to kill. This is the host stating what the
+        // world HAS; the tick() calls in the settle loop state what the capture
+        // RAN. See app/capture_manifest.h.
+        x3::capture::setOutput(outPath);
+        x3::capture::declare("echo.crowd.residents",
+            "the 40 rigged CITIZENS were not built (ECHO_RESIDENTS unset) — empty pavements "
+            "in this frame say nothing about the crowd in play");
+        x3::capture::declare("echo.crowd.miners",
+            "the gold-mine CREW (9 haulers on the lot->seam route) was not built");
+        x3::capture::declare("echo.npclife",
+            "the 12-archetype LIVING-CITY NPCs and their daily schedules were not built");
+        x3::capture::declare("echo.heli.oh1",
+            "the OH1 hero helicopter was not built");
         std::unique_ptr<x3::phys::IPhysicsWorld> sphys;
         x3::game::Scene sScene; x3::game::CrowdSystem sCrowd; x3::game::CrowdSkin sSkin;
         x3::game::CrowdSystem sMiners; x3::game::CrowdSkin sMinersSkin; bool sMinersBuilt = false;
@@ -2089,19 +2107,74 @@ int hostEchotropolis(HostContext& hc) {
         // run: the boats are neither posed nor drawn. Every screenshot-based
         // audit of "do vessels cross land" was therefore looking at an empty
         // bay, which is exactly how a flood-fill on paper could disagree with
-        // Tim's monitor. Two opt-in levers, both default-off (no existing
-        // reference capture moves):
-        //   ECHO_SHOT_STREAMED=1  drop the draw gate for the still, so
-        //                         force-resident region content actually renders
+        // Tim's monitor.
+        //
+        // ---- THE DEFAULT IS NOW ON. WHY -------------------------------------
+        // ECHO_SHOT_STREAMED shipped default-OFF to protect capture determinism.
+        // That trade does not exist, and the protection it bought was of the
+        // wrong thing:
+        //   1. THERE IS NO DETERMINISM COST. Dropping the gate does not start
+        //      the streamer — it BYPASSES it. Nothing async begins: no job pool
+        //      (init() is called with jobs=nullptr, see the M-A wiring above),
+        //      no budget slicing, no hysteresis, no wall-clock. What draws is
+        //      the container-side residency that M-A's forceAllResident already
+        //      built at boot, iterated in m_orderedIds graph order, posed off
+        //      the settle loop's own fixed clock (shotT + i*dt). Every input to
+        //      the frame stays a pure function of the command line.
+        //   2. MEASURED, NOT ASSUMED. Two identical runs of
+        //      `--world echotropolis --screenshot --shot-cam -545,4,200,-2.601,-0.058`
+        //      WITH streamed content on produce BYTE-IDENTICAL PNGs (md5
+        //      e13758c1...). So this is not a determinism trade at all — the
+        //      frame is exactly as reproducible with the fleet in it as without.
+        //      (Do NOT generalise that: the plain `--screenshot` canonlevel rig
+        //      is NOT byte-reproducible run to run on this same binary, while
+        //      `--screenshot-showroom` is. Determinism here is per-rig, which is
+        //      another reason not to spend the default on it.)
+        //   3. THE DEFAULT IS THE ONE THAT LIES. Nobody types a flag they have
+        //      never heard of. An opt-in truth switch means every casual capture
+        //      — which is nearly all of them, and every one Tim and I have
+        //      judged art from — keeps omitting the fleet in silence.
+        // So: streamed content renders by default, and ECHO_SHOT_STREAMED=0 is
+        // the explicit opt-out for anyone who wants the old gated frame back
+        // (e.g. reproducing a historical still). The manifest prints which way
+        // the run went either way, so a frame is never ambiguous again.
+        //   ECHO_SHOT_STREAMED=0  restore the gate (old default; streamed
+        //                         content INVISIBLE — logged loudly)
         //   ECHO_SHOT_T=<sec>     offset the pose clock, so a still can be
         //                         composed anywhere in the traffic cycle instead
         //                         of only at t=0.38 s
-        const bool shotStreamed = [](){ const char* e=std::getenv("ECHO_SHOT_STREAMED"); return e && *e=='1'; }();
+        //
+        // SCOPED TO REAL CAPTURES, NOT TO `headless`. This block is shared by
+        // `--screenshot` and `--smoketest` (its guard is `headless || screenshot`).
+        // A smoketest is a BOOT/HEALTH gate, not an art verification — nobody
+        // ever judged the harbour from it — and turning streamed content on for
+        // it costs something real: the extra submissions push this world past
+        // the RHI's 4096 mesh-group cap and it starts logging
+        // `kMaxDrawMeshes CAP HIT` (measured: 0 hits gated, 125 ungated). So the
+        // new default keys off `screenshot`, which means the smoketest path is
+        // byte-for-byte what it was on main, and the change lands only where a
+        // PNG is actually written and looked at. `ECHO_SHOT_STREAMED` overrides
+        // in both directions from either path.
+        const bool shotStreamed = [screenshot](){
+            const char* e = std::getenv("ECHO_SHOT_STREAMED");
+            if (e) return *e != '0';
+            return screenshot;
+        }();
         const float shotT = [](){ const char* e=std::getenv("ECHO_SHOT_T"); return e?(float)std::atof(e):0.0f; }();
         if (shotStreamed) {
             regionSet.bindStreamerForDrawGate(nullptr);
-            x3::logInfo("--world echotropolis: ECHO_SHOT_STREAMED — region draw gate dropped for the capture "
-                        "(streamed content is otherwise INVISIBLE in stills; the streamer never ticks here)");
+            x3::logInfo("--world echotropolis: capture renders STREAMED CONTENT (region draw gate "
+                        "dropped — boats/traffic/subway/drones/districts are in this frame). "
+                        "ECHO_SHOT_STREAMED=0 restores the old gated behaviour.");
+        } else if (screenshot) {
+            // Only when a PNG is actually being written and looked at. The other
+            // caller of this block is --smoketest, which is a health gate nobody
+            // judges art from; shouting at it would just teach people to ignore
+            // the shouting, which is how the original bug went unheard.
+            x3::logError("[capture] !!! ECHO_SHOT_STREAMED=0 — the region draw gate is ON and the "
+                         "streamer never ticks in a capture, so EVERY streamed region will submit "
+                         "NOTHING. Boats, street traffic, subway, drones and district dressing are "
+                         "ABSENT FROM THIS FRAME BY REQUEST. Do not read this still as the world.");
         }
         if (shotT != 0.0f)
             x3::logInfo("--world echotropolis: ECHO_SHOT_T — pose clock offset " +
@@ -2117,10 +2190,16 @@ int hostEchotropolis(HostContext& hc) {
             // now that hulls actually ride the surface, that would have made
             // every ECHO_SHOT_T still a lie about where the boats sit.
             applyOcean(device, shotT + (float)i * dt, shotTod, shotCam[1]);   // shot cam height
-            if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys); }
-            if (sMinersBuilt) { sMiners.update(dt, sScene); sMinersSkin.update(dt, sMiners, sScene, *device, *sphys); }
-            if (sOh1Built) { flyOh1(sOh1, (float)i * dt); sOh1.update(dt, sScene, *sphys, sOh1.pos()); }
-            if (sNpcBuilt) sNpc.update(dt, sScene);   // living-city schedules advance
+            // [CAPTURE MANIFEST] tick() next to each real update, so what the
+            // banner calls ACTIVE is what the loop actually ran — not what the
+            // code above intended to build.
+            if (sResBuilt) { sCrowd.update(dt, sScene); sSkin.update(dt, sCrowd, sScene, *device, *sphys);
+                             x3::capture::tick("echo.crowd.residents"); }
+            if (sMinersBuilt) { sMiners.update(dt, sScene); sMinersSkin.update(dt, sMiners, sScene, *device, *sphys);
+                             x3::capture::tick("echo.crowd.miners"); }
+            if (sOh1Built) { flyOh1(sOh1, (float)i * dt); sOh1.update(dt, sScene, *sphys, sOh1.pos());
+                             x3::capture::tick("echo.heli.oh1"); }
+            if (sNpcBuilt) { sNpc.update(dt, sScene); x3::capture::tick("echo.npclife"); }   // living-city schedules advance
             // TALKDEMO: drain streamed tokens + hold the settle loop open until the
             // reply lands (then a few more frames so the bubble is fully composed).
             if (demoAgent >= 0 && talkLlm && demoPending) {

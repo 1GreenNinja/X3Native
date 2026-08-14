@@ -122,18 +122,70 @@ boss "14.0,-2.3,-9.0,-0.6,0" · ward WR-1 "7.6,-0.15,38.9,0.45,0". Cameras embed
 boundary walls see floating doors/void (doors PVS-cull per-room since W2-A2's gate;
 walls always did) — derive cameras from room data, never eyeball coordinates.
 
-### 4.1b `--screenshot --world echotropolis` DOES NOT RENDER STREAMED CONTENT
+### 4.1b A CAPTURE IS NOT THE GAME — read the `[capture]` manifest before the PNG
 `regionSet.drawAll()` / `updateAll()` are gated on the WorldStreamer's residency state
 (`bindStreamerForDrawGate`, TIER-2 M-B), and the streamer is **only ticked in the live
-loop** — never in the capture settle loop. So every still of this world shows the
-streamed regions according to a streamer that has never run: the harbour fleet is
-neither posed nor drawn, and the pose clock never leaves t ≈ 0.38 s. This is how the
+loop** — never in the capture settle loop. So a still of this world used to show the
+streamed regions according to a streamer that had never run: the harbour fleet was
+neither posed nor drawn, and the pose clock never left t ≈ 0.38 s. This is how the
 "boat lanes cross dry land" defect survived two filings AND a flood-fill audit while
 being plainly visible on Tim's monitor: **every screenshot-based check was looking at an
-empty bay.** Two opt-in levers (both default-off, no existing reference capture moves):
-`ECHO_SHOT_STREAMED=1` drops the draw gate for the still; `ECHO_SHOT_T=<sec>` offsets the
-pose clock so a still can be composed anywhere in the traffic cycle. If you are verifying
-ANY moving or streamed content in a still, you must pass both.
+empty bay.**
+
+**FIXED TWO WAYS.** (1) `ECHO_SHOT_STREAMED` is now **default-ON** — a capture of this
+world renders streamed content unless you pass `ECHO_SHOT_STREAMED=0`. Dropping the gate
+bypasses the streamer rather than starting it, so it costs no determinism (measured:
+byte-identical PNGs across runs). (2) Every `--screenshot*`/`--capture*` run now ends
+with a loud `[capture]` **manifest** naming the subsystems that did NOT contribute to
+the frame it wrote, and stating that a visual conclusion about them from that frame is
+meaningless. **Read it.** Full contract, and how to add a subsystem to it, in
+`docs/CAPTURE_MANIFEST.md`. `ECHO_SHOT_T=<sec>` still offsets the pose clock so a still
+can be composed anywhere in the traffic cycle.
+
+### 4.1c THE STREAMER IS NOT THE ONLY LIVE-LOOP-ONLY SUBSYSTEM
+Audited 2026-08-14. Everything below is ticked in the live loop and **skipped, or ticked
+differently, in a settle loop** — same bug class, still open. The manifest only reports
+the ones that call `x3::capture::declare()`; the rest are silent today.
+
+**Residency / gate class (content renders as nothing):**
+* `EchoRegionSet::setVistaMode` — live only (`host_echotropolis.cpp`). Vista stuck
+  `false` in a capture, so even a 1 km aerial still gets the full gate.
+* `canonWstream` / `terrainStreamer` (canon) — ticked in the settle, but gated on
+  `canonStreamOn && ssEye.y > kStreamSuppressBelowY` and fed `vel=(0,0,0)`: below the
+  suppress height, or wherever lookahead prefetch matters, you capture bare terrain.
+  (`worldstream.resident` in the manifest catches exactly this: streamer ran, 0 resident.)
+* `cityNpcLife` is **built** inside the live loop, so `.built()` is never true in a
+  capture — every occupation NPC, the robber and the converging cops are absent from
+  every canon capture.
+
+**Ticked live, never in the plain `--screenshot` settle** (`app_run.cpp`): `facilityCrowd`
+(civilians photograph as mannequins in spawn pose), `canon45.update` (drawn but never
+ticked — bind pose), `canonBarrels.update` (no fireball/splash/chain, debris frozen),
+`stairwell.update`, `descMech.tick`, `vigilBarks.update`, `gpuDebrisStep`/`gpuDebrisDraw`
+(**GPU debris/gibs are in no capture at all**), `combatFx.update` outside the three
+`shot_fire`/`fxDemo`/`zapShotMode` branches, `scripts->update` (script-driven lights,
+doors, movers frozen), `missionRunner.tick`, `worldMap.discoveryTick`, `player.update`,
+`liveStrata.update`, `club1127.update`, `arsenal.tick`, `audio`/`rtAcoustics`.
+Two structural ones: the settle steps physics **variably** (`physics->step(dt)`) while
+live uses the fixed `simAcc` ladder — ragdolls/vehicles settle on a *different
+integrator* than the game; and `game.tick` is called with `(nullptr, AttackFxFn{})` in
+the settle, so enemy attack VFX and damage reactions **cannot** fire in a capture.
+
+**Per-host settle gaps:** echotropolis runs a *parallel shadow set* (`sScene/sCrowd/
+sNpc/…`), so `npcSkin` has no shot counterpart at all (NPC brains advance, **no skinned
+body is ever spawned or drawn**), and `worldCars`, `streetProps`, `echo_interiors`,
+`cityAlert` and **all physics** (`phys->step` + `scene.update`) are absent. `--world
+drive` never calls `setPointLights(shop.selectLights(...))`, so a perf-shop still is
+**completely unlit**. `--world surface` captures with `setFrustumCullEnabled(false)`
+while live runs with it on — the inverse bug: the still cannot prove culling. Showroom
+misses `galTerms.update` (blank terminal readouts) and the gallery analysts.
+`host_streamed.cpp` is the **correct template** — both headless branches tick the
+streamer every settle frame.
+
+**Convergence:** plain `--screenshot` and echotropolis settle for 24 frames while the
+`--screenshot-*` rigs use 90 (TAA/SSR/exposure) or 120 (DDGI). Canon and echotropolis
+stills are therefore captured with unconverged TAA history, DDGI probes and
+auto-exposure, where the live loop has had thousands of frames to converge.
 
 ### 4.2 The screenshot path and the viewmodel
 Until W2-A2, `--screenshot` NEVER drew the FP viewmodel — the "pistol" in old cell shots

@@ -12,6 +12,9 @@ add_executable(X3Engine WIN32
     app_run.cpp
     # #28 deep monolith split — headless screenshot/capture handlers
     screenshot_hosts.cpp
+    # CAPTURE MANIFEST — every --screenshot*/--capture* run announces which
+    # subsystems did NOT contribute to the frame it wrote (app/capture_manifest.h).
+    capture_manifest.cpp
     # #28 deep monolith split — extracted self-contained --world hosts
     world_hosts/world_hosts.cpp
     world_hosts/host_echotropolis.cpp

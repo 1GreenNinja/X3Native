@@ -15,6 +15,7 @@
 #include "engine/asset/IAssetSource.h"
 #include "engine/asset/IModelLoader.h"
 
+#include "capture_manifest.h"       // [CAPTURE MANIFEST] report() at the dispatch exit
 #include "host_context.h"
 #include "screenshot_hosts.h"
 #include "showroom_tod.h"
@@ -4059,6 +4060,13 @@ int dispatchScreenshotHosts(HostContext& hc) {
         return rc;
     }
     reportUnappliedHostCVars(hc, hc.captureHost);
+    // [CAPTURE MANIFEST] This handler owned the run and wrote its frame(s), so
+    // print the manifest HERE — right next to the "wrote <path>" line, where
+    // whoever is about to open the PNG will actually read it. Every capture path
+    // that exits elsewhere (the --world hosts, the default host) is covered by
+    // capture_manifest.cpp's static-destructor fallback instead, so no capture
+    // rig has to remember this call. report() prints exactly once either way.
+    x3::capture::report();
     return rc;
 }
 

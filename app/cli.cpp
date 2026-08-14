@@ -1,5 +1,6 @@
 // cli — parseCli() (the arg-parse loop) lifted VERBATIM from main() (#28 Phase D).
 #include "cli.h"
+#include "capture_manifest.h"   // [CAPTURE MANIFEST] arm() — see the end of parseCli
 #include "settings_io.h"   // readWindowSize (saved window default)
 #include <string_view>
 #include <cstdlib>
@@ -18,6 +19,16 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         // (see app/world_hosts/world_host_common.h). Falls through: this only
         // observes, the real flag parsing below is untouched.
         if (a.starts_with("--screenshot-")) o.captureHost = std::string(a);
+        // [CAPTURE MANIFEST] Same trick, one prefix wider. captureHost above is
+        // deliberately `--screenshot-` only (it drives the cvar latch, and
+        // widening it would change what plain --screenshot does). The manifest
+        // needs to know that ANY capture owns this run — plain --screenshot
+        // included, since that is the rig whose omissions cost us weeks — so it
+        // records its own flag. First one named wins, so the banner reports the
+        // flag the operator typed rather than a later implied one.
+        if (o.captureFlag.empty() &&
+            (a.starts_with("--screenshot") || a.starts_with("--capture") || a == "--ui-demo"))
+            o.captureFlag = std::string(a);
         // DDGI flags handled OUTSIDE the big else-if chain below (MSVC C1061:
         // every `else if` nests a block; the chain is at the compiler's limit).
         if (a == "--test-ddgi") { o.smoketest = true; o.testDdgi = true; continue; }
@@ -647,6 +658,16 @@ void parseCli(int argc, char** argv, CliOptions& o) {
     if (o.vkValidation < 0)
         if (const char* e = std::getenv("X3_VK_VALIDATION"))
             o.vkValidation = (e[0] == '1') ? 1 : 0;
+
+    // ---- [CAPTURE MANIFEST] arm before anything can declare ----------------
+    // Armed HERE, at the end of the arg loop, because this is the earliest
+    // point that knows both the capture flag and the world, and it is strictly
+    // before any subsystem is constructed. Un-armed runs (play, --smoketest,
+    // --bench) never record and never print. See app/capture_manifest.h.
+    if (!o.captureFlag.empty()) {
+        x3::capture::arm(o.captureFlag);
+        x3::capture::setWorld(o.worldMode);
+    }
 }
 
 }} // namespace x3::apphost

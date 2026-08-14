@@ -122,6 +122,13 @@ struct CliOptions {
     // by dispatchScreenshotHosts to know, BEFORE the handlers run, that a capture
     // host owns this run and the CLI cvar overrides must reach it.
     std::string captureHost;
+    // [CAPTURE MANIFEST] ANY capture flag this run names, verbatim ("" = none):
+    // `--screenshot*`, `--capture*`, `--ui-demo`. Recorded by the SAME single
+    // prefix match as captureHost above, one prefix wider — captureHost stays
+    // `--screenshot-` only because it drives the cvar latch, but the manifest
+    // has to cover plain `--screenshot` too (that is the rig that was lying).
+    // Read only by parseCli itself, to arm x3::capture. See capture_manifest.h.
+    std::string captureFlag;
     // --screenshot-perfshop [dir]: headless PERFORMANCE-SHOP proofs — boot the
     // drive world, build the shop, set the car on the lift, capture the bay
     // (car on lift + neon sign), the PARTS terminal, and the DYNO mid-pull into

@@ -2,6 +2,7 @@
 // the full design rationale and docs/plans/TIER2_STREAMING_PLAN.md §3/§4 for
 // the architecture this implements. Game/slice code only — engine/ stays pure.
 #include "echo_regions.h"
+#include "../capture_manifest.h"   // [CAPTURE MANIFEST] declare/gate — see below
 #include "../world_stream.h"
 
 #include "engine/core/x3_log.h"
@@ -149,6 +150,18 @@ bool EchoRegionSet::regionResident(const std::string& id) const {
 void EchoRegionSet::init(EchoRegionCtx& ctx, WorldStreamer& streamer, const WorldRegionGraph& graph) {
     m_ctx = &ctx;
 
+    // [CAPTURE MANIFEST] Declared HERE, from the construction site, so the
+    // manifest reports what THIS binary actually built: a build that never
+    // constructs a region set never declares these and correctly never prints
+    // them. The consequence text names the CONTENT, because the person reading
+    // it is looking at a still and wondering why the bay is empty.
+    x3::capture::declare("regions.streamed.draw",
+        "streamed-region CONTENT was not submitted: harbour boats/vessels, street "
+        "vehicles, subway, drones, district dressing, mine + woodland props");
+    x3::capture::declare("regions.streamed.update",
+        "streamed-region POSES did not advance: boats sit at their build pose "
+        "(a vessel's position in this frame proves nothing about where it sails)");
+
     m_regions.clear();
     m_orderedIds.clear();
     m_orderedIds.reserve(graph.regions.size());
@@ -230,6 +243,13 @@ void EchoRegionSet::forceAllResident(EchoRegionCtx& ctx) {
 
 void EchoRegionSet::drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) {
     if (!m_ctx) return;  // init() never called — nothing to draw
+    // [CAPTURE MANIFEST] Count the gate's verdict instead of assuming it. These
+    // two counters are the ground truth a still cannot show you: how many
+    // regions actually submitted. Reported once per frame below, so a capture
+    // that draws 0/14 regions says so in words. Counting (not listing) is what
+    // keeps this from going stale — a region added tomorrow is counted the day
+    // it is added, with no edit here.
+    unsigned drew = 0, gated = 0;
     for (const std::string& id : m_orderedIds) {
         auto rit = m_regions.find(id);
         if (rit == m_regions.end()) continue;
@@ -239,27 +259,32 @@ void EchoRegionSet::drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
         if (!m_vistaMode && m_gateStreamer) {
             const int si = m_gateStreamer->indexOf(id);
             if (si >= 0 && m_gateStreamer->state((uint32_t)si) != RegionState::Resident)
-                continue;
+                { ++gated; continue; }
         }
+        ++drew;
         // `gate` = ctx.walkScene, cached from init() — see EchoRegion::draw's
         // header doc for why (drawAll carries no Scene/ctx parameter of its
         // own per plan §3's verbatim signature, so this is the only
         // long-lived Scene reference this package has to offer).
         rit->second.draw(device, frame, m_ctx->walkScene);
     }
+    x3::capture::gate("regions.streamed.draw", drew, gated);
 }
 
 void EchoRegionSet::updateAll(float dt, float t) {
+    unsigned posed = 0, gated = 0;   // [CAPTURE MANIFEST] — see drawAll
     for (const std::string& id : m_orderedIds) {
         auto rit = m_regions.find(id);
         if (rit == m_regions.end()) continue;
         if (!m_vistaMode && m_gateStreamer) {   // M-B: skip pose work for gated-out regions
             const int si = m_gateStreamer->indexOf(id);
             if (si >= 0 && m_gateStreamer->state((uint32_t)si) != RegionState::Resident)
-                continue;
+                { ++gated; continue; }
         }
+        ++posed;
         rit->second.update(dt, t);
     }
+    x3::capture::gate("regions.streamed.update", posed, gated);
 }
 
 void EchoRegionSet::appendNearLights(float ex, float ez, std::vector<x3::rhi::PointLight>& out,

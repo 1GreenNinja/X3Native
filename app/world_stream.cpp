@@ -3,6 +3,7 @@
 // interfaces. No game-engine source consulted.
 #include "world_stream.h"
 
+#include "capture_manifest.h" // [CAPTURE MANIFEST] declare/tick — see init()/update()
 #include "city.h"
 #include "crowd.h"            // self-test: the hooked region-owned crowd proof
 #include "ocean_base.h"
@@ -141,6 +142,20 @@ void WorldStreamer::init(const WorldRegionGraph& graph, x3::jobs::IJobSystem* jo
     }
     m_jobs = jobs;
     m_shutdown = false;
+
+    // [CAPTURE MANIFEST] THE ORIGINAL SIN, made self-reporting. This streamer is
+    // update()d ONLY in the live render loop; no headless settle loop has ever
+    // ticked it. Anything gated on its residency view therefore renders as
+    // Unloaded in a capture — silently, which is the whole bug. Declaring here
+    // (construction) and ticking in update() below means "declared but never
+    // ticked" is detected BY CONSTRUCTION, for this binary, for any capture
+    // path that exists now or later. See app/capture_manifest.h.
+    x3::capture::declare("worldstream",
+        "region residency never advanced (the streamer is only ticked in the LIVE "
+        "loop) — every region it gates stayed Unloaded for the whole capture");
+    x3::capture::declare("worldstream.resident",
+        "the streamer held NO region resident for the whole capture — streamed "
+        "content was gated out even though the streamer itself ran");
 }
 
 int WorldStreamer::indexOf(std::string_view id) const {
@@ -396,6 +411,20 @@ double WorldStreamer::update(Scene& scene, x3::rhi::IRenderDevice& device,
                              float vx, float vy, float vz,
                              double budgetMs, double alreadySpentMs) {
     (void)py; (void)vy;
+    // [CAPTURE MANIFEST] Two DIFFERENT facts, both needed. "worldstream" says the
+    // streamer RAN. "worldstream.resident" says it produced RESIDENT REGIONS —
+    // which is the thing content is actually gated on. A capture that ticks the
+    // streamer and still holds every region Unloaded (canon suppresses streaming
+    // below an eye height and feeds zero velocity, so lookahead prefetch is dead)
+    // logs identically to one that streamed the whole world unless the OUTCOME is
+    // counted. Sampled at entry so it is one site with no early-return exposure;
+    // the counts aggregate across the settle loop either way.
+    x3::capture::tick("worldstream");
+    if (x3::capture::armed()) {
+        unsigned res = 0, un = 0;
+        for (const auto& r : m_regions) (r.state == RegionState::Resident ? res : un)++;
+        x3::capture::gate("worldstream.resident", res, un);
+    }
     const double t0 = nowMs();
     auto spent = [&] { return (nowMs() - t0) + alreadySpentMs; };
 
