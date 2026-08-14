@@ -876,7 +876,18 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // LATERAL slope. The slab's skirt swallows that mismatch and reads as a
     // retaining kerb where the cut is deepest.
     {
-        constexpr float kSlabProud = 0.14f;
+        // 0.14 -> 0.02 m (0.46 ft -> 0.08 ft). Tim, driving it: "the road is
+        // [1.8] feet in the air". He was reading the STEP at the road edge —
+        // the slab standing kSlabProud ABOVE the road datum while the corridor
+        // floor beside it is cut kFloorClear BELOW it. 0.46 + 0.72 = 1.18 ft of
+        // vertical face right at the white line, with no shoulder bridging it.
+        //
+        // kSlabProud was buying nothing: it exists to keep the slab off the
+        // floor, but kFloorClear already separates them by 0.72 ft on its own,
+        // which is far more than depth precision needs at this range. Dropping
+        // it to a hair leaves the markings proud of the slab and takes the step
+        // down to ~0.74 ft — a kerb, which is what a road edge should look like.
+        constexpr float kSlabProud = 0.02f;
         MeshBuf mb;
         const float up[3] = { 0.0f, 1.0f, 0.0f };
         auto P = [&](const Frame& f, float r, float u, float out[3]) {
