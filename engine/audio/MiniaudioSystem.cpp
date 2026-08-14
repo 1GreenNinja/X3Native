@@ -19,6 +19,10 @@
 // CI) we log a warning and run in silent mode: every play call is a no-op, load()
 // returns invalid handles, and shutdown() is safe. init() still returns true so
 // the host treats no-device as a non-fatal success.
+//
+// MUTE (X3_MUTE=1): starts the engine at ZERO master gain — see muteRequested()
+// and init(). Deliberately NOT the m_silent path above; see the note there for
+// why "open the device and scale the mix by 0" is the behaviour-preserving one.
 
 #include "engine/audio/IAudioSystem.h"
 #include "engine/core/x3_log.h"
@@ -88,6 +92,26 @@ constexpr size_t kMaxVoices = 64;
 
 float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 float clampPitch(float p) { return p < 0.05f ? 0.05f : (p > 8.0f ? 8.0f : p); }
+
+// ===========================================================================
+// MUTE SWITCH — X3_MUTE=1 in the environment starts the engine silent.
+//
+// WHY an env var and not a CLI flag: agents launch this engine dozens of times
+// a day on the owner's desktop while he is working, and every window otherwise
+// blasts gunfire at him. An env var can be set once per shell / per agent and
+// needs no argument parsing, so nothing in the CLI or host startup path changes.
+//
+// Truthy = anything except an explicit off value, so `X3_MUTE=1`, `=true`,
+// `=on`, `=yes` all mute and `X3_MUTE=0` unmutes without having to unset it
+// (which matters when the variable is inherited from a parent shell).
+// ===========================================================================
+bool muteRequested() {
+    const char* e = std::getenv("X3_MUTE");
+    if (!e || !*e) return false;
+    std::string v(e);
+    for (char& c : v) c = (char)std::tolower((unsigned char)c);
+    return !(v == "0" || v == "false" || v == "off" || v == "no");
+}
 
 // ===========================================================================
 // RT ACOUSTICS — Schroeder reverb INSERT node (dry + wet * reverb).
@@ -240,6 +264,15 @@ public:
     bool init() override {
         if (m_inited) return true;
 
+        // Announce mute BEFORE touching the device, so the line lands even when
+        // there is no device at all. Silence about silence is its own trap:
+        // without this someone burns twenty minutes debugging "why is there no
+        // audio" on a run that was muted on purpose.
+        m_muted = muteRequested();
+        if (m_muted) {
+            x3::logInfo("[audio] MUTED (X3_MUTE=1) — no sound will be produced this run");
+        }
+
         ma_engine_config cfg = ma_engine_config_init();
         ma_result r = ma_engine_init(&cfg, &m_engine);
         if (r != MA_SUCCESS) {
@@ -258,9 +291,28 @@ public:
         ma_engine_listener_set_direction(&m_engine, 0, 1.0f, 0.0f, 0.0f);
         ma_engine_listener_set_world_up(&m_engine, 0, 0.0f, 1.0f, 0.0f);
 
+        // MUTE: zero the MASTER gain on the engine's endpoint node — the single
+        // point every voice, loop, music stream and reverb tail mixes through,
+        // so one call silences all of them and no per-call-site change exists.
+        //
+        // This is deliberately NOT the m_silent no-device path: that path makes
+        // load() hand back invalid handles and isMusicFinished() return true
+        // unconditionally, which WOULD change behaviour (a jukebox playlist
+        // would race through every track). Zeroing the endpoint keeps every
+        // audio code path running exactly as unmuted — decode, voice cap,
+        // occlusion, reverb — the mix is just scaled by 0 on the way out. That
+        // also means a muted CI run still tests the audio system.
+        //
+        // Nothing else writes the endpoint volume (m_sfxMaster is applied
+        // per-voice), so no settings slider can undo this mid-run.
+        if (m_muted) {
+            ma_engine_set_volume(&m_engine, 0.0f);
+        }
+
         m_silent = false;
         m_inited = true;
-        x3::logInfo("[audio] miniaudio engine up");
+        x3::logInfo(m_muted ? "[audio] miniaudio engine up (master gain 0 — MUTED)"
+                            : "[audio] miniaudio engine up");
         return true;
     }
 
@@ -292,6 +344,7 @@ public:
         }
         m_inited = false;
         m_silent = false;
+        m_muted = false;
     }
 
     SoundHandle load(std::string_view absPath) override {
@@ -682,6 +735,7 @@ private:
 
     bool       m_inited = false;
     bool       m_silent = false;
+    bool       m_muted  = false;           // X3_MUTE: endpoint master gain forced to 0
     ma_engine  m_engine{};                 // valid only when !m_silent
 
     std::unordered_map<uint32_t, Proto>     m_protos;     // id -> prototype
