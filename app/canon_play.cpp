@@ -41,6 +41,16 @@ constexpr float kCanonPickupReach = 1.4f;   // R-5: upper-floor item proximity g
 constexpr float kStairRouteCadence = 1.0f;   // seconds between routing passes
 constexpr float kStairSeekRadius   = 24.0f;  // planar m from the room-side entry
 
+// Facing law (docs/CONVENTIONS.md; the same rule as monster.cpp/rescue.cpp
+// headingToFace): to point a model's local -Z along the planar direction
+// (dirX,dirZ), the yaw is atan2(-dirX,-dirZ). Used to AIM the scripted assault
+// tableau (each attacker at his captive, each captive at her attacker) — the
+// participants used to be posed but never aimed, so they all held yaw 0 and
+// faced the ward's back wall.
+inline float canonHeadingToFace(float dirX, float dirZ) {
+    return std::atan2(-dirX, -dirZ);
+}
+
 // ---------------------------------------------------------------------------
 // Minimal JSON parser (self-contained — staging/girls_dialog.json). Same lean style as
 // level_loader.cpp's JParser (which is file-local there). We need only object/array/string
@@ -605,13 +615,24 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         // the enemies the player kills to interrupt the infection. Placed right next to the
         // captive (the "mid-attack" tableau). They are NOT the rescue clock — the clock is
         // RescueSystem's timer; killing them is the gameplay verb to reach + save her.
-        struct A { uint32_t room; x3::phys::Vec3 ward; EnemyType t; float dx, dz; };
+        // `victim` is the RescueSystem slot this attacker is assaulting (Aria 0 /
+        // Keisha 1 / Emily 2 — the wardA/B/C order build() was called in). It is
+        // what makes the FACING below possible at all: an attacker has to know
+        // WHO it is scripted to be attacking before it can be pointed at them.
+        struct A { uint32_t room; x3::phys::Vec3 ward; uint32_t victim;
+                   EnemyType t; float dx, dz; };
         const A atk[] = {
-            { wRoomA, wardA, EnemyType::DominionTrooper, 1.2f,  0.6f },
-            { wRoomA, wardA, EnemyType::Verthani,        1.0f, -0.8f },
-            { wRoomB, wardB, EnemyType::DominionTrooper, 1.2f,  0.4f },
-            { wRoomC, wardC, EnemyType::Verthani,        1.2f,  0.6f },
-            { wRoomC, wardC, EnemyType::DominionTrooper, 0.9f, -0.7f },
+            { wRoomA, wardA, 0u, EnemyType::DominionTrooper, 1.2f,  0.6f },
+            { wRoomA, wardA, 0u, EnemyType::Verthani,        1.0f, -0.8f },
+            { wRoomB, wardB, 1u, EnemyType::DominionTrooper, 1.2f,  0.4f },
+            { wRoomC, wardC, 2u, EnemyType::Verthani,        1.2f,  0.6f },
+            // AUTHORED-XZ FIX (2026-08): this one used to sit at (+0.9,-0.7), which
+            // in a 10x8 ward lands 0.57 m from the instrument-cart crate the ward
+            // recipe drops at (cx + w*0.28, cz - d*0.22) — i.e. INSIDE its footprint,
+            // so the attacker read as standing in/on the crate. Mirrored to the far
+            // side of the captive: clear of the cart, and the pair now brackets her
+            // instead of both crowding one shoulder.
+            { wRoomC, wardC, 2u, EnemyType::DominionTrooper, -0.9f, -0.7f },
         };
         for (const A& a : atk) {
             if (a.room == kNoRoom) continue;
@@ -628,10 +649,42 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
             // W5-2 wiring: calm attackers play the baked Struggle loop, so the ward
             // reads as an assault IN PROGRESS (the looming tableau), not posted guards.
             m_attackers.at(i).setCalmLoop("struggle");
+            // ---- FACING (2026-08 playtest: "facing the wrong way") -------------
+            // The tableau was posed but never AIMED. MonsterSystem had no facing
+            // setter at all, so every attacker held its default yaw 0 — world -Z,
+            // i.e. the ward's back wall — while playing an assault animation at
+            // it. Aim him at the captive's ACTUAL position, read AFTER
+            // m_rescue.build() has grounded her (the target must exist before its
+            // facing is computed — the ordering half of this bug class).
+            if (a.victim < m_rescue.victimCount()) {
+                const x3::phys::Vec3 vp = m_rescue.victim(a.victim).pos();
+                m_attackers.at(i).faceTowards(vp.x, vp.z);
+            }
             ++m_taggedHostiles;
         }
+        // ---- ...and turn each CAPTIVE to face her nearest attacker. A Captive
+        // never self-rotates (RescueVictim::tick re-bakes the set yaw each frame),
+        // so without this she also held yaw 0 and stood with her back to the man
+        // assaulting her. Done in a second pass so every attacker's final,
+        // clear-spawn-nudged position is already known.
+        for (uint32_t vi = 0; vi < m_rescue.victimCount(); ++vi) {
+            const x3::phys::Vec3 vp = m_rescue.victim(vi).pos();
+            float bestD2 = 36.0f;            // only look for an attacker within 6 m
+            bool  found  = false;
+            x3::phys::Vec3 best{};
+            for (uint32_t ai = 0; ai < m_attackers.count(); ++ai) {
+                const x3::phys::Vec3 ap = m_attackers.at(ai).pos();
+                const float ddx = ap.x - vp.x, ddz = ap.z - vp.z;
+                const float d2 = ddx * ddx + ddz * ddz;
+                if (d2 > 1e-6f && d2 < bestD2) { bestD2 = d2; best = ap; found = true; }
+            }
+            if (found)
+                m_rescue.victim(vi).setFacing(
+                    canonHeadingToFace(best.x - vp.x, best.z - vp.z));
+        }
         x3::logInfo("[canonplay] Medical Bay rescue: 3 girls + " +
-                    std::to_string(m_attackers.count()) + " attackers (room-tagged)");
+                    std::to_string(m_attackers.count()) + " attackers (room-tagged, "
+                    "each attacker facing his captive + each captive facing her attacker)");
     }
     profMark("rescue");
 
@@ -1765,6 +1818,88 @@ bool runCanonPlaySelfTest() {
         }
         pcheck(ok, "P5 attackers room-tagged into the girls' ward rooms");
     }
+
+    // ---- P13: THE ASSAULT TABLEAU, IN THE REAL LEVEL (playtest 2026-08). -------
+    // Both scene defects asserted against the ACTUAL built ward — the same
+    // CanonPlay, RescueSystem and MonsterManager the game runs, not a fixture:
+    //   (a) every ward attacker FACES the captive he is scripted to be assaulting
+    //       (he used to hold yaw 0 and play the assault clip at the back wall);
+    //   (b) shooting one RELEASES the scripted pose and takes him out of the calm
+    //       state — he does not go back to bent-over-facing-the-wall.
+    {
+        const RescueSystem& rs = play.rescue();
+        // Pair each live ward attacker with the captive he is nearest to.
+        struct Pair { MonsterSystem* m; x3::phys::Vec3 target; };
+        std::vector<Pair> pairs;
+        for (uint32_t ai = 0; ai < play.attackerCount(); ++ai) {
+            MonsterSystem& m = play.attackerAt(ai);
+            if (!m.alive()) continue;
+            const x3::phys::Vec3 mp = m.pos();
+            float bestD2 = 36.0f; bool found = false; x3::phys::Vec3 best{};
+            for (uint32_t vi = 0; vi < rs.victimCount(); ++vi) {
+                const x3::phys::Vec3 vp = rs.victim(vi).pos();
+                const float d2 = (vp.x - mp.x) * (vp.x - mp.x) + (vp.z - mp.z) * (vp.z - mp.z);
+                if (d2 < bestD2) { bestD2 = d2; best = vp; found = true; }
+            }
+            if (found) pairs.push_back({ &m, best });
+        }
+        // (a) FACING: the model's forward (local -Z under the heading) must point
+        // at the captive — dot(forward, unit-to-captive) close to 1.
+        bool allFacing = !pairs.empty();
+        float worstDot = 1.0f;
+        for (const Pair& p : pairs) {
+            const x3::phys::Vec3 mp = p.m->pos();
+            float tx = p.target.x - mp.x, tz = p.target.z - mp.z;
+            const float tl = std::sqrt(tx * tx + tz * tz);
+            if (tl < 1e-4f) continue;
+            tx /= tl; tz /= tl;
+            const x3::phys::Vec3 f = p.m->facingDir();
+            const float dot = f.x * tx + f.z * tz;
+            if (dot < worstDot) worstDot = dot;
+            if (dot < 0.95f) allFacing = false;
+        }
+        // (b) DAMAGE releases the scripted pose. Shoot the first pair's attacker
+        // from OUTSIDE his line of sight of any player (no target is passed to
+        // update()) — the harshest case, and the one Tim hit.
+        bool released = false, leftCalm = false, stayedOut = true, posedFirst = false;
+        bool shotLanded = false;
+        for (const Pair& p : pairs) {
+            MonsterSystem& m = *p.m;
+            // Fire from 1.2 m BEHIND him (opposite the captive he is facing), so the
+            // lane is his own body — a shot down the ward's long axis is intercepted
+            // by whichever squadmate happens to be in front of him.
+            const x3::phys::Vec3 mp = m.pos();
+            const x3::phys::Vec3 f  = m.facingDir();
+            const x3::phys::Vec3 eye{ mp.x - f.x * 1.2f, mp.y + 1.0f, mp.z - f.z * 1.2f };
+            m.setCalmLoopClip(m.calmLoopClip() >= 0 ? m.calmLoopClip() : 0);
+            if (!m.calmLoopActive()) continue;         // rig has no clips: try the next
+            posedFirst = true;
+            const FireResult fr = m.fire(eye, f, scene, *physics, 5);
+            if (!fr.hitMonster) continue;              // blocked: try the next attacker
+            shotLanded = true;
+            released = !m.calmLoopActive();
+            for (int i = 0; i < 600 && m.alive(); ++i) {   // 10 s of REAL ticks
+                m.update(1.0f / 60.0f, scene, *physics, mp, mp, nullptr,
+                         AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+                physics->step(1.0f / 60.0f);
+                if (m.calmLoopActive()) stayedOut = false;
+                if (i == 0) leftCalm = (m.aiState() != AiState::Idle &&
+                                        m.aiState() != AiState::Patrol);
+            }
+            break;
+        }
+        x3::logInfo("    P13 tableau: pairs=" + std::to_string(pairs.size()) +
+                    " worstFacingDot=" + std::to_string(worstDot) +
+                    " posed=" + std::to_string(posedFirst ? 1 : 0) +
+                    " shotLanded=" + std::to_string(shotLanded ? 1 : 0) +
+                    " released=" + std::to_string(released ? 1 : 0) +
+                    " leftCalm=" + std::to_string(leftCalm ? 1 : 0) +
+                    " stayedOut=" + std::to_string(stayedOut ? 1 : 0));
+        pcheck(allFacing && posedFirst && shotLanded && released && leftCalm && stayedOut,
+               "P13 ward tableau: every attacker FACES his captive, and a shot releases "
+               "the scripted pose for good (real level, real tick loop)");
+    }
+
 
     // ---- P6: enemiesRemaining() counts every spawned hostile (no false "AREA CLEAR"). ----
     {

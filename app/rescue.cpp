@@ -209,8 +209,14 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // bug that shipped as the buried death ragdoll.
     {
         const float artDip = m_usingReal ? artLowestBelowOrigin(m_model, m_modelScale) : 0.0f;
-        m_pos = groundCharacter(physics, m_pos, artDip, m_name.c_str(),
-                                "rescue.cpp RescueVictim::build");
+        // A captive is an AUTHORED SCENE placement, so she takes the FLOOR policy
+        // (grounding.h groundSceneCharacter): identical to the shared rule in every
+        // case EXCEPT an authored XZ that lands over a prop, where she is grounded
+        // to the room floor instead of on top of the crate — and the authoring slip
+        // is shouted rather than silently posed. Playtest 2026-08: "Anna stands on
+        // top of a crate, not on the floor."
+        m_pos = groundSceneCharacter(physics, m_pos, artDip, m_name.c_str(),
+                                     "rescue.cpp RescueVictim::build");
     }
 
     // ---- Static-by-mass Enemy-layer box: lets the host (future) raycast it and
