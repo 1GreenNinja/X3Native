@@ -90,13 +90,112 @@ public:
     static float hullFrac(const ShipDamageModel&);                // hull/maxHull in [0,1]
 };
 
+// ===========================================================================
+// CAPITAL DEATH SEQUENCE — the staged break-up a 450 m dreadnought earns.
+// ===========================================================================
+//
+// WHY THIS EXISTS (owner playtest, 2026-08: "Antimatter critical, igniting ion
+// drive? Does that mean I destroyed the big enemy ship? We should SEE that").
+// A capital kill USED to be one frame of nine simultaneous fireballs followed
+// by a 2.6 s hold on an untouched, fully-lit hull — the ship never visibly
+// died, so the kill read as nothing at all. A capital does not pop: it ruptures,
+// walks a cascade of secondaries down its spine, vents, goes DARK, sheds hull
+// sections, and only THEN does the core let go.
+//
+// This is a pure value-type state machine — no GPU, no host types, no RNG. It
+// owns the SCHEDULE (what happens when) and the PRESENTATION SCALARS the host
+// reads each frame (how lit the hull is, how far it has rolled over). The host
+// owns the primitives: it pumps step()'s events into CombatFx / the GPU debris
+// pool and multiplies the draw by lights()/tumble(). That split is what makes
+// the whole sequence testable headless with zero rendering.
+//
+// DETERMINISM: the schedule is a compile-time table walked by a cursor, so the
+// same dt stream always yields the same events in the same order. BUDGET: step()
+// never emits more than kMaxEventsPerStep events in one call — a long frame
+// hitch cannot dump the whole cascade into a single frame's particle pool.
+
+// What the host should spawn for one scheduled beat of the sequence.
+enum class DeathFx : uint32_t {
+    Rupture,        // first hull rupture: white-hot flash + a shockwave shell
+    Cascade,        // one secondary detonation walked along the hull spine
+    Vent,           // an atmosphere / plasma vent plume streaming off the hull
+    HullFragment,   // a hull section tears free (a heavy, chunky debris burst)
+    CoreDetonation, // the reactor lets go: the biggest blast of the sequence
+};
+
+// One scheduled beat, resolved to world space by step().
+struct DeathEvent {
+    DeathFx kind   = DeathFx::Cascade;
+    float   pos[3] = { 0.0f, 0.0f, 0.0f };  // world position of the beat
+    float   radius = 0.0f;                  // blast/plume radius in metres
+    float   drift[3] = { 0.0f, 0.0f, 0.0f };// outward direction for plume/debris
+};
+
+// Live state of one capital's death. Host-owned; begin() seeds it, step()
+// advances it. Copyable POD.
+struct CapitalDeathState {
+    bool  active   = false;   // begin() called and the sequence has not finished
+    bool  finished = false;   // the full schedule has played out
+    float t        = 0.0f;    // seconds since begin()
+    int   cursor   = 0;       // next un-emitted entry in the schedule table
+    float center[3] = { 0.0f, 0.0f, 0.0f };  // hull centre at the moment of death
+    float axis[3]   = { 1.0f, 0.0f, 0.0f };  // hull long axis (unit; bow -> stern)
+    float halfLen   = 210.0f;                // half the hull length in metres
+
+    // ---- Presentation scalars the host reads EVERY frame -------------------
+    // Hull emissive / self-light multiplier. Starts at 1 (window rows, running
+    // lights and the drive plume all lit), stutters, then falls to kLightsOutFloor
+    // and stays there: THE LIGHTS GO OUT. A dark hull against the starfield is
+    // the single clearest "that ship is dead" signal in the genre.
+    float lights   = 1.0f;
+    // Dead-stick roll, radians. A ship with no attitude control tumbles.
+    float tumble   = 0.0f;
+    // Metres the dead hull has fallen off its patrol line (it stops holding
+    // station and starts going DOWN — the read that sells "she's going in").
+    float sag      = 0.0f;
+};
+
+class CapitalDeathSequence {
+public:
+    // Total run time. The host must hold the death window open at least this
+    // long or the player never sees the sequence finish.
+    static constexpr float kDurationSec      = 5.0f;
+    // Hard per-step emission cap (frame-cost guard — see the class comment).
+    static constexpr int   kMaxEventsPerStep = 3;
+    // Where the hull emissive bottoms out (not 0: a black cutout reads as a
+    // hole in the starfield, not a wreck — X3_WORLD_RULES rule 5).
+    static constexpr float kLightsOutFloor   = 0.10f;
+    // How many scheduled beats the whole sequence contains.
+    static int scheduleSize();
+
+    // Arm the sequence at `center`, with the hull's long axis `axis` (need not
+    // be unit; a degenerate axis falls back to +X) and half-length `halfLen`.
+    // Resets every field — safe to re-arm a used state.
+    static void begin(CapitalDeathState&, const float center[3],
+                      const float axis[3], float halfLen);
+
+    // Advance by `dt` and write up to `maxOut` (and never more than
+    // kMaxEventsPerStep) newly-due events into `out`. Returns how many were
+    // written. Also updates lights/tumble/sag. No-op (returns 0) when the state
+    // is not active. Sets `finished` once the schedule AND kDurationSec are done.
+    static int step(CapitalDeathState&, float dt, DeathEvent* out, int maxOut);
+
+    static bool isActive(const CapitalDeathState& s)   { return s.active; }
+    static bool isFinished(const CapitalDeathState& s) { return s.finished; }
+};
+
 // ---- --test-ship-damage self-test (>=8 sub-checks, no window/Vulkan) --------
 // Pure-logic, deterministic. Asserts: fighter shield+hull seeded; shield drains
 // before hull; overflow math exact (shield 50, dmg 80 -> shield 0, hull -30);
 // isDestroyed flips at hull<=0; tick regens shield ONLY after the delay (not
 // before); makeCapital enables subsystems; targeted subsystem damage routes
 // only when shield is down; subsystemDown flips at 0; shieldFrac/hullFrac
-// correct. Returns true iff all pass.
+// correct. Returns true iff all pass. PLUS the capital-death-sequence block:
+// begin() arms from a live model whose hull reached 0; the schedule fires a
+// Rupture first and a CoreDetonation last; the cascade walks the hull axis
+// bow->stern; lights fall to the floor; the per-step emission budget is never
+// exceeded; the sequence finishes; and the whole thing is bit-deterministic
+// across two identical runs.
 bool runShipDamageSelfTest();
 
 } // namespace x3::space
