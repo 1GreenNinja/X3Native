@@ -308,7 +308,7 @@
       "sizeFrac": 0.082, "fadeIn": 1.2, "fadeOut": 1.2, "color": [0.92, 0.95, 1.0] },
     { "t": 61.0, "dur": 5.0, "text": "SIX MONTHS LATER", "font": "title",
       "sizeFrac": 0.04, "fadeIn": 1.0, "fadeOut": 1.2, "color": [0.78, 0.82, 0.9] },
-    { "t": 71.0, "dur": 6.0, "text": "ANTIMATTER CRITICAL  -  IGNITING ION DRIVE", "font": "mono",
+    { "t": 71.0, "dur": 6.0, "text": ">> YOUR ANTIMATTER IS GONE  -  IGNITING ION DRIVE", "font": "mono",
       "sizeFrac": 0.03, "fadeIn": 0.8, "fadeOut": 1.4, "color": [0.6, 0.85, 1.0] }
   ],
 

@@ -237,7 +237,7 @@ void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
                         const std::vector<x3::asset::ModelDrawable>& draws,
                         const float pos[3], const float fwd[3], const float up[3],
                         float scale, x3::rhi::TextureHandle fallbackMr,
-                        float hitFlash) {
+                        float hitFlash, float emisScale) {
     // FULL-ORIENTATION ship draw (combat readability + the muzzle fix): model
     // +Z -> `fwd` (3D — pitch/roll read on the hull, matching the physics quat
     // the wing muzzles are computed from; the yaw-only legacy draw left the hull
@@ -293,7 +293,12 @@ void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     // pre-recal 0.50 — but the hit-flash emissive lift stays: fl01 is 0 at rest,
     // so the flash boost cannot reintroduce blanket glow.
     constexpr float kIntroShipSelfLight = 0.15f;
-    const float emisBoost = 1.0f + 2.2f * fl01;
+    // LIGHTS-OUT SCALE (capital death sequence): multiplies the emissive gate
+    // AND the self-light rim together, so a dying hull loses its window rows,
+    // its running lights and its terminator fill in one coherent move. Clamped
+    // above 0 so the hull never becomes a black cutout in the starfield.
+    const float emisK = emisScale < 0.02f ? 0.02f : emisScale;
+    const float emisBoost = (1.0f + 2.2f * fl01) * emisK;
     for (const auto& dr : draws) {
         if (!dr.meshId) continue;
         float fin[16];
@@ -328,7 +333,7 @@ void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
                            x3::rhi::TextureHandle{ dr.detailTexId },
                            dr.detailUvScale,
                            /*clearcoat=*/0.0f, /*clearcoatRough=*/0.05f,
-                           /*selfLight=*/kIntroShipSelfLight + 0.45f * fl01);
+                           /*selfLight=*/(kIntroShipSelfLight + 0.45f * fl01) * emisK);
     }
 }
 

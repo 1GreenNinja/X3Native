@@ -97,11 +97,18 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
 // `up` (re-orthonormalized). `hitFlash` in [0,1] tints the draw brighter/warm
 // (registered-hit feedback: 1 at the instant of a hit, decayed by the caller).
 // drawIntroShip above forwards here with a flattened yaw-only basis + no flash.
+// `emisScale` (default 1 = unchanged) multiplies BOTH the per-texel emissive
+// gate and the selfLight rim. It exists for one job: THE LIGHTS GOING OUT on a
+// destroyed capital ship. A hull whose window rows, running lights and drive
+// glow are still burning reads as alive no matter how much fire is in front of
+// it, so the capital-death sequence drives this from 1 down to its lights-out
+// floor. Never pass 0 — a fully unlit hull renders as a black cutout in the
+// starfield (X3_WORLD_RULES rule 5), which reads as a hole, not a wreck.
 void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                         const std::vector<x3::asset::ModelDrawable>& draws,
                         const float pos[3], const float fwd[3], const float up[3],
                         float scale, x3::rhi::TextureHandle fallbackMr = {},
-                        float hitFlash = 0.0f);
+                        float hitFlash = 0.0f, float emisScale = 1.0f);
 
 // Pulse the MFD/gauge screens' emissive strength (subtle alive flicker). Call
 // once per frame with the running time.
