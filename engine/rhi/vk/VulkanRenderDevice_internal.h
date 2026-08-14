@@ -263,6 +263,10 @@ public:
     bool skinnedRtEnabled() const override;
     uint32_t skinnedRtInstanceCount() const override;   // skinned chars in the TLAS this frame
 
+    // RT RESIDENCY (see IRenderDevice::setRtOnlyDraws): sticky submission mode.
+    // Records taken while this is set go to the TLAS only, never to raster.
+    void setRtOnlyDraws(bool on) override { m_rtOnlyDraws = on; }
+
     // vis-unify: host-injected per-frame PVS numbers (room/portal skips + flood ms).
     void setVisHostStats(uint32_t roomsCulled, float pvsMs) override {
         m_visRoomsCulled = roomsCulled; m_visPvsMs = pvsMs;
@@ -746,6 +750,12 @@ private:
         // instance is NEVER culled (sky / fullscreen / unbounded items). Mirrors
         // cull.comp's flags bit0. CPU-only — NOT uploaded to the object SSBO.
         bool     noCull = false;
+        // RT RESIDENCY (setRtOnlyDraws): this record exists FOR the TLAS. It is
+        // dropped by emitGroup at the same point a frustum-culled instance is
+        // dropped — before a raster SSBO row is assigned — so group contiguity
+        // (firstInstance = baseRow, instanceCount = drawn) is preserved for free.
+        // CPU-only, like noCull: never uploaded to the object SSBO.
+        bool     rtOnly = false;
         // GLASS material (only filled by drawMeshGlass; zeroed for opaque draws).
         float    glassParams[4]; // x = refraction, y = roughness, z = specular, w unused
         float    glassTint[4];   // rgb = tint, a = emissiveMap (GlassMaterial::emissiveMap)
@@ -3438,6 +3448,9 @@ private:
     // camera viewProj in prepareFrameData, consumed by emitGroup).
     bool                    m_frustumCull = true;
     FrustumPlanes           m_frameFrustum{};
+    // RT RESIDENCY (setRtOnlyDraws): sticky while the host fans its room-invisible
+    // geometry. Cleared at beginFrame so a host that forgets cannot leak it.
+    bool                    m_rtOnlyDraws = false;
 
     // ---- D15 GPU-driven culling (r_cullpath) -------------------------------
     // m_cullPathReq is the host request (-1 auto / 0 CPU / 1 Tier0 / 2 Tier1 /

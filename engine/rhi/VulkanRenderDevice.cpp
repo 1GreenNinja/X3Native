@@ -1040,6 +1040,10 @@ FrameContext VulkanRenderDevice::beginFrame() {
         // in the normal case.
         m_rt.drainBlasBatch();
         m_drawRecords.clear();
+        // RT RESIDENCY: the sticky submission mode never survives a frame boundary.
+        // A host that throws before clearing it would otherwise silently delete its
+        // whole raster stream on the next frame.
+        m_rtOnlyDraws = false;
         m_planetDraws.clear();   // planet body draws (FORGE3D port) reset per frame
         // Particle/decal per-frame staging (capacity persists -> no heap churn).
         m_partAdd.clear();
@@ -1475,9 +1479,10 @@ void VulkanRenderDevice::logPerfBreakdown(const char* why) {
             why, m_perfCpuFrames, frameCpu, frameCpu > 0.0 ? 1000.0 / frameCpu : 0.0, frameGpu);
         logInfo(b);
         std::snprintf(b, sizeof(b),
-            "[perf]   scene: drawMesh submitted %u  distinct meshes %u  objects drawn %u  "
-            "TLAS instances %u  BLAS %u",
-            m_lastStats.objectsSubmitted, (uint32_t)m_groupOrder.size(),
+            "[perf]   scene: drawMesh submitted %u (+%u rt-residency)  distinct meshes %u  "
+            "objects drawn %u  TLAS instances %u  BLAS %u",
+            m_lastStats.objectsSubmitted, m_lastStats.rtResidencyDraws,
+            (uint32_t)m_groupOrder.size(),
             m_lastStats.objectsDrawn, m_rt.lastInstanceCount(), m_rt.blasCount());
         logInfo(b);
         // TLAS-SPLIT LANE: the whole point of the change, in one row. `dynamic` is

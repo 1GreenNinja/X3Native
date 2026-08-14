@@ -126,6 +126,13 @@ struct RenderStats {
     uint32_t triangles        = 0;   // total triangles submitted this frame
     uint32_t objectsSubmitted = 0;   // drawMesh() calls attempted (incl. skipped)
     uint32_t objectsDrawn     = 0;   // drawMesh() calls that actually drew (== drawCalls)
+    // RT RESIDENCY (setRtOnlyDraws): draws admitted to the TLAS but deliberately
+    // kept OUT of the raster stream — the room/portal-PVS survivors that ray
+    // tracing needs and the camera does not. Counted SEPARATELY from
+    // objectsSubmitted precisely so the unified vis stats block (Visibility.h)
+    // keeps meaning what it meant: `tested` is the raster cull's input, and a
+    // PVS skip must stay a PVS skip, not become a phantom frustum kill.
+    uint32_t rtResidencyDraws = 0;
     float    gpuFrameMs       = 0.0f; // GPU time for the main pass (timestamp queries)
     uint64_t frameCount       = 0;   // total frames presented since init
 
@@ -418,6 +425,32 @@ public:
     // stats() carries the whole conserving pipeline (rooms -> frustum -> hzb ->
     // drawn). Call once per frame (before endFrame); sticky until re-set.
     virtual void setVisHostStats(uint32_t roomsCulled, float pvsMs) {}
+
+    // ---- RT RESIDENCY: geometry ray tracing needs and raster does not -------
+    // STICKY submission mode. While ON, every drawMesh*/drawMeshPBR/... call is
+    // recorded as an RT-ONLY draw: it enters the scene TLAS (with its own row in
+    // the stable RT material table) but is EXCLUDED from the raster stream — no
+    // object-SSBO row, no indirect instance, no shadow/depth/colour replay.
+    //
+    // WHY THIS EXISTS. The room/portal PVS runs at SUBMISSION (Scene::render
+    // skips room-invisible entities), so PVS-culled geometry never became a draw
+    // record and therefore never entered the TLAS at all. Frustum culling had the
+    // same consequence and was fixed downstream (the cull-compacted material index
+    // -> the stable per-record table); the PVS half was not, because there was
+    // nothing downstream to fix: the geometry simply was not there. DDGI,
+    // reflections, RT shadows and RT acoustics all behaved as if the wall in the
+    // next room did not exist — it cast no shadow and bounced no light.
+    //
+    // The raster path emits a group as `firstInstance = baseRow, instanceCount =
+    // drawn`, so a group's visible instances MUST stay contiguous. That is why an
+    // RT-only record is dropped at exactly the same point as a frustum-culled one
+    // (before its SSBO row is assigned): `row` never advances for it, so the
+    // survivors it sits between stay adjacent and no indirect command changes.
+    //
+    // Non-pure (no-op default) so headless / other devices are unaffected; a
+    // device that ignores it simply keeps today's behaviour. Reset to false at
+    // beginFrame so a host that forgets to clear it cannot leak into next frame.
+    virtual void setRtOnlyDraws(bool on) {}
 
     // Metal ambient-specular floor strength (mesh.frag IBL path): metals in a DARK
     // baked environment keep an F0-tinted ambient response instead of going black.

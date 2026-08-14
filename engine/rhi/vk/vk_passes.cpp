@@ -896,6 +896,14 @@ void VulkanRenderDevice::computeDdgiVolume() {
             mn = glm::vec3(FLT_MAX); mx = glm::vec3(-FLT_MAX);
             uint32_t n = 0;
             for (const DrawRecord& dr : m_drawRecords) {
+                // RT-residency records are deliberately EXCLUDED from the auto-fit.
+                // A probe does not have to sit inside the next room to gather it —
+                // it only has to trace a ray into it — so stretching the grid over
+                // every PVS-culled room would buy nothing and would cost probe
+                // DENSITY everywhere (fixed counts spread over a larger volume).
+                // Keeping the fit on the visible set makes the volume identical to
+                // the pre-residency build.
+                if (dr.rtOnly) continue;
                 auto it = m_meshes.find(dr.meshId);
                 if (it == m_meshes.end() || it->second.dynamic) continue;
                 const glm::vec3 t(dr.model[12], dr.model[13], dr.model[14]);
@@ -1410,7 +1418,15 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
         // indirect. This is the CPU win (no per-draw vkAllocate/vkUpdate/vkCmd*).
-        ++m_building.objectsSubmitted;
+        // RT RESIDENCY: an RT-only draw is NOT a raster submission. Counting it in
+        // objectsSubmitted would silently rewrite the unified vis block — `tested`
+        // is the raster cull's input and frustumCulled is derived as
+        // (submitted - drawn), so every PVS survivor admitted here would be
+        // reported as an extra frustum kill on top of the PVS skip that already
+        // counted it. It gets its own counter instead, and the vis line for a
+        // given camera is byte-identical to the pre-residency build.
+        if (m_rtOnlyDraws) ++m_building.rtResidencyDraws;
+        else               ++m_building.objectsSubmitted;
         auto mit = m_meshes.find(mesh.id);
         if (mit == m_meshes.end()) return;          // unknown mesh -> skip
         if (m_drawRecords.size() >= kMaxDrawsPerFrame) return; // ring full; skip safely
@@ -1499,6 +1515,7 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
             r.detailPacked = (detailIdx & 0xFFFFFu) | (uvf << 20);
         }
         r.alphaBlend       = alphaBlend;
+        r.rtOnly           = m_rtOnlyDraws;   // TLAS yes, raster no (RT residency)
         std::memcpy(r.model, model, sizeof(r.model));
         if (baseColorFactor) std::memcpy(r.factor, baseColorFactor, sizeof(r.factor));
         else { r.factor[0] = r.factor[1] = r.factor[2] = r.factor[3] = 1.0f; }
@@ -2467,6 +2484,16 @@ void VulkanRenderDevice::prepareFrameData() {
             bool anyCutout = false;   // any instance with texIndex bit31 (glTF alphaMode MASK)
             for (uint32_t ri : list) {
                 const DrawRecord& dr = m_drawRecords[ri];
+                // RT RESIDENCY: this record was submitted FOR the TLAS (the host's
+                // room/portal PVS says the camera cannot see it). Drop it here —
+                // at the SAME point a frustum-culled instance is dropped, before
+                // any SSBO row is assigned — so `row` does not advance for it and
+                // this group's survivors stay contiguous behind baseRow. It is
+                // dropped on BOTH cull paths: on the GPU path the CPU normally
+                // writes every row and lets cull.comp compact, but an RT-only
+                // instance must never reach cull.comp at all (it has no raster
+                // row to compact into).
+                if (dr.rtOnly) continue;
                 // CPU per-object frustum cull (r_frustumcull). Skip an instance whose
                 // world bounding sphere is fully outside the frustum. ALWAYS_VISIBLE
                 // (dr.noCull) and unbounded meshes (meshR == 0) are never culled.

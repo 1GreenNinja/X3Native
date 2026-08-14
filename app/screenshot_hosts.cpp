@@ -856,6 +856,316 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
     // surface with ZERO emissive. A broken build therefore paints every
     // off-screen contribution orange-and-unlit; a correct one paints it red /
     // green / cyan and lets the emissive panels actually glow.
+    // ---- PVS RESIDENCY VERIFY (X3_PVSRIG=1 --screenshot-rtmatverify [outDir]) ----
+    //
+    // THE QUESTION THIS RIG ANSWERS: when the room/portal PVS decides the camera
+    // cannot see a room, does that room's geometry still EXIST for ray tracing?
+    //
+    // Why every other rig in this repo is a null case for it. --screenshot-ddgi,
+    // -rtshadows, -reflverify, -csm and even --screenshot-rtmatverify all fan
+    // their geometry straight at the device with device->drawMesh*(). The PVS
+    // does not live there: it lives in Scene::render, which used to `continue`
+    // over a room-invisible entity before it ever became a draw record. A rig
+    // that never builds a Scene, never tags a roomId and never calls
+    // setVisibleRooms cannot express the bug, no matter what it renders. So this
+    // rig drives a REAL x3::game::Scene with REAL room tags and a REAL visible-
+    // room set — the same three calls canonlevel makes every frame.
+    //
+    // Geometry is lifted from --screenshot-rtmatverify's two arms because both
+    // are already proven to produce a readable off-screen contribution, and both
+    // already encode the hard-won constraint that a HEAD-ON mirror is impossible
+    // (refl.comp's backFade discards rays heading back at the camera, so arm 1
+    // uses a GRAZING 45-degree mirror floor with compact subjects high and
+    // ahead). The ONE change is that the contributing geometry is tagged into a
+    // room the PVS excludes. It is also placed so its whole bounding sphere
+    // clears a frustum plane by metres, which means the RASTER image is
+    // identical in both arms and only the ray-traced contribution can differ.
+    //
+    // THE PROOF THAT THE RIG FIRES. Each arm shoots TWICE off one binary:
+    //   *_pvsoff : setRoomCullEnabled(false) — the room is submitted normally.
+    //   *_pvson  : setRoomCullEnabled(true)  — the room is PVS-culled.
+    // On the UNFIXED base those two frames DIFFER: the contribution is present
+    // in _pvsoff and gone in _pvson. That difference is the defect, and it is
+    // what makes this rig not-blind. After the fix the two frames MATCH, because
+    // PVS no longer decides whether geometry exists for RT. A rig that looked the
+    // same before and after would have proved nothing.
+    if (rtMatVerifyShot && std::getenv("X3_PVSRIG")) {
+        namespace fs = std::filesystem;
+        const std::string outDir = rtMatVerifyShotDir;
+        std::error_code mkec2; fs::create_directories(outDir, mkec2);
+        x3::logInfo("X3_PVSRIG: PVS-residency verify — writing to " + outDir);
+        x3::logInfo(std::string("X3_PVSRIG: rayTracingSupported=") +
+                    (device->rayTracingSupported() ? "YES" : "NO"));
+
+        auto makeMesh = [&](const x3::prims::PrimMesh& pm) {
+            return device->createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                      pm.index.data(), (uint32_t)pm.index.size());
+        };
+        auto greyPx = x3::prims::makeSolidRGBA(4, 220, 220, 220);
+        x3::rhi::TextureHandle greyTex = device->createTexture(greyPx.data(), 4, 4, /*srgb=*/true);
+        const uint8_t mirrorMrPx[4] = { 0, 5,   255, 255 };  // rough .02, metal 1
+        const uint8_t matteMrPx[4]  = { 0, 235, 0,   255 };  // rough .92, dielectric
+        x3::rhi::TextureHandle mirrorMr = device->createTexture(mirrorMrPx, 1, 1, false);
+        x3::rhi::TextureHandle matteMr  = device->createTexture(matteMrPx,  1, 1, false);
+
+        const float kOrange[4]  = { 0.95f, 0.42f, 0.04f, 1.0f };
+        const float kWhite[4]   = { 0.92f, 0.92f, 0.92f, 1.0f };
+        const float kRedAlb[4]  = { 0.92f, 0.03f, 0.03f, 1.0f };
+        const float kGrnAlb[4]  = { 0.03f, 0.90f, 0.06f, 1.0f };
+        const float kCyanAlb[4] = { 0.05f, 0.85f, 0.95f, 1.0f };
+        const float kNoEmis[4]  = { 0, 0, 0, 0 };
+        const float kRedEmis[4] = { 1.00f, 0.03f, 0.02f, 14.0f };
+        const float kGrnEmis[4] = { 0.04f, 1.00f, 0.08f, 14.0f };
+        const float kCyanEmis[4]= { 0.06f, 0.85f, 1.00f, 14.0f };
+
+        // The two rooms. kRoomNear is the one the camera stands in and the ONLY
+        // one ever in the visible set; kRoomFar is the adjacent room the PVS
+        // excludes — and the room every contributing surface lives in.
+        constexpr uint32_t kRoomNear = 1, kRoomFar = 2;
+
+        // One helper so every entity is built the same way: mesh + material +
+        // room tag, straight into the Scene (never at the device).
+        auto addEnt = [&](x3::game::Scene& sc, x3::rhi::MeshHandle m, const float alb[4],
+                          const float emis[4], x3::rhi::TextureHandle mr, uint32_t room) {
+            x3::game::Entity e{};
+            e.mesh = m; e.tex = greyTex; e.mrTex = mr; e.roomId = room;
+            for (int i = 0; i < 4; ++i) { e.baseColor[i] = alb[i]; e.emissive[i] = emis[i]; }
+            sc.add(e);
+        };
+
+        // ===================== ARM 1 — RT REFLECTION =========================
+        // Grazing mirror floor in the NEAR room; the three coloured emissive
+        // panels hang high and ahead in the FAR room. At 45 deg pitch under a
+        // 60 deg vertical fov the frustum's top plane has fallen to y = 1.7 by
+        // the panels' distance, while they sit at y = 10 with a 5.24 m bounding
+        // radius — off screen by over 3 m, so the mirror is the only way their
+        // colour can reach the frame.
+        x3::game::Scene mirrorScene;
+        addEnt(mirrorScene, makeMesh(x3::prims::makeBox(14.0f, 0.03f, 2.0f, 0.0f, 0.03f, 8.5f, 0.5f)),
+               kOrange, kNoEmis, matteMr, kRoomNear);                       // row-0 bait
+        addEnt(mirrorScene, makeMesh(x3::prims::makeBox(14.0f, 0.25f, 18.0f, 0.0f, -0.25f, -4.0f, 0.5f)),
+               kWhite, kNoEmis, mirrorMr, kRoomNear);                       // mirror floor
+        addEnt(mirrorScene, makeMesh(x3::prims::makeBox(5.0f, 1.5f, 0.3f, -12.0f, 10.0f, -6.0f, 1.0f)),
+               kRedAlb,  kRedEmis,  x3::rhi::TextureHandle{}, kRoomFar);
+        addEnt(mirrorScene, makeMesh(x3::prims::makeBox(5.0f, 1.5f, 0.3f,   0.0f, 10.0f, -6.0f, 1.0f)),
+               kGrnAlb,  kGrnEmis,  x3::rhi::TextureHandle{}, kRoomFar);
+        addEnt(mirrorScene, makeMesh(x3::prims::makeBox(5.0f, 1.5f, 0.3f,  12.0f, 10.0f, -6.0f, 1.0f)),
+               kCyanAlb, kCyanEmis, x3::rhi::TextureHandle{}, kRoomFar);
+
+        // ===================== ARM 2 — DDGI COLOUR BLEED ======================
+        // Probes trace in every direction, so this is the cleanest statement of
+        // the bug: no grazing angles, no SSR interplay. A saturated green
+        // emissive panel stands in the FAR room BEHIND the camera (centre
+        // z = +8 against a camera at z = -2, bounding radius 5.83 m, so the whole
+        // sphere clears the near plane by over 4 m) and bleeds onto white walls
+        // in the NEAR room that the camera is looking straight at.
+        x3::game::Scene bleedScene;
+        addEnt(bleedScene, makeMesh(x3::prims::makeBox(0.5f, 1.2f, 0.5f, 4.5f, 1.2f, -4.0f, 1.0f)),
+               kOrange, kNoEmis, matteMr, kRoomNear);                       // row-0 bait
+        addEnt(bleedScene, makeMesh(x3::prims::makeBox(12.0f, 0.25f, 14.0f, 0.0f, -0.25f, -2.0f, 0.5f)),
+               kWhite, kNoEmis, matteMr, kRoomNear);                        // floor
+        addEnt(bleedScene, makeMesh(x3::prims::makeBox(8.0f, 4.0f, 0.3f, 0.0f, 4.0f, -10.0f, 1.0f)),
+               kWhite, kNoEmis, matteMr, kRoomNear);                        // far wall
+        addEnt(bleedScene, makeMesh(x3::prims::makeBox(0.3f, 4.0f, 8.0f, -7.0f, 4.0f, -2.0f, 1.0f)),
+               kWhite, kNoEmis, matteMr, kRoomNear);                        // side wall
+        // THE SOURCE. Emissive strength is a quarter of arm 1's: with the sky off
+        // and a fixed stop this panel is the room's ONLY light, and at 14 it
+        // saturates every wall to white, which is exactly how the inherited
+        // rtmatverify bleed arm ends up unreadable.
+        const float kGrnEmisSoft[4] = { 0.04f, 1.00f, 0.08f, 8.0f };
+        addEnt(bleedScene, makeMesh(x3::prims::makeBox(5.0f, 3.0f, 0.3f, 0.0f, 3.2f, 12.0f, 1.0f)),
+               kGrnAlb, kGrnEmisSoft, x3::rhi::TextureHandle{}, kRoomFar);
+
+        // The visible set NEVER contains kRoomFar. `roomCull` is the A/B arm:
+        // false = the master switch is off, so the far room draws (and lands in
+        // the TLAS) exactly as an un-culled world would; true = the PVS is live
+        // and the far room is room-invisible.
+        const uint32_t visibleRooms[1] = { kRoomNear };
+        bool bleedArm = false, roomCull = true;
+        for (x3::game::Scene* sc : { &mirrorScene, &bleedScene })
+            sc->setVisibleRooms(visibleRooms, 1);
+
+        auto drawScene = [&](const x3::rhi::FrameContext& f) {
+            x3::game::Scene& sc = bleedArm ? bleedScene : mirrorScene;
+            sc.setRoomCullEnabled(roomCull);
+            sc.render(*device, f);
+        };
+
+        device->setAmbient(0.13f, 0.13f, 0.16f);
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.30f; sp.sunDir[1] = 0.80f; sp.sunDir[2] = 0.52f;
+            device->setSkyParams(sp);
+        }
+        device->setShadowBounds(0.0f, 2.0f, -4.0f, 40.0f);
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+
+        auto poseMirror = [&]() {
+            device->setCamera(0.0f, 6.0f, 10.0f, std::atan2(-1.0f, 0.0f), -0.785f, 60.0f);
+        };
+        // Camera pulled back to z = +2 (the source moved with it, keeping the same
+        // 10 m behind-the-near-plane gap) so the far wall, the side wall, the floor
+        // and the orange row-0 bait post are ALL in frame — a colour bleed read on
+        // four surfaces at once is much harder to mistake for a tone shift.
+        auto poseBleed = [&]() {
+            device->setCamera(0.0f, 2.4f, 2.0f, std::atan2(-1.0f, 0.0f), -0.20f, 62.0f);
+        };
+        // ARM 2 LIGHTING — and why it is not the rtmatverify arm's lighting.
+        // That arm keeps a dim sky + a weak sun, and on this build the result is
+        // a blown-out near-white room in which a colour bleed is a few units of
+        // hue (verified by rendering it: --screenshot-rtmatverify's own
+        // bleed_ddgi_on is washed out). Two such frames cannot be compared by
+        // eye. So here the sky is OFF, ambient is a floor, and AUTO-EXPOSURE IS
+        // OFF at a fixed stop — the emissive panel in the next room becomes the
+        // ONLY thing lighting the scene, and it can only reach these walls
+        // through DDGI. Present: a green room. Absent from the TLAS: a black one.
+        auto lightBleedArm = [&]() {
+            device->setAmbient(0.0f, 0.0f, 0.0f);
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = false;
+            // `enabled` only turns off the sky DOME. sunLight is a separate
+            // multiplier on mesh.frag's directional key and defaults to 1.0, so a
+            // default-constructed SkyParams still floodlights the room with a full
+            // sun — which is what kept blowing this arm to white. Both go to zero.
+            sp.sunLight = 0.0f; sp.sunIntensity = 0.0f;
+            // ...and the zenith/horizon colours still feed mesh.frag's hemisphere
+            // IBL even with the dome off, which is what was painting this room a
+            // flat sky-blue no matter what setAmbient said. Black them out too.
+            sp.zenith[0]  = sp.zenith[1]  = sp.zenith[2]  = 0.0f;
+            sp.horizon[0] = sp.horizon[1] = sp.horizon[2] = 0.0f;
+            device->setSkyParams(sp);
+            x3::rhi::IRenderDevice::PostFXParams pf{};
+            pf.autoExposure = false;   // a fixed stop, or adaptation hides the delta
+            pf.bloomEnabled = false;
+            device->setPostFX(pf);
+            device->setExposure(1.0f);
+        };
+        auto setRefl = [&](bool on, bool rt) {
+            x3::rhi::IRenderDevice::ReflectionParams rf{};
+            rf.ssr = on; rf.rtFallback = rt; rf.fullRes = true; rf.intensity = 1.0f;
+            device->setReflectionParams(rf);
+        };
+        auto setDdgi = [&](bool on) {
+            x3::rhi::IRenderDevice::DdgiParams dg{};
+            dg.enabled = on;
+            if (on) {
+                dg.countX = 16; dg.countY = 8; dg.countZ = 20;
+                dg.originX = -10.0f; dg.originY = -0.5f; dg.originZ = -12.0f;
+                dg.sizeX   =  20.0f; dg.sizeY   =  8.0f; dg.sizeZ   =  24.0f;
+                dg.raysPerProbe = 128;
+                // NO hysteresis. The shipping 0.90 is a temporal filter, and probe
+                // updates are budgeted across frames, so a probe that has ever
+                // seen the green panel keeps a large fraction of it for hundreds
+                // of frames — measured: 70% of the bleed survived 420 frames after
+                // the source left the TLAS, which would have made this arm read
+                // "no change" and hidden the very defect it exists to show.
+                dg.hysteresis   = 0.0f;
+                dg.intensity    = 2.0f;
+            }
+            device->setDdgiParams(dg);
+        };
+
+        // Every shot logs the three counters that make the arm auditable without
+        // opening the PNG: how many instances the raster drew, how many draw
+        // records the PVS handed to the TLAS ONLY, and how many entities the PVS
+        // skipped. On the unfixed base the middle number is always 0.
+        auto shoot = [&](const std::string& name, int settle) -> bool {
+            const std::string path = outDir + "/" + name + ".png";
+            for (int i = 0; i < settle; ++i) {
+                glfwPollEvents();
+                if (i == settle - 1) device->armCapture(path.c_str());
+                auto f = device->beginFrame();
+                if (f.valid) drawScene(f);
+                device->endFrame(f);
+            }
+            const bool ok = device->captureFrame(path.c_str());
+            const x3::rhi::RenderStats st = device->stats();
+            const x3::game::Scene& sc = bleedArm ? bleedScene : mirrorScene;
+            x3::logInfo("X3_PVSRIG: " + name +
+                        "  rasterDrawn=" + std::to_string(st.objectsDrawn) +
+                        "  rtResidency=" + std::to_string(st.rtResidencyDraws) +
+                        "  pvsSkipped=" + std::to_string(sc.lastRoomCulled()) +
+                        (ok ? "  wrote " : "  FAILED ") + path);
+            return ok;
+        };
+
+        // WARM-UP, and why the rig is worthless without it. A mesh gets its BLAS
+        // the first time it appears in a draw record, under a per-frame build
+        // budget, and the reflection/GI denoisers carry temporal history. So a
+        // naive _pvsoff-then-_pvson pair does not isolate the PVS at all: the
+        // _pvsoff arm would also be the first time those meshes had ever been
+        // submitted, and it would come up empty for reasons that have nothing to
+        // do with this bug (measured — the first cut of this rig showed a blank
+        // mirror in BOTH arms on the base, which would have "passed" as a defect
+        // and proved nothing). Rendering the arm uncaptured with the far room
+        // submitted normally puts both arms on identical BLAS + history state, so
+        // the ONLY thing that differs afterwards is whether the PVS submits it.
+        auto warm = [&](int n) {
+            const bool save = roomCull;
+            roomCull = false;
+            for (int i = 0; i < n; ++i) {
+                glfwPollEvents();
+                auto f = device->beginFrame();
+                if (f.valid) drawScene(f);
+                device->endFrame(f);
+            }
+            roomCull = save;
+        };
+
+        bool ok = true;
+        const int kSettle = 90;
+
+        // ---- ARM 1: grazing mirror floor, RT reflection ---------------------
+        bleedArm = false; setDdgi(false); poseMirror();
+        // CONTROL: SSR on, RT fallback OFF. The panels are off screen, so the
+        // screen-space march has nothing to find and the mirror MUST stay dark.
+        // This is what pins arm 1's colour on the RT path specifically.
+        setRefl(true, true); warm(120);
+        setRefl(true, false); roomCull = true;  ok &= shoot("mirror_ssr_only", kSettle);
+        setRefl(true, true);
+        // A: PVS off — the reference. Three glowing bands in the mirror.
+        roomCull = false; ok &= shoot("mirror_rt_pvsoff", kSettle);
+        // B: PVS on — THE GATE. Base: the bands are GONE (the panels are not in
+        // the TLAS at all). Fixed: identical to A.
+        roomCull = true;  ok &= shoot("mirror_rt_pvson",  kSettle);
+
+        // ---- ARM 2: DDGI colour bleed from the next room --------------------
+        bleedArm = true; setRefl(false, false); lightBleedArm(); poseBleed();
+        setDdgi(true); warm(180);
+        setDdgi(false); roomCull = true;  ok &= shoot("bleed_ddgi_off",   kSettle);
+        // Each DDGI shot starts from a CLEARED probe grid, and this is the single
+        // most important line in the arm. The probe irradiance atlas is
+        // PERSISTENT. Running _pvsoff and then _pvson back to back left the second
+        // shot reading probes that still carried the first shot's green:
+        // measured, 86% of the bleed survived 420 frames after the source had left
+        // the TLAS entirely (green-excess +43.8 -> +37.7 — a "no change" reading
+        // that would have hidden the very defect this arm exists to show). A short
+        // DDGI-off window does not clear it either; it takes a long one. With this
+        // reset the same base build reads +43.8 vs +1.1.
+        auto ddgiReset = [&]() {
+            setDdgi(false);
+            for (int i = 0; i < 150; ++i) {
+                glfwPollEvents();
+                auto f = device->beginFrame();
+                if (f.valid) drawScene(f);
+                device->endFrame(f);
+            }
+            setDdgi(true);
+        };
+        // Probes converge over ~1-2 s of hysteresis -> settle long.
+        roomCull = true;  ddgiReset(); ok &= shoot("bleed_ddgi_pvson",  420);
+        roomCull = false; ddgiReset(); ok &= shoot("bleed_ddgi_pvsoff", 420);
+
+        mirrorScene.releaseGpu(*device);
+        bleedScene.releaseGpu(*device);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return ok ? 0 : 1;
+    }
+
     if (rtMatVerifyShot) {
         namespace fs = std::filesystem;
         std::error_code mkec; fs::create_directories(rtMatVerifyShotDir, mkec);
