@@ -2769,7 +2769,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         // prefix + colour say WHOSE event this is before the
                         // player has finished reading the words. Mission lines
                         // (the kill) draw larger and brighter than status barks.
-                        float cy2 = by + 40.0f;
+                        // While the kill banner is up it owns the band just
+                        // under the boss bar, so the bark stack steps down to
+                        // clear it instead of printing through it.
+                        float cy2 = by + (capitalKilled ? 118.0f : 40.0f);
                         for (const auto& cl : callouts) {
                             if (!cl.text || cl.t <= 0.0f) continue;
                             const float a = std::min(1.0f, cl.t / 0.6f);
@@ -2811,13 +2814,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                             // 0.395 * size * length.
                             constexpr float kAdv = 0.395f;
                             const float mainSz = 40.0f, subSz = 17.0f;
-                            const float mainY = (float)winH * 0.115f;
+                            const float mainY = (float)winH * 0.10f;
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
                                 kMain, (float)winW * 0.5f - mainSz * kAdv * 21.0f,
                                 mainY, mainSz, kc);
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
                                 kSub, (float)winW * 0.5f - subSz * kAdv * 44.0f,
-                                mainY + mainSz * 1.50f, subSz, ks);
+                                mainY + mainSz * 1.45f, subSz, ks);
                         }
                         // INCOMING flash while the turret battery spools — the
                         // telegraph: you have 0.6 s to change your line.
