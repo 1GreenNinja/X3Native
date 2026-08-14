@@ -417,6 +417,7 @@ void VulkanRenderDevice::destroyTexture(TextureHandle h) {
 
 TextureHandle VulkanRenderDevice::registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
                                       TextureHandle snow,  TextureHandle sand,
+                                      TextureHandle rockHigh,
                                       TextureHandle grassN, TextureHandle rockN,
                                       TextureHandle snowN,  TextureHandle sandN) {
         auto idxOf = [this](TextureHandle h) -> uint32_t {
@@ -430,6 +431,10 @@ TextureHandle VulkanRenderDevice::registerTerrainMaterial(TextureHandle grass, T
         m_terrainTexIdx[1] = idxOf(rock);
         m_terrainTexIdx[2] = idxOf(snow);
         m_terrainTexIdx[3] = idxOf(sand);
+        // OPTIONAL 5th ALBEDO slot (high-altitude rock). 0 = absent; the shader
+        // then falls back to tinting the one rock set, so a 4-texture caller is
+        // byte-identical to the pre-slot behaviour.
+        m_terrainTexIdx[4] = idxOf(rockHigh);
         // NORMAL maps are per-layer OPTIONAL: an invalid handle resolves to 0,
         // which mesh.frag reads as "this layer has no relief" and falls back to
         // the geometry normal for it alone. A caller that passes none at all gets
@@ -439,11 +444,12 @@ TextureHandle VulkanRenderDevice::registerTerrainMaterial(TextureHandle grass, T
         m_terrainNrmIdx[2] = idxOf(snowN);
         m_terrainNrmIdx[3] = idxOf(sandN);
         {
-            char msg[224];
+            char msg[288];
             std::snprintf(msg, sizeof(msg),
-                          "[rhi] terrain material: albedo idx %u/%u/%u/%u  normal idx %u/%u/%u/%u"
+                          "[rhi] terrain material: albedo idx %u/%u/%u/%u (+high %u)  normal idx %u/%u/%u/%u"
                           " (grass/rock/snow/sand; 0 = none)",
                           m_terrainTexIdx[0], m_terrainTexIdx[1], m_terrainTexIdx[2], m_terrainTexIdx[3],
+                          m_terrainTexIdx[4],
                           m_terrainNrmIdx[0], m_terrainNrmIdx[1], m_terrainNrmIdx[2], m_terrainNrmIdx[3]);
             x3::logInfo(msg);
         }

@@ -76,6 +76,7 @@ struct TestFlags {
     bool listClips = false;
     bool testTerrain = false, testTerrainPlace = false, testStreaming = false;
     bool testTerrainCorridor = false;  // --test-terraincorridor (corridor heightfield depression)
+    bool testTunnelDrive = false;      // --test-tunneldrive (drive-through the demo bore, negative-controlled)
     bool testTunnelMouth = false;     // --test-tunnelmouth (THE tunnel-mouth defect gate)
     bool testWorldStream = false, testWorldMap = false, testAi = false, testBestiary = false;
     bool testBosses = false, testAct2Bosses = false, testSpireMid = false, testNexus = false;
@@ -130,18 +131,6 @@ struct TestFlags {
     std::string listClipsPath;
     std::string demoDialogPath;
 };
-
-// ---------------------------------------------------------------------------
-// --test-grounding — THE CHARACTER-GROUNDING GATE (app/grounding.h).
-//
-// Every other flag above reaches dispatchTests() by being copied field-by-field
-// out of CliOptions inside main(). app/main.cpp is currently OWNED by an
-// in-flight 29-commit EXE split, so this flag deliberately does NOT take that
-// route: parseCli() sets this inline global directly and dispatchTests() reads
-// it first. Additive, zero-conflict, and it folds into TestFlags in one line
-// once the split has landed.
-// ---------------------------------------------------------------------------
-inline bool g_testGrounding = false;
 
 // Run the headless test ladder. Returns 0/1 (the program exit code) if a test
 // flag matched, or -1 if none matched (main() should continue normal boot).

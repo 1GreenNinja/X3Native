@@ -648,20 +648,21 @@ public:
     // byte-for-byte as before.
     //
     // This is a thin, additive boundary: it reuses the existing bindless array
-    // (the four textures keep their own bindless slots) and the existing draw
+    // (the textures keep their own bindless slots) and the existing draw
     // path; only a previously-reserved pad field in the SSBO row is now used to
-    // carry the terrain flag + the four packed detail-texture indices. Passing
-    // any invalid handle returns an invalid marker (terrain falls back to flat).
-    // Each of grass/rock/snow/sand should be a small seamless RGBA8 sRGB tile.
-    //
-    // NORMAL MAPS (grassN/rockN/snowN/sandN) are OPTIONAL and give the splat its
-    // RELIEF: each layer's tangent-space normal map, sampled and blended with the
-    // exact weight its albedo got. They must be created with srgb=false (a normal
-    // map is data, not colour). Omit them — or pass invalid handles — and terrain
-    // shades from the geometry normal exactly as it did before, which is what
-    // every caller that has not been updated gets.
+    // TWO independent optional groups, both defaulted, so every existing caller
+    // keeps compiling:
+    //   rockHigh  — a 5th ALBEDO: a second rock set the splat blends in with
+    //               ALTITUDE, so the high massif reads as different stone from
+    //               the road cuttings. Invalid = absent; the shader falls back to
+    //               tinting the one rock set (identical to the 4-texture era).
+    //   grassN..sandN — per-layer NORMAL maps: the splat's RELIEF. Must be
+    //               created with srgb=false. Invalid = that layer has no relief
+    //               and uses the geometry normal; all four invalid = the exact
+    //               pre-relief renderer.
     virtual TextureHandle registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
                                                   TextureHandle snow,  TextureHandle sand,
+                                                  TextureHandle rockHigh = {},
                                                   TextureHandle grassN = {}, TextureHandle rockN = {},
                                                   TextureHandle snowN  = {}, TextureHandle sandN = {}) = 0;
 

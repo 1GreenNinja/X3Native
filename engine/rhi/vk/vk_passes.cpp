@@ -1466,10 +1466,23 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
         r.texIndex    = texIndex | (alphaMask ? 0x80000000u : 0u) | (alphaBlend ? 0x40000000u : 0u);
         // `flags` carries TERRAIN (bit0) + GLASS (bit1); terrain detail idx ride in the pack fields.
         r.flags       = flags;
-        // Pack the four detail indices into two uints: pad1 = grass<<16 | rock,
-        // pad2 = snow<<16 | sand (each well under 65535 — kMaxTextures = 4096).
-        r.terrainPack1 = (m_terrainTexIdx[0] << 16) | (m_terrainTexIdx[1] & 0xFFFFu);
-        r.terrainPack2 = (m_terrainTexIdx[2] << 16) | (m_terrainTexIdx[3] & 0xFFFFu);
+        // Pack the detail indices into two uints: pad1 = grass<<16 | rock,
+        // pad2 = snow<<16 | sand. Every index is < kMaxTextures = 4096, i.e.
+        // 12 bits in a 16-bit lane — the top nibble of each lane is spare, and
+        // the OPTIONAL 5th index (high-altitude rock) rides three of them:
+        //   pack1 bits 28-31 = rockHigh[11:8]
+        //   pack1 bits 12-15 = rockHigh[7:4]
+        //   pack2 bits 28-31 = rockHigh[3:0]
+        // (pack2 bits 12-15 stay spare.) mesh_terrain.glsl masks each lane
+        // with 0xFFF, so a zero rockHigh reproduces the old words bit-for-bit
+        // and the SSBO row layout is untouched.
+        {
+            const uint32_t rh = m_terrainTexIdx[4] & 0xFFFu;
+            r.terrainPack1 = (m_terrainTexIdx[0] << 16) | (m_terrainTexIdx[1] & 0xFFFu)
+                           | (((rh >> 8) & 0xFu) << 28) | (((rh >> 4) & 0xFu) << 12);
+            r.terrainPack2 = (m_terrainTexIdx[2] << 16) | (m_terrainTexIdx[3] & 0xFFFu)
+                           | ((rh & 0xFu) << 28);
+        }
         // CLEARCOAT (car paint): reuse the SPARE pack1 lane — a clearcoat draw is
         // never the terrain marker, so the lane is free. 8.8 fixed point:
         // low byte = intensity*255, next byte = roughness*255. flags bit2 gates

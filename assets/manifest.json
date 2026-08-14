@@ -1230,6 +1230,42 @@
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
     },
     {
+      "repo_path": "assets/surface_library/terrain_bluff_clay/albedo.png",
+      "sha256": "a6743076ca0e93f05778f84573bdcf5e6775ec4e654f94d42e536355ae48da7d",
+      "size": 8678676,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_bluff_clay/mr.png",
+      "sha256": "dd13e798cbebe01d37fc831e5484cda91c6965cd0f9923aa6a1d538ca280fc29",
+      "size": 16914,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_bluff_clay/normal.png",
+      "sha256": "ac2e7f41ca49d51a060fdb011f12e6044a22c28dca00c69d5c7159f4af7457ff",
+      "size": 9105121,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_bluff_dark/albedo.png",
+      "sha256": "b54f2b9a8df59505776707a7a10ca4ebddcc2ac2528887a47556a930a7550013",
+      "size": 8770437,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_bluff_dark/mr.png",
+      "sha256": "dd13e798cbebe01d37fc831e5484cda91c6965cd0f9923aa6a1d538ca280fc29",
+      "size": 16914,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_bluff_dark/normal.png",
+      "sha256": "04452ca829d7958bf26254d25a7682fad56355f55ae16af82958b9f4fea90f49",
+      "size": 9378898,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
       "repo_path": "assets/surface_library/terrain_grass/albedo.png",
       "sha256": "70ec6975c9b87bd358fc6bb5254d331be8e593355a3683681b413b1864d3ee5f",
       "size": 9709509,
@@ -1266,6 +1302,36 @@
       "source_note": ""
     },
     {
+      "repo_path": "assets/surface_library/terrain_rock_dark/albedo.png",
+      "sha256": "158eacd7f054c9b202fb48bcf6fa3a76dfd015d9817e026cc1361143ec66a570",
+      "size": 1954609,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_rock_dark/mr.png",
+      "sha256": "b560b44bff07bad61cf643d30998ca5a3010004f18a2ffdf8c9baf2df09e8dab",
+      "size": 5335,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_rock_grey/albedo.png",
+      "sha256": "bfce683b44c5a9ddde577b0efcbc524b423d3aaf32c4a69d1c8ea8357bb8a5d9",
+      "size": 1669934,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_rock_grey/mr.png",
+      "sha256": "1c43446274b74c1f6845518aa3abaa218ec46466c9fc4d8662be7fecc5a50503",
+      "size": 4333,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_rock_grey/normal.png",
+      "sha256": "3be1669ac6710f2cc2266ddec411676752fe487a4d50a96c99d845eaa447cf0e",
+      "size": 1724468,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
       "repo_path": "assets/surface_library/terrain_sand/albedo.png",
       "sha256": "eb5e6ee2f27cef69c13ae28085a8655b23011bc1e5b0186d1ad2625d2ec83978",
       "size": 9669455,
@@ -1282,6 +1348,24 @@
       "sha256": "afa1a1ebd27461af865e2bec6d635f68b20398cca2c1ec56e610fe20abbacdb1",
       "size": 10331297,
       "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_scree/albedo.png",
+      "sha256": "beb49f52741507f9c3e70d5003f96304b7a7530778a342a9e58e8488a7921c39",
+      "size": 7962258,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_scree/mr.png",
+      "sha256": "999b2c99b296048a4be0b5f029ce5dffb9e8fe0098f579bf7d426808f0f217b2",
+      "size": 16914,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
+    },
+    {
+      "repo_path": "assets/surface_library/terrain_scree/normal.png",
+      "sha256": "0d3359d20b06590f89e0b479a2cf83e23c5c19de85269814494688345ab9783b",
+      "size": 8970097,
+      "source_note": "Mountain-variation terrain sets (Tim 2026-08-13): rock_dark=UniStorm Rock_2 (the 5th splat slot, high-altitude band), rock_grey=UniStorm Rock_1, scree=TDPA Rocks_Ground_02 (road-edge fillet), bluff_clay/dark=LGP3 cliff_clay_01/03. Curated via tools/tex_curate.py SETS_EXPLICIT."
     },
     {
       "repo_path": "assets/surface_library/terrain_snow/albedo.png",

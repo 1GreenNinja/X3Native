@@ -134,6 +134,10 @@ x3::rhi::MeshVertex makeTerrainVertex(const TerrainConfig& cfg,
     return out;
 }
 
+} // namespace — buildTileMeshAbs below is EXPORTED (terrain.h): self-tests
+  //             survey the real emitted mesh through it. Helpers above stay
+  //             internal; it may still call them (same TU, defined earlier).
+
 // ---------------------------------------------------------------------------
 // Build one tile's render mesh at a given LOD from ABSOLUTE (signed) tile coords.
 // originX/originZ are the tile's min-corner world position. Fills outVerts with
@@ -143,7 +147,8 @@ x3::rhi::MeshVertex makeTerrainVertex(const TerrainConfig& cfg,
 void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
                       TerrainLod lod,
                       std::vector<x3::rhi::MeshVertex>& outVerts,
-                      std::vector<uint32_t>& outIdx) {
+                      std::vector<uint32_t>& outIdx,
+                      uint32_t* outSurfIdxCount /*= nullptr, see terrain.h*/) {
     outVerts.clear();
     outIdx.clear();
 
@@ -169,15 +174,38 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
             outVerts.push_back(makeTerrainVertex(cfg, wx, wz, u, v, eps));
         }
     }
+    // PORTAL HOLES (see terrain.h): with none registered this is the exact
+    // pre-hole index build. With holes, each surface triangle is tested by XZ
+    // centroid + lowest vertex — the tunnel-mouth CURTAIN (triangles reaching
+    // down into the bore) is skipped from render AND, because the collision
+    // soup reuses these indices, from collision too.
+    const bool anyHole = (terrainPortalHoleCount() > 0);
+    auto pushTri = [&](uint32_t a, uint32_t b, uint32_t c) {
+        if (anyHole) {
+            const x3::rhi::MeshVertex& va = outVerts[a];
+            const x3::rhi::MeshVertex& vb = outVerts[b];
+            const x3::rhi::MeshVertex& vc = outVerts[c];
+            const float cx = (va.pos[0] + vb.pos[0] + vc.pos[0]) * (1.0f / 3.0f);
+            const float cz = (va.pos[2] + vb.pos[2] + vc.pos[2]) * (1.0f / 3.0f);
+            const float mY = std::min(va.pos[1], std::min(vb.pos[1], vc.pos[1]));
+            if (terrainPortalHoleDrops(cx, cz, mY)) return;
+        }
+        outIdx.insert(outIdx.end(), { a, b, c });
+    };
     for (uint32_t j = 0; j < quads; ++j) {
         for (uint32_t i = 0; i < quads; ++i) {
             const uint32_t a = j * vpe + i;
             const uint32_t b = a + 1;
             const uint32_t c = a + vpe;
             const uint32_t d = c + 1;
-            outIdx.insert(outIdx.end(), { a, c, b,  b, c, d });
+            pushTri(a, c, b);
+            pushTri(b, c, d);
         }
     }
+    // The surface/skirt boundary is no longer a fixed quads*quads*6 once holes
+    // drop triangles — report it so the collision soup can take exactly the
+    // surface prefix.
+    if (outSurfIdxCount) *outSurfIdxCount = (uint32_t)outIdx.size();
 
     // ---- Crack-hiding SKIRT (not in the collision surface) ---------------
     // Features worlds carry real mountains (slopes far steeper than the base
@@ -202,11 +230,27 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
         const x3::rhi::MeshVertex& va = outVerts[topA];
         const x3::rhi::MeshVertex& vb = outVerts[topB];
         float depth = skirtDepth;
-        if (anyCorridor) {
-            const float mx = (va.pos[0] + vb.pos[0]) * 0.5f;
-            const float mz = (va.pos[2] + vb.pos[2]) * 0.5f;
-            if (terrainCorridorDelta(mx, mz) < -0.25f) depth = std::min(depth, 2.5f);
-        }
+        const float mx = (va.pos[0] + vb.pos[0]) * 0.5f;
+        const float mz = (va.pos[2] + vb.pos[2]) * 0.5f;
+        // A skirt is ALSO a curtain: inside a portal hole it would hang exactly
+        // where the surface triangles were just dropped and wall the bore off
+        // again wherever a tile border crosses a mouth. Same predicate, same
+        // seam-consistency argument (midpoint is identical from both sides).
+        if (anyHole &&
+            terrainPortalHoleDrops(mx, mz, std::min(va.pos[1], vb.pos[1]) - depth))
+            return;
+        // Short skirts over the corridor FOOTPRINT — by containment, not by
+        // delta. The old test (`terrainCorridorDelta < -0.25`) was blind to
+        // BORED reaches, whose depth is 0 by design ("a tunnel does not carve
+        // the mountain above it"): over the bore the lid is natural ground, the
+        // delta is exactly 0, and a full ~55 m skirt at a tile border hung from
+        // the lid STRAIGHT THROUGH THE TUBE — measured 74 full-LOD skirt
+        // triangles inside the demo bore, reaching to 0.3 m above the road: a
+        // render-only rock wall across the carriageway (skirts carry no
+        // collision, so the car drove through it). Containment sees the tube
+        // under the lid; delta cannot.
+        if (anyCorridor && terrainCorridorContains(mx, mz))
+            depth = std::min(depth, 2.5f);
         x3::rhi::MeshVertex la = va, lb = vb;
         la.pos[1] -= depth; lb.pos[1] -= depth;
         float ex = vb.pos[0] - va.pos[0], ez = vb.pos[2] - va.pos[2];
@@ -229,6 +273,8 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
     for (uint32_t j = 0; j < quads; ++j) addSkirtEdge(0, j + 1, 0, j);
     for (uint32_t j = 0; j < quads; ++j) addSkirtEdge(vpe - 1, j, vpe - 1, j + 1);
 }
+
+namespace {   // internal helpers resume
 
 // ---------------------------------------------------------------------------
 // Procedural ground DETAIL texture: a small seamless RGBA8 tile around a base
@@ -360,29 +406,52 @@ x3::rhi::TextureHandle loadTerrainNormal(x3::rhi::IRenderDevice& device,
 //            substitute and is used deliberately, not by oversight)
 x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
     auto grass = loadTerrainAlbedo(device, "terrain_grass", 1001u,  78, 116,  56, 18); // green
-    auto rock  = loadTerrainAlbedo(device, "terrain_rock",  2002u, 104, 100,  92, 24); // grey-brown
+    // BOTH halves of the 2026-08-14 terrain work, kept whole:
+    //   * the rock ALBEDO is Predator's real cliff set (the slot used to be
+    //     sr_concrete_01, so every cliff and cutting in the game was textured
+    //     with CONCRETE and streaked with form-lines under the triplanar blend);
+    //   * the per-layer NORMAL maps are 14900k's relief fix -- mesh.frag skipped
+    //     its normal path for terrain entirely, so a cut face took the rock
+    //     albedo and then lit like plaster.
+    // Neither replaces the other: one decides what the ground IS, the other
+    // decides how it CATCHES LIGHT.
+    auto rock  = loadTerrainAlbedo(device, "fw_rock_cliff",  2002u, 104, 100,  92, 24); // real cliff rock
     auto snow  = loadTerrainAlbedo(device, "terrain_snow",  3003u, 222, 226, 235, 14); // bright white-blue
     auto sand  = loadTerrainAlbedo(device, "terrain_sand",  4004u, 178, 158, 118, 18); // tan
+    // THE SECOND ROCK BAND (Tim: "you NEED more than one texture thats for
+    // SURE"). The low rock slot stays the warm tan cliff — it textures the
+    // road cuttings — and this darker blue-grey craggy slate takes over with
+    // ALTITUDE (mesh_terrain.glsl kAlpineTint band), so the massif reads as
+    // different stone from the roadside without dragging the cuttings cold.
+    // terrain_rock_dark = UniStorm Rock_2 (see tools/tex_curate.py
+    // SETS_EXPLICIT for provenance + the contact-sheet rationale).
+    auto rockHi = loadTerrainAlbedo(device, "terrain_rock_dark", 5005u, 84, 88, 98, 20); // dark craggy
     // ...and each layer's NORMAL map. This is what turns the splat from four flat
-    // COLOURS into four SURFACES: mesh.frag used to skip its normal path entirely
-    // for terrain, so a cut face got the rock albedo and then lit like plaster.
-    // X3_TERRAIN_NORMALS=0 loads none of them, which is the exact pre-relief
-    // renderer. It exists so the before/after can be captured from ONE build at
-    // ONE viewpoint — an A/B where the only difference is the relief, with no
-    // recompile in between to smuggle in anything else.
+    // COLOURS into four SURFACES. X3_TERRAIN_NORMALS=0 loads none of them, which
+    // is the exact pre-relief renderer. It exists so the before/after can be
+    // captured from ONE build at ONE viewpoint — an A/B where the only difference
+    // is the relief, with no recompile in between to smuggle in anything else.
     const char* nrmEnv = std::getenv("X3_TERRAIN_NORMALS");
     const bool wantNormals = !(nrmEnv && nrmEnv[0] == '0');
     x3::rhi::TextureHandle grassN, rockN, snowN, sandN;
     if (wantNormals) {
         grassN = loadTerrainNormal(device, "terrain_grass");
-        rockN  = loadTerrainNormal(device, "terrain_rock");
+        // MATCHES THE ALBEDO ABOVE. This said "terrain_rock" on the branch that
+        // introduced it, which was right THEN; now that the rock slot is
+        // fw_rock_cliff, loading terrain_rock's normal here would light the
+        // cliff with a different stone's bumps. The set ships its own normal.png.
+        rockN  = loadTerrainNormal(device, "fw_rock_cliff");
         snowN  = loadTerrainNormal(device, "terrain_snow");
         sandN  = loadTerrainNormal(device, "terrain_sand");
     } else {
         x3::logWarn("[terrain] X3_TERRAIN_NORMALS=0 -- terrain relief DISABLED (albedo only)");
     }
+    // NOTE: the high-altitude rock band is albedo-only for now — it borrows the
+    // low rock's normal via the shader's blend. A 10th slot for its own normal is
+    // a follow-up, not a merge decision.
     x3::rhi::TextureHandle marker =
-        device.registerTerrainMaterial(grass, rock, snow, sand, grassN, rockN, snowN, sandN);
+        device.registerTerrainMaterial(grass, rock, snow, sand, rockHi,
+                                       grassN, rockN, snowN, sandN);
     // Fallback: if the material set couldn't be registered (no bindless), use the
     // grass tile directly so terrain is at least a believable green, not white.
     return marker.valid() ? marker : grass;
@@ -451,11 +520,19 @@ struct RangeDef {
 // Native compass: +Z = north (regions.json / world_regions gazetteer). Band
 // placement + peak heights follow the Babylon map (N z~8300 to 480 m snow /
 // E x~9200 to 500 m volcanic / S z~-9000 mesas ~200 m / W x~-8600 rolling 350 m).
-const RangeDef kRanges[4] = {
+constexpr int kRangeCount = 5;
+const RangeDef kRanges[kRangeCount] = {
     { -2200.0f,  8300.0f,  2800.0f,  8300.0f, 500.0f, 2200.0f, 380.0f, 2.2f, 45.0f,   0.0f }, // N snow
     {  9200.0f, -2000.0f,  9200.0f,  2500.0f, 550.0f, 2300.0f, 460.0f, 2.0f, 45.0f,   0.0f }, // E volcanic
     { -2800.0f, -9000.0f,  3500.0f, -9000.0f, 500.0f, 2100.0f, 230.0f, 1.1f,  0.0f, 195.0f }, // S mesa
     { -8600.0f, -2000.0f, -8600.0f,  1800.0f, 600.0f, 2400.0f, 320.0f, 1.3f,  0.0f,   0.0f }, // W crystal hills
+    // TUNNEL RIDGE. The four ranges above sit 8-9 km out, so the corridor route
+    // at (-592,-352) bored through the BASE rolling field (heightScale 55 m) —
+    // which is why the worst soil cover over the shell was only 2.46 m. A freeway
+    // tunnel needs a mountain. Runs PERPENDICULAR to the route heading so the bore
+    // crosses it square, and is short enough that outW does not reach the
+    // Scrapyard City pad at (-600,500).
+    {  -753.0f,  -740.0f,  -431.0f,    36.0f, 110.0f,  240.0f, 285.0f, 2.5f, 58.0f,   0.0f }, // tunnel ridge
 };
 
 // Flat pads: blend the field toward padY inside r, fully the field by r*1.7.
@@ -770,9 +847,18 @@ float authoredLandforms(float h, float x, float z) {
     return h;
 }
 
+// Bluff terracing (see mountainHeight). Band height is the vertical spacing of
+// the cliff/shelf pairs; strength 1 would be a full staircase, which reads as
+// machined — 0.55 leaves the fractal relief still visible through the benches.
+constexpr float kBluffStart    = 55.0f;   // m of range height before benching starts
+constexpr float kBluffFull     = 90.0f;   // m over which it reaches full strength
+constexpr float kBluffBandH    = 26.0f;   // vertical spacing of the bluffs
+constexpr float kBluffStrength = 0.55f;
+inline float clampf01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+
 float mountainHeight(float x, float z, uint32_t seed) {
     float h = 0.0f;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kRangeCount; ++i) {
         const RangeDef& r = kRanges[i];
         const float d = segDist(x, z, r.ax, r.az, r.bx, r.bz);
         if (d >= r.outW) continue;
@@ -785,6 +871,45 @@ float mountainHeight(float x, float z, uint32_t seed) {
         if (r.jagAmp > 0.0f) {
             const float j = fbm(x, z, 0.006f, 3, seed + 9000u + (uint32_t)i * 197u);
             hm += mask * (j - 0.5f) * 2.0f * r.jagAmp * ridge;   // jag rides the peaks
+            // ROCK-SCALE RELIEF. The two terms above are a ~900 m ridge shape and
+            // a ~166 m jag: both are LANDFORM frequencies, so a range built from
+            // them alone reads as a smooth dune no matter how tall it is made.
+            // Raising amp just makes a bigger dune. What was missing is relief at
+            // the scale of an actual rock face — ~45 m and ~15 m features — which
+            // is what the eye reads as "mountainous" rather than "hill".
+            // Ridged (1 - |2n-1|) rather than plain fBm so it makes CRESTS and
+            // gullies instead of lumps, and it rides `ridge` so the flanks stay
+            // calmer than the crests, as real erosion leaves them.
+            const float r1 = fbm(x, z, 0.022f, 3, seed + 11000u + (uint32_t)i * 271u);
+            const float r2 = fbm(x, z, 0.061f, 2, seed + 13000u + (uint32_t)i * 331u);
+            const float c1 = 1.0f - std::fabs(2.0f * r1 - 1.0f);
+            const float c2 = 1.0f - std::fabs(2.0f * r2 - 1.0f);
+            // NOT gated on `ridge`. The first cut multiplied this by it, which was
+            // self-defeating: ridge = pow(1-|2n-1|, ridgeExp) with ridgeExp 2.5 is
+            // near ZERO over most of the flanks, so the rock detail was suppressed
+            // exactly where the mountain reads as a smooth dune. A real massif is
+            // broken everywhere, not only along its crest line — the crest is
+            // merely MORE broken. So apply it everywhere and let `ridge` add a
+            // modest extra bite on top.
+            const float bite = 0.55f + 0.45f * ridge;
+            hm += mask * bite * r.jagAmp * (0.85f * (c1 - 0.5f) + 0.45f * (c2 - 0.5f));
+            // JAGGED BLUFFS ON CRAGGY CLIFFS. Fractal relief alone gives a rough
+            // but CONTINUOUS slope. Real massifs are not continuous: harder strata
+            // stand out as near-vertical risers with shelves between them, which
+            // is what reads as "bluffs" and "crags" rather than "rough hill".
+            // Terracing does that with the height it already has — quantise into
+            // bands and push each sample toward its band top, so the riser
+            // steepens and the tread flattens. The smoothstep IS the cliff: a
+            // linear ramp would just re-draw the slope it replaced.
+            // Strength rises with altitude so the foot stays a natural talus
+            // slope and only the upper massif breaks into benches.
+            if (hm > kBluffStart) {
+                const float up01 = clampf01((hm - kBluffStart) / kBluffFull);
+                const float band = hm / kBluffBandH;
+                const float f    = band - std::floor(band);
+                const float shaped = sstep(0.42f, 0.92f, f);
+                hm += kBluffBandH * (shaped - f) * kBluffStrength * up01 * mask;
+            }
         }
         if (r.capY > 0.0f && hm > r.capY) hm = r.capY;           // mesa flat tops
         if (hm > 0.0f) h += hm;
@@ -935,6 +1060,71 @@ void clearTerrainCorridors() { corridorRegistry().count = 0; }
 
 uint32_t terrainCorridorCount() { return corridorRegistry().count; }
 
+// ---------------------------------------------------------------------------
+// Portal holes — the mesh-level mouth exclusion (see app/terrain.h). Same
+// fixed-capacity boot-registered shape as the corridor registry, with a
+// precomputed XZ bounding box per hole for the universal early-out.
+// ---------------------------------------------------------------------------
+namespace {
+struct PortalHoleRec {
+    TerrainPortalHole h;
+    float minX = 0, maxX = 0, minZ = 0, maxZ = 0;
+};
+struct PortalHoleRegistry {
+    PortalHoleRec rec[kMaxTerrainPortalHoles];
+    uint32_t      count = 0;
+};
+PortalHoleRegistry& portalHoleRegistry() {
+    static PortalHoleRegistry kReg;
+    return kReg;
+}
+} // namespace
+
+bool registerTerrainPortalHole(const TerrainPortalHole& h) {
+    PortalHoleRegistry& reg = portalHoleRegistry();
+    if (reg.count >= kMaxTerrainPortalHoles) return false;
+    if (!std::isfinite(h.x0) || !std::isfinite(h.z0) ||
+        !std::isfinite(h.x1) || !std::isfinite(h.z1) ||
+        !std::isfinite(h.halfWidth) || !std::isfinite(h.yTop)) return false;
+    if (!(h.halfWidth > 0.0f)) return false;
+    const float dx = h.x1 - h.x0, dz = h.z1 - h.z0;
+    if (dx * dx + dz * dz < 1e-6f) return false;      // zero-length spine
+    PortalHoleRec& r = reg.rec[reg.count];
+    r.h = h;
+    r.minX = std::min(h.x0, h.x1) - h.halfWidth;
+    r.maxX = std::max(h.x0, h.x1) + h.halfWidth;
+    r.minZ = std::min(h.z0, h.z1) - h.halfWidth;
+    r.maxZ = std::max(h.z0, h.z1) + h.halfWidth;
+    ++reg.count;
+    return true;
+}
+
+void clearTerrainPortalHoles() { portalHoleRegistry().count = 0; }
+
+uint32_t terrainPortalHoleCount() { return portalHoleRegistry().count; }
+
+bool terrainPortalHoleDrops(float cx, float cz, float minY) {
+    const PortalHoleRegistry& reg = portalHoleRegistry();
+    if (reg.count == 0) return false;                 // the universal fast path
+    for (uint32_t i = 0; i < reg.count; ++i) {
+        const PortalHoleRec& r = reg.rec[i];
+        if (cx < r.minX || cx > r.maxX || cz < r.minZ || cz > r.maxZ) continue;
+        if (minY >= r.h.yTop) continue;               // whole tri above the tube
+        // Inside the prism? Project onto the spine segment; RECTANGULAR ends
+        // (t clamped to [0,1] would round them; a mouth wants a hard edge so
+        // the kept lid resumes exactly where the shell no longer covers).
+        const float ax = r.h.x0, az = r.h.z0;
+        const float abx = r.h.x1 - ax, abz = r.h.z1 - az;
+        const float len2 = abx * abx + abz * abz;
+        const float t = ((cx - ax) * abx + (cz - az) * abz) / len2;
+        if (t < 0.0f || t > 1.0f) continue;
+        const float px = ax + abx * t, pz = az + abz * t;
+        const float dx = cx - px, dz = cz - pz;
+        if (dx * dx + dz * dz <= r.h.halfWidth * r.h.halfWidth) return true;
+    }
+    return false;
+}
+
 float terrainCorridorDelta(float x, float z) {
     const CorridorRegistry& reg = corridorRegistry();
     if (reg.count == 0) return 0.0f;               // the universal fast path
@@ -948,6 +1138,23 @@ float terrainCorridorDelta(float x, float z) {
         if (d > deepest) deepest = d;              // deepest wins; never a sum
     }
     return -deepest;
+}
+
+bool terrainCorridorContains(float x, float z) {
+    const CorridorRegistry& reg = corridorRegistry();
+    if (reg.count == 0) return false;              // the universal fast path
+    for (uint32_t i = 0; i < reg.count; ++i) {
+        const CorridorRec& r = reg.rec[i];
+        if (x < r.minX || x > r.maxX || z < r.minZ || z > r.maxZ) continue;
+        const TerrainCorridor& c = r.c;
+        const float reach2 = (c.halfWidth + c.falloff) * (c.halfWidth + c.falloff);
+        for (int s = 0; s + 1 < c.nodeCount; ++s) {
+            float d2, depth;
+            corridorSegment(c, s, x, z, d2, depth);
+            if (d2 < reach2) return true;          // depth deliberately ignored
+        }
+    }
+    return false;
 }
 
 namespace {
@@ -1243,13 +1450,16 @@ void Terrain::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 if (m_lodIndexCount[l] == 0) m_lodIndexCount[l] = (uint32_t)idx.size();
             }
 
-            // Collision: LOD0 top surface only (skirts excluded).
+            // Collision: LOD0 top surface only (skirts excluded). The surface
+            // index count comes from the builder — it is only quads*quads*6
+            // when no portal hole dropped any triangle.
             {
-                buildTileMeshAbs(m_cfg, t.originX, t.originZ, TerrainLod::Full, verts, idx);
+                uint32_t surfIdx = 0;
+                buildTileMeshAbs(m_cfg, t.originX, t.originZ, TerrainLod::Full, verts, idx,
+                                 &surfIdx);
                 const uint32_t quads = (m_cfg.tileVerts - 1);
                 const uint32_t vpe   = quads + 1;
                 const uint32_t surfVerts = vpe * vpe;
-                const uint32_t surfIdx   = quads * quads * 6;
                 std::vector<float> cverts;
                 cverts.reserve((size_t)surfVerts * 3);
                 for (uint32_t i = 0; i < surfVerts; ++i) {
@@ -1357,16 +1567,17 @@ void TerrainStreamer::generate(const TerrainConfig& cfg, int32_t gx, int32_t gz,
     out.centerX = out.originX + cfg.tileSize * 0.5f;
     out.centerZ = out.originZ + cfg.tileSize * 0.5f;
 
+    uint32_t surfIdx = 0;   // LOD0 surface index count (holes may shrink it)
     for (int l = 0; l < (int)TerrainLod::Count; ++l) {
         buildTileMeshAbs(cfg, out.originX, out.originZ, (TerrainLod)l,
-                         out.lodVerts[l], out.lodIdx[l]);
+                         out.lodVerts[l], out.lodIdx[l],
+                         l == 0 ? &surfIdx : nullptr);
     }
 
-    // Collision: LOD0 top surface only (first vpe*vpe verts / quads*quads*6 idx).
+    // Collision: LOD0 top surface only (first vpe*vpe verts / surfIdx indices).
     const uint32_t quads = (cfg.tileVerts - 1);
     const uint32_t vpe   = quads + 1;
     const uint32_t surfVerts = vpe * vpe;
-    const uint32_t surfIdx   = quads * quads * 6;
     out.collVerts.clear();
     out.collVerts.reserve((size_t)surfVerts * 3);
     float lo = 1e30f, hi = -1e30f;

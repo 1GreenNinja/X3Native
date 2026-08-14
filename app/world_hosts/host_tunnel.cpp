@@ -18,6 +18,8 @@
 
 #include <filesystem>
 #include <system_error>
+#include <cmath>      // std::floor  (pause-overlay layout)
+#include <cstring>    // std::strlen (pause-overlay centering)
 
 namespace x3 { namespace apphost {
 
@@ -109,7 +111,15 @@ int hostTunnel(HostContext& hc) {
     if (carBuilt) {
         car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
         // Point it down the corridor.
-        const float yaw = std::atan2(route.dirZ, route.dirX);
+        // SPAWN YAW — engine forward at rest is -Z (CLAUDE.md AXES / CONVENTIONS
+        // §3), so rotating rest forward (0,0,-1) about +Y by theta gives
+        // (-sin theta, 0, -cos theta); facing the corridor direction (dirX, dirZ)
+        // is theta = atan2(-dirX, -dirZ). The old atan2(dirZ, dirX) measured from
+        // +X, not from -Z, which placed the car 90 deg off the road.
+        // Tim, 2026-08-14: "The car is PLACED facing the wrong way. I have to TURN
+        // it to drive it forward. Controls make the car behave as it should." —
+        // the second sentence proves the rig and skin are fine; only spawn was wrong.
+        const float yaw = -std::atan2(-route.dirX, -route.dirZ);
         const float q[4] = { 0.0f, std::sin(-yaw * 0.5f), 0.0f, std::cos(-yaw * 0.5f) };
         phys->setBodyRotation(car.chassis(), q);
     } else {
@@ -196,8 +206,79 @@ int hostTunnel(HostContext& hc) {
     x3::logInfo("--world tunnel: WASD drives, Space handbrake, mouse orbits the chase cam, Esc quits");
 
     while (!glfwWindowShouldClose(window)) {
+        // RE-SUBMIT THE BORE LIGHTS EVERY FRAME. They were set exactly ONCE at boot
+        // (setPointLights above), which is why the tunnel is lit in headless captures
+        // — those render a few frames with nothing else touching the light set — and
+        // PITCH BLACK the moment you drive it, both from inside and looking in through
+        // the portal from outside. The interactive loop streams tiles and draws other
+        // content, and the light array does not survive that. Cheap: 6 cached lights.
+        device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        // ESC OPENS THE MENU, IT DOES NOT QUIT. Tim was losing his session every
+        // time he reached for it. ESC toggles a PAUSE: the sim stops, the cursor
+        // is released so the window can be moved/alt-tabbed, and driving resumes
+        // on the next press. SHIFT+ESC is the deliberate way out, so quitting
+        // stays possible but can no longer happen by reflex.
+        //
+        // THE OVERLAY IS NOT DECORATION. The first cut of this paused silently —
+        // it only logged to a console the player is not looking at — and a paused
+        // game is pixel-identical to a hung one. Tim hit ESC, got a live window
+        // that ignored the throttle, and reported "The car doesnt move AT ALL".
+        // A mode the player cannot see is a freeze with extra steps, so the state
+        // is drawn on the glass, along with the keys that leave it.
+        {
+            static bool escWasDown = false, paused = false;
+            const bool escDown = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
+                            || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+            if (escDown && !escWasDown) {
+                if (shift) break;                      // SHIFT+ESC = quit
+                paused = !paused;
+                glfwSetInputMode(window, GLFW_CURSOR,
+                                 paused ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+                x3::logInfo(paused ? "[tunnel] PAUSED — ESC resumes, SHIFT+ESC quits"
+                                   : "[tunnel] resumed");
+            }
+            escWasDown = escDown;
+            if (paused) {
+                // Present the frame so the window stays live, but do not advance
+                // the sim or read drive input.
+                auto pf = device->beginFrame();
+                if (pf.valid) {
+                    scene.render(*device, pf);
+                    if (carBuilt) car.render(pf);
+
+                    int pw = 0, ph = 0; glfwGetFramebufferSize(window, &pw, &ph);
+                    const float fw = (float)pw, fh = (float)ph;
+
+                    // Dim the world so the menu reads as a layer above it.
+                    const float scrim[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
+                    device->drawHudQuad(pf, 0.0f, 0.0f, fw, fh, scrim);
+
+                    // Glyph cell is square and fixed for the mono role, so the
+                    // legacy N*px centering math is exact.
+                    auto centered = [&](const char* s, float px, float y, const float c[4]) {
+                        const float w = (float)std::strlen(s) * px;
+                        device->drawHudText(pf, s, (fw - w) * 0.5f, y, px, c);
+                    };
+
+                    const float title[4] = { 1.00f, 0.93f, 0.72f, 1.0f };
+                    const float body [4] = { 0.86f, 0.88f, 0.92f, 1.0f };
+                    const float dim  [4] = { 0.55f, 0.58f, 0.64f, 1.0f };
+
+                    const float tp = std::floor(fh * 0.055f);   // title glyph px
+                    const float bp = std::floor(fh * 0.026f);   // body  glyph px
+                    float y = fh * 0.34f;
+
+                    centered("PAUSED", tp, y, title);            y += tp * 2.2f;
+                    centered("ESC          resume driving", bp, y, body); y += bp * 1.8f;
+                    centered("SHIFT + ESC  quit to desktop", bp, y, body); y += bp * 2.4f;
+                    centered("the sim is stopped - this is not a freeze", bp * 0.85f, y, dim);
+                }
+                device->endFrame(pf);
+                continue;
+            }
+        }
         const double now = glfwGetTime();
         float fdt = (float)(now - prevTime); prevTime = now;
         if (fdt > 0.1f) fdt = 0.1f;
@@ -223,14 +304,76 @@ int hostTunnel(HostContext& hc) {
         streamer.update(scene, *device, *phys, vp[0], vp[2]);
         phys->step(fdt);
         if (carBuilt) car.postStep(fdt);
+        // RE-SAMPLE THE CHASE TARGET AFTER THE STEP.
+        // `vp` above was read BEFORE phys->step(), so the camera was aiming at
+        // where the car had been one physics step earlier while the car itself
+        // draws from its post-step pose. At 30 m/s a 60 Hz step is ~0.5 m, and
+        // because the frame delta varies the lag varies with it — so the car
+        // appears to oscillate between two positions a few pixels apart every
+        // frame. Tim, 2026-08-14: "when accelerating / moving, the car is
+        // oscillating between two points several pixels apart, causing a
+        // blur/shimmer."
+        // The pre-step sample is still the right input for streamer.update()
+        // (tile streaming does not need sub-frame precision); only the camera
+        // needs the current pose.
+        if (carBuilt) car.chassisPos(vp);
         scene.update(*phys);
 
         // Chase camera.
         const float dx = std::cos(camPitch) * std::cos(camYaw);
         const float dy = std::sin(camPitch);
         const float dz = std::cos(camPitch) * std::sin(camYaw);
+        // CHASE-CAM COLLISION ("clipping"). The camera was pure trigonometry with
+        // no collision query at all, so it swung straight through the tunnel
+        // shell, the cutting walls and the terrain — you could look at the bore
+        // from inside the rock. Tim, 2026-08-14: "The Tunnel... should also have
+        // clipping" / "looking under the ground makes the asphalt disappear".
+        //
+        // Cast from the car's head position out along the boom; if anything solid
+        // is in the way, pull the camera in to just short of it. Static mask, so
+        // the world stops the camera but the car itself and loose props do not.
+        // cam_collide 0 disables it (console cvar, see below).
         const float back = 9.0f;
-        const float cx = vp[0] - dx * back, cy = vp[1] + 3.2f - dy * back, cz = vp[2] - dz * back;
+        float cx = vp[0] - dx * back, cy = vp[1] + 3.2f - dy * back, cz = vp[2] - dz * back;
+
+        // CAMERA vs WORLD. Two DIFFERENT rules, because they want different
+        // behaviour — the first cut used the wall rule for both and Tim
+        // (2026-08-14) reported "camera Cannot go down to see under the car
+        // anymore.. we need to clamp it AT the ground, but not UNDER the ground."
+        //
+        // 1) GROUND: do NOT shorten the boom. Keep the full 9 m and just refuse to
+        //    go below the surface — the camera SLIDES along the ground, so you can
+        //    still pitch right down and look up at the car from grass level. This
+        //    is the "clamp at the ground" most games do.
+        {
+            const float gy = x3::game::terrainHeightAtWorld(cx, cz);
+            const float kGroundClear = 0.35f;               // keep the near plane out of the dirt
+            if (cy < gy + kGroundClear) cy = gy + kGroundClear;
+        }
+        // 2) WALLS: a raycast DOES shorten the boom, so the shell, the cutting
+        //    faces and the headwall still stop the camera instead of letting it
+        //    swim through into the rock. Cast to the ground-clamped position so a
+        //    low angle is not mistaken for a wall hit.
+        {
+            const float pivotY = vp[1] + 1.4f;              // roughly the roof line
+            float ox = cx - vp[0], oy = cy - pivotY, oz = cz - vp[2];
+            const float len = std::sqrt(ox*ox + oy*oy + oz*oz);
+            if (len > 0.05f) {
+                ox /= len; oy /= len; oz /= len;
+                const x3::phys::RayHit h = phys->rayCast(
+                    x3::phys::Vec3{ vp[0], pivotY, vp[2] },
+                    x3::phys::Vec3{ ox, oy, oz }, len, x3::phys::Layer::Static);
+                if (h.hit) {
+                    const float kSkin = 0.45f;
+                    const float d = std::max(1.6f, h.distance - kSkin);
+                    cx = vp[0] + ox * d; cy = pivotY + oy * d; cz = vp[2] + oz * d;
+                    // Re-assert the ground rule after pulling in — the shortened
+                    // point can still land under a rise.
+                    const float gy2 = x3::game::terrainHeightAtWorld(cx, cz);
+                    if (cy < gy2 + 0.35f) cy = gy2 + 0.35f;
+                }
+            }
+        }
 
         int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
         if (cw != lastW || ch != lastH) { lastW = cw; lastH = ch; if (cw > 0 && ch > 0) device->onResize((uint32_t)cw, (uint32_t)ch); }

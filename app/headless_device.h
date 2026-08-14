@@ -73,7 +73,11 @@ public:
     }
     void destroyTexture(x3::rhi::TextureHandle) override {}
 
+    // 9 handles: grass/rock/snow/sand + the optional high-altitude rock + the
+    // four optional per-layer normal maps. Kept in lockstep with IRenderDevice
+    // or this mock silently stops overriding and the class turns abstract.
     x3::rhi::TextureHandle registerTerrainMaterial(x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle,
                                                    x3::rhi::TextureHandle,
                                                    x3::rhi::TextureHandle,
                                                    x3::rhi::TextureHandle,

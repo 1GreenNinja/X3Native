@@ -90,13 +90,13 @@
       "id": "tires", "label": "Tires",
       "parts": [
         { "id": "tire_touring", "name": "Touring All-Season", "tier": 1, "price": 600,
-          "gripScale": 1.05, "compound": "AS" },
+          "gripScale": 1.25, "compound": "AS" },
         { "id": "tire_summer", "name": "Performance Summer", "tier": 2, "price": 1300,
-          "gripScale": 1.15, "compound": "PS" },
+          "gripScale": 1.32, "compound": "PS" },
         { "id": "tire_semislick", "name": "Semi-Slick R-Comp", "tier": 3, "price": 2600,
-          "gripScale": 1.3, "compound": "RC" },
+          "gripScale": 1.40, "compound": "RC" },
         { "id": "tire_slick", "name": "Full Slick", "tier": 4, "price": 4400,
-          "gripScale": 1.45, "compound": "SL" }
+          "gripScale": 1.52, "compound": "SL" }
       ]
     },
     {

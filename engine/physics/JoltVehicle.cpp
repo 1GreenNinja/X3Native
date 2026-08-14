@@ -69,6 +69,30 @@ inline JPH::Vec3 norm(JPH::Vec3Arg v) {
 
 constexpr float kGravity = 9.81f;
 
+// ---- Automatic-transmission shift points, as fractions of the REDLINE -------
+// Jolt ships absolute defaults (4000 up / 2000 down) that are unrelated to the
+// engine we author, so every car with a redline above ~4500 upshifts early and
+// bogs. These fractions are chosen against the stock torque curve
+// ([0,0.78] [0.3,0.97] [0.55,1.0] [0.8,0.95] [1,0.82]) and Jolt's default gear
+// ratios (2.66/1.78/1.3/1.0/0.74, a 1.49 step from 1st to 2nd):
+//
+//   up at 0.92 * redline lands the next gear at 0.92/1.49 = 0.62 of redline,
+//   i.e. straight onto the 0.55 torque peak. Shifting later would clip the
+//   power peak; shifting earlier drops below the peak and bogs.
+//   down at 0.50 * redline leaves a wide band between the two so the box does
+//   not hunt (a downshift must not immediately re-trigger an upshift).
+constexpr float kShiftUpFrac   = 0.92f;
+constexpr float kShiftDownFrac = 0.50f;
+// Fallback redline for vehicles authored without one, matching VehicleEngine's
+// own default so behaviour is unchanged for them.
+constexpr float kDefaultRedlineRPM = 6000.0f;
+
+inline void applyShiftPoints(JPH::VehicleTransmissionSettings& tr, float redlineRPM) {
+    const float redline = redlineRPM > 0.0f ? redlineRPM : kDefaultRedlineRPM;
+    tr.mShiftUpRPM   = redline * kShiftUpFrac;
+    tr.mShiftDownRPM = redline * kShiftDownFrac;
+}
+
 // =====================================================================
 // WHEELED — Jolt VehicleConstraint + WheeledVehicleController
 // =====================================================================
@@ -148,6 +172,17 @@ public:
         cs->mEngine.mMaxTorque = d.maxEngineTorque;
         cs->mEngine.mMaxRPM    = d.maxEngineRPM;
         cs->mTransmission.mClutchStrength = d.clutchStrength;
+        // SHIFT POINTS SCALE WITH THE REDLINE. Jolt's transmission defaults are
+        // ABSOLUTE (mShiftUpRPM 4000 / mShiftDownRPM 2000) and know nothing about
+        // the engine we just authored. Against a 6500 rpm redline that upshifts
+        // ~2500 rpm early, dropping the engine into the dead part of its curve.
+        //
+        // Measured before this fix (--test-vehparts, Release): the tier-1 STREET
+        // build upshifted at ~4030 rpm and fell to 3082 rpm at 14 m/s, while the
+        // bone-stock car pulled first gear to 6500 rpm / 22.7 m/s and BEAT it.
+        // Stock only escaped the early shift because its wheels slipped enough to
+        // block it -- so the shop sold a power upgrade that made the car slower.
+        applyShiftPoints(cs->mTransmission, d.maxEngineRPM);
 
         // Powered wheels feed the differential. Pick the first two powered wheels
         // as the differential's left/right (a standard single-axle drive). If only
@@ -276,7 +311,15 @@ public:
             m_baseMaxTorque = t.maxEngineTorque;
             eng.mMaxTorque  = m_baseMaxTorque * m_boost;
         }
-        if (t.maxEngineRPM > 0.0f) eng.mMaxRPM = t.maxEngineRPM;
+        if (t.maxEngineRPM > 0.0f) {
+            eng.mMaxRPM = t.maxEngineRPM;
+            // Keep the shift points tied to the NEW redline — a race cam that
+            // raises the limiter has to move the shift band with it, or the box
+            // upshifts mid-powerband and gives the cam away.
+            // VehicleTransmission derives from VehicleTransmissionSettings, so the
+            // live transmission takes the same helper as the build-time settings.
+            applyShiftPoints(m_ctrl->GetTransmission(), t.maxEngineRPM);
+        }
         // Normalized torque CURVE (camshaft / forced-induction profile).
         if (t.curvePoints > 0) {
             eng.mNormalizedTorque.Clear();

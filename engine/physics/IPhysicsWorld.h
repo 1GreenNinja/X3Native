@@ -35,7 +35,23 @@ public:
     // Bodies
     virtual BodyId addStaticMesh(const float* verts, uint32_t vcount,
                                  const uint32_t* indices, uint32_t icount) = 0;
-    virtual BodyId addBox(Vec3 halfExtents, Vec3 pos, float mass, Layer) = 0;
+    // `comOffset` shifts the body's CENTRE OF MASS relative to the shape centre,
+    // in the body's local frame (metres, +Y up). Default {0,0,0} = shape centre,
+    // which is what every existing caller gets.
+    //
+    // WHY THIS EXISTS. For a vehicle the CoM height is THE handling parameter:
+    // rollover threshold is roughly atan(halfTrack / comHeight). The hero car ran
+    // with its CoM at the box centre — 0.76 m up on a 0.677 m half-track, i.e.
+    // ~42 deg, where a real sports car is nearer 58 — so it tipped over on
+    // ordinary terrain. Tim, 2026-08-14: "the car still rolls" / "Can we ADD
+    // center of mass control? That is a critical part."
+    //
+    // A negative Y drops the mass toward the floor pan (what a real car does with
+    // engine, gearbox and battery low in the hull) and makes it resist roll
+    // without touching track, springs or grip. Maps to Jolt's
+    // OffsetCenterOfMassShape, which is the engine's own vehicle idiom.
+    virtual BodyId addBox(Vec3 halfExtents, Vec3 pos, float mass, Layer,
+                          Vec3 comOffset = Vec3{}) = 0;
     virtual BodyId addSphere(float radius, Vec3 pos, float mass, Layer) = 0;
     virtual void   removeBody(BodyId) = 0;
     virtual void   setBodyPosition(BodyId, Vec3) = 0;

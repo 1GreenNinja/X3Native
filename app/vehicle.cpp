@@ -92,8 +92,13 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     m_physics = &physics;
 
     // --- Chassis dynamic body (a box). Layer Dynamic. ---
+    // CENTRE OF MASS dropped 0.30 m below the box centre (new addBox param).
+    // CoM height above ground goes 0.76 -> 0.46 m against a 0.677 m half-track,
+    // lifting the rollover threshold from ~42 deg to ~56 — a real sports-car
+    // number. This is what stops "the car still rolls" without touching grip.
     m_chassis = physics.addBox(x3::phys::Vec3{m_hx, m_hy, m_hz},
-                               x3::phys::Vec3{x, y, z}, 1300.0f, x3::phys::Layer::Dynamic);
+                               x3::phys::Vec3{x, y, z}, 1300.0f, x3::phys::Layer::Dynamic,
+                               x3::phys::Vec3{0.0f, -0.30f, 0.0f});
     if (!m_chassis.valid()) return false;
 
     // --- 4 wheels at the HERO-CAR GLB stations (CTR, after the nose flip to the
@@ -127,7 +132,15 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     x3::phys::WheeledVehicleDesc vd;
     vd.chassis = m_chassis;
     vd.wheels = m_wheels.data(); vd.wheelCount = (uint32_t)m_wheels.size();
-    vd.maxEngineTorque = 700.0f; vd.maxEngineRPM = 6500.0f;
+    // TRIPLED (Tim, 2026-08-14: "the car feels HEAVY... it should accelerate
+    // nicely" -> "triple the Hp/tq"). 700 -> 2100 Nm. The powerband/shift-point
+    // fix is already live on this lane, so the extra torque lands ON the curve
+    // instead of being thrown away by an early upshift.
+    // NOTE the tyres are the next limit: gripScale 1.7 was tuned against 700 Nm
+    // and a 3x jump will spin the rears up unless traction control catches it
+    // (setInput's TC is on by default). If it just smokes instead of going,
+    // raise gripScale rather than backing the torque off.
+    vd.maxEngineTorque = 3200.0f; vd.maxEngineRPM = 6500.0f;
     // Clutch strong enough that the ENGINE is the bottleneck, not the coupling.
     // Jolt's clutch is a viscous drag (torque ~ clutchStrength * slip): at the
     // default 10 the engine pins at redline and the transmitted torque becomes
@@ -178,7 +191,19 @@ constexpr float kBodyDropY = -0.76f;
 const float kBodySkin[16] = { -1,0,0,0,  0,1,0,0,  0,0,-1,0,  0,kBodyDropY,0,1 };
 // Mesh-local wheel axis is +-X (car lateral); the physics wheel pose maps a unit
 // Y-cylinder (axis = axle). Rotate mesh X onto pose Y (Rz +90deg, column-major).
-const float kWheelAxisFix[16] = { 0,1,0,0,  -1,0,0,0,  0,0,1,0,  0,0,0,1 };
+// EXPERIMENT (Tim live-testing 2026-08-13): the Rz+90 below assumes the GLB's
+// wheels are authored with their axle on mesh-local +-X. On THIS car they spin
+// sideways like a gyroscope, i.e. 90 degrees off their axle — which is what this
+// matrix would cause if the wheels were ALREADY axle-aligned. Identity tests
+// exactly that. X3_WHEELFIX=1 restores the old matrix for an instant A/B.
+//   const float kWheelAxisFixRz90[16] = { 0,1,0,0, -1,0,0,0, 0,0,1,0, 0,0,0,1 };
+const float kWheelAxisFix[16] = { 1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
+const float kWheelAxisFixRz90[16] = { 0,1,0,0,  -1,0,0,0,  0,0,1,0,  0,0,0,1 };
+inline const float* wheelAxisFix() {
+    static const bool oldWay = [](){ const char* e = std::getenv("X3_WHEELFIX");
+                                     return e && e[0] == '1'; }();
+    return oldWay ? kWheelAxisFixRz90 : kWheelAxisFix;
+}
 } // namespace
 
 bool DriveDemo::skin(x3::rhi::IRenderDevice& device, std::string_view glbDir,
@@ -203,6 +228,13 @@ bool DriveDemo::skin(x3::rhi::IRenderDevice& device, std::string_view glbDir,
     m_bodyDraw.clear();
     for (int s = 0; s < 4; ++s) m_wheelDraw[s].clear();
     for (size_t i = 0; i < all.size(); ++i) {
+        // 'Buttom' (sic, in CTR.glb) is the UNDERBODY / floor pan. Tim asked for
+        // it back — "LEAVE BOTTOM .. rename it if you can" — after removing it
+        // made the car see-through from below. The GLB node name is misspelled;
+        // renaming it properly means re-exporting the asset, so it is aliased
+        // here instead and the engine-side name is "Bottom" wherever we surface
+        // it. It is NOT the mini-car Tim keeps seeing: that model is not in this
+        // GLB at all (36 nodes, all car parts + a mesh-less 'Collider').
         const int s = (i < names.size()) ? slotOf(names[i]) : -1;
         if (s < 0) { m_bodyDraw.push_back(all[i]); continue; }
         // Wheel drawable: bake (axis fix) * (node transform WITHOUT translation —
@@ -211,7 +243,10 @@ bool DriveDemo::skin(x3::rhi::IRenderDevice& device, std::string_view glbDir,
         float noT[16]; std::memcpy(noT, d.nodeTransform, sizeof(noT));
         noT[12] = noT[13] = noT[14] = 0.0f;
         float local[16];
-        x3::asset::mulMat4(kWheelAxisFix, noT, local);
+        // Through the ACCESSOR, not the constant: wheelAxisFix() is what reads
+        // X3_WHEELFIX. Calling kWheelAxisFix directly here made the env-var A/B
+        // silently inert — the toggle appeared to work and tested nothing.
+        x3::asset::mulMat4(wheelAxisFix(), noT, local);
         std::memcpy(d.nodeTransform, local, sizeof(local));
         m_wheelDraw[s].push_back(d);
     }

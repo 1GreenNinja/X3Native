@@ -2,9 +2,9 @@
 #define X3_MESH_TERRAIN_GLSL
 // ===========================================================================
 // Terrain material splat (open-world ground). Procedural height + slope blend of
-// four tiling detail textures (grass / rock / snow / sand) keyed off the
-// fragment's WORLD position + WORLD surface normal, with a little value noise to
-// break the tiling. Clean-room: built from the public height/slope-splat +
+// up to five tiling detail textures (grass / rock / snow / sand + an optional
+// high-altitude rock) keyed off the fragment's WORLD position + WORLD surface
+// normal, with a little value noise to break the tiling. Clean-room: built from the public height/slope-splat +
 // triplanar mapping technique (GPU Gems terrain, the standard height/slope splat
 // articles) — no engine source consulted. Only runs when vTerrainFlag != 0; all
 // other meshes skip this entirely and shade exactly as before.
@@ -30,10 +30,22 @@
 //     warm sandstone rock; W highlands = mossier grass.
 const float kSeaLevel    = 4.0;    // world Y of the basin water surface (ocean_base)
 const float kSandTop     = 16.0;   // beach fades out by here (near the basin only)
-const float kSnowBottom  = 180.0;  // snow begins (mountain shoulders)
-const float kSnowFull    = 265.0;  // fully snow by here (high peaks)
+// SNOW: retuned 180/265 -> 118/185 for the TUNNEL RIDGE (peak ~162 m — the old
+// 180 m floor sat ABOVE it, so the one mountain the player drives through
+// could never cap). Still comfortably above the 55 m base field (no lowland
+// snow); the four distant 400-500 m ranges just cap lower down, which is what
+// ranges do.
+const float kSnowBottom  = 118.0;  // snow begins (mountain shoulders)
+const float kSnowFull    = 185.0;  // fully snow by here (high peaks)
 const float kAlpineLo    = 75.0;   // grass starts yielding to rock
 const float kAlpineHi    = 140.0;  // fully rock by here (below the snow line)
+// HIGH-ROCK band (the SECOND rock set + tint): where the mountain stops being
+// the warm roadside-cutting stone and becomes dark craggy slate. Full effect
+// by 150 so the ridge summit (~162) is entirely mountain stone.
+const float kAlpineTintLo = 70.0;
+const float kAlpineTintHi = 150.0;
+const vec3  kAlpineRock   = vec3(0.52, 0.58, 0.72);   // darker, cooler (tint fallback)
+const vec3  kAlpineVein   = vec3(0.62, 0.78, 1.15);   // blue in the crevices
 // SLOPE-ROCK THRESHOLDS. These were 0.90/0.965, which is far too flat to mean
 // "cliff": normal.y = 0.93 is a 21.5 deg grassy hillside, and the old curve made
 // that 58% rock. On the rolling base field every gentle undulation therefore
@@ -248,9 +260,6 @@ vec3 triplanarNormal(uint idx, vec3 wpos, vec3 wn) {
     }
     return acc / max(wsum, 1e-4);
 }
-
-// --- SHARED SPLAT WEIGHTS ---------------------------------------------------
-// The four band weights, computed ONCE from world position + geometry normal.
 // Extracted verbatim from terrainAlbedo (same expressions, same order, same
 // noise) so that terrainNormal can blend each layer's normal map with EXACTLY
 // the weight its albedo got. Anything less and the colour of a rock face would
@@ -262,6 +271,7 @@ struct TerrainSplat {
     float rock;    // slope rock, pre snow-suppression
     float volc, mesa, moss;   // range-theme masks (albedo tint only)
     float macro;              // macro tint (albedo only)
+    float hN;                 // noise-jittered height, shared with the alpine band
 };
 
 TerrainSplat terrainSplatWeights(vec3 wpos, vec3 wn) {
@@ -273,6 +283,7 @@ TerrainSplat terrainSplatWeights(vec3 wpos, vec3 wn) {
     // perfectly horizontal contour lines.
     float n   = tnoise(wpos.xz * kMacroScale) - 0.5;   // [-0.5,0.5]
     float hN  = h + n * 6.0;                            // height jittered by noise
+    s.hN = hN;                                          // published for terrainAlbedo
 
     // ---- Range-theme masks (biome tints keyed off world position; centers
     // match terrain.cpp's kRanges band midpoints) ----
@@ -310,10 +321,22 @@ TerrainSplat terrainSplatWeights(vec3 wpos, vec3 wn) {
 // Procedural height+slope splat. Returns the blended terrain albedo in linear-ish
 // sRGB (the detail textures are stored sRGB so the array already linearises them).
 vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
-    uint grassIdx = pack.x >> 16;
-    uint rockIdx  = pack.x & 0xFFFFu;
-    uint snowIdx  = pack.y >> 16;
-    uint sandIdx  = pack.y & 0xFFFFu;
+    // Lanes are 16-bit but bindless indices are < 4096 (12 bits), so each lane's
+    // top nibble is spare — the OPTIONAL 5th index (high-altitude rock) rides
+    // three of them (packed in vk_passes.cpp; must mirror exactly):
+    //   pack.x bits 28-31 = rockHigh[11:8]
+    //   pack.x bits 12-15 = rockHigh[7:4]
+    //   pack.y bits 28-31 = rockHigh[3:0]
+    // MASK EVERY LANE WITH 0xFFF. Reading the full 16 bits (as this did before
+    // the merge) folds those piggyback nibbles into the ids and corrupts all
+    // four the moment a high-rock set is registered.
+    uint grassIdx  = (pack.x >> 16) & 0xFFFu;
+    uint rockIdx   =  pack.x        & 0xFFFu;
+    uint snowIdx   = (pack.y >> 16) & 0xFFFu;
+    uint sandIdx   =  pack.y        & 0xFFFu;
+    uint rockHiIdx = (((pack.x >> 28) & 0xFu) << 8)
+                   | (((pack.x >> 12) & 0xFu) << 4)
+                   |  ((pack.y >> 28) & 0xFu);      // 0 = no high set registered
 
     TerrainSplat s = terrainSplatWeights(wpos, wn);
 
@@ -329,6 +352,37 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
     rock  = mix(rock, rock * vec3(0.42, 0.34, 0.32), s.volc);
     rock  = mix(rock, rock * vec3(1.15, 0.92, 0.68), s.mesa);
     grass = mix(grass, grass * vec3(0.80, 1.08, 0.72), s.moss);
+
+    // ---- HIGH-ALTITUDE ROCK: the SECOND rock band ---------------------------
+    // The low rock slot is shared with the road cuttings (~15 m), so the massif
+    // cannot simply swap the set — it CROSSFADES to a second, darker craggy set
+    // with altitude when one is registered (terrain_rock_dark; rockHiIdx != 0).
+    // The vein pass runs on whichever stone the altitude picked: the set's own
+    // dark crevices are pushed COOL, so the mineral streaks the texture already
+    // has read as blue veins in the shadowed relief — luminance re-mapping, not
+    // added noise, so it never fights the relief.
+    //
+    // Without a registered high set (rockHiIdx == 0 — any 4-texture caller)
+    // this degrades to the previous behaviour exactly: the same TINT on the one
+    // shared rock set.
+    {
+        float alt = smoothstep(kAlpineTintLo, kAlpineTintHi, s.hN);
+        if (alt > 0.0) {
+            vec3 hi;
+            if (rockHiIdx != 0u) {
+                hi = triplanar(rockHiIdx, wpos, wn);          // real mountain stone
+                // The dark set is already cool; the tint pass only deepens it a
+                // touch so the summit doesn't flatten to one value.
+                hi = mix(hi, hi * vec3(0.86, 0.90, 1.02), alt * 0.6);
+            } else {
+                hi = rock * kAlpineRock;                      // tint-only fallback
+            }
+            float lum  = dot(hi, vec3(0.299, 0.587, 0.114));
+            float dark = 1.0 - smoothstep(0.18, 0.55, lum);   // 1 in the crevices
+            hi = mix(hi, hi * kAlpineVein, dark);             // veins in the recesses
+            rock = mix(rock, hi, alt);
+        }
+    }
 
     // ---- Height bands (smoothstep transitions, never hard) ----
     // Start as grass everywhere, then layer beach sand at the basin shoreline,

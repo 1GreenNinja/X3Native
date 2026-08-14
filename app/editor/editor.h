@@ -31,9 +31,32 @@ struct EditorEntity {
     // through the LevelDoc JSON today; a game loader consuming it spawns a
     // DriveDemo (app/vehicle.h: buildPhysics + skin) at this pose — exactly what
     // `--world drive` does in code. Editor-side it renders like any model entity.
+    // "portal" (Level Architect 11.0, the tunnel-lane payoff): a hand-placed,
+    // hand-oriented PORTAL PLANE. THE LEVELDOC PORTAL CONTRACT (consumers — e.g.
+    // the tunnel corridor system — read portals from the LevelDoc JSON, never
+    // from tunnel constants):
+    //   pos          — the portal plane's CENTER (metres, world).
+    //   yaw/pitch/roll — full 3-axis orientation (see the rotation note below);
+    //                  the portal plane is the LOCAL X/Y plane, its facing
+    //                  normal is LOCAL +Z rotated by that orientation.
+    //   size         — [0]=width, [1]=height (full extents, m); [2] optional
+    //                  slab thickness for the editor/loader marker (default 0.4).
+    //   script       — the LINK id ("tunnel_a_west"): consumers pair portals /
+    //                  bind traversal logic by this id. Free-form string.
+    // The editor places/orients it by hand; the loader spawns a non-colliding
+    // oriented marker slab so placement is visible in-game. Nothing else is
+    // implied — traversal/rendering semantics belong to the consumer.
     std::string type = "prop";
     float pos[3]   = { 0, 0, 0 };
-    float yaw      = 0.0f;               // radians about +Y
+    float yaw      = 0.0f;               // radians about +Y (Tim's original axis)
+    // THE THIRD ROTATION AXIS (Level Architect 11.0). Tim's 10.9 rotated about +Y
+    // (yaw); UE5's cue — the one thing it added to his scheme — is the remaining
+    // axes on the SAME hotkeys. pitch = radians about +X, roll = radians about +Z.
+    // Composite orientation is R = Ry(yaw) * Rx(pitch) * Rz(roll) (see rotYPR).
+    // Both default 0 and are emitted to JSON only when nonzero, so every existing
+    // level file round-trips byte-identical. Gated by rot3Enabled().
+    float pitch    = 0.0f;               // radians about +X
+    float roll     = 0.0f;               // radians about +Z
     float scale    = 1.0f;
     float tint[3]  = { 0.8f, 0.8f, 0.85f };
     // Feature 3 (content/model browser): a GLB relative path under the editor's
@@ -55,6 +78,16 @@ struct EditorEntity {
     // light (a fusion core, a solar cell face, a neon strip). Default {0,0,0,0}
     // == no glow, so every existing entity round-trips + renders unchanged.
     float emissive[4] = { 0, 0, 0, 0 };
+    // ---- GENERATOR PROVENANCE (the generator -> LevelDoc handoff, 11.0) -----
+    // `gen` is a STABLE provenance key stamped by whatever generator emitted this
+    // entity ("tunnel:portal:a_west", "city:lot:12/crate:3"). Empty = hand-
+    // authored. `genEdited` flips to true the moment a human edits a generated
+    // object. REGENERATION RULE (docs/design/LEVELDOC_HANDOFF.md): a re-run may
+    // replace only objects whose gen key it owns AND genEdited == false; edited
+    // objects are kept and the generator's replacement for that key is skipped.
+    // Both serialize ONLY when set, so hand-authored docs stay byte-identical.
+    std::string gen;
+    bool genEdited = false;
     // Live link to the Scene entity id while editing (not serialized). kNoLink-ish
     // sentinel = not spawned in the live scene.
     uint32_t sceneEntity = 0xFFFFFFFFu;
@@ -71,7 +104,11 @@ struct BlockoutBrush {
     uint32_t type   = 0;                 // 0=Box 1=Ramp 2=Cylinder 3=Stairs (== prims::BrushType)
     float pos[3]    = { 0, 0, 0 };       // world center
     float size[3]   = { 2, 2, 2 };       // full extents (m)
-    float yaw       = 0.0f;              // radians about +Y
+    float yaw       = 0.0f;              // radians about +Y (Tim's original axis)
+    // Third rotation axis (11.0) — see the EditorEntity note. R = Ry*Rx*Rz.
+    // Serialized only when nonzero (existing files stay byte-identical).
+    float pitch     = 0.0f;              // radians about +X
+    float roll      = 0.0f;              // radians about +Z
     float tint[3]   = { 0.85f, 0.85f, 0.88f };
     // Surface MATERIAL id (Feature 1, click-a-wall texturing). Names a built-in
     // material in editorMaterials() — the host resolves it to a cached GPU texture +
@@ -79,6 +116,10 @@ struct BlockoutBrush {
     // Round-trips through the brushes[] JSON so a textured blockout reloads as-authored.
     std::string material;
     bool  collide   = true;              // add a static Jolt body
+    // Generator provenance (see the EditorEntity note): stable key + edited flag.
+    // commitBrushEdit()/nudgeBrush() stamp genEdited on a gen-tagged brush.
+    std::string gen;
+    bool genEdited = false;
     // Live links (NOT serialized): the Scene entity id + Jolt body id while editing.
     uint32_t sceneEntity = 0xFFFFFFFFu;
     uint32_t body        = 0;            // x3::phys::BodyId.id (0 == none)
@@ -108,6 +149,30 @@ struct LevelDoc {
 
 // Transform-gizmo axes.
 enum class Axis : uint8_t { None = 0, X, Y, Z };
+
+// ---------------------------------------------------------------------------
+// THE THIRD ROTATION AXIS (Level Architect 11.0) — shared rotation math + gates.
+//
+// One rotation convention for the WHOLE round trip (editor gizmo, OBB pick,
+// scene matrices, Jolt body quats, the LevelDoc loader): local -> world is
+//   R = Ry(yaw) * Rx(pitch) * Rz(roll)
+// with Ry exactly the matrix the 10.x editor already used for yaw, so a doc
+// with pitch == roll == 0 produces bit-identical transforms to before.
+// ---------------------------------------------------------------------------
+// Feature gate: X3_EDITOR_ROT3=0 restores the prior yaw-only behaviour exactly
+// (pitch/roll neither parsed nor emitted, single yaw ring, no body rotation).
+bool rot3Enabled();
+// Portal gate: X3_EDITOR_PORTAL=0 restores prior behaviour ("portal" entities
+// are treated as generic markers; no portal UI/overlay).
+bool portalsEnabled();
+// Column-major 3x3 rotation, R = Ry(yaw)*Rx(pitch)*Rz(roll). out[col*3 + row].
+void rotYPR(float yaw, float pitch, float roll, float outR9[9]);
+// Same rotation as an (x, y, z, w) quaternion (IPhysicsWorld convention).
+void yprToQuat(float yaw, float pitch, float roll, float outQuat[4]);
+// The rotate tool's ANGLE snap step (radians) — 5 degrees, mirroring the move
+// gizmo's grid snap. One constant so the gizmo, the keyboard op and the tests
+// can never disagree.
+constexpr float kAngleSnapRad = 5.0f * 0.01745329252f;
 
 // ---------------------------------------------------------------------------
 // Undo/redo command stack (P0.6). The history is BRUSH-FOCUSED: every brush
@@ -371,6 +436,15 @@ public:
     bool  resizeSelectedBrush(Axis axis, float delta);
     // Move the selected brush along `axis` by `delta` metres (snapped to the grid).
     bool  moveSelectedBrush(Axis axis, float delta);
+    // Rotate the selected brush about `axis` by `delta` radians (11.0: X = pitch,
+    // Y = yaw — the 10.9 axis, Z = roll), snapped to kAngleSnapRad when grid snap
+    // is on (mirrors the move gizmo's snap behaviour). With rot3 disabled only the
+    // Y axis operates (prior behaviour). Returns true iff the angle changed.
+    bool  rotateSelectedBrush(Axis axis, float delta);
+    // Snap an angle (radians) to the 5-degree rotate step (identity when snap off).
+    float snapAngle(float v) const {
+        return m_snap ? std::round(v / kAngleSnapRad) * kAngleSnapRad : v;
+    }
     // Delete the selected brush. Returns true if one was removed.
     bool  deleteSelectedBrush();
 

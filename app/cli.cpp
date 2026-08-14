@@ -1,7 +1,6 @@
 // cli — parseCli() (the arg-parse loop) lifted VERBATIM from main() (#28 Phase D).
 #include "cli.h"
 #include "settings_io.h"   // readWindowSize (saved window default)
-#include "test_registry.h" // g_testGrounding (--test-grounding; see the note there)
 #include <string_view>
 #include <cstdlib>
 #include <cstring>
@@ -145,9 +144,6 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-pickup") o.testPickup = true;
         else if (a == "--test-combat") o.testCombat = true;
         else if (a == "--test-deathragdoll") o.testDeathRagdoll = true;
-        // Sets the inline global rather than a CliOptions field: main()'s
-        // field-by-field copy into TestFlags is owned by the EXE split lane.
-        else if (a == "--test-grounding") x3::apphost::g_testGrounding = true;
         else if (a == "--test-audio") o.testAudio = true;
         else if (a == "--test-acoustics") o.testAcoustics = true;
         else if (a == "--test-level1") o.testLevel1 = true;
@@ -182,6 +178,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-terrain") o.testTerrain = true;
         else if (a == "--test-terrainplace") o.testTerrainPlace = true;
         else if (a == "--test-terraincorridor") o.testTerrainCorridor = true;
+        else if (a == "--test-tunneldrive") o.testTunnelDrive = true;
         else if (a == "--test-tunnelmouth") o.testTunnelMouth = true;
         else if (a == "--test-streaming") o.testStreaming = true;
         else if (a == "--test-ai") o.testAi = true;
@@ -357,6 +354,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
                 o.benchFrames = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
         }
         else if (a == "--editor") o.editorMode = true;
+        else if (a == "--print-assetroot") o.printAssetRoot = true;
         else if (a == "--screenshot-editor") {
             o.editorShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.editorShotPath = argv[++i];

@@ -29,13 +29,21 @@ namespace {
 const float kGridSteps[] = { 1.0f, 0.5f, 0.25f };
 const char* kGridLabels[] = { "1 m", "0.5 m", "0.25 m" };
 
-// Build a column-major model matrix from an origin-centered brush's pos + yaw.
+// Build a column-major model matrix from an origin-centered brush's pos + full
+// 11.0 rotation (rotYPR with pitch=roll=0 is bit-identical to the old yaw path).
 void brushMatrix(const BlockoutBrush& b, float m[16]) {
-    const float c = std::cos(b.yaw), s = std::sin(b.yaw);
-    m[0]=c;    m[1]=0; m[2]=-s;   m[3]=0;
-    m[4]=0;    m[5]=1; m[6]=0;    m[7]=0;
-    m[8]=s;    m[9]=0; m[10]=c;   m[11]=0;
+    float R[9];
+    rotYPR(b.yaw, b.pitch, b.roll, R);
+    m[0]=R[0];  m[1]=R[1];  m[2]=R[2];   m[3]=0;
+    m[4]=R[3];  m[5]=R[4];  m[6]=R[5];   m[7]=0;
+    m[8]=R[6];  m[9]=R[7];  m[10]=R[8];  m[11]=0;
     m[12]=b.pos[0]; m[13]=b.pos[1]; m[14]=b.pos[2]; m[15]=1;
+}
+
+// True iff the brush carries any rotation at all (drives the body-orientation path).
+bool brushRotated(const BlockoutBrush& b) {
+    return std::fabs(b.yaw) > 1e-6f || std::fabs(b.pitch) > 1e-6f ||
+           std::fabs(b.roll) > 1e-6f;
 }
 } // namespace
 
@@ -383,13 +391,31 @@ void EditorHost::spawnBrush(int idx, x3::rhi::IRenderDevice& device,
             x3::phys::Vec3 he{ b.size[0]*0.5f, b.size[1]*0.5f, b.size[2]*0.5f };
             x3::phys::BodyId bid = physics.addBox(he, pos, 0.0f, x3::phys::Layer::Static);
             b.body = bid.id;
+            // 11.0: orient the box body to the brush (before this, even a yawed box
+            // collided axis-aligned — the render lied about the walls). Fallback
+            // X3_EDITOR_ROT3=0 restores the old axis-aligned bodies exactly.
+            if (rot3Enabled() && brushRotated(b)) {
+                float q[4];
+                yprToQuat(b.yaw, b.pitch, b.roll, q);
+                physics.setBodyRotation(bid, q);
+            }
         } else {
-            // The collision verts are origin-centered (local); offset them to the brush
-            // world position so the static mesh sits under the rendered solid.
-            // (Yaw on a mesh brush is a P3 refinement; axis-aligned is the P2 core.)
+            // The collision verts are origin-centered (local); rotate them by the
+            // brush orientation (11.0 — previously axis-aligned even under yaw),
+            // then offset to the brush world position.
             std::vector<float> cv = pm.cverts;
+            const bool rot = rot3Enabled() && brushRotated(b);
+            float R[9];
+            if (rot) rotYPR(b.yaw, b.pitch, b.roll, R);
             for (size_t i = 0; i + 2 < cv.size(); i += 3) {
-                cv[i+0] += b.pos[0]; cv[i+1] += b.pos[1]; cv[i+2] += b.pos[2];
+                float x = cv[i+0], y = cv[i+1], z = cv[i+2];
+                if (rot) {
+                    const float wx = R[0]*x + R[3]*y + R[6]*z;
+                    const float wy = R[1]*x + R[4]*y + R[7]*z;
+                    const float wz = R[2]*x + R[5]*y + R[8]*z;
+                    x = wx; y = wy; z = wz;
+                }
+                cv[i+0] = x + b.pos[0]; cv[i+1] = y + b.pos[1]; cv[i+2] = z + b.pos[2];
             }
             x3::phys::BodyId bid = physics.addStaticMesh(
                 cv.data(), (uint32_t)(cv.size()/3),
@@ -421,8 +447,18 @@ void EditorHost::syncBrushTransform(int idx, x3::game::Scene& scene,
     BlockoutBrush& b = m_doc.brushes[idx];
     if (b.sceneEntity != 0xFFFFFFFFu && b.sceneEntity < scene.size())
         brushMatrix(b, scene.get(b.sceneEntity).transform);
-    if (b.body) physics.setBodyPosition(x3::phys::BodyId{ b.body },
-                                        x3::phys::Vec3{ b.pos[0], b.pos[1], b.pos[2] });
+    if (b.body) {
+        physics.setBodyPosition(x3::phys::BodyId{ b.body },
+                                x3::phys::Vec3{ b.pos[0], b.pos[1], b.pos[2] });
+        // 11.0: keep a Box body's orientation in step with the brush (mesh-collision
+        // brushes bake rotation into their triangles instead — a rotation change on
+        // those routes through Respawn, see brushNeedsRespawn).
+        if (rot3Enabled() && b.type == 0u) {
+            float q[4];
+            yprToQuat(b.yaw, b.pitch, b.roll, q);
+            physics.setBodyRotation(x3::phys::BodyId{ b.body }, q);
+        }
+    }
 }
 
 void EditorHost::teardownLinks(uint32_t sceneEntity, uint32_t body,
@@ -912,6 +948,28 @@ int EditorHost::placeModel(const std::string& relPath, x3::rhi::IRenderDevice& d
     return idx;
 }
 
+// ---------------------------------------------------------------------------
+// 11.0 PORTAL authoring — place a "portal" entity at the fly-cam focus. The
+// portal faces BACK at the camera (yaw = camera yaw + pi), which is what you
+// want when you fly to a wall and stamp a door on it. Default 3x3 m plane,
+// 0.4 m marker slab. See the LEVELDOC PORTAL CONTRACT in editor.h.
+// ---------------------------------------------------------------------------
+int EditorHost::placePortal() {
+    float focus[3] = {
+        m_state.snapValue(m_camX + std::cos(m_camPitch)*std::cos(m_camYaw) * 6.0f),
+        m_state.snapValue(m_camY + std::sin(m_camPitch) * 6.0f),
+        m_state.snapValue(m_camZ + std::cos(m_camPitch)*std::sin(m_camYaw) * 6.0f),
+    };
+    int idx = m_state.addEntity("portal", focus);
+    if (idx < 0) return idx;
+    EditorEntity& e = m_doc.entities[idx];
+    e.name = "portal_" + std::to_string(idx);
+    e.yaw  = m_camYaw + 3.14159265f;              // local +Z (the facing) toward the camera
+    e.size[0] = 3.0f; e.size[1] = 3.0f; e.size[2] = 0.4f;
+    e.tint[0] = 0.30f; e.tint[1] = 0.90f; e.tint[2] = 1.0f;   // the palette portal cyan
+    return idx;
+}
+
 void EditorHost::renderModels(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) {
     if (m_doc.entities.empty()) return;
     const float white[4] = { 1, 1, 1, 1 };
@@ -919,12 +977,15 @@ void EditorHost::renderModels(x3::rhi::IRenderDevice& device, const x3::rhi::Fra
         if (e.model.empty()) continue;
         const LoadedModel* lm = loadModelCached(e.model, device);
         if (!lm || !lm->ok) continue;
-        // Object transform: yaw about +Y, uniform scale, translate to pos (column-major).
-        const float c = std::cos(e.yaw), s = std::sin(e.yaw), k = e.scale;
+        // Object transform: full 11.0 rotation, uniform scale, translate (column-
+        // major). rotYPR with pitch=roll=0 reproduces the old yaw-only matrix.
+        float R[9];
+        rotYPR(e.yaw, e.pitch, e.roll, R);
+        const float k = e.scale;
         float obj[16] = {
-            c*k, 0, -s*k, 0,
-            0,   k, 0,    0,
-            s*k, 0, c*k,  0,
+            R[0]*k, R[1]*k, R[2]*k, 0,
+            R[3]*k, R[4]*k, R[5]*k, 0,
+            R[6]*k, R[7]*k, R[8]*k, 0,
             e.pos[0], e.pos[1], e.pos[2], 1
         };
         for (const auto& d : lm->drawables) {
@@ -1113,6 +1174,19 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
 
     ImGui::Separator();
     ImGui::TextDisabled("Add buttons are undoable (Ctrl+Z / Ctrl+Y).");
+
+    // ---- 11.0: PORTAL placement (the tunnel-lane payoff). Places a portal
+    // entity facing the camera; orient it with the Details rows / see it via the
+    // cyan overlay frame. (Entities have no undo stack yet — same as models.)
+    if (portalsEnabled()) {
+        ImGui::Separator();
+        if (ImGui::Button("Add Portal")) {
+            int idx = placePortal();
+            if (idx >= 0) m_state.select(idx);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(faces the camera)");
+    }
     ImGui::End();
 
     // ---- Details panel (P3): two-way-synced pos/yaw/size for the selection, each
@@ -1125,7 +1199,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         BlockoutBrush& b = m_doc.brushes[si];
         ImGui::Text("Selected: %s  [%s]", b.name.c_str(), EditorState::brushTypeName(b.type));
         const float step = kGridSteps[m_gridSel];
-        bool moved = false, resized = false;
+        bool moved = false, resized = false, rotated = false;
 
         // Tool readout (drives the viewport gizmo). Q select / W move.
         ImGui::TextDisabled("Tool: %s  (Q select, W move, Ctrl+Z/Y undo/redo)",
@@ -1149,13 +1223,28 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
         if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
 
-        // Rotation (yaw degrees in UI, radians in doc).
+        // Rotation (degrees in UI, radians in doc). 11.0: yaw keeps its row; pitch
+        // and roll join it — same widget, same undo bracketing, same drag feel.
         float yawDeg = b.yaw * 57.29578f;
         if (ImGui::DragFloat("Yaw", &yawDeg, 1.0f)) {
-            b.yaw = yawDeg * 0.0174533f; moved = true;
+            b.yaw = yawDeg * 0.0174533f; rotated = true;
         }
         if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
         if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+        if (rot3Enabled()) {
+            float pitchDeg = b.pitch * 57.29578f;
+            if (ImGui::DragFloat("Pitch", &pitchDeg, 1.0f)) {
+                b.pitch = pitchDeg * 0.0174533f; rotated = true;
+            }
+            if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
+            if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+            float rollDeg = b.roll * 57.29578f;
+            if (ImGui::DragFloat("Roll", &rollDeg, 1.0f)) {
+                b.roll = rollDeg * 0.0174533f; rotated = true;
+            }
+            if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
+            if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+        }
 
         // Scale = full extents (m), snapped + clamped. A change rebuilds the mesh.
         float size[3] = { b.size[0], b.size[1], b.size[2] };
@@ -1178,6 +1267,45 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
             if (resized) respawnBrush(si, device, scene, physics);   // rebuild mesh+body
             else if (moved) syncBrushTransform(si, scene, physics);  // transform-only
         }
+    } else if (portalsEnabled() && m_state.selKind() != SelKind::Brush &&
+               m_state.hasSelection() &&
+               m_doc.entities[m_state.selected()].type == "portal") {
+        // ---- 11.0: PORTAL details — position, full 3-axis orientation, plane
+        // size, and the LINK id (the contract consumers pair portals by). Portals
+        // are pure doc data in the editor (the overlay draws them), so edits need
+        // no scene/body sync. Degrees in UI, radians in doc, like the brush rows.
+        int ei = m_state.selected();
+        EditorEntity& e = m_doc.entities[ei];
+        ImGui::Text("Portal: %s", e.name.c_str());
+        if (!e.gen.empty())
+            ImGui::TextDisabled("generated: %s%s", e.gen.c_str(),
+                                e.genEdited ? "  (hand-edited)" : "");
+        ImGui::PushItemWidth(-ImGui::GetFontSize() * 6.0f);
+        float pos[3] = { e.pos[0], e.pos[1], e.pos[2] };
+        if (ImGui::DragFloat3("Pos##ptl", pos, kGridSteps[m_gridSel])) {
+            for (int a = 0; a < 3; ++a) e.pos[a] = m_state.snapValue(pos[a]);
+            if (!e.gen.empty()) e.genEdited = true;
+        }
+        float ypr[3] = { e.yaw * 57.29578f, e.pitch * 57.29578f, e.roll * 57.29578f };
+        const bool r3 = rot3Enabled();
+        bool rot = false;
+        if (ImGui::DragFloat("Yaw##ptl", &ypr[0], 1.0f)) { e.yaw = ypr[0]*0.0174533f; rot = true; }
+        if (r3 && ImGui::DragFloat("Pitch##ptl", &ypr[1], 1.0f)) { e.pitch = ypr[1]*0.0174533f; rot = true; }
+        if (r3 && ImGui::DragFloat("Roll##ptl", &ypr[2], 1.0f))  { e.roll = ypr[2]*0.0174533f; rot = true; }
+        if (rot && !e.gen.empty()) e.genEdited = true;
+        float wh[2] = { e.size[0], e.size[1] };
+        if (ImGui::DragFloat2("W x H##ptl", wh, 0.25f, 0.25f, 200.0f)) {
+            e.size[0] = std::max(0.25f, wh[0]); e.size[1] = std::max(0.25f, wh[1]);
+            if (!e.gen.empty()) e.genEdited = true;
+        }
+        char link[96];
+        std::snprintf(link, sizeof(link), "%s", e.script.c_str());
+        if (ImGui::InputText("Link id##ptl", link, sizeof(link))) {
+            e.script = link;
+            if (!e.gen.empty()) e.genEdited = true;
+        }
+        ImGui::PopItemWidth();
+        if (ImGui::Button("Delete portal")) m_state.deleteSelected();
     } else {
         ImGui::TextDisabled("(no brush selected — pick one in the viewport or Outliner)");
     }
@@ -1302,6 +1430,10 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     // The unobtrusive floating cheat-sheet (corner, faint) — H toggles it.
     drawKeybindOverlay();
 
+    // ---- 11.0 portal overlays (before the gizmo so a selected brush's gizmo
+    // draws on top of a portal frame behind it). ----
+    drawPortalOverlays(device);
+
     // ---- Viewport gizmo + click-pick (P3). Drawn last so it overlays the scene. ----
     {
         ImGuiIO& io = ImGui::GetIO();
@@ -1352,7 +1484,18 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
     if (m_dragging) {
         if (!lmb || si < 0) {
             m_state.commitBrushEdit();
-            if (si >= 0) syncBrushTransform(si, scene, physics);
+            if (si >= 0) {
+                const BlockoutBrush& b = m_doc.brushes[si];
+                // 11.0: a rotate drag on a MESH-collision brush (Ramp/Cylinder/
+                // Stairs) must rebake the world-space collision triangles at
+                // release. During the drag only the render transform tracks (a
+                // per-frame static-mesh rebuild would hitch); the body catches up
+                // here. Boxes stay a cheap quat sync.
+                if (m_tool == Tool::Rotate && rot3Enabled() && b.type != 0u && b.collide)
+                    respawnBrush(si, device, scene, physics);
+                else
+                    syncBrushTransform(si, scene, physics);
+            }
             m_dragging = false; m_dragAxis = Axis::None;
         } else {
             BlockoutBrush& b = m_doc.brushes[si];
@@ -1385,19 +1528,26 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
             }
             // Rotate uses a SEPARATE mapping (angle from cursor about the screen origin),
             // handled here so it doesn't depend on a single axis arm projection.
+            // 11.0: the grabbed RING picks the field — X ring = pitch, Y = yaw (Tim's
+            // 10.9 axis, mapping unchanged), Z = roll. Same 5-degree snap as yaw had.
             if (m_tool == Tool::Rotate) {
                 ImVec2 oc;
                 if (project(b.pos[0], b.pos[1], b.pos[2], oc)) {
                     const float ang = std::atan2(mouse.y - oc.y, mouse.x - oc.x);
-                    float dyaw = ang - m_dragStartAng;
-                    float newYaw = m_dragBaseYaw + dyaw;
-                    // Snap yaw to 5-degree increments when grid-snap is on.
-                    if (m_state.snapEnabled()) {
-                        const float step = 5.0f * 0.0174533f;
-                        newYaw = std::round(newYaw / step) * step;
-                    }
-                    if (std::fabs(newYaw - b.yaw) > 1e-5f) {
-                        b.yaw = newYaw;
+                    float dAng = ang - m_dragStartAng;
+                    // The screen sweep reverses when the rotation axis points AWAY
+                    // from the camera. Y keeps the legacy fixed mapping so the yaw
+                    // drag feels exactly as it always did.
+                    if (m_dragAxis == Axis::X && (m_camX - b.pos[0]) < 0.0f) dAng = -dAng;
+                    if (m_dragAxis == Axis::Z && (m_camZ - b.pos[2]) < 0.0f) dAng = -dAng;
+                    float* field = (m_dragAxis == Axis::X) ? &b.pitch
+                                 : (m_dragAxis == Axis::Z) ? &b.roll : &b.yaw;
+                    float target = m_dragBaseRot + dAng;
+                    // Snap to 5-degree increments when grid-snap is on.
+                    if (m_state.snapEnabled())
+                        target = std::round(target / kAngleSnapRad) * kAngleSnapRad;
+                    if (std::fabs(target - *field) > 1e-5f) {
+                        *field = target;
                         syncBrushTransform(si, scene, physics);
                     }
                 }
@@ -1414,14 +1564,46 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
             const Axis  axes[3] = { Axis::X, Axis::Y, Axis::Z };
             float grabBest = 14.0f; Axis grab = Axis::None; float grabS = 0.0f;
 
-            if (m_tool == Tool::Rotate) {
-                // A single yaw ring (about +Y) in the brush's tool-accent pink.
+            if (m_tool == Tool::Rotate && !rot3Enabled()) {
+                // Legacy (rot3 off): the single yaw ring (about +Y) in tool-accent pink.
                 dl->AddCircle(o, std::max(24.0f, kAxisLen * 22.0f), IM_COL32(255,136,170,255), 48, 2.5f);
                 // Grab anywhere near the ring band.
                 if (!m_dragging) {
                     const float rad = std::max(24.0f, kAxisLen * 22.0f);
                     const float dd = std::sqrt((mouse.x-o.x)*(mouse.x-o.x) + (mouse.y-o.y)*(mouse.y-o.y));
                     if (std::fabs(dd - rad) < 12.0f) grab = Axis::Y;
+                }
+            } else if (m_tool == Tool::Rotate) {
+                // 11.0: THREE world-plane rings — X red, Y green, Z blue (the same
+                // axis colors as the move arms). Each ring is a true 3D circle in
+                // the plane perpendicular to its axis, projected point-by-point
+                // through worldToScreen, so it foreshortens correctly at any camera
+                // angle. Grab = nearest ring vertex within the pick radius.
+                const float r = kAxisLen * 0.85f;
+                const int   N = 40;
+                for (int a = 0; a < 3; ++a) {
+                    float u[3] = { 0, 0, 0 }, v[3] = { 0, 0, 0 };
+                    if (a == 0)      { u[1] = 1; v[2] = 1; }   // X ring: YZ plane
+                    else if (a == 1) { u[0] = 1; v[2] = 1; }   // Y ring: XZ plane
+                    else             { u[0] = 1; v[1] = 1; }   // Z ring: XY plane
+                    const bool active = m_dragging && m_dragAxis == axes[a];
+                    ImVec2 prev; bool prevOk = false;
+                    for (int k = 0; k <= N; ++k) {
+                        const float t  = (float)k / (float)N * 6.2831853f;
+                        const float ct = std::cos(t), st = std::sin(t);
+                        ImVec2 pt;
+                        const bool okp = project(b.pos[0] + (u[0]*ct + v[0]*st) * r,
+                                                 b.pos[1] + (u[1]*ct + v[1]*st) * r,
+                                                 b.pos[2] + (u[2]*ct + v[2]*st) * r, pt);
+                        if (okp && prevOk)
+                            dl->AddLine(prev, pt, cols[a], active ? 3.5f : 2.0f);
+                        if (okp && !m_dragging) {
+                            const float d = std::sqrt((mouse.x-pt.x)*(mouse.x-pt.x) +
+                                                      (mouse.y-pt.y)*(mouse.y-pt.y));
+                            if (d < grabBest) { grabBest = d; grab = axes[a]; }
+                        }
+                        prev = pt; prevOk = okp;
+                    }
                 }
             } else {
                 // Move / Scale: three axis arms. Scale draws a box at the tip, Move a dot.
@@ -1454,7 +1636,10 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
                 m_dragging = true; m_dragAxis = grab; m_dragStartS = grabS;
                 const int a = (grab == Axis::X) ? 0 : (grab == Axis::Y) ? 1 : 2;
                 m_dragBaseM   = (m_tool == Tool::Scale) ? b.size[a] : b.pos[a];
-                m_dragBaseYaw = b.yaw;
+                // Rotate: base the drag on the grabbed ring's angle field (11.0).
+                m_dragBaseRot = (m_tool != Tool::Rotate) ? b.yaw
+                              : (grab == Axis::X) ? b.pitch
+                              : (grab == Axis::Z) ? b.roll : b.yaw;
                 m_dragStartAng = std::atan2(mouse.y - o.y, mouse.x - o.x);
                 m_state.beginBrushEdit(si);     // group the drag into one undo step
             }
@@ -1476,6 +1661,61 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
 }
 
 // ---------------------------------------------------------------------------
+// 11.0 — PORTAL overlays. Every "portal" entity is drawn as an oriented wire
+// frame (its W x H plane, cross-braced) + a facing-normal arrow + its name, on
+// the ImGui foreground list via worldToScreen. This is the editor-side visual;
+// the LevelDoc loader spawns the in-game marker slab. Pure overlay: no scene
+// entities, no meshes, nothing to leak or tear down.
+// ---------------------------------------------------------------------------
+void EditorHost::drawPortalOverlays(x3::rhi::IRenderDevice& device) {
+    if (!portalsEnabled()) return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    auto project = [&](const float w[3], ImVec2& out) -> bool {
+        float sx = 0, sy = 0;
+        if (!device.worldToScreen(w[0], w[1], w[2], sx, sy)) return false;
+        out = ImVec2(sx, sy); return true;
+    };
+    for (int i = 0; i < (int)m_doc.entities.size(); ++i) {
+        const EditorEntity& e = m_doc.entities[i];
+        if (e.type != "portal") continue;
+        const bool sel = (m_state.selKind() != SelKind::Brush && m_state.selected() == i);
+        const ImU32 col = sel ? IM_COL32(255, 209, 46, 255)      // selection amber
+                              : IM_COL32(77, 230, 255, 220);     // portal cyan
+        float R[9];
+        rotYPR(e.yaw, e.pitch, e.roll, R);
+        const float hw = (e.size[0] > 0 ? e.size[0] : 3.0f) * 0.5f;
+        const float hh = (e.size[1] > 0 ? e.size[1] : 3.0f) * 0.5f;
+        // The plane is LOCAL X (width) x LOCAL Y (height); facing is LOCAL +Z.
+        auto toWorld = [&](float lx, float ly, float lz, float out[3]) {
+            out[0] = e.pos[0] + R[0]*lx + R[3]*ly + R[6]*lz;
+            out[1] = e.pos[1] + R[1]*lx + R[4]*ly + R[7]*lz;
+            out[2] = e.pos[2] + R[2]*lx + R[5]*ly + R[8]*lz;
+        };
+        float c0[3], c1[3], c2[3], c3[3], n0[3], n1[3];
+        toWorld(-hw, -hh, 0, c0); toWorld(hw, -hh, 0, c1);
+        toWorld(hw, hh, 0, c2);   toWorld(-hw, hh, 0, c3);
+        toWorld(0, 0, 0, n0);     toWorld(0, 0, 1.2f, n1);
+        ImVec2 p0, p1, p2, p3, a0, a1;
+        if (project(c0, p0) && project(c1, p1) && project(c2, p2) && project(c3, p3)) {
+            dl->AddLine(p0, p1, col, sel ? 3.0f : 2.0f);
+            dl->AddLine(p1, p2, col, sel ? 3.0f : 2.0f);
+            dl->AddLine(p2, p3, col, sel ? 3.0f : 2.0f);
+            dl->AddLine(p3, p0, col, sel ? 3.0f : 2.0f);
+            dl->AddLine(p0, p2, col, 1.0f);              // cross-brace: reads as a
+            dl->AddLine(p1, p3, col, 1.0f);              // plane, not a box face
+            char lbl[96];
+            std::snprintf(lbl, sizeof(lbl), "%s%s%s", e.name.c_str(),
+                          e.script.empty() ? "" : " -> ", e.script.c_str());
+            dl->AddText(ImVec2((p0.x+p2.x)*0.5f + 6, (p0.y+p2.y)*0.5f - 18), col, lbl);
+        }
+        if (project(n0, a0) && project(n1, a1)) {
+            dl->AddLine(a0, a1, col, 2.0f);
+            dl->AddCircleFilled(a1, 4.0f, col);          // arrow tip = the facing side
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Phase 5 — resolve the faced AXIS: which world axis the crosshair ray crosses the
 // looked-at brush on. Transform the camera ray into the brush's local frame, run the
 // slab test, and report the axis of the entry face. Falls back to the camera-forward
@@ -1487,12 +1727,17 @@ Axis EditorHost::facedAxis(int brushIdx) const {
     const float fz = std::cos(m_camPitch) * std::sin(m_camYaw);
     if (brushIdx >= 0 && brushIdx < (int)m_doc.brushes.size()) {
         const BlockoutBrush& b = m_doc.brushes[brushIdx];
-        const float c = std::cos(b.yaw), s = std::sin(b.yaw);
-        // world->local (transpose of R(yaw)); translate to the brush center.
+        // world->local: transpose of the full 11.0 rotation (dot with R's columns);
+        // translate to the brush center. Yaw-only brushes behave exactly as before.
+        float R[9];
+        rotYPR(b.yaw, b.pitch, b.roll, R);
         const float ox = m_camX-b.pos[0], oy = m_camY-b.pos[1], oz = m_camZ-b.pos[2];
-        const float lox = c*ox - s*oz, loy = oy, loz = s*ox + c*oz;
-        const float ldx = c*fx - s*fz, ldy = fy, ldz = s*fx + c*fz;
-        const float ro[3] = { lox, loy, loz }, rd[3] = { ldx, ldy, ldz };
+        const float ro[3] = { R[0]*ox + R[1]*oy + R[2]*oz,
+                              R[3]*ox + R[4]*oy + R[5]*oz,
+                              R[6]*ox + R[7]*oy + R[8]*oz };
+        const float rd[3] = { R[0]*fx + R[1]*fy + R[2]*fz,
+                              R[3]*fx + R[4]*fy + R[5]*fz,
+                              R[6]*fx + R[7]*fy + R[8]*fz };
         const float h[3] = { b.size[0]*0.5f, b.size[1]*0.5f, b.size[2]*0.5f };
         float tmin = 0.0f, tmax = 1e30f; int entryAxis = -1; bool hit = true;
         for (int a = 0; a < 3; ++a) {

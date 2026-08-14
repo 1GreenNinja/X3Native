@@ -409,6 +409,7 @@ public:
     // here (the marker is purely a CPU sentinel), so there is nothing to destroy.
     TextureHandle registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
                                           TextureHandle snow,  TextureHandle sand,
+                                          TextureHandle rockHigh,
                                           TextureHandle grassN, TextureHandle rockN,
                                           TextureHandle snowN,  TextureHandle sandN) override;
 
@@ -2356,15 +2357,11 @@ private:
     VkDescriptorSet       m_bindlessSet    = VK_NULL_HANDLE;
     uint32_t              m_nextBindless   = 0;   // next free bindless slot
     // Terrain material splat: the marker handle id returned by
-    // registerTerrainMaterial() + the four resolved detail bindless indices
-    // (grass, rock, snow, sand). 0 marker id == no terrain material registered.
+    // registerTerrainMaterial() + the five resolved detail bindless indices
+    // (grass, rock, snow, sand, high-altitude rock — [4] optional, 0 = absent).
+    // 0 marker id == no terrain material registered.
     uint32_t              m_terrainMarkerId = 0;
-    uint32_t              m_terrainTexIdx[4] = { 0, 0, 0, 0 };
-    // ...and the matching NORMAL-map bindless indices, same layer order. 0 = the
-    // layer has no normal map -> mesh.frag falls back to the geometry normal for
-    // it. These ride the SsaoControl UBO (terrainNrm), not the object SSBO row:
-    // the terrain material set is device-global, so per-object would be 4 bytes
-    // of the same constant on every terrain draw.
+    uint32_t              m_terrainTexIdx[5] = { 0, 0, 0, 0, 0 };
     uint32_t              m_terrainNrmIdx[4] = { 0, 0, 0, 0 };
     VkDescriptorSetLayout m_objSetLayout   = VK_NULL_HANDLE;
     VkDescriptorPool      m_objPool        = VK_NULL_HANDLE;

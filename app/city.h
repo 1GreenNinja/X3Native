@@ -48,6 +48,22 @@ struct CityZonePlan {
     uint32_t    buildingCount = 0;          // graybox buildings placed
 };
 
+// BOOT STEP for the freeway tunnels. Registers ONE TerrainCorridor per plan in
+// kTunnels, aimed along its heading at the range it serves, so the ground is
+// actually cut and bored instead of being decorated with two boxes.
+//
+// MUST be called at BOOT, before the first terrain height query /
+// TerrainStreamer::init(), per app/terrain.h's registry contract. It cannot
+// live in the city REGION builder: the city is streamed, so that builder runs
+// long after terrain init and any corridor registered there would be ignored by
+// tiles already generated.
+//
+// Returns the number of plans that produced a GENUINE BORE. A plan whose
+// heading crosses no hill registers its cutting and reports no bore — that is a
+// real answer about the terrain, not a failure, and the caller must not dress a
+// tunnel there. Idempotent.
+uint32_t registerCityFreewayTunnels();
+
 struct FreewayTunnelPlan {
     const char* name = "";
     float mouthX = 0.0f, mouthZ = 0.0f;     // tunnel mouth (city side)
