@@ -66,6 +66,22 @@ inline std::string resolveAssetRoot() {
     // living only on the authoring box while it sat in assets/ the whole time.
     // Requiring a known marker subdirectory makes a wrong-but-existing path
     // fail over to the next candidate instead of winning.
+    //
+    // ⚠ THE MARKER IS LOAD-BEARING, AND IT IS THE ONLY THING HOLDING THIS UP.
+    // A DEPLOYED build (games ship to D:\GameDev\X3Play, exe at the root of it)
+    // sits at a DIFFERENT depth from a build tree, and it re-enters the exact
+    // trap above: for D:\GameDev\X3Play\X3Play.exe, candidate 2 resolves to
+    // "D:\assets" — which case-insensitively matches the unrelated D:\Assets
+    // Unity-pack library that exists on the dev boxes. Today that candidate
+    // loses ONLY because D:\Assets happens to contain neither surface_library
+    // nor converted_glb, and candidate 3 (exe/assets) then wins correctly.
+    // So this is one `mkdir D:\Assets\converted_glb` away from silently
+    // repointing every deployed build at the wrong tree again — and the
+    // failure is SILENT: assets simply go missing, nothing logs an error.
+    // If you add a marker name here, do not pick one an asset library would
+    // plausibly also use. Better: log the resolved root (see assetRoot()'s
+    // callers) so "which tree am I reading?" is answerable from a play log,
+    // and prefer exe/assets ahead of any ../.. candidate for shipped builds.
     auto looksLikeAssetRoot = [&](const fs::path& p) {
         return fs::is_directory(p / "surface_library", ec)
             || fs::is_directory(p / "converted_glb", ec);
