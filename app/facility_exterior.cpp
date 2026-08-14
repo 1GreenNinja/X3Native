@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 
+
 namespace x3::game {
 
 namespace {
@@ -29,6 +30,58 @@ double monoMs() {
     using C = std::chrono::steady_clock;
     return std::chrono::duration<double, std::milli>(C::now().time_since_epoch()).count();
 }
+
+// ===========================================================================
+// BLACK GLASS — the curtain wall's material authoring, and WHY these numbers.
+//
+// THE SPEC (owner): "BLACK GLASS BANDS on WHITE CONCRETE with thick spandrels."
+// WHAT SHIPPED: flat beige stripes. Measured on the landing approach, the glass
+// band read luma 161 against a 175 concrete spandrel — a band contrast of +13
+// on a 175 field, i.e. the two materials were the SAME VALUE. The facade had no
+// black in it at all.
+//
+// THE MEASUREMENT (fix/facade-black-glass, --world surface, Tim's low approach
+// framing, luma sampled per scanline over facade-only rows):
+//
+//   specular  glass band   concrete band   contrast   ratio
+//   1.00 (was)   161.2         174.8        +13.5      0.92   <- flat
+//   0.30          ~112         ~169         +57        0.66
+//   0.12          73.4         168.8        +95.3      0.44   <- shipped
+//   0.00          40.2         166.4       +126.2      0.24   <- flat paint
+//
+// WHERE THE BRIGHTNESS CAME FROM. Not geometry (the shard fix already pushed
+// every pane clear of the wall), not albedo (the backing wall genuinely is
+// 14,16,20), and NOT ACES clipping — a baseline glass pixel measured
+// (173,158,154), nowhere near saturation, so nothing was clipping to white.
+// It was ONE term: glass.frag's split-sum environment reflection `envRefl`,
+// multiplied by this material's `specular`. Proof: deleting the un-fresneled
+// sun/point GGX glint (`specSum`) from the shared pass changed the measurement
+// by 0.0 luma — the sun is BEHIND this face at golden hour — while driving
+// `specular` to 0 collapsed the glass from 161 to 40. Sweeping tint, opacity
+// and base colour at specular 1.0 moved the result by under 1 luma, because
+// the environment reflection is ADDITIVE and swamped the body entirely.
+//
+// WHY PER-INSTANCE AND NOT A SHARED-PASS RETUNE. `specular` is a per-draw
+// GlassMaterial field, and it is exactly the multiplier on the term that was
+// blowing out. So the facade is corrected here, in its own authoring, and the
+// shared glass pass is untouched — Club 1127's bar, the holo panels, ship
+// canopies and vehicle glass are byte-identical. A Fresnel retune of the
+// shared pass would have been the larger, riskier change for no extra result.
+//
+// WHAT THE NUMBERS MEAN. specular 0.12 is not "turn the reflection off": the
+// pane keeps a real, sharp sky reflection that brightens toward grazing (the
+// BRDF LUT's fresnel rise survives), which is what still reads as GLASS rather
+// than black paint — compare the 0.00 row above, which is flat paint. The tint
+// and opacity are the honest authoring for BLACK architectural glass: a dark
+// body over a near-black backing, near-opaque as spandrel glass is. They barely
+// move the luma, but they set the HUE, so the pane goes cool-neutral instead of
+// carrying the warm beige it had.
+constexpr float kGlassSpecular = 0.12f;   // was 1.0f — 100% of the blowout
+constexpr float kGlassOpacity  = 0.90f;   // was ~0.66 — spandrel glass is near-opaque
+constexpr float kGlassTintR    = 0.15f;   // was 0.60 — BLACK glass body, cool-neutral
+constexpr float kGlassTintG    = 0.17f;   // was 0.66
+constexpr float kGlassTintB    = 0.20f;   // was 0.70
+// ===========================================================================
 
 // Deterministic integer-hash micro-variation (the surface world's exact hash).
 float h01(uint32_t s) {
@@ -462,13 +515,13 @@ void FacilityExterior::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 GlassPanelDraw p{};
                 for (int i = 0; i < 16; ++i) p.xform[i] = m[i];
                 p.base[0] = 0.055f; p.base[1] = 0.065f; p.base[2] = 0.080f; p.base[3] = 1.0f;
-                p.mat.opacity    = 0.66f + (r1 - 0.5f) * 0.16f;
+                p.mat.opacity    = kGlassOpacity + (r1 - 0.5f) * 0.06f;
                 p.mat.refraction = 0.004f;
                 p.mat.roughness  = 0.035f + r0 * 0.10f;
-                p.mat.specular   = 1.0f;
-                p.mat.tint[0] = 0.60f + (r2 - 0.5f) * 0.10f;
-                p.mat.tint[1] = 0.66f + (r0 - 0.5f) * 0.08f;
-                p.mat.tint[2] = 0.70f + (r1 - 0.5f) * 0.10f;
+                p.mat.specular   = kGlassSpecular;
+                p.mat.tint[0] = kGlassTintR + (r2 - 0.5f) * 0.03f;
+                p.mat.tint[1] = kGlassTintG + (r0 - 0.5f) * 0.03f;
+                p.mat.tint[2] = kGlassTintB + (r1 - 0.5f) * 0.03f;
                 m_panes.push_back(p);
                 return;
             }
@@ -547,13 +600,13 @@ void FacilityExterior::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float r0 = h01((uint32_t)g * 3u + 11u), r1 = h01((uint32_t)g * 3u + 12u),
                         r2 = h01((uint32_t)g * 3u + 13u);
             mg.base[0] = 0.055f; mg.base[1] = 0.065f; mg.base[2] = 0.080f; mg.base[3] = 1.0f;
-            mg.mat.opacity    = 0.66f + (r1 - 0.5f) * 0.16f;
+            mg.mat.opacity    = kGlassOpacity + (r1 - 0.5f) * 0.06f;
             mg.mat.refraction = 0.004f;
             mg.mat.roughness  = 0.035f + r0 * 0.10f;
-            mg.mat.specular   = 1.0f;
-            mg.mat.tint[0] = 0.60f + (r2 - 0.5f) * 0.10f;
-            mg.mat.tint[1] = 0.66f + (r0 - 0.5f) * 0.08f;
-            mg.mat.tint[2] = 0.70f + (r1 - 0.5f) * 0.10f;
+            mg.mat.specular   = kGlassSpecular;
+            mg.mat.tint[0] = kGlassTintR + (r2 - 0.5f) * 0.03f;
+            mg.mat.tint[1] = kGlassTintG + (r0 - 0.5f) * 0.03f;
+            mg.mat.tint[2] = kGlassTintB + (r1 - 0.5f) * 0.03f;
             m_merged.push_back(mg);
         }
     }
