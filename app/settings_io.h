@@ -10,6 +10,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstdint>
+#include <cctype>
 
 namespace x3 { namespace apphost {
 
@@ -83,6 +84,44 @@ inline bool readSkipIntro() {
     }
     return skip;
 }
+// ---- LIVE TUNING LEVERS (dogfight feel) ------------------------------------
+// Feel is subjective, so the space-combat numbers are LEVERS, not verdicts: any
+// of them can be dialled without a rebuild. Two sources, checked in order:
+//   1. the environment  — X3_<KEY with '.'->'_', upper-cased>, e.g.
+//                         X3_SPACE_STRAFEACCEL=140   (a one-shot A/B)
+//   2. the settings cfg — a `space.strafeAccel=140` line in
+//                         %LOCALAPPDATA%\x3native_settings.cfg (persistent)
+// Anything missing/garbled keeps `def`. The cfg is re-read per call; this is
+// only ever called a handful of times at beat entry, never per frame.
+inline float readTuningFloat(const char* key, float def) {
+    if (!key || !*key) return def;
+    // 1) environment override
+    {
+        std::string env = "X3_";
+        for (const char* p = key; *p; ++p)
+            env += (*p == '.') ? '_' : (char)std::toupper((unsigned char)*p);
+        if (const char* v = std::getenv(env.c_str()); v && *v) {
+            char* end = nullptr;
+            const double d = std::strtod(v, &end);
+            if (end != v) return (float)d;
+        }
+    }
+    // 2) settings cfg
+    std::ifstream f(x3SettingsPath());
+    if (!f) return def;
+    float out = def; std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (line.compare(0, eq, key) != 0) continue;
+        const char* vs = line.c_str() + eq + 1;
+        char* end = nullptr;
+        const double d = std::strtod(vs, &end);
+        if (end != vs) out = (float)d;
+    }
+    return out;
+}
+
 // Write ALL persisted settings (window size + audio + flight mode + skip-intro)
 // in one shot. skipIntro is a TRAILING DEFAULTED param so every pre-existing
 // call site keeps its meaning (and keeps compiling) unchanged.

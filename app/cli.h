@@ -239,6 +239,7 @@ struct CliOptions {
     // and EVA zero-G spacewalk (--test-eva). All headless / deterministic. The
     // playable showcase is `--world space`. Additive flags.
     bool        testSpace = false, testShipAi = false, testTargeting = false;
+    bool        testSpaceHud = false, testCockpitSway = false;
     bool        testShipDamage = false, testEva = false;
     // --test-secretroom (code-locked trapdoor -> secret room): the cell HoloTerminal
     // override code opens a floor-hatch to a stocked secret room below. Additive flag.

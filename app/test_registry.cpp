@@ -143,6 +143,8 @@
 #include "wing_dressing.h"        // x3::game::runWingDressingSelfTest (--test-wingdressing)
 #include "descent_slide.h"        // x3::game::runDescentSlideSelfTest (--test-descentslide, Wave 2C)
 #include "space/targeting.h"      // x3::space::TargetingSystem (--test-targeting)
+#include "space/hud_project.h"    // x3::space::hud (--test-spacehud)
+#include "space/cockpit_sway.h"   // x3::space::CockpitSway (--test-cockpitsway)
 #include "space/ship_damage.h"    // x3::space::runShipDamageSelfTest (--test-ship-damage)
 #include "space/eva.h"            // x3::space::runEvaSelfTest (--test-eva)
 
@@ -1290,6 +1292,16 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testSpace) {
         x3::logInfo("running space-pilot (Act-3 6DOF) --test-space self-test...");
         return x3::game::runSpaceSelfTest() ? 0 : 1;
+    }
+    if (tf.testSpaceHud) {
+        x3::logInfo("running SPACE-HUD projection self-test (world->screen basis, "
+                    "aim-independence, off-screen edge, collision-aware label layout)...");
+        return x3::space::hud::runSpaceHudSelfTest() ? 0 : 1;
+    }
+    if (tf.testCockpitSway) {
+        x3::logInfo("running COCKPIT-SWAY self-test (mass lag spring: sign, clamps, "
+                    "frame-rate independence, settle, hard bypass)...");
+        return x3::space::runCockpitSwaySelfTest() ? 0 : 1;
     }
     if (tf.testEva) {
         x3::logInfo("running EVA spacewalk (Act-3 S12 zero-G) --test-eva self-test...");

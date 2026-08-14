@@ -192,9 +192,25 @@ public:
     // `widthOverride` (m, full ribbon width; 0 = the on-foot kTracerThickness
     // default): SPACE bolts pass ~0.5 m — the 0.035 m rifle tracer is sub-pixel
     // at dogfight range (a 10 m hull judged from 60-300 m).
+    // `carrierVel` (m/s, optional): the SHOOTER's velocity at the instant of the
+    // shot. The beam then RIDES it — both endpoints advance by carrierVel*dt
+    // every frame of the tracer's life, so a bolt fired from a moving ship stays
+    // attached to the muzzle instead of hanging in world space while the hull
+    // slides out from under it.
+    //   OWNER BUG (2026-08, space): "the laser blaster plasma whatever weapon
+    //   beams do not come from the ship when its strafing, they come beside it".
+    //   The muzzle origin was already correct and current-frame; the beam is
+    //   simply a 0.12 s world-anchored segment, so at 110 m/s of lateral thrust
+    //   the ship travels 13 m — nearly two hull lengths — before it fades. It was
+    //   always wrong; it only became visible once the ship could genuinely strafe.
+    //   (This also rules out the one-frame-lag hypothesis, which would predict a
+    //   fixed velocity*dt ~= 0.7 m gap rather than one that GROWS as the bolt ages.)
+    // nullptr / omitted == a stationary shooter == byte-identical to the previous
+    // behaviour, which is what every on-foot caller wants.
     void addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to,
                    WeaponFxKind kind = WeaponFxKind::Default,
-                   float widthOverride = 0.0f);
+                   float widthOverride = 0.0f,
+                   const x3::phys::Vec3* carrierVel = nullptr);
 
     // ---- Combat-event particle/decal presets (the juice) -------------------
     // Each spawns a tuned burst into the bounded pool / decal ring. Called from the
@@ -250,7 +266,12 @@ public:
     // Ship-scale muzzle flash at a wing hardpoint (the on-foot 0.05 m flash is
     // invisible from a chase camera): one bright core + a short spray along
     // the fire direction, so the bolt visibly LEAVES the ship.
-    void spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
+    // `carrierVel` (optional): the shooter's velocity, ADDED to every spawned
+    // particle so the flash rides the hull instead of being left behind — the
+    // particle half of the strafing-beam bug (see addTracer). nullptr == the
+    // previous stationary behaviour.
+    void spawnShipMuzzle(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir,
+                         const x3::phys::Vec3* carrierVel = nullptr);
     // SHIP DISINTEGRATION blast (space-combat power fantasy): a MASSIVE one-shot
     // kill burst — a dense hot fireball (scaled up ~5x vs spawnExplosion, more
     // cores), a huge white-hot central FLASH that blooms hard for a couple frames,
@@ -291,6 +312,7 @@ private:
         float          life = 0.0f;  // remaining seconds; <= 0 means free slot
         float          age  = 0.0f;  // seconds since spawn (Lightning bolt propagation)
         float          width = 0.0f; // full ribbon width override (0 = default)
+        x3::phys::Vec3 vel{};        // shooter velocity the beam rides (0 = world-anchored)
         WeaponFxKind   kind = WeaponFxKind::Default;  // Lightning -> jagged bolt
     };
 
