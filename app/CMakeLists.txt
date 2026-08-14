@@ -228,7 +228,12 @@ add_library(x3app SHARED
     rpg_ui.cpp
     ui.cpp)
 
-target_link_libraries(x3app PUBLIC x3core PRIVATE glfw)
+# PRIVATE, not PUBLIC: the thin launchers only call x3AppMain() and must not
+# inherit the engine static lib. PUBLIC propagated x3core to both exes — harmless
+# today (each exe references nothing from it, so both stay ~13 KB) but a foot-gun
+# the moment a launcher touches an engine symbol and gets its OWN copy of the
+# engine's statics alongside the DLL's.
+target_link_libraries(x3app PRIVATE x3core glfw)
 
 # Dear ImGui (docking) — EDITOR-ONLY. The Level Architect host (app/editor/
 # editor_host.cpp) submits its panels with the CORE ImGui widget API directly; the

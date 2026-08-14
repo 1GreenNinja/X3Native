@@ -223,7 +223,10 @@ bool DriveDemo::skin(x3::rhi::IRenderDevice& device, std::string_view glbDir,
         float noT[16]; std::memcpy(noT, d.nodeTransform, sizeof(noT));
         noT[12] = noT[13] = noT[14] = 0.0f;
         float local[16];
-        x3::asset::mulMat4(kWheelAxisFix, noT, local);
+        // Through the ACCESSOR, not the constant: wheelAxisFix() is what reads
+        // X3_WHEELFIX. Calling kWheelAxisFix directly here made the env-var A/B
+        // silently inert — the toggle appeared to work and tested nothing.
+        x3::asset::mulMat4(wheelAxisFix(), noT, local);
         std::memcpy(d.nodeTransform, local, sizeof(local));
         m_wheelDraw[s].push_back(d);
     }
