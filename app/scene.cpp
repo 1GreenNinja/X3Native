@@ -1,7 +1,28 @@
 // Scene/entity layer implementation (S2). See app/scene.h.
 #include "scene.h"
 
+#include "engine/core/x3_log.h"
+
+#include <cstdlib>
+
 namespace x3::game {
+
+// RT RESIDENCY default (see Scene::setRtResidency). ON unless the process is
+// started with X3_RT_PVS_RESIDENCY=0 — the A/B arm the verification rig uses to
+// reproduce the pre-fix behaviour on the SAME binary, and the escape hatch if a
+// world ever wants the smaller TLAS back.
+bool Scene::rtResidencyDefault() {
+    static const bool s_on = [] {
+        const char* e = std::getenv("X3_RT_PVS_RESIDENCY");
+        const bool on = !(e && e[0] == '0');
+        if (!on)
+            x3::logInfo("[rt] X3_RT_PVS_RESIDENCY=0 — PVS-culled geometry is OUT of the "
+                        "scene TLAS again (pre-fix behaviour: no RT shadows, no GI bounce, "
+                        "no reflections from the next room)");
+        return on;
+    }();
+    return s_on;
+}
 
 uint32_t Scene::add(const Entity& e) {
     uint32_t id;
@@ -141,6 +162,9 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
     LodView lodView{};
     if (lodActive) lodView = lodViewFromDevice(device);
     m_lodStats = LodFrameStats{};
+    // RT RESIDENCY: mirror of the device's sticky rt-only submission mode (see the
+    // loop below). Starts false because beginFrame clears it on the device side.
+    bool rtOnlyMode = false;
 
     for (const Entity& e : m_entities) {
         if (!e.visible || !e.mesh.valid())
@@ -150,10 +174,27 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
         // whenever the cull is inactive, so this is a no-op for every existing entity.
         // Skips are COUNTED (lastRoomCulled) for the unified vis stats block: they are
         // the "rooms" stage of the conserving rooms -> frustum -> hzb -> drawn chain.
-        if (!roomVisible(e.roomId)) {
+        // RT RESIDENCY (fix/rt-pvs-residency). A room-invisible entity is still
+        // GEOMETRY: DDGI probes, reflection rays, RT shadow rays and RT acoustics
+        // all need the wall in the next room, which casts a shadow and bounces
+        // light whether or not the camera can see it. Before this, a PVS skip
+        // meant no draw record, and no draw record meant no TLAS instance — the
+        // geometry did not exist for ray tracing at all. So instead of skipping,
+        // submit it in the device's RT-ONLY mode: it gets a draw record (hence a
+        // TLAS instance and its own row in the stable RT material table) and is
+        // dropped from the raster stream before any SSBO row is assigned, so the
+        // rasterised image, the draw calls and the vis stats are all unchanged.
+        //
+        // The PVS skip is still COUNTED (lastRoomCulled): as far as the unified
+        // vis block is concerned nothing about the raster pipeline moved.
+        const bool rtOnly = !roomVisible(e.roomId);
+        if (rtOnly) {
             ++m_lastRoomCulled;
-            continue;
+            if (!m_rtResidency) continue;   // residency off -> pre-fix behaviour
         }
+        // Sticky device state, so only the TRANSITIONS cost a virtual call — the
+        // room-visible and room-invisible entities arrive in runs.
+        if (rtOnly != rtOnlyMode) { device.setRtOnlyDraws(rtOnly); rtOnlyMode = rtOnly; }
         // ---- LOD level selection --------------------------------------------
         // Swapping the submitted mesh HANDLE is the whole integration: the render
         // device groups draws by mesh id, so every instance that picked the same
@@ -218,6 +259,9 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
             device.drawMeshEmissive(frame, mesh, e.tex, e.baseColor, e.emissive, e.transform);
         }
     }
+    // Hand the device back in RASTER mode: everything the host fans AFTER the
+    // scene (sky, viewmodel, FX, HUD, env-art) must draw normally.
+    if (rtOnlyMode) device.setRtOnlyDraws(false);
 }
 
 void Scene::releaseGpu(x3::rhi::IRenderDevice& device) {

@@ -274,6 +274,26 @@ public:
     // Count how many of this scene's entities would be DRAWN under the current cull
     // state (visible + valid mesh + roomVisible). Diagnostics / the self-test proof.
     uint32_t drawnCount() const;
+    // ---- RT RESIDENCY: PVS-culled geometry in the TLAS ---------------------
+    // The room/portal PVS above decides what the CAMERA can see. Ray tracing has
+    // a different, looser requirement: a wall in the next room still casts RT
+    // shadows, still bounces light into DDGI, still reflects and still occludes
+    // audio rays. Because the PVS ran at SUBMISSION, room-invisible entities
+    // produced no draw record at all and so never entered the scene TLAS — the
+    // geometry did not exist for ray tracing, not merely "was shaded wrong".
+    //
+    // With residency ON (the default) render() still keeps them out of the raster
+    // stream — it submits them through IRenderDevice::setRtOnlyDraws, which
+    // admits them to the TLAS and drops them before any object-SSBO row is
+    // assigned. The rasterised image, the draw calls, the indirect commands and
+    // the unified vis stats are all unchanged; only the TLAS grows.
+    //
+    // OFF restores the pre-fix behaviour exactly (a plain `continue`). It is the
+    // A/B arm for the verification rig and the escape hatch if a world ever wants
+    // the cheaper TLAS. Env override: X3_RT_PVS_RESIDENCY=0.
+    void setRtResidency(bool on) { m_rtResidency = on; }
+    bool rtResidency() const { return m_rtResidency; }
+
     // How many drawable entities the LAST render() skipped because their room was
     // not visible (the PVS prefilter). Feeds IRenderDevice::setVisHostStats so the
     // unified vis stats block conserves: rooms + frustum + hzb + drawn == candidates.
@@ -312,6 +332,11 @@ private:
     std::unordered_set<uint32_t> m_visibleRooms;
     bool m_roomCullEnabled = true;
     bool m_roomCullActive  = false;
+    // RT residency (see setRtResidency). Default ON; X3_RT_PVS_RESIDENCY=0 turns
+    // it off process-wide (resolved once, in scene.cpp).
+    bool m_rtResidency     = rtResidencyDefault();
+    // Process-wide default, read from the environment on first use.
+    static bool rtResidencyDefault();
     // PVS skip count of the last render() (mutable: render() is const). Stats only.
     mutable uint32_t m_lastRoomCulled = 0;
 
