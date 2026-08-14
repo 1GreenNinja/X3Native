@@ -318,6 +318,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-listen") o.testListen = true;
         else if (a == "--test-perfshop") o.testPerfshop = true;
         else if (a == "--test-space") o.testSpace = true;
+        else if (a == "--test-spacehud") o.testSpaceHud = true;
+        else if (a == "--test-cockpitsway") o.testCockpitSway = true;
         else if (a == "--test-eva") o.testEva = true;
         else if (a == "--test-ship-ai") o.testShipAi = true;
         else if (a == "--test-targeting") o.testTargeting = true;

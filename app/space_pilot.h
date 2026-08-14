@@ -73,6 +73,23 @@ public:
         // Any thrust/strafe/vertical input releases the brake. 0 = OFF (pure
         // Newtonian coast — every existing caller + drift self-tests unchanged).
         float flightAssist    = 0.0f;
+        // ---- 6DOF TRANSLATION (owner spec 2026-08: "IDEALLY, we could strafe in
+        // 6DOF and keep on a target the whole time. That is the goal for space
+        // combat" — and the symptom that prompted it: "visually it darts left and
+        // right, but it doesn't FEEL like its moving much past the initial burst").
+        //
+        // ASSIST DELAY. flightAssist above is a STATION-KEEPING brake, and it used
+        // to engage on the very first frame the stick was centred — so a dodge
+        // burst was killed the instant you let go and all the motion lived in the
+        // first few frames. The brake now waits `assistDelay` seconds of no
+        // translation input before it starts, so a strafe COASTS (Newtonian) and
+        // only then settles to a stop. 0 = the old immediate behaviour.
+        float assistDelay     = 0.0f;   // seconds of idle before the brake engages
+        // MAX LATERAL VELOCITY. A dedicated ceiling on the velocity component
+        // PERPENDICULAR to the nose, so "how fast can I slide sideways" is one
+        // number instead of an emergent consequence of maxSpeed. 0 = no separate
+        // cap (only the omnidirectional maxSpeed applies) — every existing caller.
+        float maxStrafeSpeed  = 0.0f;   // m/s of lateral+vertical velocity
         float angularDrag     = 1.5f;   // per-second (snappier rotational settle)
         float boostMul        = 2.5f;   // sprint -> accel multiplier (eats energy)
         float maxSpeed        = 220.0f; // m/s hard speed cap
@@ -123,6 +140,14 @@ public:
         float fovMax         = 80.0f;   // FOV (deg) at full speed + boost punch.
         float chaseFollow    = 10.0f;   // 3P camera position ease rate (1/s).
                                         // Higher = tighter/rigid; lower = laggy.
+        // ELASTIC-CHASE LAG — the VISIBLE "zip" (owner: "the ship doesn't zip
+        // left and right as fast as it should"). The chase point rides the hull;
+        // the camera springs toward it at chaseLagRate (1/s) and the hull is
+        // allowed to displace up to chaseLagMax metres in frame before the camera
+        // catches up. Bigger max = more visible dart; the clamp is what keeps the
+        // ship on screen through a hard maneuver. Were hard-coded 5.0 / 7.5.
+        float chaseLagMax    = 5.0f;    // metres of in-frame displacement allowed
+        float chaseLagRate   = 7.5f;    // spring rate toward the ideal chase point (1/s)
         float lookAhead      = 0.06f;   // 3P look-ahead: meters of camera lead per
                                         // (m/s) of speed along the velocity dir.
         float shakeAmp       = 0.05f;   // screen-shake amplitude (meters / ~rad)
@@ -209,6 +234,20 @@ public:
     // dead-astern. Clamped so you can look almost fully behind + well up/down.
     void addFreeLook(float dx, float dy);
 
+    // 6DOF TARGET HOLD (owner spec: "keep on a target the whole time"). Steers
+    // the ship's NOSE toward `dirWorld` at up to `maxRateRad` rad/s, and touches
+    // NOTHING ELSE — velocity, thrust and the camera are untouched, so the player
+    // keeps translating freely in 6DOF while the guns stay on the contact. This
+    // is the RIGHT shape of assist for a 6DOF ship: it stabilises ORIENTATION,
+    // never translation.
+    //
+    // It writes the look TARGET angles (which m_yaw/m_pitch then ease toward at
+    // Tuning.lookSmoothing), so it composes with mouse input instead of fighting
+    // it — and the host is expected to pass maxRateRad == 0 on any frame the
+    // player is actively looking around, so manual aim always wins outright.
+    // Returns the remaining angular error (radians) for HUD/telemetry.
+    float steerNoseToward(const float dirWorld[3], float maxRateRad, float dt);
+
     // 1P / 3P toggle (showcase binds it to V).
     void toggleCameraMode();
     bool isThirdPerson() const { return m_thirdPerson; }
@@ -291,6 +330,9 @@ private:
     float m_pitch = 0;                 // around ship local +Z (after yaw)
     float m_roll  = 0;                 // around ship local +X (forward)
     float m_rollAxis = 0;              // buffered Q/E this frame
+    // Seconds since the last translation input — gates Tuning.assistDelay so a
+    // strafe burst COASTS before the station-keeping brake takes hold.
+    float m_noThrustFor = 0;
 
     // Active flight mode (default Arcade; changed via setMode).
     FlightMode m_mode = FlightMode::Arcade;

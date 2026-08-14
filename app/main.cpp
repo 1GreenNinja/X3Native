@@ -441,6 +441,8 @@ int x3AppMain(int argc, char** argv) {
         _tf.testPerfshop = o.testPerfshop;
         _tf.testGamma = o.testGamma;
         _tf.testSpace = o.testSpace;
+        _tf.testSpaceHud = o.testSpaceHud;
+        _tf.testCockpitSway = o.testCockpitSway;
         _tf.testEva = o.testEva;
         _tf.testShipAi = o.testShipAi;
         _tf.testTargeting = o.testTargeting;

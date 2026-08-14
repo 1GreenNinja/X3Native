@@ -257,6 +257,132 @@ inline x3::phys::Vec3 groundCharacter(x3::phys::IPhysicsWorld& physics,
     return fixed;
 }
 
+// ===========================================================================
+// AUTHORED SCENE PLACEMENTS: GROUND TO THE **FLOOR**, NOT TO WHATEVER IS UNDER
+// THIS XZ.  (Decision, 2026-08 — stated out loud because it is a judgement
+// call and both answers are defensible.)
+//
+// THE QUESTION. groundCharacter() above finds THE SUPPORT SURFACE under an XZ,
+// which is exactly right for a walker: if you are standing on a crate, your
+// feet belong on top of the crate. But an AUTHORED SCENE PARTICIPANT — a
+// captive posed in a ward, an actor in a scripted tableau — was placed by a
+// human who meant "here, in this room, on this floor". If her authored XZ
+// happens to land over a crate, obeying the support-surface rule stands her ON
+// the crate: correct by the rule, wrong for the scene, and SILENT.
+//
+// THE CALL. For authored scene placements the datum is THE ROOM FLOOR. A prop
+// under the authored XZ is an AUTHORING ACCIDENT, and the safety net must not
+// convert a small authoring slip into a broken shot. So: find the floor, put
+// her on the floor, and SHOUT that the authored XZ is standing in furniture so
+// the placement gets fixed rather than papered over. Grounding is a net (the
+// header says so, twice); a net must never invent a placement nobody asked for.
+//
+// WHY NOT "the authored XZ is simply wrong, leave the rule alone"? Because that
+// answer only works while nobody can see the prop. Today the room-dressing
+// props in this game carry NO physics body at all (app/room_dressing.cpp never
+// touches IPhysicsWorld), so rayCastStrict(Layer::Static) cannot report a crate
+// and the hazard is dormant — it is NOT fixed. The first pass that gives props
+// collision (bullets stopping on a crate, cover, mantling) arms it everywhere
+// at once, silently, in a system whose entire reason for existing is that this
+// bug class shipped three times silently. Fix the authored XZ AND close the
+// door: both, not either.
+//
+// HOW. No new arguments to plumb through three layers: find the floor from the
+// probe itself. Sample a RING of four points a body-and-a-crate away from the
+// authored XZ; the room floor is the LOWEST surface any of them found (a prop
+// can only ever RAISE a sample, never lower it). If the centre probe sits above
+// that floor by a PROP-SIZED amount, the centre hit is furniture — ground to
+// the floor and shout. If it sits above by MORE than a prop (kSceneDeckDrop),
+// the ring found a different DECK (a stairwell, a pit, a mezzanine edge), not
+// furniture — trust the centre probe and behave exactly like groundCharacter.
+//
+// COST: four extra raycasts PER PLACEMENT, at build time only (the header's
+// existing budget is one ray per placement; placements are tens per level).
+// ===========================================================================
+
+// How far out to sample for the real floor. Must clear the biggest dressing
+// prop's footprint plus a humanoid radius: Crate Long is 1.27 m deep and a
+// body is ~0.4 m, so 1.10 m from the authored XZ is outside a short crate and
+// still inside any room a character is authored in.
+inline constexpr float kSceneFloorRing = 1.10f;
+// A centre-vs-floor step SMALLER than this is not furniture, it is the datum
+// slop the base rule already handles (the 0.15 m proud slab).
+inline constexpr float kScenePropTol   = 0.10f;
+// A centre-vs-floor step LARGER than this is not furniture either — the ring
+// sampled a different deck. Crate Short/Long are 0.60 m; a cot is ~0.55 m; a
+// stacked crate is ~1.22 m. 1.60 m is above every prop and below a storey.
+inline constexpr float kSceneDeckDrop  = 1.60f;
+
+// The room floor under (x,z), sampled AROUND the point so a prop directly
+// underneath cannot masquerade as the floor. `found` is false when no ring
+// sample hit anything static.
+struct SceneFloor { bool found = false; float y = 0.0f; };
+
+inline SceneFloor probeSceneFloor(x3::phys::IPhysicsWorld& physics,
+                                  float x, float z, float nearY,
+                                  float ring = kSceneFloorRing,
+                                  float up = kGroundProbeUp,
+                                  float down = kGroundProbeDown) {
+    SceneFloor f;
+    const float ox[4] = {  ring, -ring,  0.0f,  0.0f };
+    const float oz[4] = {  0.0f,  0.0f,  ring, -ring };
+    for (int i = 0; i < 4; ++i) {
+        const GroundProbe g = probeGround(physics, x + ox[i], z + oz[i], nearY,
+                                          SurfaceType::Unknown, false, up, down);
+        if (!g.found) continue;
+        if (!f.found || g.surfaceY < f.y) { f.found = true; f.y = g.surfaceY; }
+    }
+    return f;
+}
+
+// Place an AUTHORED SCENE character. Same contract as groundCharacter() — takes
+// the wanted FEET position and the art's own dip below its origin, returns
+// where the character should actually stand — with the floor policy above
+// applied on top. Every non-furniture case is byte-identical to
+// groundCharacter(), including the probe-missed and refuse-to-snap paths.
+inline x3::phys::Vec3 groundSceneCharacter(x3::phys::IPhysicsWorld& physics,
+                                           const x3::phys::Vec3& wanted,
+                                           float artLowestBelowFeet,
+                                           const char* who, const char* site,
+                                           SurfaceType hint = SurfaceType::Unknown,
+                                           bool terrain = false,
+                                           GroundProbe* outProbe = nullptr) {
+    GroundProbe g;
+    const x3::phys::Vec3 fixed = groundCharacter(physics, wanted, artLowestBelowFeet,
+                                                 who, site, hint, terrain, &g);
+    if (outProbe) *outProbe = g;
+    if (!g.found) return fixed;              // nothing found: base rule already shouted
+
+    const SceneFloor floor = probeSceneFloor(physics, wanted.x, wanted.z, wanted.y);
+    if (!floor.found) return fixed;          // no floor to prefer — keep the base result
+
+    const float step = g.surfaceY - floor.y;   // how far the centre hit sits above it
+    if (step <= kScenePropTol || step >= kSceneDeckDrop)
+        return fixed;                        // datum slop, or a genuinely different deck
+
+    // FURNITURE. Ground to the floor instead, and say so loudly: the authored XZ
+    // is standing in a prop and THAT is what needs fixing.
+    x3::phys::Vec3 onFloor = wanted;
+    onFloor.y = floor.y + artLowestBelowFeet;
+    char buf[640];
+    std::snprintf(buf, sizeof(buf),
+        "[grounding] !!! AUTHORED SCENE PLACEMENT IS STANDING ON A PROP !!!\n"
+        "[grounding] !!!   character : %s\n"
+        "[grounding] !!!   authored  : (%.3f, %.3f) — the support surface under that XZ is\n"
+        "[grounding] !!!               y=%.4f, but the ROOM FLOOR around it is y=%.4f\n"
+        "[grounding] !!!   STEP      : %.3f m of furniture (crate / cot / bench)\n"
+        "[grounding] !!!   ACTION    : grounded to the FLOOR (y=%.4f), NOT onto the prop.\n"
+        "[grounding] !!!   call site : %s\n"
+        "[grounding] !!! A scene participant belongs on the floor of the room it was posed\n"
+        "[grounding] !!! in. FIX THE AUTHORED XZ — this clamp keeps the shot readable, it\n"
+        "[grounding] !!! does not make the placement correct.",
+        who ? who : "?", (double)wanted.x, (double)wanted.z,
+        (double)g.surfaceY, (double)floor.y, (double)step,
+        (double)onFloor.y, site ? site : "?");
+    x3::logError(buf);
+    return onFloor;
+}
+
 // ---------------------------------------------------------------------------
 // ART DATUM MEASUREMENT — the number every caller needs and nobody had.
 //
@@ -540,6 +666,56 @@ inline bool runGroundingSelfTest() {
                "G10 terrain classifier: steep slope -> Rock (slope-rock override)");
         gcheck(classifyTerrainSurface(0.0f, 300.0f, 0.0f, 0.95f) == SurfaceType::Snow,
                "G10 terrain classifier: high flat peak -> Snow");
+    }
+
+    // ---- G11: AUTHORED SCENE PLACEMENT vs A PROP (the floor-vs-support call) --
+    // A 0.60 m crate (Crate Short's real height) sitting on the interior slab,
+    // with a captive authored directly over it.
+    //   * the SHARED rule grounds her ON the crate — correct for a walker, wrong
+    //     for a posed scene, and silent;
+    //   * groundSceneCharacter() grounds her on the ROOM FLOOR and shouts.
+    // Both behaviours are asserted, so the decision is visible in the gate and a
+    // future change of mind has to change a test, not just a line.
+    {
+        const x3::phys::BodyId crate = physics->addBox(
+            x3::phys::Vec3{ 0.34f, 0.30f, 0.34f },
+            x3::phys::Vec3{ 3.0f, 0.15f + 0.30f, 3.0f }, 0.0f, x3::phys::Layer::Static);
+        physics->optimizeBroadphase();
+
+        const x3::phys::Vec3 authored{ 3.0f, 0.15f, 3.0f };   // on the slab, over the crate
+        const x3::phys::Vec3 support = groundCharacter(*physics, authored, 0.0f,
+                                                       "G11/support-rule", "grounding.h:G11");
+        gcheck(approx(support.y, 0.75f, 0.02f),
+               "G11 the SUPPORT rule stands her on the crate (0.750) — the hazard is real");
+
+        const x3::phys::Vec3 onFloor = groundSceneCharacter(*physics, authored, 0.0f,
+                                                            "G11/scene-rule", "grounding.h:G11");
+        gcheck(approx(onFloor.y, 0.15f, 0.02f),
+               "G11 DECISION: an authored SCENE placement grounds to the FLOOR (0.150), not the prop");
+
+        // ...and the scene rule must NOT become "ignore geometry": a metre away
+        // from the crate it is byte-identical to the shared rule (the 0.15 m
+        // proud-slab correction G1 covers still happens).
+        const x3::phys::Vec3 clearXz{ 6.0f, 0.0f, 3.0f };
+        const x3::phys::Vec3 a = groundCharacter(*physics, clearXz, 0.0f, "G11/a", "grounding.h:G11");
+        const x3::phys::Vec3 b = groundSceneCharacter(*physics, clearXz, 0.0f, "G11/b", "grounding.h:G11");
+        gcheck(approx(a.y, 0.15f) && approx(b.y, a.y),
+               "G11 clear of props the scene rule matches the shared rule exactly");
+
+        // A genuinely different DECK (a 0.90 m riser is above the prop band but a
+        // 2.4 m mezzanine is not furniture) must still be honoured, not "corrected".
+        physics->removeBody(crate);
+        const x3::phys::BodyId deck = physics->addBox(
+            x3::phys::Vec3{ 1.2f, 1.2f, 1.2f },
+            x3::phys::Vec3{ -6.0f, 1.05f, 3.0f }, 0.0f, x3::phys::Layer::Static);
+        physics->optimizeBroadphase();
+        const x3::phys::Vec3 onDeck = groundSceneCharacter(
+            *physics, x3::phys::Vec3{ -6.0f, 2.20f, 3.0f }, 0.0f,
+            "G11/deck", "grounding.h:G11");
+        gcheck(approx(onDeck.y, 2.25f, 0.02f),
+               "G11 a real raised DECK (2.25 m) is still honoured — the rule targets furniture only");
+        physics->removeBody(deck);
+        physics->optimizeBroadphase();
     }
 
     physics->shutdown();

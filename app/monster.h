@@ -1014,6 +1014,32 @@ public:
         m_pos = p; m_yaw = yaw; m_yawTarget = yaw;
     }
 
+    // ---- SCRIPTED-SCENE FACING (2026-08 assault-tableau fix) ---------------
+    // THE BUG THIS CLOSES: a scripted participant was never given a facing AT
+    // ALL. m_yaw defaults to 0 and the calm states only SWEEP around whatever
+    // yaw they already hold (Idle: m_yawTarget = m_yaw + 0.15*sin*dt), so an
+    // unaggroed enemy holds yaw 0 — world -Z — forever. In the F2 ward assault
+    // tableau that pointed every attacker AT A WALL instead of at the captive he
+    // is scripted to be assaulting. RescueVictim has had setFacing() since the
+    // showroom gallery (rescue.h); MonsterSystem never grew the equivalent, so
+    // no caller COULD aim an enemy even if it wanted to.
+    //
+    // `yaw` is the LOGICAL heading in the shared headingToFace convention
+    // (yaw = atan2(-dirX,-dirZ) points the model's local -Z along (dirX,dirZ)).
+    // The 180deg VISUAL flip for the +Z-authored rigged GLBs is applied in the
+    // draw bake, exactly as it is for RescueVictim — pass the heading TOWARD the
+    // target, not the flipped one.
+    //
+    // Sets the slew TARGET as well as the current yaw, so the turn-rate slew in
+    // update() does not immediately drag the body back to where it was.
+    void setFacing(float yaw) { m_yaw = yaw; m_yawTarget = yaw; m_calmYawBase = yaw; }
+    // Face the world XZ point (tx,tz) from wherever this monster currently
+    // stands. Call AFTER the spawn position is final (post-grounding, post
+    // clear-spawn nudge) AND after the target's position is known — reading a
+    // facing before its target exists is the same ordering bug in a new suit.
+    // No-op if the target is on top of us (no defined heading).
+    void faceTowards(float tx, float tz);
+
     // SKINNED CITIZENS (crowd skin layer): externally drive an inert prop's
     // LOCOMOTION + GESTURE, alongside setPropPose. The caller owns the brain
     // (CrowdSystem) and calls this each frame BEFORE update():
@@ -1032,6 +1058,29 @@ public:
     // Drop an active calm loop (back to plain idle/locomotion). Used by the
     // crowd skin layer to toggle the Talk clip on conversation start/end.
     void clearCalmLoop() { m_calmLoopClip = -1; m_calmLoopT = 0.0f; }
+
+    // ---- DAMAGE ENDS THE SCRIPTED SCENE (2026-08) --------------------------
+    // Called from BOTH damage paths (applyFireHit + takeMeleeDamage), on the
+    // survive AND the kill branch. Two things that were missing:
+    //
+    //   1. THE SCRIPTED POSE IS RELEASED, PERMANENTLY. setCalmLoop() latches a
+    //      clip for the object's LIFE, and the anim block replays it every frame
+    //      the AI happens to be Idle/Patrol and standing still. The one-shot
+    //      hit-react preempts it for its clip duration and then falls back INTO
+    //      it — so a shot enemy flinched and then returned to the assault pose,
+    //      bent over, mid-fight. Nothing anywhere cleared it on damage.
+    //
+    //   2. BEING SHOT COUNTS AS A SIGHTING. m_everSawPlayer is set ONLY by a
+    //      successful LOS probe, and the no-LOS branch of the decision block
+    //      will only Search if m_everSawPlayer is already true — otherwise it
+    //      returns to the calm state. So an enemy shot from a spot it could not
+    //      see went straight back to Idle (and, before (1), back to the scripted
+    //      pose) instead of reacting. Seed the alert and force a decision NOW
+    //      rather than waiting out the jittered ~0.15-0.45 s cadence.
+    //
+    // `threatPos` (nullable) is where the damage came from — the shooter's eye
+    // on the ray path; null for a melee hit (the attacker is already adjacent).
+    void onDamaged(const x3::phys::Vec3* threatPos);
 
     // True if the real GLB loaded; false if the procedural fallback box is in use.
     // Valid after buildMonster().
@@ -1287,6 +1336,11 @@ private:
     // ---- Combat-AI state machine (D-ai) -----------------------------------
     AiState m_ai            = AiState::Idle; // current behaviour state
     float   m_yawTarget     = 0.0f;          // desired heading (m_yaw slews toward it)
+    // The heading a CALM state sweeps ABOUT (Idle look-around / patrol pause). Set
+    // on every state entry, at AI init, and by setFacing(). Without it the sweep
+    // fed m_yaw back into its own target and drifted the heading away — so a
+    // scripted participant would not hold the facing it was posed with.
+    float   m_calmYawBase   = 0.0f;
     float   m_stateTime     = 0.0f;          // seconds spent in the current state
     float   m_decisionTimer = 0.0f;          // countdown to the next state re-eval
     float   m_dmgMemory     = 0.0f;          // seconds-left of "recently took damage"

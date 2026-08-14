@@ -771,6 +771,10 @@ FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
     m_dmgMemory   = kAiDamageMemory;
     m_dmgWindowHp += shotDmg;
     m_dormant     = false;   // taking fire WAKES a gated spawn (it fights back)
+    // THE SCRIPTED SCENE IS OVER: release any latched interaction clip and treat
+    // the shot as a sighting so the AI leaves the tableau state. Runs BEFORE the
+    // kill/survive split so it is impossible to add a damage path that forgets it.
+    onDamaged(&eye);
 
     if (dead) {
         // ---- Death: remove the physics body IMMEDIATELY (so subsequent rays
@@ -845,6 +849,45 @@ void MonsterSystem::overrideClip(ClipSlot slot, const char* fuzzyName) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SCRIPTED-SCENE FACING. Aim this monster's local -Z at the world XZ point
+// (tx,tz) using the SAME headingToFace law the AI uses every frame, so a
+// scripted pose and a live chase agree about what "facing" means.
+// ---------------------------------------------------------------------------
+void MonsterSystem::faceTowards(float tx, float tz) {
+    const float dx = tx - m_pos.x, dz = tz - m_pos.z;
+    if (dx * dx + dz * dz < 1e-6f) return;      // on top of us: no defined heading
+    setFacing(headingToFace(dx, dz));
+}
+
+// ---------------------------------------------------------------------------
+// DAMAGE ENDS THE SCRIPTED SCENE (see the header comment on onDamaged). Runs on
+// every damage path, kill or not — a character that has been shot is in combat,
+// and a combat character is never driven by an interaction clip again.
+// ---------------------------------------------------------------------------
+void MonsterSystem::onDamaged(const x3::phys::Vec3* threatPos) {
+    // (1) Release the scripted calm loop for good. This is the fix for "he
+    // pulled out of Anna and faced the wall, bending over": the Struggle clip
+    // was still driving the skeleton after he had entered combat.
+    if (m_calmLoopClip >= 0) {
+        if (aiLogEnabled())
+            x3::logInfo(std::string("[ai] entity ") + std::to_string(m_entity) +
+                        " scripted calm loop RELEASED (took damage) — combat owns the pose now");
+        m_calmLoopClip = -1;
+        m_calmLoopT    = 0.0f;
+    }
+    // (2) Being shot is a sighting: seed the alert so the no-LOS branch Searches
+    // (turns + investigates) instead of falling straight back to the calm state.
+    if (threatPos) m_lastKnown = *threatPos;
+    m_everSawPlayer = true;
+    if (m_searchTimer < kAiSearchTime) m_searchTimer = kAiSearchTime;
+    if (m_ai == AiState::Idle || m_ai == AiState::Patrol) {
+        m_ai        = AiState::Search;   // out of the tableau state, into combat
+        m_stateTime = 0.0f;
+    }
+    m_decisionTimer = 0.0f;              // re-decide THIS frame, not up to 0.45 s later
+}
+
 int MonsterSystem::clipIndex(ClipSlot slot) const {
     switch (slot) {
         case ClipSlot::Idle:     return m_idleClip;
@@ -903,6 +946,9 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
     m_dmgMemory   = kAiDamageMemory;
     m_dmgWindowHp += dmg;
     m_dormant     = false;   // taking damage WAKES a gated spawn (it fights back)
+    // THE SCRIPTED SCENE IS OVER (same rule as the shot path; no threat position
+    // is available for a melee hit — the attacker is already adjacent).
+    onDamaged(nullptr);
     if (dead) {
         m_alive    = false;
         m_dying    = true;
@@ -1224,7 +1270,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // Mix the entity id into the seed so each instance gets a distinct stream.
         m_rng ^= (m_entity * 2654435761u) + 0x85EBCA6Bu;
         m_decisionTimer = kAiDecisionPeriod * (0.3f + 0.7f * rng01(m_rng));
-        m_yawTarget = m_yaw;
+        m_yawTarget   = m_yaw;
+        m_calmYawBase = m_yaw;   // hold whatever facing the placement gave us
         m_strafeDir = (rng01(m_rng) < 0.5f) ? -1.0f : 1.0f;
     }
 
@@ -1371,6 +1418,7 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 }
                 m_ai = want;
                 m_stateTime = 0.0f;
+                m_calmYawBase = m_yaw;   // a calm state sweeps about where it entered
                 if (m_ai == AiState::Search)  m_searchTimer = kAiSearchTime;
                 if (m_ai == AiState::Regroup) m_regroupTimer = kAiRegroupHold;
             }
@@ -1532,9 +1580,17 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
 
         case AiState::Idle: {
             // Idle: stand still, slow idle heading sweep so it doesn't look frozen.
+            //
+            // THIS USED TO DRIFT. `m_yawTarget = m_yaw + <small>` feeds the CURRENT
+            // heading back into its own target every frame, so the "sweep" is an
+            // integrator, not an oscillation: the slew never returns to where it
+            // started and a calm enemy walks its heading away at ~0.4 rad per 4 s.
+            // That is the second half of "facing the wrong way" — aiming a scripted
+            // participant is pointless if he slowly rotates off his mark while the
+            // player walks over. Sweep around the heading he was GIVEN instead.
             wantMove = false;
             m_searchSweep += dt * (kAiSearchSweepFreq * 0.3f);
-            m_yawTarget = m_yaw + 0.15f * std::sin(m_searchSweep) * dt;
+            m_yawTarget = m_calmYawBase + 0.15f * std::sin(m_searchSweep);
         } break;
 
         case AiState::Patrol: {
@@ -1555,13 +1611,16 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 m_patrolPause -= dt;
                 wantMove = false;
                 m_searchSweep += dt * (kAiSearchSweepFreq * 0.5f);
-                m_yawTarget = m_yaw + 0.35f * std::sin(m_searchSweep) * dt;
+                // Bounded look-around about the arrival heading (see the Idle case:
+                // the old form integrated and walked the heading off its waypoint).
+                m_yawTarget = m_calmYawBase + 0.35f * std::sin(m_searchSweep);
                 if (m_patrolPause <= 0.0f) {
                     m_patrolIdx = (m_patrolIdx + 1) & 3;
                     m_patrolStall = 0;
                 }
             } else if (pl < 0.4f || m_patrolStall > 45) {
                 // Arrived (or the leg is wall-blocked ~0.75 s): begin the pause beat.
+                m_calmYawBase = m_yaw;      // sweep about the heading we arrived on
                 m_patrolPause = m_patrolPauseSec +
                                 0.6f * m_patrolPauseSec * (2.0f * rng01(m_rng) - 1.0f);
                 m_patrolStall = 0;
@@ -1574,10 +1633,11 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         } break;
 
         default: {
-            // Idle: stand still, slow idle heading sweep so it doesn't look frozen.
+            // Idle: stand still, bounded idle sweep about the given heading (see
+            // the AiState::Idle case for why this must not integrate).
             wantMove = false;
             m_searchSweep += dt * (kAiSearchSweepFreq * 0.3f);
-            m_yawTarget = m_yaw + 0.15f * std::sin(m_searchSweep) * dt;
+            m_yawTarget = m_calmYawBase + 0.15f * std::sin(m_searchSweep);
         } break;
     }
 
@@ -3901,6 +3961,156 @@ bool runAiSelfTest() {
         aicheck(noBlindHits && prompt && sink.hits >= 1,
                 "Th2 fresh LOS grants a fair attack promptly after cover breaks");
         w->shutdown();
+    }
+
+    // =======================================================================
+    // SCRIPTED SCENE (2026-08 playtest: the F2 ward assault tableau).
+    //   Ts1  a scripted participant FACES ITS TARGET, and HOLDS that facing
+    //        while it is calm (the defect: no facing was set at all, so every
+    //        attacker held yaw 0 — world -Z — and played an assault animation
+    //        at the ward's back wall).
+    //   Ts2  a DAMAGED character LEAVES the scripted state: the latched calm
+    //        loop is released and the AI leaves Idle (the defect: the Struggle
+    //        clip kept driving the skeleton after he entered combat — "he
+    //        pulled out of Anna, and faced the wall, bending over").
+    //   Ts3  the release survives a shot the enemy could NOT see coming (no
+    //        LOS): being shot must count as a sighting, or the AI falls
+    //        straight back to the calm state and re-enters the tableau pose.
+    //   Ts4  DEATH also leaves the scripted state (if the scripted state can
+    //        block a hit reaction it can block a death animation too).
+    // =======================================================================
+    {
+        // Each sub-block owns its OWN world: a MonsterSystem's Enemy-layer box
+        // outlives its Scene, so sharing a world would leave the previous block's
+        // hitbox sitting at the origin and eating the shot ray.
+        MonsterSystem::Tuning t = aiGuardTuning();
+        t.chaseSpeed = 0.0f;
+        // Multi-clip rig so the calm loop has clips to pin (the default
+        // alien_crawler.glb is idle-only in some drops; _anim always has a set).
+        t.modelFile = "alien_crawler_anim.glb";
+
+        // ---- Ts1: FACES ITS TARGET, and keeps facing it while calm. --------
+        {
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init(); aiGround(*w, 60.0f);
+            Scene scene; MonsterSystem m;
+            m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                x3::phys::Vec3{ 0, 0.4f, 0 }, t);
+            // Target 3 m along +X, 4 m along +Z: forward must become (0.6, 0, 0.8).
+            m.faceTowards(3.0f, 4.0f);
+            const x3::phys::Vec3 f0 = m.facingDir();
+            const bool aimed = std::fabs(f0.x - 0.6f) < 0.02f &&
+                               std::fabs(f0.z - 0.8f) < 0.02f;
+            // No target at all -> the calm state must HOLD it, not drift away.
+            for (int i = 0; i < 240; ++i) {
+                m.update(kAiDt, scene, *w, x3::phys::Vec3{ 0, 1.6f, 0 },
+                         x3::phys::Vec3{ 0, 1.6f, 0 }, nullptr, AttackFxFn{},
+                         BossPhaseFn{}, AllyQueryFn{});
+                w->step(kAiDt);
+            }
+            const x3::phys::Vec3 f1 = m.facingDir();
+            const bool held = aiAngErr(std::atan2(f1.x, f1.z),
+                                       std::atan2(f0.x, f0.z)) < 0.15f;
+            x3::logInfo(std::string("[ai-test] (s1) aimed=") + (aimed ? "1" : "0") +
+                        " forward=(" + std::to_string(f1.x) + ", " + std::to_string(f1.z) +
+                        ") held=" + (held ? "1" : "0"));
+            aicheck(aimed && held,
+                    "Ts1 a scripted participant faces its target and holds it while calm");
+            w->shutdown();
+        }
+
+        // ---- Ts2 / Ts3 / Ts4: damage releases the scripted state. ----------
+        // Pin the calm loop to an EXACT clip so the assertion does not depend on
+        // a particular rig shipping a clip literally named "struggle".
+        auto poseScripted = [&](MonsterSystem& m) {
+            m.setCalmLoopClip(0);
+            return m.calmLoopActive();
+        };
+        {
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init(); aiGround(*w, 60.0f);
+            Scene scene; MonsterSystem m; AiTargetStub tgt;
+            m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                x3::phys::Vec3{ 0, 0.4f, 0 }, t);
+            const bool posed = poseScripted(m);
+            // Idle it for a beat so the tableau is genuinely running.
+            for (int i = 0; i < 30; ++i) {
+                m.update(kAiDt, scene, *w, x3::phys::Vec3{ 0, 1.6f, 0 },
+                         x3::phys::Vec3{ 0, 1.6f, 0 }, nullptr, AttackFxFn{},
+                         BossPhaseFn{}, AllyQueryFn{});
+                w->step(kAiDt);
+            }
+            const bool stillPosed = m.calmLoopActive();
+            // SHOOT HIM (non-lethal): from -Z, straight down +Z into the box.
+            const x3::phys::Vec3 eye{ 0.0f, 0.9f, -5.0f };
+            const FireResult r = m.fire(eye, x3::phys::Vec3{ 0, 0, 1 }, scene, *w, 5);
+            const bool released = !m.calmLoopActive();
+            // ...and the AI must leave the calm state, not flinch and settle back.
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            const bool leftIdle = (m.aiState() != AiState::Idle &&
+                                   m.aiState() != AiState::Patrol);
+            x3::logInfo(std::string("[ai-test] (s2) posed=") + (posed ? "1" : "0") +
+                        " stillPosed=" + (stillPosed ? "1" : "0") +
+                        " hit=" + (r.hitMonster ? "1" : "0") +
+                        " alive=" + (m.alive() ? "1" : "0") +
+                        " released=" + (released ? "1" : "0") +
+                        " state=" + aiStateName(m.aiState()));
+            aicheck(posed && stillPosed && r.hitMonster && m.alive() &&
+                    released && leftIdle,
+                    "Ts2 a damaged character leaves the scripted state (pose released, out of Idle)");
+            w->shutdown();
+        }
+        {
+            // Ts3: shot with NO line of sight (the enemy never saw the player).
+            // m_everSawPlayer is set only by a successful LOS probe, so before this
+            // fix the no-LOS branch returned him straight to the calm state.
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init(); aiGround(*w, 60.0f);
+            Scene scene; MonsterSystem m;
+            m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                x3::phys::Vec3{ 0, 0.4f, 0 }, t);
+            poseScripted(m);
+            const x3::phys::Vec3 eye{ 0.0f, 0.9f, -5.0f };
+            m.fire(eye, x3::phys::Vec3{ 0, 0, 1 }, scene, *w, 5);
+            // Tick with NO target at all — the harshest version of "cannot see him".
+            bool everCalmAgain = false;
+            for (int i = 0; i < 600; ++i) {     // 10 s: well past kAiSearchTime
+                m.update(kAiDt, scene, *w, x3::phys::Vec3{ 0, 1.6f, -5.0f },
+                         x3::phys::Vec3{ 0, 1.6f, -5.0f }, nullptr, AttackFxFn{},
+                         BossPhaseFn{}, AllyQueryFn{});
+                w->step(kAiDt);
+                if (m.calmLoopActive()) everCalmAgain = true;
+            }
+            x3::logInfo(std::string("[ai-test] (s3) everCalmAgain=") +
+                        (everCalmAgain ? "1" : "0") + " state=" + aiStateName(m.aiState()));
+            aicheck(!everCalmAgain,
+                    "Ts3 the scripted pose never returns after damage, even with no LOS");
+            w->shutdown();
+        }
+        {
+            // Ts4: the DEATH path also leaves the scripted state.
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init(); aiGround(*w, 60.0f);
+            Scene scene; MonsterSystem m;
+            m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                x3::phys::Vec3{ 0, 0.4f, 0 }, t);
+            poseScripted(m);
+            const bool killed = m.takeMeleeDamage(100000, scene, *w);
+            const bool released = !m.calmLoopActive();
+            for (int i = 0; i < 20; ++i) {
+                m.update(kAiDt, scene, *w, x3::phys::Vec3{ 0, 1.6f, 0 },
+                         x3::phys::Vec3{ 0, 1.6f, 0 }, nullptr, AttackFxFn{},
+                         BossPhaseFn{}, AllyQueryFn{});
+                w->step(kAiDt);
+            }
+            x3::logInfo(std::string("[ai-test] (s4) killed=") + (killed ? "1" : "0") +
+                        " released=" + (released ? "1" : "0") +
+                        " calmNow=" + (m.calmLoopActive() ? "1" : "0"));
+            aicheck(killed && !m.alive() && released && !m.calmLoopActive(),
+                    "Ts4 death leaves the scripted state too (no latched clip on a corpse)");
+            w->shutdown();
+        }
     }
 
     x3::logInfo(std::string("[ai-test] ") + std::to_string(ai_pass) + " passed, " +

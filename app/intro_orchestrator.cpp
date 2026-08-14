@@ -49,6 +49,9 @@
 #include "mesh_prims.h"       // makeUVSphere — the star core / corona shells
 #include "space/space_layer.h"   // x3::space::SpaceLayer (S0 spine; AtmoDescent runner host)
 #include "space/descent.h"       // x3::space::AtmoDescent (the ion-pulse on-rails coast-down)
+#include "space/hud_project.h"   // world->screen HUD projection + collision-aware label layout
+#include "space/cockpit_sway.h"  // cockpit mass: the interior lags the hull under accel
+#include "settings_io.h"         // readTuningFloat — the live dogfight-feel levers
 
 #include <algorithm>
 #include <cmath>
@@ -366,7 +369,108 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                      // (owner: "MICROSCOPIC window", "can't see the
                                      // ship"). Open chase view sees the whole fight.
                                      // F2 toggles back to the cockpit.
+
+    // ======================================================================
+    // DOGFIGHT-FEEL LEVERS (owner playtest 2026-08: "The ship doesn't zip left
+    // and right as fast as it should, it feels very dampened").
+    //
+    // Feel is subjective, so these are DIALS, not verdicts. Every one can be
+    // changed without a rebuild — set an env var for a one-shot A/B or add the
+    // line to %LOCALAPPDATA%\x3native_settings.cfg to make it stick:
+    //
+    //   X3_SPACE_STRAFEACCEL=44        space.strafeAccel=44
+    //
+    // The effective values are LOGGED at beat entry ([intro-feel]) so whatever
+    // is in the build is always visible in the log next to the frame.
+    //
+    // WHAT CHANGED AND WHY (previous value -> new default):
+    //  * strafeAccel 44 -> 110 m/s^2. Lateral authority was 34% of the forward
+    //    thrust (130), so a sideways dodge took 1.36 s to reach 60 m/s while a
+    //    straight charge took 0.46 s — the ship simply could not slide. 110 is
+    //    85% of forward thrust: 60 m/s of lateral in 0.55 s, and the Shift
+    //    escape-dodge (x5) in 0.11 s.
+    //  * lookBias 0.30 -> 0.15. The target-keeping assist blends the CAMERA GAZE
+    //    toward the locked contact every frame, so 30% of every mouse whip was
+    //    being eaten by an assist pulling the view back onto the target — the
+    //    textbook "assist fighting the input" feel. 0 turns it off entirely;
+    //    0.30 restores the old behaviour for an A/B.
+    //  * chaseLagMax 5 -> 8 m. This is the visible zip: how far the hull may
+    //    displace in frame before the chase camera catches up. 5 m on a 22 m arm
+    //    was ~18% of frame height; 8 m is ~29% and still cannot leave frame.
+    // Everything else is exposed unchanged so it can be dialled from the same
+    // place rather than hunted for in the source.
+    //
+    // 6DOF PASS (owner spec: "IDEALLY, we could strafe in 6DOF and keep on a
+    // target the whole time. That is the goal for space combat", against the
+    // symptom "it darts left and right, but it doesn't FEEL like its moving much
+    // past the initial burst"). Three things were killing a strafe the moment it
+    // started, and none of them was a per-frame damping term:
+    //  * flightAssist 2.5/s engaged on the FIRST idle frame, so releasing the key
+    //    bled the dodge away with a 0.4 s time constant -> all the motion was in
+    //    the opening burst. Now 0.8/s behind a 0.45 s assistDelay: the slide
+    //    HOLDS, then settles to station-keeping (which the owner also asked for).
+    //  * noseFollow 2.8/s rotated the whole velocity vector back onto the nose
+    //    the instant A/D came up, so lateral velocity was not merely damped, it
+    //    was converted into forward motion. That is the exact opposite of 6DOF;
+    //    it is now OFF by default and replaced by...
+    //  * ...targetHold: a ROTATION-only assist that keeps the nose on the locked
+    //    contact while the player translates freely. Assist belongs on
+    //    orientation in a 6DOF ship, never on translation.
+    // DRIFT MODEL, stated explicitly: velocity now PERSISTS while you fly
+    // (Newtonian) and only bleeds when you take your hands off the stick for
+    // longer than space.assistDelay. Set space.flightAssist=0 for pure Newtonian
+    // with no station-keeping at all.
+    const float lvStrafeAccel   = x3::apphost::readTuningFloat("space.strafeAccel",   110.0f);
+    const float lvLinearAccel   = x3::apphost::readTuningFloat("space.linearAccel",   130.0f);
+    const float lvNoseFollow    = x3::apphost::readTuningFloat("space.noseFollow",      0.0f);
+    const float lvFlightAssist  = x3::apphost::readTuningFloat("space.flightAssist",    0.8f);
+    const float lvAssistDelay   = x3::apphost::readTuningFloat("space.assistDelay",     0.45f);
+    const float lvMaxStrafeSpd  = x3::apphost::readTuningFloat("space.maxStrafeSpeed", 160.0f);
+    const float lvTargetHold    = x3::apphost::readTuningFloat("space.targetHold",      1.6f);
+    const float lvLookSmoothing = x3::apphost::readTuningFloat("space.lookSmoothing",  22.0f);
+    const float lvChaseLagMax   = x3::apphost::readTuningFloat("space.chaseLagMax",     8.0f);
+    const float lvChaseLagRate  = x3::apphost::readTuningFloat("space.chaseLagRate",    7.5f);
+    const float lvLookBias      = x3::apphost::readTuningFloat("space.lookBias",        0.15f);
+    const float lvSwayStrength  = x3::apphost::readTuningFloat("space.cockpitSway",     1.0f);
+    tun.maxLinearAccel = lvLinearAccel;
+    tun.maxStrafeAccel = lvStrafeAccel;
+    tun.noseFollow     = lvNoseFollow;
+    tun.flightAssist   = lvFlightAssist;
+    tun.assistDelay    = lvAssistDelay;
+    tun.maxStrafeSpeed = lvMaxStrafeSpd;
+    tun.lookSmoothing  = lvLookSmoothing;
+    tun.chaseLagMax    = lvChaseLagMax;
+    tun.chaseLagRate   = lvChaseLagRate;
+    x3::logInfo("[intro-feel] strafeAccel=" + std::to_string(lvStrafeAccel) +
+                " linearAccel=" + std::to_string(lvLinearAccel) +
+                " noseFollow=" + std::to_string(lvNoseFollow) +
+                " flightAssist=" + std::to_string(lvFlightAssist) +
+                " assistDelay=" + std::to_string(lvAssistDelay) +
+                " maxStrafeSpeed=" + std::to_string(lvMaxStrafeSpd) +
+                " targetHold=" + std::to_string(lvTargetHold) +
+                " lookSmoothing=" + std::to_string(lvLookSmoothing) +
+                " chaseLagMax=" + std::to_string(lvChaseLagMax) +
+                " chaseLagRate=" + std::to_string(lvChaseLagRate) +
+                " lookBias=" + std::to_string(lvLookBias) +
+                " cockpitSway=" + std::to_string(lvSwayStrength) +
+                "  (override: X3_SPACE_<KEY>=v or space.<key>=v in x3native_settings.cfg)");
+
     pilot.spawn(*phys, 0.0f, 0.0f, 0.0f, tun);
+
+    // COCKPIT MASS (owner: "The cockpit stays put when the player ship moves").
+    // Only ever moves the cockpit MESH — camera, boresight and HUD markers stay
+    // on the ship's true pose, so the sway can never fight the aim.
+    x3::space::CockpitSway cockpitSway;
+    {
+        x3::space::CockpitSway::Tuning st{};
+        st.refAccel = tun.maxLinearAccel;   // normal thrust saturates it; boost holds it
+        st.strength = lvSwayStrength;       // 0 = the old rigid cockpit
+        cockpitSway.setTuning(st);
+    }
+    float swayPrevVel[3] = { 0, 0, 0 };
+    bool  swayPrevVelValid = false;
+    float swayPrevYaw = 0.0f;
+    bool  swayPrevYawValid = false;
 
     x3::space::EnemyShipManager enemies;
     enemies.init((uint32_t)std::max(0, beat.enemyCount));
@@ -465,19 +569,28 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // hits (~20-35 s of real flying) — a fight, not a wall.
     auto capital = x3::space::ShipDamage::makeCapital(/*shield*/400, /*hull*/1500, /*subHp*/120);
 
-    const float dt = 1.0f / 60.0f;
-    const int   maxSteps = (int)(beat.timeoutSec / dt);
-    // ---- REAL-TIME PACING (owner playtest: "I can fly for 0.8 seconds ... but not
-    // control my ship"). The beat advances the SIM by a FIXED dt = 1/60 per step, which
-    // is correct for determinism — but the loop presented frames with NO vsync and NO
-    // wall-clock pacing, so on a fast GPU it spun through all maxSteps in a fraction of a
-    // second: a 30 s beat (1800 steps) rendered at ~2000 fps = ~0.9 s of REAL control,
-    // and then it was over. The fix is the house rule (memory: "delta time, never frame
-    // time") applied to the LOOP: gate each fixed step on real elapsed time so 1800 steps
-    // of 1/60 take 30 s of WALL CLOCK. Headless (deterministic tests) is unpaced. If a
-    // frame is genuinely slow (elapsed already past target) we never sleep — we just do
-    // not run FASTER than real time; slower is the renderer's problem, not this gate's.
-    const auto   tStart = std::chrono::steady_clock::now();
+    // ---- TIME BASE -------------------------------------------------------
+    // HEADLESS (self-tests / captures / boot-time) runs a FIXED 1/60 per step:
+    // determinism is the whole point there, and nothing is watching the clock.
+    //
+    // LIVE runs on the WALL CLOCK. It used to advance the sim by the same fixed
+    // 1/60 ONCE PER RENDERED FRAME, sleeping only when it was running AHEAD —
+    // which means the sim could never run faster than real time but could easily
+    // run SLOWER: at 46 fps every second of wall clock only advanced 0.78 s of
+    // game time, so the ship accelerated 22% slower, turned 22% slower, and every
+    // eased term settled 29% later. That is the house rule ("game motion is
+    // scaled by dt, never per-frame") violated at the LOOP level rather than
+    // inside a damping term, and it reads exactly as the owner described it:
+    // "it feels very dampened". Live now measures the real frame interval and
+    // feeds THAT to the sim, clamped to a sane band so a hitch or an alt-tab
+    // cannot teleport the ship or blow up the integrator. Same shape as the
+    // --world space host, which has always done this correctly.
+    constexpr float kFixedDt = 1.0f / 60.0f;
+    constexpr float kMinDt   = 1.0f / 400.0f;   // cap the step rate (600+ fps)
+    constexpr float kMaxDt   = 1.0f / 20.0f;    // a hitch advances at most 50 ms
+    const int   maxSteps = (int)(beat.timeoutSec / kFixedDt);
+    auto  tPrev   = std::chrono::steady_clock::now();
+    float simTime = 0.0f;                       // accumulated sim seconds (was step*dt)
     int   localSalvosFaced = 0, localSalvosDodged = 0;
     int   localShotsFired = 0, localShotsHit = 0;
     int   localSubsDestroyed = 0;
@@ -1167,7 +1280,17 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     bool  capKilled = false;
     (void)capKillPos;
     for (int step = 0; interactive || step < maxSteps; ++step) {
-        const float tNow = (float)step * dt;
+        // See the TIME BASE note above: fixed 1/60 headless, real elapsed live.
+        float dt = kFixedDt;
+        if (interactive) {
+            const auto now = std::chrono::steady_clock::now();
+            dt = (float)std::chrono::duration<double>(now - tPrev).count();
+            tPrev = now;
+            if (!(dt > kMinDt)) dt = kMinDt;      // also catches NaN
+            if (dt > kMaxDt)    dt = kMaxDt;
+        }
+        simTime += dt;
+        const float tNow = simTime;
 
         // ---- Input: live reads GLFW; headless uses a deterministic synthetic
         //      "competent pilot" profile (steady forward + aim at the capital). ----
@@ -1300,6 +1423,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 in.moveFwd = 0.0f;
                 fire = (step >= 402 && step < 424) ||
                        (step >= 630 && step < 900);
+                // STRAFING FIRE (the beam-origin evidence, owner: "the weapon
+                // beams do not come from the ship when its strafing, they come
+                // beside it"). The second fire window now runs with A/D HELD, so
+                // the s660/s900 frames are shot at full lateral velocity — which
+                // is the only condition under which a world-anchored tracer
+                // visibly detaches from the wingtip. Deterministic; the frames
+                // are the standing regression evidence for that fix.
+                in.moveStrafe = (step >= 630 && step < 900) ? 1.0f : 0.0f;
                 if (step == 30 && enemies.count() >= 3) {
                     enemies.damageShip(1, 34);   // -> ~43% hull: sparks + smoke trail
                     enemies.damageShip(2, 48);   // -> 20% hull: heavy smoke + embers
@@ -1496,7 +1627,9 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 auto frame = hc.device->beginFrame();
                 if (frame.valid && cockpit) {
                     int winW = (int)hc.W, winH = (int)hc.H;
-                    if (hc.window) glfwGetWindowSize(hc.window, &winW, &winH);
+                    // FRAMEBUFFER pixels, not window points (see the HUD note in
+                    // the flight branch): drawHudQuad works in framebuffer px.
+                    if (hc.window) glfwGetFramebufferSize(hc.window, &winW, &winH);
                     aimSkyAtStar(cineCamPos[0], cineCamPos[1], cineCamPos[2]);
                     if (!planets.empty())
                         x3::apphost::drawNightSkyPlanets(hc.device, frame, planetMesh,
@@ -1515,12 +1648,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 }
                 hc.device->endFrame(frame);
                 if (interactive) {
-                    const double target  = (double)(step + 1) * (double)dt;
-                    const double elapsed = std::chrono::duration<double>(
-                        std::chrono::steady_clock::now() - tStart).count();
-                    if (elapsed < target)
+                    // Courtesy frame ceiling only — dt is measured, never assumed
+                    // (see the TIME BASE note; this cut-scene branch is on the
+                    // same clock as the flight branch).
+                    const double frameSec = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - tPrev).count();
+                    constexpr double kMinFrameSec = 1.0 / 300.0;
+                    if (frameSec < kMinFrameSec)
                         std::this_thread::sleep_for(
-                            std::chrono::duration<double>(target - elapsed));
+                            std::chrono::duration<double>(kMinFrameSec - frameSec));
                 }
             }
             continue;   // the combat world is frozen under the kill-cam
@@ -1733,9 +1869,24 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     if (dl > 1.0f) {
                         dirT[0] /= dl; dirT[1] /= dl; dirT[2] /= dl;
                         // Capture runs bias harder so the locked target is IN
-                        // the evidence frame; live play keeps the gentle pull.
-                        pilot.setCameraLookBias(dirT, captureMode ? 0.55f : 0.30f);
+                        // the evidence frame; live play uses the space.lookBias
+                        // lever (default 0.15, was a hard-coded 0.30 — an assist
+                        // that ate a third of every mouse whip, which is the
+                        // classic "the ship doesn't zip" culprit). 0 = off.
+                        pilot.setCameraLookBias(dirT, captureMode ? 0.55f : lvLookBias);
                         fedBias = true;
+                        // 6DOF TARGET HOLD (owner spec: "strafe in 6DOF and keep
+                        // on a target the whole time"). Steers the SHIP'S NOSE —
+                        // and only the nose — onto the locked contact, so you can
+                        // slide sideways, climb, back off, and the guns stay on
+                        // him. Manual aim wins outright: any mouse movement this
+                        // frame passes rate 0, so the assist never fights the
+                        // player's own look. space.targetHold is the rate cap in
+                        // rad/s; 0 disables the whole thing.
+                        const bool lookingNow = std::fabs(in.lookDX) > 0.5f ||
+                                                std::fabs(in.lookDY) > 0.5f;
+                        pilot.steerNoseToward(dirT,
+                            (lvTargetHold > 0.0f && !lookingNow) ? lvTargetHold : 0.0f, dt);
                     }
                     break;
                 }
@@ -2175,9 +2326,65 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // MFD screens. The analytic-sky starfield is the world-fixed backdrop.
             // The cockpit rig is the 1P view ONLY. In 3P chase it would hang in
             // front of the pulled-back camera and block the whole screen.
-            if (cockpit && !pilot.isThirdPerson()) {
+            //
+            // THE FLOATING-MODULE BUG (owner, live: "That module is the ship
+            // INTERIOR!!!!"). This pose was already gated on 1P — but the Scene
+            // below was rendered UNCONDITIONALLY, so in the DEFAULT 3P chase the
+            // whole two-seat interior drew at its authored BASE transforms, i.e.
+            // parked at the world origin where the ship spawned, and never moved
+            // again. From outside that reads as a room-sized box of interior wall
+            // backfaces and glowing MFD screens floating in the starfield beside
+            // the fighters — and it is ALSO, literally, "the cockpit stays put
+            // when the player ship moves". One gate closes both.
+            const bool cockpitVisible = cockpit && !pilot.isThirdPerson();
+            if (cockpitVisible) {
                 x3::apphost::pulseIntroScreens(*cockpit, beatT);
-                x3::apphost::poseIntroCockpit(*cockpit, cx, cy, cz, cyaw, cpit);
+                // MASS: the cabin lags the hull under acceleration and banks into
+                // turns (dt-correct spring, clamped small). Driven by the ship's
+                // REAL net acceleration resolved into its own axes — never the raw
+                // thrust input, which stays pinned while the ship is speed-capped.
+                const x3::phys::Vec3 vNow = pilot.velocity();
+                const x3::phys::Vec3 sf3  = pilot.forward();
+                const x3::phys::Vec3 sr3  = pilot.right();
+                const x3::phys::Vec3 su3  = pilot.up();
+                float aW[3] = { 0, 0, 0 };
+                if (swayPrevVelValid && dt > 1e-4f) {
+                    aW[0] = (vNow.x - swayPrevVel[0]) / dt;
+                    aW[1] = (vNow.y - swayPrevVel[1]) / dt;
+                    aW[2] = (vNow.z - swayPrevVel[2]) / dt;
+                }
+                swayPrevVel[0] = vNow.x; swayPrevVel[1] = vNow.y; swayPrevVel[2] = vNow.z;
+                swayPrevVelValid = true;
+                const float aLocal[3] = {
+                    aW[0]*sf3.x + aW[1]*sf3.y + aW[2]*sf3.z,
+                    aW[0]*sr3.x + aW[1]*sr3.y + aW[2]*sr3.z,
+                    aW[0]*su3.x + aW[1]*su3.y + aW[2]*su3.z };
+                const float yawNow  = pilot.yaw();
+                float yawDelta = yawNow - swayPrevYaw;
+                while (yawDelta >  3.14159265f) yawDelta -= 6.28318531f;
+                while (yawDelta < -3.14159265f) yawDelta += 6.28318531f;
+                const float yawRate = swayPrevYawValid && dt > 1e-4f ? yawDelta / dt : 0.0f;
+                swayPrevYaw = yawNow; swayPrevYawValid = true;
+                cockpitSway.update(dt, aLocal, yawRate);
+                const float swayLocal[3] = { cockpitSway.surge(), cockpitSway.swayR(),
+                                             cockpitSway.heave() };
+                // 1P eye + the SHIP's basis (not the gaze — the cabin is bolted to
+                // the hull, so freelook/look-bias must never rotate it).
+                const x3::phys::Vec3 pEye = pilot.pos();
+                const float eyeW[3] = { pEye.x + sf3.x * 0.4f,
+                                        pEye.y + sf3.y * 0.4f,
+                                        pEye.z + sf3.z * 0.4f };
+                const float shipF[3] = { sf3.x, sf3.y, sf3.z };
+                const float shipU[3] = { su3.x, su3.y, su3.z };
+                x3::apphost::poseIntroCockpitBasis(*cockpit, eyeW, shipF, shipU,
+                                                   swayLocal, cockpitSway.pitch(),
+                                                   cockpitSway.yaw(), cockpitSway.roll());
+            } else if (cockpit) {
+                // 3P: keep the interior OUT of the exterior frame, and keep the
+                // sway spring at rest so a mid-flight F2 flip starts neutral.
+                x3::apphost::setIntroCockpitVisible(*cockpit, false);
+                cockpitSway.reset();
+                swayPrevVelValid = false; swayPrevYawValid = false;
             }
             if (fxOn && playerFiredThisStep) {
                 // WING-MOUNTED FIRE (owner: "the fire needs to COme from weapons
@@ -2196,9 +2403,19 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     pj.z + fh2 * std::sin(pilot.yaw()) * 600.0f };
                 // SHIP-SCALE bolt + wingtip muzzle flash: wide enough to read
                 // from the chase camera (0.035 m rifle tracer is sub-pixel).
+                // CARRIER VELOCITY (owner, live: "the weapon beams do not come
+                // from the ship when its strafing, they come beside it"). The
+                // muzzle origin was always current-frame — the beam is a 0.12 s
+                // WORLD-ANCHORED segment, so once the strafe fix let the ship
+                // actually slide at ~110 m/s it travelled ~13 m (two hull
+                // lengths) before the bolt faded and the beam was left hanging
+                // beside it. Feeding the ship's velocity makes the beam ride the
+                // hull for its whole life, so it leaves the wingtip and stays
+                // attached however hard you are strafing.
+                const x3::phys::Vec3 pv = pilot.velocity();
                 fxPtr->addTracer({ wm[0], wm[1], wm[2] }, { aim[0], aim[1], aim[2] },
-                                 x3::game::WeaponFxKind::Default, /*width*/ 0.50f);
-                fxPtr->spawnShipMuzzle({ wm[0], wm[1], wm[2] }, { wd[0], wd[1], wd[2] });
+                                 x3::game::WeaponFxKind::Default, /*width*/ 0.50f, &pv);
+                fxPtr->spawnShipMuzzle({ wm[0], wm[1], wm[2] }, { wd[0], wd[1], wd[2] }, &pv);
             }
             // DAMAGE READS ON THE HULL (owner: "we should see some representation
             // of the damage on the enemy ship"): staged persistent FX keyed to
@@ -2256,8 +2473,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 // HUD-space size: the real window when there is one, the fixed
                 // 1280x720 headless framebuffer in a capture run.
                 int winW = (int)hc.W, winH = (int)hc.H;
-                if (hc.window) glfwGetWindowSize(hc.window, &winW, &winH);
-                cockpit->scene.render(*hc.device, frame);
+                // FRAMEBUFFER pixels, not window points: drawHudQuad works in framebuffer
+                // px and the render aspect comes from the swapchain extent, so any DPI
+                // scale would otherwise skew every world-anchored marker.
+                if (hc.window) glfwGetFramebufferSize(hc.window, &winW, &winH);
+                // 1P ONLY (see the cockpitVisible note above): in 3P chase the
+                // interior would otherwise render at the world origin as a
+                // free-floating module in the starfield.
+                if (cockpitVisible) cockpit->scene.render(*hc.device, frame);
                 // The planet backdrop first (eye-anchored; depth-occluded by everything
                 // drawn after). Space now has a WORLD behind the fight.
                 // ANCHOR 10.5 km — THE PAIR RULE (landmine L7): the far plane below is
@@ -2447,16 +2670,29 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 // Projection is from the ACTUAL camera basis (camF/camU), not
                 // the ship's Euler — with lock-bias / ALT-freelook the view is
                 // not the nose, and Euler markers drift off their ships.
+                //
+                // THE DEFECT-3 FIX (owner, live: the whole bracket + CAP ACQ +
+                // all four subsystem labels "in EMPTY SPACE, with no ship
+                // anywhere near it", and "MOVES WILDLY with the mouse"). This
+                // block used to build its own view basis inline, and got it
+                // wrong in TWO compounding ways:
+                //   1. up = fwd x right  — that is MINUS up. Every marker was
+                //      mirrored about the horizontal centre line.
+                //   2. neither axis was normalized and camU was never
+                //      orthogonalized against camF. cameraBasis() returns the
+                //      GAZE (ship-forward blended with freelook + the
+                //      target-keeping look bias) together with the SHIP's up —
+                //      NOT orthogonal, and the skew changes every time the mouse
+                //      moves, which is precisely why the markers swam. The
+                //      render device Gram-Schmidts inside setCameraBasis, so the
+                //      HUD and the raster were using two different cameras.
+                // Both now live in x3::space::hud::ViewProjector, which builds
+                // the basis exactly the way glm::lookAt does and is covered by
+                // --test-spacehud.
                 if (winW > 0 && winH > 0) {
-                    const float tanHalfY = std::tan(65.0f * 0.5f * 3.14159265f / 180.0f);
-                    const float tanHalfX = tanHalfY * (float)winW / (float)winH;
-                    const float fw[3] = { camF[0], camF[1], camF[2] };
-                    const float rt[3] = { fw[1]*camU[2] - fw[2]*camU[1],
-                                          fw[2]*camU[0] - fw[0]*camU[2],
-                                          fw[0]*camU[1] - fw[1]*camU[0] };
-                    const float up[3] = { fw[1]*rt[2] - fw[2]*rt[1],
-                                          fw[2]*rt[0] - fw[0]*rt[2],
-                                          fw[0]*rt[1] - fw[1]*rt[0] };
+                    const float eyeW[3] = { cx, cy, cz };
+                    const x3::space::hud::ViewProjector vproj(
+                        eyeW, camF, camU, 65.0f, (float)winW, (float)winH);
                     struct Proj {
                         bool  vis;          // on screen, in front
                         float sx, sy;       // screen px
@@ -2465,27 +2701,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         float ex, ey;       // unit-square edge dir (off-screen)
                     };
                     auto project = [&](const float p[3]) {
-                        Proj o{}; o.vis = false; o.ex = o.ey = 0.0f;
-                        const float d[3] = { p[0]-cx, p[1]-cy, p[2]-cz };
-                        const float zf = d[0]*fw[0] + d[1]*fw[1] + d[2]*fw[2];
-                        const float xr = d[0]*rt[0] + d[1]*rt[1] + d[2]*rt[2];
-                        const float yu = d[0]*up[0] + d[1]*up[1] + d[2]*up[2];
-                        o.zf = zf;
-                        if (zf > 1.0f) {
-                            const float nx = (xr / zf) / tanHalfX;
-                            const float ny = (yu / zf) / tanHalfY;
-                            if (nx > -1.f && nx < 1.f && ny > -1.f && ny < 1.f) {
-                                o.vis = true;
-                                o.sx = (nx * 0.5f + 0.5f) * (float)winW;
-                                o.sy = (0.5f - ny * 0.5f) * (float)winH;
-                                o.pxPerM = (float)winH / (2.0f * zf * tanHalfY);
-                                return o;
-                            }
-                        }
-                        float ex = xr, ey = yu;
-                        if (zf > 0.0f) { ex = xr / std::max(zf, 1.0f); ey = yu / std::max(zf, 1.0f); }
-                        const float m = std::max(std::fabs(ex), std::fabs(ey));
-                        if (m > 1e-4f) { o.ex = ex / m; o.ey = ey / m; }
+                        const x3::space::hud::Projected r = vproj.project(p);
+                        Proj o{};
+                        o.vis    = r.onScreen;
+                        o.sx     = r.sx;      o.sy = r.sy;
+                        o.zf     = r.depth;   o.pxPerM = r.pxPerMetre;
+                        o.ex     = r.edgeX;   o.ey = r.edgeY;
                         return o;
                     };
                     auto quad = [&](float x, float y, float w, float h, const float col[4]) {
@@ -2514,15 +2735,22 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                  dotSz, dotSz, col);
                         }
                     };
+                    // Off-screen indicator: pinned inside the viewport edge along
+                    // the true frustum-relative direction (ViewProjector::edgePoint),
+                    // so it never wanders outside the window and behind-the-camera
+                    // contacts still point the way you have to turn.
                     auto chevron = [&](const Proj& pr, const float col[4], float px) {
                         if (std::fabs(pr.ex) < 1e-4f && std::fabs(pr.ey) < 1e-4f) return;
                         const char* arrow = (std::fabs(pr.ex) > std::fabs(pr.ey))
                                             ? (pr.ex > 0 ? ">" : "<")
                                             : (pr.ey > 0 ? "^" : "v");
-                        const float sx2 = (pr.ex * 0.92f * 0.5f + 0.5f) * (float)winW;
-                        const float sy2 = (0.5f - pr.ey * 0.88f * 0.5f) * (float)winH;
+                        x3::space::hud::Projected e{};
+                        e.edgeX = pr.ex; e.edgeY = pr.ey;
+                        float sx2 = 0.0f, sy2 = 0.0f;
+                        vproj.edgePoint(e, px * 1.4f, sx2, sy2);
                         hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
-                                                arrow, sx2, sy2, px, col);
+                                                arrow, sx2 - px * 0.3f, sy2 - px * 0.5f,
+                                                px, col);
                     };
                     // Warm-dim hull bar (the ground-enemy healthbar language):
                     // near-black warm backing, warm amber fill shading to red as
@@ -2575,8 +2803,16 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         // Bracket half-size = the DRAWN silhouette radius (the
                         // same vis-comp factor as the draw + hit test) projected
                         // to px, clamped legible.
+                        // RANGE, not forward depth: the draw scales by the TRUE
+                        // camera->ship distance, so feeding pr.zf here made the
+                        // bracket shrink away from the hull for anything off the
+                        // view axis (zf = range * cos(angle)) — the bracket read
+                        // as too small on exactly the contacts you are turning to
+                        // fight. Same quantity the draw uses, so they now agree.
+                        const float dBx = e.pos[0]-cx, dBy = e.pos[1]-cy, dBz = e.pos[2]-cz;
+                        const float rangeE = std::sqrt(dBx*dBx + dBy*dBy + dBz*dBz);
                         const float worldR = 0.85f * x3::space::shipai::kVisBaseScale *
-                                             x3::space::shipai::visCompFactor(pr.zf);
+                                             x3::space::shipai::visCompFactor(rangeE);
                         const float halfPx = std::min(120.0f,
                             std::max(16.0f, worldR * pr.pxPerM)) + 6.0f;
                         // The damage meter rides above the bracket for EVERY visible
@@ -2620,17 +2856,33 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     }
 
                     // ---- Capital ship -----------------------------------------
+                    // The bracket rect is remembered as a KEEP-OUT for the
+                    // subsystem callouts below, so the labels never sit on top of
+                    // the boss's own bracket/health block.
+                    x3::space::hud::Rect capKeepOut{};
+                    bool capKeepOutValid = false;
                     {
                         const bool isTgt = lockHad && lockId == 1000u;
                         const Proj pr = project(capC);
-                        if (pr.vis) {
+                        // A WRECK IS NOT A TARGET (handed over by the capital-death
+                        // lane): the bracket, the CAP label, the shield/hull bars
+                        // and the subsystem pips all kept drawing over the debris
+                        // after the dreadnought was destroyed. Everything
+                        // world-anchored to the capital goes away with it.
+                        if (pr.vis && !capitalKilled) {
                             const float halfPx = std::min(260.0f,
                                 std::max(30.0f, kCapHullR * pr.pxPerM)) + 6.0f;
                             const float* col = isTgt ? staged : amberM;
                             bracket(pr.sx, pr.sy, halfPx, isTgt ? 2.0f : 1.0f, col);
+                            // CAP / CAP ACQ rides just OUTSIDE the bracket's top-left
+                            // corner (owner: "CAP ... draws over the fighter").
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
                                 isTgt && !lockedNow ? "CAP ACQ" : "CAP",
-                                pr.sx - halfPx, pr.sy - halfPx - 16.0f, 12.0f, col);
+                                pr.sx - halfPx, pr.sy - halfPx - 34.0f, 12.0f, col);
+                            capKeepOut = x3::space::hud::Rect{
+                                pr.sx - halfPx - 4.0f, pr.sy - halfPx - 36.0f,
+                                halfPx * 2.0f + 8.0f, halfPx * 2.0f + 52.0f };
+                            capKeepOutValid = true;
                             {
                                 // ALWAYS-ON capital readout (owner: "we need a
                                 // health indication on the enemy ship!!!"). This
@@ -2658,7 +2910,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                          down ? pipDown : pipUp);
                                 }
                             }
-                        } else {
+                        } else if (!capitalKilled) {
                             chevron(pr, isTgt ? redM : amberM, 18.0f);
                         }
                     }
@@ -2667,26 +2919,86 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     // kill it). Alive = amber diamond + name; dead = dark ember
                     // mark. While the reactor is EXPOSED, its wound gets a hot
                     // pulsing marker — THE thing to shoot, visibly. ----
-                    {
+                    //
+                    // READABILITY (owner, live): at the 2.6 km standoff the whole
+                    // 450 m dreadnought is ~200 px wide, so the four hardpoints
+                    // project inside ~80 px of each other and the raw
+                    // "name at marker + 10 px" layout stacked TURRETS / ENGINES /
+                    // SENSORS / SHIELD GEN on top of each other AND on the hull.
+                    // Subsystem targeting IS the feature, so the callouts now get
+                    // a collision-aware layout with LEADER LINES back to their
+                    // hardpoints (x3::space::hud::layoutLabels, covered by
+                    // --test-spacehud T6/T7), and a hardpoint that is off-screen
+                    // or behind you gets an edge chevron instead of vanishing.
+                    if (!capitalKilled) {   // a wreck has no live hardpoints
                         const float hpUp[4]   = { 1.0f, 0.72f, 0.20f, 0.95f };
                         const float hpDead[4] = { 0.45f, 0.20f, 0.10f, 0.75f };
+                        constexpr float kHpTextPx = 11.0f;
+                        x3::space::hud::LabelRequest   lreq[kMaxSubsystems]{};
+                        x3::space::hud::LabelPlacement lpl[kMaxSubsystems]{};
+                        int   lIdx[kMaxSubsystems];
+                        uint32_t lCount = 0;
                         // A DESTROYED ship presents no aim points. Leaving live
                         // hardpoint markers floating over a burning wreck was
                         // the HUD still saying "there is something here to
                         // shoot" while the answer was "you already won".
+                        // Both lanes wanted this: feat/capital-ship-death gates the
+                        // loop here, and fix/space-combat-feel's "the capital bracket
+                        // and hardpoints go away with the wreck". lCount stays 0 for
+                        // a dead capital, so the label layout below is a no-op and
+                        // no leader lines are drawn to a wreck.
                         for (int si = 0; si < kMaxSubsystems && !capitalKilled; ++si) {
                             float hw[3]; hardWorld(si, hw);
                             const Proj hp = project(hw);
-                            if (!hp.vis) continue;
                             const float* col = subWasDown[si] ? hpDead : hpUp;
+                            if (!hp.vis) {
+                                // Off-screen / behind: a small directional tick so
+                                // the surviving hardpoints are still findable.
+                                if (!subWasDown[si]) chevron(hp, col, 12.0f);
+                                continue;
+                            }
                             const float s = subWasDown[si] ? 4.0f : 6.0f;
                             quad(hp.sx - s*0.5f, hp.sy - s*0.5f, s, s, col);
                             quad(hp.sx - s*0.5f - 2.0f, hp.sy - 1.0f, 2.0f, 2.0f, col);
                             quad(hp.sx + s*0.5f, hp.sy - 1.0f, 2.0f, 2.0f, col);
-                            if (!subWasDown[si] && hp.pxPerM * kHard[si].radius > 2.5f)
+                            if (subWasDown[si]) continue;   // dead: mark only, no label
+                            lreq[lCount].anchorX  = hp.sx;
+                            lreq[lCount].anchorY  = hp.sy;
+                            lreq[lCount].w = hc.device->textAdvance(
+                                x3::rhi::FontRole::Enemy, kHard[si].name, kHpTextPx) + 4.0f;
+                            lreq[lCount].h = kHpTextPx + 4.0f;
+                            // Nearest hardpoint first — it gets the tightest slot.
+                            lreq[lCount].priority = (int)(hp.zf * 0.01f);
+                            lIdx[lCount] = si;
+                            ++lCount;
+                        }
+                        if (lCount > 0) {
+                            // Keep the callouts off the capital's own bracket +
+                            // health bars (they are the other thing you must read).
+                            x3::space::hud::layoutLabels(
+                                lreq, lpl, lCount,
+                                capKeepOutValid ? &capKeepOut : nullptr,
+                                capKeepOutValid ? 1u : 0u,
+                                (float)winW, (float)winH);
+                            for (uint32_t li = 0; li < lCount; ++li) {
+                                const int si = lIdx[li];
+                                const float* col = hpUp;
+                                // Leader line first (under the text), dimmed.
+                                const float lead[4] = { col[0], col[1], col[2], 0.45f };
+                                x3::space::hud::Rect segs[2];
+                                const uint32_t ns = x3::space::hud::leaderSegments(
+                                    lpl[li], lreq[li], 1.0f, segs);
+                                for (uint32_t k = 0; k < ns; ++k)
+                                    quad(segs[k].x, segs[k].y, segs[k].w, segs[k].h, lead);
+                                // A near-black backing plate so the name reads
+                                // against a bright hull, then the name.
+                                const float plate[4] = { 0.02f, 0.03f, 0.04f, 0.62f };
+                                quad(lpl[li].x - 2.0f, lpl[li].y - 1.0f,
+                                     lreq[li].w + 4.0f, lreq[li].h + 2.0f, plate);
                                 hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
-                                    kHard[si].name, hp.sx + s + 4.0f, hp.sy - 5.0f,
-                                    10.0f, col);
+                                    kHard[si].name, lpl[li].x, lpl[li].y + 1.0f,
+                                    kHpTextPx, col);
+                            }
                         }
                         const bool reactorOpen = crippled && !capitalKilled &&
                             std::fmod(reactorT, kReactorCycle) < kReactorOpen;
@@ -2719,7 +3031,16 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         const float hfB = x3::space::ShipDamage::hullFrac(capital);
                         const float bw  = std::min(680.0f, (float)winW * 0.52f);
                         const float bx  = (float)winW * 0.5f - bw * 0.5f;
-                        const float by  = (float)winH * 0.055f;
+                        // LAYOUT (owner, live: "DREADNOUGHT SHIELDS 100% HULL 100%
+                        // prints ON TOP of its own bars"). The title was drawn at
+                        // by-18 with a 14 px cap height, which lands ON the shield
+                        // strip; and at by = 0.055*H the whole block also collided
+                        // with the top-left HULL/SHD/CONTACTS readout. The bars
+                        // move down to 0.105*H and the title gets a full line of
+                        // clearance above them, on its own backing plate.
+                        const float by  = (float)winH * 0.105f;
+                        const float titlePx = 14.0f;
+                        const float titleY  = by - titlePx - 12.0f;
                         const float back[4]   = { 0.03f, 0.035f, 0.05f, 0.72f };
                         const float shCol[4]  = { 0.40f, 0.80f, 1.00f, 0.95f };
                         // Hull fill reddens as it drops (green-ish -> hot red).
@@ -2761,9 +3082,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                 rOpen ? "REACTOR EXPOSED  HULL %d%%"
                                       : "REACTOR SHIELDED  HULL %d%%",
                                 (int)(hfB * 100.0f + 0.5f));
-                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
-                            bossTag, bx, by - 18.0f, 14.0f,
-                            rOpen ? redM : (hfB > 0.0f ? amberM : redM));
+                        {
+                            const float tw = hc.device->textAdvance(
+                                x3::rhi::FontRole::Enemy, bossTag, titlePx);
+                            quad(bx - 2.0f, titleY - 3.0f, tw + 8.0f, titlePx + 8.0f, back);
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                bossTag, bx + 2.0f, titleY, titlePx,
+                                rOpen ? redM : (hfB > 0.0f ? amberM : redM));
+                        }
                         // CALLOUT STACK (the radio barks) under the boss bar.
                         // SOURCE-CODED (the messaging law, see CalloutSrc): the
                         // prefix + colour say WHOSE event this is before the
@@ -2926,8 +3252,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                             const float eFrac = pilot.maxEnergy() > 0.0f
                                 ? pilot.energy() / pilot.maxEnergy() : 0.0f;
                             const float bw = 90.0f, bh = 4.0f;
+                            // ANCHOR (owner, live: "PWR still draws over open
+                            // space rather than attached to anything"). The bar
+                            // rides UNDER the gun boresight so the state lives
+                            // with the aim — but when the boresight is off-screen
+                            // (lock-bias / ALT-freelook swing the gaze off the
+                            // nose) the old fallback parked it at DEAD CENTRE,
+                            // i.e. straight over whatever ship you were looking
+                            // at. Off-boresight it now goes to a stable
+                            // bottom-centre chrome slot instead.
                             const float bx = pr.vis ? pr.sx : (float)winW * 0.5f;
-                            const float by = (pr.vis ? pr.sy : (float)winH * 0.5f) + 26.0f;
+                            const float by = pr.vis ? (pr.sy + 26.0f)
+                                                    : (float)winH * 0.92f;
                             const float back[4] = { 0.02f, 0.04f, 0.06f, 0.65f };
                             float fill[4] = { 0.45f, 0.90f, 1.0f, 0.85f };
                             if (pilot.energy() < 2.8f) {          // can't fire: red pulse
@@ -3102,16 +3438,20 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // capital or press Esc): end the beat just past the last capture.
             if (evDir && *evDir && step >= 960) break;
 
-            // Hold this step until real time catches up to where the sim thinks it is
-            // (see tStart). target = when step (step+1) SHOULD begin, in wall seconds.
-            // Only ever waits; a slow frame that is already behind falls straight through.
-            // Capture runs are UNPACED (nobody is watching the offscreen frames).
+            // The old "hold this step until wall clock catches up" gate is GONE:
+            // the sim now consumes the REAL frame interval (see TIME BASE), so
+            // wall clock and game time advance together by construction, in both
+            // directions. What is left is a courtesy ceiling so an uncapped
+            // present loop does not free-run at four figures of fps burning the
+            // GPU for frames nobody can see; it never slows the SIM, because dt
+            // is measured after the sleep, not assumed.
             if (interactive) {
-                const double target  = (double)(step + 1) * (double)dt;
-                const double elapsed = std::chrono::duration<double>(
-                                           std::chrono::steady_clock::now() - tStart).count();
-                if (elapsed < target)
-                    std::this_thread::sleep_for(std::chrono::duration<double>(target - elapsed));
+                const double frameSec = std::chrono::duration<double>(
+                                            std::chrono::steady_clock::now() - tPrev).count();
+                constexpr double kMinFrameSec = 1.0 / 300.0;
+                if (frameSec < kMinFrameSec)
+                    std::this_thread::sleep_for(
+                        std::chrono::duration<double>(kMinFrameSec - frameSec));
             }
         }
 

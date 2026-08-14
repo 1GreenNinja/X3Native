@@ -23,6 +23,7 @@
 #include "../asset_root.h"
 #include "../headless_device.h"
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -217,6 +218,86 @@ void poseIntroCockpit(IntroCockpitRig& rig,
     for (size_t i = 0; i < rig.entityIds.size(); ++i)
         x3::asset::mulMat4(T, rig.baseXf[i].data(),
                            rig.scene.get(rig.entityIds[i]).transform);
+}
+
+namespace {
+// Rodrigues rotation of `v` about the unit axis `ax` by `ang` radians, in place.
+inline void rotAboutAxis(float v[3], const float ax[3], float ang) {
+    if (std::fabs(ang) < 1e-6f) return;
+    const float c = std::cos(ang), s = std::sin(ang);
+    const float d = ax[0]*v[0] + ax[1]*v[1] + ax[2]*v[2];
+    const float cr[3] = { ax[1]*v[2] - ax[2]*v[1],
+                          ax[2]*v[0] - ax[0]*v[2],
+                          ax[0]*v[1] - ax[1]*v[0] };
+    for (int k = 0; k < 3; ++k)
+        v[k] = v[k]*c + cr[k]*s + ax[k]*d*(1.0f - c);
+}
+inline void norm3(float v[3]) {
+    const float l = std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    if (l > 1e-6f) { v[0] /= l; v[1] /= l; v[2] /= l; }
+}
+} // namespace
+
+void poseIntroCockpitBasis(IntroCockpitRig& rig,
+                           const float eyePos[3], const float fwd[3], const float up[3],
+                           const float swayLocal[3],
+                           float swayPitch, float swayYaw, float swayRoll) {
+    // Orthonormalize (fwd, up) exactly like the render device does, then derive
+    // right = fwd x up. The cockpit GLB was authored facing local +Z with local
+    // +Y up; from the Euler poseIntroCockpit above, local +X maps to -right.
+    float f[3] = { fwd[0], fwd[1], fwd[2] };
+    norm3(f);
+    float u[3] = { up[0], up[1], up[2] };
+    {
+        const float d = u[0]*f[0] + u[1]*f[1] + u[2]*f[2];
+        for (int k = 0; k < 3; ++k) u[k] -= f[k] * d;
+        norm3(u);
+    }
+    float r[3] = { f[1]*u[2] - f[2]*u[1],
+                   f[2]*u[0] - f[0]*u[2],
+                   f[0]*u[1] - f[1]*u[0] };          // right = fwd x up
+    norm3(r);
+
+    // SWAY ROTATION, in the ship's own frame: roll about forward, then pitch
+    // about right, then yaw about up. Small angles; order is stable + subtle.
+    rotAboutAxis(r, f, swayRoll);  rotAboutAxis(u, f, swayRoll);
+    rotAboutAxis(f, r, swayPitch); rotAboutAxis(u, r, swayPitch);
+    rotAboutAxis(f, u, swayYaw);   rotAboutAxis(r, u, swayYaw);
+    norm3(f); norm3(u); norm3(r);
+
+    // Column-major: col0 = -right (the GLB's local +X), col1 = up, col2 = fwd.
+    float T[16] = {
+        -r[0], -r[1], -r[2], 0.0f,
+         u[0],  u[1],  u[2], 0.0f,
+         f[0],  f[1],  f[2], 0.0f,
+         0.0f,  0.0f,  0.0f, 1.0f };
+    // Pilot eye at cockpit-local (0, 1.60, -1.38) — same point the Euler path uses.
+    const float ex = 0.0f, ey = 1.60f, ez = -1.38f;
+    // SWAY TRANSLATION: the cabin slides relative to the eye (the eye stays on
+    // the hull, so aim is untouched). {surge, sway, heave} along {fwd, right, up}.
+    const float sf = swayLocal ? swayLocal[0] : 0.0f;
+    const float sr = swayLocal ? swayLocal[1] : 0.0f;
+    const float su = swayLocal ? swayLocal[2] : 0.0f;
+    for (int k = 0; k < 3; ++k) {
+        const float base = eyePos[k] + f[k] * sf + r[k] * sr + u[k] * su;
+        T[12 + k] = base - (T[k] * ex + T[4 + k] * ey + T[8 + k] * ez);
+    }
+    for (size_t i = 0; i < rig.entityIds.size(); ++i)
+        x3::asset::mulMat4(T, rig.baseXf[i].data(),
+                           rig.scene.get(rig.entityIds[i]).transform);
+}
+
+void setIntroCockpitVisible(IntroCockpitRig& rig, bool visible) {
+    for (size_t i = 0; i < rig.entityIds.size(); ++i) {
+        float* T = rig.scene.get(rig.entityIds[i]).transform;
+        if (visible) {
+            for (int k = 0; k < 16; ++k) T[k] = rig.baseXf[i][k];
+        } else {
+            // Zero basis == degenerate == nothing rasterized (the ShipInterior
+            // hideStationMarkers trick), and it keeps the entity/id set stable.
+            for (int k = 0; k < 12; ++k) T[k] = 0.0f;
+        }
+    }
 }
 
 bool buildIntroCombatArt(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device) {
@@ -518,6 +599,161 @@ bool runIntroCockpitSelfTest() {
         icCheck(finite && moved, "C6 pose math finite + camera-locked");
     } else {
         icCheck(false, "C6 pose math (orch rig unavailable)");
+    }
+    // C8 — THE FLOATING-INTERIOR GATE (owner, live: "That module is the ship
+    // INTERIOR!!!!"). The intro rendered this rig's Scene unconditionally while
+    // only POSING it in 1P, so in the default 3P chase the whole interior drew
+    // at its authored base transforms — parked at the world origin, in the
+    // starfield, next to the fighters, never moving. Two invariants now covered:
+    //   (a) hidden means hidden — setIntroCockpitVisible(false) leaves a
+    //       degenerate (zero-basis) transform, so nothing rasterizes;
+    //   (b) shown means PARENTED — posing at two different ship positions moves
+    //       the interior by the same delta. That is also, literally, the fix for
+    //       "the cockpit stays put when the player ship moves".
+    if (builtOrch && !orch.entityIds.empty()) {
+        setIntroCockpitVisible(orch, false);
+        const float* h = orch.scene.get(orch.entityIds[0]).transform;
+        bool zeroed = true;
+        for (int i = 0; i < 12; ++i) zeroed = zeroed && (h[i] == 0.0f);
+        icCheck(zeroed, "C8a hidden interior is degenerate (nothing drawn in 3P)");
+
+        const float fwd[3] = { 1, 0, 0 }, up[3] = { 0, 1, 0 };
+        const float eyeA[3] = {   0.0f, 0.0f, 0.0f };
+        const float eyeB[3] = { 500.0f, 40.0f, -90.0f };
+        poseIntroCockpitBasis(orch, eyeA, fwd, up);
+        const float* ta = orch.scene.get(orch.entityIds[0]).transform;
+        const float a0 = ta[12], a1 = ta[13], a2 = ta[14];
+        poseIntroCockpitBasis(orch, eyeB, fwd, up);
+        const float* tb = orch.scene.get(orch.entityIds[0]).transform;
+        const bool tracks = std::fabs((tb[12] - a0) - 500.0f) < 1e-2f &&
+                            std::fabs((tb[13] - a1) -  40.0f) < 1e-2f &&
+                            std::fabs((tb[14] - a2) - (-90.0f)) < 1e-2f;
+        icCheck(tracks, "C8b interior TRACKS the ship (not parked at the origin)");
+
+        // C8c — the pose is ROLL-CAPABLE: rolling the ship's up vector 90 deg
+        // must rotate the cabin with it. The old Euler pose ignored roll, so the
+        // horizon banked while the canopy stayed level.
+        // (COPY each transform out — scene.get() hands back a live pointer that
+        //  the next pose call overwrites.)
+        float tLevel[16], tRolled[16], tSwayed[16];
+        poseIntroCockpitBasis(orch, eyeA, fwd, up);
+        std::memcpy(tLevel, orch.scene.get(orch.entityIds[0]).transform, sizeof(tLevel));
+        const float upRolled[3] = { 0, 0, 1 };          // ship rolled 90 deg
+        poseIntroCockpitBasis(orch, eyeA, fwd, upRolled);
+        std::memcpy(tRolled, orch.scene.get(orch.entityIds[0]).transform, sizeof(tRolled));
+        bool rolled = false;
+        for (int i = 0; i < 12 && !rolled; ++i)
+            rolled = std::fabs(tRolled[i] - tLevel[i]) > 0.1f;
+        icCheck(rolled, "C8c cockpit pose is roll-capable (banks with the hull)");
+
+        // C8d — the sway offsets displace the cabin, and are SMALL (a cockpit
+        // that swings is a sick cockpit).
+        const float sway[3] = { -0.085f, -0.07f, -0.055f };
+        poseIntroCockpitBasis(orch, eyeA, fwd, up, sway, 0.035f, 0.03f, 0.075f);
+        std::memcpy(tSwayed, orch.scene.get(orch.entityIds[0]).transform, sizeof(tSwayed));
+        const float dxs = tSwayed[12] - tLevel[12];
+        const float dys = tSwayed[13] - tLevel[13];
+        const float dzs = tSwayed[14] - tLevel[14];
+        const float dmag = std::sqrt(dxs*dxs + dys*dys + dzs*dzs);
+        icCheck(dmag > 1e-3f && dmag < 0.5f,
+                "C8d sway displaces the cabin, subtly (" + std::to_string(dmag) + " m)");
+    } else {
+        icCheck(false, "C8 interior visibility/tracking (orch rig unavailable)");
+    }
+    // C9 — DOES THE INTERIOR FIT IN THE SHIP? (owner: "It should FIT in the
+    // ship.") Measures the posed cockpit's world AABB against the exterior
+    // fighter hull it belongs to (JakeFighterShip_textured.glb, drawn at scale
+    // 1.0 in the intro's 3P view) and REPORTS BOTH IN METRES so the numbers are
+    // in the log, not in an argument. Advisory rather than a hard failure on the
+    // long axis: a cockpit tub legitimately runs the length of a small fighter,
+    // and this test's job is to make a mismatch impossible to miss, not to
+    // block the build on an art call.
+    if (builtOrch && !orch.entityIds.empty()) {
+        auto rigAabb = [&](IntroCockpitRig& r, float mn[3], float mx[3]) {
+            mn[0] = mn[1] = mn[2] =  3.4e38f;
+            mx[0] = mx[1] = mx[2] = -3.4e38f;
+            bool any = false;
+            for (size_t i = 0; i < r.entityIds.size(); ++i) {
+                const auto& e = r.scene.get(r.entityIds[i]);
+                float lo[3], hi[3];
+                if (!device.meshBounds(e.mesh, lo, hi)) continue;
+                const float* T = e.transform;
+                for (int c = 0; c < 8; ++c) {
+                    const float p[3] = { (c & 1) ? hi[0] : lo[0],
+                                         (c & 2) ? hi[1] : lo[1],
+                                         (c & 4) ? hi[2] : lo[2] };
+                    for (int a = 0; a < 3; ++a) {
+                        const float w = T[a] * p[0] + T[4 + a] * p[1] +
+                                        T[8 + a] * p[2] + T[12 + a];
+                        if (w < mn[a]) mn[a] = w;
+                        if (w > mx[a]) mx[a] = w;
+                    }
+                }
+                any = true;
+            }
+            return any;
+        };
+        const float fwd[3] = { 1, 0, 0 }, up[3] = { 0, 1, 0 }, eye[3] = { 0, 0, 0 };
+        poseIntroCockpitBasis(orch, eye, fwd, up);
+        float imn[3], imx[3];
+        const bool gotInt = rigAabb(orch, imn, imx);
+        // The exterior hull, through the same loader.
+        float hullDim[3] = { 0, 0, 0 };
+        bool  gotHull = false;
+        {
+            if (orch.assets) orch.assets->mountDir(x3::game::riggedGlbRoot(), 1);
+            x3::asset::Model hull = orch.loader ? orch.loader->load("JakeFighterShip_textured.glb")
+                                                : x3::asset::Model{};
+            if (hull.ok) {
+                float hmn[3] = {  3.4e38f,  3.4e38f,  3.4e38f };
+                float hmx[3] = { -3.4e38f, -3.4e38f, -3.4e38f };
+                for (const auto& d : x3::asset::makeDrawables(hull)) {
+                    float lo[3], hi[3];
+                    if (!device.meshBounds(x3::rhi::MeshHandle{ d.meshId }, lo, hi)) continue;
+                    for (int c = 0; c < 8; ++c) {
+                        const float p[3] = { (c & 1) ? hi[0] : lo[0],
+                                             (c & 2) ? hi[1] : lo[1],
+                                             (c & 4) ? hi[2] : lo[2] };
+                        for (int a = 0; a < 3; ++a) {
+                            const float w = d.nodeTransform[a] * p[0] +
+                                            d.nodeTransform[4 + a] * p[1] +
+                                            d.nodeTransform[8 + a] * p[2] +
+                                            d.nodeTransform[12 + a];
+                            if (w < hmn[a]) hmn[a] = w;
+                            if (w > hmx[a]) hmx[a] = w;
+                        }
+                    }
+                    gotHull = true;
+                }
+                if (gotHull)
+                    for (int a = 0; a < 3; ++a) hullDim[a] = hmx[a] - hmn[a];
+                orch.loader->unload(hull);
+            }
+        }
+        if (gotInt) {
+            const float id[3] = { imx[0]-imn[0], imx[1]-imn[1], imx[2]-imn[2] };
+            x3::logInfo("  [introcockpit] interior AABB (m): " +
+                        std::to_string(id[0]) + " x " + std::to_string(id[1]) +
+                        " x " + std::to_string(id[2]));
+            if (gotHull)
+                x3::logInfo("  [introcockpit] exterior hull AABB (m): " +
+                            std::to_string(hullDim[0]) + " x " + std::to_string(hullDim[1]) +
+                            " x " + std::to_string(hullDim[2]) +
+                            "  (JakeFighterShip_textured.glb, drawn at scale 1.0)");
+            // Sorted extents: the interior must not be BIGGER on any axis than the
+            // hull's largest dimension — that is the "room-sized module beside the
+            // fighter" failure, and it is the one worth failing the gate on.
+            float is[3] = { id[0], id[1], id[2] };
+            std::sort(is, is + 3);
+            float hs[3] = { hullDim[0], hullDim[1], hullDim[2] };
+            std::sort(hs, hs + 3);
+            const bool fits = !gotHull || (is[2] <= hs[2] * 1.10f);
+            icCheck(fits, "C9 interior fits the hull envelope (longest axis " +
+                          std::to_string(is[2]) + " m vs hull " +
+                          std::to_string(hs[2]) + " m)");
+        } else {
+            icCheck(false, "C9 interior AABB (no measurable meshes)");
+        }
     }
     // C7: the beat combat art (enemy fighter + capital) loads via the rig loader.
     const bool combat = buildIntroCombatArt(orch, device);

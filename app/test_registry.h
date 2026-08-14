@@ -124,6 +124,7 @@ struct TestFlags {
     // radar/lock (--test-targeting) + ship-damage model (--test-ship-damage) +
     // EVA zero-G spacewalk (--test-eva). All headless / deterministic.
     bool testSpace = false, testShipAi = false, testTargeting = false;
+    bool testSpaceHud = false, testCockpitSway = false;
     bool testShipDamage = false, testEva = false;
 
     // --- path/string args used by a few handlers ---
