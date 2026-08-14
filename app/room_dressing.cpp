@@ -152,7 +152,17 @@ const ZoneAir& airFor(uint8_t z) {
 // The engine defaults (VulkanRenderDevice m_ambient / m_iblIntensity), re-asserted the
 // moment the eye leaves the room graph so the exterior/sky path is untouched.
 constexpr float kExteriorAmbient[3] = { 0.42f, 0.44f, 0.50f };
-constexpr float kExteriorIbl        = 0.50f;   // app_run sets this for the SEAM-2 facade
+// HANDOFF CONTINUITY: 1.0 is the ENGINE DEFAULT (VulkanRenderDevice m_iblIntensity),
+// and therefore the value `--world surface` runs at — that host never calls
+// setIblIntensity, and the owner's verdict on its exterior is "correct lighting".
+// This was 0.50, matching app_run's post-build setIblIntensity(0.5f) — but THAT call
+// exists to protect the INTERIOR reads (its own comment: "the FP viewmodel washed
+// pink-white"), and interiors do not come through here: the branch above hands every
+// in-graph room its per-zone air (ZWard 0.2 etc.) and overwrites it anyway. So the
+// only thing 0.50 ever dimmed was the OUTDOORS — halving the sky's contribution to
+// the apron, the facade's shadow side and the streamed city, on exactly the side of
+// the [E] ENTER FACILITY handoff that has to match the side the owner approved.
+constexpr float kExteriorIbl        = 1.00f;
 
 // Indexed by Zone. Texture sets are AD-3's curated survivors (matlib-verified).
 const Recipe& recipeFor(uint8_t z) {
@@ -1850,8 +1860,8 @@ void RoomDressing::applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t 
     const int key = interior ? zone : -2;    // -2 = "exterior" (distinct from -1 = unset)
     if (key == m_lastZone) return;
     m_lastZone = key;
-    device.setFog(m_zoneFog[(size_t)zone]);
     if (interior) {
+        device.setFog(m_zoneFog[(size_t)zone]);
         const ZoneAir& air = airFor((uint8_t)zone);
         device.setAmbient(air.amb[0], air.amb[1], air.amb[2]);
         device.setIblIntensity(air.ibl);
@@ -1859,8 +1869,25 @@ void RoomDressing::applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t 
                     std::to_string(zone) + " -> ambient " + std::to_string(air.amb[0]) +
                     " ibl " + std::to_string(air.ibl));
     } else {
+        // ---- HANDOFF CONTINUITY: the EXTERIOR gets NO interior fog. -------------
+        // The line above used to run for BOTH branches — and `zone` is initialised
+        // to ZWard, so stepping outdoors (eyeRoom == kNoRoom, no zone lookup) hung
+        // the DETENTION WARD's fog on the open air: a dark amber at 0.0042/m capped
+        // at 0.62, i.e. up to 62% of every distant pixel replaced by cell-block
+        // haze. That is why the apron, the streamed city and the 13 km mountain
+        // ring read crushed and brown on the canon side while `--world surface`
+        // (which never calls setFog at all) reads clear golden-hour: the two sides
+        // of the [E] ENTER FACILITY handoff had different ATMOSPHERES, not just
+        // different content. The block's own comment already stated the intent —
+        // "the exterior ... is lit by the sky/IBL rig and must keep the engine
+        // defaults" — the fog call simply sat above the branch that enforces it.
+        // Engine default FogParams is `enabled = false`, which is exactly the
+        // surface host's shipping (and owner-approved) outdoor air.
+        device.setFog(x3::rhi::IRenderDevice::FogParams{});
         device.setAmbient(kExteriorAmbient[0], kExteriorAmbient[1], kExteriorAmbient[2]);
         device.setIblIntensity(kExteriorIbl);
+        x3::logInfo("[zone-air] EXTERIOR -> sky/IBL rig (fog OFF, ambient default, ibl " +
+                    std::to_string(kExteriorIbl) + ")");
     }
 }
 

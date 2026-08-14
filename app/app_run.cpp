@@ -4285,6 +4285,44 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo("--set " + kv.first + " " + kv.second);
     }
 
+    // ---- HANDOFF CONTINUITY: OUTDOOR CASCADED SHADOWS FOR THE CANON WORLD ----
+    // world_host_common.h's applyOutdoorCsm() turns cascades on for every host
+    // with a sun and real view depth — and it is called by exactly five hosts
+    // (cliffs / drive / streamed / surface / valley). The canon world is NOT one
+    // of them: it runs runDefaultHost, whose per-frame applyRtaoCVars reads the
+    // console, and `r_csm` is registered defaulting to "0". So canonlevel — which
+    // since SEAM 2/3 owns a 108 m glass tower, a lit apron, a streamed city and a
+    // 13 km horizon ring under the SAME golden-hour sun — shadowed all of it with
+    // the legacy single 45 m camera-locked ortho box.
+    //
+    // That is one half of the [E] ENTER FACILITY discontinuity measured on this
+    // lane: `--world surface` logs "cascades ON over 300 m", canonlevel logs "OFF
+    // -> legacy single cascade (ortho half-extent 45.0 m)". Walking through the
+    // breach therefore changed the SHADOWING MODEL of the same building.
+    //
+    // Gated three ways so nothing else moves: only the canon world, only once the
+    // SEAM-2 exterior actually stood up (no exterior = no outdoors = no reason),
+    // and only when the command line did not speak — an explicit `--set r_csm 0`
+    // still restores the legacy box bit-exactly, which is the A/B escape hatch.
+    // 300 m (not the streamer's 600) is deliberate: it puts cascade 0's half-extent
+    // at ~30 m, TIGHTER than the 45 m box it replaces, so interior shadow density
+    // improves rather than regressing. Written to the CONSOLE, not pushed at the
+    // device, because applyRtaoCVars re-pushes r_csm every frame and would
+    // otherwise stamp the default straight back over it.
+    if (canonWorld && canonFloor.valid() && facilityExterior.built()) {
+        auto cliSaid = [&](const char* n) {
+            for (const auto& kv : cliCVars) if (kv.first == n) return true;
+            return false;
+        };
+        if (!cliSaid("r_csm")) {
+            console->set("r_csm", "1");
+            if (!cliSaid("r_csm_dist")) console->set("r_csm_dist", "300");
+            x3::logInfo("[csm] --world canonlevel: cascades ON over 300 m (SEAM-2 exterior "
+                        "is live — parity with --world surface across the [E] handoff; "
+                        "`--set r_csm 0` restores the legacy 45 m box)");
+        }
+    }
+
     // ---- CONTENT WIRING: map the light cvars onto this frame's budgets ------
     // Called once here (so the headless capture paths, which never enter a
     // frame loop, still get the requested state) and again after every
