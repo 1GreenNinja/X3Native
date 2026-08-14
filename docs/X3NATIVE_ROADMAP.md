@@ -53,7 +53,14 @@ Each is its own spec → plan → build cycle. Status: ✅ done · 🔜 next · 
 > eleven subsystems were still marked ⛔ blocked or 🔜 next while their implementations were
 > already committed under `engine/`. Because this doc is what every session and every parallel
 > agent reads first, that staleness was actively misdirecting work. Each row below now cites the
-> file that proves its status. **Only I (CSG editor) remains genuinely unstarted.**
+> file that proves its status.
+>
+> **Correction 2026-08-14.** The first pass of this table called subsystem I "genuinely not started"
+> — that was wrong. It searched for *filenames* matching `csg`/`brush` and missed `app/editor/`,
+> which has carried a working brush system on `main` all along. **I is the Level Architect**, and
+> per `LEVEL_ARCHITECT_ROADMAP.md` §P1.1 its Modeling/Brush Mode is "the direct supercharged
+> successor to the owner's Doom/Quake brush days + the clean-BSP-brush directive." It is now its
+> own EXE on lane `inspx/la-exe` (Level Architect 11.0). **No subsystem in this table is unstarted.**
 
 | ID | Subsystem | Status | Proof in tree | Hardware notes |
 |---|---|---|---|---|
@@ -65,7 +72,7 @@ Each is its own spec → plan → build cycle. Status: ✅ done · 🔜 next · 
 | **F** | Compute irradiance/probe GI (Sousa hybrid) | ✅ **shipped** | `rhi/vk/vk_gi_rt.cpp`, `rhi/ClusterLights.{h,cpp}` | **runs on 1080 Ti (compute, no RT)** |
 | **G** | Hardware-RT reflections / path-tracing tier | ✅ **shipped** | `rhi/VulkanRT.h`, `rhi/ReflDenoise.{h,cpp}` | **5090 only** (no 1080 Ti) |
 | **H** | Streaming + LOD (vista LODs, contribution culling) | ✅ **shipped** | `app/world_stream.{h,cpp}`, `app/world_hosts/host_streamed.cpp` | I/O on the job system's I/O pool |
-| **I** | CSG brush + patch editor → mesh/collision bake (M8) | ⛔ **genuinely not started** | *(no `csg`/`brush` sources exist)* | the one real gap in this table |
+| **I** | CSG brush + patch editor → mesh/collision bake (M8) — **= Level Architect** | 🔜 **substantially built, active lane** | `app/editor/` (5,167 lines): `BrushCmd`/`BrushEdit`/`BrushRay`/`BrushSelection`/`BrushTransform`, brush types Box/Ramp/Cylinder/Stairs, live `IPhysicsWorld` sync. Split to its own EXE on `inspx/la-exe` as **Level Architect 11.0**. | see `docs/design/LEVEL_ARCHITECT_ROADMAP.md` §P1.1 |
 | **J** | Character anim / GPU skinning / IK / **active ragdoll** (D8) — *v2 spec tiered T0→T3* | ✅ **past J1** | `app/anim.cpp`, `physics/Ragdoll.{h,cpp}`, GPU skin path in `rhi/IRenderDevice.h` | `specs/J-character-animation.spec.md` |
 | **K** | **GPU destruction physics** (compute debris world) — *v2 spec tiered T0→T3* | ✅ **shipped, incl. one T3** | `physics/Destruction.{h,cpp}`, `physics/StructuralCollapse.{h,cpp}` | `specs/K-gpu-destruction.spec.md`; async overlap still weak on Pascal |
 | — | M3 Jolt physics (CPU authoritative) | ✅ done | `physics/JoltPhysicsWorld.cpp` | single-precision port (see §7.1 — still open) |
@@ -130,7 +137,11 @@ Everything that sequence ordered has shipped. What's actually next:
 
 1. **§7.1 — call the Jolt precision decision.** Cheapest unblock on the board; gates both large-world
    content and netcode replication. Lean (b), camera-relative origin rebasing.
-2. **I — CSG brush + patch editor** → mesh/collision bake (M8). The one unstarted subsystem.
+2. **I — Level Architect 11.0** (lane `inspx/la-exe`). Not unstarted — in flight as its own EXE over
+   a shared host DLL. Per `LEVEL_ARCHITECT_ROADMAP.md`, brush authoring exists (Box/Ramp/Cylinder/
+   Stairs with live Jolt sync); the remaining P1.1 flagship work is the half-edge / dynamic-mesh
+   kernel for vertex/edge/face editing, extrude/bevel and the Cut tool. `LEVELDOC_HANDOFF.md`
+   defines the generator→editor handoff format that makes generated content editable.
 3. **Harden what shipped fast.** B/D/E/F/G/H/K all landed without appearing on this roadmap as done —
    worth an acceptance-test pass against each spec's §12 rather than new construction.
 4. **T3 selection (§9).** Structural-connectivity destruction already shipped; pick the next T3
