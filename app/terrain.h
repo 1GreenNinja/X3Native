@@ -244,6 +244,17 @@ uint32_t terrainCorridorCount();
 // registered terrainHeightAt() is BIT-IDENTICAL to the pre-corridor field.
 float    terrainCorridorDelta(float x, float z);
 
+// True when (x,z) lies within the FOOTPRINT (halfWidth + falloff of the
+// polyline) of any registered corridor, REGARDLESS of the depth profile there.
+// This is not redundant with terrainCorridorDelta: a BORED reach carves
+// nothing (depth 0 by design — a tunnel does not carve the mountain above it)
+// yet still owns its footprint, and the tile mesher needs to know "a tube runs
+// under here" — its border skirts must not hang ~55 m down through the bore
+// (measured: 74 full-LOD skirt triangles inside the demo tube, down to 0.3 m
+// above the road — the rock wall you could drive through). Exactly false when
+// nothing is registered.
+bool     terrainCorridorContains(float x, float z);
+
 // ---- PORTAL HOLES ---------------------------------------------------------
 // Mesh-level exclusion for tunnel mouths. The corridor primitive can steepen
 // the ground's sweep at a portal but can never REMOVE it: h(x,z) is single-
@@ -328,6 +339,21 @@ enum class TerrainLod : uint8_t { Full = 0, Half = 1, Quarter = 2, Count = 3 };
 // (worldX, worldZ, cfg). Both the fixed-grid Terrain and the streamer use it.
 // ---------------------------------------------------------------------------
 float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ);
+
+// Build one tile's render mesh at a given LOD from ABSOLUTE (signed) tile
+// coords — the very mesher the streamer generates from (surface + LOD-crack
+// skirt, portal holes applied). originX/originZ are the tile's min-corner
+// world position; the surface triangles are the first *outSurfIdxCount
+// indices (what collision uses). Pure / thread-safe. Exported so self-tests
+// can survey the REAL emitted mesh — a field query cannot see mesh-level
+// artifacts (skirts, LOD interpolation, hole drops), and this lane has been
+// bitten by exactly that gap (the torn mountain shipped through a green
+// field-level test).
+void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
+                      TerrainLod lod,
+                      std::vector<x3::rhi::MeshVertex>& outVerts,
+                      std::vector<uint32_t>& outIdx,
+                      uint32_t* outSurfIdxCount = nullptr);
 
 // One terrain tile: addressable by SIGNED grid coords (gx,gz), owns its 3 LOD
 // render meshes, a collision body, and the scene entity that draws the active
