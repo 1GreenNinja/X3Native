@@ -5,6 +5,7 @@
 // companion path) for load/skin/follow, and the monster.cpp drone ranged path for the
 // LOS-gated hitscan — retargeted from "shoot Jake" to "shoot the nearest hostile".
 #include "sarah.h"
+#include "grounding.h"   // THE GROUNDING RULE: feet may not enter a solid surface
 #include "mesh_prims.h"
 #include "headless_device.h"
 #include "asset_root.h"
@@ -24,6 +25,13 @@ namespace {
 
 // Sarah's collision box half-extents (a standing humanoid ~1.8 m), matching rescue.
 constexpr x3::phys::Vec3 kSarahHalf{ 0.4f, 0.9f, 0.4f };
+
+// DATUM CONVERSION, in one place. m_pos is her FEET; addBox()/setBodyPosition()
+// take the body CENTRE. Passing m_pos straight in (as this used to) centres a
+// 1.8 m box on her ankles: half buried, the useful half only reaching her waist.
+inline x3::phys::Vec3 sarahBodyCenter(const x3::phys::Vec3& feet) {
+    return x3::phys::Vec3{ feet.x, feet.y + kSarahHalf.y, feet.z };
+}
 constexpr float kSarahScale = 1.0f;
 
 // Column-major 4x4 from a 3x3 basis (columns bx,by,bz), uniform scale s, translation t.
@@ -162,11 +170,21 @@ void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_drawables.push_back(d);
     }
 
+    // ---- THE GROUNDING RULE (app/grounding.h). Sarah is spawned at an AUTHORED
+    // position — a floor constant plus an offset — and authored placements are the
+    // ones that sink (a physics-driven walker just rests on its collision). Probe
+    // the surface actually under her and seat her lowest extent on it. --------
+    {
+        const float artDip = m_usingReal ? artLowestBelowOrigin(m_model, m_modelScale) : 0.0f;
+        m_pos = groundCharacter(physics, m_pos, artDip, "Sarah",
+                                "sarah.cpp SarahCompanion::build");
+    }
+
     // ---- Static-by-mass Enemy-layer box: lets her move via setBodyPosition (the
     // teleport trick the monster chase / S4 door use). Mass 0 so she stays put while
     // restrained. NOTE: Enemy layer keeps her out of the player's own shot ray while
     // still being a solid presence — she is friendly, so the player never targets her. -
-    m_body = physics.addBox(kSarahHalf, m_pos, 0.0f, x3::phys::Layer::Enemy);
+    m_body = physics.addBox(kSarahHalf, sarahBodyCenter(m_pos), 0.0f, x3::phys::Layer::Enemy);
 
     // ---- Tag::Prop entity: bookkeeping only; render mesh left invalid so draw() owns
     // the multi-primitive draw (mirrors RescueVictim). ----
@@ -174,6 +192,11 @@ void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
     e.tag     = (uint32_t)Tag::Prop;
     e.visible = true;
     e.body    = m_body;
+    // The body's CENTRE is one half-height above her feet (see sarahBodyCenter);
+    // Scene::update syncs the entity transform FROM the body, so tell it to
+    // subtract that back off or the whole character would render a half-height in
+    // the air. Exactly the mechanism monster.cpp uses for its raised hitbox.
+    e.bodyVisualOffsetY = kSarahHalf.y;
     composeTRS(e.transform,
                x3::phys::Vec3{1,0,0}, x3::phys::Vec3{0,1,0}, x3::phys::Vec3{0,0,1},
                m_modelScale, m_pos);
@@ -425,7 +448,8 @@ void SarahCompanion::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
         if (fdx*fdx + fdz*fdz > 1e-4f) m_yaw = headingToFace(fdx, fdz);
     }
 
-    if (m_body.valid()) physics.setBodyPosition(m_body, m_pos);
+    // FEET -> CENTRE (see sarahBodyCenter).
+    if (m_body.valid()) physics.setBodyPosition(m_body, sarahBodyCenter(m_pos));
     bakeTransform(scene);
 
     // Drive locomotion from this frame's real movement (ignore teleport snaps).

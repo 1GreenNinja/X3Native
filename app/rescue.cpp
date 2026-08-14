@@ -4,12 +4,14 @@
 // (IRenderDevice / IPhysicsWorld / IModelLoader / IAssetSource) only. No
 // purchased C# / id Tech / RBDOOM source consulted. Mirrors monster.cpp.
 #include "rescue.h"
+#include "grounding.h"   // THE GROUNDING RULE: feet may not enter a solid surface
 #include "mesh_prims.h"
 #include "headless_device.h"
 #include "asset_root.h"
 
 #include "engine/core/x3_log.h"
 
+#include <algorithm> // std::min (measured ragdoll lowest-extent lift)
 #include <cmath>
 #include <cstdio>    // std::snprintf (R8 root-Y negative-control GLB builder)
 #include <cstring>   // std::memcpy (ragdoll bone bind-pose copies)
@@ -29,6 +31,13 @@ constexpr x3::phys::Vec3 kVictimHalf{ 0.4f, 0.9f, 0.4f };
 // Default live-character scale (rigged humanoid GLBs read ~1.8 m at scale 1).
 constexpr float kVictimScale = 1.0f;
 constexpr float kBoxScale    = 1.0f;
+
+// DATUM CONVERSION, in one place. A victim's m_pos is her FEET; addBox() and
+// setBodyPosition() take the body CENTRE. Everything that touches m_body must go
+// through this, or the collision volume goes back to straddling the floor.
+inline x3::phys::Vec3 victimBodyCenter(const x3::phys::Vec3& feet) {
+    return x3::phys::Vec3{ feet.x, feet.y + kVictimHalf.y, feet.z };
+}
 
 // Build a column-major 4x4 from a 3x3 basis (columns bx,by,bz), uniform scale s,
 // and translation t. Identical to monster.cpp's composeTRS.
@@ -183,10 +192,38 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_drawables.push_back(d);
     }
 
+    // ---- THE GROUNDING RULE (app/grounding.h; Tim: "character feet can NOT
+    // enter the floor unless its water, sand, or lava"). ---------------------
+    // THIS IS WHERE THE SHIPPED BUG WAS. Callers hand us an authored `pos` taken
+    // from a level-wide ground constant (host_surface_start passes kGroundY = 0),
+    // but the surface the girl actually stands on is whatever static geometry is
+    // under that XZ — in the surface facility that is an interior floor slab
+    // whose TOP is at +0.15 m. Result: boots 0.15 m inside the concrete, in the
+    // exact frame with the "[E] ENTER FACILITY" prompt. The art is NOT at fault
+    // (AnnaCasual.glb spans y 0.000..1.800 — feet at origin, per X3_WORLD_RULES
+    // rule 4); the placement Y was.
+    //
+    // `artLowestBelowOrigin` measures the loaded rig's own bind-pose dip below
+    // its origin, so a pelvis-datum rig (the Jake -0.9647 armature family) is
+    // lifted by exactly that much instead of being buried — which is the SAME
+    // bug that shipped as the buried death ragdoll.
+    {
+        const float artDip = m_usingReal ? artLowestBelowOrigin(m_model, m_modelScale) : 0.0f;
+        m_pos = groundCharacter(physics, m_pos, artDip, m_name.c_str(),
+                                "rescue.cpp RescueVictim::build");
+    }
+
     // ---- Static-by-mass Enemy-layer box: lets the host (future) raycast it and
     // lets the companion move via setBodyPosition (same teleport trick the monster
     // chase + S4 door use). Mass 0 so it stays put in the ward. ----
-    m_body = physics.addBox(kVictimHalf, m_pos, 0.0f, x3::phys::Layer::Enemy);
+    // BODY DATUM: addBox() takes the body CENTRE. m_pos is her FEET, so the
+    // centre is one half-height up. This used to pass m_pos directly, which put a
+    // 1.8 m-tall box centred on her ankles: half of it buried in the floor, and
+    // the half that mattered only reaching her waist (so LOS probes and the
+    // de-overlap ring were reading the wrong volume). Same datum confusion as the
+    // draw bug above, in the physics half of the same function.
+    m_body = physics.addBox(kVictimHalf, victimBodyCenter(m_pos), 0.0f,
+                            x3::phys::Layer::Enemy);
 
     // ---- Tag::Prop entity: bookkeeping only; render mesh left invalid so
     // Scene::render skips it and draw() owns the multi-primitive draw. ----
@@ -194,6 +231,11 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
     e.tag     = (uint32_t)Tag::Prop;
     e.visible = true;
     e.body    = m_body;
+    // The body's CENTRE is one half-height above her feet (see victimBodyCenter);
+    // Scene::update syncs the entity transform FROM the body, so tell it to
+    // subtract that back off or the whole character would render a half-height in
+    // the air. Exactly the mechanism monster.cpp uses for its raised hitbox.
+    e.bodyVisualOffsetY = kVictimHalf.y;
     composeTRS(e.transform,
                x3::phys::Vec3{1,0,0}, x3::phys::Vec3{0,1,0}, x3::phys::Vec3{0,0,1},
                m_modelScale, m_pos);
@@ -296,12 +338,30 @@ void RescueVictim::ragdoll(Scene& scene, x3::phys::IPhysicsWorld& physics) {
     // m_pos is Aria's FEET on the floor, so lift the placement by the pelvis height so
     // the rig spawns standing on the floor (feet at m_pos) and topples ONTO it — rather
     // than spawning half-buried in the floor slab. (mirrors monster.cpp's grounded rig). -
-    constexpr float kRigPelvisH = 0.9f;   // pelvis height above the feet in the canonical rig
+    // MEASURED, NOT GUESSED. This used to lift by a hardcoded kRigPelvisH = 0.9,
+    // which is a magic number for the same quantity monster.cpp:2113-2124 already
+    // MEASURES from the authored rig (its lowest capsule extent, caps included).
+    // Two solutions to one problem is how the datum drifts; use the measured one,
+    // so a change to the canonical rig can never silently re-bury her.
     x3::phys::makeHumanoidRagdollBones(/*originY*/0.0f, m_ragdollBones);
+    {
+        float lowest = 0.0f;
+        for (const auto& d : m_ragdollBones) {
+            const float* bw = d.bindWorld;
+            // Capsule runs from the bone origin along its local +Y (column 1) for
+            // 2*halfHeight, with a hemispherical cap of `radius` at each end.
+            const float tipY = bw[13] + bw[5] * (2.0f * d.halfHeight);
+            lowest = std::min(lowest, std::min(bw[13], tipY) - d.radius);
+        }
+        if (lowest < 0.0f)
+            x3::phys::makeHumanoidRagdollBones(/*originY*/-lowest, m_ragdollBones);
+    }
     const uint32_t bn = (uint32_t)m_ragdollBones.size();
     if (bn == 0) { m_ragdollBones.clear(); return; }
 
-    const x3::phys::Vec3 footPos{ m_pos.x, m_pos.y + kRigPelvisH * scale, m_pos.z };
+    // The rig is now authored with its lowest extent AT y=0, so placing it at
+    // m_pos (her feet) stands it on the floor — no extra lift.
+    const x3::phys::Vec3 footPos{ m_pos.x, m_pos.y, m_pos.z };
     float place[16];
     composeTRS(place,
                x3::phys::Vec3{ c, 0.0f, -s },
@@ -448,7 +508,9 @@ bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
             m_pos.x += mx * travel; m_pos.z += mz * travel;
             m_yaw = headingToFace(dx, dz);   // face the player while following
         }
-        if (m_body.valid()) physics.setBodyPosition(m_body, m_pos);
+        // FEET -> CENTRE (see victimBodyCenter): m_pos is her feet, the body is
+        // a 1.8 m box whose CENTRE must sit one half-height above them.
+        if (m_body.valid()) physics.setBodyPosition(m_body, victimBodyCenter(m_pos));
         bakeTransform(scene);
         // BUG #48: drive the walk/idle blend from this frame's planar movement (a
         // teleport-snap is ignored — it's not real locomotion) so a following

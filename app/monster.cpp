@@ -4,6 +4,7 @@
 // IPhysicsWorld + Scene interfaces only. No purchased C# copied; no id Tech /
 // RBDOOM source consulted.
 #include "monster.h"
+#include "grounding.h"   // THE GROUNDING RULE: feet may not enter a solid surface
 #include "combat_log.h"
 #include "mesh_prims.h"
 #include "headless_device.h"
@@ -558,6 +559,32 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
                             (authored ? " (authored scale kept)" : " (within human band)"));
             }
         }
+    }
+
+    // ---- THE GROUNDING RULE (app/grounding.h; Tim: "character feet can NOT
+    // enter the floor unless its water, sand, or lava"). ---------------------
+    // Enemies are placed from AUTHORED constants: the canon/spire/act2 authoring
+    // layer adds a blanket +0.4 m "body-center" offset (canon_play.cpp
+    // kEnemyFootUp, spire_*.cpp kEnemyYOff, level1_game.cpp kEnemyY, act2_*.h)
+    // against a runtime that documents FEET-at-origin and applies no compensating
+    // translation. Rather than chase ~60 call sites, seat every ground enemy on
+    // the surface actually under it, once, here.
+    //
+    // FLYERS ARE EXEMPT and always will be: a hovering drone's origin IS its
+    // centre (see m_flyer below) and it is deliberately airborne (kDroneHoverY).
+    // Deliberately-elevated props are additionally protected by groundCharacter's
+    // refuse-to-teleport guard, which declines any correction over 2 m.
+    // (noBody citizens ARE grounded — they are pure visuals, and a visual with its
+    // feet in the pavement is exactly the defect nobody screenshots.)
+    if (!m_flyer && !tuning.skipGrounding) {
+        // A standUpZtoY model is rotated by m_modelFixup, so its MODEL-space Y is
+        // not world up and its bind extent along Y means nothing here; those pass
+        // 0 and rely on the probe alone.
+        const float artDip = tuning.standUpZtoY
+                           ? 0.0f
+                           : x3::game::artLowestBelowOrigin(m_model, m_modelScale);
+        m_pos = x3::game::groundCharacter(physics, m_pos, artDip, modelFile.c_str(),
+                                          "monster.cpp MonsterSystem::buildMonsterTuned");
     }
 
     // ---- Enemy-layer collision body for the shoot raycast. mass 0 -> Static
