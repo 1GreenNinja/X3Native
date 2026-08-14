@@ -439,6 +439,10 @@ public:
     // ---- HUD timer data (host renders the rows) ---------------------------
     uint32_t victimCount() const { return (uint32_t)m_victims.size(); }
     const RescueVictim& victim(uint32_t i) const { return *m_victims[i]; }
+    // Mutable overload: the CONTENT module that builds the scene needs to POSE a
+    // victim after build (RescueVictim::setFacing — aim her at the attacker who
+    // is scripted to be assaulting her). Read-only callers keep the const one.
+    RescueVictim& victim(uint32_t i) { return *m_victims[i]; }
     // The active timer rows (one per Captive whose timer is running). At most 3.
     std::vector<RescueTimerHud> hudTimers() const;
     uint32_t rescuedCount() const;   // companions secured

@@ -356,6 +356,10 @@ public:
     uint32_t cellGuardCount() const { return m_cellGuards.count(); }
     // Per-girl attacker count (Medical Bay interrupt-rescue enemies).
     uint32_t attackerCount() const { return m_attackers.count(); }
+    // Borrow a ward attacker (the assault-tableau self-test asserts his FACING and
+    // that damage releases his scripted pose, against the real built level).
+    MonsterSystem&       attackerAt(uint32_t i)       { return m_attackers.at(i); }
+    const MonsterSystem& attackerAt(uint32_t i) const { return m_attackers.at(i); }
     // Placed lightning battery-cell count (the self-test asserts >0 + room-tagging).
     uint32_t batteryCount() const { return (uint32_t)m_batteries.size(); }
 
