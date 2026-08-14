@@ -54,12 +54,47 @@ constexpr float kPickupRadius = 1.2f;
 // main.cpp can register the cvars without converting. The pistol GLB's barrel
 // reads "to the right" with a plain camera-basis orientation, so a -90 deg yaw
 // swings it FULLY to forward = traditional point-to-crosshair. Dial vm_* live to converge.
+//
+// ===========================================================================
+// WHAT fwd/right/down MEASURE — read this before re-tuning (Tim 2026-08, live
+// play on ceb3c48: "the gun is in your face way over your head").
+// ===========================================================================
+// They position the weapon's BARREL LINE — the point (0, vmMuzzle.y, 0) in the
+// GLB's scene space — relative to the eye. They used to position the GLB's own
+// ORIGIN, and EVERY purchased weapon GLB in this roster is authored STANDING ON
+// THE FLOOR: its origin is the ground plane under the gun and its barrel is the
+// TOP of the model (scene-space y 0.37 .. 0.68, i.e. 0.15 .. 0.25 m once the
+// viewmodel scale is applied). Pushing that origin 0.35 m "down" therefore left
+// the BARREL only ~0.08 m below eye level — the sights landed ON the crosshair
+// and the gun's mass filled the middle of the frame. That is the bug Tim saw,
+// and it also made every gun sit at a DIFFERENT height (each model's barrel is a
+// different distance above its floor plane). Anchoring on the barrel line makes
+// `down` mean exactly what its name says, for every weapon, and normalizes the
+// roster. See Arsenal::currentViewmodelFrame.
 constexpr float kVmDefYawDeg   = 193.0f; // yaw about camera up (degrees) — barrel -> forward (Tim-tuned)
 constexpr float kVmDefPitchDeg = 7.0f;   // pitch about camera right (degrees) (Tim-tuned)
 constexpr float kVmDefRollDeg  = 0.0f;   // roll about camera forward (degrees)
-constexpr float kVmDefFwd      = 1.0f;   // forward along look dir (meters) (Tim-tuned)
-constexpr float kVmDefRight    = 0.25f;  // to the right (meters) (Tim-tuned; more-right pass)
-constexpr float kVmDefDown     = 0.35f;  // below the eye line (meters) (Tim-tuned)
+constexpr float kVmDefFwd      = 0.86f;  // barrel line ahead of the eye (meters)
+constexpr float kVmDefRight    = 0.30f;  // barrel line right of the eye (meters)
+constexpr float kVmDefDown     = 0.30f;  // barrel line BELOW the eye line (meters)
+
+// ---- FP viewmodel LENS (vm_fov) -------------------------------------------
+// The engine draws the viewmodel with the WORLD's projection (one frame-UBO
+// viewProj; shaders/mesh.vert has no per-draw projection), so there is no second
+// camera to give the gun its own FOV. This reproduces one the honest way: at a
+// fixed forward distance, rendering an object under fovV instead of fovW is
+// equivalent to magnifying its SIZE and its OFF-AXIS offsets by
+//     k = tan(fovW/2) / tan(fovV/2)
+// which is exactly what a narrower viewmodel FOV does to the on-screen read.
+// (What it does NOT reproduce is the perspective INSIDE the gun — a real narrow
+// viewmodel FOV also flattens the barrel's own foreshortening. Stated plainly so
+// nobody mistakes this for a second render pass.)
+//   kVmDefFovDeg <= 0  -> k = 1, the gun shares the world lens (default).
+//   kVmWorldFovDeg     -> the world FOV to measure against; the live game camera
+//                         renders at 60 (app_run: device->setCamera(..., 60.0f)),
+//                         the still-capture hosts at 70.
+constexpr float kVmDefFovDeg   = 0.0f;   // 0/<=0 = share the world lens
+constexpr float kVmWorldFovDeg = 60.0f;  // the live loop's vertical FOV
 
 // Global "hold it up bigger" multiplier folded onto every weapon's vmScale when the
 // FP viewmodel is composed (Tim: 2x is CORRECT, keep it). Public because the MUZZLE
@@ -130,6 +165,11 @@ public:
     // The pickup entity id (kNoLink until built).
     uint32_t pickupEntity() const { return m_pickupEntity; }
 
+    // The legacy pistol GLB's BARREL LINE height in its own scene space (the same
+    // anchor Arsenal uses; see the kVmDef* note above). 0 for the fallback box,
+    // which is already authored around its own origin.
+    float viewmodelPivotY() const { return m_vmPivotY; }
+
     // True if the real GLB loaded; false if the procedural fallback box is in
     // use. Valid after buildWeaponPickup().
     bool usingRealModel() const { return m_usingReal; }
@@ -154,6 +194,11 @@ private:
     uint32_t       m_pickupEntity = kNoLink; // index into the Scene
     float          m_animT = 0.0f;           // animation cursor (seconds), bob+spin
     float          m_modelScale = 1.0f;      // uniform scale applied to the model
+    // Barrel-line anchor for the FP viewmodel (scene-space Y of the barrel in
+    // WeaponEnergyPistol.glb, MEASURED with tools/weapon_muzzle_probe.py: the
+    // model is 1.8 units tall standing on y=0 and its barrel rides at y=1.603).
+    // 0 while the procedural fallback box is in use.
+    float          m_vmPivotY = 0.0f;
 
     bool m_hasWeapon = false;
 };
@@ -539,14 +584,34 @@ public:
 
     bool viewmodelsLoaded() const { return !m_views.empty(); }
 
+    // ---- FP viewmodel LENS + SIZE levers (see kVmDefFovDeg in this header) ----
+    // Set the viewmodel FOV emulation. `vmFovDeg` <= 0 shares the world lens (the
+    // default, magnification 1). `worldFovDeg` is the FOV the frame is ACTUALLY
+    // rendered at (60 in the live loop, 70 in the still-capture hosts) — pass it so
+    // the same vm_fov reads the same in a still as it does in play. `scaleMul` is a
+    // pure size multiplier on top (1 = the shipped kVmScaleBoost read).
+    // Seeded at construction from the environment so the levers are reachable from
+    // a command line with NO rebuild and NO app_run.cpp plumbing:
+    //     X3_VM_FOV, X3_VM_WORLDFOV, X3_VM_SCALE
+    void  setViewmodelLens(float vmFovDeg, float worldFovDeg, float scaleMul = 1.0f);
+    float viewmodelFovDeg()      const { return m_vmFovDeg; }
+    float viewmodelWorldFovDeg() const { return m_vmWorldFovDeg; }
+    float viewmodelScaleMul()    const { return m_vmScaleMul; }
+    // The magnification the lens levers currently apply (1.0 = untouched).
+    float viewmodelMagnification() const;
+
     // ---- THE MUZZLE -----------------------------------------------------------
     // The composed FP viewmodel frame: the world basis (bx,by,bz), the origin `pos` and
     // the total scale the gun is DRAWN at. Identical math to (and shared with)
     // drawCurrentViewmodel, so anything solved in this frame lands ON the gun.
     struct VmFrame {
         x3::phys::Vec3 bx{1,0,0}, by{0,1,0}, bz{0,0,1};
+        // The GLB ORIGIN in the world = the model matrix's translation column, i.e.
+        // a GLB scene-space point p draws at pos + scale*(bx*p.x + by*p.y + bz*p.z).
+        // NOTE this is NOT where vm_fwd/vm_right/vm_down point: those position the
+        // gun's BARREL LINE (0, vmMuzzle.y, 0) and the anchor is folded in here.
         x3::phys::Vec3 pos{};
-        float          scale = 1.0f;   // vmScale * kVmScaleBoost
+        float          scale = 1.0f;   // vmScale * kVmScaleBoost * lens magnification
     };
     VmFrame currentViewmodelFrame(float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
                                   float extraYawOff = 0.0f, float extraPitchOff = 0.0f,
@@ -630,6 +695,11 @@ private:
     // [W9-3 RPG] progression multiplier layer state (see setReloadMult/setAmmoCapMult).
     float m_reloadMult  = 1.0f;
     float m_ammoCapMult = 1.0f;
+
+    // FP viewmodel lens levers (setViewmodelLens; env-seeded in the ctor).
+    float m_vmFovDeg      = kVmDefFovDeg;
+    float m_vmWorldFovDeg = kVmWorldFovDeg;
+    float m_vmScaleMul    = 1.0f;
 };
 
 // Headless self-test (--test-weapons). Exercises the data-driven arsenal with NO

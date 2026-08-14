@@ -8,6 +8,8 @@
 #include "engine/core/x3_log.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 
 namespace x3::game {
@@ -39,6 +41,12 @@ constexpr float kSpinRate     = 1.2f;    // rad/s yaw
 // authored small already, so it uses scale 1.
 constexpr float kRealModelScale = 0.18f;
 constexpr float kBoxModelScale  = 1.0f;
+
+// WeaponEnergyPistol.glb's BARREL LINE in its own scene space. The model stands
+// on y=0 and is 1.8 units tall; its barrel rides at y=1.603 (MEASURED with
+// tools/weapon_muzzle_probe.py). The FP viewmodel anchors on this, not on the
+// GLB origin — see the kVmDef* block in weapon.h for why.
+constexpr float kRealModelPivotY = 1.603f;
 
 // Pickup pedestal size for the fallback procedural "weapon" box.
 constexpr float kBoxHalf = 0.18f;
@@ -108,12 +116,14 @@ void WeaponSystem::buildWeaponPickup(Scene& scene, x3::rhi::IRenderDevice& devic
     if (!m_drawables.empty()) {
         m_usingReal  = true;
         m_modelScale = kRealModelScale;
+        m_vmPivotY   = kRealModelPivotY;   // barrel line, not the model's floor plane
         x3::logInfo("[weapon] loaded WeaponEnergyPistol.glb — " +
                     std::to_string(m_drawables.size()) + " drawable primitive(s)");
     } else {
         // ---- Fallback: a small procedural box so the slice still works. ----
         m_usingReal  = false;
         m_modelScale = kBoxModelScale;
+        m_vmPivotY   = 0.0f;   // the box is already authored around its own origin
         if (m_model.ok)
             x3::logWarn("[weapon] GLB loaded but produced no drawables; using fallback box");
         else
@@ -245,7 +255,8 @@ void WeaponSystem::drawViewmodel(x3::rhi::IRenderDevice& device,
     };
 
     // Eye + forward*f + right*r - up*d  (lower-right of the view). The f/r/d
-    // distances come from the live-tunable vm_fwd/vm_right/vm_down cvars.
+    // distances come from the live-tunable vm_fwd/vm_right/vm_down cvars, and they
+    // position the gun's BARREL LINE — the GLB origin is corrected off below.
     x3::phys::Vec3 pos{
         eyeX + forward.x * fwd + right.x * right_ - up.x * down,
         eyeY + forward.y * fwd + right.y * right_ - up.y * down,
@@ -272,6 +283,16 @@ void WeaponSystem::drawViewmodel(x3::rhi::IRenderDevice& device,
     x3::phys::Vec3 bx = applyOffsets(right);
     x3::phys::Vec3 by = applyOffsets(up);
     x3::phys::Vec3 bz = applyOffsets(negFwd);
+
+    // BARREL-LINE ANCHOR. WeaponEnergyPistol.glb stands on y=0 with its barrel at
+    // the TOP of the model (y = 1.603 of 1.8), so pinning the GLB ORIGIN `down`
+    // metres under the eye left the barrel only 0.06 m below eye level — the gun
+    // read as held over the player's head. Slide the origin so the point
+    // (0, m_vmPivotY, 0) is what `pos` actually places. Identical maths to
+    // Arsenal::currentViewmodelFrame; 0 pivot (fallback box) = old behaviour.
+    pos.x -= by.x * (m_vmPivotY * m_modelScale);
+    pos.y -= by.y * (m_vmPivotY * m_modelScale);
+    pos.z -= by.z * (m_vmPivotY * m_modelScale);
 
     float model[16];
     composeTRS(model, bx, by, bz, m_modelScale, pos);
@@ -678,6 +699,42 @@ Arsenal::Arsenal(std::vector<WeaponDef> roster) : m_defs(std::move(roster)) {
         m_state[i].charge      = m_defs[i].usesCharge ? m_defs[i].chargeMax : 0.0f;
     }
     if (m_defs.empty()) m_sel = -1; else m_sel = 0;
+
+    // FP viewmodel LENS levers, seeded from the environment so they are reachable
+    // from a command line with no rebuild (and without plumbing new cvars through
+    // app_run.cpp, which the EXE split is about to rewrite). See weapon.h.
+    auto envF = [](const char* k, float dflt) {
+        const char* v = std::getenv(k);
+        if (!v || !*v) return dflt;
+        char* end = nullptr;
+        const float f = std::strtof(v, &end);
+        return (end && end != v) ? f : dflt;
+    };
+    setViewmodelLens(envF("X3_VM_FOV",      kVmDefFovDeg),
+                     envF("X3_VM_WORLDFOV", kVmWorldFovDeg),
+                     envF("X3_VM_SCALE",    1.0f));
+    if (m_vmFovDeg > 0.0f || m_vmScaleMul != 1.0f)
+        x3::logInfo("[arsenal] viewmodel lens: vm_fov=" + std::to_string(m_vmFovDeg) +
+                    " world_fov=" + std::to_string(m_vmWorldFovDeg) +
+                    " scale_mul=" + std::to_string(m_vmScaleMul) +
+                    " -> magnification " + std::to_string(viewmodelMagnification()));
+}
+
+void Arsenal::setViewmodelLens(float vmFovDeg, float worldFovDeg, float scaleMul) {
+    // Clamp to sane lenses so a fat-fingered value can't produce a degenerate or
+    // negative magnification (tan blows up at 180 deg and flips past it).
+    m_vmFovDeg      = (vmFovDeg   > 0.0f) ? std::fmin(vmFovDeg,   179.0f) : 0.0f;
+    m_vmWorldFovDeg = (worldFovDeg > 1.0f) ? std::fmin(worldFovDeg, 179.0f) : kVmWorldFovDeg;
+    m_vmScaleMul    = (scaleMul   > 0.01f) ? std::fmin(scaleMul,   10.0f)  : 1.0f;
+}
+
+float Arsenal::viewmodelMagnification() const {
+    if (m_vmFovDeg <= 0.0f) return 1.0f;   // share the world lens
+    const float halfV = m_vmFovDeg      * 0.5f * (kPi / 180.0f);
+    const float halfW = m_vmWorldFovDeg * 0.5f * (kPi / 180.0f);
+    const float tv = std::tan(halfV);
+    if (!(tv > 1e-4f)) return 1.0f;
+    return std::tan(halfW) / tv;
 }
 
 void Arsenal::restore(int sel, const std::vector<std::pair<int,int>>& ammo) {
@@ -1064,9 +1121,13 @@ Arsenal::VmFrame Arsenal::currentViewmodelFrame(
     const float yawOff   = d.vmYawDeg   * (kPi / 180.0f) + extraYawOff;
     const float pitchOff = d.vmPitchDeg * (kPi / 180.0f) + extraPitchOff;
     const float rollOff  = d.vmRollDeg  * (kPi / 180.0f) + extraRollOff;
+    // LENS: a narrower viewmodel FOV is reproduced by magnifying the gun's SIZE and
+    // its OFF-AXIS offsets at a fixed forward distance (see kVmDefFovDeg, weapon.h).
+    // mag == 1 by default, so this is a no-op unless the lens levers are set.
+    const float mag   = viewmodelMagnification() * m_vmScaleMul;
     const float fwd   = d.vmFwd   + extraFwd;
-    const float rgt   = d.vmRight + extraRight;
-    const float down  = d.vmDown  + extraDown;
+    const float rgt   = (d.vmRight + extraRight) * mag;
+    const float down  = (d.vmDown  + extraDown)  * mag;
 
     // Same camera-basis math as WeaponSystem::drawViewmodel (see 3 CONVENTIONS).
     const float cp = std::cos(pitch), sp = std::sin(pitch);
@@ -1076,9 +1137,6 @@ Arsenal::VmFrame Arsenal::currentViewmodelFrame(
     const x3::phys::Vec3 up{ right.y * forward.z - right.z * forward.y,
                              right.z * forward.x - right.x * forward.z,
                              right.x * forward.y - right.y * forward.x };
-    f.pos = x3::phys::Vec3{ eyeX + forward.x * fwd + right.x * rgt - up.x * down,
-                            eyeY + forward.y * fwd + right.y * rgt - up.y * down,
-                            eyeZ + forward.z * fwd + right.z * rgt - up.z * down };
     const x3::phys::Vec3 negFwd{ -forward.x, -forward.y, -forward.z };
     auto applyOffsets = [&](x3::phys::Vec3 v) {
         v = rotateAboutAxis(v, up,      yawOff);
@@ -1089,7 +1147,28 @@ Arsenal::VmFrame Arsenal::currentViewmodelFrame(
     f.bx = applyOffsets(right);
     f.by = applyOffsets(up);
     f.bz = applyOffsets(negFwd);
-    f.scale = d.vmScale * kVmScaleBoost;
+    f.scale = d.vmScale * kVmScaleBoost * mag;
+
+    // ---- THE ANCHOR (Tim 2026-08: "the gun is in your face way over your head") --
+    // fwd/right/down place the weapon's BARREL LINE, i.e. the GLB scene-space point
+    // (0, vmMuzzle.y, 0). They used to place the GLB ORIGIN, and every purchased
+    // weapon GLB in this roster is authored STANDING ON THE FLOOR — origin on the
+    // ground plane under the gun, barrel at the TOP of the model (scene y 0.37..0.68,
+    // = 0.15..0.25 m at viewmodel scale). So `down 0.35` only lowered the gun's FEET:
+    // the barrel came to rest ~0.08 m under eye level, put the sights ON the
+    // crosshair and threw the gun's mass across the middle of the frame — and every
+    // gun landed at a different height, because every model's barrel is a different
+    // distance above its own floor plane. Subtracting the anchor here (rather than
+    // re-tuning six numbers per weapon) makes `down` mean what it says, for the whole
+    // roster, and keeps ONE frame shared with currentMuzzle() so the FX origin still
+    // rides the drawn barrel tip (W13a).
+    // NOTE the pivot is applied to `f.pos` only, so VmFrame stays exactly what its
+    // consumers expect: the model matrix's translation column.
+    const float pivotY = d.vmMuzzle.y;
+    f.pos = x3::phys::Vec3{
+        eyeX + forward.x * fwd + right.x * rgt - up.x * down - f.by.x * (pivotY * f.scale),
+        eyeY + forward.y * fwd + right.y * rgt - up.y * down - f.by.y * (pivotY * f.scale),
+        eyeZ + forward.z * fwd + right.z * rgt - up.z * down - f.by.z * (pivotY * f.scale) };
     return f;
 }
 
@@ -1721,10 +1800,6 @@ bool runWeaponsSelfTest() {
                 const x3::phys::Vec3 up{ rt.y * fw.z - rt.z * fw.y,
                                          rt.z * fw.x - rt.x * fw.z,
                                          rt.x * fw.y - rt.y * fw.x };
-                const x3::phys::Vec3 origin{
-                    ex + fw.x * d.vmFwd + rt.x * d.vmRight - up.x * d.vmDown,
-                    ey + fw.y * d.vmFwd + rt.y * d.vmRight - up.y * d.vmDown,
-                    ez + fw.z * d.vmFwd + rt.z * d.vmRight - up.z * d.vmDown };
                 auto off = [&](x3::phys::Vec3 v) {
                     v = rotateAboutAxis(v, up, d.vmYawDeg   * kDeg);
                     v = rotateAboutAxis(v, rt, d.vmPitchDeg * kDeg);
@@ -1734,6 +1809,12 @@ bool runWeaponsSelfTest() {
                 const x3::phys::Vec3 bx = off(rt), by = off(up),
                                      bz = off(x3::phys::Vec3{ -fw.x, -fw.y, -fw.z });
                 const float s = d.vmScale * kVmScaleBoost;
+                // fwd/right/down place the BARREL LINE (0, vmMuzzle.y, 0), so the GLB
+                // origin sits that far back down the viewmodel's own up axis.
+                const x3::phys::Vec3 origin{
+                    ex + fw.x * d.vmFwd + rt.x * d.vmRight - up.x * d.vmDown - by.x * (d.vmMuzzle.y * s),
+                    ey + fw.y * d.vmFwd + rt.y * d.vmRight - up.y * d.vmDown - by.y * (d.vmMuzzle.y * s),
+                    ez + fw.z * d.vmFwd + rt.z * d.vmRight - up.z * d.vmDown - by.z * (d.vmMuzzle.y * s) };
                 const x3::phys::Vec3 mL = d.vmMuzzle;
                 const x3::phys::Vec3 want{
                     origin.x + (bx.x * mL.x + by.x * mL.y + bz.x * mL.z) * s,
@@ -1760,6 +1841,65 @@ bool runWeaponsSelfTest() {
         // shotgun (a 4.4 m source model) must reach visibly further than the pistol.
         wcheck(perWeapon && (maxReach - minReach) > 0.10f,
                "W13c the muzzle is PER-WEAPON (barrel reach differs across the roster)");
+    }
+
+    // ---- W14: THE FP VIEWMODEL TRANSFORM (Tim 2026-08, live play on ceb3c48:
+    // "the gun is in your face way over your head") REGRESSION GUARD.
+    // The gun used to be anchored on the GLB ORIGIN, which for every purchased
+    // weapon model is the FLOOR PLANE UNDER THE GUN — so `vmDown` lowered the gun's
+    // feet while its barrel (the TOP of the model) stayed level with the eye. These
+    // assert the read a first-person viewmodel must have, in metres, for EVERY
+    // weapon: barrel BELOW the eye by vmDown, muzzle below and to the RIGHT of the
+    // look axis, and the whole silhouette off the eye line. No Vulkan needed.
+    {
+        Arsenal a;
+        a.setViewmodelLens(0.0f, kVmWorldFovDeg);   // ignore any X3_VM_* in the harness env
+        bool barrelAtDown = true;   // the barrel LINE lands exactly vmDown under the eye
+        bool muzzleBelow  = true;   // and the barrel TIP is below the eye line too
+        bool muzzleRight  = true;   // ...and to the right (lower-right read)
+        bool consistent   = true;   // every gun at the SAME barrel height (was 0.15-0.25 m apart)
+        float minDrop = 1e9f, maxDrop = -1e9f;
+        const float ex = 3.0f, ey = 1.7f, ez = -2.0f;
+
+        for (int wi = 0; wi < a.count(); ++wi) {
+            a.select(wi);
+            const WeaponDef& d = a.def(wi);
+            // Level look down +X: forward=(1,0,0), right=(0,0,1), up=(0,1,0).
+            const Arsenal::VmFrame f = a.currentViewmodelFrame(ex, ey, ez, 0.0f, 0.0f);
+            // The barrel line is the GLB point (0, vmMuzzle.y, 0) — map it through the
+            // SAME frame the gun is drawn with.
+            const float by_ = f.pos.y + f.by.y * d.vmMuzzle.y * f.scale;
+            const float drop = ey - by_;                       // metres below eye level
+            if (std::fabs(drop - d.vmDown) > 1e-3f) barrelAtDown = false;
+            if (drop < minDrop) minDrop = drop;
+            if (drop > maxDrop) maxDrop = drop;
+
+            const x3::phys::Vec3 m = a.currentMuzzle(ex, ey, ez, 0.0f, 0.0f);
+            if (!(m.y < ey - 0.10f)) muzzleBelow = false;       // at least 10 cm under the eye
+            if (!(m.z - ez > 0.02f)) muzzleRight = false;       // +Z is camera-right at yaw 0
+        }
+        consistent = (maxDrop - minDrop) < 1e-3f;
+        wcheck(barrelAtDown, "W14a vm_down places the BARREL LINE, not the model's floor plane");
+        wcheck(consistent,   "W14b every weapon's barrel sits at the SAME height under the eye");
+        wcheck(muzzleBelow,  "W14c the muzzle is BELOW eye level (not on the crosshair)");
+        wcheck(muzzleRight,  "W14d the muzzle sits RIGHT of the look axis (lower-right read)");
+
+        // ---- W14e/f: the vm_fov LENS lever. A NARROWER viewmodel FOV magnifies the
+        // gun and pushes it further off-axis; sharing the world FOV changes nothing.
+        Arsenal b;
+        b.setViewmodelLens(0.0f, 60.0f);                    // share the world lens
+        const bool lensOff = std::fabs(b.viewmodelMagnification() - 1.0f) < 1e-6f;
+        const Arsenal::VmFrame base = b.currentViewmodelFrame(ex, ey, ez, 0.0f, 0.0f);
+        b.setViewmodelLens(45.0f, 60.0f);                   // narrower than the world
+        const float mag = b.viewmodelMagnification();
+        const Arsenal::VmFrame lens = b.currentViewmodelFrame(ex, ey, ez, 0.0f, 0.0f);
+        const bool bigger = lens.scale > base.scale * 1.05f;
+        const bool offAxis = (lens.pos.z - ez) > (base.pos.z - ez) * 1.05f;  // further right
+        const bool magMath = std::fabs(mag - (std::tan(30.0f * kPi / 180.0f) /
+                                              std::tan(22.5f * kPi / 180.0f))) < 1e-4f;
+        wcheck(lensOff, "W14e vm_fov 0 == share the world lens (magnification 1, no change)");
+        wcheck(bigger && offAxis && magMath,
+               "W14f vm_fov 45 vs world 60 magnifies the gun + pushes it off-axis by tan ratio");
     }
 
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +
