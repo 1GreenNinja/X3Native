@@ -18,6 +18,8 @@
 
 #include <filesystem>
 #include <system_error>
+#include <cmath>      // std::floor  (pause-overlay layout)
+#include <cstring>    // std::strlen (pause-overlay centering)
 
 namespace x3 { namespace apphost {
 
@@ -189,7 +191,71 @@ int hostTunnel(HostContext& hc) {
         // content, and the light array does not survive that. Cheap: 6 cached lights.
         device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        // ESC OPENS THE MENU, IT DOES NOT QUIT. Tim was losing his session every
+        // time he reached for it. ESC toggles a PAUSE: the sim stops, the cursor
+        // is released so the window can be moved/alt-tabbed, and driving resumes
+        // on the next press. SHIFT+ESC is the deliberate way out, so quitting
+        // stays possible but can no longer happen by reflex.
+        //
+        // THE OVERLAY IS NOT DECORATION. The first cut of this paused silently —
+        // it only logged to a console the player is not looking at — and a paused
+        // game is pixel-identical to a hung one. Tim hit ESC, got a live window
+        // that ignored the throttle, and reported "The car doesnt move AT ALL".
+        // A mode the player cannot see is a freeze with extra steps, so the state
+        // is drawn on the glass, along with the keys that leave it.
+        {
+            static bool escWasDown = false, paused = false;
+            const bool escDown = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
+                            || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+            if (escDown && !escWasDown) {
+                if (shift) break;                      // SHIFT+ESC = quit
+                paused = !paused;
+                glfwSetInputMode(window, GLFW_CURSOR,
+                                 paused ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+                x3::logInfo(paused ? "[tunnel] PAUSED — ESC resumes, SHIFT+ESC quits"
+                                   : "[tunnel] resumed");
+            }
+            escWasDown = escDown;
+            if (paused) {
+                // Present the frame so the window stays live, but do not advance
+                // the sim or read drive input.
+                auto pf = device->beginFrame();
+                if (pf.valid) {
+                    scene.render(*device, pf);
+                    if (carBuilt) car.render(pf);
+
+                    int pw = 0, ph = 0; glfwGetFramebufferSize(window, &pw, &ph);
+                    const float fw = (float)pw, fh = (float)ph;
+
+                    // Dim the world so the menu reads as a layer above it.
+                    const float scrim[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
+                    device->drawHudQuad(pf, 0.0f, 0.0f, fw, fh, scrim);
+
+                    // Glyph cell is square and fixed for the mono role, so the
+                    // legacy N*px centering math is exact.
+                    auto centered = [&](const char* s, float px, float y, const float c[4]) {
+                        const float w = (float)std::strlen(s) * px;
+                        device->drawHudText(pf, s, (fw - w) * 0.5f, y, px, c);
+                    };
+
+                    const float title[4] = { 1.00f, 0.93f, 0.72f, 1.0f };
+                    const float body [4] = { 0.86f, 0.88f, 0.92f, 1.0f };
+                    const float dim  [4] = { 0.55f, 0.58f, 0.64f, 1.0f };
+
+                    const float tp = std::floor(fh * 0.055f);   // title glyph px
+                    const float bp = std::floor(fh * 0.026f);   // body  glyph px
+                    float y = fh * 0.34f;
+
+                    centered("PAUSED", tp, y, title);            y += tp * 2.2f;
+                    centered("ESC          resume driving", bp, y, body); y += bp * 1.8f;
+                    centered("SHIFT + ESC  quit to desktop", bp, y, body); y += bp * 2.4f;
+                    centered("the sim is stopped - this is not a freeze", bp * 0.85f, y, dim);
+                }
+                device->endFrame(pf);
+                continue;
+            }
+        }
         const double now = glfwGetTime();
         float fdt = (float)(now - prevTime); prevTime = now;
         if (fdt > 0.1f) fdt = 0.1f;

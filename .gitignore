@@ -88,6 +88,10 @@ run.pid
 /*.gif
 
 # Runtime / scratch artifacts
+# /scratch/ is the working area for capture sweeps (tunnelshots/, tintprobe/,
+# rock_candidates.png). Frames that PROVE something get curated into
+# docs/screenshots/ and committed there; everything else is throwaway.
+/scratch/
 imgui.ini
 b1log.txt
 *terminal log*.txt
@@ -111,7 +115,7 @@ assets/converted_glb/ShowRoom_Vol30/*
 vehbuild.json
 assets/surface_library/
 assets/converted_glb/Detention/
-# mines lane (2026-08-03): Armory mine kit — asset-store distributed (manifest.json),
+# mines lane (2026-08-03): Armory mine kit ï¿½ asset-store distributed (manifest.json),
 # never LFS (the LFS budget is exhausted fleet-wide; see the weapon-viewmodel note below).
 assets/converted_glb/mine/
 assets/converted_glb/ModularSciFi_Interior/SM_Wall_B.glb
