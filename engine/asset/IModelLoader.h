@@ -225,4 +225,22 @@ void prewarmModelDecodesAsync(std::vector<std::pair<std::string, std::string>> r
 // found on disk — runs the batch import). Returns true if the core tests pass.
 bool runModelLoaderSelfTest();
 
+// True if `textureId` (a RAW rhi::TextureHandle::id, untagged) is currently held
+// by the process-wide refcounted GLB texture cache.
+//
+// WHY THIS EXISTS. Meshes and textures have very different lifetimes here:
+// GpuUploader mints a fresh createMesh() per primitive on every load(), so a mesh
+// handle has exactly one owner and a direct destroyMesh() is safe. Textures are
+// the opposite — the same converted kit piece (SM_Wall_A.glb, a district's shared
+// prefab) is loaded by many separate systems, they all receive the SAME handle,
+// and the cache decrements a refcount in GpuUploader::free(), physically
+// destroying only on the last release. Calling device.destroyTexture() straight
+// off such a handle frees a texture other live systems still point at.
+//
+// Any subsystem that keeps its own teardown ledger of raw texture ids must ask
+// this before destroying one, and skip it if true — the loader owns that texture
+// and will free it when the last referencing Model is unload()ed.
+// See app/env_art.cpp's destroy() doctrine and app/world_stream.cpp captureLedger().
+bool isCacheManagedTexture(uint32_t textureId);
+
 } // namespace x3::asset
