@@ -111,6 +111,7 @@
 #include "city.h"
 #include "tunnel_corridor.h"   // x3::game::runTunnelDriveSelfTest (--test-tunneldrive)
 #include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
+#include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
@@ -745,6 +746,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running ROUTE FRAME self-test (polyline frame: straight unchanged, "
                     "curve followed, frame perpendicular through the bend)...");
         return x3::game::runRouteFrameSelfTest() ? 0 : 1;
+    }
+    if (tf.testRiverBridge) {
+        x3::logInfo("running RIVER BRIDGE self-test (the valley road meets the river "
+                    "square, the span gap leaves it untouched, the at-grade control drowns)...");
+        return x3::game::runRiverBridgeSelfTest() ? 0 : 1;
     }
     if (tf.testTunnelDrive) {
         x3::logInfo("running TUNNEL DRIVE-THROUGH self-test (real rig through the demo "

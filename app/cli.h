@@ -494,6 +494,7 @@ struct CliOptions {
     // --test-routeframe: TunnelRoute polyline-frame gate (P1 of the road network).
     bool        testRouteFrame = false;
     bool        testRoadNetwork = false;   // --test-roadnetwork
+    bool        testRiverBridge = false;   // --test-riverbridge (valley road + Bridge No.1)
     // Headless editor proof (--screenshot-editor [path.png]): init ImGui in a headless
     // device, render ONE frame with the dockspace + demo window, and capture a PNG that
     // shows the ImGui window — proves the Phase-0 integration actually rasterizes.

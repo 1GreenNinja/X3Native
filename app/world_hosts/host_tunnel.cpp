@@ -18,7 +18,9 @@
 #include "../player.h"
 
 #include <array>
+#include <memory>
 #include "../road_network.h"
+#include "../river_bridge.h"
 #include "../vehicle.h"
 #include "../asset_root.h"
 #include "engine/audio/IAudioSystem.h"   // ENGINE NOTE: RPM-driven loop
@@ -149,6 +151,36 @@ int hostTunnel(HostContext& hc) {
             ringSpec.maxGrade  = 0.07f;
             const x3::game::RoadBuildResult rr = x3::game::registerRoad(ringSpec);
             if (!rr.ok) { x3::logError("--world tunnel: ring registration FAILED"); ringOn = false; }
+        }
+    }
+    // THE 31-MILE OUTER TOUR (X3_OUTER_RING=1) — the four-range loop with its
+    // five bores — and THE RIVER CROSSING (X3_RIVER_ROAD=1) — the valley road
+    // over Bridge No.1. Registered in the same boot slot, for the same reason:
+    // the corridor registry closes at the first height query below.
+    x3::game::OuterRingResult outerRing;
+    bool outerOn = false;
+    {
+        const char* e = std::getenv("X3_OUTER_RING");
+        outerOn = (e && e[0] == '1');
+        if (outerOn) {
+            outerRing = x3::game::registerOuterRing();
+            if (!outerRing.road.ok) {
+                x3::logError("--world tunnel: outer tour registration FAILED");
+                outerOn = false;
+            }
+        }
+    }
+    x3::game::RiverRoadResult riverRoad;
+    bool riverOn = false;
+    {
+        const char* e = std::getenv("X3_RIVER_ROAD");
+        riverOn = (e && e[0] == '1');
+        if (riverOn) {
+            riverRoad = x3::game::registerRiverRoad();
+            if (!riverRoad.road.ok) {
+                x3::logError("--world tunnel: river road registration FAILED");
+                riverOn = false;
+            }
         }
     }
 
@@ -291,6 +323,27 @@ int hostTunnel(HostContext& hc) {
     // The ribbon: 4 lanes of asphalt plus a 20 ft cement apron each side, laid
     // into the cutting the corridor already graded.
     if (ringOn) x3::game::buildRoadRibbon(ringSpec, scene, *device, *phys);
+    // The outer tour's pavement + its five dressed bores. The ribbon rides the
+    // graded DATUM (not the carved field) so it stays level across the
+    // portal-ramp approaches; gap reaches are skipped — each tunnel lays its
+    // own road, shell, portals and lights, through the same machinery as the
+    // demo bore. Their lights join the merged per-frame pool automatically.
+    std::vector<std::unique_ptr<x3::game::TunnelCorridorWorld>> tourBores;
+    if (outerOn) {
+        x3::game::buildRoadRibbon(outerRing.spec, scene, *device, *phys,
+                                  &outerRing.roadY);
+        for (const x3::game::TunnelRoute* r : outerRing.bores) {
+            if (!r || !r->boreValid) continue;
+            auto w = std::make_unique<x3::game::TunnelCorridorWorld>();
+            if (w->build(scene, *device, *phys, *r, streamer.groundTexture()))
+                tourBores.push_back(std::move(w));
+        }
+    }
+    if (riverOn) {
+        x3::game::buildRoadRibbon(riverRoad.spec, scene, *device, *phys,
+                                  &riverRoad.roadY);
+        x3::game::buildRiverBridge(riverRoad.plan, scene, *device, *phys);
+    }
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
 
     // ---- THE INTERIOR PROGRAM, decided and COUNTED at boot -----------------
@@ -720,6 +773,7 @@ int hostTunnel(HostContext& hc) {
 
         if (carBuilt) car.shutdown();
         tunnel.shutdown(*device, *phys);
+        for (auto& w : tourBores) w->shutdown(*device, *phys);
         // Shared across every bore, so it is released ONCE here rather than by
         // each tunnel's own shutdown (which would free textures its neighbours
         // are still drawing with).
@@ -1483,6 +1537,7 @@ int hostTunnel(HostContext& hc) {
     }
 
     tunnel.shutdown(*device, *phys);
+    for (auto& w : tourBores) w->shutdown(*device, *phys);
     x3::game::shutdownTunnelSurfaces(*device);   // shared sets, released once
     streamer.shutdown(scene, *device, *phys);
     jobs->shutdown(); phys->shutdown(); device->shutdown();

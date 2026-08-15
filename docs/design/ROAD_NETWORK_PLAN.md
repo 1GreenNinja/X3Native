@@ -96,6 +96,52 @@ own summary of them.
     local-tangent `worldAt()`, and multi-route `TunnelSpec` — exactly P1's
     shape.
 
+## BUILT 2026-08-15 — the outer tour + Bridge No. 1 (what the terrain said back)
+
+Delivered on `inspx/outer-ring`: `registerOuterRing()` (road_network) and the
+valley road + Bridge No. 1 (`app/river_bridge.{h,cpp}`), gated by
+`--test-roadnetwork` (17/17) and `--test-riverbridge` (9/9). Driveable in
+`--world tunnel` under `X3_OUTER_RING=1` / `X3_RIVER_ROAD=1`. Everything below
+was MEASURED against the field; four places where this plan and the terrain
+disagreed are recorded because they change how the next phases read this doc:
+
+1. **The outer tour is 30.8 miles with FIVE bores, 3.9 miles underground** —
+   not "four bores, one per range". Measured: the nominal circle needs an
+   862 ft trench through the N massif (the self-test's negative control keeps
+   proving it); the N range takes two tunnels (flank 1.8 km + massif 3.2 km),
+   the W range three (the circle runs near-parallel to its spine — the worst
+   geometry — and a 2nd survey found the only sane lane at r 6800 with three
+   short-to-long bores), the S mesa needs NONE (open bench ride at r 7600),
+   and the E volcanic core is out of reach entirely: its spine is 9.8 km from
+   the ring centre, beyond any 31-mile geometry. The east arc rides foothills.
+2. **Tunnel grade physics vetoes high portals.** A bore's internal profile is
+   capped at 4.5%, so a long tunnel drags its uphill portal far below any
+   bench the road might meet it on (measured: −60 to −100 m on the first W
+   authoring — the "summit plateau crossing" died there). Portals must be
+   authored at chord ends whose GROUND matches what 4.5% can reach; descents
+   steeper than 7% happen INSIDE the rock (Crystal Descent Tunnel, 2.8 km at
+   4.49%).
+3. **Bridge No. 1 is a GORGE bridge, not a levee bridge.** This plan modelled
+   the N5–N6 site as low levees (crests 4.6–7.2 ft, deck ≈ waterY + 9 ft).
+   Measured: the country around that reach stands ~100 ft above the water and
+   the channel cuts through it as a slot — the "low-set" crest+2 ft deck is a
+   280 ft span 106 ft over the river on ~100 ft piers. All B-gates hold on the
+   real geometry (soffit clear, piers outside the floor, span bit-untouched);
+   the LOOK is more than was promised, not less.
+4. **`worldRiverNodes()` returns the 16-node Chaikin chain, not the 9 authored
+   nodes.** Indexing it as authored put the first bridge plan on the facility
+   beach reach; the soffit gate caught it. The N5–N6 mid-reach is chain
+   [10]→[11].
+5. Also: `--test-echoroads` already fails 9 gates (R6 frontage checksum …) on
+   the base branch BEFORE this work — N3's "still passes" premise is stale.
+
+New machinery, reusable by P4–P9: `RoadSpec::Gap` (span gaps: bores and decks
+suppress the carve, datum pinned across), the PORTAL RAMP grading ceiling
+(bounded approach embankments — corridors still never fill), a close-the-loop
+depth pass in `registerRoad` (the tunnel module's step-4 discipline, ported),
+and `X3_RING_SURVEY` (dump graded-cut profiles along candidate circles — the
+instrument every waypoint above was authored with).
+
 ## DECIDED BY TIM, 2026-08-15 (after the sharpening pass — these WIN)
 
 1. **BOTH rings, not one.** *"15 mile ring"* … *"Still make the big ring too"*.
