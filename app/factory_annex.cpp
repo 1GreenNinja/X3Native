@@ -732,7 +732,8 @@ bool runFactoryAnnexSelfTest() {
         struct Pin { uint32_t prop, glow; };
         const Pin want[FactoryAnnex::kFloorCount] = {
             { 6, 56 },   // A MIXTURE ATRIUM: 6 stir arms; 48 rim studs + 8 river glow
-            { 0, 0 },    // B (Task 8)
+            { 40, 15 },  // B INVENTION WORKS: 8 movers + 24 slats + 8 gizmos;
+                         //   5 studs + 8 organ keys + centrifuge + maybe-panel
             { 0, 0 },    // C (Task 9)
             { 0, 0 },    // D (Task 10)
             { 0, 0 },    // E (Task 11)
@@ -777,6 +778,42 @@ bool runFactoryAnnexSelfTest() {
                 wp.shallowColor[0] > wp.shallowColor[1] &&      // raspberry: R-dominant
                 wp.shallowColor[0] > wp.shallowColor[2],
                 "F3 river water params registered (raspberry, sunken surface)");
+    }
+
+    // ---- F4: the Invention Works' eight machines RING the center (the cab
+    // chain owns the middle 4.4 m) and every mover sits inside the floor.
+    {
+        const AnnexRoom& rB = annex.room(1);
+        bool ringOk = rB.propEntCount == 40;
+        for (uint32_t i = 0; i < 8 && ringOk; ++i) {
+            const Entity& e = scene.get(rB.propEntFirst + i);
+            const float dx = e.transform[12] - rB.centerX;
+            const float dz = e.transform[14] - rB.centerZ;
+            const float r2 = dx * dx + dz * dz;
+            if (r2 < 2.2f * 2.2f) ringOk = false;                    // center law
+            if (std::fabs(dx) > 20.0f || std::fabs(dz) > 20.0f) ringOk = false;
+        }
+        faCheck(ringOk, "F4 invention works: 8 machines ring the center, in-floor");
+    }
+
+    // ---- F5: the conveyor wraps — a slat scrolls, stays on the belt, and
+    // jumps back when it reaches the end (14 m at 1.2 m/s => wrap < 13 s).
+    {
+        const AnnexRoom& rB = annex.room(1);
+        const uint32_t slat = rB.propEntFirst + 8;                   // first slat
+        const float az0 = rB.centerZ;
+        bool moved = false, wrapped = false, onBelt = true;
+        float prevZ = scene.get(slat).transform[14];
+        for (int i = 0; i < 60 * 13; ++i) {
+            annex.tick(dt, scene);
+            const float z = scene.get(slat).transform[14];
+            if (std::fabs(z - prevZ) > 1e-5f) moved = true;
+            if (z < prevZ - 5.0f) wrapped = true;                    // the wrap jump
+            if (std::fabs(z - az0) > 7.1f) onBelt = false;
+            prevZ = z;
+        }
+        faCheck(moved && wrapped && onBelt,
+                "F5 conveyor slat scrolls, wraps, and never leaves the belt");
     }
 
     // ---- F11: all 10 triggers registered with the exact 300-313 id map.

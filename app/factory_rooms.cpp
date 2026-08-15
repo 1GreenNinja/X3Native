@@ -404,10 +404,286 @@ void tickRoomMixture(Scene& scene, AnnexRoom& room, float t) {
 }
 
 // ============================================================================
-// FLOOR B (y=15) — THE INVENTION WORKS (Task 8): lands with its task.
+// FLOOR B (y=15) — THE INVENTION WORKS (Task 8)
 // ============================================================================
-void buildRoomInvention(FactoryRoomCtx& ctx, AnnexRoom& room) { (void)ctx; (void)room; }
-void tickRoomInvention (Scene& scene, AnnexRoom& room, float t) { (void)scene; (void)room; (void)t; }
+// Eight whimsy machines (the plan's prop table, transcribed) + the 14 m
+// wrapping conveyor. Floor B hosts the BORE MOUTH: the cab's lateral leg runs
+// x [-20, 0] at z 0, so the strip z in [-3.2, 3.2] west of center stays CLEAR
+// (machines sit north/south of it and east of center). The chute drop-shaft
+// column at local (8, 8) is avoided too (Task 10 cuts it through this floor).
+//
+// Machine layout (local offsets; order == the plan's table == span order):
+//   0 Gum-Stretcher    (-10,  9)  piston, amp 0.9 @ 1.4 Hz     mint
+//   1 Fizz Compressor  (-10, -9)  spin 2.2 rad/s               amber
+//   2 Idea Bellows     ( -3, 13)  squash 0.7..1.15 @ 0.5 Hz    violet
+//   3 Sprocket Fountain( -3,-13)  spin 1.1 rad/s + bob 0.4     brass
+//   4 Wobble Boiler    ( 10,-10)  sway roll +-0.12 @ 0.9 Hz    raspberry
+//   5 Button Organ     ( 12,  0)  key-chase, 8 keys @ 0.12 s   white
+//   6 Notion Centrifuge( 13, 11)  spin 4.0 rad/s               cyan
+//   7 The Maybe Machine( 16,-16)  random flicker (t*13.7 hash) gold
+// Spans: prop = 8 movers + 24 conveyor slats + 8 gizmo cubes = 40;
+//        glow = 5 machine studs + 8 organ keys + 1 + 1 = 15.
+constexpr float kInvPos[8][2] = {
+    { -10.0f,   9.0f }, { -10.0f,  -9.0f }, { -3.0f,  13.0f }, { -3.0f, -13.0f },
+    {  10.0f, -10.0f }, {  12.0f,   0.0f }, { 13.0f,  11.0f }, { 16.0f, -16.0f },
+};
+constexpr float kMint[3]   = { 0.40f, 1.00f, 0.60f };
+constexpr float kAmber[3]  = { 1.00f, 0.72f, 0.25f };
+constexpr float kViolet[3] = { 0.62f, 0.35f, 1.00f };
+constexpr float kRasp[3]   = { 1.00f, 0.35f, 0.55f };
+constexpr float kWhite[3]  = { 1.00f, 1.00f, 1.00f };
+constexpr float kCyan[3]   = { 0.35f, 0.90f, 1.00f };
+constexpr float kGold[3]   = { 1.00f, 0.84f, 0.30f };
+// Conveyor: 14 m along Z at local x +5, 24 slats, 1.2 m/s scroll, 8 gizmos.
+constexpr float kConvX = 5.0f, kConvLen = 14.0f, kConvTopY = 0.95f;
+constexpr int   kConvSlats = 24, kConvGizmos = 8;
+constexpr float kConvSpeed = 1.2f;
+
+void buildRoomInvention(FactoryRoomCtx& ctx, AnnexRoom& room) {
+    Scene& s = ctx.scene;
+    const float ax = ctx.centerX, az = ctx.centerZ, y0 = room.baseY;
+    const SurfaceSet& sIron  = ctx.surf.get(ctx.device, "mw_metal_panels_a");
+    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "mw_metal_trim_b");
+    const SurfaceSet& sCop   = ctx.surf.get(ctx.device, "mw_metal_trim_a");
+    auto physBox = [&](float wx, float wy, float wz, float hx, float hy, float hz) {
+        ctx.physics.addBox({ hx, hy, hz }, { wx, wy, wz }, 0.0f,
+                           x3::phys::Layer::Static);
+    };
+
+    // ---- Machine bodies (static furniture; the movers land in the prop span).
+    // 0 Gum-Stretcher: two pillars + crown beam; the piston plate bobs between.
+    {
+        const float mx = ax + kInvPos[0][0], mz = az + kInvPos[0][1];
+        for (int sgn = -1; sgn <= 1; sgn += 2)
+            addBox(ctx, mx + sgn * 1.8f, y0 + 1.5f, mz, 0.22f, 1.5f, 0.35f, 0.0f,
+                   &sBrass, kBrassTint);
+        addBox(ctx, mx, y0 + 3.05f, mz, 2.1f, 0.15f, 0.45f, 0.0f, &sBrass, kBrassTint);
+        physBox(mx, y0 + 1.5f, mz, 2.0f, 1.5f, 1.5f);
+    }
+    // 1 Fizz Compressor: squat drum + dome cap; rotor spins above.
+    {
+        const float mx = ax + kInvPos[1][0], mz = az + kInvPos[1][1];
+        for (int i = 0; i < 8; ++i) {
+            const float a = (i / 8.0f) * kTwoPi, c = std::cos(a), sn = std::sin(a);
+            const float xA[3] = { -sn, 0, c }, yA[3] = { 0, 1, 0 }, zA[3] = { -c, 0, -sn };
+            x3::prims::PrimMesh pm = x3::prims::makeBox(0.62f, 1.25f, 0.14f, 0, 0, 0, 0.35f);
+            Entity e;
+            e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                           pm.index.data(), (uint32_t)pm.index.size());
+            ctx.meshes.push_back(e.mesh);
+            if (sCop.ok) { e.tex = sCop.albedo; e.normalTex = sCop.normal; e.mrTex = sCop.mr; }
+            e.baseColor[0] = kCopperTint[0]; e.baseColor[1] = kCopperTint[1];
+            e.baseColor[2] = kCopperTint[2]; e.baseColor[3] = 1.0f;
+            e.tag = (uint32_t)Tag::Static;
+            makeXform(e.transform, xA, yA, zA, mx + 1.3f * c, y0 + 1.25f, mz + 1.3f * sn);
+            s.add(e);
+        }
+        addBox(ctx, mx, y0 + 2.8f, mz, 0.9f, 0.3f, 0.9f, 0.0f, &sBrass, kBrassTint);
+        addBox(ctx, mx, y0 + 3.3f, mz, 0.18f, 0.5f, 0.18f, 0.0f, &sBrass, kBrassTint);
+        physBox(mx, y0 + 1.4f, mz, 1.5f, 1.4f, 1.5f);
+    }
+    // 2 Idea Bellows: plinth + cap; the bellows block squashes between them.
+    {
+        const float mx = ax + kInvPos[2][0], mz = az + kInvPos[2][1];
+        addBox(ctx, mx, y0 + 0.25f, mz, 1.0f, 0.25f, 1.0f, 0.0f, &sIron, kDarkIron);
+        addBox(ctx, mx, y0 + 3.6f, mz, 0.8f, 0.12f, 0.8f, 0.6f, &sBrass, kBrassTint);
+        physBox(mx, y0 + 1.0f, mz, 1.0f, 1.0f, 1.0f);
+    }
+    // 3 Sprocket Fountain: a fluted column; the sprocket spins + bobs on it.
+    {
+        const float mx = ax + kInvPos[3][0], mz = az + kInvPos[3][1];
+        addBox(ctx, mx, y0 + 2.75f, mz, 0.45f, 2.75f, 0.45f, 0.785f, &sBrass, kBrassTint);
+        addBox(ctx, mx, y0 + 0.3f, mz, 1.4f, 0.3f, 1.4f, 0.0f, &sIron, kDarkIron);
+        physBox(mx, y0 + 2.75f, mz, 0.7f, 2.75f, 0.7f);
+    }
+    // 4 Wobble Boiler: plinth only — the 4x4x4 tank ITSELF sways (prop span).
+    {
+        const float mx = ax + kInvPos[4][0], mz = az + kInvPos[4][1];
+        addBox(ctx, mx, y0 + 0.2f, mz, 2.2f, 0.2f, 2.2f, 0.0f, &sIron, kDarkIron);
+        physBox(mx, y0 + 2.2f, mz, 2.0f, 2.0f, 2.0f);
+    }
+    // 5 Button Organ: console + five ranked pipes (a machine that plays ideas).
+    {
+        const float mx = ax + kInvPos[5][0], mz = az + kInvPos[5][1];
+        addBox(ctx, mx, y0 + 0.8f, mz, 1.0f, 0.8f, 3.0f, 0.0f, &sBrass, kBrassTint);
+        for (int i = 0; i < 5; ++i) {
+            const float ph = 0.9f + 0.45f * (float)i;   // ranked pipe heights
+            addBox(ctx, mx + 0.55f, y0 + 1.6f + ph * 0.5f, mz - 2.0f + (float)i * 1.0f,
+                   0.28f, ph * 0.5f, 0.28f, 0.0f, &sCop, kCopperTint);
+        }
+        physBox(mx, y0 + 1.2f, mz, 1.2f, 1.2f, 3.2f);
+    }
+    // 6 Notion Centrifuge: low wide drum; the arm spins fast above it.
+    {
+        const float mx = ax + kInvPos[6][0], mz = az + kInvPos[6][1];
+        x3::prims::PrimMesh pm = x3::prims::makeCylinder(2.2f, 2.2f, 0.5f, 18, 0.3f);
+        Entity e;
+        e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                       pm.index.data(), (uint32_t)pm.index.size());
+        ctx.meshes.push_back(e.mesh);
+        if (sIron.ok) { e.tex = sIron.albedo; e.normalTex = sIron.normal; e.mrTex = sIron.mr; }
+        e.baseColor[0] = kDarkIron[0]; e.baseColor[1] = kDarkIron[1];
+        e.baseColor[2] = kDarkIron[2]; e.baseColor[3] = 1.0f;
+        e.tag = (uint32_t)Tag::Static;
+        yawXform(e.transform, 0.0f, mx, y0 + 0.5f, mz);
+        s.add(e);
+        physBox(mx, y0 + 0.5f, mz, 2.2f, 0.5f, 2.2f);
+    }
+    // 7 The Maybe Machine: a tall enigmatic cabinet (it might do anything).
+    {
+        const float mx = ax + kInvPos[7][0], mz = az + kInvPos[7][1];
+        addBox(ctx, mx, y0 + 3.5f, mz, 1.0f, 3.5f, 1.0f, 0.3f, &sIron, kDarkIron);
+        physBox(mx, y0 + 3.5f, mz, 1.2f, 3.5f, 1.2f);
+    }
+
+    // ---- Conveyor frame (rails + legs + a walk-solid underbody) -------------
+    {
+        const float hz = kConvLen * 0.5f + 0.2f;
+        for (int sgn = -1; sgn <= 1; sgn += 2)
+            addBox(ctx, ax + kConvX + sgn * 1.05f, y0 + 0.78f, az,
+                   0.12f, 0.14f, hz, 0.0f, &sBrass, kBrassTint);
+        for (int i = 0; i < 4; ++i)
+            addBox(ctx, ax + kConvX, y0 + 0.35f, az - 6.0f + (float)i * 4.0f,
+                   0.9f, 0.35f, 0.18f, 0.0f, &sIron, kDarkIron);
+        physBox(ax + kConvX, y0 + 0.45f, az, 1.15f, 0.45f, hz);
+    }
+
+    // ---- PROP SPAN: 8 machine movers, 24 slats, 8 gizmos (contiguous) -------
+    room.propEntFirst = s.size();
+    // 0 gum piston plate (mint-lit from the glow strip above)
+    addBox(ctx, ax + kInvPos[0][0], y0 + 1.6f, az + kInvPos[0][1],
+           1.4f, 0.15f, 1.0f, 0.0f, &sBrass, kBrassTint, 0.0f, nullptr, true);
+    // 1 fizz rotor
+    addBox(ctx, ax + kInvPos[1][0], y0 + 3.9f, az + kInvPos[1][1],
+           1.5f, 0.10f, 0.26f, 0.0f, &sBrass, kBrassTint, 0.0f, nullptr, true);
+    // 2 bellows block (squash pose: tick rewrites scaleY + re-anchors)
+    addBox(ctx, ax + kInvPos[2][0], y0 + 1.5f, az + kInvPos[2][1],
+           0.9f, 1.0f, 0.9f, 0.0f, &sCop, kCopperTint, 0.0f, nullptr, true);
+    // 3 sprocket (spin + bob)
+    addBox(ctx, ax + kInvPos[3][0], y0 + 4.0f, az + kInvPos[3][1],
+           1.3f, 0.08f, 0.4f, 0.0f, &sBrass, kBrassTint, 0.0f, nullptr, true);
+    // 4 wobble boiler tank (the machine IS the mover)
+    addBox(ctx, ax + kInvPos[4][0], y0 + 2.4f, az + kInvPos[4][1],
+           2.0f, 2.0f, 2.0f, 0.0f, &sCop, kCopperTint, 0.0f, nullptr, true);
+    // 5 organ metronome wand
+    addBox(ctx, ax + kInvPos[5][0], y0 + 2.1f, az + kInvPos[5][1],
+           0.12f, 0.45f, 0.12f, 0.0f, &sBrass, kBrassTint, 0.0f, nullptr, true);
+    // 6 centrifuge arm (fast)
+    addBox(ctx, ax + kInvPos[6][0], y0 + 1.35f, az + kInvPos[6][1],
+           2.1f, 0.10f, 0.30f, 0.0f, &sBrass, kBrassTint, 0.0f, nullptr, true);
+    // 7 maybe-machine beacon (the flicker; emissive poked in tick)
+    addBox(ctx, ax + kInvPos[7][0], y0 + 7.3f, az + kInvPos[7][1],
+           0.32f, 0.32f, 0.32f, 0.0f, nullptr, kGold, 0.4f, kGold, true);
+    // Conveyor slats (scroll along Z; wrap at the belt end).
+    for (int i = 0; i < kConvSlats; ++i) {
+        const float z0 = -kConvLen * 0.5f + ((float)i + 0.5f) * (kConvLen / kConvSlats);
+        addBox(ctx, ax + kConvX, y0 + kConvTopY, az + z0,
+               0.92f, 0.05f, 0.24f, 0.0f, &sIron, kDarkIron, 0.0f, nullptr, true);
+    }
+    // Gizmo cubes riding the belt (emissive whatsits — mint/amber alternating).
+    for (int i = 0; i < kConvGizmos; ++i) {
+        const float z0 = -kConvLen * 0.5f + ((float)i + 0.5f) * (kConvLen / kConvGizmos);
+        addGlow(ctx, ax + kConvX, y0 + kConvTopY + 0.34f, az + z0,
+                0.26f, 0.26f, 0.26f, (float)i * 0.7f,
+                (i & 1) ? kAmber : kMint, 1.0f);
+    }
+    room.propEntCount = s.size() - room.propEntFirst;
+
+    // ---- GLOW SPAN: 5 machine studs, 8 organ keys, centrifuge, maybe-panel --
+    room.glowEntFirst = s.size();
+    addGlow(ctx, ax + kInvPos[0][0], y0 + 3.25f, az + kInvPos[0][1],
+            1.6f, 0.06f, 0.10f, 0.0f, kMint, 1.6f);                      // 0 gum
+    addGlow(ctx, ax + kInvPos[1][0], y0 + 2.55f, az + kInvPos[1][1],
+            1.35f, 0.07f, 0.07f, 0.0f, kAmber, 1.0f);                    // 1 fizz
+    addGlow(ctx, ax + kInvPos[2][0], y0 + 3.35f, az + kInvPos[2][1],
+            0.7f, 0.06f, 0.7f, 0.6f, kViolet, 1.6f);                     // 2 bellows
+    addGlow(ctx, ax + kInvPos[3][0], y0 + 5.35f, az + kInvPos[3][1],
+            0.3f, 0.3f, 0.3f, 0.785f, kBrassGlow, 0.6f);                 // 3 sprocket
+    addGlow(ctx, ax + kInvPos[4][0], y0 + 4.55f, az + kInvPos[4][1],
+            1.2f, 0.07f, 1.2f, 0.0f, kRasp, 1.1f);                       // 4 boiler
+    for (int k = 0; k < 8; ++k)                                          // 5..12 keys
+        addGlow(ctx, ax + kInvPos[5][0] - 1.06f, y0 + 1.15f,
+                az + kInvPos[5][1] - 2.45f + (float)k * 0.7f,
+                0.05f, 0.16f, 0.28f, 0.0f, kWhite, 0.35f);
+    addGlow(ctx, ax + kInvPos[6][0], y0 + 1.06f, az + kInvPos[6][1],
+            2.25f, 0.05f, 2.25f, 0.785f, kCyan, 1.5f);                   // 13 centrifuge
+    addGlow(ctx, ax + kInvPos[7][0], y0 + 4.2f, az + kInvPos[7][1] - 1.02f,
+            0.6f, 1.4f, 0.05f, 0.3f, kGold, 0.5f);                       // 14 maybe
+    room.glowEntCount = s.size() - room.glowEntFirst;
+}
+
+void tickRoomInvention(Scene& scene, AnnexRoom& room, float t) {
+    if (room.propEntCount == 0) return;
+    const float y0 = room.baseY, az = room.centerZ;
+    const uint32_t p0 = room.propEntFirst;
+    // 0 Gum-Stretcher piston: Y bob, amp 0.9 @ 1.4 Hz.
+    scene.get(p0 + 0).transform[13] = y0 + 1.6f + 0.9f * std::sin(t * (1.4f * kTwoPi));
+    // 1 Fizz Compressor rotor: 2.2 rad/s.
+    pokeYaw(scene.get(p0 + 1).transform, t * 2.2f);
+    // 2 Idea Bellows: scaleY squash 0.7..1.15 @ 0.5 Hz, bottom anchored.
+    {
+        Entity& e = scene.get(p0 + 2);
+        const float sc = 0.925f + 0.225f * std::sin(t * (0.5f * kTwoPi));
+        e.transform[5]  = sc;                       // basis Y column scale
+        e.transform[13] = y0 + 0.5f + sc * 1.0f;    // bottom stays on the plinth
+    }
+    // 3 Sprocket Fountain: spin 1.1 rad/s + bob 0.4 m.
+    {
+        Entity& e = scene.get(p0 + 3);
+        pokeYaw(e.transform, t * 1.1f);
+        e.transform[13] = y0 + 4.0f + 0.4f * std::sin(t * (0.8f * kTwoPi) * 0.5f);
+    }
+    // 4 Wobble Boiler: roll (about Z) +-0.12 rad @ 0.9 Hz.
+    {
+        Entity& e = scene.get(p0 + 4);
+        const float r = 0.12f * std::sin(t * (0.9f * kTwoPi));
+        const float c = std::cos(r), sn = std::sin(r);
+        float* m = e.transform;
+        m[0] = c;  m[1] = sn; m[2]  = 0;
+        m[4] = -sn; m[5] = c; m[6]  = 0;
+        m[8] = 0;  m[9] = 0;  m[10] = 1;
+    }
+    // 5 Button Organ wand: a gentle conductor bob.
+    scene.get(p0 + 5).transform[13] = y0 + 2.1f + 0.15f * std::sin(t * 3.0f);
+    // 6 Notion Centrifuge: 4.0 rad/s.
+    pokeYaw(scene.get(p0 + 6).transform, t * 4.0f);
+    // 7 The Maybe Machine beacon: random flicker (the plan's t*13.7 hash).
+    {
+        Entity& e = scene.get(p0 + 7);
+        const float h = std::fabs(std::sin(std::floor(t * 13.7f) * 12.9898f));
+        e.emissive[3] = 0.25f + 1.05f * h * h;
+        pokeYaw(e.transform, t * 0.6f);
+    }
+    // Conveyor slats + gizmos: pose-scroll at 1.2 m/s, wrapping at the ends.
+    for (int i = 0; i < kConvSlats; ++i) {
+        const float z0 = ((float)i + 0.5f) * (kConvLen / kConvSlats);
+        scene.get(p0 + 8 + i).transform[14] =
+            az - kConvLen * 0.5f + std::fmod(z0 + kConvSpeed * t, kConvLen);
+    }
+    for (int i = 0; i < kConvGizmos; ++i) {
+        Entity& e = scene.get(p0 + 8 + kConvSlats + i);
+        const float z0 = ((float)i + 0.5f) * (kConvLen / kConvGizmos);
+        e.transform[14] = az - kConvLen * 0.5f + std::fmod(z0 + kConvSpeed * t, kConvLen);
+        pokeYaw(e.transform, t * 1.3f + (float)i * 0.7f);
+    }
+    // Glow span: machine studs breathe; the organ keys CHASE (0.12 s step);
+    // the maybe-panel flickers with its beacon.
+    const uint32_t g0 = room.glowEntFirst;
+    const float breathe[5] = { 1.6f, 1.0f, 1.6f, 0.6f, 1.1f };
+    for (int i = 0; i < 5; ++i)
+        scene.get(g0 + i).emissive[3] =
+            breathe[i] * (0.8f + 0.25f * std::sin(t * 0.9f + (float)i * 1.2f));
+    {
+        const int lit = (int)(t / 0.12f) % 8;
+        for (int k = 0; k < 8; ++k)
+            scene.get(g0 + 5 + (uint32_t)k).emissive[3] = (k == lit) ? 2.4f : 0.30f;
+    }
+    scene.get(g0 + 13).emissive[3] = 1.5f * (0.8f + 0.25f * std::sin(t * 1.7f));
+    {
+        const float h = std::fabs(std::sin(std::floor(t * 13.7f) * 12.9898f));
+        scene.get(g0 + 14).emissive[3] = 0.2f + 0.8f * h;
+    }
+}
 
 // ============================================================================
 // FLOOR C (y=28) — THE FIZZ GALLERY (Task 9): lands with its task.
