@@ -185,16 +185,49 @@ bool ElevatorSystem::build(Scene& scene, x3::rhi::IRenderDevice& device,
                            float shaftX, float shaftZ,
                            float cabHalfX, float cabHalfY, float cabHalfZ,
                            const std::vector<float>& stopsCenterY, int startStop) {
-    if (stopsCenterY.empty()) {
+    // Legacy vertical build — now a thin wrapper over the 3D graph build: the
+    // stop list is sorted low -> high (unchanged), every stop sits at the shaft
+    // XZ, and the rails form the full vertical chain. Behavior (and the build
+    // log) is byte-identical to the pre-graph implementation.
+    std::vector<float> ys = stopsCenterY;
+    std::sort(ys.begin(), ys.end());                 // low -> high
+    std::vector<Stop> stops;
+    stops.reserve(ys.size());
+    for (float y : ys)
+        stops.push_back(Stop{ x3::phys::Vec3{ shaftX, y, shaftZ }, "", false });
+    std::vector<std::pair<int, int>> rails;
+    for (int i = 0; i + 1 < (int)stops.size(); ++i) rails.push_back({ i, i + 1 });
+    const bool ok = buildEx(scene, device, physics, cabHalfX, cabHalfY, cabHalfZ,
+                            stops, rails, startStop);
+    m_chainGraph = ok;   // Y-sorted vertical chain: the club insert may rebuild it
+    return ok;
+}
+
+bool ElevatorSystem::buildEx(Scene& scene, x3::rhi::IRenderDevice& device,
+                             x3::phys::IPhysicsWorld& physics,
+                             float cabHalfX, float cabHalfY, float cabHalfZ,
+                             const std::vector<Stop>& stops,
+                             const std::vector<std::pair<int, int>>& rails, int startStop) {
+    if (stops.empty()) {
         x3::logError("[elevator] build: no stops");
         return false;
     }
     m_halfX = cabHalfX; m_halfY = cabHalfY; m_halfZ = cabHalfZ;
-    m_stopsY = stopsCenterY;
-    std::sort(m_stopsY.begin(), m_stopsY.end());     // low -> high
-    m_target = std::clamp(startStop, 0, (int)m_stopsY.size() - 1);
+    m_stops = stops;
+    m_stopsY.resize(m_stops.size());                 // derived mirror (legacy reads)
+    for (size_t i = 0; i < m_stops.size(); ++i) m_stopsY[i] = m_stops[i].center.y;
+    const int n = (int)m_stops.size();
+    m_adj.assign(m_stops.size(), {});
+    for (const std::pair<int, int>& r : rails) {
+        if (r.first < 0 || r.second < 0 || r.first >= n || r.second >= n ||
+            r.first == r.second) continue;
+        m_adj[r.first].push_back(r.second);
+        m_adj[r.second].push_back(r.first);
+    }
+    m_chainGraph = false;                            // build() sets this after us
+    m_target = std::clamp(startStop, 0, n - 1);
     m_curStop = m_target;
-    m_pos = x3::phys::Vec3{ shaftX, m_stopsY[m_target], shaftZ };
+    m_pos = m_stops[m_target].center;
     m_state = ElevState::Idle;
 
     // Render mesh authored centered at the body origin (the Entity transform
@@ -216,10 +249,66 @@ bool ElevatorSystem::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_body = scene.get(m_entity).body;
     m_built = true;
 
+    // (Same log text as the pre-graph build(): the start stop's XZ IS the shaft
+    // XZ on legacy vertical cabs, so --test-elevator output is byte-identical.)
     x3::logInfo("[elevator] built: " + std::to_string(m_stopsY.size()) + " stops at (" +
-                std::to_string(shaftX) + ", " + std::to_string(shaftZ) + "), start stop " +
+                std::to_string(m_pos.x) + ", " + std::to_string(m_pos.z) + "), start stop " +
                 std::to_string(m_target));
     return true;
+}
+
+const x3::phys::Vec3& ElevatorSystem::stopCenter(int i) const {
+    static const x3::phys::Vec3 kZero{};
+    return (i >= 0 && i < (int)m_stops.size()) ? m_stops[i].center : kZero;
+}
+
+void ElevatorSystem::unlockHidden() {
+    if (m_unlocked) return;
+    m_unlocked = true;
+    x3::logInfo("[elevator] hidden rail unlocked — the annex stops are on the panel now");
+}
+
+// Mirror-preserving stop insert (the disco club-descent used to raw-insert into
+// m_stopsY; with m_stops primary the insert must keep stops/mirror/rails in
+// sync). Legacy semantics preserved EXACTLY: the list stays Y-sorted, indices
+// at/above the insert shift +1, and (as before) m_target/m_curStop/m_riftStop/
+// m_secretStop are NOT re-mapped — the caller re-resolves what it needs.
+// Returns the new stop's index.
+int ElevatorSystem::insertStopY(float centerY) {
+    const float sx = m_stops.empty() ? m_pos.x : m_stops[0].center.x;
+    const float sz = m_stops.empty() ? m_pos.z : m_stops[0].center.z;
+    int idx = 0;
+    while (idx < (int)m_stops.size() && m_stops[idx].center.y < centerY) ++idx;
+    m_stops.insert(m_stops.begin() + idx,
+                   Stop{ x3::phys::Vec3{ sx, centerY, sz }, "", false });
+    m_stopsY.resize(m_stops.size());
+    for (size_t i = 0; i < m_stops.size(); ++i) m_stopsY[i] = m_stops[i].center.y;
+    if (m_chainGraph) {
+        // Legacy vertical cab: the rails are simply the sorted chain — rebuild it.
+        m_adj.assign(m_stops.size(), {});
+        for (int i = 0; i + 1 < (int)m_stops.size(); ++i) {
+            m_adj[i].push_back(i + 1);
+            m_adj[i + 1].push_back(i);
+        }
+    } else {
+        // Graph cab: remap existing adjacency indices past the insert, then wire
+        // the new stop to its nearest neighbour so it stays reachable.
+        for (std::vector<int>& row : m_adj)
+            for (int& j : row)
+                if (j >= idx) ++j;
+        m_adj.insert(m_adj.begin() + idx, {});
+        int best = -1; float bd = 1e30f;
+        for (int i = 0; i < (int)m_stops.size(); ++i) {
+            if (i == idx) continue;
+            const float dx = m_stops[i].center.x - sx;
+            const float dy = m_stops[i].center.y - centerY;
+            const float dz = m_stops[i].center.z - sz;
+            const float d = dx * dx + dy * dy + dz * dz;
+            if (d < bd) { bd = d; best = i; }
+        }
+        if (best >= 0) { m_adj[idx].push_back(best); m_adj[best].push_back(idx); }
+    }
+    return idx;
 }
 
 // ===========================================================================
@@ -847,11 +936,9 @@ bool ElevatorSystem::keypadDigit(int digit) {
                 for (int i = 0; i < (int)m_stopsY.size(); ++i)
                     if (std::fabs(m_stopsY[i] - m_clubStopY) < 0.5f) { clubIdx = i; break; }
                 if (clubIdx < 0) {
-                    m_stopsY.insert(m_stopsY.begin(), m_clubStopY);  // becomes the low stop
-                    std::sort(m_stopsY.begin(), m_stopsY.end());
-                    for (int i = 0; i < (int)m_stopsY.size(); ++i)
-                        if (std::fabs(m_stopsY[i] - m_clubStopY) < 0.5f) { clubIdx = i; break; }
-                    // Re-resolve the current/target stop indices after the insert.
+                    // Mirror-preserving insert (becomes the low stop on legacy
+                    // cabs, exactly as the raw m_stopsY.insert+sort used to).
+                    clubIdx = insertStopY(m_clubStopY);
                 }
                 startTravelTo(clubIdx);
             } else {

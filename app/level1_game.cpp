@@ -1405,6 +1405,25 @@ bool runElevatorSelfTest() {
         check(wraps && home, "E6 callNext wraps top->ground; cab returns to the floor stop");
     }
 
+    // ---- E7: buildEx with a 3D waypoint graph — legacy accessors still sane.
+    // (The Anywhere Elevator: stops are full 3D cab-center positions wired by
+    // rails; the legacy vertical API reads through the m_stopsY mirror.)
+    {
+        ElevatorSystem ev;
+        std::vector<ElevatorSystem::Stop> stops = {
+            { {0.0f,  2.0f, 0.0f}, "F1",    /*hidden*/false },
+            { {0.0f, 12.0f, 0.0f}, "F3",    false },
+            { {60.0f, 12.0f, 0.0f}, "ANNEX", true },   // lateral, hidden until unlock
+        };
+        // rails: 0<->1 vertical, 1<->2 lateral (undirected adjacency pairs).
+        std::vector<std::pair<int, int>> rails = { {0, 1}, {1, 2} };
+        check(ev.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 0),
+              "E7 buildEx 3D graph builds");
+        check(ev.stopCount() == 3 && std::fabs(ev.stopY(2) - 12.0f) < 1e-6f &&
+              std::fabs(ev.stopCenter(2).x - 60.0f) < 1e-6f,
+              "E7b legacy stopY reads the Y of a lateral stop (center intact)");
+    }
+
     physics->shutdown();
     x3::logInfo(std::string("[elevator-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

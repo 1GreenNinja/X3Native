@@ -112,6 +112,28 @@ public:
                float shaftX, float shaftZ, float cabHalfX, float cabHalfY, float cabHalfZ,
                const std::vector<float>& stopsCenterY, int startStop = 0);
 
+    // -------- ANYWHERE ELEVATOR (3D waypoint graph; additive, T1) ------------
+    // One stop of the 3D graph. `center` is the cab-CENTER world position at the
+    // stop; `hidden` stops stay off callNext()/floor-button cycling until
+    // unlockHidden() (keypad code kAnnexCode) reveals them.
+    struct Stop {
+        x3::phys::Vec3 center;         // cab-CENTER world position at this stop
+        const char*    label = "";     // panel/button label
+        bool           hidden = false; // not in callNext()/button cycling until unlocked
+    };
+    // 3D build: stops + rails (undirected adjacency pairs). Legacy build()
+    // forwards here with x=shaftX,z=shaftZ on every stop and a full vertical
+    // rail chain, so vertical cabs behave byte-identically (m_stopsY is kept as
+    // a derived mirror — m_stopsY[i] = m_stops[i].center.y — so every legacy
+    // read is untouched).
+    bool buildEx(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                 float cabHalfX, float cabHalfY, float cabHalfZ,
+                 const std::vector<Stop>& stops,
+                 const std::vector<std::pair<int, int>>& rails, int startStop = 0);
+    const x3::phys::Vec3& stopCenter(int i) const;   // full 3D stop accessor
+    void unlockHidden();                             // reveals hidden stops (annex rail)
+    bool hiddenUnlocked() const { return m_unlocked; }
+
     // Request travel to a stop index (clamped). No-op while already moving.
     void callTo(int stopIndex);
     // Cycle to the next stop, wrapping high->low. Simple "call" verb for the core.
@@ -340,7 +362,15 @@ private:
     x3::phys::BodyId m_body;
     x3::phys::Vec3   m_pos{};                 // cab CENTER world pos
     float    m_halfX = 1.5f, m_halfY = 0.15f, m_halfZ = 1.5f;
-    std::vector<float> m_stopsY;              // cab-center Y per stop (low -> high)
+    std::vector<float> m_stopsY;              // DERIVED MIRROR: m_stops[i].center.y
+                                              // (low -> high on legacy vertical cabs)
+
+    // ---- The Anywhere Elevator: 3D waypoint graph (T1) ----
+    std::vector<Stop>             m_stops;    // primary stop store (mirrored into m_stopsY)
+    std::vector<std::vector<int>> m_adj;      // undirected rail adjacency per stop
+    bool m_chainGraph = false;                // built via legacy build() (sorted vertical chain)
+    bool m_unlocked   = false;                // hidden stops revealed (annex code)
+    int  insertStopY(float centerY);          // mirror-preserving insert (disco club stop)
     int      m_target = 0;
     int      m_curStop = 0;                   // last-arrived/nearest stop (FSM tracking)
     ElevState m_state = ElevState::Idle;
