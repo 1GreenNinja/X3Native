@@ -154,15 +154,28 @@ constexpr float kTrGarageDropM  = 4.00f;   // 13.1 ft below the roadway
 constexpr float kTrGarageRampGrade = 0.15f;                       // 15 %
 constexpr float kTrGarageRampM  = kTrGarageDropM / kTrGarageRampGrade;  // 26.7 m = 87 ft
 constexpr uint32_t kTrGarageBays = 6;      // parked vehicles on display
-// THREE lifts, and they are not three of the same thing -- Tim's spec: two
-// Rotary-style 10,000 lb TWO-POST lifts and one Hunter-style ALIGNMENT RACK.
-// The distinction is the point. A two-post grabs the frame and leaves the wheels
-// hanging (brakes, suspension, anything you take OFF the car); an alignment rack
-// is a drive-on runway that keeps the car ON its wheels with turnplates at the
-// front, because you cannot measure toe and camber on a car that is dangling.
-// A workshop with three identical lifts is a workshop that only does one job.
-constexpr uint32_t kTrGarageTwoPost = 2;
-constexpr uint32_t kTrGarageRacks   = 1;
+// ---- THE REAL SHOP --------------------------------------------------------
+// This is not a generic garage kit. It is Tim's own shop, LATE NIGHT SPEED,
+// inventoried by its owner: THREE Rotary two-post lifts, ONE Hunter alignment
+// rack, a Hunter ROAD FORCE balancer, a tire machine, and a Miller welder.
+//
+// The distinctions between them are the whole point, and getting them wrong is
+// what makes a game garage read as set dressing:
+//   * A TWO-POST grabs the frame and leaves the wheels hanging -- brakes,
+//     suspension, anything you take off the car. Three of them is a shop that
+//     can have three jobs open at once, which is what a working shop looks like.
+//   * The ALIGNMENT RACK is the opposite: drive-on runways that keep the car ON
+//     its wheels, with turnplates at the front, because toe and camber cannot be
+//     measured on a car that is dangling.
+//   * The BALANCER and the TIRE MACHINE live together, because they are used
+//     together -- a tire comes off the machine and goes straight on the
+//     balancer. Putting them at opposite ends is the tell that nobody who has
+//     done the job laid out the room.
+//   * ROAD FORCE specifically: it presses a loaded roller against the tire to
+//     simulate the weight of the car, so it finds problems a spin balancer
+//     cannot. That is why it is a distinct machine and not just "a balancer".
+constexpr uint32_t kTrGarageTwoPost = 3;   // Rotary
+constexpr uint32_t kTrGarageRacks   = 1;   // Hunter alignment
 constexpr uint32_t kTrGarageLifts   = kTrGarageTwoPost + kTrGarageRacks;
 // Rotary two-post: 10,000 lb, ~11 ft posts, arms at lift height.
 constexpr float kTrLiftPostHM   = 3.35f;   // 11.0 ft
@@ -171,6 +184,11 @@ constexpr float kTrLiftArmHM    = 1.20f;   // arms parked at 3.9 ft
 constexpr float kTrRackLenM     = 4.90f;   // 16.1 ft
 constexpr float kTrRackWideM    = 0.51f;   // 20 in
 constexpr float kTrRackHM       = 1.22f;   // 4.0 ft
+// ---- Tire bay + fabrication. Sizes are the real machines' footprints.
+constexpr float kTrBalancerHM   = 1.55f;   // Hunter Road Force: hood up, ~5.1 ft
+constexpr float kTrTireMachHM   = 1.70f;   // tire changer with its tower, 5.6 ft
+constexpr float kTrWelderHM     = 0.95f;   // Miller on its cart, 3.1 ft
+constexpr float kTrBottleHM     = 1.35f;   // the gas bottle beside it, 4.4 ft
 // The stair. Riser 6.9 in / tread 11.0 in gives 2R+T = 24.8 in, which is the
 // comfortable-stair rule real stairs are built to; anything steeper reads as a
 // ladder and anything shallower eats footprint we do not have in a hillside.

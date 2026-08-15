@@ -1578,8 +1578,11 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                         // has to be 15 ft clear: 11 ft of post plus a car on top
                         // of it does not fit under the control room's 8.5.
                         for (uint32_t L = 0; L < kTrGarageTwoPost; ++L) {
-                            const float ls = sc.s0 + gLen * (L == 0 ? 0.26f : 0.58f);
-                            const float ll = sc.latIn + gDep * 0.42f;
+                            // Three bays down the long wall on ~14 ft centres --
+                            // a two-post needs its neighbour far enough away that
+                            // two doors can be open at once.
+                            const float ls = sc.s0 + gLen * (0.14f + 0.16f * (float)L);
+                            const float ll = sc.latIn + gDep * 0.34f;
                             for (int side2 = -1; side2 <= 1; side2 += 2) {
                                 float post[3];
                                 PA(frameAtS(ls), sgn * (ll + (float)side2 * 1.45f),
@@ -1639,6 +1642,78 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                 }
                             }
                         }
+                        // ---- THE TIRE BAY. Road Force balancer and the tire
+                        // machine, SIDE BY SIDE, because that is the order the
+                        // work happens in: the tire comes off the changer and
+                        // goes straight onto the balancer. Splitting them across
+                        // the room is the tell that nobody who has done the job
+                        // laid it out.
+                        {
+                            const float ts = sc.s0 + gLen * 0.66f;
+                            const float tl = sc.latIn + gDep * 0.80f;
+                            // Road Force balancer: base, shaft, and the hood that
+                            // swings down over the wheel.
+                            float bal[3];
+                            PA(frameAtS(ts), sgn * tl, fy + kTrBalancerHM * 0.45f, bal);
+                            obox(fixture, bal, right, ax, 0.42f, kTrBalancerHM * 0.45f, 0.70f, 1.0f);
+                            float hood[3];
+                            PA(frameAtS(ts + 0.30f), sgn * tl, fy + kTrBalancerHM, hood);
+                            obox(fixture, hood, right, ax, 0.46f, 0.10f, 0.52f, 1.0f);
+                            // The read-out head is the bit you actually stand at.
+                            float head[3];
+                            PA(frameAtS(ts - 0.55f), sgn * tl, fy + 1.30f, head);
+                            obox(fglow, head, right, ax, 0.26f, 0.20f, 0.06f, 1.0f);
+
+                            // Tire machine: turntable low, tower up the back.
+                            const float ms = ts + 2.4f;
+                            float tt[3];
+                            PA(frameAtS(ms), sgn * tl, fy + 0.30f, tt);
+                            obox(fixture, tt, right, ax, 0.55f, 0.30f, 0.55f, 1.0f);
+                            float tower[3];
+                            PA(frameAtS(ms + 0.55f), sgn * (tl + 0.15f), fy + kTrTireMachHM * 0.5f, tower);
+                            obox(fixture, tower, right, ax, 0.14f, kTrTireMachHM * 0.5f, 0.14f, 1.0f);
+                            float armT[3];
+                            PA(frameAtS(ms + 0.20f), sgn * (tl + 0.15f), fy + kTrTireMachHM, armT);
+                            obox(fixture, armT, right, ax, 0.12f, 0.09f, 0.48f, 1.0f);
+                        }
+
+                        // ---- THE MILLER, on its cart, with the bottle strapped
+                        // to it. A welder is not a box in the corner: it is a
+                        // cart you drag to the car, which is why it sits in the
+                        // open floor rather than against a wall.
+                        {
+                            const float ws2 = sc.s0 + gLen * 0.50f;
+                            const float wl  = sc.latIn + gDep * 0.66f;
+                            float cart[3];
+                            PA(frameAtS(ws2), sgn * wl, fy + kTrWelderHM * 0.5f, cart);
+                            obox(fixture, cart, right, ax, 0.34f, kTrWelderHM * 0.5f, 0.48f, 1.0f);
+                            float bottle[3];
+                            PA(frameAtS(ws2 - 0.42f), sgn * wl, fy + kTrBottleHM * 0.5f, bottle);
+                            obox(fixture, bottle, right, ax, 0.13f, kTrBottleHM * 0.5f, 0.13f, 1.0f);
+                        }
+
+                        // ---- THE ROBINAIR A/C MACHINE. A wheeled recovery cart
+                        // with the twin manifold gauges on its face -- the pair
+                        // of dials is the entire silhouette people recognise it
+                        // by, so they are modelled and lit rather than implied.
+                        // Parked with the welder because both are machines you
+                        // ROLL to the car, not fixtures you take the car to.
+                        {
+                            const float as2 = sc.s0 + gLen * 0.50f;
+                            const float al  = sc.latIn + gDep * 0.78f;
+                            float body[3];
+                            PA(frameAtS(as2), sgn * al, fy + 0.55f, body);
+                            obox(fixture, body, right, ax, 0.30f, 0.55f, 0.40f, 1.0f);
+                            float mast[3];
+                            PA(frameAtS(as2), sgn * al, fy + 1.05f, mast);
+                            obox(fixture, mast, right, ax, 0.26f, 0.16f, 0.34f, 1.0f);
+                            for (int g = -1; g <= 1; g += 2) {   // the twin gauges
+                                float gg[3];
+                                PA(frameAtS(as2 + (float)g * 0.12f), sgn * (al - 0.34f), fy + 1.10f, gg);
+                                obox(fglow, gg, right, ax, 0.075f, 0.075f, 0.02f, 1.0f);
+                            }
+                        }
+
                         // BENCH RUN + toolboxes along the far wall. A workshop is
                         // a wall you can put things down on; without it the bay
                         // is a car park with a lift in it.
