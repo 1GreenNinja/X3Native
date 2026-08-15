@@ -423,6 +423,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testWetness  = o.testWetness;
         _tf.testStorm    = o.testStorm;
         _tf.testPrecip   = o.testPrecip;
+        _tf.testTunnelFitout = o.testTunnelFitout;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
         _tf.testNpcLife = o.testNpcLife;

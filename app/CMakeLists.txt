@@ -192,6 +192,7 @@ add_library(x3app SHARED
     wetness.cpp         # rain soak/dry + ice + tire grip (wetness lane)
     storm.cpp           # lightning flash + delayed thunder (weather lane)
     precip_fx.cpp       # falling snow + rain, camera-local volume (weather lane)
+    tunnel_fitout.cpp   # bore interior program: lay-bys, lamps, signs, doors
     mine_fx.cpp         # the mine-entrance family (Armory rock + glowing mouth)
     vehparts.cpp
     csm_test.cpp

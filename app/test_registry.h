@@ -107,6 +107,7 @@ struct TestFlags {
     bool testWetness = false;// wetness lane: rain soak/dry asymmetry, ice hysteresis, tire grip
     bool testStorm   = false;// storm lane: lightning flash shape + thunder travel delay
     bool testPrecip  = false;// precip lane: falling snow/rain, camera-local volume
+    bool testTunnelFitout = false;// tunnel lane: bore interior program placement
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
     bool testReflDenoise = false;    // --test-refldenoise (edge-aware a-trous reflection DENOISE; pure CPU)
     bool testEchoRoads = false;      // --test-echoroads (LIFT A: EchoRoads road-graph checksum; no GPU, no assets)

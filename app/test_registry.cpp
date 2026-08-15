@@ -155,6 +155,7 @@
 #include "wetness.h"
 #include "storm.h"
 #include "precip_fx.h"
+#include "tunnel_fitout.h"
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
 #include "speaking_monster.h"    // x3::apphost::SpeakingMonster (--demo-dialog)
 
@@ -1088,6 +1089,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(EoS arch-glow bake varies + fixture census + light complement + "
                     "deep-core brightest + teardown)...");
         return x3::game::runMineFxSelfTest() ? 0 : 1;
+    }
+    if (tf.testTunnelFitout) {
+        x3::logInfo("running TUNNEL INTERIOR FITOUT self-test "
+                    "(lay-by placement + portal tangent + SH4 profile rate + lamp burnout as "
+                    "MAINTENANCE not noise + walkway breaks + determinism)...");
+        return x3::game::runTunnelFitoutSelfTest() ? 0 : 1;
     }
     if (tf.testPrecip) {
         x3::logInfo("running PRECIPITATION self-test "

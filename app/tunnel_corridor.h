@@ -88,19 +88,49 @@
 namespace x3::game {
 
 // --- Cross-section + corridor constants (metres) ---------------------------
-// Road-scale, not BL's cavernous 72x34 auto-tunnels (BL_WORLD_PORT.md §2.3
-// notes those are sized to swallow a hill, not to carry a road). These are in
-// the range of BL's NAMED tunnels (14-16 wide, 8-9 tall) and of a real 2-lane
-// motorway bore.
-constexpr float kTcRoadHalfWidth  = 6.0f;   // drivable ribbon half-width
-constexpr float kTcTubeHalfWidth  = 7.0f;   // interior half-width at the springing
-constexpr float kTcTubeWallH      = 3.6f;   // vertical wall height before the arch
-constexpr float kTcTubeCrownH     = 7.6f;   // interior crown height above the road datum
+// WIDENED 2026-08-15 TO CARRY THE ROAD NETWORK. The bore was sized as a 2-lane
+// motorway tube (39 ft roadway) and TUNNEL_INTERIOR_PLAN.md still records that
+// figure as fact. Then app/road_network.h laid the ring at FOUR 12 ft lanes --
+// a 48 ft running surface. The tunnel was therefore 9 ft NARROWER than the road
+// feeding it: the outer lanes ran into the wall, and the lane markings the
+// ribbon paints would have died at the portal.
+//
+// Nothing caught this because the two were authored days apart and neither
+// owns the other's numbers. It is the same class of defect as the built-but-
+// unwired features: each half correct, the SEAM never measured.
+//
+// Sized from the road outward, in feet, because that is the unit the road is
+// specified in and the conversion belongs at one end or the other, not both:
+//
+//   running surface   4 lanes x 12.0 ft   = 48.0 ft   (half 24.0 ft = 7.32 m)
+//   walkway deck      3.0 ft each side               (spec W1: >= 2.8 ft)
+//   interior          48 + 2x3            = 54.0 ft   (half 27.0 ft = 8.23 m)
+//   shell             0.9 m                          (unchanged)
+//   corridor floor    must clear the OUTER shell (9.13 m) with the same ~0.9 m
+//                     margin the 2-lane section had -> 10.1 m = 33.1 ft
+//
+// The arch RISE keeps its old proportion (0.571 of the half-span) rather than
+// its old absolute height: holding the crown at 7.6 m over a span 18 % wider
+// would have flattened the vault into a culvert. Rise 4.70 m over a 3.8 m wall
+// puts the crown at 8.5 m = 27.9 ft, and costs only 0.9 m more soil cover.
+constexpr float kTcRoadHalfWidth  = 7.32f;  // drivable half-width: 24.0 ft (4 x 12 ft lanes)
+constexpr float kTcTubeHalfWidth  = 8.23f;  // interior half-width at the springing: 27.0 ft
+constexpr float kTcTubeWallH      = 3.80f;  // vertical wall height before the arch: 12.5 ft
+constexpr float kTcTubeCrownH     = 8.50f;  // interior crown above the road datum: 27.9 ft
 constexpr float kTcShellThick     = 0.9f;   // wall/crown thickness
+
+// ---- WALKWAYS (TUNNEL_INTERIOR_PLAN.md W1) --------------------------------
+// The raised maintenance walk each side, which is WHAT THE EXTRA WIDTH IS FOR.
+// A bore with a bare wall at the lane edge reads as a pipe; a kerb, a deck and
+// the shadow line under it read as infrastructure someone maintains. It is also
+// the element every later fitting hangs off -- railings, SOS niches, door
+// thresholds and the lay-by kerb all sit at deck level.
+constexpr float kTcWalkKerbH      = 0.305f; // kerb height: 1.0 ft
+constexpr float kTcWalkDeckW      = 0.914f; // deck width:  3.0 ft
 constexpr float kTcMinSoilCover   = 3.5f;   // ground kept above the tube's outer crown
 // Corridor footprint. The flat floor must be wider than the tube's outer shell
 // so the tube sits INSIDE the depression, never straddling its shoulder.
-constexpr float kTcCorridorHalfW  = 8.8f;
+constexpr float kTcCorridorHalfW  = 10.1f;  // 33.1 ft -- clears the 9.13 m outer shell
 // The shoulder run. Under the old two-regime build this had to be kept tight
 // because every metre of it was a metre of earth ramp inside the mouth. With
 // cut-and-cover the depth profile no longer steps at the portal at all, so the
