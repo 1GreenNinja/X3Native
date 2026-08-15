@@ -306,10 +306,70 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/converted_glb/Vehicles/CTR.glb",
+      "sha256": "68b2ed68ba6258f33c2bf760879ad740e22d6034fdd9cdaccaa820b6e563b1af",
+      "size": 4722024,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Coupe.glb",
+      "sha256": "249d54aa19f337ff793bf197edfe25b625707b07b0fb626791fb47d295e35801",
+      "size": 1168244,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/E30.glb",
+      "sha256": "c8381a46073404f7e671f9b4008e688e7e1833b6da970737825ddd7d99c89829",
+      "size": 1281744,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
       "repo_path": "assets/converted_glb/Vehicles/E46_New.glb",
-      "sha256": "d2d94de9cd2ed29be1a63a69924945993d185b0134b2ac17c5a51bf1b8ff2566",
-      "size": 1216564,
-      "source_note": "Realistic Car Controller V4 E46_New, Draco-decoded via gltf-transform. Has the INTERIOR: Seats/Dashboard/SteeringWheel/Interior/GearHandle + Needle_KM/Needle_RPM. Untextured until run through the car texture-bake pipeline."
+      "sha256": "e04b701c3c67892beb5efa7f89730a62cd3e5f617b38ed2a38d8455e1fa23dab",
+      "size": 1220816,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/F1.glb",
+      "sha256": "0b85c508b1280a12e740d214ab483b7631dda2fc4888b3fc384f4e85d827a78a",
+      "size": 465048,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Jeep.glb",
+      "sha256": "282524ec8fac0793bbe7b36fdffa440051e9da3a3453675eeaad1f1ba0a505ce",
+      "size": 1117180,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/M3_E36.glb",
+      "sha256": "5e7c2c85cd3dca9670fcf4336fa13425c029f9f6ed2a214a66567a2931f3d5a4",
+      "size": 1212352,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Muscle.glb",
+      "sha256": "923e825e6db3c65814b073e22368372005217c5a2c59bc4e04e34590fa024d3e",
+      "size": 2783312,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Pickup.glb",
+      "sha256": "54fc42dc5ca1f13cb6ce6802260d2f875b7f8c878dd1ac422a1677a2b0185f96",
+      "size": 540828,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Skyline_by_BUMSTRUM.glb",
+      "sha256": "6fafa2b87ffb734ce7c310757bbf45179c94684a9fe54f09412f2e56b3699323",
+      "size": 2102456,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Truck.glb",
+      "sha256": "300f95611cda276fbbc7fddda914091213da7e5eea09a5171fd1540c07c7dc70",
+      "size": 890564,
+      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
     },
     {
       "repo_path": "assets/converted_glb/mine/barrel.glb",

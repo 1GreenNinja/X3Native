@@ -419,17 +419,12 @@ int hostTunnel(HostContext& hc) {
         //
         // Checking the pack BEFORE modelling anything is the whole lesson of
         // today: the interior did not need building, it needed finding.
-        car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
-        // E46_New.glb is STAGED beside it and is the interior car -- Seats,
-        // Dashboard, SteeringWheel, Interior, GearHandle, plus live Needle_KM /
-        // Needle_RPM gauges -- with the same Wheel_FL/FR/RL/RR names and the same
-        // `Buttom` underbody, so the skin mapping needs no change. It is NOT
-        // switched on yet because it renders WHITE: the pack ships its textures
-        // as separate Unity assets, so the raw GLB carries one embedded image for
-        // 35 materials. CTR's copy here is 4.5 MB against the source's 0.34 MB
-        // precisely because it went through the texture-baking pipeline
-        // (tools/convert_car_glb.py). Run E46 through that and this is a one-word
-        // change.
+        car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/E46_New.glb");
+        // E46_New is the INTERIOR car: Seats, Dashboard, SteeringWheel,
+        // Interior, GearHandle and a pair of emissive Needle_KM / Needle_RPM
+        // gauges. Same Wheel_FL/FR/RL/RR names and the same misspelled `Buttom`
+        // underbody as CTR, so the skin mapping is untouched. Ten more vehicles
+        // from the same pack sit beside it in converted_glb/Vehicles.
         // Point it down the corridor.
         // SPAWN YAW — engine forward at rest is -Z (CLAUDE.md AXES / CONVENTIONS
         // §3), so rotating rest forward (0,0,-1) about +Y by theta gives

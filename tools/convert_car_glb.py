@@ -44,6 +44,51 @@ def overrides(paint):
     return [
         # physics proxy — handled by the node strip, belt+braces black it out
         ("collider",        dict(strip=True)),
+
+        # ---- INTERIOR (added 2026-08-15 for E46_New, the only vehicle in RCC v4
+        #      that ships a cabin). CTR and friends are exterior shells, so these
+        #      keys never matched anything before and no car had a seat to sit in.
+        #      Ordered FIRST because several of them would otherwise fall through
+        #      to a generic rule and come out wrong -- "M_SteeringWheel" contains
+        #      "wheel" and would have been painted TYRE BLACK by the rule five
+        #      lines down, and "M_Dashboard" contains "board" but also "dash".
+        ("steeringwheel",   dict(bc=(0.045, 0.045, 0.05, 1.0), metal=0.0, rough=0.55)),
+        ("gearhandle",      dict(bc=(0.06, 0.055, 0.05, 1.0), metal=0.3, rough=0.35)),
+        ("dashboard",       dict(bc=(0.055, 0.055, 0.06, 1.0), metal=0.0, rough=0.70)),
+        ("dash",            dict(bc=(0.055, 0.055, 0.06, 1.0), metal=0.0, rough=0.70)),
+        # Needles read as instruments only if they GLOW -- an unlit needle on a
+        # dark dash is invisible, which is the same failure as an unlit sign in
+        # the tunnel.
+        ("needle",          dict(bc=(0.8, 0.1, 0.08, 1.0), metal=0.0, rough=0.3,
+                                  emissive=(1.0, 0.15, 0.1, 3.0))),
+        ("seats",           dict(bc=(0.075, 0.07, 0.07, 1.0), metal=0.0, rough=0.85)),
+        ("seat",            dict(bc=(0.075, 0.07, 0.07, 1.0), metal=0.0, rough=0.85)),
+        ("interior",        dict(bc=(0.05, 0.05, 0.052, 1.0), metal=0.0, rough=0.80)),
+        ("wiper",           dict(bc=(0.03, 0.03, 0.032, 1.0), metal=0.0, rough=0.5)),
+
+        # ---- SECOND NAMING CONVENTION. RCC v4 is not internally consistent:
+        #      CTR names lights "Light_Headlight_R" and glass "Windows", while
+        #      E46 names them "Headlights_Left" and "Windshield". The existing
+        #      keys match the first and silently miss the second, which is why
+        #      E46 rendered as a white bar of soap. Substring matching means the
+        #      fix is extra keys, not a second table.
+        ("headlight",       dict(bc=(0.9, 0.92, 1.0, 1.0), metal=0.0, rough=0.10,
+                                  emissive=(1.0, 0.98, 0.92, 5.0))),
+        ("brake",           dict(bc=(0.5, 0.01, 0.01, 1.0), metal=0.0, rough=0.15,
+                                  emissive=(1.0, 0.05, 0.03, 4.0))),
+        ("indicator",       dict(bc=(0.45, 0.12, 0.0, 1.0), metal=0.0, rough=0.3)),
+        ("reverse",         dict(bc=(0.6, 0.6, 0.6, 1.0), metal=0.0, rough=0.3)),
+        ("windshield",      dict(bc=(0.012, 0.012, 0.016, 1.0), metal=1.0, rough=0.06)),
+        ("windscreen",      dict(bc=(0.012, 0.012, 0.016, 1.0), metal=1.0, rough=0.06)),
+        ("engine",          dict(bc=(0.07, 0.07, 0.075, 1.0), metal=0.7, rough=0.45)),
+        ("trunk",           dict(bc=(0.0, 0.0, 0.0, 1.0), metal=0.80, rough=0.40,
+                                  clearcoat=(1.0, 0.05), paint=True)),
+        ("spoiler",         dict(bc=(0.0, 0.0, 0.0, 1.0), metal=0.80, rough=0.40,
+                                  clearcoat=(1.0, 0.05), paint=True)),
+        ("bumper",          dict(bc=(0.0, 0.0, 0.0, 1.0), metal=0.80, rough=0.40,
+                                  clearcoat=(1.0, 0.05), paint=True)),
+        ("door",            dict(bc=(0.0, 0.0, 0.0, 1.0), metal=0.80, rough=0.40,
+                                  clearcoat=(1.0, 0.05), paint=True)),
         # ---- lights (emissive; ordered BEFORE body so "light_..." never
         #      falls through to a paint rule) ----
         ("light_headlight", dict(bc=(0.9, 0.92, 1.0, 1.0), metal=0.0, rough=0.10,
