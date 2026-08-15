@@ -111,6 +111,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional output GIF path arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') o.captureFactoryPath = argv[++i];
         }
+        if (a == "--capture-burst") {   // T14: the roof-burst finale GIF
+            o.captureBurst = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureBurstPath = argv[++i];
+        }
         if (a == "--smoketest") o.smoketest = true;
         else if (a == "--legacypost")  o.legacyPost = 1;   // A/B: auto-exposure OFF (pre-strike look)
         else if (a == "--legacypost2") o.legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough

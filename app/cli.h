@@ -795,6 +795,15 @@ struct CliOptions {
     // modeled on --capture-ai. Default: build/factory_bore.gif.
     bool        captureFactory     = false;
     std::string captureFactoryPath = "build/factory_bore.gif";
+    // Factory BURST capture (--capture-burst [out.gif]): the roof-burst finale.
+    // Build the Annex + the combined elevator graph with the cab parked at A5
+    // (the burst stop), armBurst() IN CODE, and film the whole scripted beat —
+    // the golden dais, the 2x-accel ascent, the roof SHATTER (GPU debris +
+    // CombatFx, the host-factory FX wiring), and the apex hover over the world.
+    // Two scripted shots (interior dais -> exterior crane at the roofline),
+    // 60 frames -> 640x360 @ 20 fps looping GIF. Default: build/factory_burst.gif.
+    bool        captureBurst     = false;
+    std::string captureBurstPath = "build/factory_burst.gif";
     // Crowd-spread capture (--capture-crowd-spread [outDir]): the anti-crowding proof.
     // Spawn a CLUSTER of guards stacked on nearly one point next to a player reference,
     // step them through the REAL MonsterManager::update (which wires the separation

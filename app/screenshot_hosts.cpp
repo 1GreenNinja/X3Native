@@ -41,6 +41,7 @@
 #include "factory_annex.h"     // --capture-factory: the Confection Annex bore ride
 #include "elevator.h"          // --capture-factory: the Anywhere Elevator cab
 #include "trigger.h"           // --capture-factory: the annex trigger volumes
+#include "fx.h"                // --capture-burst: CombatFx roof-shatter wiring
 #include "world_hosts/world_host_common.h"   // applyHostRenderCVars / reportUnappliedHostCVars
 #include "asset_root.h"
 #include "intro_orchestrator.h"   // X3_INTRO_CAPTURE headless combat-evidence run
@@ -116,6 +117,7 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
     const bool cityShot = hc.cityShot;            const std::string& cityShotPath = hc.cityShotPath;
     const bool captureAi = hc.captureAi;          const std::string& captureAiDir = hc.captureAiDir;
     const bool captureFactory = hc.captureFactory; const std::string& captureFactoryPath = hc.captureFactoryPath;
+    const bool captureBurst = hc.captureBurst;    const std::string& captureBurstPath = hc.captureBurstPath;
     const bool captureCrowdSpread = hc.captureCrowdSpread; const std::string& captureCrowdSpreadDir = hc.captureCrowdSpreadDir;
     const bool captureWalk = hc.captureWalk;      const std::string& captureWalkPath = hc.captureWalkPath;
     const bool captureFootIk = hc.captureFootIk;  const std::string& captureFootIkPath = hc.captureFootIkPath;
@@ -3597,6 +3599,224 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return (fcFrameNo > 0 && fcGifOk) ? 0 : 1;
+    }
+
+    // ---- Factory ROOF-BURST capture (--capture-burst [out.gif]) ------------
+    // THE FINALE HERO SHOT (feat/factory-annex T14): the whole scripted Burst
+    // beat on film — the cab parked on the golden dais at A5, armBurst() IN
+    // CODE, the 2x-accel ascent, the roof SHATTER (GPU debris + CombatFx, the
+    // exact host-factory FX wiring), and the apex hover over the world. Two
+    // scripted shots with a hard cut (reads cinematic, avoids clipping the
+    // roof slab with a chase camera): an interior dais shot tilting up as the
+    // cab leaves, then an exterior crane above the roofline tracking the cab
+    // through the shatter to the hover. 60 frames -> 640x360 @ 20 fps GIF,
+    // modeled on --capture-factory above (the SOLE gif.h TU).
+    if (captureBurst) {
+        namespace fs = std::filesystem;
+        const std::string gifPath = captureBurstPath;
+        std::string framesDir = gifPath;
+        {
+            const size_t dot = framesDir.find_last_of('.');
+            if (dot != std::string::npos) framesDir.resize(dot);
+            framesDir += "_frames";
+        }
+        x3::logInfo("--capture-burst: filming the roof-burst finale to " + gifPath);
+        std::error_code mkec;
+        fs::create_directories(framesDir, mkec);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> fbphys(x3::phys::createPhysicsWorld());
+        fbphys->init();
+        x3::game::Scene fbscene;
+        x3::game::TriggerSystem fbtrig;
+        x3::game::FactoryAnnex fbannex;
+        fbannex.build(fbscene, *device, *fbphys, fbtrig, /*shaftX*/0.0f, /*shaftZ*/0.0f);
+        fbannex.applyAtmosphere(*device);
+
+        x3::game::ElevatorSystem fbelev;
+        const x3::game::FactoryAnnex::ElevatorGraph g =
+            x3::game::FactoryAnnex::makeElevatorGraph(0.0f, 0.0f);
+        // Park the cab AT A5 (the burst stop) — the capture IS the finale.
+        // buildVisuals stays IN for this one: the shot watches the glass car
+        // from OUTSIDE, so the car had better be there to watch.
+        fbelev.buildEx(fbscene, *device, *fbphys,
+                       x3::game::FactoryAnnex::kCabHalfX,
+                       x3::game::FactoryAnnex::kCabHalfY,
+                       x3::game::FactoryAnnex::kCabHalfZ,
+                       g.stops, g.rails, /*startStop*/g.a5);
+        fbelev.enableFsm(true);
+        fbelev.setFloorLabels(g.labels);
+        fbelev.setBurst(g.a5, x3::game::FactoryAnnex::kRoofY, /*apexY*/105.0f);
+        fbelev.buildVisuals(fbscene, *device);
+
+        // The host-factory FX wiring, verbatim (host_factory.cpp is the
+        // reference): GPU debris resting on the roof + CombatFx spawnExplosion
+        // (this branch's fireball) + the 6x spawnImpact glass ring.
+        x3::game::CombatFx fbfx;
+        fbfx.init(*device);
+        {
+            x3::rhi::IRenderDevice::GpuDebrisParams gp{};
+            gp.gravity[1] = -9.81f;
+            gp.groundY    = x3::game::FactoryAnnex::kRoofY + 0.5f;
+            gp.restitution = 0.25f; gp.friction = 0.5f;
+            device->gpuDebrisConfig(gp);
+        }
+        fbelev.onRoofShatter = [&](const x3::phys::Vec3& p) {
+            const float bp[3] = { p.x, p.y, p.z };
+            device->gpuDebrisSpawnBurst(bp, /*count*/96u, /*speed*/14.0f,
+                                        /*lifetime*/6.0f, /*halfExtent*/0.14f,
+                                        /*seed*/0x4790u);
+            fbfx.spawnExplosion(p, 5.0f);
+            for (int i = 0; i < 6; ++i) {
+                const float a = (float)i * (6.2831853f / 6.0f);
+                const x3::phys::Vec3 rim{ p.x + 2.2f * std::cos(a), p.y,
+                                          p.z + 2.2f * std::sin(a) };
+                const x3::phys::Vec3 n{ std::cos(a) * 0.4f, 1.0f, std::sin(a) * 0.4f };
+                fbfx.spawnImpact(rim, n);
+            }
+            x3::logInfo("--capture-burst: THE ROOF SHATTERS (on film)");
+        };
+
+        // Settle a beat so the dais chase + accent glow are lit at frame 0.
+        const float sdt = 1.0f / 60.0f;
+        for (int i = 0; i < 12; ++i) {
+            fbannex.tick(sdt, fbscene);
+            fbelev.update(sdt, fbscene, *fbphys);
+            fbfx.update(sdt);
+            fbphys->step(sdt);
+        }
+
+        const int   kFrames      = 60;    // 60 frames @ 20 fps (the T14 contract)
+        const int   kStepsPerCap = 8;     // 8 s sim: dais beat + ascent + hover
+        const int   kArmFrame    = 8;     // ~1 s dais beat; the door seal (1.8 s,
+                                          // doors idle OPEN under the FSM) is
+                                          // part of the show, and arming early
+                                          // leaves ~1.5 s of apex hover on film
+        float fbWaterClock = 0.0f;        // the confection river, host-pushed
+        int   fbFrameNo = 0;
+        std::vector<std::string> fbFramePaths;
+        for (int f = 0; f < kFrames; ++f) {
+            glfwPollEvents();
+            if (f == kArmFrame) fbelev.armBurst();   // 9999, entered by the rig
+            for (int s = 0; s < kStepsPerCap; ++s) {
+                fbannex.tick(sdt, fbscene);
+                fbelev.update(sdt, fbscene, *fbphys);
+                fbfx.update(sdt);
+                fbphys->step(sdt);
+            }
+            {   // ONE merged light push: annex rig + elevator rig (host law).
+                std::vector<x3::rhi::PointLight> lp(fbannex.pointLights());
+                lp.insert(lp.end(), fbelev.pointLights().begin(),
+                          fbelev.pointLights().end());
+                device->setPointLights(lp.data(), (uint32_t)lp.size());
+            }
+            {   // The confection river — host-advanced water clock.
+                fbWaterClock += sdt * (float)kStepsPerCap;
+                x3::rhi::IRenderDevice::WaterParams wp = fbannex.riverWater();
+                wp.time = fbWaterClock;
+                device->setWaterParams(wp);
+            }
+            // TWO SHOTS, one hard cut when the cab clears the Tube Junction:
+            //   1) interior dais shot (floor E, beside the golden ring),
+            //      tilting up to follow the cab out;
+            //   2) exterior crane above the roofline (z=+42, facing -Z),
+            //      tracking the cab through the shatter to the apex hover.
+            const x3::phys::Vec3 c = fbelev.cabCenter();
+            float cam[5];
+            if (c.y < 62.0f) {
+                cam[0] = 49.0f; cam[1] = 57.6f; cam[2] = 9.0f;
+                cam[3] = -0.686f;                      // facing the dais/cab
+                const float dx = c.x - cam[0], dz = c.z - cam[2];
+                const float dist = std::sqrt(dx * dx + dz * dz);
+                cam[4] = std::atan2(c.y + 0.8f - cam[1], dist);   // track the car
+            } else if (c.y < 92.0f) {
+                cam[0] = 60.0f; cam[1] = 72.0f; cam[2] = 42.0f;
+                cam[3] = -1.5708f;                     // facing -Z, at the annex
+                cam[4] = std::atan2(c.y + 0.5f - cam[1], 42.0f);
+            } else {
+                // Shot 3 — the apex: a close sky camera so the hover reads as
+                // a CAB over the world, not a speck against the gradient.
+                cam[0] = 60.0f; cam[1] = 100.0f; cam[2] = 22.0f;
+                cam[3] = -1.5708f;
+                cam[4] = std::atan2(c.y - cam[1], 22.0f);
+            }
+            if (cam[4] >  1.2f) cam[4] =  1.2f;
+            if (cam[4] < -0.6f) cam[4] = -0.6f;
+            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 68.0f);
+            char fpath[512];
+            std::snprintf(fpath, sizeof(fpath), "%s/frame_%03d.png",
+                          framesDir.c_str(), fbFrameNo);
+            device->armCapture(fpath);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                device->gpuDebrisStep(sdt * (float)kStepsPerCap);
+                fbscene.render(*device, frame);
+                const float shardTint[4] = { 0.75f, 0.88f, 0.95f, 1.0f };
+                device->gpuDebrisDraw(frame, shardTint);
+                fbfx.draw(*device, frame, cam[0], cam[1], cam[2], cam[3], cam[4]);
+                fbfx.submit(*device, frame);
+            }
+            device->endFrame(frame);
+            if (device->captureFrame(fpath)) fbFramePaths.emplace_back(fpath);
+            ++fbFrameNo;
+        }
+
+        // ---- Assemble the 640x360 @ 20 fps GIF (2x box-downsample per frame).
+        bool fbGifOk = false;
+        if (!fbFramePaths.empty()) {
+            GifWriter gif{};
+            const uint32_t delayCs = 5;   // 20 fps, looping
+            uint32_t gw = 0, gh = 0;
+            std::vector<unsigned char> small;
+            for (size_t i = 0; i < fbFramePaths.size(); ++i) {
+                int w = 0, h = 0, ch4 = 0;
+                unsigned char* px = stbi_load(fbFramePaths[i].c_str(), &w, &h, &ch4, 4);
+                if (!px) continue;
+                const uint32_t dw = (uint32_t)w / 2u, dh = (uint32_t)h / 2u;
+                if (i == 0) {
+                    gw = dw; gh = dh;
+                    small.resize((size_t)gw * gh * 4u);
+                    if (!GifBegin(&gif, gifPath.c_str(), gw, gh, delayCs)) {
+                        stbi_image_free(px);
+                        break;
+                    }
+                }
+                if (dw == gw && dh == gh) {
+                    for (uint32_t y = 0; y < gh; ++y)
+                        for (uint32_t x = 0; x < gw; ++x)
+                            for (uint32_t k = 0; k < 4; ++k) {
+                                const uint32_t s00 = ((2*y    ) * (uint32_t)w + 2*x    ) * 4u + k;
+                                const uint32_t s01 = ((2*y    ) * (uint32_t)w + 2*x + 1) * 4u + k;
+                                const uint32_t s10 = ((2*y + 1) * (uint32_t)w + 2*x    ) * 4u + k;
+                                const uint32_t s11 = ((2*y + 1) * (uint32_t)w + 2*x + 1) * 4u + k;
+                                small[((size_t)y * gw + x) * 4u + k] = (unsigned char)
+                                    (((uint32_t)px[s00] + px[s01] + px[s10] + px[s11]) / 4u);
+                            }
+                    GifWriteFrame(&gif, small.data(), gw, gh, delayCs);
+                }
+                stbi_image_free(px);
+                if (i + 1 == fbFramePaths.size()) fbGifOk = GifEnd(&gif);
+            }
+        }
+        {
+            char sb[320];
+            std::error_code szec;
+            const uintmax_t gifBytes = fbGifOk ? fs::file_size(gifPath, szec) : 0;
+            std::snprintf(sb, sizeof(sb),
+                "--capture-burst: %d frames -> %s | GIF %s (%llu bytes) | fired=%d cab y=%.1f",
+                fbFrameNo, framesDir.c_str(),
+                fbGifOk ? gifPath.c_str() : "(FAILED)",
+                (unsigned long long)gifBytes, fbelev.burstFired() ? 1 : 0,
+                fbelev.cabCenter().y);
+            x3::logInfo(sb);
+        }
+
+        fbfx.shutdown(*device);
+        fbannex.shutdown(*device);
+        fbphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return (fbFrameNo > 0 && fbGifOk && fbelev.burstFired()) ? 0 : 1;
     }
 
     // ---- Crowd-spread capture (--capture-crowd-spread [outDir]) ------------

@@ -140,6 +140,7 @@ struct HostContext {
     bool        cityShot = false;       std::string cityShotPath;        // W8-3 city vantage
     bool        captureAi = false;      std::string captureAiDir;
     bool        captureFactory = false; std::string captureFactoryPath;   // --capture-factory [out.gif]
+    bool        captureBurst = false;   std::string captureBurstPath;     // --capture-burst [out.gif]
     bool        captureCrowdSpread = false; std::string captureCrowdSpreadDir;
     bool        captureWalk = false;    std::string captureWalkPath;
     std::string captureWalkRig;         // --capture-walk optional rig GLB
