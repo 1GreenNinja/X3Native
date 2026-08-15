@@ -30,12 +30,17 @@ namespace x3::game {
 namespace {
 
 // ---- Palette (plan design decision 7: candy-bright against dark iron) ------
-constexpr float kIronTint[3]   = { 0.16f, 0.14f, 0.19f };  // aubergine iron (#2a2430 family)
-constexpr float kFloorTint[3]  = { 0.20f, 0.18f, 0.23f };  // slightly lifted deck
+// Phase-5 note: these are MULTIPLIERS over real albedos now, not flat colors.
+// The fa_iron_wall corrugated albedo is a mid-brown scan, so the aubergine
+// walls carry their hue in the tint at ~0.5 value (the old 0.16 flat-tint
+// crushed the texture to black — the "slop" verdict); the deck rides the
+// bright mw_metal_panels_a set pulled down to a believable floor value.
+constexpr float kIronTint[3]   = { 0.52f, 0.44f, 0.62f };  // aubergine over corrugated iron
+constexpr float kFloorTint[3]  = { 0.38f, 0.34f, 0.44f };  // deck panels, dusk-violet
 constexpr float kBrassTint[3]  = { 0.69f, 0.55f, 0.34f };  // brass #b08d57
 constexpr float kBrassGlow[3]  = { 1.00f, 0.78f, 0.42f };  // warm brass emissive
 constexpr float kGlassTint[3]  = { 0.72f, 0.88f, 0.94f };  // cool curtain glass
-constexpr float kBoreIron[3]   = { 0.14f, 0.13f, 0.17f };  // bore panels (darker)
+constexpr float kBoreIron[3]   = { 0.46f, 0.40f, 0.54f };  // bore panels (darker aubergine)
 
 // Shell dims not already public on the class.
 constexpr float kSlabHalfT   = 0.25f;   // floor/roof slab half-thickness
@@ -246,6 +251,12 @@ void tickRoomInvention (Scene& scene, AnnexRoom& room, float t);
 void tickRoomFizz      (Scene& scene, AnnexRoom& room, float t);
 void tickRoomSorting   (Scene& scene, AnnexRoom& room, float t);
 void tickRoomTube      (Scene& scene, AnnexRoom& room, float t);
+void factoryGlbCacheReset();   // Phase 5: drop the previous build's drawable cache
+// Phase 5: the load-if-present hero hook (factory_rooms.cpp); the self-test
+// probes both of its branches directly (F16b/F16c).
+int heroHook(FactoryRoomCtx& ctx, const char* relPath, const char* what,
+             float x, float y, float z, float yaw, float scale,
+             bool isProp, std::vector<float>* outXf);
 
 FactoryAnnex::ElevatorGraph FactoryAnnex::makeElevatorGraph(float shaftX, float shaftZ) {
     ElevatorGraph g;
@@ -285,10 +296,29 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ===== Curated PBR surface sets (owned by the library; destroyAll in
     // shutdown; a set that fails to load leaves ok=false and the boxes fall
     // back to their flat tints — the headless self-test path never breaks).
+    // Phase 5 swaps the shell onto the fa_* factory sets (tools/
+    // tex_curate_factory.py): corrugated riveted iron for the walls/bore,
+    // smudged worn metal (brass-tinted) for every trim run.
     m_surf.mount(assetRoot() + "/surface_library");
-    const SurfaceSet& sIron  = m_surf.get(device, "mw_metal_panels_a");   // aubergine-iron walls
-    const SurfaceSet& sDeck  = m_surf.get(device, "mw_metal_grate");      // floor decks
-    const SurfaceSet& sTrim  = m_surf.get(device, "mw_metal_trim_b");     // brass trim body
+    const SurfaceSet& sIron  = m_surf.get(device, "fa_iron_wall");        // corrugated iron walls
+    const SurfaceSet& sDeck  = m_surf.get(device, "mw_metal_panels_a");   // floor decks (panel relief)
+    const SurfaceSet& sTrim  = m_surf.get(device, "fa_brass_worn");       // brass trim body
+
+    // ===== Phase-5 GLB services: ONE loader for the Glimvale dressing + the
+    // StarForge hero hooks (barrels.cpp's Barrel.glb pattern, annex-wide). A
+    // failed mount leaves loader null — every hook then takes its procedural
+    // fallback branch and logs it (the annex never REQUIRES an asset).
+    m_assets.reset(x3::asset::createAssetSource());
+    if (m_assets->mountDir(convertedGlbRoot(), 0)) {
+        m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+    } else {
+        x3::logWarn("[factory] mountDir failed (" + convertedGlbRoot() +
+                    ") — all hero hooks + dressing fall back to procedural");
+    }
+    m_art = FactoryArtHooks{};
+    m_art.loader = m_loader.get();
+    m_art.models = &m_models;
+    factoryGlbCacheReset();
 
     // ===== Rooms (names + accents; content spans stay EMPTY until Phase 3).
     m_rooms.clear();
@@ -314,9 +344,36 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
                   ax, kFloorBaseY[0], az, kFloorHalf, &sDeck, kFloorTint);
     // B/C/D carry the chute drop-shaft hole (Task 10: the hatch on D opens
     // into a glass shaft that falls THROUGH B and C to the padded room on A).
+    // Phase 5: the FIZZ GALLERY (C) floor is the checkered tile — authored as
+    // a THIN OVERLAY over the deck slab, not a slab swap: a swapped slab put
+    // the red checker on its UNDERSIDE, i.e. on the Invention Works' ceiling
+    // (caught on the first Phase-5 floor-B capture).
     for (uint32_t i = 1; i <= 3; ++i)
         addSlabWithChuteHole(scene, device, physics, m_meshes,
                              ax, kFloorBaseY[i], az, kFloorHalf, &sDeck, kFloorTint);
+    {
+        const SurfaceSet& sCheck = m_surf.get(device, "fa_tile_checker");
+        constexpr float kCheckTint[3] = { 1.0f, 0.96f, 0.92f };
+        const float topY = kFloorBaseY[2] + 0.012f;
+        const float hx0 = kChuteX - kChuteHoleHalf, hx1 = kChuteX + kChuteHoleHalf;
+        const float hz0 = kChuteZ - kChuteHoleHalf, hz1 = kChuteZ + kChuteHoleHalf;
+        const float half = kFloorHalf;
+        struct Seg { float x0, z0, x1, z1; };
+        const Seg segs[7] = {
+            { -half,     -half,      half,      -kOpenHalf },
+            {  kOpenHalf, -kOpenHalf, half,      kOpenHalf },
+            { -half,     -kOpenHalf, -kOpenHalf, kOpenHalf },
+            { -half,      kOpenHalf,  hx0,       half      },
+            {  hx1,       kOpenHalf,  half,      half      },
+            {  hx0,       kOpenHalf,  hx1,       hz0       },
+            {  hx0,       hz1,        hx1,       half      },
+        };
+        for (const Seg& s : segs)
+            addSurfBox(scene, device, m_meshes,
+                       ax + (s.x0 + s.x1) * 0.5f, topY - 0.006f, az + (s.z0 + s.z1) * 0.5f,
+                       (s.x1 - s.x0) * 0.5f, 0.006f, (s.z1 - s.z0) * 0.5f,
+                       &sCheck, kCheckTint);
+    }
     addSlabWithOpening(scene, device, physics, m_meshes,
                        ax, kFloorBaseY[4], az, kFloorHalf, &sDeck, kFloorTint);
     addSlabWithOpening(scene, device, physics, m_meshes,
@@ -522,7 +579,7 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ===== Per-room content hooks (factory_rooms.cpp — Phase 3 fills them).
     {
         FactoryRoomCtx ctx{ scene, device, physics, m_meshes, m_surf, ax, az,
-                            &m_river };
+                            &m_river, &m_art };
         buildRoomMixture  (ctx, m_rooms[0]);
         buildRoomInvention(ctx, m_rooms[1]);
         buildRoomFizz     (ctx, m_rooms[2]);
@@ -584,9 +641,25 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // catches it (a 20 m room lit only from the ceiling reads black at
             // the floor — verified on the first bore-ride capture).
             addLight(ax, kFloorBaseY[i] + 6.0f, az,
-                     5.5f + 2.5f * a[0], 5.0f + 2.5f * a[1], 4.6f + 2.5f * a[2],
-                     34.0f);
+                     7.0f + 2.5f * a[0], 6.3f + 2.5f * a[1], 5.8f + 2.5f * a[2],
+                     36.0f);
+            // Phase 5: three FILLS per floor. One key at the center left
+            // every 20 m room's corners pitch black — the Glimvale dressing,
+            // the padded room and the crate corners lived entirely in ambient
+            // (the floor-A art-pass capture showed the bank garden as black
+            // blobs). Soft warm fills, deliberately dimmer than the key.
+            addLight(ax - 14.0f, kFloorBaseY[i] + 5.5f, az + 9.0f,
+                     2.8f, 2.2f, 2.0f, 21.0f);
+            addLight(ax + 13.0f, kFloorBaseY[i] + 5.5f, az - 11.0f,
+                     2.8f, 2.2f, 2.0f, 21.0f);
+            addLight(ax - 9.0f, kFloorBaseY[i] + 6.0f, az - 9.0f,
+                     2.2f, 1.75f, 1.6f, 18.0f);
         }
+        // Floor A extras: the north-east work corner (padded room + crates)
+        // and the west bank garden both face AWAY from the key — a third fill
+        // each so the confection river's banks read at dusk.
+        addLight(ax + 11.0f, kFloorBaseY[0] + 5.0f, az + 11.0f, 2.3f, 1.8f, 1.5f, 15.0f);
+        addLight(ax - 14.0f, kFloorBaseY[0] + 5.5f, az - 9.0f, 2.0f, 1.5f, 1.5f, 15.0f);
         const float boreCy = kFloorBaseY[1] + kBoreLift;
         addLight(shaftX + 12.0f, boreCy, az, 2.4f, 1.9f, 1.1f, 14.0f);   // brass bore
         addLight(shaftX + 30.0f, boreCy, az, 2.4f, 1.9f, 1.1f, 14.0f);
@@ -594,12 +667,14 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
 
     m_entCount = scene.size() - m_entFirst;
     m_built = true;
-    char msg[192];
+    char msg[256];
     std::snprintf(msg, sizeof(msg),
         "[factory] annex shell built: %u rooms, %u entities, %u meshes, "
-        "%u triggers (300-313), center x=%.0f",
+        "%u triggers (300-313), center x=%.0f | hero hooks %u real / %u fallback, "
+        "%u dressing entities",
         (uint32_t)m_rooms.size(), m_entCount, (uint32_t)m_meshes.size(),
-        kFactoryTrigCount, ax);
+        kFactoryTrigCount, ax, m_art.heroPresent, m_art.heroFallback,
+        m_art.dressEntities);
     x3::logInfo(msg);
 }
 
@@ -608,21 +683,27 @@ void FactoryAnnex::tick(float dt, Scene& scene) {
     m_time += dt;
     const float t = m_time;
     // Bore ribs: the powered-bore breathing pulse (per-rib phase offsets).
-    // Capped low — over ~0.7 the warm brass ACES-clips to cream (X3_WORLD_RULES
-    // material law 5; verified on the first bore-ride capture).
+    // Phase-5 EMISSIVE RESTRAINT: warm accents hold <= 0.45 steady (the art
+    // direction's glow law) — the ribs are brass PBR first, glow second.
     for (uint32_t i = 0; i < m_ribGlowCount; ++i) {
         Entity& e = scene.get(m_ribGlowFirst + i);
-        e.emissive[3] = 0.42f + 0.22f * std::sin(t * 1.4f + (float)i * 0.45f);
+        e.emissive[3] = 0.32f + 0.12f * std::sin(t * 1.4f + (float)i * 0.45f);
     }
-    // Glass-curtain mullions: a slower, subtler breath.
+    // Glass-curtain mullions: a slower, subtler breath (warm cap 0.45).
     for (uint32_t i = 0; i < m_trimGlowCount; ++i) {
         Entity& e = scene.get(m_trimGlowFirst + i);
-        e.emissive[3] = 0.6f + 0.25f * std::sin(t * 0.6f + (float)i * 1.1f);
+        e.emissive[3] = 0.32f + 0.10f * std::sin(t * 0.6f + (float)i * 1.1f);
     }
     // Per-floor accent coves: a gentle candy-shop breathe, phase per floor.
-    for (uint32_t i = 0; i < m_accentCount; ++i) {
-        Entity& e = scene.get(m_accentFirst + i);
-        e.emissive[3] = 1.5f + 0.4f * std::sin(t * 0.5f + (float)i * 1.3f);
+    // Warm accents (raspberry/amber/gold) hold ~0.4; cool (mint/cyan) may
+    // breathe to ~0.9 (the cool cap) — the cove is a STRIP, not a lightbox.
+    {
+        constexpr float coveBase[kFloorCount] = { 0.38f, 0.72f, 0.38f, 0.38f, 0.72f };
+        constexpr float coveAmp[kFloorCount]  = { 0.07f, 0.16f, 0.07f, 0.07f, 0.16f };
+        for (uint32_t i = 0; i < m_accentCount && i < kFloorCount; ++i) {
+            Entity& e = scene.get(m_accentFirst + i);
+            e.emissive[3] = coveBase[i] + coveAmp[i] * std::sin(t * 0.5f + (float)i * 1.3f);
+        }
     }
     // The Chute of Dubious Quality (Task 10): once trigger 310 latches, the
     // Sorting Hall's clock runs — tickRoomSorting slides the hatch open after
@@ -678,6 +759,14 @@ void FactoryAnnex::shutdown(x3::rhi::IRenderDevice& device) {
     for (auto h : m_meshes) if (h.valid()) device.destroyMesh(h);
     m_meshes.clear();
     m_surf.destroyAll(device);
+    // Phase-5 GLB models: unload each (mesh buffers freed; the loader's
+    // process-wide texture cache keeps its own steady-state refs — see F15's
+    // double build/shutdown balance check).
+    if (m_loader) for (auto& m : m_models) m_loader->unload(m);
+    m_models.clear();
+    m_loader.reset();
+    m_assets.reset();
+    m_art = FactoryArtHooks{};
     m_rooms.clear();
     m_ribGlowFirst = m_ribGlowCount = 0;
     m_trimGlowFirst = m_trimGlowCount = 0;
@@ -711,7 +800,9 @@ void FactoryAnnex::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
     sp.zenith[0] = 0.10f; sp.zenith[1] = 0.08f; sp.zenith[2] = 0.16f;
     sp.horizon[0] = 0.55f; sp.horizon[1] = 0.34f; sp.horizon[2] = 0.24f;   // toffee dusk
     device.setSkyParams(sp);
-    device.setAmbient(0.055f, 0.048f, 0.065f);      // low aubergine ambient
+    device.setAmbient(0.072f, 0.062f, 0.082f);      // low aubergine ambient (Phase-5 lift:
+                                                    // real albedos are darker than the old
+                                                    // flat tints; blacks need a floor)
     device.setIblProbe(false);
     device.setIblIntensity(0.08f);
     device.setIblSpecular(0.9f);
@@ -771,17 +862,21 @@ bool runFactoryAnnexSelfTest() {
             "F1b shell entity/mesh counts + span in range");
     {
         // Phase-3 law: the per-room content spans are PINNED as each room
-        // lands (the Phase-2 all-zero pins flip room by room). Spans must be
-        // contiguous, in scene range, and exactly the authored sizes.
+        // lands. Phase 5: the Sorting arms + Tube capsule are load-if-present
+        // HERO slots — when the forge delivers, one prop entity becomes N
+        // drawable entities, so those two pins flex by the room's recorded
+        // hero prim counts (0 == procedural fallback == the Phase-3 numbers).
+        const uint32_t armN  = annex.room(3).heroArmPrims  ? annex.room(3).heroArmPrims  : 1u;
+        const uint32_t capsN = annex.room(4).heroCapsPrims ? annex.room(4).heroCapsPrims : 1u;
         struct Pin { uint32_t prop, glow; };
         const Pin want[FactoryAnnex::kFloorCount] = {
             { 6, 56 },   // A MIXTURE ATRIUM: 6 stir arms; 48 rim studs + 8 river glow
             { 40, 15 },  // B INVENTION WORKS: 8 movers + 24 slats + 8 gizmos;
                          //   5 studs + 8 organ keys + centrifuge + maybe-panel
             { 49, 4 },   // C FIZZ GALLERY: 40 bubbles + 9 fan blades; 4 collars
-            { 15, 56 },  // D SORTING HALL: 12 orbs + 2 arms + hatch;
+            { 12u + 2u * armN + 1u, 56 },   // D SORTING HALL: 12 orbs + 2 arms + hatch;
                          //   4 hatch rims + 52 sign strokes (25 + 27)
-            { 1, 17 },   // E TUBE JUNCTION: the capsule; 12 dais studs + 5 collars
+            { capsN, 17 },   // E TUBE JUNCTION: the capsule; 12 dais studs + 5 collars
         };
         bool pinsOk = true;
         for (uint32_t i = 0; i < annex.roomCount(); ++i) {
@@ -917,7 +1012,8 @@ bool runFactoryAnnexSelfTest() {
     // slides the hatch open (visual x moves the full 2.4 m slide).
     {
         const AnnexRoom& rD = annex.room(3);
-        const uint32_t hatch = rD.propEntFirst + 14;
+        const uint32_t armN = rD.heroArmPrims ? rD.heroArmPrims : 1u;
+        const uint32_t hatch = rD.propEntFirst + 12u + 2u * armN;
         const float x0 = scene.get(hatch).transform[12];
         annex.onTrigger((uint32_t)FactoryTrigger::SorterChute);
         faCheck(annex.chuteTripped(), "F9 chute trigger (310) latches");
@@ -1027,13 +1123,66 @@ bool runFactoryAnnexSelfTest() {
         faCheck(annex.room(0).visited, "F14b onTrigger is idempotent");
     }
 
-    // ---- F15: clean shutdown — every device create balanced by a destroy (the
-    // headless VMA-leak analogue), and the annex resets.
+    // ---- F16 (Phase 5): the load-if-present hero hooks. Every one of the 17
+    // hook sites (6 vats + 8 machine bodies + 1 capsule + 2 sorter arms) must
+    // have taken exactly one branch, and the helper must behave correctly in
+    // BOTH branches when probed directly: a missing GLB returns 0, tallies the
+    // fallback and authors NOTHING; a present GLB (a committed Glimvale mesh)
+    // authors >0 drawable entities and tallies present. The present-branch
+    // probe is skipped on an asset-less clone (dressing == 0 means no GLB
+    // resolved — the same graceful degradation the hooks themselves have).
+    {
+        faCheck(annex.heroHooksPresent() + annex.heroHooksFallback() == 17,
+                "F16 all 17 hero hook sites took exactly one branch");
+        std::vector<x3::rhi::MeshHandle> probeMeshes;
+        SurfaceLibrary probeSurf;
+        std::vector<x3::asset::Model> probeModels;
+        Scene probeScene;
+        std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
+        std::unique_ptr<x3::asset::IModelLoader> ld;
+        if (src->mountDir(convertedGlbRoot(), 0))
+            ld.reset(x3::asset::createModelLoader(&device, src.get()));
+        FactoryArtHooks probeArt;
+        probeArt.loader = ld.get();
+        probeArt.models = &probeModels;
+        FactoryRoomCtx probeCtx{ probeScene, device, *phys, probeMeshes,
+                                 probeSurf, 0.0f, 0.0f, nullptr, &probeArt };
+        const uint32_t ents0 = probeScene.size();
+        const int miss = heroHook(probeCtx, "FactoryProps/__NeverDelivered__.glb",
+                                  "F16MissProbe", 0, 0, 0, 0.0f, 1.0f, false, nullptr);
+        faCheck(miss == 0 && probeArt.heroFallback == 1 &&
+                probeScene.size() == ents0,
+                "F16b missing GLB: 0 entities, fallback branch tallied+logged");
+        if (annex.dressEntityCount() > 0) {
+            const int hit = heroHook(probeCtx, "Glimvale/SM_Stylized_Barrel.glb",
+                                     "F16HitProbe", 0, 0, 0, 0.0f, 1.0f, false, nullptr);
+            faCheck(hit > 0 && probeArt.heroPresent == 1 &&
+                    probeScene.size() == ents0 + (uint32_t)hit,
+                    "F16c present GLB: drawable entities, present branch tallied+logged");
+        } else {
+            x3::logWarn("[factory-test] F16c present-branch probe SKIPPED "
+                        "(no converted_glb assets on this clone)");
+        }
+        if (ld) for (auto& m : probeModels) ld->unload(m);
+    }
+
+    // ---- F15: clean shutdown. MESHES: every create balanced by a destroy
+    // (the headless VMA-leak analogue). TEXTURES: the model loader keeps a
+    // process-wide texture cache that DELIBERATELY retains one ref per unique
+    // GLB texture (the boot-time cache), so absolute zero only holds for
+    // meshes; for textures the honest assertion is the STEADY STATE — a full
+    // second build+shutdown cycle must not grow the live count by even one.
     {
         annex.shutdown(device);
-        faCheck(!annex.built() && annex.meshCount() == 0 &&
-                device.meshLive == 0 && device.texLive == 0,
-                "F15 shutdown frees every mesh/texture (create/destroy balance)");
+        const int texSteady = device.texLive;
+        faCheck(!annex.built() && annex.meshCount() == 0 && device.meshLive == 0,
+                "F15 shutdown frees every mesh (create/destroy balance)");
+        Scene scene2;
+        TriggerSystem trig2;
+        annex.build(scene2, device, *phys, trig2, /*shaftX*/0.0f, /*shaftZ*/0.0f);
+        annex.shutdown(device);
+        faCheck(device.meshLive == 0 && device.texLive == texSteady,
+                "F15b rebuild+shutdown holds steady state (no cumulative leak)");
     }
 
     phys->shutdown();

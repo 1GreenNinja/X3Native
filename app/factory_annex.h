@@ -30,8 +30,11 @@
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
+#include "engine/asset/IAssetSource.h"    // Phase 5: Glimvale dressing + hero hooks
+#include "engine/asset/IModelLoader.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -80,9 +83,32 @@ struct AnnexRoom {
     // The room keeps the world pointer it was built against for that one poke.
     x3::phys::IPhysicsWorld* physRef = nullptr;
     x3::phys::BodyId         hatchBody{};
+    // ---- Phase-5 hero hooks (load-if-present). When a StarForge hero GLB is
+    // found for an ANIMATED prop (the pneumatic capsule / the two sorter arms),
+    // the prop authors ONE Scene entity per GLB drawable instead of the single
+    // procedural mesh; the drawables' baked node transforms are kept here (16
+    // floats each, filled ONCE at build) so tick() re-poses obj * heroXf[i]
+    // with no per-frame heap. Counts are PER INSTANCE; 0 == procedural fallback
+    // (one entity per prop, exactly the Phase-3 shape).
+    std::vector<float> heroXf;
+    uint32_t heroArmPrims  = 0;   // Sorting Hall: drawables per sorter arm
+    uint32_t heroCapsPrims = 0;   // Tube Junction: drawables in the capsule
 };
 
 class FactoryAnnex;
+
+// Phase-5 art-pass services shared by every room hook: the GLB loader (Glimvale
+// dressing + StarForge hero hooks) and the branch tallies the self-test pins
+// (F16). `loader == nullptr` (mountDir failed / assets absent) means EVERY hook
+// takes its procedural-fallback branch — the annex still builds and the
+// headless self-test still passes on an asset-less clone.
+struct FactoryArtHooks {
+    x3::asset::IModelLoader*       loader = nullptr;
+    std::vector<x3::asset::Model>* models = nullptr;  // annex-owned; unloaded at shutdown
+    uint32_t heroPresent  = 0;    // hero hooks that found their GLB
+    uint32_t heroFallback = 0;    // hero hooks that ran the procedural fallback
+    uint32_t dressEntities = 0;   // Glimvale dressing entities authored
+};
 
 // Per-room authoring/animation context handed to the factory_rooms.cpp hooks so
 // Phase 3 can fill the five rooms without touching the annex core. `meshes` is
@@ -100,6 +126,8 @@ struct FactoryRoomCtx {
     // Floor A registers the confection river's water params through here
     // (points at the annex's m_river; see FactoryAnnex::riverWater()).
     x3::rhi::IRenderDevice::WaterParams* river = nullptr;
+    // Phase 5: model-loading services + tallies (never null after build()).
+    FactoryArtHooks* art = nullptr;
 };
 
 // The Confection Annex. Build once after device + physics + a TriggerSystem are
@@ -200,6 +228,13 @@ public:
     uint32_t meshCount() const { return (uint32_t)m_meshes.size(); }
     uint32_t entityFirst() const { return m_entFirst; }
     uint32_t entityCount() const { return m_entCount; }
+    // Phase-5 hero-hook / dressing tallies (self-test F16): how many of the 17
+    // load-if-present hero hooks (6 vats + 8 machine bodies + capsule + 2 sorter
+    // arms) found their GLB vs fell back, and how many Glimvale dressing
+    // entities were authored (0 on an asset-less clone — never a failure).
+    uint32_t heroHooksPresent()  const { return m_art.heroPresent; }
+    uint32_t heroHooksFallback() const { return m_art.heroFallback; }
+    uint32_t dressEntityCount()  const { return m_art.dressEntities; }
 
     // The annex's own point-light rig (one warm accent light per floor + the
     // bore's brass pair; built once at build(), static thereafter). The host
@@ -241,6 +276,14 @@ private:
     // e.g. the bore rib torus, instanced by all 13 ribs — are pushed ONCE).
     std::vector<x3::rhi::MeshHandle> m_meshes;
     SurfaceLibrary                   m_surf;
+    // Phase-5 GLB services: loader + every Model kept alive for its device
+    // meshes/textures. shutdown() unloads each Model (mesh buffers freed, the
+    // loader's process-wide texture cache keeps its own refs — steady-state,
+    // asserted by F15's double build/shutdown).
+    std::unique_ptr<x3::asset::IAssetSource> m_assets;
+    std::unique_ptr<x3::asset::IModelLoader> m_loader;
+    std::vector<x3::asset::Model>            m_models;
+    FactoryArtHooks                          m_art;
 
     // Animated shell spans (contiguous; tick() pokes emissive[3] in place).
     uint32_t m_ribGlowFirst  = 0, m_ribGlowCount  = 0;   // bore brass ribs

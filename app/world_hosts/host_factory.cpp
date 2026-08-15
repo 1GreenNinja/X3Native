@@ -89,7 +89,7 @@ int hostFactory(HostContext& hc) {
     elev.buildVisuals(fascene, *device);
     // The elevator hands the WORLD's air back when the rider steps out — tell
     // it what this world's air IS (matches annex.applyAtmosphere).
-    elev.setWorldAtmosphere(0.055f, 0.048f, 0.065f, 0.08f);
+    elev.setWorldAtmosphere(0.072f, 0.062f, 0.082f, 0.08f);
 
     // ---- Roof-burst FX: GPU debris + CombatFx, wired HERE (the elevator is
     // render-pure; onRoofShatter is the host's hook — Phase-1 handoff note).
