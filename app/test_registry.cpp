@@ -154,6 +154,7 @@
 #include "mine_fx.h"
 #include "wetness.h"
 #include "storm.h"
+#include "precip_fx.h"
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
 #include "speaking_monster.h"    // x3::apphost::SpeakingMonster (--demo-dialog)
 
@@ -1087,6 +1088,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(EoS arch-glow bake varies + fixture census + light complement + "
                     "deep-core brightest + teardown)...");
         return x3::game::runMineFxSelfTest() ? 0 : 1;
+    }
+    if (tf.testPrecip) {
+        x3::logInfo("running PRECIPITATION self-test "
+                    "(camera-local volume + recycle + intensity scales COUNT not speed + "
+                    "rain/snow fall-speed split + determinism + NEGATIVE CONTROL)...");
+        return x3::game::runPrecipSelfTest() ? 0 : 1;
     }
     if (tf.testStorm) {
         x3::logInfo("running LIGHTNING + THUNDER self-test "

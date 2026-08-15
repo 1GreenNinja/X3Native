@@ -216,6 +216,7 @@ public:
     // Underwater caustics (mesh.frag; rides the SsaoControl caustics lane).
     void setCaustics(const CausticsParams& c) override;
     void setWetness(const WetnessParams& w) override;
+    void setSnowCover(float cover) override;
 
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override;
@@ -2887,6 +2888,7 @@ private:
         // Surface wetness (setWetness): all zero when no host opted in -> the
         // mesh.frag gate never opens (dry worlds byte-identical).
         glm::vec4 wetness;      // x = amount, y = porosity, z = puddles, w = min roughness
+        glm::vec4 precip;       // x = lying-snow cover 0..1, yzw reserved
     };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.
@@ -3427,6 +3429,7 @@ private:
     FogParams               m_fogParams{};       // enabled=false -> fog pass never recorded
     CausticsParams          m_caustics{};        // enabled=false -> mesh.frag caustics gate stays shut
     WetnessParams           m_wetness{};         // amount=0 -> mesh.frag wetness gate stays shut
+    float                   m_snowCover = 0.0f;  // 0 -> terrain snow band is altitude-only
     GradeParams             m_gradeParams{};     // strength=0 -> composite grade block inert
     FilmicParams            m_filmic{};          // enabled=false -> composite filmic block inert
     uint32_t                m_filmicFrame = 0;   // per-frame grain-seed advance (the crawl)

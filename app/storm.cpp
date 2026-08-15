@@ -78,6 +78,7 @@ void StormSystem::strike(float intensity) {
     s.soundInS   = d / m_cfg.soundSpeed;
     s.bearingRad = randUnit() * 2.0f * kPi;
     s.played     = false;
+    s.isEcho     = false;
 
     // The flash fires NOW, at a brightness that falls off with distance. Not
     // inverse-square: the sky is a diffuse reflector, so a far strike still
@@ -172,6 +173,37 @@ void StormSystem::tick(float dt, float intensity, x3::audio::IAudioSystem* audio
         // farther it travelled, the more of the top end the air took.
         const float pitch = 1.05f - 0.25f * far01;
         audio->playSound3D(x3::audio::SoundHandle{ id }, px, py, pz, vol, pitch);
+
+        // ---- THE ROLL ---------------------------------------------------
+        // Thunder is not a point source. The channel is MILES long, so sound
+        // from the far end of it arrives seconds after sound from the near end,
+        // from a measurably different direction. That spread is what makes a
+        // storm feel like it is happening around you rather than at you -- one
+        // bang, however loud, is a firework.
+        //
+        // So a distant strike schedules ECHO TAILS: the same voice re-fired a
+        // moment later, quieter, further along the channel's bearing. Near
+        // strikes get none, because at half a mile the whole channel arrives
+        // essentially at once and a crack is genuinely a crack.
+        if (!isNear && !s.isEcho && m_rumble) {
+            const uint32_t tails = 2;
+            for (uint32_t k = 1; k <= tails; ++k) {
+                uint32_t slot2 = kMaxStrikesInFlight;
+                for (uint32_t j = 0; j < kMaxStrikesInFlight; ++j)
+                    if (m_flight[j].played || m_flight[j].soundInS <= 0.0f) { slot2 = j; break; }
+                if (slot2 >= kMaxStrikesInFlight) break;
+                LightningStrike& t = m_flight[slot2];
+                t.distanceM = s.distanceM * (1.0f + 0.18f * (float)k);
+                // Fired as a strike already in flight, with NO flash: the light
+                // is long gone. Only the sound is still arriving.
+                t.soundInS  = (0.55f + 0.5f * (float)k) * (0.7f + randUnit() * 0.6f);
+                // Walk the bearing along the channel. This is the stereo: the
+                // roll sweeps across you instead of sitting in one speaker.
+                t.bearingRad = s.bearingRad + (randUnit() - 0.5f) * 1.4f;
+                t.played = false;
+                t.isEcho = true;
+            }
+        }
     }
 }
 

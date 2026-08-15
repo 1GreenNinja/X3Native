@@ -259,6 +259,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-vehparts") o.testVehParts = true;
         else if (a == "--test-csm") o.testCsm = true;   // Lane 3: cascaded shadow maps (no GPU needed)
         else if (a == "--test-minefx") o.testMineFx = true;   // mines lane: entrance census + glow bake (no GPU needed)
+        else if (a == "--test-precip")  o.testPrecip  = true; // falling snow/rain: camera-local volume, recycle, flutter (no GPU needed)
         else if (a == "--test-storm")   o.testStorm   = true; // lightning + thunder: flash shape, travel delay (no GPU/audio needed)
         else if (a == "--test-wetness") o.testWetness = true; // wetness lane: soak/dry asymmetry + ice + grip (no GPU needed)
         else if (a == "--test-geolod") o.testGeoLod = true;   // Lane 5: mesh LOD + vertex compression (no GPU needed)

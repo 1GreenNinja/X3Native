@@ -49,6 +49,7 @@ struct CliOptions {
          testMineFx = false,
          testWetness = false,   // --test-wetness: rain soak/dry, ice hysteresis, tire grip
          testStorm   = false,   // --test-storm: lightning flash shape + thunder travel delay
+         testPrecip  = false,   // --test-precip: falling snow/rain, camera-local volume
          testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,

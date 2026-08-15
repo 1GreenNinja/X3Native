@@ -2151,6 +2151,9 @@ void VulkanRenderDevice::prepareFrameData() {
             // an instruction on it and every existing capture is unchanged.
             sc.wetness  = glm::vec4(m_wetness.amount, m_wetness.porosity,
                                     m_wetness.puddles, m_wetness.minRough);
+            // LYING SNOW (setSnowCover): 0 leaves the terrain snow band exactly
+            // as it was before this lane existed -- altitude-only, no weather.
+            sc.precip   = glm::vec4(m_snowCover, 0.0f, 0.0f, 0.0f);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }

@@ -20,6 +20,7 @@
 #include "../weather.h"
 #include "../wetness.h"
 #include "../storm.h"
+#include "../precip_fx.h"
 #include "../hud.h"
 // stb_image: file-local static copy (the cinematic.cpp / descent_slide.cpp
 // recipe — the engine's implementation is file-local in ModelLoader.cpp, so each
@@ -43,6 +44,17 @@
 #include <cstring>    // std::strlen (pause-overlay centering)
 
 namespace x3 { namespace apphost {
+
+// ONE upward ray finds the roof over the camera. Cheap (a single static-layer
+// query per frame) and GENERAL -- it knows nothing about tunnels, so it will do
+// the same job under a bridge, an overpass or a gas-station canopy the day those
+// exist, with no new code. Returns a huge value under open sky.
+static float skyVisibleAt(x3::phys::IPhysicsWorld& phys, float x, float y, float z) {
+    const x3::phys::RayHit h = phys.rayCastStrict(
+        x3::phys::Vec3{ x, y + 0.5f, z }, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+        60.0f, x3::phys::Layer::Static);
+    return h.hit ? 0.0f : 1.0f;
+}
 
 int hostTunnel(HostContext& hc) {
     auto* device = hc.device;
@@ -119,6 +131,9 @@ int hostTunnel(HostContext& hc) {
     x3::game::Weather weather;
     x3::game::WetnessModel wetness;
     x3::game::StormSystem storm;
+    x3::game::PrecipFx precip;
+    x3::game::PrecipKind precipKind = x3::game::PrecipKind::None;
+    float precipAmt = 0.0f;
     bool weatherOn = false;
     {
         const char* e = std::getenv("X3_WEATHER");
@@ -126,6 +141,7 @@ int hostTunnel(HostContext& hc) {
         if (weatherOn) {
             weather.setBiome(x3::game::Biome::Temperate);
             storm.reset();
+            precip.init(x3::game::PrecipConfig{});
             if (e && std::strcmp(e, "storm") == 0)      weather.forceState(x3::game::WeatherState::Storm, true);
             else if (std::strcmp(e, "rain")  == 0)      weather.forceState(x3::game::WeatherState::Rain,  true);
             else if (std::strcmp(e, "fog")   == 0)      weather.forceState(x3::game::WeatherState::Fog,   true);
@@ -135,6 +151,32 @@ int hostTunnel(HostContext& hc) {
                 // purpose. Asking for snow asks for a snowfield.
                 weather.setBiome(x3::game::Biome::Snow);
                 weather.forceState(x3::game::WeatherState::Snow, true);
+            }
+            // PRIME THE GROUND. Snow accumulates at an inch an HOUR, which is the
+            // right rate and a useless one to start a session on: arriving in a
+            // blizzard on bare grass and waiting forty real minutes for it to go
+            // white is not a demo, it is a screensaver. So the integrator is
+            // fast-forwarded before the first frame -- the same model, the same
+            // maths, just run ahead, exactly as loading a save would.
+            //
+            // It keeps accumulating live from there, which is the point: you
+            // arrive somewhere that HAS weather rather than somewhere weather is
+            // about to start, and it still deepens while you drive.
+            {
+                float primeIn = 0.0f;
+                if (const char* pe = std::getenv("X3_SNOW_IN")) primeIn = (float)std::atof(pe);
+                else if (weather.sample().snowfall) primeIn = 2.6f;   // a settled fall
+                if (primeIn > 0.0f) {
+                    const x3::game::WeatherSample& p = weather.sample();
+                    // 1 s steps: coarse enough to prime a whole night in a blink,
+                    // fine enough that the freeze/thaw hysteresis still resolves.
+                    for (int i = 0; i < 60 * 60 * 24 && wetness.snowDepthIn() < primeIn; ++i)
+                        wetness.tick(1.0f, p.precipitation, p.tempC, p.snowfall);
+                    char pb[128];
+                    std::snprintf(pb, sizeof(pb), "weather: primed %.1f in of lying snow",
+                                  wetness.snowDepthIn());
+                    x3::logInfo(pb);
+                }
             }
             x3::logInfo(std::string("weather: ON (") +
                         x3::game::weatherStateName(weather.sample().state) + " in " +
@@ -320,9 +362,43 @@ int hostTunnel(HostContext& hc) {
                 streamer.update(scene, *device, *phys, fx, cam[2]);
                 phys->step(dt);
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 68.0f);
+
+                // THE CAPTURE LOOP NEEDS THE WEATHER TOO. This settle loop is
+                // entirely separate from the interactive one below, so wiring
+                // weather into only the latter left every screenshot a clear
+                // summer afternoon no matter what was forced -- which is exactly
+                // how you ship a feature nobody can see.
+                if (weatherOn) {
+                    weather.tick(dt);
+                    const x3::game::WeatherSample& ws = weather.sample();
+                    wetness.tick(dt, ws.precipitation, ws.tempC, ws.snowfall);
+                    storm.tick(dt, ws.state == x3::game::WeatherState::Storm ? ws.hazardLevel : 0.0f,
+                               nullptr, cam[0], cam[1], cam[2]);
+                    x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
+                    sp.enabled = true;
+                    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
+                    sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
+                    sp.exposure = ws.sky.exposure + storm.flash();
+                    device->setSkyParams(sp);
+                    x3::rhi::IRenderDevice::WetnessParams wp{};
+                    wp.amount = wetness.wetness() * (1.0f - wetness.snowCover());
+                    device->setWetness(wp);
+                    device->setSnowCover(wetness.snowCover());
+                    precip.update(dt,
+                                  ws.snowfall ? x3::game::PrecipKind::Snow
+                                              : (ws.precipitation > 0.0f ? x3::game::PrecipKind::Rain
+                                                                         : x3::game::PrecipKind::None),
+                                  ws.precipitation, cam[0], cam[1], cam[2], 0.0f, 0.0f,
+                                  skyVisibleAt(*phys, cam[0], cam[1], cam[2]));
+                }
+
                 if (i == kFrames - 1) device->armCapture(out.c_str());
                 auto frame = device->beginFrame();
-                if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
+                if (frame.valid) {
+                    scene.render(*device, frame);
+                    if (carBuilt) car.render(frame);
+                    if (weatherOn) precip.submit(*device, frame);
+                }
 
                 device->endFrame(frame);
             }
@@ -512,6 +588,19 @@ int hostTunnel(HostContext& hc) {
             wp.minRough = 0.06f - 0.03f * wetness.iciness();
             wp.puddles  = 1.0f - 0.7f * wetness.iciness();
             device->setWetness(wp);
+
+            // LYING SNOW -> the terrain snowline. Brings the white DOWN the
+            // range rather than whitening everything at once.
+            device->setSnowCover(wetness.snowCover());
+            // The falling half is updated further down, once the CAMERA is
+            // solved -- the volume must centre on the eye, not on the car, or a
+            // chase-cam offset leaves a metre of snow hanging behind your own
+            // viewpoint. Stash what it needs.
+            precipKind = ws.snowfall ? x3::game::PrecipKind::Snow
+                                     : (ws.precipitation > 0.0f ? x3::game::PrecipKind::Rain
+                                                                : x3::game::PrecipKind::None);
+            precipAmt  = ws.precipitation;
+
         }
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         const float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
@@ -723,6 +812,9 @@ int hostTunnel(HostContext& hc) {
             static float fovNow = 72.0f;
             fovNow += (want - fovNow) * std::min(1.0f, fdt * 3.0f);   // smooth
             device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
+            if (weatherOn)
+                precip.update(fdt, precipKind, precipAmt, cx, cy, cz, 0.0f, 0.0f,
+                              skyVisibleAt(*phys, cx, cy, cz));
         }
         auto frame = device->beginFrame();
         if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
@@ -772,6 +864,11 @@ int hostTunnel(HostContext& hc) {
                 device->drawHudImage(frame, texGate, gcx - gw * 0.5f,
                                      gcy + R + R * 0.12f, gw, gh, white);
             }
+
+            // FALLING SNOW / RAIN. Submitted here, inside the frame: the device
+            // adds no particle pass at all when the count is zero, so clear
+            // weather costs literally nothing.
+            if (weatherOn) precip.submit(*device, frame);
 
             // THE THERMOMETER, beside the speedo. Only when weather is running:
             // a gauge pinned at a constant is worse than no gauge, because it

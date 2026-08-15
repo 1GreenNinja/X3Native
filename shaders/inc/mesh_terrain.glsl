@@ -301,8 +301,25 @@ TerrainSplat terrainSplatWeights(vec3 wpos, vec3 wn) {
 
     // Snow cap on the high ranges: prefers flatter ground (slides off cliffs);
     // suppressed over the volcanic east (basalt stays dark).
-    s.snow = clamp(smoothstep(kSnowBottom, kSnowFull, hN)
-                 * smoothstep(0.55, 0.80, slope)
+    // WEATHER LOWERS THE SNOWLINE. The altitude band below is the permanent
+    // one -- the cap these peaks wear in fair weather. A snowstorm does not
+    // paint the world white uniformly; it brings the LINE DOWN, so the tops go
+    // first and the valleys go last, because height is cold. Watching the white
+    // come down the mountain as it settles is the whole effect, and it is what
+    // uniform whitening throws away.
+    //
+    // At full cover the band bottoms out below sea level, so even flat ground
+    // is under it -- but it arrives there LAST, having swept down the range.
+    float snowW = clamp(ssao.precip.x, 0.0, 1.0);
+    float snowBot = mix(kSnowBottom, -8.0,  snowW);
+    float snowTop = mix(kSnowFull,   20.0,  snowW);
+    // Deep snow also holds on ground it would otherwise slide off. Relaxing the
+    // slope gate is what lets it climb the cutting walls and the road banks
+    // instead of leaving them bare in a whiteout.
+    float slopeLo = 0.55 - 0.28 * snowW;
+    float slopeHi = 0.80 - 0.22 * snowW;
+    s.snow = clamp(smoothstep(snowBot, snowTop, hN)
+                 * smoothstep(slopeLo, slopeHi, slope)
                  * (1.0 - s.volc), 0.0, 1.0);
 
     // ---- Slope rock: overrides whatever band where the surface is steep. ----

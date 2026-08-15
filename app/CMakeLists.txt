@@ -191,6 +191,7 @@ add_library(x3app SHARED
     street_lights.cpp
     wetness.cpp         # rain soak/dry + ice + tire grip (wetness lane)
     storm.cpp           # lightning flash + delayed thunder (weather lane)
+    precip_fx.cpp       # falling snow + rain, camera-local volume (weather lane)
     mine_fx.cpp         # the mine-entrance family (Armory rock + glowing mouth)
     vehparts.cpp
     csm_test.cpp

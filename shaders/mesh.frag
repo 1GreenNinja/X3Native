@@ -128,6 +128,12 @@ layout(set = 3, binding = 1) uniform SsaoControl {
     uvec4 terrainNrm; // xy = the two packs (see above), zw = reserved
     // ---- Surface wetness (setWetness; amount 0 = gate shut, byte-identical) ----
     vec4 wetness;     // x = amount (0..1 soak), y = porosity, z = puddles, w = min roughness
+    // ---- Lying snow (setSnowCover). x = 0..1 ground cover; 0 = gate shut and
+    // the terrain snow band is EXACTLY the altitude-only one it has always been,
+    // so every existing capture is byte-identical. Appended at the tail for the
+    // same reason terrainNrm was: glass.frag declares this buffer only as far as
+    // `caustics` and must stay a valid std140 prefix.
+    vec4 precip;      // x = snow cover, yzw = reserved
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR

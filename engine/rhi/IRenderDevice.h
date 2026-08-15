@@ -390,6 +390,13 @@ public:
         float minRough  = 0.06f;  // roughness a fully-soaked surface converges to
     };
     virtual void setWetness(const WetnessParams&) {}
+
+    // LYING SNOW, 0..1 ground cover (app/wetness.h WetnessModel::snowCover()).
+    // Brings the terrain's SNOWLINE down rather than whitening the world flat:
+    // the tops go first and the valleys go last, because height is cold, and
+    // watching the white come down the range is the effect. 0 (the default)
+    // leaves the permanent altitude-only snow cap exactly as it was.
+    virtual void setSnowCover(float) {}
     // Filmic grade + split-tone + vignette in the composite pass, master-lerped by
     // `strength` (0 = bit-identical passthrough — the shader never enters the block).
     struct GradeParams {

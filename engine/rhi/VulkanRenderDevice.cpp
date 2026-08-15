@@ -679,6 +679,9 @@ void VulkanRenderDevice::setFilmic(const FilmicParams& f) { m_filmic = f; }
 // control UBO (SsaoControl caustics lane) by prepareFrameData.
 void VulkanRenderDevice::setCaustics(const CausticsParams& c) { m_caustics = c; }
 void VulkanRenderDevice::setWetness(const WetnessParams& w) { m_wetness = w; }
+void VulkanRenderDevice::setSnowCover(float cover) {
+    m_snowCover = cover < 0.0f ? 0.0f : (cover > 1.0f ? 1.0f : cover);
+}
 
 void VulkanRenderDevice::setMetalAmbient(float sIn) {
         const float s = m_cvarOv.applyMetalAmbient(sIn);   // CLI --set latch

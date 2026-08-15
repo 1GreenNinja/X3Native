@@ -47,6 +47,11 @@ struct LightningStrike {
     float soundInS    = 0.0f;   // seconds until the thunder lands (counts down)
     float bearingRad  = 0.0f;   // where on the horizon, for 3D placement
     bool  played      = false;  // its thunder has fired
+    // Is this an ECHO TAIL rather than the strike itself? Tails must not spawn
+    // tails of their own -- without this flag the roll cascades and the sky
+    // never stops rumbling. They also carry no flash: the light is long gone by
+    // the time the far end of the channel is heard.
+    bool  isEcho      = false;
 };
 
 struct StormConfig {
