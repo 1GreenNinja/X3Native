@@ -8,6 +8,7 @@
 //
 // See app/tunnel_corridor.h for the technique + the clean-room BL provenance.
 #include "world_host_common.h"
+#include "host_shell.h"                  // console (~), pause menu (ESC), FPS (F3)
 #include "engine/core/IJobSystem.h"
 #include "engine/physics/IVehicle.h"
 #include "../scene.h"
@@ -266,9 +267,59 @@ int hostTunnel(HostContext& hc) {
     double prevTime = glfwGetTime();
     float camYaw = std::atan2(route.dirZ, route.dirX), camPitch = -0.10f;
     int lastW = (int)W, lastH = (int)H;
-    x3::logInfo("--world tunnel: WASD drives, Space handbrake, mouse orbits the chase cam, Esc quits");
+    x3::logInfo("--world tunnel: WASD drives, Space handbrake, mouse orbits the chase cam, "
+                "~ console, ESC menu, SHIFT+ESC quits");
 
-    while (!glfwWindowShouldClose(window)) {
+    // ---- DEV SHELL: console, pause menu, FPS -------------------------------
+    // The reason the whole vehicle-feel pass was slow: every torque figure, grip
+    // scale and centre-of-mass nudge cost an edit-rebuild-relaunch-drive-back
+    // cycle, and those are values you have to judge by feel, one at a time. They
+    // are all live now.
+    HostShell shell;
+    shell.attach(hc);
+    if (auto* con = shell.console()) {
+        shell.addFloatCommand("car_torque", "peak engine torque, Nm (stock 2400)",
+            [&](float v) { x3::phys::WheeledTuning t; t.maxEngineTorque = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_redline", "engine redline, rpm (stock 7500)",
+            [&](float v) { x3::phys::WheeledTuning t; t.maxEngineRPM = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_grip", "tyre grip multiplier (stock 5.2; 1 = Jolt's economy tyre)",
+            [&](float v) { x3::phys::WheeledTuning t; t.gripScale = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_mass", "chassis mass, kg (stock 1300)",
+            [&](float v) { x3::phys::WheeledTuning t; t.massKg = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_brake", "brake torque, Nm, all wheels",
+            [&](float v) { x3::phys::WheeledTuning t; t.brakeTorque = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_ride", "ride-height delta, m (negative lowers)",
+            [&](float v) { x3::phys::WheeledTuning t; t.rideHeightDelta = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_springfreq", "suspension spring frequency, Hz",
+            [&](float v) { x3::phys::WheeledTuning t; t.suspensionFreq = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_springdamp", "suspension damping ratio",
+            [&](float v) { x3::phys::WheeledTuning t; t.suspensionDamp = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_boost", "flat torque multiplier over the whole curve",
+            [&](float v) { car.setTorqueBoost(v); });
+        shell.addToggleCommand("car_tc", "traction control (also bound to T)",
+            [&]{ return car.tractionControl(); },
+            [&](bool on) { car.setTractionControl(on); });
+        con->registerCommand("car_reset", [&](const std::vector<std::string>&) {
+            car.setTorqueBoost(1.0f);
+            x3::phys::WheeledTuning t;
+            t.maxEngineTorque = 2400.0f; t.maxEngineRPM = 7500.0f;
+            t.gripScale = 5.2f; t.massKg = 1300.0f;
+            car.applyTuning(t);
+            con->print("car back to the shipped 993 Turbo numbers");
+        }, "restore the stock vehicle tune");
+        con->registerCommand("car", [&](const std::vector<std::string>&) {
+            char b[256];
+            std::snprintf(b, sizeof(b),
+                          "gear %d  %.0f rpm  %.0f mph  boost x%.2f  TC %s",
+                          car.gear(), (double)car.engineRPM(),
+                          (double)(std::fabs(car.forwardSpeed()) * 2.23694f),
+                          (double)car.torqueBoost(),
+                          car.tractionControl() ? "on" : "off");
+            con->print(b);
+        }, "print the car's live state");
+    }
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         // RE-SUBMIT THE BORE LIGHTS EVERY FRAME. They were set exactly ONCE at boot
         // (setPointLights above), which is why the tunnel is lit in headless captures
         // — those render a few frames with nothing else touching the light set — and
@@ -277,81 +328,45 @@ int hostTunnel(HostContext& hc) {
         // content, and the light array does not survive that. Cheap: 6 cached lights.
         device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
         glfwPollEvents();
-        // ESC OPENS THE MENU, IT DOES NOT QUIT. Tim was losing his session every
-        // time he reached for it. ESC toggles a PAUSE: the sim stops, the cursor
-        // is released so the window can be moved/alt-tabbed, and driving resumes
-        // on the next press. SHIFT+ESC is the deliberate way out, so quitting
-        // stays possible but can no longer happen by reflex.
-        //
-        // THE OVERLAY IS NOT DECORATION. The first cut of this paused silently —
-        // it only logged to a console the player is not looking at — and a paused
-        // game is pixel-identical to a hung one. Tim hit ESC, got a live window
-        // that ignored the throttle, and reported "The car doesnt move AT ALL".
-        // A mode the player cannot see is a freeze with extra steps, so the state
-        // is drawn on the glass, along with the keys that leave it.
-        {
-            static bool escWasDown = false, paused = false;
-            const bool escDown = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-            const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
-                            || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
-            if (escDown && !escWasDown) {
-                if (shift) break;                      // SHIFT+ESC = quit
-                paused = !paused;
-                glfwSetInputMode(window, GLFW_CURSOR,
-                                 paused ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
-                x3::logInfo(paused ? "[tunnel] PAUSED — ESC resumes, SHIFT+ESC quits"
-                                   : "[tunnel] resumed");
-            }
-            escWasDown = escDown;
-            if (paused) {
-                // Present the frame so the window stays live, but do not advance
-                // the sim or read drive input.
-                auto pf = device->beginFrame();
-                if (pf.valid) {
-                    scene.render(*device, pf);
-                    if (carBuilt) car.render(pf);
+        shell.beginFrame();
 
-                    int pw = 0, ph = 0; glfwGetFramebufferSize(window, &pw, &ph);
-                    const float fw = (float)pw, fh = (float)ph;
-
-                    // Dim the world so the menu reads as a layer above it.
-                    const float scrim[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
-                    device->drawHudQuad(pf, 0.0f, 0.0f, fw, fh, scrim);
-
-                    // Glyph cell is square and fixed for the mono role, so the
-                    // legacy N*px centering math is exact.
-                    auto centered = [&](const char* s, float px, float y, const float c[4]) {
-                        const float w = (float)std::strlen(s) * px;
-                        device->drawHudText(pf, s, (fw - w) * 0.5f, y, px, c);
-                    };
-
-                    const float title[4] = { 1.00f, 0.93f, 0.72f, 1.0f };
-                    const float body [4] = { 0.86f, 0.88f, 0.92f, 1.0f };
-                    const float dim  [4] = { 0.55f, 0.58f, 0.64f, 1.0f };
-
-                    const float tp = std::floor(fh * 0.055f);   // title glyph px
-                    const float bp = std::floor(fh * 0.026f);   // body  glyph px
-                    float y = fh * 0.34f;
-
-                    centered("PAUSED", tp, y, title);            y += tp * 2.2f;
-                    centered("ESC          resume driving", bp, y, body); y += bp * 1.8f;
-                    centered("SHIFT + ESC  quit to desktop", bp, y, body); y += bp * 2.4f;
-                    centered("the sim is stopped - this is not a freeze", bp * 0.85f, y, dim);
-                }
-                device->endFrame(pf);
-                continue;
-            }
-        }
+        // ESC OPENS THE MENU, IT DOES NOT QUIT — the shell owns that now, along
+        // with the console and the FPS overlay. This host used to hand-roll the
+        // pause by polling glfwGetKey and tracking its own `escWasDown` edge,
+        // which drops a press any time a frame runs longer than the keypress.
+        // The shell edge-detects in the GLFW key CALLBACK instead, so a press
+        // cannot be missed no matter how long the frame took.
         const double now = glfwGetTime();
         float fdt = (float)(now - prevTime); prevTime = now;
         if (fdt > 0.1f) fdt = 0.1f;
+
+        if (shell.paused()) {
+            // Present so the window stays live, but do not advance the sim.
+            auto pf = device->beginFrame();
+            if (pf.valid) {
+                scene.render(*device, pf);
+                if (carBuilt) car.render(pf);
+                shell.draw(pf, fdt);
+            }
+            device->endFrame(pf);
+            continue;
+        }
+
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         const float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
         lastMX = mx; lastMY = my;
-        camYaw += ddx * 0.0025f; camPitch -= ddy * 0.0025f;
-        if (camPitch >  1.2f) camPitch =  1.2f;
-        if (camPitch < -1.2f) camPitch = -1.2f;
-        auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+        // Do not steer the camera with the mouse while the console has it — the
+        // cursor is released to click, and the view would spin as you reach for
+        // the scrollback.
+        if (!shell.consoleOpen()) {
+            camYaw += ddx * 0.0025f; camPitch -= ddy * 0.0025f;
+            if (camPitch >  1.2f) camPitch =  1.2f;
+            if (camPitch < -1.2f) camPitch = -1.2f;
+        }
+        // shell.key(), not glfwGetKey(): returns false while the console or the
+        // menu owns the keyboard, so typing `car_grip 6` no longer also steers
+        // right, brakes and applies the handbrake.
+        auto kd = [&](int k){ return shell.key(k); };
 
         x3::phys::VehicleInput in;
         if (carBuilt) {
@@ -644,13 +659,17 @@ int hostTunnel(HostContext& hc) {
                     device->drawHudQuad(frame, x0 + i * (lw + gp), y0, lw, lh, c4);
                 }
             }
-            {   // key hints, on screen, because this host has no console
+            {   // Key hints on the glass. A binding nobody can see does not
+                // exist: T toggled traction control for a whole session while
+                // the only mention of it went to a log file.
                 const float hp = R * 0.085f;
-                const float hc[4] = { 0.52f, 0.57f, 0.66f, 1.0f };
-                device->drawHudText(frame, "T  TRACTION",  gcx - R * 0.95f,
-                                    gcy - R * 1.52f, hp, hc);
+                const float hcol[4] = { 0.52f, 0.57f, 0.66f, 1.0f };
+                device->drawHudText(frame, "~  CONSOLE",      gcx - R * 0.95f,
+                                    gcy - R * 1.64f, hp, hcol);
+                device->drawHudText(frame, "T  TRACTION",     gcx - R * 0.95f,
+                                    gcy - R * 1.52f, hp, hcol);
                 device->drawHudText(frame, "SPACE  HANDBRAKE", gcx - R * 0.95f,
-                                    gcy - R * 1.40f, hp, hc);
+                                    gcy - R * 1.40f, hp, hcol);
             }
             {
                 const bool tcOn = car.tractionControl();
@@ -662,6 +681,7 @@ int hostTunnel(HostContext& hc) {
                                     gcy - R * 1.30f, px, c4);
             }
         }
+        shell.draw(frame, fdt);      // console + FPS/stats, over everything
         device->endFrame(frame);
     }
 
