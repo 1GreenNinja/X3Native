@@ -30,10 +30,28 @@
 
 namespace x3::game {
 
+// THE CROSS-SECTION, in the units Tim gave it (feet), converted once here.
+//
+//      |<--------------------- 88 ft paved --------------------->|
+//      | 20 ft apron |  12 | 12 | 12 | 12  (4 lanes) | 20 ft apron |
+//                    |<------- 48 ft running -------->|
+//
+// The APRONS are load-bearing, not trim: Tim asked for "HUGE cement aprons on
+// the side.. that you can pull a dead car on to". A car is ~15 ft long, so 20 ft
+// of shoulder is the width where that is actually true rather than nearly true.
+constexpr float kLaneFt      = 12.0f;   // US freeway standard
+constexpr int   kLaneCount   = 4;
+constexpr float kApronFt     = 20.0f;   // each side; a dead car is ~15 ft
+constexpr float kFtToM       = 0.3048f;
+constexpr float kRunningHalfM = (kLaneFt * (float)kLaneCount * 0.5f) * kFtToM;  // 24 ft
+constexpr float kPavedHalfM   = kRunningHalfM + kApronFt * kFtToM;              // 44 ft
+
 // One authored route: a centreline in world XZ. Y is derived from the terrain.
 struct RoadSpec {
     std::string name  = "road";
-    float halfWidth   = 8.0f;    // full-depth carve half-width (m)
+    // Carve half-width. Must cover the FULL paved width or the apron's outer
+    // edge lands on uncut ground and the shoulder tilts into the hillside.
+    float halfWidth   = kPavedHalfM + 1.0f;
     float falloff     = 14.0f;   // smoothstep run outward from halfWidth (m)
     float maxGrade    = 0.07f;   // 7% — a real mountain highway's ceiling
     std::vector<float> x, z;     // centreline nodes, world (same length, >= 2)

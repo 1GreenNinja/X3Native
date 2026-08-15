@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 
 namespace x3::game {
@@ -209,8 +210,10 @@ RoadBuildResult registerInnerRing() {
     constexpr float kInnerRadiusM = 3842.0f;
     constexpr uint32_t kInnerNodes = 396;
     RoadSpec s = makeRingRoad("inner tour", -592.0f, -352.0f, kInnerRadiusM, kInnerNodes);
-    s.halfWidth = 8.0f;
-    s.falloff   = 14.0f;
+    // 88 ft of pavement: 4 x 12 ft lanes plus a 20 ft cement apron each side,
+    // wide enough to pull a dead car fully clear of the running surface.
+    s.halfWidth = kPavedHalfM + 1.0f;   // +1 m so the apron edge sits on cut ground
+    s.falloff   = 18.0f;                // a wider road wants a longer batter
     s.maxGrade  = 0.07f;
     return registerRoad(s);
 }
@@ -261,6 +264,43 @@ bool runRoadNetworkSelfTest() {
         std::snprintf(d, sizeof(d), "highest carved centreline point %.0f ft at node %.0f",
                       worst * kMToFt, worstAt);
         check(worst < 1e8f, "N5 the carved centreline is sampleable end to end", d);
+    }
+
+    // ---- N6: what does the registry actually COST per height query? --------
+    // The cap went 16 -> 192, and the early-out is a bbox test per REGISTERED
+    // corridor paid on every query whether or not one is near. Terrain
+    // generation makes millions of queries, so this number decides whether a
+    // spatial index is engineering or premature optimisation. Measure it.
+    {
+        const size_t kProbes = 400000;
+        // A patch of open country far from the ring: the WORST case, because
+        // every corridor is rejected by bbox and none early-exits sooner.
+        auto timeDelta = [&](const char* tag) {
+            const auto t0 = std::chrono::steady_clock::now();
+            float sink = 0.0f;
+            for (size_t i = 0; i < kProbes; ++i) {
+                const float a = (float)i * 0.017f;
+                sink += terrainCorridorDelta(60000.0f + std::cos(a) * 500.0f,
+                                             60000.0f + std::sin(a) * 500.0f);
+            }
+            const auto t1 = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            char b[200];
+            std::snprintf(b, sizeof(b), "[roadnet]   %s: %.1f ms for %zu queries = %.1f ns each%s",
+                          tag, ms, kProbes, ms * 1e6 / (double)kProbes,
+                          sink == 0.0f ? "" : "");
+            x3::logInfo(b);
+            return ms;
+        };
+        const double withRing = timeDelta("13 corridors (the ring)");
+        clearTerrainCorridors();
+        const double empty = timeDelta("0 corridors (baseline)");
+        const double perCorridorNs = (withRing - empty) * 1e6 / (double)kProbes / 13.0;
+        std::snprintf(d, sizeof(d),
+            "%.1f ns per corridor per query; at the 192 cap that is %.0f ns/query, "
+            "%.0f ms per million",
+            perCorridorNs, perCorridorNs * 192.0, perCorridorNs * 192.0 / 1000.0);
+        check(perCorridorNs * 192.0 < 2000.0, "N6 the registry scan is affordable at the cap", d);
     }
 
     clearTerrainCorridors();
