@@ -1,0 +1,11 @@
+{ "rig_task_id": "01a00620-435f-7ab9-b77b-11f3b56ad08f", "prefix": "BossTheSiren",
+  "clips": [
+    { "name": "Idle",        "action_id": 0   },
+    { "name": "Walk",        "action_id": 1   },
+    { "name": "Run",         "action_id": 14  },
+    { "name": "Attack",      "action_id": 4   },
+    { "name": "Attack2",     "action_id": 97  },
+    { "name": "Death",       "action_id": 8   },
+    { "name": "Hitreaction", "action_id": 178 },
+    { "name": "Taunt",       "action_id": 308 }
+  ] }

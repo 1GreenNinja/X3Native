@@ -1,0 +1,74 @@
+[
+  {
+    "name": "Idle",
+    "action_id": 0,
+    "task_id": "01a00622-43a9-7b5d-b11a-4f780ad884ad",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/overlord\\OverLordEnforcer99_Idle.glb"
+  },
+  {
+    "name": "Walk",
+    "action_id": 106,
+    "task_id": "01a00622-45cc-7b5e-843a-1a3fcdb7c558",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/overlord\\OverLordEnforcer99_Walk.glb"
+  },
+  {
+    "name": "Run",
+    "action_id": 16,
+    "task_id": "01a00622-4749-7d3a-9ebc-0ac341272331",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/overlord\\OverLordEnforcer99_Run.glb"
+  },
+  {
+    "name": "Attack",
+    "action_id": 4,
+    "task_id": "01a00622-490e-7b44-afb6-aa85cf002e1e",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/overlord\\OverLordEnforcer99_Attack.glb"
+  },
+  {
+    "name": "Attack2",
+    "action_id": 128,
+    "task_id": "01a00622-4ac9-7b45-838b-5c2b2a62db37",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/overlord\\OverLordEnforcer99_Attack2.glb"
+  },
+  {
+    "name": "Death",
+    "action_id": 8,
+    "task_id": "01a00622-4c4f-7b64-9ba8-d195b46e3933",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/overlord\\OverLordEnforcer99_Death.glb"
+  },
+  {
+    "name": "Hitreaction",
+    "action_id": 178,
+    "task_id": "01a00622-4de8-764b-94b6-1cc5415b9a2d",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/overlord\\OverLordEnforcer99_Hitreaction.glb"
+  },
+  {
+    "name": "Taunt",
+    "action_id": 88,
+    "task_id": "01a00622-4fda-7b65-9c59-57467856fe20",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/overlord\\OverLordEnforcer99_Taunt.glb"
+  }
+]

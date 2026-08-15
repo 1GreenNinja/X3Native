@@ -654,6 +654,11 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
               true,  2.2f,  500, 18, 3.2f, true,  0.35f, 0.40f, 0.50f },  // dark node
             { "F5 Boss: Swarm Controller", "Swarm Controller",  "DroneOscillating.glb",
               false, 1.9f,  560, 20, 3.4f, true,  0.90f, 0.70f, 0.30f },  // amber swarm
+            // NOTE: the Meshy re-rig grew him. The old 19-bone skeleton spanned
+            // 1.476 m, the new 24-bone one spans 2.006 m, and the engine scales by
+            // bone span — so this same 1.5f now renders 3.01 m where it used to
+            // render 2.21 m. KEPT DELIBERATELY (Tim, 8/15): the bigger Overseer
+            // reads better as the F6 boss. Drop to 1.1f to restore the old size.
             { "F6 Boss: Alien Overseer",   "Alien Overseer",    "OverLordEnforcer99.glb",
               false, 1.5f,  640, 22, 3.3f, false, 0.80f, 0.75f, 0.90f },  // pale violet
             { "F7 Boss: Jake's Clone",     "Jake's Clone",      "Jake_22_actions.glb",

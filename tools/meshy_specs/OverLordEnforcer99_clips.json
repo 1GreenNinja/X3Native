@@ -1,0 +1,11 @@
+{ "rig_task_id": "01a0061f-5298-7a8d-970c-647c2e84b0b9", "prefix": "OverLordEnforcer99",
+  "clips": [
+    { "name": "Idle",        "action_id": 0   },
+    { "name": "Walk",        "action_id": 106 },
+    { "name": "Run",         "action_id": 16  },
+    { "name": "Attack",      "action_id": 4   },
+    { "name": "Attack2",     "action_id": 128 },
+    { "name": "Death",       "action_id": 8   },
+    { "name": "Hitreaction", "action_id": 178 },
+    { "name": "Taunt",       "action_id": 88  }
+  ] }
