@@ -1161,9 +1161,192 @@ void tickRoomSorting(Scene& scene, AnnexRoom& room, float t) {
 }
 
 // ============================================================================
-// FLOOR E (y=54) — THE TUBE JUNCTION (Task 11): lands with its task.
+// FLOOR E (y=54) — THE TUBE JUNCTION + burst lobby (Task 11)
 // ============================================================================
-void buildRoomTube     (FactoryRoomCtx& ctx, AnnexRoom& room) { (void)ctx; (void)room; }
-void tickRoomTube      (Scene& scene, AnnexRoom& room, float t) { (void)scene; (void)room; (void)t; }
+// Five glass transport tubes (1.2 m dia) fan from the west wall base up to the
+// ceiling; a pneumatic brass capsule whooshes along a fixed 4-point polyline
+// (6 m/s, 2 s pauses at both ends, ping-pong; arrival bumps eventCount for the
+// host's doorThunk cue). Center: the GOLDEN BURST DAIS under the roof
+// extension — trigger 312 arms the keypad hint ("the roof is not the limit —
+// 9999", already wired in host_factory's HUD title). Trigger 313 marks the
+// tube boarding platform. All local offsets; capsule motion is deterministic
+// in t, so tick() carries no integration state.
+constexpr float kTubeBase[5][2] = {   // (z at x=-19, floor end)
+    { -16.0f, 0 }, { -8.0f, 0 }, { 0.0f, 0 }, { 8.0f, 0 }, { 16.0f, 0 },
+};
+constexpr float kTubeTopZ[5] = { -10.0f, -5.0f, 0.0f, 5.0f, 10.0f };
+constexpr float kCapsPath[4][3] = {   // local {x, y-above-base, z}
+    { -17.5f, 1.6f, -13.0f }, { -12.0f, 4.2f, -6.0f },
+    {  -8.5f, 7.2f,  2.0f }, {  -6.5f, 9.8f,  8.5f },
+};
+constexpr float kCapsSpeed = 6.0f, kCapsPause = 2.0f;
+
+// Capsule path metrics (compile-time-ish; computed on first use, POD only).
+inline float capsSegLen(int i) {
+    const float dx = kCapsPath[i + 1][0] - kCapsPath[i][0];
+    const float dy = kCapsPath[i + 1][1] - kCapsPath[i][1];
+    const float dz = kCapsPath[i + 1][2] - kCapsPath[i][2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+inline float capsTotalLen() { return capsSegLen(0) + capsSegLen(1) + capsSegLen(2); }
+
+void buildRoomTube(FactoryRoomCtx& ctx, AnnexRoom& room) {
+    Scene& s = ctx.scene;
+    const float ax = ctx.centerX, az = ctx.centerZ, y0 = room.baseY;   // 54
+    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "mw_metal_trim_b");
+    const SurfaceSet& sIron  = ctx.surf.get(ctx.device, "mw_metal_panels_a");
+    constexpr float kGold[3] = { 1.00f, 0.84f, 0.30f };
+
+    // ---- The five glass tubes: tilted near-clear cylinders, wall to ceiling.
+    for (int i = 0; i < 5; ++i) {
+        const float bx = ax - 19.0f, bz = az + kTubeBase[i][0], by = y0 + 0.3f;
+        const float tx = ax - 6.0f,  tz = az + kTubeTopZ[i],    ty = y0 + 10.7f;
+        float dyv[3] = { tx - bx, ty - by, tz - bz };
+        const float len = std::sqrt(dyv[0]*dyv[0] + dyv[1]*dyv[1] + dyv[2]*dyv[2]);
+        dyv[0] /= len; dyv[1] /= len; dyv[2] /= len;
+        // Basis: local +Y along the tube axis; +X level (up x axis), +Z = X x Y.
+        float xA[3] = { dyv[2], 0.0f, -dyv[0] };
+        const float xl = std::sqrt(xA[0]*xA[0] + xA[2]*xA[2]);
+        xA[0] /= xl; xA[2] /= xl;
+        const float zA[3] = { xA[1]*dyv[2] - xA[2]*dyv[1],
+                              xA[2]*dyv[0] - xA[0]*dyv[2],
+                              xA[0]*dyv[1] - xA[1]*dyv[0] };
+        x3::prims::PrimMesh pm = x3::prims::makeCylinder(0.6f, 0.6f, len * 0.5f, 18);
+        Entity e;
+        e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                       pm.index.data(), (uint32_t)pm.index.size());
+        ctx.meshes.push_back(e.mesh);
+        e.baseColor[0] = 0.72f; e.baseColor[1] = 0.88f; e.baseColor[2] = 0.94f;
+        e.baseColor[3] = 1.0f;
+        e.transparent = true;
+        e.glass.opacity = 0.055f; e.glass.refraction = 0.010f;
+        e.glass.roughness = 0.05f; e.glass.specular = 0.6f;
+        e.glass.tint[0] = 0.72f; e.glass.tint[1] = 0.88f; e.glass.tint[2] = 0.94f;
+        e.tag = (uint32_t)Tag::Static;
+        makeXform(e.transform, xA, dyv, zA,
+                  (bx + tx) * 0.5f, (by + ty) * 0.5f, (bz + tz) * 0.5f);
+        s.add(e);
+        // Wall socket at the base (brass) — the tube visibly PLUGS IN.
+        addBox(ctx, bx - 0.1f, by + 0.4f, bz, 0.35f, 0.95f, 0.95f, 0.0f,
+               &sBrass, kBrassTint);
+    }
+    // ---- The boarding platform (trigger 313's volume sits over it).
+    {
+        addBox(ctx, ax - 12.0f, y0 + 0.15f, az - 12.0f, 2.0f, 0.15f, 2.0f, 0.0f,
+               &sIron, kDarkIron);
+        ctx.physics.addBox({ 2.0f, 0.15f, 2.0f }, { ax - 12.0f, y0 + 0.15f, az - 12.0f },
+                           0.0f, x3::phys::Layer::Static);
+    }
+    // ---- The golden burst dais: a brass ring torus around the cab opening.
+    {
+        x3::prims::PrimMesh pm = x3::prims::makeTorus(3.2f, 0.16f, 48, 10);
+        Entity e;
+        e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                       pm.index.data(), (uint32_t)pm.index.size());
+        ctx.meshes.push_back(e.mesh);
+        if (sBrass.ok) { e.tex = sBrass.albedo; e.normalTex = sBrass.normal; e.mrTex = sBrass.mr; }
+        e.baseColor[0] = kGold[0] * 0.8f; e.baseColor[1] = kGold[1] * 0.8f;
+        e.baseColor[2] = kGold[2] * 0.8f; e.baseColor[3] = 1.0f;
+        e.emissive[0] = kGold[0]; e.emissive[1] = kGold[1]; e.emissive[2] = kGold[2];
+        e.emissive[3] = 0.35f;
+        e.tag = (uint32_t)Tag::Static;
+        const float xA[3] = { 1, 0, 0 }, yA[3] = { 0, 0, -1 }, zA[3] = { 0, 1, 0 };
+        makeXform(e.transform, xA, yA, zA, ax, y0 + 0.18f, az);
+        s.add(e);
+    }
+
+    // ---- PROP SPAN: the pneumatic capsule (ONE entity; pose = path formula).
+    room.propEntFirst = s.size();
+    {
+        x3::prims::PrimMesh pm = x3::prims::makeCylinder(0.30f, 0.30f, 0.45f, 14);
+        Entity e;
+        e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                       pm.index.data(), (uint32_t)pm.index.size());
+        ctx.meshes.push_back(e.mesh);
+        if (sBrass.ok) { e.tex = sBrass.albedo; e.normalTex = sBrass.normal; e.mrTex = sBrass.mr; }
+        e.baseColor[0] = kBrassTint[0]; e.baseColor[1] = kBrassTint[1];
+        e.baseColor[2] = kBrassTint[2]; e.baseColor[3] = 1.0f;
+        e.emissive[0] = kBrassGlow[0]; e.emissive[1] = kBrassGlow[1];
+        e.emissive[2] = kBrassGlow[2]; e.emissive[3] = 0.45f;
+        e.tag = (uint32_t)Tag::Prop;
+        yawXform(e.transform, 0.0f, ax + kCapsPath[0][0], y0 + kCapsPath[0][1],
+                 az + kCapsPath[0][2]);
+        s.add(e);
+    }
+    room.propEntCount = s.size() - room.propEntFirst;
+
+    // ---- GLOW SPAN: 12 dais studs (chase) + 5 tube base collars ------------
+    room.glowEntFirst = s.size();
+    for (int i = 0; i < 12; ++i)
+        addRingGlow(ctx, ax, y0 + 0.32f, az, 3.2f, ((float)i / 12.0f) * kTwoPi,
+                    0.22f, 0.05f, 0.07f, kGold, 0.9f);
+    for (int i = 0; i < 5; ++i)
+        addGlow(ctx, ax - 18.7f, y0 + 1.75f, az + kTubeBase[i][0],
+                0.10f, 0.10f, 0.75f, 0.0f, room.accent, 1.6f);
+    room.glowEntCount = s.size() - room.glowEntFirst;
+}
+
+void tickRoomTube(Scene& scene, AnnexRoom& room, float t) {
+    if (room.propEntCount == 0) return;
+    const float ax = room.centerX, az = room.centerZ, y0 = room.baseY;
+    // ---- Capsule: 6 m/s along the polyline, 2 s pause at each end, ping-pong.
+    // Deterministic in t: phase -> arclength s -> segment -> pose.
+    const float L = capsTotalLen();
+    const float T = L / kCapsSpeed;
+    const float P = 2.0f * (T + kCapsPause);
+    const float phase = std::fmod(t, P);
+    float sArc; int phState;                      // 0 pause@0, 1 fwd, 2 pause@L, 3 back
+    if      (phase < kCapsPause)            { sArc = 0.0f; phState = 0; }
+    else if (phase < kCapsPause + T)        { sArc = (phase - kCapsPause) * kCapsSpeed; phState = 1; }
+    else if (phase < 2.0f * kCapsPause + T) { sArc = L; phState = 2; }
+    else                                    { sArc = L - (phase - 2.0f * kCapsPause - T) * kCapsSpeed; phState = 3; }
+    int seg = 0;
+    float s0 = 0.0f;
+    while (seg < 2 && sArc > s0 + capsSegLen(seg)) { s0 += capsSegLen(seg); ++seg; }
+    const float segL = capsSegLen(seg);
+    const float u = segL > 1e-5f ? (sArc - s0) / segL : 0.0f;
+    float d[3] = { kCapsPath[seg + 1][0] - kCapsPath[seg][0],
+                   kCapsPath[seg + 1][1] - kCapsPath[seg][1],
+                   kCapsPath[seg + 1][2] - kCapsPath[seg][2] };
+    const float dl = std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+    d[0] /= dl; d[1] /= dl; d[2] /= dl;
+    // Basis: +Y along travel; +X level; +Z = X x Y (det +1).
+    float xA[3] = { d[2], 0.0f, -d[0] };
+    const float xl = std::sqrt(xA[0]*xA[0] + xA[2]*xA[2]);
+    xA[0] /= (xl > 1e-5f ? xl : 1.0f); xA[2] /= (xl > 1e-5f ? xl : 1.0f);
+    const float zA[3] = { xA[1]*d[2] - xA[2]*d[1],
+                          xA[2]*d[0] - xA[0]*d[2],
+                          xA[0]*d[1] - xA[1]*d[0] };
+    Entity& cap = scene.get(room.propEntFirst);
+    makeXform(cap.transform, xA, d, zA,
+              ax + kCapsPath[seg][0] + (kCapsPath[seg + 1][0] - kCapsPath[seg][0]) * u,
+              y0 + kCapsPath[seg][1] + (kCapsPath[seg + 1][1] - kCapsPath[seg][1]) * u,
+              az + kCapsPath[seg][2] + (kCapsPath[seg + 1][2] - kCapsPath[seg][2]) * u);
+    // Arrival edge (fwd -> pause@L, back -> pause@0): bump the host's cue
+    // counter once per docking. stateB remembers the previous phase state.
+    if ((float)phState != room.stateB) {
+        const int prev = (int)room.stateB;
+        if ((prev == 1 && phState == 2) || (prev == 3 && phState == 0)) {
+            room.eventCount += 1;
+            const int endIdx = (phState == 2) ? 3 : 0;
+            room.eventPos[0] = ax + kCapsPath[endIdx][0];
+            room.eventPos[1] = y0 + kCapsPath[endIdx][1];
+            room.eventPos[2] = az + kCapsPath[endIdx][2];
+        }
+        room.stateB = (float)phState;
+    }
+    // Glow: the dais studs run a golden CHASE (the burst invitation); the tube
+    // collars breathe cyan.
+    for (uint32_t i = 0; i < room.glowEntCount; ++i) {
+        Entity& e = scene.get(room.glowEntFirst + i);
+        if (i < 12) {
+            const int lead = (int)(t * 6.0f) % 12;
+            const int dist = ((int)i - lead + 12) % 12;
+            e.emissive[3] = (dist == 0) ? 1.8f : (dist < 3 ? 0.9f : 0.35f);
+        } else {
+            e.emissive[3] = 1.3f + 0.5f * std::sin(t * 1.1f + (float)i * 1.9f);
+        }
+    }
+}
 
 } // namespace x3::game

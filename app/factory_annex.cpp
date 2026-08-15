@@ -781,7 +781,7 @@ bool runFactoryAnnexSelfTest() {
             { 49, 4 },   // C FIZZ GALLERY: 40 bubbles + 9 fan blades; 4 collars
             { 15, 56 },  // D SORTING HALL: 12 orbs + 2 arms + hatch;
                          //   4 hatch rims + 52 sign strokes (25 + 27)
-            { 0, 0 },    // E (Task 11)
+            { 1, 17 },   // E TUBE JUNCTION: the capsule; 12 dais studs + 5 collars
         };
         bool pinsOk = true;
         for (uint32_t i = 0; i < annex.roomCount(); ++i) {
@@ -924,6 +924,35 @@ bool runFactoryAnnexSelfTest() {
         for (int i = 0; i < 60 * 3; ++i) annex.tick(dt, scene);   // 3 s > 1.5 + 0.8
         const float slid = scene.get(hatch).transform[12] - x0;
         faCheck(slid > 2.3f, "F9b hatch slides open after the 1.5 s stand-on beat");
+    }
+
+    // ---- F10: the pneumatic capsule traverses AND pauses — over one full
+    // cycle it must show both sustained motion and a >= 1.8 s dock stillness,
+    // never leave the tube-fan corner, and bump the docking event counter.
+    {
+        const AnnexRoom& rE = annex.room(4);
+        const uint32_t cap = rE.propEntFirst;
+        const uint32_t ev0 = rE.eventCount;
+        float px = scene.get(cap).transform[12];
+        float py = scene.get(cap).transform[13];
+        float stillRun = 0.0f, bestStill = 0.0f;
+        bool moved = false, inBounds = true;
+        for (int i = 0; i < 60 * 20; ++i) {              // 20 s > one full cycle
+            annex.tick(dt, scene);
+            const float x = scene.get(cap).transform[12];
+            const float y = scene.get(cap).transform[13];
+            const float step = std::fabs(x - px) + std::fabs(y - py);
+            if (step < 1e-5f) { stillRun += dt; if (stillRun > bestStill) bestStill = stillRun; }
+            else              { stillRun = 0.0f; moved = true; }
+            const float lx = x - rE.centerX;
+            if (lx < -18.5f || lx > -5.5f || y < rE.baseY + 1.0f || y > rE.baseY + 10.5f)
+                inBounds = false;
+            px = x; py = y;
+        }
+        faCheck(moved && bestStill >= 1.8f && inBounds,
+                "F10 capsule traverses the polyline with 2 s dock pauses");
+        faCheck(annex.room(4).eventCount > ev0,
+                "F10b capsule docking bumps the host cue counter");
     }
 
     // ---- F11: all 10 triggers registered with the exact 300-313 id map.
