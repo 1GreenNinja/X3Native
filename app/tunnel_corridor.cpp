@@ -315,15 +315,74 @@ float TunnelRoute::roadYAt(float s) const {
     return st.back().roadY;
 }
 
+// P1 — THE FRAME FOLLOWS THE POLYLINE.
+//
+// These three were `origin + dir * s` against ONE route heading, which is what
+// made every corridor a straight run. The stations always carried their own
+// x/z/s, so the polyline was in the data the whole time; the frame just did not
+// read it. (The CARVE never had this limitation — terrain.h calls
+// TerrainCorridor "the polyline generalization of the river carve" and unions a
+// capsule per segment, crease-free, with --test-terraincorridor C4 proving the
+// joints. Only this layer was straight.)
+//
+// STRAIGHT ROUTES MUST COME OUT BIT-IDENTICAL. Every station of a straight route
+// lies on `origin + dir * s` by construction, so interpolating between two of
+// them along arc length returns the same point, and the segment tangent is dir.
+// That is not a hope — --test-tunnelmouth (7/7) and --test-tunneldrive both run
+// the straight demo route and would move if it were not so.
+
+// Locate s in the station polyline. Returns the index of the segment END node
+// (>= 1) and the 0..1 parameter along it. Extrapolates on the end segments so
+// s outside [0, totalLen] runs straight out along that end's heading — the
+// approach cuttings and the portal sweeps both rely on that.
+void TunnelRoute::segmentAt(float s, uint32_t& outI, float& outT) const {
+    const size_t n = st.size();
+    if (n < 2) { outI = 1; outT = 0.0f; return; }
+    if (s <= st[1].s) {                       // before/inside the first segment
+        const float d = std::max(1e-4f, st[1].s - st[0].s);
+        outI = 1; outT = (s - st[0].s) / d; return;
+    }
+    for (size_t i = 2; i < n; ++i) {
+        if (s <= st[i].s) {
+            const float d = std::max(1e-4f, st[i].s - st[i-1].s);
+            outI = (uint32_t)i; outT = (s - st[i-1].s) / d; return;
+        }
+    }
+    const float d = std::max(1e-4f, st[n-1].s - st[n-2].s);   // past the end
+    outI = (uint32_t)(n - 1); outT = (s - st[n-2].s) / d;
+}
+
+void TunnelRoute::tangentAt(float s, float& outTx, float& outTz) const {
+    if (st.size() < 2) { outTx = dirX; outTz = dirZ; return; }
+    uint32_t i; float t;
+    segmentAt(s, i, t);
+    float tx = st[i].x - st[i-1].x, tz = st[i].z - st[i-1].z;
+    const float len = std::sqrt(tx*tx + tz*tz);
+    if (len < 1e-5f) { outTx = dirX; outTz = dirZ; return; }   // degenerate node pair
+    outTx = tx / len; outTz = tz / len;
+}
+
 void TunnelRoute::posAt(float s, float out[3]) const {
-    out[0] = ox + dirX * s;
-    out[2] = oz + dirZ * s;
+    if (st.size() < 2) { out[0] = ox + dirX * s; out[2] = oz + dirZ * s; out[1] = roadYAt(s); return; }
+    uint32_t i; float t;
+    segmentAt(s, i, t);
+    out[0] = st[i-1].x + (st[i].x - st[i-1].x) * t;
+    out[2] = st[i-1].z + (st[i].z - st[i-1].z) * t;
     out[1] = roadYAt(s);
 }
 
 void TunnelRoute::worldAt(float s, float lat, float& outX, float& outZ) const {
-    outX = ox + dirX * s + (-dirZ) * lat;
-    outZ = oz + dirZ * s + ( dirX) * lat;
+    if (st.size() < 2) {
+        outX = ox + dirX * s + (-dirZ) * lat;
+        outZ = oz + dirZ * s + ( dirX) * lat;
+        return;
+    }
+    float p[3]; posAt(s, p);
+    float tx, tz; tangentAt(s, tx, tz);
+    // Right of travel is (-tz, +tx) in this convention — the same sign the
+    // straight form used with dir, so lateral offsets keep their meaning.
+    outX = p[0] + (-tz) * lat;
+    outZ = p[2] + ( tx) * lat;
 }
 
 // ---------------------------------------------------------------------------
@@ -440,10 +499,32 @@ void deriveRoute(const RouteSeed& seed, TunnelRoute& route, TerrainCorridor& c) 
     // spacing of longitudinal reach makes the linear interpolation an upper
     // bound in practice; step 4 then stops arguing and proves it.
     route.st.resize(kRouteNodes);
+
+    // PASS 1 — LAY THE SPINE. Every station's (s, x, z) is written BEFORE
+    // anything reads the frame.
+    //
+    // This used to be one loop that called route.worldAt() to place each station
+    // while the station array was still being filled. That was harmless while
+    // worldAt was `origin + dir * s` and ignored the array — and it became a
+    // circular read the moment the frame started following the polyline
+    // (P1): resize() zero-initialises the stations, so worldAt was interpolating
+    // between zeroes and the whole route landed at the origin. Both tunnel gates
+    // caught it immediately.
+    //
+    // Splitting the passes is also what makes CURVED routes authorable: pass 1
+    // is now the only place a spine is defined, so a future curved seed writes
+    // x/z here and everything downstream follows without further change.
     for (int i = 0; i < kRouteNodes; ++i) {
         TunnelStation& n = route.st[i];
         n.s = ds * (float)i;
-        route.worldAt(n.s, 0.0f, n.x, n.z);
+        // The seed spine is straight: centre-relative, along the seed heading.
+        n.x = route.ox + route.dirX * n.s;
+        n.z = route.oz + route.dirZ * n.s;
+    }
+
+    // PASS 2 — SAMPLE THE GROUND against the finished spine.
+    for (int i = 0; i < kRouteNodes; ++i) {
+        TunnelStation& n = route.st[i];
         n.ground = tunnelNaturalHeightAt(n.x, n.z);
         n.latMin = n.latMax = n.ground;
         // SAMPLE THE GROUND AT THE RESOLUTION THE INVARIANT IS CHECKED AT.
@@ -2301,6 +2382,128 @@ bool runTunnelDriveSelfTest() {
     clearTerrainPortalHoles();
     setPortalCutEnv(true);
     x3::logInfo("[tunneldrive] " + std::to_string(passN) + " passed, " +
+                std::to_string(failN) + " failed");
+    return failN == 0;
+}
+
+
+// ---------------------------------------------------------------------------
+// runRouteFrameSelfTest (--test-routeframe) — P1's gate.
+//
+// The road network rests on TunnelRoute's frame following its polyline, so that
+// capability gets its own test rather than being implied by the tunnel gates
+// (which only ever drive a STRAIGHT route and so cannot see a curve at all).
+//
+// Two halves, and the first matters as much as the second:
+//   * a straight route must still match the old closed form EXACTLY, because
+//     every existing gate depends on that;
+//   * a curved route must actually follow its arc, with a frame that stays
+//     perpendicular through the bend.
+// ---------------------------------------------------------------------------
+bool runRouteFrameSelfTest() {
+    int passN = 0, failN = 0;
+    auto check = [&](bool ok, const char* name, const char* detail = nullptr) {
+        std::string m = std::string(ok ? "PASS " : "FAIL ") + name;
+        if (detail && *detail) m += std::string(" — ") + detail;
+        if (ok) { ++passN; x3::logInfo("[routeframe] " + m); }
+        else    { ++failN; x3::logError("[routeframe] " + m); }
+    };
+    char d[256];
+
+    // ---- A) STRAIGHT: identical to origin + dir * s ------------------------
+    {
+        TunnelRoute r;
+        r.ox = -592.0f; r.oz = -352.0f;
+        r.dirX = -0.92388f; r.dirZ = 0.38268f;
+        const int N = 32; const float ds = 20.645f;
+        r.st.resize(N);
+        for (int i = 0; i < N; ++i) {
+            r.st[i].s = ds * (float)i;
+            r.st[i].x = r.ox + r.dirX * r.st[i].s;
+            r.st[i].z = r.oz + r.dirZ * r.st[i].s;
+            r.st[i].roadY = 40.0f;
+        }
+        r.totalLen = ds * (float)(N - 1);
+        float worstPos = 0.0f, worstLat = 0.0f;
+        for (float s = -40.0f; s <= r.totalLen + 40.0f; s += 0.5f) {
+            float p[3]; r.posAt(s, p);
+            worstPos = std::max(worstPos, std::fabs(p[0] - (r.ox + r.dirX * s)));
+            worstPos = std::max(worstPos, std::fabs(p[2] - (r.oz + r.dirZ * s)));
+            for (float lat : { -8.8f, 0.0f, 6.0f }) {
+                float wx, wz; r.worldAt(s, lat, wx, wz);
+                worstLat = std::max(worstLat, std::fabs(wx - (r.ox + r.dirX*s + (-r.dirZ)*lat)));
+                worstLat = std::max(worstLat, std::fabs(wz - (r.oz + r.dirZ*s + ( r.dirX)*lat)));
+            }
+        }
+        std::snprintf(d, sizeof(d), "worst posAt %.4f ft, worst worldAt %.4f ft (incl. extrapolation past both ends)",
+                      worstPos * 3.28084f, worstLat * 3.28084f);
+        check(worstPos < 0.01f && worstLat < 0.01f,
+              "F1 STRAIGHT route is unchanged by the polyline frame", d);
+    }
+
+    // ---- B) CURVED: follows the arc, frame stays perpendicular -------------
+    {
+        // A quarter circle of radius 400 m — a sweeper, not a hairpin.
+        const float R = 400.0f;
+        TunnelRoute r;
+        const int N = 32;
+        r.st.resize(N);
+        float acc = 0.0f, px = R, pz = 0.0f;
+        for (int i = 0; i < N; ++i) {
+            const float a = (3.14159265f * 0.5f) * (float)i / (float)(N - 1);
+            const float x = R * std::cos(a), z = R * std::sin(a);
+            if (i > 0) acc += std::sqrt((x-px)*(x-px) + (z-pz)*(z-pz));
+            r.st[i].x = x; r.st[i].z = z; r.st[i].s = acc; r.st[i].roadY = 0.0f;
+            px = x; pz = z;
+        }
+        r.totalLen = acc;
+        r.ox = r.st[0].x; r.oz = r.st[0].z;
+        r.dirX = 0.0f; r.dirZ = 1.0f;
+
+        // The sampled centreline must lie ON the circle. Chord sag between
+        // 32 nodes over a quarter arc is the only expected error.
+        float worstR = 0.0f;
+        for (float s = 0.0f; s <= r.totalLen; s += 0.5f) {
+            float p[3]; r.posAt(s, p);
+            worstR = std::max(worstR, std::fabs(std::sqrt(p[0]*p[0] + p[2]*p[2]) - R));
+        }
+        std::snprintf(d, sizeof(d), "worst radial error %.2f ft over a %.0f ft radius arc (chord sag)",
+                      worstR * 3.28084f, R * 3.28084f);
+        check(worstR < 2.0f, "F2 CURVED route follows its arc", d);
+
+        // The frame must stay perpendicular: a lateral offset moves the point
+        // RADIALLY, so the offset centreline is a concentric arc.
+        //
+        // SIGN: this arc runs counterclockwise (from (R,0) toward (0,R)), so at
+        // (R,0) the tangent is +Z and "right of travel" — (-tz, +tx) — points
+        // at the ORIGIN. A positive lateral offset therefore moves INWARD, and
+        // the expected radius is R - lat, not R + lat. Writing it the wrong way
+        // round first produced a 131.65 ft error at a 66 ft offset, which is
+        // 2 x lat exactly: the signature of a sign flip, and the reason this
+        // check earns its place rather than just restating the implementation.
+        float worstPerp = 0.0f;
+        for (float s = 1.0f; s <= r.totalLen - 1.0f; s += 0.5f) {
+            for (float lat : { -20.0f, 20.0f }) {
+                float wx, wz; r.worldAt(s, lat, wx, wz);
+                const float got = std::sqrt(wx*wx + wz*wz);
+                worstPerp = std::max(worstPerp, std::fabs(got - (R - lat)));
+            }
+        }
+        std::snprintf(d, sizeof(d), "worst %.2f ft at +-66 ft lateral — a constant offset stays parallel to the arc",
+                      worstPerp * 3.28084f);
+        check(worstPerp < 2.5f, "F3 the frame stays PERPENDICULAR through the bend", d);
+
+        // And the tangent must actually turn: 90 degrees end to end.
+        float t0x, t0z, t1x, t1z;
+        r.tangentAt(0.0f, t0x, t0z);
+        r.tangentAt(r.totalLen, t1x, t1z);
+        const float dot = t0x*t1x + t0z*t1z;
+        const float deg = std::acos(std::max(-1.0f, std::min(1.0f, dot))) * 57.29578f;
+        std::snprintf(d, sizeof(d), "tangent turns %.1f deg end to end (expected ~90)", deg);
+        check(deg > 80.0f && deg < 100.0f, "F4 the TANGENT turns with the road", d);
+    }
+
+    x3::logInfo("[routeframe] " + std::to_string(passN) + " passed, " +
                 std::to_string(failN) + " failed");
     return failN == 0;
 }

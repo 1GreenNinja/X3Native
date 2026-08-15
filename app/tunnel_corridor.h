@@ -179,7 +179,17 @@ struct TunnelStation {
 // The chosen route + everything derived from it. Filled by registerRoute().
 struct TunnelRoute {
     std::vector<TunnelStation> st;
-    float dirX = 1.0f, dirZ = 0.0f;   // unit XZ heading (constant — a straight run)
+    // MEAN heading of the whole route (node 0 -> last node), unit XZ.
+    //
+    // This used to be THE heading: posAt/worldAt were `origin + dir * s`, which
+    // made every route a straight run by construction. The stations always
+    // carried their own x/z/s, so the polyline was already in the data — the
+    // frame simply ignored it. It no longer does; see tangentAt().
+    //
+    // Kept because a route still has a useful overall bearing (spawn facing,
+    // chase-camera rest yaw in host_tunnel.cpp) and because for a straight route
+    // it IS the tangent everywhere, so nothing that reads it changes.
+    float dirX = 1.0f, dirZ = 0.0f;
     float ox = 0.0f, oz = 0.0f;       // world XZ of node 0 (s = 0)
     // The route's OWN origin. posAt() used to read file-scope constants, which is
     // what pinned the module to exactly one tunnel; carrying them per route is
@@ -210,8 +220,22 @@ struct TunnelRoute {
     float roadYAt(float s) const;
     void  posAt(float s, float out[3]) const;   // {x, roadY, z}
     // (s, lateral offset) -> world XZ. `lat` is metres right of the direction
-    // of travel. The corridor is a straight run, so the frame is constant.
+    // of travel, using the LOCAL tangent at s — so the frame follows the
+    // polyline instead of being constant, and a lateral offset stays
+    // perpendicular to the road through a bend.
     void  worldAt(float s, float lat, float& outX, float& outZ) const;
+
+    // Unit XZ tangent at arc length s, from the station polyline. Clamped to
+    // the end segments, so extrapolating past either end runs straight out
+    // along that end's heading — which is what the approach cuttings rely on.
+    // For a straight route this returns dirX/dirZ at every s.
+    void  tangentAt(float s, float& outTx, float& outTz) const;
+
+    // Which polyline segment arc-length s falls in: outI is the END node index
+    // (>= 1), outT the 0..1 parameter along that segment. Extrapolates on the
+    // end segments rather than clamping, so the approach cuttings keep running
+    // straight out past the last node.
+    void  segmentAt(float s, uint32_t& outI, float& outT) const;
 };
 
 // The PRE-corridor surface at world (x,z). terrainHeightAtWorld() applies the
@@ -278,6 +302,13 @@ TunnelSpec demoTunnelSpec();
 // Streams the real terrain (headless device), builds the real road/shell
 // collision, drives the real Jolt wheeled rig. No window/Vulkan.
 bool runTunnelDriveSelfTest();
+
+// --test-routeframe — P1's gate: TunnelRoute's frame follows its station
+// polyline. Proves BOTH that a straight route is unchanged by the change (every
+// existing tunnel gate depends on that) and that a curved route actually
+// follows its arc with a perpendicular frame. Pure maths — no device, no
+// physics, no assets.
+bool runRouteFrameSelfTest();
 
 // The built world: road ribbon, tunnel shell, portals, markings, lights.
 class TunnelCorridorWorld {

@@ -486,6 +486,8 @@ struct CliOptions {
     // two exes MUST resolve the same root — this flag is how that gets checked
     // instead of assumed. See docs/design/LEVEL_ARCHITECT_EXE_PLAN.md, D1.
     bool        printAssetRoot = false;
+    // --test-routeframe: TunnelRoute polyline-frame gate (P1 of the road network).
+    bool        testRouteFrame = false;
     // Headless editor proof (--screenshot-editor [path.png]): init ImGui in a headless
     // device, render ONE frame with the dockspace + demo window, and capture a PNG that
     // shows the ImGui window — proves the Phase-0 integration actually rasterizes.

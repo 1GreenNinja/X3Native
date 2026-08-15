@@ -357,6 +357,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--editor") o.editorMode = true;
         else if (a == "--print-assetroot") o.printAssetRoot = true;
+        else if (a == "--test-routeframe") o.testRouteFrame = true;
         else if (a == "--screenshot-editor") {
             o.editorShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.editorShotPath = argv[++i];

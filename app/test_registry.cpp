@@ -715,6 +715,11 @@ int dispatchTests(const TestFlags& tf) {
                     "centreline depth / tile seam / joint continuity / determinism)...");
         return x3::game::runTerrainCorridorSelfTest() ? 0 : 1;
     }
+    if (tf.testRouteFrame) {
+        x3::logInfo("running ROUTE FRAME self-test (polyline frame: straight unchanged, "
+                    "curve followed, frame perpendicular through the bend)...");
+        return x3::game::runRouteFrameSelfTest() ? 0 : 1;
+    }
     if (tf.testTunnelDrive) {
         x3::logInfo("running TUNNEL DRIVE-THROUGH self-test (real rig through the demo "
                     "bore; earth-ramp NEGATIVE CONTROL with X3_TUNNEL_PORTAL_CUT=0)...");
