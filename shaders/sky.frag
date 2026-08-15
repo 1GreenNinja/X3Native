@@ -34,6 +34,64 @@ layout(set = 0, binding = 0) uniform SkyUBO {
 layout(location = 0) in vec2 vNdc;
 layout(location = 0) out vec4 outColor;
 
+// ===========================================================================
+// CLOUDS — a lit layer at altitude, not a texture on a dome.
+//
+// THE ONE DECISION THAT MATTERS: the view ray is intersected with a horizontal
+// PLANE at kCloudAlt and the noise is sampled at that world position. That is
+// what makes clouds behave: overhead they are broad and slow, toward the
+// horizon they compress and crowd together because the ray grazes the plane at
+// a shallow angle. Sampling noise by DIRECTION instead — the obvious shortcut —
+// gives a bowl of cotton wool that slides with the camera and never reads as
+// distance. Perspective is the whole effect.
+//
+// Everything else serves that:
+//   * fBm with a DOMAIN WARP so the shapes are billowed rather than griddy.
+//     Plain fBm reads as static; warping the sample point by another fBm is
+//     what turns blobs into something with flow in it.
+//   * A COVERAGE THRESHOLD, not a fog. Real fair-weather sky is mostly blue
+//     with distinct clouds in it, so the noise is remapped through a smoothstep
+//     whose floor rises with the cover parameter. Low cover = separate cumulus
+//     with blue between them; high cover = they merge into overcast.
+//   * SUN-SIDE SILVERING. A cloud is lit from one side: the density GRADIENT
+//     along the sun direction drives a bright rim, so the edge facing the sun
+//     glows and the far side stays grey-blue. Without this clouds are flat
+//     stickers, and no amount of noise detail fixes that.
+//   * HORIZON FADE. The layer dissolves into the haze band near the horizon so
+//     there is no hard line where the plane runs out.
+// ===========================================================================
+
+float cloudHash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+float cloudNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);          // smoothstep interpolant
+    return mix(mix(cloudHash(i + vec2(0,0)), cloudHash(i + vec2(1,0)), u.x),
+               mix(cloudHash(i + vec2(0,1)), cloudHash(i + vec2(1,1)), u.x), u.y);
+}
+
+float cloudFbm(vec2 p) {
+    float a = 0.5, sum = 0.0;
+    for (int k = 0; k < 5; ++k) { sum += a * cloudNoise(p); p *= 2.03; a *= 0.5; }
+    return sum;
+}
+
+// Density in [0,1] at a world XZ on the cloud plane.
+float cloudDensity(vec2 wp, float cover, float t) {
+    vec2 drift = vec2(t * 0.006, t * 0.0022);          // slow, and not axis-aligned
+    vec2 p = wp * 0.00055 + drift;
+    // Domain warp: displace the sample by a coarser fBm. This is the difference
+    // between "noise" and "weather".
+    vec2 w = vec2(cloudFbm(p * 0.5 + 17.3), cloudFbm(p * 0.5 - 9.1));
+    float d = cloudFbm(p + (w - 0.5) * 1.6);
+    // Coverage: raise the floor with `cover` so low cover leaves real blue gaps.
+    float lo = mix(0.62, 0.24, clamp(cover, 0.0, 1.0));
+    return smoothstep(lo, lo + 0.22, d);
+}
+
+
 // ---- Procedural starfield. Additive + gated to dark skies, so it is INVISIBLE by
 // day (Level1) and only blooms on a night sky. Rotates around Y by sky.params.z
 // (seconds) for the slow "wheeling celestial sphere" once a scene advances time.
@@ -221,9 +279,45 @@ void main() {
         col += starField(dir, sky.params.z) * (1.5 * night) * max(aboveW, spaceW);
     }
 
+    vec3 sunRGB = sky.sunColor.rgb;
+
+    // ---- CLOUDS: composited over the sky, under the sun disk. ---------------
+    // Placed BEFORE the sun disk so the disk still burns through in front of a
+    // thin edge, and AFTER the stars so a night sky keeps its clouds dark.
+    {
+        float cover = clamp(sky.params.w, 0.0, 1.0);
+        // haze < 0.5 shades toward deep space; no clouds out there.
+        float atmo  = clamp(haze * 2.0, 0.0, 1.0);
+        if (cover > 0.001 && atmo > 0.001 && up > 0.0) {
+            const float kCloudAlt = 1400.0;                 // ~4,600 ft
+            float distToPlane = kCloudAlt / max(up, 0.02);   // ray -> plane
+            vec2  wp = sky.camPos.xz + dir.xz * distToPlane;
+            float t  = sky.params.z;
+
+            float d = cloudDensity(wp, cover, t);
+
+            // SUN-SIDE SILVERING from the density gradient along the sun's XZ
+            // heading: the edge facing the sun lights up, the far side does not.
+            vec2  sunXZ = normalize(sunDir.xz + vec2(1e-4));
+            float dAhead = cloudDensity(wp + sunXZ * 900.0, cover, t);
+            float rim    = clamp((d - dAhead) * 2.2, 0.0, 1.0);
+
+            // Body colour: cool grey-white, warmed toward the sun's own colour.
+            vec3 lit   = mix(vec3(0.62, 0.66, 0.74), sky.sunColor.rgb * 1.15, 0.35);
+            vec3 shade = vec3(0.30, 0.33, 0.40);
+            float sunAlign = pow(max(dot(dir, sunDir), 0.0), 6.0);
+            vec3 cloudCol = mix(shade, lit, 0.35 + 0.65 * rim) + sunRGB * sunAlign * 0.55 * rim;
+
+            // Fade into the horizon haze, and ease in from the zenith so the
+            // layer has no hard edge where the plane runs out.
+            float horizonFade = smoothstep(0.02, 0.22, up);
+            float alpha = d * horizonFade * atmo;
+            col = mix(col, cloudCol, clamp(alpha, 0.0, 1.0));
+        }
+    }
+
     // ---- Sun disk + glow, placed at the directional sun. ----
     float cosAngle = clamp(dot(dir, sunDir), -1.0, 1.0);
-    vec3 sunRGB = sky.sunColor.rgb;
     float sunI  = max(sky.sunColor.a, 0.0);
     // Wide Mie-like forward glow: a high-power cosine lobe around the sun. Grows
     // toward the horizon (more aerosol path) for a believable late-day flare.

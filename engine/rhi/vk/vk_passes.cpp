@@ -2329,7 +2329,7 @@ void VulkanRenderDevice::prepareFrameData() {
             glm::vec3 sd = glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
             sky.sunDir   = glm::vec4(sd, 0.0f);
             sky.sunColor = glm::vec4(m_sky.sunColor[0], m_sky.sunColor[1], m_sky.sunColor[2], m_sky.sunIntensity);
-            sky.params   = glm::vec4(m_sky.haze, m_sky.exposure, m_skyTime, 0.0f);
+            sky.params   = glm::vec4(m_sky.haze, m_sky.exposure, m_skyTime, m_sky.cloud);
             sky.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], 0.0f);
             sky.horizon  = glm::vec4(m_sky.horizon[0], m_sky.horizon[1], m_sky.horizon[2], 0.0f);
             std::memcpy(fr.skyMapped, &sky, sizeof(SkyUBO));

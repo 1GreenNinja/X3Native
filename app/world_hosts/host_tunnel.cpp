@@ -104,6 +104,8 @@ int hostTunnel(HostContext& hc) {
         sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
         sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
         sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f;
+        // Scattered fair-weather cumulus. 0 would be the old clear sky exactly.
+        sp.cloud = 0.42f;
         device->setSkyParams(sp);
     }
     device->setCameraFar(4000.0f);

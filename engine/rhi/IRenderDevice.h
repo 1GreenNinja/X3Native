@@ -829,6 +829,11 @@ public:
         float sunIntensity  = 1.0f;
         float haze          = 0.5f;
         float exposure      = 1.0f;
+        // CLOUD COVER, 0..1. 0 = the clear analytic sky exactly as before (the
+        // cloud term multiplies out, so every existing scene is unchanged);
+        // ~0.35 = scattered fair-weather cumulus; 1 = overcast. Rides the sky
+        // UBO's last reserved param lane, so no new binding.
+        float cloud         = 0.0f;
         float zenith[3]     = { 0.10f, 0.28f, 0.66f }; // overhead sky color (linear); per-scene (default = old global)
         float horizon[3]    = { 0.62f, 0.74f, 0.92f }; // horizon glow color (linear); per-scene (default = old global)
         // SCENE SUN RADIANCE for mesh.frag's directional key (separate from
