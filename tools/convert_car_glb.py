@@ -146,13 +146,47 @@ def main():
                 g.extensionsUsed = (g.extensionsUsed or []) + ["KHR_materials_emissive_strength"]
         log("tuned", m.name, "->", rule)
 
-    # 2) Strip Collider nodes (don't render the physics proxy). The node keeps
-    #    its slot (indices stay valid) but loses its mesh reference.
+    # 2) Strip Collider nodes (don't render the physics proxy).
+    #
+    # THE "MINI CAR" BUG (found 2026-08-14). Detaching the node is NOT enough:
+    # clearing n.mesh leaves the mesh sitting in g.meshes referenced by NOBODY,
+    # and an ORPHANED mesh is exactly what a loader's "don't silently drop it"
+    # safety net will emit — at IDENTITY. Every real car part hangs off a node
+    # scaled 2.54, so CTR.glb's orphaned 60,349-triangle 'Collider' rendered at
+    # 1/2.54 = 39% size at the origin: a whole second, smaller car under the real
+    # one, plus 60k triangles of waste every frame.
+    #
+    # So detach the node AND remove the mesh, remapping every remaining mesh
+    # index so nothing else shifts under us.
     stripped = 0
+    doomed = set()
     for n in g.nodes:
         if n.mesh is not None and "collider" in (n.name or "").lower():
-            n.mesh = None; stripped += 1
-    log(f"clearcoat materials: {ccCount}, collider nodes stripped: {stripped}")
+            doomed.add(n.mesh); n.mesh = None; stripped += 1
+    # Belt and braces: any mesh whose OWN name marks it a proxy goes too, even if
+    # no node ever pointed at it (already-orphaned input).
+    for i, msh in enumerate(g.meshes or []):
+        if "collider" in (msh.name or "").lower() or "collision" in (msh.name or "").lower():
+            doomed.add(i)
+    removed = 0
+    if doomed:
+        keep = [i for i in range(len(g.meshes)) if i not in doomed]
+        remap = {old: new for new, old in enumerate(keep)}
+        g.meshes = [g.meshes[i] for i in keep]
+        for n in g.nodes:
+            if n.mesh is not None:
+                n.mesh = remap.get(n.mesh)      # None if it pointed at a doomed mesh
+        removed = len(doomed)
+    # Assert the invariant this function exists to guarantee: no mesh may be left
+    # unreferenced, or the loader will draw it.
+    used = {n.mesh for n in g.nodes if n.mesh is not None}
+    orphans = [i for i in range(len(g.meshes or [])) if i not in used]
+    if orphans:
+        names = ", ".join(repr((g.meshes[i].name or "")) for i in orphans)
+        raise SystemExit(f"ERROR: {len(orphans)} mesh(es) left unreferenced and would "
+                         f"render at identity scale: {names}")
+    log(f"clearcoat materials: {ccCount}, collider nodes stripped: {stripped}, "
+        f"proxy meshes removed: {removed}, orphans remaining: 0")
 
     os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
     g.save(dst)

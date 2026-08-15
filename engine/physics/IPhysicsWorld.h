@@ -35,13 +35,13 @@ public:
     // Bodies
     virtual BodyId addStaticMesh(const float* verts, uint32_t vcount,
                                  const uint32_t* indices, uint32_t icount) = 0;
-    // `comOffset` shifts the body's CENTRE OF MASS relative to the shape centre,
-    // in the body's local frame (metres, +Y up). Default {0,0,0} = shape centre,
+    // `comOffset` shifts the body's CENTER OF MASS relative to the shape center,
+    // in the body's local frame (meters, +Y up). Default {0,0,0} = shape center,
     // which is what every existing caller gets.
     //
     // WHY THIS EXISTS. For a vehicle the CoM height is THE handling parameter:
     // rollover threshold is roughly atan(halfTrack / comHeight). The hero car ran
-    // with its CoM at the box centre — 0.76 m up on a 0.677 m half-track, i.e.
+    // with its CoM at the box center — 0.76 m up on a 0.677 m half-track, i.e.
     // ~42 deg, where a real sports car is nearer 58 — so it tipped over on
     // ordinary terrain. Tim, 2026-08-14: "the car still rolls" / "Can we ADD
     // center of mass control? That is a critical part."
@@ -130,7 +130,7 @@ public:
     // culled for the same reason.
     //
     // For an LOS / wall probe use rayCastStrict(..., Layer::Static) below.
-    // Some callers legitimately DEPEND on the permissive behaviour — e.g.
+    // Some callers legitimately DEPEND on the permissive behavior — e.g.
     // engine/ai/Navigation.cpp floor-samples with a Dynamic mask and needs the
     // Static floor back, and monster fire casts an Enemy mask and needs walls to
     // stop the bullet. Do NOT "fix" this by making the mask exclusive.

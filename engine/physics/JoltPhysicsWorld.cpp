@@ -416,7 +416,7 @@ public:
         ss.SetEmbedded();
         auto res = ss.Create();
         if (res.HasError()) { x3::logError(std::string("[phys] box: ") + res.GetError().c_str()); return {}; }
-        // CENTRE-OF-MASS OFFSET (see IPhysicsWorld.h). Zero offset takes the plain
+        // CENTER-OF-MASS OFFSET (see IPhysicsWorld.h). Zero offset takes the plain
         // box so every existing caller is bit-identical to before.
         if (comOffset.x != 0.0f || comOffset.y != 0.0f || comOffset.z != 0.0f) {
             JPH::OffsetCenterOfMassShapeSettings os(
@@ -1549,7 +1549,7 @@ bool runPhysicsSelfTest() {
         w->addBox(Vec3{0.4f, 0.4f, 0.4f}, Vec3{0.0f, 1.2f, -3.0f}, 5.0f, Layer::Dynamic);
         for (int i = 0; i < 2; ++i) w->step(kFixedDt);
 
-        // The probe an LOS caller writes: stop short of the target's centre.
+        // The probe an LOS caller writes: stop short of the target's center.
         const float losLen = 6.0f - 0.3f;
 
         // (a) THE TRAP, pinned: the permissive mask reports the hostile as a "wall".

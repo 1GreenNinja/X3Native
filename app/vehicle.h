@@ -84,6 +84,14 @@ public:
     void chassisPos(float out[3]) const;
     float forwardSpeed() const { return m_ctl ? m_ctl->forwardSpeed() : 0.0f; }
     float engineRPM()    const { return m_ctl ? m_ctl->engineRPM() : 0.0f; }
+    int   gear()         const { return m_ctl ? m_ctl->gear() : 0; }
+    // Raw driver throttle, pre-traction-control. For HUD + engine AUDIO: tone
+    // must follow LOAD, and load starts with what the driver is asking for.
+    float throttleInput() const { return m_lastIn.throttle; }
+    // Throttle AFTER traction control — what the engine is actually given, and
+    // therefore what the engine NOTE should follow. When TC trims for slip the
+    // sound must trim with it, or the audio lies about what the car is doing.
+    float effectiveThrottle() const { return m_effThrottle; }
 
     // ---- Performance-shop live tuning passthrough (engine WheeledTuning). ----
     // Re-tunes the RUNNING Jolt vehicle in place (engine curve/torque, mass, grip,
@@ -114,9 +122,14 @@ private:
     std::unique_ptr<x3::phys::IVehicleController> m_ctl;
     x3::phys::BodyId m_chassis;
     // Chassis half extents — sized to the hero-car GLB footprint (CTR).
-    float m_hx = 0.84f, m_hy = 0.5f, m_hz = 1.95f;
+    // m_hx widened 0.84 -> 0.95 so the collision box spans the 1.808 m body
+    // (it was 12 cm NARROWER than the bodywork) and the wider stance.
+    // 1.07 = half the widened 2.13 m body (1.808 * 1.18), so the collision box
+    // spans the bodywork rather than sitting inside it.
+    float m_hx = 1.07f, m_hy = 0.5f, m_hz = 1.95f;
 
-    x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD/audio)
+    x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD)
+    float m_effThrottle = 0.0f;          // post-TC throttle (engine audio load)
     bool m_tcEnabled = true;             // traction control (see setInput)
     bool  m_tintOn = false;              // paint tint (see setPaintTint)
     float m_tint[3] = { 1, 1, 1 };

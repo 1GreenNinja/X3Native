@@ -1,0 +1,48 @@
+#!/bin/sh
+# X3Native post-checkout — keep LFS working, then heal the asset store.
+#
+# WHY THIS EXISTS. A branch switch can leave dual-tracked assets as 132-byte LFS
+# pointers, and the in-engine failure is SILENT: "[surface-lib] set '<name>'
+# incomplete" scrolls past and the material falls back to flat colour. That is
+# how 15 miles of road came back wearing grey plastic aprons on 2026-08-15, and
+# how a texture defect gets mistaken for a renderer bug.
+#
+# Two things, in order:
+#   1. git lfs post-checkout — the stock LFS hook. MUST run; this file replaces
+#      the one `git lfs install` wrote, so dropping it would break LFS.
+#   2. asset_store.py fetch — heal anything the store knows about. The store is
+#      the AUTHORITATIVE copy: measured 2026-08-15, the LFS server is missing 48
+#      of 397 objects while the store reported zero missing and zero mismatched.
+#
+# The fetch is quiet and cheap when nothing is stale (it hashes and skips), and
+# it is a no-op on a box where everything is already local — like the OG 14900k.
+# Set X3_SKIP_ASSET_HEAL=1 to bypass it.
+
+command -v git-lfs >/dev/null 2>&1 || {
+    printf >&2 "\n%s\n\n" "This repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'post-checkout' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks')."
+    exit 2
+}
+git lfs post-checkout "$@"
+
+# Only on a real branch/file checkout (arg 3 == 1 means branch switch).
+[ "$3" = "1" ] || exit 0
+[ -n "$X3_SKIP_ASSET_HEAL" ] && exit 0
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -f "$root/tools/asset_store.py" ] || exit 0
+[ -f "$root/assets/manifest.json" ] || exit 0
+
+# The store lives on Z: on Predator; the tool's default (D:\Assets\X3AssetStore)
+# is nearly empty there — 27 object prefixes against 175 on Z:. Respect an
+# already-set X3_ASSET_STORE so other fleet boxes keep their own path.
+if [ -z "$X3_ASSET_STORE" ] && [ -d "/z/X3AssetStore" ]; then
+    X3_ASSET_STORE='Z:\X3AssetStore'
+    export X3_ASSET_STORE
+fi
+
+python "$root/tools/asset_store.py" fetch --all 2>&1 \
+    | grep -Ei "fetched|failed" \
+    | grep -v " 0 fetched, 0 failed" \
+    | sed 's/^/[asset-heal] /'
+
+exit 0

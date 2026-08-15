@@ -120,6 +120,10 @@ struct Model {
     std::vector<Node>          nodes;
     std::vector<Skin>          skins;
     std::vector<AnimationClip> animations;
+    // glTF mesh names, indexed by MeshPrimitive::meshIndex (empty string if the
+    // source mesh was unnamed). Needed so makeDrawables() can tell a COLLISION
+    // PROXY from real geometry — see the orphan safety net there.
+    std::vector<std::string>   meshNames;
     bool ok = false;
 };
 
