@@ -359,8 +359,21 @@ int hostTunnel(HostContext& hc) {
     x3::game::Hud hud;
     bool conQuit = false;
     hud.init(*console, &conQuit);
-    g_tunnelHud = &hud;
-    glfwSetCharCallback(window, tunnelCharCB);
+    // HEADLESS HAS NO WINDOW. --screenshot-tunnel runs with hc.window == nullptr,
+    // and handing that to glfwSetCharCallback is an access violation -- which is
+    // exactly what happened: every capture died at 0xC0000005 the moment after
+    // "console ready", while the interactive path stayed perfectly happy. So the
+    // console looked innocent and the CAR looked guilty; I bisected onto the car
+    // model and it was never the car. Interactive-only testing hid a crash in
+    // the path that produces every screenshot in the repo.
+    //
+    // The console is a typing surface and is meaningless with no window anyway.
+    // The cvars it registers still work headless -- those live on the console
+    // object, not on the window.
+    if (window) {
+        g_tunnelHud = &hud;
+        glfwSetCharCallback(window, tunnelCharCB);
+    }
     console->registerCVar("wx", "off",
         "weather: off | clear | cloudy | rain | storm | fog | snow");
     console->registerCVar("wx_snow_in", "0",
@@ -395,7 +408,28 @@ int hostTunnel(HostContext& hc) {
     x3::game::DriveDemo car;
     const bool carBuilt = car.build(*device, *phys, startPos[0], startPos[1] + 1.4f, startPos[2]);
     if (carBuilt) {
+        // E46_New, not CTR. Tim asked for a seat, a passenger seat, a dash and a
+        // steering wheel; CTR is an exterior shell -- 34 nodes, none of them
+        // interior. Same pack (Realistic Car Controller V4), same wheel node
+        // names (Wheel_FL/FR/RL/RR) and the same misspelled `Buttom` underbody,
+        // so the skin mapping is unchanged -- but it carries Seats, Dashboard,
+        // SteeringWheel, Interior, GearHandle, Wipers, and a pair of live gauge
+        // needles (Needle_KM / Needle_RPM) that a later pass can drive off the
+        // speedo and tacho the HUD already computes.
+        //
+        // Checking the pack BEFORE modelling anything is the whole lesson of
+        // today: the interior did not need building, it needed finding.
         car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
+        // E46_New.glb is STAGED beside it and is the interior car -- Seats,
+        // Dashboard, SteeringWheel, Interior, GearHandle, plus live Needle_KM /
+        // Needle_RPM gauges -- with the same Wheel_FL/FR/RL/RR names and the same
+        // `Buttom` underbody, so the skin mapping needs no change. It is NOT
+        // switched on yet because it renders WHITE: the pack ships its textures
+        // as separate Unity assets, so the raw GLB carries one embedded image for
+        // 35 materials. CTR's copy here is 4.5 MB against the source's 0.34 MB
+        // precisely because it went through the texture-baking pipeline
+        // (tools/convert_car_glb.py). Run E46 through that and this is a one-word
+        // change.
         // Point it down the corridor.
         // SPAWN YAW — engine forward at rest is -Z (CLAUDE.md AXES / CONVENTIONS
         // §3), so rotating rest forward (0,0,-1) about +Y by theta gives
@@ -795,7 +829,7 @@ int hostTunnel(HostContext& hc) {
         {
             static bool graveWas = false, bkWas = false, entWas = false,
                         upWas = false, dnWas = false, tabWas = false;
-            const bool gr = glfwGetKey(window, GLFW_KEY_GRAVE_ACCENT) == GLFW_PRESS;
+            const bool gr = window && glfwGetKey(window, GLFW_KEY_GRAVE_ACCENT) == GLFW_PRESS;
             if (gr && !graveWas) hud.toggleConsole();
             graveWas = gr;
             if (hud.consoleOpen()) {

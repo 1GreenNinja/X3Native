@@ -306,6 +306,12 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/converted_glb/Vehicles/E46_New.glb",
+      "sha256": "d2d94de9cd2ed29be1a63a69924945993d185b0134b2ac17c5a51bf1b8ff2566",
+      "size": 1216564,
+      "source_note": "Realistic Car Controller V4 E46_New, Draco-decoded via gltf-transform. Has the INTERIOR: Seats/Dashboard/SteeringWheel/Interior/GearHandle + Needle_KM/Needle_RPM. Untextured until run through the car texture-bake pipeline."
+    },
+    {
       "repo_path": "assets/converted_glb/mine/barrel.glb",
       "sha256": "596451a948aafdca91c458e5de48b6c6396f6a9c7e5a4460961a87c52135307f",
       "size": 161980,
