@@ -3,6 +3,7 @@
 // transcribed; the technique is documented in docs/design/BL_WORLD_PORT.md
 // §2.2/§2.3/§3.2/§3.3/§4.3/§4.4 and re-implemented here from first principles.
 #include "tunnel_corridor.h"
+#include "tunnel_fitout.h"
 #include "mesh_prims.h"
 #include "asset_root.h"        // assetRoot() — the surface_library mount point
 #include "vehicle.h"           // DriveDemo — the drive-through self-test rig
@@ -1165,6 +1166,203 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         Material pm; pm.alb = paintTex; pm.mr = roughMR;
         pm.emissive[0] = pm.emissive[1] = pm.emissive[2] = 0.9f; pm.emissive[3] = 0.05f;
         upload(paint, pm, /*collide*/false);
+
+        // ================= 1a) THE INTERIOR FITOUT =========================
+        // Walkways, railings, the subway wall band, signage, screens and door
+        // recesses. WHERE each thing goes was decided in tunnel_fitout.h -- and
+        // decided there rather than here on purpose, because placement is the
+        // part that can be wrong in ways a screenshot hides. This block only
+        // DRAWS what that module already proved.
+        //
+        // Everything is gated on the ROOFED span. A walkway running out of the
+        // portal and down the open approach cutting would be the same
+        // built-but-not-thought-through shape as snow falling inside a tunnel.
+        if (route.boreValid) {
+            TunnelFitout fit;
+            FitoutConfig fcfg;
+            fit.build(route.boreS0, route.boreS1, fcfg, /*seed*/ 0x7A11u);
+
+            MeshBuf walk, rail, band, panel, glow;
+            const float deckY = kTcWalkKerbH;              // deck top, above the road datum
+            const float hw    = kTcRoadHalfWidth;
+            const float deckW = kTcWalkDeckW;
+
+            // ---- WALKWAY: kerb face + deck top, both sides ----------------
+            // Broken at a lay-by on that side, which is what makes a bay
+            // reachable from a stopped car instead of a kerb you climb.
+            for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
+                const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
+                if (a.s < route.boreS0 || b.s > route.boreS1) continue;
+                for (int sgn = -1; sgn <= 1; sgn += 2) {
+                    if (fit.walkwayBrokenAt(a.s, sgn)) continue;
+                    const float i0 = (float)sgn * hw;            // inner (road) edge
+                    const float o0 = (float)sgn * (hw + deckW);  // outer (wall) edge
+                    float a0[3], a1[3], b0[3], b1[3], a0d[3], b0d[3];
+                    // Kerb face, road level -> deck level.
+                    P(a, i0, 0.0f,   a0d); P(b, i0, 0.0f,   b0d);
+                    P(a, i0, deckY,  a0);  P(b, i0, deckY,  b0);
+                    const float nIn[3] = { -(float)sgn * right[0], 0.0f, -(float)sgn * right[2] };
+                    if (sgn > 0) walk.quad(a0d, a0, b0, b0d, nIn, 0, 1, a.s*0.3f, b.s*0.3f);
+                    else         walk.quad(a0, a0d, b0d, b0, nIn, 0, 1, a.s*0.3f, b.s*0.3f);
+                    // Deck top.
+                    P(a, o0, deckY, a1); P(b, o0, deckY, b1);
+                    const float nU[3] = { 0, 1, 0 };
+                    if (sgn > 0) walk.quad(a0, a1, b1, b0, nU, 0, 1, a.s*0.25f, b.s*0.25f);
+                    else         walk.quad(a1, a0, b0, b1, nU, 0, 1, a.s*0.25f, b.s*0.25f);
+                }
+            }
+
+            // ---- RAILING. Tim: "Not decorative: this is what makes a tunnel
+            // read as infrastructure rather than a tube." Posts on a 2.5 m
+            // pitch with a top rail. Drawn as thin boxes rather than cylinders
+            // because at 40 ft away across a lit bore the silhouette is all you
+            // read, and a box costs a twelfth of the triangles.
+            {
+                const float postPitch = 2.5f;
+                const float railH = 1.05f;          // 3.4 ft, a real handrail height
+                const float lat = hw + deckW - 0.12f;
+                for (float sPos = route.boreS0 + 1.0f; sPos < route.boreS1 - 1.0f; sPos += postPitch) {
+                    for (int sgn = -1; sgn <= 1; sgn += 2) {
+                        if (fit.walkwayBrokenAt(sPos, sgn)) continue;
+                        // Nearest frame; the bore is short enough that a lookup
+                        // by proportion is exact to well under a post's width.
+                        const size_t idx = (size_t)clampf(
+                            (sPos / std::max(1e-3f, route.totalLen)) * (float)(roadFrames.size() - 1),
+                            0.0f, (float)(roadFrames.size() - 1));
+                        const Frame& fr = roadFrames[idx];
+                        // obox is CENTRE + HALF-extents, so the post is placed
+                        // at mid-height with half its length, not at its foot.
+                        float mid[3];
+                        P(fr, (float)sgn * lat, deckY + railH * 0.5f, mid);
+                        const float ax[3] = { route.dirX, 0.0f, route.dirZ };
+                        obox(rail, mid, right, ax, 0.035f, railH * 0.5f, 0.035f, 1.0f);
+                    }
+                }
+                // The top rail: one continuous run per side, per unbroken span.
+                for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
+                    const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
+                    if (a.s < route.boreS0 || b.s > route.boreS1) continue;
+                    for (int sgn = -1; sgn <= 1; sgn += 2) {
+                        if (fit.walkwayBrokenAt(a.s, sgn)) continue;
+                        float a0[3], a1[3], b0[3], b1[3];
+                        P(a, (float)sgn*(lat-0.03f), deckY+railH, a0);
+                        P(a, (float)sgn*(lat+0.03f), deckY+railH, a1);
+                        P(b, (float)sgn*(lat+0.03f), deckY+railH, b1);
+                        P(b, (float)sgn*(lat-0.03f), deckY+railH, b0);
+                        const float nU[3] = { 0, 1, 0 };
+                        rail.quad(a0, a1, b1, b0, nU, 0, 1, a.s*0.4f, b.s*0.4f);
+                    }
+                }
+            }
+
+            // ---- THE SUBWAY BAND. A tiled wainscot from just above the deck
+            // to head height, proud of the shell by a centimetre. This is the
+            // single cheapest thing that moves a bore from "concrete pipe" to
+            // "station": real transit tunnels are tiled to head height and bare
+            // above it, and the HORIZONTAL LINE that creates is what the eye
+            // reads as a built interior. Without it the wall is one untouched
+            // sweep from floor to crown and no amount of signage rescues it.
+            {
+                const float bandLo = deckY + 0.10f;
+                const float bandHi = deckY + 2.35f;      // 7.7 ft: head height
+                const float lat = kTcTubeHalfWidth - 0.012f;
+                for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
+                    const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
+                    if (a.s < route.boreS0 || b.s > route.boreS1) continue;
+                    for (int sgn = -1; sgn <= 1; sgn += 2) {
+                        float a0[3], a1[3], b0[3], b1[3];
+                        P(a, (float)sgn*lat, bandLo, a0);
+                        P(a, (float)sgn*lat, bandHi, a1);
+                        P(b, (float)sgn*lat, bandHi, b1);
+                        P(b, (float)sgn*lat, bandLo, b0);
+                        const float nIn[3] = { -(float)sgn*right[0], 0.0f, -(float)sgn*right[2] };
+                        if (sgn > 0) band.quad(a0, a1, b1, b0, nIn, 0, 1, a.s*0.22f, b.s*0.22f);
+                        else         band.quad(a1, a0, b0, b1, nIn, 0, 1, a.s*0.22f, b.s*0.22f);
+                    }
+                }
+            }
+
+            // ---- WALL FITTINGS: signs, screens, door recesses -------------
+            // One loop, because they are the same operation at different sizes
+            // and colours: a quad on the wall at a station the fitout chose.
+            {
+                auto frameFor = [&](float sPos) -> const Frame& {
+                    const size_t idx = (size_t)clampf(
+                        (sPos / std::max(1e-3f, route.totalLen)) * (float)(roadFrames.size() - 1),
+                        0.0f, (float)(roadFrames.size() - 1));
+                    return roadFrames[idx];
+                };
+                for (const Fitting& fg : fit.fittings()) {
+                    if (fg.kind == FittingKind::Lamp) continue;   // the light pool owns those
+                    const Frame& fr = frameFor(fg.s);
+                    const float sgn = (float)fg.side;
+                    const float lat = kTcTubeHalfWidth - 0.03f;
+                    float w = 0.9f, h = 0.6f, yc = deckY + 1.55f;
+                    MeshBuf* into = &panel;
+                    if (fg.kind == FittingKind::Screen) { w = 2.6f; h = 1.4f; yc = deckY + 1.9f; into = &glow; }
+                    else if (fg.kind == FittingKind::Sign) { w = 1.6f; h = 0.45f; yc = deckY + 2.05f; into = &glow; }
+                    else if (fg.kind == FittingKind::Door) { w = 1.1f; h = 2.1f; yc = deckY + 1.05f; }
+                    else if (fg.kind == FittingKind::SosNiche) { w = 0.8f; h = 1.0f; yc = deckY + 1.1f; }
+                    // The quad, spanning +/- w/2 ALONG the route.
+                    const float half = w * 0.5f;
+                    float p0[3], p1[3], p2[3], p3[3];
+                    for (int k = 0; k < 4; ++k) {
+                        const float ds = (k == 0 || k == 3) ? -half : half;
+                        const float dy = (k < 2) ? -h * 0.5f : h * 0.5f;
+                        float* out = (k == 0) ? p0 : (k == 1) ? p1 : (k == 2) ? p2 : p3;
+                        // Offset along the route by ds using the route's own
+                        // direction, so a fitting stays flat on the wall.
+                        Frame tmp = fr;
+                        tmp.p[0] += route.dirX * ds;
+                        tmp.p[2] += route.dirZ * ds;
+                        P(tmp, sgn * lat, yc + dy, out);
+                    }
+                    const float nIn[3] = { -sgn*right[0], 0.0f, -sgn*right[2] };
+                    if (fg.side > 0) into->quad(p0, p3, p2, p1, nIn, 0, 1, 0, 1);
+                    else             into->quad(p1, p2, p3, p0, nIn, 0, 1, 0, 1);
+                }
+            }
+
+            // ---- Upload. Walkways COLLIDE (you can stand on them); the band,
+            // signage and rails do not -- a railing you can catch a wing mirror
+            // on turns a 100 mph tunnel run into a lottery, and nothing about
+            // the fiction needs it solid.
+            Material wm; if (portalSet.ok) { wm.alb = portalSet.albedo; wm.mr = portalSet.mr; wm.nrm = portalSet.normal; }
+                         else { wm.alb = concreteTex; wm.mr = roughMR; }
+            upload(walk, wm, /*collide*/true);
+
+            Material rm; rm.alb = paintTex; rm.mr = solid1(0, 90, 210, false);   // metal: smooth, metallic
+            for (int c = 0; c < 3; ++c) rm.tint[c] = 0.42f;
+            upload(rail, rm, /*collide*/false);
+
+            Material bm; if (boreSet.ok) { bm.alb = boreSet.albedo; bm.mr = boreSet.mr; bm.nrm = boreSet.normal; }
+                         else { bm.alb = concreteTex; bm.mr = roughMR; }
+            for (int c = 0; c < 3; ++c) bm.tint[c] = 0.93f;   // tile reads lighter than the raw shell
+            upload(band, bm, /*collide*/false);
+
+            Material dm; dm.alb = concreteTex; dm.mr = roughMR;
+            dm.tint[0] = 0.30f; dm.tint[1] = 0.33f; dm.tint[2] = 0.38f;
+            upload(panel, dm, /*collide*/false);
+
+            // Signs and screens are EMISSIVE -- they are the only thing in the
+            // bore that makes its own light, which is exactly why they read at
+            // distance and why they must not also be lights in the pool (that
+            // budget is spent, and 19 signs would blow it on their own).
+            Material gm; gm.alb = paintTex; gm.mr = roughMR;
+            gm.emissive[0] = 0.55f; gm.emissive[1] = 0.80f; gm.emissive[2] = 1.0f; gm.emissive[3] = 1.4f;
+            upload(glow, gm, /*collide*/false);
+
+            char fb[220];
+            std::snprintf(fb, sizeof(fb),
+                "tunnel fitout: %u lay-bys, %u signs, %u screens, %u doors, %u SOS | "
+                "walkway %.1f ft deck, kerb %.1f ft, band to %.1f ft",
+                (uint32_t)fit.layBys().size(), fit.countOf(FittingKind::Sign),
+                fit.countOf(FittingKind::Screen), fit.countOf(FittingKind::Door),
+                fit.countOf(FittingKind::SosNiche),
+                kTcWalkDeckW * 3.28084f, kTcWalkKerbH * 3.28084f,
+                (deckY + 2.35f) * 3.28084f);
+            x3::logInfo(fb);
+        }
     }
 
     // ================= 1b) THE SHOULDERS ===================================

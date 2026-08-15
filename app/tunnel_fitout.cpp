@@ -45,9 +45,17 @@ void TunnelFitout::build(float boreS0, float boreS1, const FitoutConfig& cfg, ui
     const float footprint = 2.0f * (cfg.layByHalfLenM + cfg.layByTaperM);
     int side = +1;
     if (usableHi - usableLo > footprint) {
-        // Centre the run so the first and last bays sit symmetrically rather
-        // than marching from one end and leaving a long bare tail.
-        const int n = (int)std::floor((usableHi - usableLo) / cfg.layBySpacingM) + 1;
+        // HOW MANY ACTUALLY FIT, not how many the spacing suggests. Deriving the
+        // count from spacing alone put the outermost bays past the usable ends,
+        // where the footprint test below then rejected them -- and on the demo
+        // bore it rejected BOTH, so a 1,486 ft tunnel with room for a lay-by got
+        // none at all while the maths looked reasonable. The run must fit
+        // ENDS-INCLUSIVE: (n-1) gaps plus one full footprint inside the usable
+        // length. Caught by driving it, not by the test, because F1/F2 only ever
+        // asserted that whatever survived was legal -- never that anything did.
+        const float usable = usableHi - usableLo;
+        int n = (int)std::floor((usable - footprint) / cfg.layBySpacingM) + 1;
+        if (n < 1) n = 1;
         const float span = (float)(n - 1) * cfg.layBySpacingM;
         const float start = (usableLo + usableHi) * 0.5f - span * 0.5f;
         for (int i = 0; i < n; ++i) {
@@ -322,6 +330,24 @@ bool runTunnelFitoutSelfTest() {
         std::snprintf(buf, sizeof(buf), "F9 a %.0f ft bore gets %u lay-bys (no room, and it does not force one)",
                       80.0f * kFt, (uint32_t)tiny.layBys().size());
         fcheck(tiny.layBys().empty(), buf);
+    }
+
+    // F10: A BORE WITH ROOM FOR A BAY GETS ONE. This is the assertion the suite
+    // was missing, and its absence hid a real bug: F1/F2 only ever checked that
+    // whatever SURVIVED placement was legal, never that anything did. The demo
+    // bore (1,486 ft, room for one) was silently producing ZERO because the
+    // count came from spacing rather than from what fits, and every existing
+    // assertion passed on the empty set. A suite that is vacuously true on no
+    // output is not testing the output.
+    {
+        const float demoS0 = 89.0f, demoS1 = 542.0f;    // the actual demo ridge bore
+        TunnelFitout demo; demo.build(demoS0, demoS1, cfg, 0x7A11u);
+        const float usable = (demoS1 - demoS0) - 2.0f * cfg.portalClearM;
+        const float need   = 2.0f * (cfg.layByHalfLenM + cfg.layByTaperM);
+        std::snprintf(buf, sizeof(buf),
+            "F10 the demo bore (%.0f ft, %.0f ft usable vs %.0f ft needed) gets %u lay-by(s), not zero",
+            (demoS1 - demoS0) * kFt, usable * kFt, need * kFt, (uint32_t)demo.layBys().size());
+        fcheck(usable > need && !demo.layBys().empty(), buf);
     }
 
     std::snprintf(buf, sizeof(buf), "--- tunnel fitout self-test: %d passed, %d failed ---", g_pass, g_fail);
