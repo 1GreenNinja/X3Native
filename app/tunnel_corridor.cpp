@@ -5,6 +5,8 @@
 #include "tunnel_corridor.h"
 #include "tunnel_fitout.h"
 #include "tunnel_rooms.h"
+
+#include <functional>
 #include "mesh_prims.h"
 #include "asset_root.h"        // assetRoot() — the surface_library mount point
 #include "vehicle.h"           // DriveDemo — the drive-through self-test rig
@@ -1402,26 +1404,72 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     const Frame& fa = frameAtS(sc.s0);
                     const Frame& fb = frameAtS(sc.s1);
 
-                    // Which faces are shared with a neighbour and must be left open.
-                    bool openS0 = false, openS1 = false, openIn = false, openOut = false;
-                    for (size_t j = 0; j < sp.size(); ++j) {
-                        if (j == i) continue;
-                        const TunnelSpace& o = sp[j];
-                        if (touchS(sc, o, false)) openS0 = true;
-                        if (touchS(sc, o, true))  openS1 = true;
-                        if (touchLat(sc, o, false)) openIn = true;
-                        if (touchLat(sc, o, true))  openOut = true;
-                    }
-                    // The entry stub's inner face is the DOORWAY onto the bore --
-                    // always open, and it is the only place the program touches
-                    // the tunnel the player can see.
-                    if (sc.kind == SpaceKind::EntryStub) openIn = true;
+                    // ---- SOLID ROCK. THE WALL HAS A DOORWAY IN IT; IT IS NOT
+                    // ABSENT. The first cut of this skipped a whole shared face
+                    // whenever two spaces touched, which is right only when they
+                    // are the same size. They are not: the hall is 6.6 ft wide
+                    // and the rooms are 15-20 ft deep, so skipping the face left
+                    // up to 13 ft of open hole -- and the hole does not look out
+                    // onto anything, because the mountain is a HEIGHTFIELD and
+                    // the volume behind these rooms is VOID. Walk through one and
+                    // you leave the world.
+                    //
+                    // So every face is emitted MINUS the opening: four border
+                    // quads around a rectangle. The result is watertight by
+                    // construction, and the doorway is the size of the thing that
+                    // actually connects rather than the size of the smaller room.
+                    auto faceWithHole = [&](float uMin, float uMax, float yMin, float yMax,
+                                            float oU0, float oU1, float oY0, float oY1,
+                                            const float nrm[3], bool flip,
+                                            const std::function<void(float,float,float*)>& place) {
+                        // Clip the opening to the face; an empty clip means a
+                        // solid wall, which is the common case.
+                        oU0 = std::max(oU0, uMin); oU1 = std::min(oU1, uMax);
+                        oY0 = std::max(oY0, yMin); oY1 = std::min(oY1, yMax);
+                        const bool hasHole = (oU1 - oU0 > 0.01f) && (oY1 - oY0 > 0.01f);
+                        auto strip = [&](float a0, float a1, float b0, float b1) {
+                            if (a1 - a0 < 0.005f || b1 - b0 < 0.005f) return;
+                            float P0[3], P1[3], P2[3], P3[3];
+                            place(a0, b0, P0); place(a1, b0, P1);
+                            place(a1, b1, P2); place(a0, b1, P3);
+                            if (flip) room.quad(P3, P2, P1, P0, nrm, 0, 1, 0, 1);
+                            else      room.quad(P0, P1, P2, P3, nrm, 0, 1, 0, 1);
+                        };
+                        if (!hasHole) { strip(uMin, uMax, yMin, yMax); return; }
+                        strip(uMin, oU0, yMin, yMax);   // left of the opening
+                        strip(oU1, uMax, yMin, yMax);   // right of it
+                        strip(oU0, oU1, yMin, oY0);     // under the lintel-to-floor
+                        strip(oU0, oU1, oY1, yMax);     // over the head
+                    };
+
+                    // Find the neighbour that opens onto a given face, and the
+                    // extent of that opening. Returns false for a solid wall.
+                    auto openingOn = [&](bool lateralFace, bool highSide,
+                                         float& u0, float& u1, float& y0, float& y1) {
+                        for (size_t j2 = 0; j2 < sp.size(); ++j2) {
+                            if (j2 == i) continue;
+                            const TunnelSpace& o = sp[j2];
+                            if (o.side != sc.side) continue;
+                            bool touches = lateralFace ? touchLat(sc, o, highSide)
+                                                       : touchS(sc, o, highSide);
+                            if (!touches) continue;
+                            // The opening is the OVERLAP of the two spaces on the
+                            // face's in-plane axes -- never the whole face.
+                            if (lateralFace) { u0 = std::max(sc.s0, o.s0);   u1 = std::min(sc.s1, o.s1); }
+                            else             { u0 = std::max(sc.latIn, o.latIn); u1 = std::min(sc.latOut, o.latOut); }
+                            y0 = std::max(sc.floorY, o.floorY);
+                            y1 = std::min(sc.floorY + sc.clearH, o.floorY + o.clearH);
+                            return true;
+                        }
+                        return false;
+                    };
 
                     const float li = sgn * sc.latIn, lo = sgn * sc.latOut;
                     float A[3], B[3], C[3], D[3];
                     const float nU[3] = { 0, 1, 0 }, nD[3] = { 0, -1, 0 };
 
-                    // Floor + ceiling (never shared: a stair handles level change).
+                    // Floor + ceiling: never shared (a stair carries level change),
+                    // so these are always solid.
                     PA(fa, li, fy, A); PA(fa, lo, fy, B); PA(fb, lo, fy, C); PA(fb, li, fy, D);
                     if (sc.side > 0) room.quad(A, B, C, D, nU, 0, 1, 0, 1);
                     else             room.quad(D, C, B, A, nU, 0, 1, 0, 1);
@@ -1429,27 +1477,42 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     if (sc.side > 0) room.quad(D, C, B, A, nD, 0, 1, 0, 1);
                     else             room.quad(A, B, C, D, nD, 0, 1, 0, 1);
 
-                    // End walls (station bounds).
-                    if (!openS0) {
-                        PA(fa, li, fy, A); PA(fa, lo, fy, B); PA(fa, lo, cy, C); PA(fa, li, cy, D);
-                        const float n[3] = { route.dirX, 0, route.dirZ };
-                        room.quad(A, B, C, D, n, 0, 1, 0, 1);
+                    // ---- End walls (at s0 and s1). In-plane axis is LATERAL.
+                    for (int e = 0; e < 2; ++e) {
+                        const bool high = (e == 1);
+                        const Frame& fe = high ? fb : fa;
+                        float u0 = 0, u1 = 0, y0 = 0, y1 = 0;
+                        const bool hole = openingOn(false, high, u0, u1, y0, y1);
+                        const float n[3] = { high ? -route.dirX : route.dirX, 0.0f,
+                                             high ? -route.dirZ : route.dirZ };
+                        const float lmin = std::min(sc.latIn, sc.latOut);
+                        const float lmax = std::max(sc.latIn, sc.latOut);
+                        faceWithHole(lmin, lmax, fy, cy,
+                                     hole ? u0 : 1e9f, hole ? u1 : -1e9f, y0, y1,
+                                     n, high != (sc.side > 0),
+                                     [&](float u, float y, float* out) { PA(fe, sgn * u, y, out); });
                     }
-                    if (!openS1) {
-                        PA(fb, li, fy, A); PA(fb, lo, fy, B); PA(fb, lo, cy, C); PA(fb, li, cy, D);
-                        const float n[3] = { -route.dirX, 0, -route.dirZ };
-                        room.quad(D, C, B, A, n, 0, 1, 0, 1);
-                    }
-                    // Side walls (lateral bounds).
-                    if (!openIn) {
-                        PA(fa, li, fy, A); PA(fb, li, fy, B); PA(fb, li, cy, C); PA(fa, li, cy, D);
-                        const float n[3] = { sgn*right[0], 0, sgn*right[2] };
-                        room.quad(A, B, C, D, n, 0, 1, 0, 1);
-                    }
-                    if (!openOut) {
-                        PA(fa, lo, fy, A); PA(fb, lo, fy, B); PA(fb, lo, cy, C); PA(fa, lo, cy, D);
-                        const float n[3] = { -sgn*right[0], 0, -sgn*right[2] };
-                        room.quad(D, C, B, A, n, 0, 1, 0, 1);
+
+                    // ---- Side walls (at latIn and latOut). In-plane axis is STATION.
+                    for (int e = 0; e < 2; ++e) {
+                        const bool outer = (e == 1);
+                        const float lat = outer ? lo : li;
+                        float u0 = 0, u1 = 0, y0 = 0, y1 = 0;
+                        bool hole = openingOn(true, outer, u0, u1, y0, y1);
+                        // The entry stub's INNER face is the doorway onto the
+                        // bore: the one opening not shared with another space.
+                        if (!outer && sc.kind == SpaceKind::EntryStub) {
+                            hole = true;
+                            u0 = sc.s0; u1 = sc.s1; y0 = fy; y1 = cy;
+                        }
+                        const float n[3] = { (outer ? -sgn : sgn) * right[0], 0.0f,
+                                             (outer ? -sgn : sgn) * right[2] };
+                        faceWithHole(sc.s0, sc.s1, fy, cy,
+                                     hole ? u0 : 1e9f, hole ? u1 : -1e9f, y0, y1,
+                                     n, outer != (sc.side > 0),
+                                     [&](float u, float y, float* out) {
+                                         PA(frameAtS(u), lat, y, out);
+                                     });
                     }
 
                     // ---- WHAT MAKES THE ROOM A ROOM. Tim: the rooms "are not

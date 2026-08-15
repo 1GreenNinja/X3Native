@@ -631,6 +631,54 @@ bool runTunnelRoomsSelfTest() {
         rcheck(off.spaces().empty() && off.doors().empty(), b);
     }
 
+    // ---- R10: SOLID ROCK. Every connection between two spaces must be a
+    // DOORWAY, never a whole missing wall.
+    //
+    // This exists because the first geometry pass skipped the entire shared face
+    // wherever two spaces touched. That is correct only if they are the same
+    // size, and they are deliberately not: the hall is 6.6 ft wide and the rooms
+    // are 15-20 ft deep, so up to 13 ft of wall simply vanished. And the hole
+    // does not look out onto anything -- the mountain is a HEIGHTFIELD, so the
+    // volume behind these rooms is VOID. Walking through one leaves the world.
+    //
+    // The property that makes it safe is arithmetic, so it can be asserted from
+    // the data: for every touching pair, the overlap must be a STRICT SUBSET of
+    // at least one of the two faces, which is exactly the condition that leaves
+    // a border of wall standing around the opening.
+    {
+        // The shipped program, on the shipped hillside -- not a synthetic one.
+        TunnelRoomProgram pg; pg.build(route, fit, TunnelTier::A);
+        const auto& sv = pg.spaces();
+
+        int pairs = 0, strict = 0;
+        float worstGapFt = 0.0f;
+        for (size_t a = 0; a < sv.size(); ++a) {
+            for (size_t c = a + 1; c < sv.size(); ++c) {
+                const TunnelSpace& X = sv[a]; const TunnelSpace& Y = sv[c];
+                if (X.side != Y.side) continue;
+                const bool latTouch = (std::fabs(X.latOut - Y.latIn) < 0.1f ||
+                                       std::fabs(Y.latOut - X.latIn) < 0.1f);
+                const bool staTouch = (std::fabs(X.s1 - Y.s0) < 0.1f ||
+                                       std::fabs(Y.s1 - X.s0) < 0.1f);
+                if (!latTouch && !staTouch) continue;
+                ++pairs;
+                // In-plane extents of the two faces, and their overlap.
+                const float xa = latTouch ? X.s0 : X.latIn, xb = latTouch ? X.s1 : X.latOut;
+                const float ya = latTouch ? Y.s0 : Y.latIn, yb = latTouch ? Y.s1 : Y.latOut;
+                const float o0 = std::max(xa, ya), o1 = std::min(xb, yb);
+                if (o1 - o0 <= 0.01f) continue;             // they only graze
+                const float widest = std::max(xb - xa, yb - ya);
+                if ((o1 - o0) < widest - 0.01f) ++strict;
+                worstGapFt = std::max(worstGapFt, (widest - (o1 - o0)) * kFt);
+            }
+        }
+        std::snprintf(b, sizeof(b),
+            "R10 %d connected pair(s); %d have a face WIDER than the opening (up to %.1f ft of wall "
+            "that a whole-face skip would have deleted, straight into the void behind the rooms)",
+            pairs, strict, worstGapFt);
+        rcheck(pairs > 0 && strict > 0, b);
+    }
+
     std::snprintf(b, sizeof(b), "--- tunnel rooms self-test: %d passed, %d failed ---", g_pass, g_fail);
     if (g_fail) x3::logError(b); else x3::logInfo(b);
     return g_fail == 0;
