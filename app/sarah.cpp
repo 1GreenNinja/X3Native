@@ -120,14 +120,23 @@ void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
     //   tears or fuses the mesh — which is why every attempt above failed in the
     //   legs while the torso read fine.
     //
-    //   THE FIX is therefore a RE-RIG OF HER LEGS, not more clip hunting:
-    //   reposition the eight leg joints symmetrically over the actual leg
-    //   geometry and re-weight (Blender automatic weights, then verify by posing
-    //   ONE leg and confirming the other does not move), after which
-    //   retarget_glb.py should transfer any Meshy clip set cleanly. Alternative:
-    //   Meshy Smart Rig from the web UI (web-only; Tim drives it).
-    //   Until then she stays a one-pose figure, and the LIVE F7 path
-    //   (AnnaCasual.glb) is unaffected — it has its own clips. ----
+    //   ✅ RESOLVED 2026-08-15 — Sarah_anim.glb IS COMMITTED AND SHE ANIMATES.
+    //   The fix was a RE-RIG OF HER LEGS (tools/refit_leg_rig.py), not more clip
+    //   hunting: it measures the mesh cross-section at each leg joint's own
+    //   height and places the joint at the centroid of its own side, taking the
+    //   UpLeg separation 0.080 -> 0.257. Clips then transfer cleanly off
+    //   JakeClone_player.glb via tools/retarget_glb.py (world-space orientation,
+    //   so the 94.5 deg rest delta no longer matters):
+    //   Idle / Walk / Run / Aim / Death / Hitreaction.
+    //   This block resolves to 'idle=3 walk=5 aim=0 death=1' where every lookup
+    //   used to MISS at -1, and --test-companion-combat passes 18/18.
+    //   Gotchas that cost the most time, if this is ever redone: the glTF
+    //   importer INVENTS bone tails and hers were at z=-35 (they gate automatic
+    //   weighting's volume test), parent_set(ARMATURE_AUTO) is a silent no-op
+    //   under --background so the leg weights are solved in Python instead, and
+    //   these rigs are authored in CENTIMETRES with a 0.01 armature scale.
+    //   Remaining art nit: the pelvis reads slightly broad in motion.
+    //   The F7 path (AnnaCasual.glb) is unchanged — it has its own clips. ----
     std::string file = std::string(modelFile.empty() ? std::string_view("Sarah.glb")
                                                      : modelFile);
     {
