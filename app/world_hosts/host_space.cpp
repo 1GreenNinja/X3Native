@@ -5,6 +5,7 @@
 // HostContext (`hc.device` is a raw IRenderDevice*, so the pre-split
 // `device.get()`/`device->` become `device`/`device->`), mirroring host_drive.cpp.
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~) + FPS (F3); this host keeps its OWN pause menu
 #include "engine/asset/IAssetSource.h"
 #include "engine/asset/IModelLoader.h"
 #include "../scene.h"
@@ -2078,11 +2079,29 @@ int hostSpace(HostContext& hc) {
         // ---- PAUSE MENU state (ESC opens it; it NO LONGER exits) -----------
         bool paused = false;
         int  menuSel = 0;
-        bool prevEsc = false, prevUp = false, prevDown = false, prevEnter = false;
+        bool prevUp = false, prevDown = false, prevEnter = false;   // prevEsc gone: ESC is a callback edge now
+
+        // Console (~) and the FPS/stats overlay. This host is the ONE exception
+        // to the shell owning ESC: it already has a bespoke four-row pause menu
+        // AND a rule that ESC is a cinematic SKIP, not a pause, during the death
+        // sequence. Replacing that with the shell's generic menu would lose
+        // both, so the escape handler always consumes ESC and just latches the
+        // edge for the host's existing logic below — the shell's own menu never
+        // opens here. What this host gains is the console and the frame times.
+        //
+        // The latch is a real key EVENT now; the polled prevEsc pair it replaces
+        // dropped any press shorter than a frame.
+        HostShell shell;
+        shell.attach(hc);
+        bool escEdge = false;
+        shell.setEscapeHandler([&]() -> bool { escEdge = true; return true; });
         bool prevAnyKey = false;   // rising-edge latch so a held key can't insta-skip
 
         x3::logInfo("--world space: WASD thrust, mouse look, Q/E roll, Space/Ctrl up/down, Shift boost, V camera, LMB laser, 1/2/3 mode, I=invulnerable, Esc=pause menu");
-        while (!glfwWindowShouldClose(window)) {
+        while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
+            // Cleared before the poll: the escape handler runs inside
+            // glfwPollEvents(), so clearing after would wipe what it just set.
+            escEdge = false;
             glfwPollEvents();
             double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
             if (fdt > 0.1f) fdt = 0.1f;
@@ -2119,13 +2138,11 @@ int hostSpace(HostContext& hc) {
             // ESC toggles the pause menu (rising edge) ONLY while flying — during the
             // death cinematic (incl. InsideSun) ESC is a skip, not a pause. Resync the
             // mouse anchor so resume doesn't jump the view.
-            const bool escNow = kd(GLFW_KEY_ESCAPE);
-            if (!seq && escNow && !prevEsc) {
+            if (!seq && escEdge) {
                 paused = !paused;
                 glfwSetInputMode(window, GLFW_CURSOR, paused ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
                 lastMX = mx; lastMY = my;
             }
-            prevEsc = escNow;
 
             if (pilotFrozen) {
                 // Detonation..Respawn: freeze the pilot, advance the phase machine
@@ -2373,6 +2390,7 @@ int hostSpace(HostContext& hc) {
                 if (paused) drawPauseMenu(frame, (float)cw, (float)chh, menuSel);
                 drawCinematic(frame, (float)cw, (float)chh);       // no-op unless a flash/phase overlay is active
             }
+            shell.draw(frame);   // console + FPS over this host's own HUD and menu
             device->endFrame(frame);
         }
         if (warnLoop.valid())  saudio->stopLoop(warnLoop);

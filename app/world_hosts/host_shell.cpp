@@ -141,6 +141,10 @@ bool HostShell::onKey(int key, int action, int mods) {
         // closed the window, so the reflex key is now the safe one and leaving
         // takes a deliberate two-key press (or the menu's QUIT row).
         if (shift) { m_quit = true; return true; }
+        // The host gets first refusal, so its own modals stay closable — see
+        // setEscapeHandler. Not offered while the menu is already up: ESC then
+        // means "leave the menu", unambiguously.
+        if (!m_paused && m_onEscape && m_onEscape()) return true;
         setPaused(!m_paused);
         return true;
     }

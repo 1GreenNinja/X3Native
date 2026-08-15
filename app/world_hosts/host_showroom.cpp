@@ -3,6 +3,7 @@
 // prelude: the 6 `device.get()` calls (main()'s device was a unique_ptr) are
 // `device` here (a raw IRenderDevice*); semantically identical.
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../showroom_tod.h"
 #include "../cinematic.h"        // NightSkyPlanet / loadNightSkyPlanets / drawNightSkyPlanets
 #include "../scene.h"
@@ -1799,7 +1800,7 @@ int hostShowroom(HostContext& hc) {
         bool                  hatchCodeMode = false;
         x3::game::KeypadEntry hatchKeypad;
         bool hkDigitPrev[10] = {};
-        bool hkEnterPrev = false, hkBackPrev = false, hkEscPrev = false;
+        bool hkEnterPrev = false, hkBackPrev = false;   // hkEscPrev gone: ESC is a callback edge now
         float hatchDeniedTimer = 0.0f;   // >0 while the "DENIED" flash is shown
         x3::logInfo("--world showroom: walk the showroom — WASD, mouse look, Space jump, "
                     "LeftShift sprint, E talk to Aria / open the strut-door keypad, F ride elevator, "
@@ -1812,17 +1813,24 @@ int hostShowroom(HostContext& hc) {
                     "glass elevator to the deck.");
 
         int lastWs = (int)W, lastHs = (int)H;
-        while (!glfwWindowShouldClose(window)) {
+
+        // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h.
+        HostShell shell;
+        shell.attach(hc);
+        // ESC keeps its first job — cancelling hatch code-entry (the §6.4 gate
+        // behaviour) — and only opens the shell's menu when the keypad is down.
+        // The shell takes ESC in its key callback, so without this first-refusal
+        // the keypad would have no way out. It is a real edge from the callback
+        // now rather than the polled hkEscPrev pair, which dropped any press
+        // shorter than a frame.
+        shell.setEscapeHandler([&]() -> bool {
+            if (hatchCodeMode) { hatchCodeMode = false; hatchKeypad.clear(); return true; }
+            return false;
+        });
+
+        while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
             glfwPollEvents();
-            // Esc (edge-detected): while the hatch keypad is up, the FIRST Esc cancels
-            // code-entry (mirrors the §6.4 gate, where Esc backs out of codeMode);
-            // otherwise Esc quits the walkthrough as before.
-            bool escNow = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-            if (escNow && !hkEscPrev) {
-                if (hatchCodeMode) { hatchCodeMode = false; hatchKeypad.clear(); }
-                else { hkEscPrev = escNow; break; }
-            }
-            hkEscPrev = escNow;
+            shell.beginFrame();
 
             double now = glfwGetTime();
             float dt = (float)(now - prevTime); prevTime = now;
@@ -1830,10 +1838,11 @@ int hostShowroom(HostContext& hc) {
             elapsed += dt;
 
             double mx, my; glfwGetCursorPos(window, &mx, &my);
-            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            const float look = shell.inputEnabled() ? 1.0f : 0.0f;   // no mouse-look while typing
+            float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
             lastMX = mx; lastMY = my;
 
-            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            auto kd = [&](int k) { return shell.key(k); };   // false while the console/menu owns input
             bool spaceNow = kd(GLFW_KEY_SPACE);
 
             x3::game::PlayerInput in;
@@ -2122,6 +2131,7 @@ int hostShowroom(HostContext& hc) {
                     device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(), bx, by, 22.0f, bcol);
                 }
             }
+            shell.draw(frame);
             device->endFrame(frame);
         }
 

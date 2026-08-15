@@ -99,6 +99,18 @@ public:
     // they can cheaply stop — so the shell asks rather than assumes.
     void setFreezesSim(bool yes) { m_freezesSim = yes; }
 
+    // ESC FIRST-REFUSAL. Some hosts already give ESC a layered meaning — close
+    // the confirm prompt, then the world map, then quit (host_streamed); cancel
+    // the keypad entry (host_showroom). The shell takes ESC in the key callback,
+    // so without this the host would simply never see it and its own modal
+    // would become unclosable.
+    //
+    // Return true from the handler if the host consumed the press. The shell
+    // only opens its menu when the handler declines. Not called for SHIFT+ESC,
+    // which always quits, or while the console is open, where ESC closes the
+    // console.
+    void setEscapeHandler(std::function<bool()> fn) { m_onEscape = std::move(fn); }
+
     // ---- Draw --------------------------------------------------------------
     // Console panel, pause menu and FPS/stats overlay, in that stacking order.
     // Call after the world has rendered and before endFrame().
@@ -145,6 +157,8 @@ private:
 
     double m_lastTime = 0.0;    // shell's own frame clock (see draw(frame))
     float  m_dt       = 1.0f / 60.0f;
+
+    std::function<bool()> m_onEscape;   // host first-refusal on ESC
 
     // Cursor mode to restore when the menu closes: hosts differ (a driving host
     // captures the cursor, a showroom may not), so the shell remembers rather
