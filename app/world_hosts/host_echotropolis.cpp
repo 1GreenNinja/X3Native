@@ -1970,6 +1970,27 @@ int hostEchotropolis(HostContext& hc) {
     // Pose the default orbit (17deg, radius 70), settle the waves a few frames so
     // the Gerstner surface isn't flat, then arm+grab. Mirrors host_valley's grab.
     if (headless || screenshot) {
+        // --set OVERRIDES IN THE CAPTURE PATH. This host's console — and every
+        // registerCVar in it — lives in the INTERACTIVE branch far below, which
+        // a screenshot run returns long before reaching. So `--set` has never
+        // had ANY effect on a capture from this world: every headless cvar A/B
+        // taken here compared an image to itself. Rather than stand a whole
+        // console up in the capture path, read the overrides the capture needs.
+        auto cliVal = [&](const char* name, float dflt) {
+            for (const auto& kv : hc.cliCVars)
+                if (kv.first == name) return (float)std::atof(kv.second.c_str());
+            return dflt;
+        };
+        {
+            x3::rhi::IRenderDevice::WetnessParams wt{};
+            wt.amount   = cliVal("r_wetness", 0.0f);
+            wt.porosity = cliVal("r_wetness_porosity", 1.0f);
+            wt.puddles  = cliVal("r_wetness_puddles", 1.0f);
+            wt.minRough = cliVal("r_wetness_minrough", 0.06f);
+            device->setWetness(wt);
+            x3::logInfo("--world echotropolis: WETNESS amount " +
+                        std::to_string(wt.amount) + " (capture path)");
+        }
         // Snap the smoothed state onto the targets (no live input to ease from).
         rig.sFocusX = rig.focusX; rig.sFocusZ = rig.focusZ;
         rig.sYaw = rig.yaw; rig.sPitch = rig.pitch; rig.sRadius = rig.radius;
@@ -3097,6 +3118,10 @@ int hostEchotropolis(HostContext& hc) {
     console->registerCVar("r_rtreflections", "0", "ray-query reflection fallback where SSR misses (RT hardware only)");
     console->registerCVar("r_reflquality",   "0", "reflection buffer resolution: 0 = half-res (default), 1 = full-res");
     console->registerCVar("r_reflintensity", "1", "reflection blend weight scale [0..1] on the IBL-specular replace");
+    console->registerCVar("r_wetness",         "0",    "Surface wetness 0..1 (rain soak); 0 = dry (byte-identical)");
+    console->registerCVar("r_wetness_porosity","1.0",  "How much materials darken when wet");
+    console->registerCVar("r_wetness_puddles", "1.0",  "Cavity/AO pooling strength (0 = uniform coat)");
+    console->registerCVar("r_wetness_minrough","0.06", "Roughness a fully-soaked surface converges to");
     console->registerCVar("r_ddgi",           "1",    "DDGI probe-grid GI (this world defaults ON; 0 = flat/IBL ambient)");
     console->registerCVar("r_ddgi_debug",     "0",    "DDGI debug view: 0 = off, 1 = irradiance field, 2 = grid confidence");
     console->registerCVar("r_ddgi_rays",      "96",   "DDGI rays per probe per frame (16..128)");
@@ -3137,6 +3162,17 @@ int hostEchotropolis(HostContext& hc) {
                     (device->rayTracingSupported() ? " [RT hardware]" : " [no RT — inert]"));
     }
 
+    // --set OVERRIDES. This host builds its OWN console and registers its own
+    // cvars above, and until now it never looked at hc.cliCVars — so `--set`
+    // was a SILENT NO-OP for every cvar in this world, not just new ones. Any
+    // A/B run against --world echotropolis with --set compared a value to
+    // itself. Applied HERE, after registration, because registerCVar seeds the
+    // default and would otherwise stomp the override.
+    for (const auto& kv : hc.cliCVars) {
+        console->set(kv.first, kv.second);
+        x3::logInfo("--world echotropolis: --set " + kv.first + " " + kv.second);
+    }
+
     // Per-frame cvar -> device sync (the app_run applyRtaoCVars pattern). Cheap:
     // string lookups on ~20 cvars; every setter is a cached-store no-op when
     // unchanged. Runs at the top of the frame so console edits apply same-frame.
@@ -3173,6 +3209,16 @@ int hostEchotropolis(HostContext& hc) {
         ddgiP.raysPerProbe = std::clamp(ci("r_ddgi_rays"), 16, 128);
         ddgiP.intensity    = cf("r_ddgi_intensity");
         device->setDdgiParams(ddgiP);
+        // SURFACE WETNESS. Echo Harbor is a Pacific-Northwest harbour: rain is
+        // its default mood, and a wet street is what makes the reflection and
+        // DDGI work above actually visible. The cvar is the manual override;
+        // when this world drives Weather it feeds WetnessModel instead.
+        x3::rhi::IRenderDevice::WetnessParams wt{};
+        wt.amount   = cf("r_wetness");
+        wt.porosity = cf("r_wetness_porosity");
+        wt.puddles  = cf("r_wetness_puddles");
+        wt.minRough = cf("r_wetness_minrough");
+        device->setWetness(wt);
         x3::rhi::IRenderDevice::RtShadowParams rs{};
         rs.tier        = ci("r_rtshadows");
         rs.sunSizeDeg  = cf("r_rtsun_size");

@@ -189,6 +189,7 @@ add_library(x3app SHARED
     vehicle.cpp
     world_cars.cpp
     street_lights.cpp
+    wetness.cpp         # rain soak/dry + ice + tire grip (wetness lane)
     mine_fx.cpp         # the mine-entrance family (Armory rock + glowing mouth)
     vehparts.cpp
     csm_test.cpp

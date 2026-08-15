@@ -104,6 +104,7 @@ struct TestFlags {
     bool testCsm = false;   // Lane 3: cascaded shadow maps (splits, snapping, rotation invariance)
     bool testGeoLod = false;// Lane 5: mesh LOD (screen-space error, hysteresis) + vertex compression
     bool testMineFx = false;// mines lane: Armory mine entrance census + glow bake
+    bool testWetness = false;// wetness lane: rain soak/dry asymmetry, ice hysteresis, tire grip
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
     bool testReflDenoise = false;    // --test-refldenoise (edge-aware a-trous reflection DENOISE; pure CPU)
     bool testEchoRoads = false;      // --test-echoroads (LIFT A: EchoRoads road-graph checksum; no GPU, no assets)

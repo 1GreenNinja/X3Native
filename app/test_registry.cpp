@@ -152,6 +152,7 @@
 
 #include "test_registry.h"
 #include "mine_fx.h"
+#include "wetness.h"
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
 #include "speaking_monster.h"    // x3::apphost::SpeakingMonster (--demo-dialog)
 
@@ -1085,6 +1086,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(EoS arch-glow bake varies + fixture census + light complement + "
                     "deep-core brightest + teardown)...");
         return x3::game::runMineFxSelfTest() ? 0 : 1;
+    }
+    if (tf.testWetness) {
+        x3::logInfo("running SURFACE WETNESS self-test "
+                    "(soak/dry asymmetry + drizzle ceiling + ice needs water + "
+                    "freeze/thaw hysteresis + grip ordering + NEGATIVE CONTROL)...");
+        return x3::game::runWetnessSelfTest() ? 0 : 1;
     }
     if (tf.testGeoLod) {
         x3::logInfo("running MESH LOD + VERTEX COMPRESSION self-test "

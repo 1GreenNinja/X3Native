@@ -47,6 +47,7 @@ struct CliOptions {
          testNet = false, testRescue = false, testCompanionCombat = false, testDestruction = false,
          testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testCsm = false, testGeoLod = false,
          testMineFx = false,
+         testWetness = false,   // --test-wetness: rain soak/dry, ice hysteresis, tire grip
          testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,

@@ -2146,6 +2146,11 @@ void VulkanRenderDevice::prepareFrameData() {
                 (m_terrainNrmIdx[0] << 16) | (m_terrainNrmIdx[1] & 0xFFFFu),
                 (m_terrainNrmIdx[2] << 16) | (m_terrainNrmIdx[3] & 0xFFFFu),
                 0u, 0u);
+            // SURFACE WETNESS lane (setWetness): amount 0 leaves this all-zero,
+            // and mesh.frag's gate is `amount > 0`, so a dry world never spends
+            // an instruction on it and every existing capture is unchanged.
+            sc.wetness  = glm::vec4(m_wetness.amount, m_wetness.porosity,
+                                    m_wetness.puddles, m_wetness.minRough);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }

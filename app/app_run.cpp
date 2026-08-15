@@ -569,6 +569,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // with traced bounce light; specular stays IBL/reflections. Requires ray-query
     // + position-fetch hardware (RTX class); everything else silently ignores it.
     // Probes converge over ~1-2 s; emissive panels + sun changes propagate. Live.
+    console.registerCVar("r_wetness",         "0",    "Surface wetness 0..1 (rain soak): darkens diffuse, smooths roughness, raises F0; 0 = off (byte-identical)");
+    console.registerCVar("r_wetness_porosity","1.0",  "How much this world's materials darken when wet (0 = no darkening)");
+    console.registerCVar("r_wetness_puddles", "1.0",  "Strength of cavity/AO pooling (0 = uniform coat, no puddles)");
+    console.registerCVar("r_wetness_minrough","0.06", "Roughness a fully-soaked surface converges to (0 = mirror)");
     console.registerCVar("r_ddgi",           "0",    "DDGI probe-grid GI (ray query + position fetch); 0 = off (flat/IBL ambient, byte-identical)");
     console.registerCVar("r_ddgi_debug",     "0",    "DDGI debug view: 0 = off, 1 = irradiance field, 2 = grid confidence");
     console.registerCVar("r_ddgi_rays",      "96",   "DDGI rays per probe per frame (16..128)");
@@ -850,6 +854,16 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     if (dg.raysPerProbe <= 0) dg.raysPerProbe = 96;
     if (dg.hysteresis  <= 0.0f) dg.hysteresis = 0.97f;
     device.setDdgiParams(dg);
+    // SURFACE WETNESS (live). r_wetness is the GLOBAL soak the shader applies.
+    // A host that models weather drives this from WetnessModel rather than the
+    // cvar. 0 = gate shut = byte-identical, which is why every dry world and
+    // every existing capture is untouched by this lane.
+    x3::rhi::IRenderDevice::WetnessParams wt{};
+    wt.amount   = console.getFloat("r_wetness");
+    wt.porosity = console.getFloat("r_wetness_porosity");
+    wt.puddles  = console.getFloat("r_wetness_puddles");
+    wt.minRough = console.getFloat("r_wetness_minrough");
+    device.setWetness(wt);
     // RT soft shadows (live). The device tier-gates on ray-query hardware + the
     // mesh_rt pipeline variants; on anything else this is a harmless store and
     // the plain (bit-identical) mesh pipelines stay bound.
