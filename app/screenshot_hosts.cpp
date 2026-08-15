@@ -3504,6 +3504,7 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
         const int   kFrames      = 60;    // plan: 60 frames @ 20 fps
         const int   kStepsPerCap = 10;    // 1/6 s sim per frame: doors + the full
                                           // 60 m leg + arrival fit the 60 frames
+        float fcWaterClock = 0.0f;        // the confection river (T7): host-pushed
         int   fcFrameNo = 0;
         std::vector<std::string> fcFramePaths;
         for (int f = 0; f < kFrames; ++f) {
@@ -3518,6 +3519,12 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
                 lp.insert(lp.end(), fcelev.pointLights().begin(),
                           fcelev.pointLights().end());
                 device->setPointLights(lp.data(), (uint32_t)lp.size());
+            }
+            {   // The confection river (T7) — host-advanced water clock.
+                fcWaterClock += sdt * (float)kStepsPerCap;
+                x3::rhi::IRenderDevice::WaterParams wp = fcannex.riverWater();
+                wp.time = fcWaterClock;
+                device->setWaterParams(wp);
             }
             // Rider's eye INSIDE the cab, looking down the direction of travel
             // (+X — device forward at yaw 0): ribs, then the glass curtain.

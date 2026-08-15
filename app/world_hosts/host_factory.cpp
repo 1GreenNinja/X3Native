@@ -122,6 +122,19 @@ int hostFactory(HostContext& hc) {
 
     const float dt = 1.0f / 60.0f;
 
+    // THE CONFECTION RIVER (Floor A, T7): the annex registers the raspberry
+    // water params at build; the HOST owns the device push (setWaterParams is
+    // host territory, per the plan). The clock is host-advanced so captures
+    // are deterministic (the engine water convention). Stack copy per frame —
+    // no heap.
+    float waterClock = 0.0f;
+    auto pushWater = [&](float advance) {
+        waterClock += advance;
+        x3::rhi::IRenderDevice::WaterParams wp = annex.riverWater();
+        wp.time = waterClock;
+        device->setWaterParams(wp);
+    };
+
     // ONE point-light push per frame: the annex's rig (per-floor accents +
     // bore brass, static) + the elevator's (cab interior/disco, animated).
     // Reserved once — no per-frame heap after the first push.
@@ -157,6 +170,7 @@ int hostFactory(HostContext& hc) {
             fafx.update(dt);
             faphys->step(dt);
             pushLights();
+            pushWater(dt);
             device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
             if (i == kSettle - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
@@ -320,6 +334,7 @@ int hostFactory(HostContext& hc) {
             annex.onTrigger(id);
 
         pushLights();
+        pushWater(fdt);
 
         // HUD line (dependency-free): the window title.
         {

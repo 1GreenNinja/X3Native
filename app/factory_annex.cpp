@@ -163,6 +163,37 @@ void addSlabWithOpening(Scene& scene, x3::rhi::IRenderDevice& device,
     }
 }
 
+// Floor A's slab (Task 7): the standard 40x40-with-cab-opening MINUS the
+// confection river channel — a full-depth slot at local x [kRiverX0, kRiverX1]
+// running the whole Z extent. Five axis-aligned segments, render + physics
+// (the slot is REALLY open; the river bed/banks below are Floor A content,
+// factory_rooms.cpp). East region carries the cab opening exactly like
+// addSlabWithOpening; west of the channel is one bank strip.
+void addSlabFloorA(Scene& scene, x3::rhi::IRenderDevice& device,
+                   x3::phys::IPhysicsWorld& physics,
+                   std::vector<x3::rhi::MeshHandle>& meshes,
+                   float cx, float topY, float cz, float half,
+                   const SurfaceSet* sf, const float tint[3]) {
+    const float cy  = topY - kSlabHalfT;
+    const float rx0 = FactoryAnnex::kRiverX0, rx1 = FactoryAnnex::kRiverX1;
+    struct Seg { float x0, z0, x1, z1; };
+    const Seg segs[5] = {
+        { -half,     -half,      rx0,        half      },   // west bank strip
+        { rx1,        kOpenHalf, half,       half      },   // east: +Z strip
+        { rx1,       -half,      half,      -kOpenHalf },   // east: -Z strip
+        { kOpenHalf, -kOpenHalf, half,       kOpenHalf },   // east: +X side block
+        { rx1,       -kOpenHalf, -kOpenHalf, kOpenHalf },   // east: -X side block
+    };
+    for (const Seg& s : segs) {
+        const float scx = cx + (s.x0 + s.x1) * 0.5f, scz = cz + (s.z0 + s.z1) * 0.5f;
+        const float shx = (s.x1 - s.x0) * 0.5f,      shz = (s.z1 - s.z0) * 0.5f;
+        addSurfBox(scene, device, meshes, scx, cy, scz, shx, kSlabHalfT, shz, sf, tint);
+        physics.addBox(x3::phys::Vec3{ shx, kSlabHalfT, shz },
+                       x3::phys::Vec3{ scx, cy, scz },
+                       0.0f, x3::phys::Layer::Static);
+    }
+}
+
 } // namespace
 
 const float FactoryAnnex::kFloorBaseY[FactoryAnnex::kFloorCount] =
@@ -232,6 +263,7 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
         AnnexRoom r;
         r.name  = kRoomSpec[i].name;
         r.baseY = kFloorBaseY[i];
+        r.centerX = ax; r.centerZ = az;
         r.accent[0] = kRoomSpec[i].accent[0];
         r.accent[1] = kRoomSpec[i].accent[1];
         r.accent[2] = kRoomSpec[i].accent[2];
@@ -242,7 +274,11 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // opening (the annex vertical chain passes through the room centers; the
     // parked cab fills the opening flush with the walking floor). The ROOF is
     // the plane the Burst shatters through (kRoofY = 65 — setBurst's roofY).
-    for (uint32_t i = 0; i < kFloorCount; ++i)
+    // Floor A carries the confection river slot (Task 7); the rest are the
+    // standard slab-with-cab-opening.
+    addSlabFloorA(scene, device, physics, m_meshes,
+                  ax, kFloorBaseY[0], az, kFloorHalf, &sDeck, kFloorTint);
+    for (uint32_t i = 1; i < kFloorCount; ++i)
         addSlabWithOpening(scene, device, physics, m_meshes,
                            ax, kFloorBaseY[i], az, kFloorHalf, &sDeck, kFloorTint);
     addSlabWithOpening(scene, device, physics, m_meshes,
@@ -445,9 +481,10 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
     addSlabWithOpening(scene, device, physics, m_meshes,
                        shaftX, kFloorBaseY[1], shaftZ, kLandHalf, &sDeck, kFloorTint);
 
-    // ===== Per-room content hooks (factory_rooms.cpp — EMPTY in Phase 2).
+    // ===== Per-room content hooks (factory_rooms.cpp — Phase 3 fills them).
     {
-        FactoryRoomCtx ctx{ scene, device, physics, m_meshes, m_surf, ax, az };
+        FactoryRoomCtx ctx{ scene, device, physics, m_meshes, m_surf, ax, az,
+                            &m_river };
         buildRoomMixture  (ctx, m_rooms[0]);
         buildRoomInvention(ctx, m_rooms[1]);
         buildRoomFizz     (ctx, m_rooms[2]);
@@ -602,6 +639,7 @@ void FactoryAnnex::shutdown(x3::rhi::IRenderDevice& device) {
     m_trimGlowFirst = m_trimGlowCount = 0;
     m_accentFirst = m_accentCount = 0;
     m_lights.clear();
+    m_river = x3::rhi::IRenderDevice::WaterParams{};
     m_entFirst = m_entCount = 0;
     m_lowGrav = m_chute = m_burstDais = m_tubeRide = m_boreEntered = false;
     m_time = 0.0f;
@@ -688,23 +726,69 @@ bool runFactoryAnnexSelfTest() {
             annex.entityFirst() + annex.entityCount() == scene.size(),
             "F1b shell entity/mesh counts + span in range");
     {
-        bool roomsEmpty = true;   // Phase 2 law: rooms are EMPTY hooks
-        for (uint32_t i = 0; i < annex.roomCount(); ++i)
-            if (annex.room(i).propEntCount != 0 || annex.room(i).glowEntCount != 0)
-                roomsEmpty = false;
-        faCheck(roomsEmpty, "F1c Phase-2 rooms are empty hooks (Phase 3 fills them)");
+        // Phase-3 law: the per-room content spans are PINNED as each room
+        // lands (the Phase-2 all-zero pins flip room by room). Spans must be
+        // contiguous, in scene range, and exactly the authored sizes.
+        struct Pin { uint32_t prop, glow; };
+        const Pin want[FactoryAnnex::kFloorCount] = {
+            { 6, 56 },   // A MIXTURE ATRIUM: 6 stir arms; 48 rim studs + 8 river glow
+            { 0, 0 },    // B (Task 8)
+            { 0, 0 },    // C (Task 9)
+            { 0, 0 },    // D (Task 10)
+            { 0, 0 },    // E (Task 11)
+        };
+        bool pinsOk = true;
+        for (uint32_t i = 0; i < annex.roomCount(); ++i) {
+            const AnnexRoom& r = annex.room(i);
+            if (r.propEntCount != want[i].prop || r.glowEntCount != want[i].glow) {
+                pinsOk = false;
+                char pb[128];
+                std::snprintf(pb, sizeof(pb),
+                    "  F1c room %u spans: prop %u (want %u) glow %u (want %u)",
+                    i, r.propEntCount, want[i].prop, r.glowEntCount, want[i].glow);
+                x3::logError(pb);
+            }
+            if (r.propEntCount && r.propEntFirst + r.propEntCount > scene.size()) pinsOk = false;
+            if (r.glowEntCount && r.glowEntFirst + r.glowEntCount > scene.size()) pinsOk = false;
+        }
+        faCheck(pinsOk, "F1c per-room content spans pinned (A landed)");
     }
 
-    // ---- F2: all 10 triggers registered with the exact 300-313 id map.
+    // ---- F2: Floor A stir arms MOVE — tick 30 frames, a stir arm's rotation
+    // basis must change (pose poke on the prop span; plan T7 step 4).
+    {
+        const AnnexRoom& rA = annex.room(0);
+        const uint32_t arm = rA.propEntFirst;
+        const float b0 = scene.get(arm).transform[0], b2 = scene.get(arm).transform[2];
+        for (int i = 0; i < 30; ++i) annex.tick(dt, scene);
+        const bool moved =
+            std::fabs(scene.get(arm).transform[0] - b0) > 1e-4f ||
+            std::fabs(scene.get(arm).transform[2] - b2) > 1e-4f;
+        faCheck(moved, "F2 stir arm rotates across 30 ticks (span pose poke)");
+    }
+
+    // ---- F3: the confection river's water params are registered (the host
+    // applies them): enabled, raspberry-tinted, surface BELOW every deck.
+    {
+        const auto wp = annex.riverWater();
+        faCheck(wp.enabled &&
+                std::fabs(wp.seaLevel - FactoryAnnex::kRiverSurfY) < 1e-4f &&
+                wp.seaLevel < FactoryAnnex::kFloorBaseY[0] &&
+                wp.shallowColor[0] > wp.shallowColor[1] &&      // raspberry: R-dominant
+                wp.shallowColor[0] > wp.shallowColor[2],
+                "F3 river water params registered (raspberry, sunken surface)");
+    }
+
+    // ---- F11: all 10 triggers registered with the exact 300-313 id map.
     {
         const uint32_t ids[kFactoryTrigCount] = { 300, 301, 302, 303, 304,
                                                   305, 310, 311, 312, 313 };
         bool all = triggers.count() == kFactoryTrigCount;
         for (uint32_t id : ids) if (!triggers.findById(id)) all = false;
-        faCheck(all, "F2 all 10 triggers registered (300-305 + 310-313)");
+        faCheck(all, "F11 all 10 triggers registered (300-305 + 310-313)");
     }
 
-    // ---- F3: the combined elevator graph reaches A5 from F1 THROUGH the 4790
+    // ---- F12: the combined elevator graph reaches A5 from F1 THROUGH the 4790
     // unlock. Locked first (callTo must be a no-op), then the code, then the
     // full multi-leg ride: F1 -> F3 (vertical) -> A2 (lateral bore) -> A5
     // (annex chain), full-stop at every corner by design.
@@ -719,12 +803,12 @@ bool runFactoryAnnexSelfTest() {
         elev.enableFsm(true);
         elev.setFloorLabels(g.labels);
         elev.setBurst(g.a5, FactoryAnnex::kRoofY, 105.0f);
-        faCheck(built && elev.stopCount() == 7, "F3 combined graph builds (7 stops)");
+        faCheck(built && elev.stopCount() == 7, "F12 combined graph builds (7 stops)");
         elev.callTo(g.a5);
         faCheck(elev.state() == ElevState::Idle && !elev.hiddenUnlocked(),
-                "F3b locked annex: callTo(A5) is a no-op before the code");
+                "F12b locked annex: callTo(A5) is a no-op before the code");
         elev.keypadDigit(4); elev.keypadDigit(7); elev.keypadDigit(9); elev.keypadDigit(0);
-        faCheck(elev.hiddenUnlocked(), "F3c keypad 4790 unlocks the annex rail");
+        faCheck(elev.hiddenUnlocked(), "F12c keypad 4790 unlocks the annex rail");
         elev.callTo(g.a5);
         bool arrived = false;
         for (int i = 0; i < 60 * 120 && !arrived; ++i) {   // 120 s sim budget
@@ -736,12 +820,12 @@ bool runFactoryAnnexSelfTest() {
         faCheck(arrived &&
                 std::fabs(c.x - FactoryAnnex::kAnnexXOff) < 0.05f &&
                 std::fabs(c.y - (FactoryAnnex::kFloorBaseY[4] - FactoryAnnex::kCabHalfY)) < 0.05f,
-                "F3d cab rides F1 -> F3 -> lateral bore -> A5 and opens the doors");
+                "F12d cab rides F1 -> F3 -> lateral bore -> A5 and opens the doors");
         faCheck(elev.floorLabel(g.a5) == "A5",
-                "F3e setFloorLabels wired (Phase-1 handoff: labels are host-fed)");
+                "F12e setFloorLabels wired (Phase-1 handoff: labels are host-fed)");
     }
 
-    // ---- F4: tick() animates the shell — a bore rib's emissive moves.
+    // ---- F13: tick() animates the shell — a bore rib's emissive moves.
     {
         // Rib span is annex-internal; probe via a known glow entity: tick twice
         // at different times and require SOME entity emissive[3] to change.
@@ -751,10 +835,10 @@ bool runFactoryAnnexSelfTest() {
         bool moved = false;
         for (uint32_t i = 0; i < scene.size(); ++i)
             if (std::fabs(scene.get(i).emissive[3] - before[i]) > 1e-4f) moved = true;
-        faCheck(moved, "F4 tick() pulses the bore/trim glow spans");
+        faCheck(moved, "F13 tick() pulses the bore/trim glow spans");
     }
 
-    // ---- F5: onTrigger latches — room visited + low-grav + chute + dais.
+    // ---- F14: onTrigger latches — room visited + low-grav + chute + dais.
     {
         annex.onTrigger((uint32_t)FactoryTrigger::RoomMixture);
         annex.onTrigger((uint32_t)FactoryTrigger::FizzLowGrav);
@@ -762,18 +846,18 @@ bool runFactoryAnnexSelfTest() {
         annex.onTrigger((uint32_t)FactoryTrigger::BurstArm);
         faCheck(annex.room(0).visited && annex.lowGravActive() &&
                 annex.chuteTripped() && annex.burstDaisVisited(),
-                "F5 onTrigger latches visited/low-grav/chute/dais");
+                "F14 onTrigger latches visited/low-grav/chute/dais");
         annex.onTrigger((uint32_t)FactoryTrigger::RoomMixture);   // idempotent
-        faCheck(annex.room(0).visited, "F5b onTrigger is idempotent");
+        faCheck(annex.room(0).visited, "F14b onTrigger is idempotent");
     }
 
-    // ---- F6: clean shutdown — every device create balanced by a destroy (the
+    // ---- F15: clean shutdown — every device create balanced by a destroy (the
     // headless VMA-leak analogue), and the annex resets.
     {
         annex.shutdown(device);
         faCheck(!annex.built() && annex.meshCount() == 0 &&
                 device.meshLive == 0 && device.texLive == 0,
-                "F6 shutdown frees every mesh/texture (create/destroy balance)");
+                "F15 shutdown frees every mesh/texture (create/destroy balance)");
     }
 
     phys->shutdown();

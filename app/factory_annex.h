@@ -62,10 +62,24 @@ constexpr uint32_t kFactoryTrigCount = 10;    // 300-305 + 310-313
 struct AnnexRoom {
     const char* name = "";                 // e.g. "MIXTURE ATRIUM" (original ONLY)
     float       baseY = 0.0f;              // walking-floor Y of this room
+    float       centerX = 0.0f, centerZ = 0.0f;   // room center (== annex center)
     float       accent[3] = { 1, 1, 1 };   // room accent color (linear)
     uint32_t    propEntFirst = 0, propEntCount = 0;   // animated span (pose pokes)
     uint32_t    glowEntFirst = 0, glowEntCount = 0;   // emissive-pulse span
     bool        visited = false;           // latched by its entry trigger
+    // ---- Phase-3 room state (POD, authored at build; tick mutates in place —
+    // no heap). stateA/stateB are room-specific clocks (Sorting: seconds since
+    // the chute tripped; Tube: last capsule leg, for arrival edges). eventCount
+    // bumps on host-audible beats (capsule docking thunk, hatch fully open)
+    // with eventPos = where — the host edge-detects it for 3D cues.
+    float    stateA = 0.0f, stateB = 0.0f;
+    uint32_t eventCount = 0;
+    float    eventPos[3] = { 0, 0, 0 };
+    // The Sorting Hall's hatch is a MOVED-STATIC (the elevator-cab technique):
+    // its physics body slides aside with the visual so the floor really opens.
+    // The room keeps the world pointer it was built against for that one poke.
+    x3::phys::IPhysicsWorld* physRef = nullptr;
+    x3::phys::BodyId         hatchBody{};
 };
 
 class FactoryAnnex;
@@ -83,6 +97,9 @@ struct FactoryRoomCtx {
     SurfaceLibrary&                   surf;
     float                             centerX = 0.0f;
     float                             centerZ = 0.0f;
+    // Floor A registers the confection river's water params through here
+    // (points at the annex's m_river; see FactoryAnnex::riverWater()).
+    x3::rhi::IRenderDevice::WaterParams* river = nullptr;
 };
 
 // The Confection Annex. Build once after device + physics + a TriggerSystem are
@@ -103,6 +120,23 @@ public:
     static constexpr float    kCabHalfX    = 1.6f;   // cab half-extents (match E7-E11)
     static constexpr float    kCabHalfY    = 0.25f;
     static constexpr float    kCabHalfZ    = 1.6f;
+    // THE CONFECTION RIVER (Floor A, Task 7): a sunken channel cut clean
+    // through the Floor-A slab at local x [kRiverX0, kRiverX1] (offsets from
+    // the annex center), running the full Z extent. The water surface sits
+    // BELOW every walkable deck (the water plane is engine-global). The plan
+    // sketches the band "diagonally"; slab segmentation + IPhysicsWorld::addBox
+    // are axis-aligned (no yaw), so the channel runs straight along Z — the
+    // documented Task-7 adaptation.
+    static constexpr float kRiverX0    = -16.0f;
+    static constexpr float kRiverX1    = -4.0f;
+    static constexpr float kRiverSurfY = 1.55f;   // water level (kFloorBaseY[0]-0.45)
+    static constexpr float kRiverBedY  = 0.65f;   // channel bed (wading floor)
+    // THE CHUTE OF DUBIOUS QUALITY (Floor D, Task 10): the drop-shaft column at
+    // local (kChuteX, kChuteZ); floors B/C/D slabs carry a kChuteHoleHalf hole
+    // (Floor A keeps its slab — the padded room's floor).
+    static constexpr float kChuteX        = 8.0f;
+    static constexpr float kChuteZ        = 8.0f;
+    static constexpr float kChuteHoleHalf = 1.1f;
     // Walking-floor Y per room (A..E). Cab-center stop Y = baseY - kCabHalfY +
     // 2*kCabHalfY... no: cab TOP flush with the walking floor => center =
     // baseY - kCabHalfY (see makeElevatorGraph in factory_annex.cpp).
@@ -130,6 +164,15 @@ public:
     // textures and the surface-library sets. Physics ownership stays with the
     // caller (the host shuts down its own world), mirroring Rifthub.
     void shutdown(x3::rhi::IRenderDevice& device);
+
+    // THE CONFECTION RIVER's water parameters (Floor A, Task 7): the raspberry
+    // Gerstner surface that fills the river channel cut through the Floor-A
+    // slab (sea level BELOW every walkable deck — the plane is global, so the
+    // channel is sunken; from outside the annex it reads as the confection sea
+    // the works are built over). The HOST applies it (device.setWaterParams is
+    // host territory, the plan's T7 step 2): copy, advance .time, push per
+    // frame. enabled=false until Floor A is built.
+    x3::rhi::IRenderDevice::WaterParams riverWater() const { return m_river; }
 
     // Host atmosphere opt-in (called once after build()): dark-iron interior
     // ambient + IBL so the aubergine shell + emissive brass read (values live
@@ -206,6 +249,13 @@ private:
 
     // The annex's own point lights (see pointLights()).
     std::vector<x3::rhi::PointLight> m_lights;
+    // The confection river's water params (filled by Floor A's builder via
+    // setRiverWater — factory_rooms.cpp owns the art numbers).
+    x3::rhi::IRenderDevice::WaterParams m_river;
+public:
+    // factory_rooms.cpp (Floor A) registers the river here. Not for hosts.
+    void setRiverWater(const x3::rhi::IRenderDevice::WaterParams& wp) { m_river = wp; }
+private:
     // Full annex entity span (self-test range checks).
     uint32_t m_entFirst = 0, m_entCount = 0;
 };
