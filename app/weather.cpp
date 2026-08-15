@@ -9,6 +9,7 @@
 #include "engine/core/x3_log.h"
 
 #include <cmath>
+#include <cstdio>
 #include <string>
 
 namespace x3::game {
@@ -36,6 +37,7 @@ struct WeatherLook {
     float ambient[3];      // ambient/fill nudge
     float precipitation;   // 0..1 rain/snow particle intensity hint
     float hazardLevel;     // 0..1 (0 == non-hazardous state)
+    float tempOffsetC;     // shift from the biome's base temperature, degrees C
 };
 
 // Table indexed by WeatherState. Hazard states: Storm (lightning), Sandstorm
@@ -43,14 +45,58 @@ struct WeatherLook {
 // the Swamp (poison) — handled at sample time via the biome. Base table marks
 // the unconditional hazards; swamp-fog poison is layered on in rebuildSample().
 const WeatherLook kLooks[(int)WeatherState::Count] = {
-    /* Clear     */ { 0.30f, 1.00f, 1.00f, { 1.00f, 1.00f, 1.00f }, { 0.16f, 0.17f, 0.20f }, 0.00f, 0.00f },
-    /* Cloudy    */ { 0.45f, 0.92f, 0.70f, { 0.92f, 0.93f, 0.95f }, { 0.15f, 0.16f, 0.18f }, 0.00f, 0.00f },
-    /* Rain      */ { 0.60f, 0.80f, 0.50f, { 0.80f, 0.84f, 0.90f }, { 0.13f, 0.14f, 0.17f }, 0.65f, 0.00f },
-    /* Storm     */ { 0.72f, 0.62f, 0.32f, { 0.62f, 0.66f, 0.78f }, { 0.10f, 0.11f, 0.15f }, 0.90f, 0.70f },
-    /* Fog       */ { 0.92f, 0.78f, 0.45f, { 0.85f, 0.86f, 0.88f }, { 0.15f, 0.15f, 0.16f }, 0.00f, 0.00f },
-    /* Sandstorm */ { 0.95f, 0.70f, 0.40f, { 1.05f, 0.85f, 0.55f }, { 0.18f, 0.13f, 0.08f }, 0.40f, 0.85f },
-    /* Snow      */ { 0.70f, 0.95f, 0.65f, { 0.95f, 0.97f, 1.05f }, { 0.18f, 0.19f, 0.22f }, 0.70f, 0.55f },
+    /* Clear     */ { 0.30f, 1.00f, 1.00f, { 1.00f, 1.00f, 1.00f }, { 0.16f, 0.17f, 0.20f }, 0.00f, 0.00f,  2.0f },
+    /* Cloudy    */ { 0.45f, 0.92f, 0.70f, { 0.92f, 0.93f, 0.95f }, { 0.15f, 0.16f, 0.18f }, 0.00f, 0.00f, -1.0f },
+    /* Rain      */ { 0.60f, 0.80f, 0.50f, { 0.80f, 0.84f, 0.90f }, { 0.13f, 0.14f, 0.17f }, 0.65f, 0.00f, -3.0f },
+    /* Storm     */ { 0.72f, 0.62f, 0.32f, { 0.62f, 0.66f, 0.78f }, { 0.10f, 0.11f, 0.15f }, 0.90f, 0.70f, -5.0f },
+    /* Fog       */ { 0.92f, 0.78f, 0.45f, { 0.85f, 0.86f, 0.88f }, { 0.15f, 0.15f, 0.16f }, 0.00f, 0.00f, -2.0f },
+    /* Sandstorm */ { 0.95f, 0.70f, 0.40f, { 1.05f, 0.85f, 0.55f }, { 0.18f, 0.13f, 0.08f }, 0.40f, 0.85f,  6.0f },
+    /* Snow      */ { 0.70f, 0.95f, 0.65f, { 0.95f, 0.97f, 1.05f }, { 0.18f, 0.19f, 0.22f }, 0.70f, 0.55f, -4.0f },
 };
+
+// ---------------------------------------------------------------------------
+// TEMPERATURE. The missing link between weather and wetness: WetnessModel::tick()
+// has always taken a tempC and nothing produced one, so rain could not freeze,
+// snow had nothing to melt it, and there was no number to put on a gauge.
+//
+// Three terms, in order of size:
+//   1. BIOME BASE — where you are. A snowfield is not a swamp.
+//   2. STATE OFFSET — what the sky is doing (kLooks[].tempOffsetC above).
+//   3. DIURNAL SWING — what time it is, and this is the term worth having.
+//      The amplitude is per-biome because that is a real and very legible
+//      difference: DRY air holds no heat, so the desert dumps ~13 C between
+//      afternoon and small hours (drive it at night and you need the heater),
+//      while humid swamp air barely moves. Getting this term right is why a
+//      desert night reads as a different place rather than a darker one.
+//
+// Minimum near 05:00, maximum near 15:00 — lagged behind noon because ground
+// heats through the afternoon. A plain cos(t) peaking at 12:00 is the tell of a
+// model nobody thought about.
+struct BiomeTemp {
+    float baseC;     // annual-mean-ish air temperature at the daily midpoint
+    float swingC;    // HALF the peak-to-trough daily range
+};
+const BiomeTemp kBiomeTemp[(int)Biome::Count] = {
+    /* Temperate */ {  14.0f,  6.0f },   // 57 F, +/- 11 F
+    /* Desert    */ {  30.0f, 13.0f },   // 86 F, +/- 23 F -- the big one
+    /* Swamp     */ {  24.0f,  3.5f },   // 75 F, humid air barely swings
+    // The base must clear its OWN swing plus the warmest state offset (Clear,
+    // +2), or a snowfield's sunny afternoon creeps above freezing and melts the
+    // snow it is named for. -8 -> peak -1.5 C. WT2 holds this honest.
+    /* Snow      */ {  -8.0f,  4.5f },   // 18 F, and it never gets out of freezing
+};
+
+// Diurnal factor in [-1, +1]. Peak 15:00, trough 03:00 -- the ~3-hour LAG
+// behind solar noon/dawn is the whole point: ground keeps absorbing after the
+// sun passes overhead, so the hottest part of the day is mid-afternoon and the
+// coldest is just before dawn. A cos() peaking at 12:00 is the giveaway that
+// nobody thought about it.
+inline float diurnal(float hours) {
+    float h = std::fmod(hours, 24.0f);
+    if (h < 0.0f) h += 24.0f;
+    const float kPi = 3.14159265358979f;
+    return std::sin((h - 9.0f) * (kPi / 12.0f));
+}
 
 // Biome -> the set of legal states (Clear + Cloudy universal). A bit per state.
 inline uint32_t bit(WeatherState s) { return 1u << (uint32_t)s; }
@@ -207,6 +253,7 @@ void Weather::rebuildSample() {
     float tint[3]; lerp3(a.sunTint, b.sunTint, e, tint);
     float amb[3]; lerp3(a.ambient, b.ambient, e, amb);
     float precip = lerp(a.precipitation, b.precipitation, e);
+    float tempOff = lerp(a.tempOffsetC, b.tempOffsetC, e);
 
     // Hazard flips at the transition MIDPOINT (e >= 0.5 -> use target hazard,
     // else outgoing) so the flag tracks the visible dominant state. Swamp fog is
@@ -239,6 +286,18 @@ void Weather::rebuildSample() {
     m_sample.ambient[2]   = amb[2];
     m_sample.fogDensity   = haze;
     m_sample.precipitation = precip;
+
+    // Air temperature: biome base + what the sky is doing + what time it is.
+    const BiomeTemp& bt = kBiomeTemp[(int)m_biome];
+    m_sample.tempC = bt.baseC + tempOff + bt.swingC * diurnal(m_todHours);
+    m_sample.freezing = (m_sample.tempC <= 0.0f);
+    // SNOWFALL, not just "is it cold". Two ways to get it: the Snow state
+    // itself, or ordinary precipitation falling into freezing air -- which is
+    // what makes a temperate rainstorm turn to snow overnight instead of
+    // needing a whole separate weather state to say so.
+    m_sample.snowfall = (m_target == WeatherState::Snow) ||
+                        (m_from == WeatherState::Snow) ||
+                        (precip > 0.01f && m_sample.tempC <= 1.0f);
     m_sample.hazardLevel  = hazard;
     m_sample.hazardous    = hazard > 0.0f;
     m_sample.state        = m_target;
@@ -360,6 +419,104 @@ bool runWeatherSelfTest() {
         sn.setBiome(Biome::Snow);
         sn.forceState(WeatherState::Snow, true);
         wcheck(sn.hazardous(), "W8 snow (blizzard) is hazardous");
+    }
+
+    // ---- WT: TEMPERATURE. The field that lets weather drive wetness, snow
+    // melt away, and a gauge read something. ----
+    {
+        char tb[220];
+        auto atNoon = [](Biome b, WeatherState st) {
+            Weather w({ 30.0f, 25.0f, 75.0f, false, 7 });
+            w.setBiome(b);
+            w.forceState(st, true);
+            w.setTimeOfDay(12.0f);
+            return w.sample().tempC;
+        };
+
+        // WT1: biome dominates. A snowfield is not a desert.
+        const float desert = atNoon(Biome::Desert, WeatherState::Clear);
+        const float snowy  = atNoon(Biome::Snow,   WeatherState::Clear);
+        std::snprintf(tb, sizeof(tb),
+                      "WT1 biome sets the base: desert %.0f F vs snowfield %.0f F at the same hour",
+                      desert * 1.8f + 32.0f, snowy * 1.8f + 32.0f);
+        wcheck(desert > snowy + 20.0f, tb);
+
+        // WT2: a snow biome NEVER climbs out of freezing, or its own snow would
+        // melt off every afternoon.
+        Weather cold({ 30.0f, 25.0f, 75.0f, false, 7 });
+        cold.setBiome(Biome::Snow);
+        cold.forceState(WeatherState::Clear, true);
+        bool everThawed = false;
+        for (int h = 0; h < 24; ++h) {
+            cold.setTimeOfDay((float)h);
+            if (cold.sample().tempC > 0.0f) everThawed = true;
+        }
+        wcheck(!everThawed, "WT2 a snow biome stays below freezing around the whole clock");
+
+        // WT3: the DIURNAL SWING, and its lag. Hottest mid-afternoon, coldest
+        // before dawn -- not noon and midnight.
+        Weather d({ 30.0f, 25.0f, 75.0f, false, 7 });
+        d.setBiome(Biome::Desert);
+        d.forceState(WeatherState::Clear, true);
+        float hottestAt = 0.0f, coldestAt = 0.0f, hi = -999.0f, lo = 999.0f;
+        for (int q = 0; q < 96; ++q) {
+            const float hr = (float)q * 0.25f;
+            d.setTimeOfDay(hr);
+            const float t = d.sample().tempC;
+            if (t > hi) { hi = t; hottestAt = hr; }
+            if (t < lo) { lo = t; coldestAt = hr; }
+        }
+        std::snprintf(tb, sizeof(tb),
+                      "WT3 peak at %04.1f h and trough at %04.1f h -- the afternoon LAG, not a cos() peaking at noon",
+                      hottestAt, coldestAt);
+        wcheck(hottestAt > 13.5f && hottestAt < 16.5f && coldestAt > 1.5f && coldestAt < 4.5f, tb);
+
+        // WT4: DRY AIR SWINGS HARDER. The desert's day/night range must beat the
+        // swamp's by a wide margin -- that difference is what makes a desert
+        // night read as a different place rather than a darker one.
+        auto rangeF = [](Biome b) {
+            Weather w({ 30.0f, 25.0f, 75.0f, false, 7 });
+            w.setBiome(b); w.forceState(WeatherState::Clear, true);
+            float hi2 = -999.0f, lo2 = 999.0f;
+            for (int q = 0; q < 96; ++q) {
+                w.setTimeOfDay((float)q * 0.25f);
+                const float t = w.sample().tempC;
+                if (t > hi2) hi2 = t;
+                if (t < lo2) lo2 = t;
+            }
+            return (hi2 - lo2) * 1.8f;
+        };
+        const float dRange = rangeF(Biome::Desert), sRange = rangeF(Biome::Swamp);
+        std::snprintf(tb, sizeof(tb),
+                      "WT4 desert swings %.0f F across the day, humid swamp only %.0f F", dRange, sRange);
+        wcheck(dRange > sRange * 2.0f, tb);
+
+        // WT5: the sky cools you. A storm is colder than clear sky, same place,
+        // same hour.
+        const float clearT = atNoon(Biome::Temperate, WeatherState::Clear);
+        const float stormT = atNoon(Biome::Temperate, WeatherState::Storm);
+        std::snprintf(tb, sizeof(tb), "WT5 a storm reads %.0f F colder than clear sky at the same hour",
+                      (clearT - stormT) * 1.8f);
+        wcheck(stormT < clearT, tb);
+
+        // WT6: what is coming down has a PHASE, and the wetness model branches on
+        // it -- rain soaks, snow lies. Note the biome gate makes Rain illegal in
+        // a Snow biome, so the two are never confusable by accident; the
+        // temperature term in the phase rule is what covers a host that drives a
+        // region colder than its biome's default.
+        Weather r({ 30.0f, 25.0f, 75.0f, false, 7 });
+        r.setBiome(Biome::Temperate);
+        wcheck(r.forceState(WeatherState::Rain, true), "WT6a temperate rain is a legal storm");
+        r.setTimeOfDay(15.0f);
+        const bool warmRain = !r.sample().snowfall && r.sample().precipitation > 0.0f;
+        Weather sf({ 30.0f, 25.0f, 75.0f, false, 7 });
+        sf.setBiome(Biome::Snow);
+        sf.forceState(WeatherState::Snow, true);
+        sf.setTimeOfDay(15.0f);          // the WARMEST hour it has
+        const bool coldSnow = sf.sample().snowfall && sf.sample().freezing;
+        wcheck(warmRain && coldSnow,
+               "WT6b rain reports as rain and soaks; snow reports as SNOW and lies, "
+               "even at the snowfield's warmest hour");
     }
 
     // ---- W9: hazard flips at the transition MIDPOINT, not the start, when

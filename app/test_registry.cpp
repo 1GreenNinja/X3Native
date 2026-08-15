@@ -153,6 +153,7 @@
 #include "test_registry.h"
 #include "mine_fx.h"
 #include "wetness.h"
+#include "storm.h"
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
 #include "speaking_monster.h"    // x3::apphost::SpeakingMonster (--demo-dialog)
 
@@ -1086,6 +1087,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(EoS arch-glow bake varies + fixture census + light complement + "
                     "deep-core brightest + teardown)...");
         return x3::game::runMineFxSelfTest() ? 0 : 1;
+    }
+    if (tf.testStorm) {
+        x3::logInfo("running LIGHTNING + THUNDER self-test "
+                    "(flash/bang travel delay + multi-stroke flicker + distance->brightness + "
+                    "in-flight thunder survives the storm passing + determinism + NEGATIVE CONTROL)...");
+        return x3::game::runStormSelfTest() ? 0 : 1;
     }
     if (tf.testWetness) {
         x3::logInfo("running SURFACE WETNESS self-test "

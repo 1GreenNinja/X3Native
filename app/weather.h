@@ -77,6 +77,21 @@ struct WeatherSample {
     bool         hazardous    = false;        // HazardZone reads this (sandstorm/poison-fog/storm/blizzard)
     float        hazardLevel  = 0.0f;         // 0..1 hazard intensity (0 when not hazardous)
     float        precipitation = 0.0f;        // 0..1 rain/snow intensity (host particle hint)
+    // AIR TEMPERATURE, degrees C. The missing link: WetnessModel::tick() takes a
+    // tempC and this system never produced one, so weather could not drive
+    // wetness, snow had nothing to melt it, and a thermometer had nothing to
+    // read. Derived from biome base + the active state + a diurnal swing, and
+    // carried through transitions like every other field.
+    //
+    // Reported to Tim in FAHRENHEIT (tempF()); stored in C because the freeze
+    // point is 0 and every physical threshold in the wetness model is metric.
+    float        tempC        = 15.0f;
+    bool         freezing     = false;        // tempC <= 0: snow settles, water ices
+    // Is the falling precipitation SNOW rather than rain? Snow can fall while the
+    // ground is above freezing (it melts on contact) so this is not just tempC<=0.
+    bool         snowfall     = false;
+
+    float tempF() const { return tempC * 1.8f + 32.0f; }
     WeatherState state        = WeatherState::Clear;  // the dominant (incoming) state
     WeatherState fromState    = WeatherState::Clear;  // outgoing state during a transition
     float        transition   = 1.0f;         // 0 = just started transition, 1 = settled
@@ -121,6 +136,13 @@ public:
     bool  hazardous() const { return m_sample.hazardous; }
     float hazardLevel() const { return m_sample.hazardLevel; }
 
+    // Feed the host's time-of-day, in HOURS on a 24-hour clock. Drives the
+    // diurnal temperature swing (peak 15:00, trough 03:00), which is why a
+    // desert night reads cold and a desert afternoon reads punishing. Defaults
+    // to noon, so a host that never calls this still gets a sane temperature.
+    void setTimeOfDay(float hours) { m_todHours = hours; rebuildSample(); }
+    float timeOfDay() const { return m_todHours; }
+
 private:
     void  beginTransition(WeatherState to, bool instant);
     void  rebuildSample();
@@ -129,6 +151,7 @@ private:
 
     WeatherConfig m_cfg{};
     Biome         m_biome   = Biome::Temperate;
+    float         m_todHours = 12.0f;   // host clock, 0..24; drives the diurnal swing
 
     WeatherState  m_from    = WeatherState::Clear;  // outgoing
     WeatherState  m_target  = WeatherState::Clear;  // incoming/current

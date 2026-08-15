@@ -48,6 +48,7 @@ struct CliOptions {
          testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false, testCsm = false, testGeoLod = false,
          testMineFx = false,
          testWetness = false,   // --test-wetness: rain soak/dry, ice hysteresis, tire grip
+         testStorm   = false,   // --test-storm: lightning flash shape + thunder travel delay
          testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,

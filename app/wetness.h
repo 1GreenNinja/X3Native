@@ -42,7 +42,8 @@ enum class SurfaceCondition : uint32_t {
     Wet      = 2,   // a continuous film — full reflections
     Standing = 3,   // saturated; puddles, spray, hydroplaning territory
     Ice      = 4,   // frozen film — the dangerous one
-    Count    = 5,
+    Snow     = 5,   // lying snow deep enough to drive ON rather than through
+    Count    = 6,
 };
 
 const char* surfaceConditionName(SurfaceCondition c);
@@ -73,6 +74,25 @@ struct WetnessConfig {
     float gripWet        = 0.67f;   // fully wet, no standing water
     float gripStanding   = 0.55f;   // saturated, spray and aquaplaning risk
     float gripIce        = 0.18f;   // fully iced
+    float gripSnow       = 0.42f;   // lying snow: worse than wet, better than ice
+
+    // ---- SNOW ACCUMULATION -------------------------------------------------
+    // Depth in INCHES per hour of steady full-intensity snowfall. 1 in/hr is a
+    // solid, believable storm — heavy enough that you watch it build over a
+    // drive, not so heavy that the world is buried in ninety seconds.
+    float snowFallInPerHour = 1.0f;
+    // MELT. This is a degree-hour model, which is how snowmelt is actually
+    // forecast: melt rate is proportional to how far ABOVE freezing the air is,
+    // not a flat timer. It is why a 34 F afternoon takes all day to clear a
+    // driveway and a 50 F one clears it by lunch — and it comes out of the
+    // integrator for free instead of being scripted.
+    float snowMeltInPerHourPerDegC = 0.55f;
+    // Cap. Past this the surface just reads "deep"; unbounded accumulation only
+    // produces a number nobody can see.
+    float snowMaxIn = 14.0f;
+    // Depth at which the surface stops being a road with snow on it and starts
+    // being snow. Below this it is a dusting: visible, but you drive the road.
+    float snowCoverIn = 0.4f;
 };
 
 // The integrator. Embed by value; tick it once per frame with the weather's
@@ -86,7 +106,7 @@ public:
     const WetnessConfig& config() const { return m_cfg; }
 
     // Back to bone dry, unfrozen.
-    void reset() { m_wet = 0.0f; m_ice = 0.0f; }
+    void reset() { m_wet = 0.0f; m_ice = 0.0f; m_snow = 0.0f; }
 
     // Advance. `precipitation` is WeatherSample::precipitation (0..1);
     // `tempC` is local air temperature in Celsius. dt in seconds.
@@ -94,12 +114,25 @@ public:
     // Ice only forms where there is water to freeze, and it can never exceed
     // the wetness it froze out of — otherwise a dry road in a cold snap would
     // turn to sheet ice, which is not a thing.
-    void tick(float dt, float precipitation, float tempC);
+    // `snowfall` is WeatherSample::snowfall — whether what is coming down is
+    // snow rather than rain. Defaults false so every existing caller is
+    // unchanged and simply never accumulates.
+    void tick(float dt, float precipitation, float tempC, bool snowfall = false);
 
     // 0..1 soak. This is what drives IRenderDevice::WetnessParams::amount.
     float wetness() const { return m_wet; }
     // 0..1 how much of that film has frozen.
     float iciness() const { return m_ice; }
+
+    // LYING SNOW DEPTH. Stored in metres to match every other length in the
+    // engine; reported in inches because that is the only unit a snow depth is
+    // ever quoted in. Convert at the boundary, never in the middle.
+    float snowDepthM() const { return m_snow; }
+    float snowDepthIn() const { return m_snow * 39.3701f; }
+    // 0..1 visual coverage — how white the ground reads. Rises fast off zero
+    // (a dusting already turns a field white) and saturates well before the
+    // depth cap, because past an inch or two more snow does not look whiter.
+    float snowCover() const;
 
     // The classification. Standing water needs a genuinely saturated surface,
     // so the threshold is high.
@@ -112,8 +145,9 @@ public:
 
 private:
     WetnessConfig m_cfg{};
-    float m_wet = 0.0f;
-    float m_ice = 0.0f;
+    float m_wet  = 0.0f;
+    float m_ice  = 0.0f;
+    float m_snow = 0.0f;   // lying depth, METRES
 };
 
 // --test-wetness. Headless, no device: asserts the soak/dry asymmetry, the

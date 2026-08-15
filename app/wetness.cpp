@@ -15,6 +15,7 @@ const char* surfaceConditionName(SurfaceCondition c) {
         case SurfaceCondition::Wet:      return "wet";
         case SurfaceCondition::Standing: return "standing water";
         case SurfaceCondition::Ice:      return "ice";
+        case SurfaceCondition::Snow:     return "snow";
         default:                         return "?";
     }
 }
@@ -34,9 +35,13 @@ inline float approach(float cur, float target, float seconds, float dt) {
 }
 } // namespace
 
-void WetnessModel::tick(float dt, float precipitation, float tempC) {
+void WetnessModel::tick(float dt, float precipitation, float tempC, bool snowfall) {
     if (dt <= 0.0f) return;
-    const float rain = clamp01(precipitation);
+    // Precipitation splits by phase: what falls as SNOW accumulates as depth and
+    // must not also soak the road as rain, or a blizzard would leave standing
+    // water. Snow reaches the water term only by MELTING, further down.
+    const float rain = snowfall ? 0.0f : clamp01(precipitation);
+    const float snow = snowfall ? clamp01(precipitation) : 0.0f;
 
     // WATER. Rain drives the surface toward the soak its intensity supports —
     // a drizzle never produces standing water no matter how long it falls —
@@ -75,9 +80,57 @@ void WetnessModel::tick(float dt, float precipitation, float tempC) {
     else if (tempC >= m_cfg.thawPointC)   m_ice = approach(m_ice, 0.0f, m_cfg.thawSeconds, dt);
     m_ice = clamp01(m_ice);
     if (m_ice > m_wet) m_ice = m_wet;   // only reachable if the film shrank by rain change
+
+    // ---- SNOW ----------------------------------------------------------
+    // Accumulation is trivial; the MELT is where the model earns its keep.
+    //
+    // Melt here is DEGREE-HOUR: the rate is proportional to how far above
+    // freezing the air is, which is how snowmelt is genuinely forecast. It buys
+    // behaviour a timer cannot — 34 F takes all day to clear what 50 F clears
+    // by lunch, and the thaw slows down on its own as evening cools, with
+    // nothing scripting any of it. A flat "melts in N seconds" would make every
+    // thaw the same thaw.
+    const float kInPerHourToMPerSec = 0.0254f / 3600.0f;
+    if (snow > 0.0f && tempC <= m_cfg.freezePointC) {
+        // Falling snow only LIES if the ground is at or below freezing.
+        // Above it, the flakes are visible in the air and melt on contact —
+        // which is exactly the sleety in-between people recognise and almost
+        // nothing models.
+        m_snow += snow * m_cfg.snowFallInPerHour * kInPerHourToMPerSec * dt;
+    }
+    if (tempC > m_cfg.freezePointC && m_snow > 0.0f) {
+        const float degrees = tempC - m_cfg.freezePointC;
+        const float melted = m_cfg.snowMeltInPerHourPerDegC * degrees
+                           * kInPerHourToMPerSec * dt;
+        const float actual = (melted < m_snow) ? melted : m_snow;
+        m_snow -= actual;
+        // MELTWATER WETS THE ROAD. The one coupling that makes the thaw read as
+        // a thaw: the snow does not simply vanish, it leaves the street soaked
+        // behind it, and if the night comes back down that water is what
+        // freezes into ice. Snow -> water -> ice is a loop, not three effects.
+        const float kSoakPerMeltM = 1.0f / 0.0025f;   // ~0.1 in of melt = fully wet
+        m_wet = clamp01(m_wet + actual * kSoakPerMeltM);
+    }
+    const float maxM = m_cfg.snowMaxIn * 0.0254f;
+    if (m_snow > maxM) m_snow = maxM;
+    if (m_snow < 0.0f) m_snow = 0.0f;
+}
+
+float WetnessModel::snowCover() const {
+    // Whiteness saturates long before depth does: a half-inch dusting already
+    // reads as a white field, and the eye cannot tell four inches from eight.
+    // Tying coverage linearly to depth would leave the world looking bare
+    // through the entire opening of a storm, which is the part you watch.
+    const float in = snowDepthIn();
+    const float t = in / 1.6f;
+    return (t >= 1.0f) ? 1.0f : (t <= 0.0f ? 0.0f : t * t * (3.0f - 2.0f * t));
 }
 
 SurfaceCondition WetnessModel::condition() const {
+    // Lying snow reads FIRST, above even ice: whatever the asphalt is doing
+    // underneath, once there is real depth on it you are driving on snow.
+    // Same doctrine as ice-over-water below — the car rides the TOP layer.
+    if (snowDepthIn() >= m_cfg.snowCoverIn) return SurfaceCondition::Snow;
     if (m_ice >= 0.35f)  return SurfaceCondition::Ice;
     if (m_wet >= 0.85f)  return SurfaceCondition::Standing;
     if (m_wet >= 0.40f)  return SurfaceCondition::Wet;
@@ -101,6 +154,13 @@ float WetnessModel::gripScale() const {
     // ice value by iciness gives "half-iced is halfway to lethal", which is
     // both physically sane and the behaviour a driver can read and react to.
     if (m_ice > 0.0f) g = g + (m_cfg.gripIce - g) * m_ice;
+    // Then snow, on top of everything, by the SAME top-layer rule. Lying snow
+    // is worse than wet and better than ice -- it packs and gives the tire
+    // something to bite, which sheet ice does not. Note it can therefore IMPROVE
+    // grip over black ice, and that is correct: a dusting over an icy road is
+    // genuinely easier to drive than the bare ice underneath it.
+    const float cover = snowCover();
+    if (cover > 0.0f) g = g + (m_cfg.gripSnow - g) * cover;
     return g;
 }
 
@@ -234,6 +294,101 @@ bool runWetnessSelfTest() {
                "W9 a world that never rains stays exactly dry, grip exactly 1.0");
     }
 
+
+    // ---- WS: SNOW ACCUMULATION. Depth that builds, and a degree-hour melt. ----
+    {
+        char sb[240];
+        const float dt = 0.5f;
+        auto runSnow = [&](float tempC, float startDepthIn, float hours, bool falling) {
+            WetnessModel m;
+            // Seed a starting depth by snowing at -10 C first.
+            if (startDepthIn > 0.0f) {
+                for (int i = 0; i < 400000 && m.snowDepthIn() < startDepthIn; ++i)
+                    m.tick(dt, 1.0f, -10.0f, true);
+            }
+            const int steps = (int)(hours * 3600.0f / dt);
+            for (int i = 0; i < steps; ++i) m.tick(dt, falling ? 1.0f : 0.0f, tempC, falling);
+            return m;
+        };
+
+        // WS1: an hour of full snowfall below freezing lays about the configured
+        // inch. The rate is the contract, so check it against the config.
+        WetnessModel one = runSnow(-5.0f, 0.0f, 1.0f, true);
+        std::snprintf(sb, sizeof(sb), "WS1 one hour of steady snowfall laid %.2f in (config says %.2f)",
+                      one.snowDepthIn(), WetnessConfig{}.snowFallInPerHour);
+        wcheck(std::fabs(one.snowDepthIn() - WetnessConfig{}.snowFallInPerHour) < 0.05f, sb);
+
+        // WS2: snow falling into ABOVE-freezing air does not lie. It melts on
+        // contact -- the sleety in-between that almost nothing models.
+        WetnessModel warm = runSnow(4.0f, 0.0f, 3.0f, true);
+        std::snprintf(sb, sizeof(sb), "WS2 three hours of snow at 39 F left %.3f in on the ground",
+                      warm.snowDepthIn());
+        wcheck(warm.snowDepthIn() < 0.001f, sb);
+
+        // WS3: DEGREE-HOUR MELT -- the whole reason melt is not a timer. A 50 F
+        // afternoon must clear far more than a 34 F one in the same time.
+        WetnessModel cool = runSnow(1.0f,  6.0f, 3.0f, false);   // 34 F
+        WetnessModel mild = runSnow(10.0f, 6.0f, 3.0f, false);   // 50 F
+        std::snprintf(sb, sizeof(sb),
+            "WS3 after 3 h: 34 F left %.2f in standing, 50 F left %.2f in -- rate scales with DEGREES, not a timer",
+            cool.snowDepthIn(), mild.snowDepthIn());
+        wcheck(cool.snowDepthIn() > mild.snowDepthIn() + 0.5f, sb);
+
+        // WS4: MELTWATER WETS THE ROAD. The coupling that makes a thaw read as a
+        // thaw instead of snow simply vanishing. Sampled AT the end of the melt,
+        // not hours later -- the road is supposed to dry out afterwards, and a
+        // first pass that waited two hours measured exactly that and called the
+        // coupling broken.
+        WetnessModel thaw = runSnow(-10.0f, 3.0f, 0.0f, false);
+        int melting = 0;
+        while (thaw.snowDepthIn() > 0.001f && melting < 200000) { thaw.tick(dt, 0.0f, 8.0f); ++melting; }
+        std::snprintf(sb, sizeof(sb),
+                      "WS4 3 in of snow cleared in %.0f min at 46 F and left the road soaked (%.2f)",
+                      melting * dt / 60.0f, thaw.wetness());
+        wcheck(thaw.wetness() > 0.5f, sb);
+
+        // WS5: depth is CAPPED -- an all-night blizzard cannot bury the world in
+        // a number nobody can see.
+        WetnessModel buried = runSnow(-15.0f, 0.0f, 40.0f, true);
+        std::snprintf(sb, sizeof(sb), "WS5 40 h of blizzard capped at %.1f in (config max %.1f)",
+                      buried.snowDepthIn(), WetnessConfig{}.snowMaxIn);
+        wcheck(buried.snowDepthIn() <= WetnessConfig{}.snowMaxIn + 0.01f &&
+               buried.snowDepthIn() > WetnessConfig{}.snowMaxIn - 0.01f, sb);
+
+        // WS6: coverage saturates LONG before depth does -- a dusting already
+        // reads white, which is the part of a storm you actually watch.
+        WetnessModel dust = runSnow(-10.0f, 0.6f, 0.0f, false);
+        std::snprintf(sb, sizeof(sb),
+                      "WS6 a %.1f in dusting already reads %.0f%% white; %.1f in reads %.0f%%",
+                      dust.snowDepthIn(), dust.snowCover() * 100.0f,
+                      buried.snowDepthIn(), buried.snowCover() * 100.0f);
+        wcheck(dust.snowCover() > 0.25f && buried.snowCover() > 0.99f, sb);
+
+        // WS7: lying snow is its own surface, and it grips BETTER than the ice
+        // it may be sitting on -- packed snow gives the tire something to bite.
+        WetnessModel lying = runSnow(-6.0f, 2.0f, 0.0f, false);
+        wcheck(lying.condition() == SurfaceCondition::Snow,
+               "WS7a real depth classifies as SNOW, not as the wet road underneath");
+        WetnessModel icy;
+        for (int i = 0; i < 20000; ++i) icy.tick(0.5f, 0.8f, 5.0f);   // soak
+        for (int i = 0; i < 20000; ++i) icy.tick(0.5f, 0.0f, -6.0f);  // freeze
+        std::snprintf(sb, sizeof(sb),
+            "WS7b snow grips %.2f vs bare ice %.2f -- a dusting over ice is genuinely easier to drive",
+            lying.gripScale(), icy.gripScale());
+        wcheck(lying.gripScale() > icy.gripScale(), sb);
+
+        // WS8: NEGATIVE CONTROL. The obvious model -- depth proportional to how
+        // hard it is snowing right now -- cannot accumulate at all: stop the
+        // snow and the drift is instantly gone. Prove ours persists.
+        WetnessModel persist = runSnow(-8.0f, 0.0f, 2.0f, true);
+        const float duringStorm = persist.snowDepthIn();
+        for (int i = 0; i < (int)(3600.0f / dt); ++i) persist.tick(dt, 0.0f, -8.0f, false);
+        std::snprintf(sb, sizeof(sb),
+            "WS8 an hour after the snow stopped, %.2f in of the %.2f in is still lying; "
+            "the naive depth=intensity model would read 0.00 in",
+            persist.snowDepthIn(), duringStorm);
+        wcheck(persist.snowDepthIn() > duringStorm - 0.01f, sb);
+    }
     x3::logInfo("[wetness-test] " + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;

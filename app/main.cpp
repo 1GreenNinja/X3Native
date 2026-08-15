@@ -421,6 +421,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testEchoRoads = o.testEchoRoads;       // LIFT A: EchoRoads road graph (no GPU needed)
         _tf.testMineFx   = o.testMineFx;
         _tf.testWetness  = o.testWetness;
+        _tf.testStorm    = o.testStorm;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
         _tf.testNpcLife = o.testNpcLife;
