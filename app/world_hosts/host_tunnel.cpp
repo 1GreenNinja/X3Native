@@ -306,6 +306,42 @@ int hostTunnel(HostContext& hc) {
     // nobody logs is a wish, and because the "built but not wired" failure this
     // codebase keeps hitting starts exactly here: a module that decides
     // correctly and silently.
+    // ---- THE FLEET AND THE GARAGE ------------------------------------
+    // Eleven vehicles converted; six of them stand in the bay. The list is
+    // ordered the way a garage would order it -- the one you are driving first,
+    // then the rest -- rather than alphabetically, because the first row of a
+    // chooser is the one that gets looked at.
+    struct FleetCar { const char* file; const char* name; };
+    static const FleetCar kFleet[] = {
+        { "Vehicles/E46_New.glb", "E46 SPORT"   },
+        { "Vehicles/CTR.glb",     "CTR"         },
+        { "Vehicles/M3_E36.glb",  "M3 E36"      },
+        { "Vehicles/E30.glb",     "E30"         },
+        { "Vehicles/Coupe.glb",   "COUPE"       },
+        { "Vehicles/Muscle.glb",  "MUSCLE"      },
+        { "Vehicles/Skyline_by_BUMSTRUM.glb", "SKYLINE" },
+        { "Vehicles/Pickup.glb",  "PICKUP"      },
+        { "Vehicles/Jeep.glb",    "JEEP"        },
+        { "Vehicles/Truck.glb",   "TRUCK"       },
+        { "Vehicles/F1.glb",      "F1"          },
+    };
+    constexpr int kFleetCount = (int)(sizeof(kFleet) / sizeof(kFleet[0]));
+    int  fleetSel   = 0;        // what is being DRIVEN
+    int  garageCursor = 0;      // what the chooser is highlighting
+    bool garageOpen = false;
+
+    // The display cars standing in the bay. Loaded once, drawn every frame --
+    // these are STATIC props, not vehicles: no physics, no controller. A parked
+    // car that is a real vehicle body is eleven Jolt rigs idling for scenery.
+    struct ParkedCar {
+        std::unique_ptr<x3::asset::IAssetSource> src;
+        std::unique_ptr<x3::asset::IModelLoader> loader;
+        x3::asset::Model model;
+        std::vector<x3::asset::ModelDrawable> draw;
+        float world[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    };
+    std::vector<ParkedCar> parked;
+
     // Where the plant rooms ended up, so their hums can start once the audio
     // system exists (STEP 3b below).
     std::vector<std::array<float, 3>> plantHumPos;
@@ -326,6 +362,44 @@ int hostTunnel(HostContext& hc) {
             (uint32_t)rooms.spaces().size(), rooms.entityCount(),
             rooms.worstRockCoverM() * 3.28084f);
         x3::logInfo(rb);
+
+        // ---- PARK THE FLEET. Six bays, nose-in, two rows of three -- the
+        // layout the garage was SIZED for, so the cars land where the painted
+        // bays are rather than being scattered and hoping.
+        for (const x3::game::TunnelSpace& sp : rooms.spaces()) {
+            if (sp.kind != x3::game::SpaceKind::Garage) continue;
+            const float gLen = sp.s1 - sp.s0, gDep = sp.latOut - sp.latIn;
+            for (uint32_t b = 0; b < x3::game::kTrGarageBays && (int)b < kFleetCount; ++b) {
+                const uint32_t row = b / 3, bay = b % 3;
+                const float bs  = sp.s0 + (0.6f + (float)bay * 3.0f) * (gLen / 10.5f) + 2.4f;
+                const float bl  = sp.latIn + (row == 0 ? 2.1f : gDep - 5.5f);
+                float wx = 0.0f, wz = 0.0f;
+                route.worldAt(bs, (float)sp.side * bl, wx, wz);
+                ParkedCar pc;
+                pc.src.reset(x3::asset::createAssetSource());
+                if (!pc.src || !pc.src->mountDir(x3::game::convertedGlbRoot(), 0)) continue;
+                pc.loader.reset(x3::asset::createModelLoader(device, pc.src.get()));
+                // Skip whatever is being DRIVEN -- a garage showing you the car
+                // you arrived in is a mirror, not a collection.
+                const int which = (int)b + 1;
+                pc.model = pc.loader->load(kFleet[which % kFleetCount].file);
+                if (!pc.model.ok) continue;
+                pc.draw = x3::asset::makeDrawables(pc.model);
+                // Nose-in: rows face each other across the aisle.
+                const float a = std::atan2(route.dirZ, route.dirX)
+                              + (row == 0 ? 1.5707963f : -1.5707963f);
+                const float ca = std::cos(a), sa = std::sin(a);
+                const float m[16] = { ca,0,-sa,0,  0,1,0,0,  sa,0,ca,0,  wx, sp.floorY, wz, 1 };
+                for (int k = 0; k < 16; ++k) pc.world[k] = m[k];
+                parked.push_back(std::move(pc));
+            }
+        }
+        if (!parked.empty()) {
+            char pb2[96];
+            std::snprintf(pb2, sizeof(pb2), "garage: %u vehicle(s) parked in the bay",
+                          (uint32_t)parked.size());
+            x3::logInfo(pb2);
+        }
 
         // The plant rooms want a hum, but the audio system is not created until
         // further down. Carry their POSITIONS out of here rather than reordering

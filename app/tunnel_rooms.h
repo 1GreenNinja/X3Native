@@ -65,7 +65,9 @@ enum class SpaceKind : uint32_t {
     ControlRoom= 4,  // the command console, and the stairhead in its far end
     Stair      = 5,  // switchback flight down to the complex
     Landing    = 6,  // underground-complex landing (the task #9 elevator tie-in)
-    Count      = 7,
+    Garage     = 7,  // the fleet bay: lifts, benches, and the cars parked in it
+    Ramp       = 8,  // the DRIVEABLE slope down into the garage
+    Count      = 9,
 };
 
 const char* spaceKindName(SpaceKind k);
@@ -116,6 +118,59 @@ constexpr float kTrMinRunToRoom = 6.10f;   // 20.0 ft, spec D3's floor (entry + 
 constexpr float kTrPlantLenM    = 9.00f,  kTrPlantDepM = 6.00f,  kTrPlantHM = 3.20f;
 constexpr float kTrSignalLenM   = 7.00f,  kTrSignalDepM= 4.50f,  kTrSignalHM= 2.44f;
 constexpr float kTrCtrlLenM     = 8.00f,  kTrCtrlDepM  = 6.00f,  kTrCtrlHM  = 2.60f;
+// ---- THE GARAGE -----------------------------------------------------------
+// Sized from what it HOLDS, not picked as a round number. Eleven vehicles in the
+// fleet; six on display is the number that reads as a collection without turning
+// the bay into a car park -- two rows of three, nose-in.
+//
+//   bay depth   : 4.6 m car + 1.4 m to walk round the nose        = 6.0 m
+//   two rows    : 2 x 6.0 m, back to back, + a 5.5 m drive aisle  = 17.5 m
+//   bay width   : 1.9 m car + 1.1 m to open a door                = 3.0 m
+//   three bays  : 3 x 3.0 m + 1.5 m of bench run at the far end   = 10.5 m
+//
+// The HEIGHT is the one that is not about cars: a two-post lift needs a car's
+// height plus a person's plus the arms, and at 2.6 m (the control room) you
+// cannot raise anything. 4.6 m is a real workshop door height and it is what
+// makes the lifts read as usable rather than as decoration.
+// TIM'S SPEC, 2026-08-15: 100 ft long, 43 ft deep, 24 ft in the clear, reached
+// down a RAMP so the whole bay sits under the mountain rather than beside the
+// road. My first pass was 34 x 57 x 15 -- deeper than it was long, which is the
+// shape of a store room, not a shop. A workshop runs ALONG its access, so the
+// long axis belongs on the bore.
+//
+// 24 ft of clear height is not lift clearance, it is CRANE clearance: at 15 ft a
+// two-post is the tallest thing that fits and you can never put a beam over it.
+constexpr float kTrGarageLenM   = 30.48f;  // 100.0 ft along the bore
+constexpr float kTrGarageDepM   = 13.11f;  //  43.0 ft back into the rock
+constexpr float kTrGarageHM     =  7.32f;  //  24.0 ft in the clear
+// ---- THE RAMP -------------------------------------------------------------
+// The floor sits BELOW the roadway and you drive down to it, which is what puts
+// the bay properly under the hill instead of tucked behind the tunnel wall. Two
+// consequences worth stating: everything above it is rock (the envelope check
+// gets easier, not harder, going down), and the ramp has to be DRIVEABLE -- 15 %
+// is the steep end of real parking-garage practice, and at a 13 ft drop that is
+// 87 ft of ramp, which is why the approach is long.
+constexpr float kTrGarageDropM  = 4.00f;   // 13.1 ft below the roadway
+constexpr float kTrGarageRampGrade = 0.15f;                       // 15 %
+constexpr float kTrGarageRampM  = kTrGarageDropM / kTrGarageRampGrade;  // 26.7 m = 87 ft
+constexpr uint32_t kTrGarageBays = 6;      // parked vehicles on display
+// THREE lifts, and they are not three of the same thing -- Tim's spec: two
+// Rotary-style 10,000 lb TWO-POST lifts and one Hunter-style ALIGNMENT RACK.
+// The distinction is the point. A two-post grabs the frame and leaves the wheels
+// hanging (brakes, suspension, anything you take OFF the car); an alignment rack
+// is a drive-on runway that keeps the car ON its wheels with turnplates at the
+// front, because you cannot measure toe and camber on a car that is dangling.
+// A workshop with three identical lifts is a workshop that only does one job.
+constexpr uint32_t kTrGarageTwoPost = 2;
+constexpr uint32_t kTrGarageRacks   = 1;
+constexpr uint32_t kTrGarageLifts   = kTrGarageTwoPost + kTrGarageRacks;
+// Rotary two-post: 10,000 lb, ~11 ft posts, arms at lift height.
+constexpr float kTrLiftPostHM   = 3.35f;   // 11.0 ft
+constexpr float kTrLiftArmHM    = 1.20f;   // arms parked at 3.9 ft
+// Hunter rack: a drive-on runway pair, 16 ft long, 20 in wide, at 4 ft.
+constexpr float kTrRackLenM     = 4.90f;   // 16.1 ft
+constexpr float kTrRackWideM    = 0.51f;   // 20 in
+constexpr float kTrRackHM       = 1.22f;   // 4.0 ft
 // The stair. Riser 6.9 in / tread 11.0 in gives 2R+T = 24.8 in, which is the
 // comfortable-stair rule real stairs are built to; anything steeper reads as a
 // ladder and anything shallower eats footprint we do not have in a hillside.
@@ -149,6 +204,7 @@ constexpr float kTrMaxStepUp    = 0.45f;   // 18 in
 // interesting thing a code can say here.
 constexpr int kTunnelServiceCode = 1361;   // plant + signal
 constexpr int kTunnelControlCode = 3902;   // the control room, and the way down
+constexpr int kTunnelGarageCode  = 5514;   // the fleet bay (non-colliding with the above)
 
 // ---------------------------------------------------------------------------
 // The program for ONE bore.

@@ -1545,6 +1545,114 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                             float g[3] = { c[0], c[1] + 0.62f, c[2] };
                             obox(fglow, g, right, ax, 0.30f, 0.05f, 0.06f, 1.0f);
                         }
+                    } else if (sc.kind == SpaceKind::Garage) {
+                        // ---- THE VEHICLE BAY ---------------------------------
+                        // Two rows of bays nose-in with a drive aisle between,
+                        // two lifts, and a bench run down the far wall. The
+                        // PARKED CARS are drawn by the host (it owns the model
+                        // loader); what lives here is the room's own hardware,
+                        // and the bay markings that make the empty floor read as
+                        // a garage rather than as a big empty room.
+                        const float gLen = sc.s1 - sc.s0, gDep = sc.latOut - sc.latIn;
+                        const float aisle = fy + 0.005f;
+                        // Bay outlines: three per row, painted on the floor.
+                        for (int row = 0; row < 2; ++row) {
+                            for (int bay = 0; bay < 3; ++bay) {
+                                const float bs = sc.s0 + (0.6f + (float)bay * 3.0f) * (gLen / 10.5f);
+                                const float bl = sc.latIn + (row == 0 ? 0.8f : gDep - 6.8f);
+                                for (int e2 = 0; e2 < 2; ++e2) {   // the two long stripes
+                                    const float lat = sgn * (bl + (e2 ? 2.6f : 0.05f));
+                                    float q0[3], q1[3], q2[3], q3[3];
+                                    PA(frameAtS(bs),        lat - 0.05f, aisle, q0);
+                                    PA(frameAtS(bs),        lat + 0.05f, aisle, q1);
+                                    PA(frameAtS(bs + 4.8f), lat + 0.05f, aisle, q2);
+                                    PA(frameAtS(bs + 4.8f), lat - 0.05f, aisle, q3);
+                                    fglow.quad(q0, q1, q2, q3, nU, 0, 1, 0, 1);
+                                }
+                            }
+                        }
+                        // ---- TWO-POST LIFTS (Rotary-style, 10,000 lb). Two
+                        // columns either side of the car with swing arms that
+                        // reach UNDER it to the frame. The wheels hang free --
+                        // that is what a two-post is FOR, and it is why the bay
+                        // has to be 15 ft clear: 11 ft of post plus a car on top
+                        // of it does not fit under the control room's 8.5.
+                        for (uint32_t L = 0; L < kTrGarageTwoPost; ++L) {
+                            const float ls = sc.s0 + gLen * (L == 0 ? 0.26f : 0.58f);
+                            const float ll = sc.latIn + gDep * 0.42f;
+                            for (int side2 = -1; side2 <= 1; side2 += 2) {
+                                float post[3];
+                                PA(frameAtS(ls), sgn * (ll + (float)side2 * 1.45f),
+                                   fy + kTrLiftPostHM * 0.5f, post);
+                                obox(fixture, post, right, ax, 0.15f, kTrLiftPostHM * 0.5f, 0.15f, 1.0f);
+                                // The overhead beam that ties the columns is the
+                                // silhouette people actually recognise a lift by.
+                                if (side2 < 0) {
+                                    float beam[3];
+                                    PA(frameAtS(ls), sgn * ll, fy + kTrLiftPostHM, beam);
+                                    obox(fixture, beam, right, ax, 1.60f, 0.10f, 0.13f, 1.0f);
+                                }
+                                // Swing arms, parked low and reaching inward.
+                                for (int arm2 = -1; arm2 <= 1; arm2 += 2) {
+                                    float arm[3];
+                                    PA(frameAtS(ls + (float)arm2 * 0.85f),
+                                       sgn * (ll + (float)side2 * 0.80f), fy + kTrLiftArmHM, arm);
+                                    obox(fixture, arm, right, ax, 0.55f, 0.06f, 0.09f, 1.0f);
+                                }
+                            }
+                        }
+
+                        // ---- HUNTER-STYLE ALIGNMENT RACK. A DRIVE-ON runway,
+                        // not a lift that grabs the frame: alignment is measured
+                        // with the car's weight on its own wheels, so the deck
+                        // stays under the tyres and the front pads are
+                        // TURNPLATES that let the wheels swivel while you set
+                        // toe. Modelling it as a third two-post would have been
+                        // the easy thing and would have said the shop cannot do
+                        // alignment.
+                        {
+                            const float rs2 = sc.s0 + gLen * 0.84f;
+                            const float rl  = sc.latIn + gDep * 0.42f;
+                            for (int run = -1; run <= 1; run += 2) {
+                                float deck[3];
+                                PA(frameAtS(rs2), sgn * (rl + (float)run * 0.95f),
+                                   fy + kTrRackHM, deck);
+                                obox(fixture, deck, right, ax,
+                                     kTrRackWideM * 0.5f, 0.09f, kTrRackLenM * 0.5f, 1.0f);
+                                // Approach ramp at the back of each runway.
+                                float ramp[3];
+                                PA(frameAtS(rs2 - kTrRackLenM * 0.5f - 0.9f),
+                                   sgn * (rl + (float)run * 0.95f), fy + kTrRackHM * 0.5f, ramp);
+                                obox(fixture, ramp, right, ax,
+                                     kTrRackWideM * 0.5f, kTrRackHM * 0.5f, 0.9f, 1.0f);
+                                // TURNPLATE at the front of each runway.
+                                float plate[3];
+                                PA(frameAtS(rs2 + kTrRackLenM * 0.30f),
+                                   sgn * (rl + (float)run * 0.95f), fy + kTrRackHM + 0.10f, plate);
+                                obox(fglow, plate, right, ax, 0.26f, 0.02f, 0.26f, 1.0f);
+                                // The four support legs.
+                                for (int lg = -1; lg <= 1; lg += 2) {
+                                    float leg[3];
+                                    PA(frameAtS(rs2 + (float)lg * kTrRackLenM * 0.38f),
+                                       sgn * (rl + (float)run * 0.95f), fy + kTrRackHM * 0.5f, leg);
+                                    obox(fixture, leg, right, ax, 0.10f, kTrRackHM * 0.5f, 0.10f, 1.0f);
+                                }
+                            }
+                        }
+                        // BENCH RUN + toolboxes along the far wall. A workshop is
+                        // a wall you can put things down on; without it the bay
+                        // is a car park with a lift in it.
+                        {
+                            float bench[3];
+                            PA(frameAtS((sc.s0 + sc.s1) * 0.5f), sgn * (sc.latOut - 0.45f), fy + 0.45f, bench);
+                            obox(fixture, bench, right, ax, 0.42f, 0.45f, gLen * 0.40f, 1.0f);
+                            for (int t = 0; t < 3; ++t) {
+                                float tb[3];
+                                PA(frameAtS(sc.s0 + gLen * (0.22f + 0.28f * (float)t)),
+                                   sgn * (sc.latOut - 0.5f), fy + 1.28f, tb);
+                                obox(fixture, tb, right, ax, 0.34f, 0.38f, 0.55f, 1.0f);
+                            }
+                        }
                     } else if (sc.kind == SpaceKind::ControlRoom) {
                         // THE COMMAND CONSOLE -- a desk with a lit face. This is
                         // the thing the whole chain of door -> hall -> room exists

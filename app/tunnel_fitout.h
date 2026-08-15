@@ -71,7 +71,11 @@ struct FitoutConfig {
     float screenSpacingM  = 220.0f;  // rarer: these are events, not wallpaper
 
     // ---- Doors + maintenance --------------------------------------------
-    float doorSpacingM    = 165.0f;  // service doors, alternating sides
+    // 120 m (~394 ft), tightened from 165 when the GARAGE became a fourth role:
+    // three doors and four rooms meant evicting one that had already earned its
+    // place. Service doors every ~400 ft is if anything more realistic than
+    // every 540, so the fix costs nothing but a shorter walk.
+    float doorSpacingM    = 120.0f;  // service doors, alternating sides
     float maintSpacingM   = 480.0f;  // plant/equipment bays
     float maintLenM       = 34.0f;
 };

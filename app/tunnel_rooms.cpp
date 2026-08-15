@@ -41,6 +41,8 @@ const char* spaceKindName(SpaceKind k) {
     switch (k) {
         case SpaceKind::EntryStub:   return "entry stub";
         case SpaceKind::Hall:        return "hall";
+        case SpaceKind::Garage:      return "garage";
+        case SpaceKind::Ramp:        return "ramp";
         case SpaceKind::PlantRoom:   return "plant room";
         case SpaceKind::SignalRoom:  return "signal equipment room";
         case SpaceKind::ControlRoom: return "control room";
@@ -172,9 +174,26 @@ void TunnelRoomProgram::build(const TunnelRoute& route, const TunnelFitout& fit,
             signal = (int)i;
     }
 
+    // 4) GARAGE -> the eligible door nearest a PORTAL. This one is not about
+    //    cable runs or drainage: it is about the DRIVE. A fleet bay buried in
+    //    the middle of a bore means the longest possible trip to fetch a car,
+    //    and the shortest trip is the whole reason to keep cars in a tunnel at
+    //    all. Assigned LAST so it never outbids the three rooms whose positions
+    //    are dictated by physics rather than convenience.
+    int garage = -1;
+    for (size_t i = 0; i < m_doors.size(); ++i) {
+        if ((int)i == ctrl || (int)i == plant || (int)i == signal) continue;
+        if (!eligible(m_doors[i])) continue;
+        const float toPortal = std::min(m_doors[i].s - route.boreS0, route.boreS1 - m_doors[i].s);
+        const float bestSoFar = (garage < 0) ? 1e9f
+            : std::min(m_doors[garage].s - route.boreS0, route.boreS1 - m_doors[garage].s);
+        if (toPortal < bestSoFar - 1e-4f) garage = (int)i;
+    }
+
     if (ctrl   >= 0) addProgramFor(route, ctrl,   SpaceKind::ControlRoom);
     if (plant  >= 0) addProgramFor(route, plant,  SpaceKind::PlantRoom);
     if (signal >= 0) addProgramFor(route, signal, SpaceKind::SignalRoom);
+    if (garage >= 0) addProgramFor(route, garage, SpaceKind::Garage);
 
     // Envelope pass over what was actually built, with the real footprints
     // rather than the probe's.
@@ -197,7 +216,7 @@ void TunnelRoomProgram::build(const TunnelRoute& route, const TunnelFitout& fit,
 // ---------------------------------------------------------------------------
 void TunnelRoomProgram::addProgramFor(const TunnelRoute& route, int doorIdx, SpaceKind terminal) {
     RoomDoor& d = m_doors[(size_t)doorIdx];
-    const float fy   = branchFloorY(route, d.s);
+    float fy         = branchFloorY(route, d.s);   // the GARAGE ramp lowers this
     const float lat0 = shellOuterHalfW();
     const float lat1 = lat0 + kTrEntryRunM;              // hall's near wall
     const float half = kTrHallClearW * 0.5f;
@@ -225,20 +244,45 @@ void TunnelRoomProgram::addProgramFor(const TunnelRoute& route, int doorIdx, Spa
     const int iStub = push(SpaceKind::EntryStub, d.s - half, d.s + half,
                            lat0, lat1, fy, kTrHallClearH, -1, 1);
     // The gallery.
-    const float hallFar = d.s + dir * kTrHallRunM;
+    float hallFar = d.s + dir * kTrHallRunM;       // the GARAGE ramp extends this
     const int iHall = push(SpaceKind::Hall, d.s - dir * half, hallFar,
                            lat1, lat1 + kTrHallClearW, fy, kTrHallClearH, iStub, 0);
 
+    int roomParent = -2;            // -2 = "the hall"; the garage re-points it
     float rlen = kTrCtrlLenM, rdep = kTrCtrlDepM, rh = kTrCtrlHM;
     uint32_t rents = 2;             // holo_terminal: a body entity + a screen-glow entity
     if (terminal == SpaceKind::PlantRoom)  { rlen = kTrPlantLenM;  rdep = kTrPlantDepM;  rh = kTrPlantHM;  rents = 1; }
     if (terminal == SpaceKind::SignalRoom) { rlen = kTrSignalLenM; rdep = kTrSignalDepM; rh = kTrSignalHM; rents = 1; }
+    if (terminal == SpaceKind::Garage) {
+        rlen = kTrGarageLenM; rdep = kTrGarageDepM; rh = kTrGarageHM;
+        // THE RAMP, inserted between the hall and the bay. It is a space in its
+        // own right rather than a slope applied to the hall, because the walk
+        // test has to know a vehicle can get down it AND back up -- the same
+        // reachable-and-escapable rule the stair had to satisfy, except this one
+        // is driven rather than walked.
+        const float rampS0 = hallFar;
+        const float rampS1 = hallFar + dir * kTrGarageRampM;
+        const int iRamp = push(SpaceKind::Ramp, rampS0, rampS1, lat1, lat1 + 6.0f,
+                               fy - kTrGarageDropM * 0.5f, 5.0f, iHall, 0);
+        if (iRamp >= 0) m_spaces[(size_t)iRamp].dropM = kTrGarageDropM;
+        roomParent = iRamp;         // you reach the bay THROUGH the ramp
+        // and the bay itself starts where the ramp ends, a full drop lower.
+        hallFar = rampS1;
+        fy -= kTrGarageDropM;
+        // The parked fleet is the cost: one entity per vehicle on show, plus the
+        // lifts and the bench run. Counted honestly rather than as "a room",
+        // because R6n proved the Tier-A budget is what actually binds here and a
+        // showroom that quietly spends 9 of 40 needs to say so.
+        rents = kTrGarageBays + kTrGarageLifts + 1;
+    }
 
     const float rs0 = hallFar;
     const float rs1 = hallFar + dir * rlen;
-    const int iRoom = push(terminal, rs0, rs1, lat1, lat1 + rdep, fy, rh, iHall, rents);
+    const int iRoom = push(terminal, rs0, rs1, lat1, lat1 + rdep, fy, rh,
+                           (roomParent == -2) ? iHall : roomParent, rents);
 
-    if (terminal != SpaceKind::ControlRoom) { d.code = kTunnelServiceCode; }
+    if (terminal == SpaceKind::Garage) { d.code = kTunnelGarageCode; }
+    else if (terminal != SpaceKind::ControlRoom) { d.code = kTunnelServiceCode; }
     else {
         d.code = kTunnelControlCode;
         // The stairhead sits in the control room's far end, so the flight is
@@ -261,7 +305,8 @@ void TunnelRoomProgram::addProgramFor(const TunnelRoute& route, int doorIdx, Spa
 
     d.hasProgram = true;
     d.firstSpace = iStub;
-    d.label = (terminal == SpaceKind::PlantRoom)  ? "PLANT"
+    d.label = (terminal == SpaceKind::Garage)     ? "VEHICLE BAY"
+            : (terminal == SpaceKind::PlantRoom)  ? "PLANT"
             : (terminal == SpaceKind::SignalRoom) ? "SIGNAL EQUIPMENT"
                                                   : "CONTROL";
 }
@@ -325,8 +370,17 @@ bool tunnelWalkInAndOut(const std::vector<TunnelSpace>& spaces, const RoomDoor& 
         // A drop bigger than a step is only legal if a STAIR carries it. This is
         // the whole assertion: geometry alone cannot tell the difference between
         // a stairwell and an oubliette.
-        const bool carried = (pa.kind == SpaceKind::Stair && pa.dropM >= dy - 0.01f) ||
-                             (sp.kind == SpaceKind::Stair && sp.dropM >= dy - 0.01f);
+        // A RAMP carries a drop exactly as a stair does -- it is the whole
+        // reason it exists. Without this the gate was right to fail: it saw the
+        // garage sitting 13 ft under the hall with nothing connecting them and
+        // called it a soft-lock, which is precisely the trap it was written to
+        // catch. The difference between the two is what USES them (a stair is
+        // walked, a ramp is driven), not whether they connect levels.
+        auto carries = [](const TunnelSpace& x, float need) {
+            return (x.kind == SpaceKind::Stair || x.kind == SpaceKind::Ramp)
+                && x.dropM >= need - 0.01f;
+        };
+        const bool carried = carries(pa, dy) || carries(sp, dy);
         if (!carried) {
             if (outFailure) std::snprintf(outFailure, failCap,
                 "%s sits %.1f ft below the %s with no stair carrying the drop -- you get in and stay in",
@@ -540,7 +594,12 @@ bool runTunnelRoomsSelfTest() {
             "R6 %u doors, %u of them with enough mountain over them to take a room -- and the bore "
             "still gets exactly %u. The kit repeats, the story does not",
             df.countOf(FittingKind::Door), elig, dp.programmedDoorCount());
-        rcheck(elig > 3 && dp.programmedDoorCount() == 3, b);
+        // FOUR now, not three: the garage joined the authored table on
+        // 2026-08-15. The number moving is fine -- what this gate defends is that
+        // it is a FIXED number set by the table, not one that grows with the
+        // length of the bore. A mile of tunnel still gets exactly the rooms the
+        // story has, which is the whole anti-slop claim.
+        rcheck(elig > 4 && dp.programmedDoorCount() == 4, b);
     }
 
     // ---- R6n: NEGATIVE CONTROL for the anti-slop gate. Cost out the naive
@@ -581,7 +640,13 @@ bool runTunnelRoomsSelfTest() {
             "R7 the room program costs %u entities of the Tier-A budget of 40 "
             "(the rest is walkways, railings, strips, doors, signs, screens)",
             prog.entityCount());
-        rcheck(prog.entityCount() > 0 && prog.entityCount() <= 14, b);
+        // Raised 14 -> 20 when the garage landed. It is the single most
+        // expensive room in the program and says so: six vehicles on display,
+        // two lifts and a bench run cost 9 of the 40 by themselves. That is a
+        // deliberate purchase, not drift -- and it is still under half the
+        // budget, which is what keeps R6n's naive build (52) genuinely failing
+        // rather than merely losing on points.
+        rcheck(prog.entityCount() > 0 && prog.entityCount() <= 20, b);
     }
 
     // ---- R8: TIERS B AND C GET NOTHING. Not unimplemented -- decided.
@@ -604,10 +669,16 @@ bool runTunnelRoomsSelfTest() {
         for (const TunnelSpace& sp : prog.spaces()) {
             if (sp.parent < 0 || sp.kind == SpaceKind::Landing) continue;
             const TunnelSpace& pa = prog.spaces()[(size_t)sp.parent];
-            if (pa.kind == SpaceKind::Stair) continue;
+            // A stair or a RAMP is the thing that changes level, so the space
+            // below one is exempt -- and so is the ramp itself, whose own floor
+            // is by definition not the floor it came from. Everything else in a
+            // branch shares one datum: a room whose floor follows the road grade
+            // is a room with a slope in it.
+            if (pa.kind == SpaceKind::Stair || pa.kind == SpaceKind::Ramp) continue;
+            if (sp.kind == SpaceKind::Ramp) continue;
             if (std::fabs(sp.floorY - pa.floorY) > 1e-4f) level = false;
         }
-        rcheck(level, "R9 every space in a branch shares one level floor datum (spec C3), the stair "
+        rcheck(level, "R9 every space in a branch shares one level floor datum (spec C3), the stair and the garage ramp "
                       "being the only thing that changes height");
     }
 
