@@ -139,6 +139,43 @@ own summary of them.
    but gearing and terrain. Do not tune the road to a speed we have not honestly
    measured on real road.
 
+## CORRECTION 2026-08-15 — "WE CAN DRIVE THROUGH A MOUNTAIN. WE HAVE TUNNELS."
+
+Sharpening pass 2 concluded the outer ring **cannot be a circle**, because at
+4.93 miles radius it lands inside the north range's core band (7.8-8.8 km) and
+would drive through a mountain.
+
+Tim: *"We CAN drive through a mountain!!!! we have TUNNELS!!!!"*
+
+He is right, and it is the better answer. Driving through a mountain is not the
+failure mode here — it is a SHIPPED FEATURE with a 7/7 gate on it. The premise
+"a road cannot go there" quietly imported an assumption from games that have no
+tunnels. This one has `TunnelCorridorWorld`, cut-and-cover carve, portals, a
+backfill lid, and `registerCityFreewayTunnels()` already boring four city
+freeway bores.
+
+**What this changes:**
+
+* The outer tour may run CLOSE TO A CIRCLE and BORE THROUGH the ranges where it
+  meets them, instead of detouring around them. A ring road that punches through
+  four mountain ranges is a far better road than one that avoids them, and it
+  reuses the most finished system in the lane.
+* Tunnels stop being a set piece and become **infrastructure** — a repeatable
+  element the network uses wherever it meets a range. That is a different
+  engineering problem from one showcase bore (cost at multiples, per-bore
+  identity so eight do not read as eight copies, bores on a CURVE now that the
+  frame follows a polyline, long-bore behaviour). The tunnel spec is being
+  re-sharpened in that light; see TUNNEL_INTERIOR_PLAN.md.
+* The "authored waypoint tour" conclusion still holds for the INNER tour (it
+  goes to the valley, the climb and the summit by choice) but is no longer
+  FORCED on the outer one by terrain.
+
+**Still true, and not overturned:** a tunnel is only the answer where there is a
+mountain. The outer tour still cannot be a naive circle drawn without looking —
+it must be authored so its range crossings land where a bore makes sense
+(through the ridge, not clipping a shoulder), and so the four bores are spaced
+as landmarks rather than arriving in a clump.
+
 ## DECIDED 2026-08-15 — HOW THE ROADS REACH THE WATER: "Both, valley route first"
 
 Pass 2 established that as literally specified, **nothing crosses the river**:
