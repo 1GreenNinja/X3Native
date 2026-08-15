@@ -51,6 +51,7 @@ struct CliOptions {
          testStorm   = false,   // --test-storm: lightning flash shape + thunder travel delay
          testPrecip  = false,   // --test-precip: falling snow/rain, camera-local volume
          testTunnelFitout = false, // --test-tunnelfitout: bore interior program placement
+         testTunnelRooms = false,  // --test-tunnelrooms: what is BEHIND the service doors
          testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,

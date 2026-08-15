@@ -13,6 +13,8 @@
 #include "../scene.h"
 #include "../terrain.h"
 #include "../tunnel_corridor.h"
+#include "../tunnel_fitout.h"
+#include "../tunnel_rooms.h"
 #include "../road_network.h"
 #include "../vehicle.h"
 #include "../asset_root.h"
@@ -239,6 +241,38 @@ int hostTunnel(HostContext& hc) {
     // into the cutting the corridor already graded.
     if (ringOn) x3::game::buildRoadRibbon(ringSpec, scene, *device, *phys);
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
+
+    // ---- THE INTERIOR PROGRAM, decided and COUNTED at boot -----------------
+    // This is the whole hook the rooms lane needs from the host: the fitout says
+    // where the service doors are, the room program says what is behind them,
+    // and both are pure data (--test-tunnelfitout / --test-tunnelrooms prove
+    // them headless). Nothing is drawn here yet -- the room/hall/stair MESHES
+    // belong in tunnel_corridor.cpp beside the shell's MeshBuf/upload/material
+    // machinery, and duplicating that machinery to avoid touching one file
+    // would be the worse mistake.
+    //
+    // It is logged because TUNNEL_INTERIOR_PLAN.md B1 is right that a budget
+    // nobody logs is a wish, and because the "built but not wired" failure this
+    // codebase keeps hitting starts exactly here: a module that decides
+    // correctly and silently.
+    {
+        x3::game::FitoutConfig fcfg;
+        x3::game::TunnelFitout fitout;
+        fitout.build(route.boreS0, route.boreS1, fcfg, 7u);
+        x3::game::TunnelRoomProgram rooms;
+        // The demo ridge is the census's one and only Tier A bore -- the
+        // showcase. Every other bore in the world is B or C and gets no rooms.
+        rooms.build(route, fitout, x3::game::TunnelTier::A);
+        char rb[320];
+        std::snprintf(rb, sizeof(rb),
+            "tunnel interior: %u service doors, %u opening onto a program "
+            "(%u spaces, %u entities of the Tier-A budget of 40); least rock over any "
+            "room ceiling %.0f ft [NOT YET DRAWN -- placement only]",
+            (uint32_t)rooms.doors().size(), rooms.programmedDoorCount(),
+            (uint32_t)rooms.spaces().size(), rooms.entityCount(),
+            rooms.worstRockCoverM() * 3.28084f);
+        x3::logInfo(rb);
+    }
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
     x3::game::DriveDemo car;

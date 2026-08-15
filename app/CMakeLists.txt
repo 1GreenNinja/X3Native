@@ -193,7 +193,8 @@ add_library(x3app SHARED
     storm.cpp           # lightning flash + delayed thunder (weather lane)
     precip_fx.cpp       # falling snow + rain, camera-local volume (weather lane)
     tunnel_fitout.cpp   # bore interior program: lay-bys, lamps, signs, doors
-    mine_fx.cpp         # the mine-entrance family (Armory rock + glowing mouth)
+    tunnel_rooms.cpp    # what is BEHIND those doors: halls, rooms, stairs, the complex landing
+    mine_fx.cpp        # the mine-entrance family (Armory rock + glowing mouth)
     vehparts.cpp
     csm_test.cpp
     mesh_lod.cpp        # Lane 5: screen-space-error discrete LOD selection
