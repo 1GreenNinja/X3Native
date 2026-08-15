@@ -1227,12 +1227,17 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 for (float sPos = route.boreS0 + 1.0f; sPos < route.boreS1 - 1.0f; sPos += postPitch) {
                     for (int sgn = -1; sgn <= 1; sgn += 2) {
                         if (fit.walkwayBrokenAt(sPos, sgn)) continue;
-                        // Nearest frame; the bore is short enough that a lookup
-                        // by proportion is exact to well under a post's width.
-                        const size_t idx = (size_t)clampf(
-                            (sPos / std::max(1e-3f, route.totalLen)) * (float)(roadFrames.size() - 1),
-                            0.0f, (float)(roadFrames.size() - 1));
-                        const Frame& fr = roadFrames[idx];
+                        // EXACT STATION, not the nearest frame. That comment used
+                        // to claim a proportional lookup was "exact to well under a
+                        // post's width" and it was simply wrong: roadFrames are laid
+                        // every 4 m (s += 4.0f at the build) while these posts are on
+                        // a 2.5 m pitch, so the snap collapsed roughly one post in
+                        // three onto its neighbour's frame -- doubled posts with a
+                        // gap beside them, at 13 ft intervals down both sides of the
+                        // bore. Found because the LNSS lane hit the same snap with a
+                        // wall standoff and reported it; the railings were making the
+                        // identical mistake one function away.
+                        Frame fr = frameAt(sPos);
                         // obox is CENTRE + HALF-extents, so the post is placed
                         // at mid-height with half its length, not at its foot.
                         float mid[3];

@@ -210,23 +210,39 @@ GraphSums summarise(const RoadGraph& g) {
 }
 
 // ---------------------------------------------------------------------------
-// GOLDENS. Recorded on inspx/lift-roads and re-verified against the SOURCE
-// branch inspx/city-blocks by compiling THIS FILE there unchanged.
+// GOLDENS. Originally recorded on inspx/lift-roads and re-verified against the
+// SOURCE branch inspx/city-blocks by compiling THIS FILE there unchanged.
+//
+// REBASELINED 2026-08-15 for commit 4852d14c ("fix(echo): pave the ground
+// streets — crown lanes, corridor veto"). That fix promoted the five CROWN
+// LANES from flat buildCrown GLB slabs into first-class EchoRoads Avenues
+// (echo_roads.cpp §"1d-bis THE CROWN GRID"), draped/curbed/lamped and swept by
+// the junction pass. That intentionally ADDS 5 edges / +10 nodes (2 endpoints
+// each) / ~671 centreline samples / more junctions + frontage to the graph.
+// The generator landed on main after the 2026-08-03 goldens (b810aa97) but the
+// matching golden bump did not travel with the fold, so this gate was stale.
+// The new graph was verified correct before rebaselining: every INVARIANT test
+// stayed green (R3 determinism ×2 + across 3 process runs; R4 zigzag law 0
+// violators; R5 clustering 108→68; R6 frontage offset/yaw sub-mm; R7/R8), the
+// count deltas match the crown-grid arithmetic exactly, and the crown renders
+// as a coherent orthogonal avenue grid with real junction patches (not garbage).
+//   old → new:  nodes 87→97  edges 44→49  samples 2519→3190
+//               junctions 57→68  frontagePts 594→860
 // ---------------------------------------------------------------------------
-constexpr uint64_t kGoldStructure   = 0xec219309cb47e21aull;
-constexpr uint64_t kGoldCentre      = 0x28c3970fa28ff31full;
-constexpr uint64_t kGoldLanes       = 0x2969dd787d4577c3ull;
-constexpr uint64_t kGoldFrontage    = 0x75b9e7d8865dc166ull;
-constexpr size_t   kGoldNodes       = 87;
-constexpr size_t   kGoldEdges       = 44;
-constexpr size_t   kGoldSamples     = 2519;
-constexpr uint32_t kGoldJunctions   = 57;
-constexpr size_t   kGoldFrontagePts = 594;
+constexpr uint64_t kGoldStructure   = 0xce3183d4a30f76b5ull;
+constexpr uint64_t kGoldCentre      = 0x1f23544a1ef90081ull;
+constexpr uint64_t kGoldLanes       = 0x6a7a4f1ead51f36cull;
+constexpr uint64_t kGoldFrontage    = 0x7cfca13d834f61a0ull;
+constexpr size_t   kGoldNodes       = 97;
+constexpr size_t   kGoldEdges       = 49;
+constexpr size_t   kGoldSamples     = 3190;
+constexpr uint32_t kGoldJunctions   = 68;
+constexpr size_t   kGoldFrontagePts = 860;
 // The bit-exact centreline hash is NOT a gate (a compiler may legally reorder
-// an FMA); it is logged, and on this toolchain it is 0x075736a79ae5e586 on
-// BOTH inspx/lift-roads and inspx/city-blocks — i.e. the lift is bit-identical,
-// not merely equivalent to a millimetre.
-constexpr uint64_t kNoteCentreBits  = 0x075736a79ae5e586ull;
+// an FMA); it is logged. On this toolchain (MSVC 14.50, Release) it is
+// 0xc382a7f5f115ac79 after the 2026-08-15 rebaseline; a differing value on
+// another toolchain is informational only — the gate rides the quantised hash.
+constexpr uint64_t kNoteCentreBits  = 0xc382a7f5f115ac79ull;
 
 // Bring-up only: print the goldens instead of asserting them.
 constexpr bool kRecord = false;
