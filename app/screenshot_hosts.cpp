@@ -38,6 +38,9 @@
 #include "level1.h"            // F2 rescue rooms: buildLevel1 / Level1ArtMask (--screenshot-rescuerooms)
 #include "wing_dressing.h"     // F2-F7 wing dressing (--screenshot-rescuerooms)
 #include "editor/editor_host.h"
+#include "factory_annex.h"     // --capture-factory: the Confection Annex bore ride
+#include "elevator.h"          // --capture-factory: the Anywhere Elevator cab
+#include "trigger.h"           // --capture-factory: the annex trigger volumes
 #include "world_hosts/world_host_common.h"   // applyHostRenderCVars / reportUnappliedHostCVars
 #include "asset_root.h"
 #include "intro_orchestrator.h"   // X3_INTRO_CAPTURE headless combat-evidence run
@@ -112,6 +115,7 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
     const bool oceanBaseShot = hc.oceanBaseShot;  const std::string& oceanBaseShotPath = hc.oceanBaseShotPath;
     const bool cityShot = hc.cityShot;            const std::string& cityShotPath = hc.cityShotPath;
     const bool captureAi = hc.captureAi;          const std::string& captureAiDir = hc.captureAiDir;
+    const bool captureFactory = hc.captureFactory; const std::string& captureFactoryPath = hc.captureFactoryPath;
     const bool captureCrowdSpread = hc.captureCrowdSpread; const std::string& captureCrowdSpreadDir = hc.captureCrowdSpreadDir;
     const bool captureWalk = hc.captureWalk;      const std::string& captureWalkPath = hc.captureWalkPath;
     const bool captureFootIk = hc.captureFootIk;  const std::string& captureFootIkPath = hc.captureFootIkPath;
@@ -3439,6 +3443,153 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return (frameNo > 0 && gifOk) ? 0 : 1;
+    }
+
+    // ---- Factory bore-ride capture (--capture-factory [out.gif]) -----------
+    // THE GLASS-CURTAIN MONEY SHOT (feat/factory-annex T6): the camera rides
+    // INSIDE the Anywhere Elevator's cab down the lateral bore leg — brass ribs
+    // whipping past, then the annex glass curtain + the lit wonder-room floors
+    // sliding by as the cab crosses into the Annex. The ride is ARMED IN CODE
+    // (unlockHidden + callTo the annex bore stop — no keypad walk needed).
+    // 60 frames -> a 640x360 @ 20 fps looping GIF (headless renders at the
+    // fixed 1280x720; each frame is 2x box-downsampled for the GIF). Modeled
+    // on --capture-ai above (the SOLE gif.h TU).
+    if (captureFactory) {
+        namespace fs = std::filesystem;
+        const std::string gifPath = captureFactoryPath;
+        std::string framesDir = gifPath;
+        {
+            const size_t dot = framesDir.find_last_of('.');
+            if (dot != std::string::npos) framesDir.resize(dot);
+            framesDir += "_frames";
+        }
+        x3::logInfo("--capture-factory: riding the annex bore to " + gifPath);
+        std::error_code mkec;
+        fs::create_directories(framesDir, mkec);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> fcphys(x3::phys::createPhysicsWorld());
+        fcphys->init();
+        x3::game::Scene fcscene;
+        x3::game::TriggerSystem fctrig;
+        x3::game::FactoryAnnex fcannex;
+        fcannex.build(fcscene, *device, *fcphys, fctrig, /*shaftX*/0.0f, /*shaftZ*/0.0f);
+        fcannex.applyAtmosphere(*device);
+
+        x3::game::ElevatorSystem fcelev;
+        const x3::game::FactoryAnnex::ElevatorGraph g =
+            x3::game::FactoryAnnex::makeElevatorGraph(0.0f, 0.0f);
+        // Start the cab AT F3 (the bore level) so the whole capture is the
+        // lateral leg. NO buildVisuals: the cab's sealed door panels would fill
+        // the forward view — the capture is the ride, the bore and the curtain.
+        fcelev.buildEx(fcscene, *device, *fcphys,
+                       x3::game::FactoryAnnex::kCabHalfX,
+                       x3::game::FactoryAnnex::kCabHalfY,
+                       x3::game::FactoryAnnex::kCabHalfZ,
+                       g.stops, g.rails, /*startStop*/g.f3);
+        fcelev.enableFsm(true);
+        fcelev.setFloorLabels(g.labels);
+        // ARM THE RIDE: the annex rail opens in code and the cab departs for
+        // A2 — the F3 -> A2 leg IS the bore transit.
+        fcelev.unlockHidden();
+        fcelev.callTo(g.a2);
+
+        // Let the annex glow settle a beat before frame 0.
+        const float sdt = 1.0f / 60.0f;
+        for (int i = 0; i < 12; ++i) {
+            fcannex.tick(sdt, fcscene);
+            fcelev.update(sdt, fcscene, *fcphys);
+            fcphys->step(sdt);
+        }
+
+        const int   kFrames      = 60;    // plan: 60 frames @ 20 fps
+        const int   kStepsPerCap = 10;    // 1/6 s sim per frame: doors + the full
+                                          // 60 m leg + arrival fit the 60 frames
+        int   fcFrameNo = 0;
+        std::vector<std::string> fcFramePaths;
+        for (int f = 0; f < kFrames; ++f) {
+            glfwPollEvents();
+            for (int s = 0; s < kStepsPerCap; ++s) {
+                fcannex.tick(sdt, fcscene);
+                fcelev.update(sdt, fcscene, *fcphys);
+                fcphys->step(sdt);
+            }
+            {   // ONE merged light push: annex rig + elevator rig (host law).
+                std::vector<x3::rhi::PointLight> lp(fcannex.pointLights());
+                lp.insert(lp.end(), fcelev.pointLights().begin(),
+                          fcelev.pointLights().end());
+                device->setPointLights(lp.data(), (uint32_t)lp.size());
+            }
+            // Rider's eye INSIDE the cab, looking down the direction of travel
+            // (+X — device forward at yaw 0): ribs, then the glass curtain.
+            const x3::phys::Vec3 c = fcelev.cabCenter();
+            device->setCamera(c.x + 0.3f, c.y + 1.35f, c.z,
+                              /*yaw*/0.0f, /*pitch*/-0.06f, 68.0f);
+            char fpath[512];
+            std::snprintf(fpath, sizeof(fpath), "%s/frame_%03d.png",
+                          framesDir.c_str(), fcFrameNo);
+            device->armCapture(fpath);
+            auto frame = device->beginFrame();
+            if (frame.valid) fcscene.render(*device, frame);
+            device->endFrame(frame);
+            if (device->captureFrame(fpath)) fcFramePaths.emplace_back(fpath);
+            ++fcFrameNo;
+        }
+
+        // ---- Assemble the 640x360 @ 20 fps GIF (2x box-downsample per frame).
+        bool fcGifOk = false;
+        if (!fcFramePaths.empty()) {
+            GifWriter gif{};
+            const uint32_t delayCs = 5;   // 5/100 s per frame == 20 fps, looping
+            uint32_t gw = 0, gh = 0;
+            std::vector<unsigned char> small;
+            for (size_t i = 0; i < fcFramePaths.size(); ++i) {
+                int w = 0, h = 0, ch4 = 0;
+                unsigned char* px = stbi_load(fcFramePaths[i].c_str(), &w, &h, &ch4, 4);
+                if (!px) continue;
+                const uint32_t dw = (uint32_t)w / 2u, dh = (uint32_t)h / 2u;
+                if (i == 0) {
+                    gw = dw; gh = dh;
+                    small.resize((size_t)gw * gh * 4u);
+                    if (!GifBegin(&gif, gifPath.c_str(), gw, gh, delayCs)) {
+                        stbi_image_free(px);
+                        break;
+                    }
+                }
+                if (dw == gw && dh == gh) {
+                    for (uint32_t y = 0; y < gh; ++y)
+                        for (uint32_t x = 0; x < gw; ++x)
+                            for (uint32_t k = 0; k < 4; ++k) {
+                                const uint32_t s00 = ((2*y    ) * (uint32_t)w + 2*x    ) * 4u + k;
+                                const uint32_t s01 = ((2*y    ) * (uint32_t)w + 2*x + 1) * 4u + k;
+                                const uint32_t s10 = ((2*y + 1) * (uint32_t)w + 2*x    ) * 4u + k;
+                                const uint32_t s11 = ((2*y + 1) * (uint32_t)w + 2*x + 1) * 4u + k;
+                                small[((size_t)y * gw + x) * 4u + k] = (unsigned char)
+                                    (((uint32_t)px[s00] + px[s01] + px[s10] + px[s11]) / 4u);
+                            }
+                    GifWriteFrame(&gif, small.data(), gw, gh, delayCs);
+                }
+                stbi_image_free(px);
+                if (i + 1 == fcFramePaths.size()) fcGifOk = GifEnd(&gif);
+            }
+        }
+        {
+            char sb[320];
+            std::error_code szec;
+            const uintmax_t gifBytes = fcGifOk ? fs::file_size(gifPath, szec) : 0;
+            std::snprintf(sb, sizeof(sb),
+                "--capture-factory: %d frames -> %s | GIF %s (%llu bytes) | cab ended at x=%.1f",
+                fcFrameNo, framesDir.c_str(),
+                fcGifOk ? gifPath.c_str() : "(FAILED)",
+                (unsigned long long)gifBytes, fcelev.cabCenter().x);
+            x3::logInfo(sb);
+        }
+
+        fcannex.shutdown(*device);
+        fcphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return (fcFrameNo > 0 && fcGifOk) ? 0 : 1;
     }
 
     // ---- Crowd-spread capture (--capture-crowd-spread [outDir]) ------------

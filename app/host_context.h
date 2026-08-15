@@ -139,6 +139,7 @@ struct HostContext {
     bool        oceanBaseShot = false;  std::string oceanBaseShotPath;   // W3-4 undersea base
     bool        cityShot = false;       std::string cityShotPath;        // W8-3 city vantage
     bool        captureAi = false;      std::string captureAiDir;
+    bool        captureFactory = false; std::string captureFactoryPath;   // --capture-factory [out.gif]
     bool        captureCrowdSpread = false; std::string captureCrowdSpreadDir;
     bool        captureWalk = false;    std::string captureWalkPath;
     std::string captureWalkRig;         // --capture-walk optional rig GLB

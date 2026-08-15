@@ -133,6 +133,7 @@ const Destination kDest[] = {
 { "tunnel",       "Terrain Corridor Tunnel",  "Drive a road bored through a hillside - the corridor-depression tech.", "tunnel",            DestGroup::DevWorld,   false },
 { "complex",      "Survival Complex",         "The 7-level survival complex (gamma fold).",                            "complex",           DestGroup::DevWorld,   false },
 { "mines",        "The Mines",                "Mine-entrance showcase - Armory rock, timber portals, glowing mouths.", "mines",             DestGroup::DevWorld,   false },
+{ "factory",      "The Confection Annex",     "Five wonder-room floors behind the wall - ride the Anywhere Elevator.", "factory",           DestGroup::DevWorld,   false },
 };
 constexpr uint32_t kDestCount = (uint32_t)(sizeof(kDest) / sizeof(kDest[0]));
 

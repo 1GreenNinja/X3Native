@@ -99,6 +99,18 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.wsLookaheadS = std::strtof(argv[++i], nullptr);
             continue;
         }
+        // --test-factory / --capture-factory (feat/factory-annex): STANDALONE
+        // if()s, deliberately OUTSIDE the else-if ladders below — the parser
+        // already rides MSVC's C1061 block-nesting limit (see the chain-break
+        // comments), and the plan calls this out explicitly. Exact == matches,
+        // unique flags: a matched arg simply falls through the ladders without
+        // re-matching.
+        if (a == "--test-factory") o.testFactory = true;
+        if (a == "--capture-factory") {
+            o.captureFactory = true;
+            // Optional output GIF path arg (next token, if it isn't another flag).
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.captureFactoryPath = argv[++i];
+        }
         if (a == "--smoketest") o.smoketest = true;
         else if (a == "--legacypost")  o.legacyPost = 1;   // A/B: auto-exposure OFF (pre-strike look)
         else if (a == "--legacypost2") o.legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough

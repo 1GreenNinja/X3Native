@@ -345,7 +345,10 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
     // jumpVelocity = sqrt(2 * |g| * H) lands the apex at H above the feet.
     float velY = 0.0f;
     if (m_jumpBuffer > 0.0f && m_coyote > 0.0f) {
-        velY = std::sqrt(2.0f * std::fabs(kGravity) * kJumpHeight);
+        // m_jumpScale = 1.0 everywhere except inside the factory annex's
+        // low-grav zone (setJumpScale; x1.8 there) — the default is byte-
+        // identical to the old jump.
+        velY = std::sqrt(2.0f * std::fabs(kGravity) * kJumpHeight) * m_jumpScale;
         m_jumpBuffer = 0.0f;   // consume
         m_coyote     = 0.0f;   // no double-jump from one ground contact
     }
