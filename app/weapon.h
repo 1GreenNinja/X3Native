@@ -233,6 +233,17 @@ enum class FireKind : uint8_t {
     Projectile,  // spawn a travelling projectile — plasma / energy
 };
 
+// HARD BOUND on how many ProjectileSpawns ONE trigger pull may emit (see
+// Arsenal::fire). A Projectile weapon emits WeaponDef::pellets spawns — 1 for every
+// aimed weapon, N for a STREAM weapon (flamethrower 3 puffs, freezeray 4 crystals) —
+// and this clamps N so a mis-authored def cannot make a held stream weapon push an
+// unbounded burst. It bounds the SHOT, not time: ResolvedFire::projectiles is a fresh
+// vector per call, so holding fire can never grow one vector. What holding fire does
+// grow is the HOST's live-bolt list, and that is bounded by flight time, not by this:
+// the worst case in the roster is the freezeray at 12 shots/s x 4 crystals travelling
+// 12 m at 35 m/s (0.34 s of life) = ~16 bolts alive at steady state.
+constexpr int kMaxStreamSpawns = 8;
+
 // One weapon's data. Plain values, no behaviour. Copyable.
 struct WeaponDef {
     std::string name        = "weapon"; // display / log / switch name
@@ -254,6 +265,21 @@ struct WeaponDef {
     int         reserveAmmo = 60;       // spare rounds carried (refills the mag on reload)
     float       reloadTime  = 1.5f;     // seconds to reload a full magazine
     float       projSpeed   = 0.0f;     // projectile travel speed (m/s); 0 for hitscan
+    // ---- BALLISTIC ARC (2026-08-15 weapon-feel lane) -------------------------
+    // Downward acceleration (m/s^2) applied to this weapon's projectiles by the host
+    // integrator: v.y -= projectileGravity * dt (POSITIVE falls, NEGATIVE rises — the
+    // flamethrower's puffs rise). Hitscan weapons ignore it entirely.
+    //
+    // DEFAULT 0.0 IS LOAD-BEARING. Zero reproduces the flat-velocity model every
+    // pre-existing weapon was tuned against exactly, so adding this field changes no
+    // existing trajectory. runWeaponsSelfTest W17c asserts that rather than assuming it.
+    //
+    // Harvested from the C++ port (D:\GameDev\EscapeLab3D, read-only): the port stores a
+    // dimensionless `gravityScale` against a fixed `GRAVITY = 800` port-units/s^2
+    // (src/game/projectile.cpp ApplyGravity). Converting an acceleration needs the same
+    // LENGTH ratio the roster lane derived for speed (x0.05), so:
+    //     projectileGravity = gravityScale * 800 * 0.05 = gravityScale * 40
+    float       projectileGravity = 0.0f; // m/s^2 down (+) / up (-); 0 = flat (every legacy weapon)
     // ---- Act-1 weapon-ladder mechanics (additive; default 0 = old behaviour) ----
     // ChainGun spin-up: seconds of continuous firing before the weapon reaches its
     // full fireRate. While spinning up the EFFECTIVE rate ramps linearly from
@@ -423,6 +449,12 @@ struct ProjectileSpawn {
     x3::phys::Vec3 vel{};      // unit dir * projSpeed (m/s)
     int            damage = 0; // damage on impact
     float          range  = 0; // max travel distance before despawn (m)
+    // Ballistic arc: downward acceleration (m/s^2) the host applies to `vel` each
+    // step — dt-SCALED, never per frame (v.y -= gravity*dt; pos += v*dt). Stamped
+    // from WeaponDef::projectileGravity. 0 = the flat path every legacy bolt flies.
+    // NOTE the host integrator does not read this yet (that is app_run.cpp, frozen
+    // behind inspx/la-exe = Phase B1); the value is carried correctly regardless.
+    float          gravity = 0.0f;
     // canon-aliens Adaptive Hide: type stamped from the firing WeaponDef::type so the
     // host can pass it to MonsterManager::fire(..., damage, type).
     x3::DamageType type   = x3::DamageType::Kinetic;
@@ -489,7 +521,11 @@ struct ResolvedFire {
     // not once per frame.
     bool                         dryFire = false;
     std::vector<HitscanRay>      rays;          // FireKind::Hitscan (pellets entries)
-    std::vector<ProjectileSpawn> projectiles;   // FireKind::Projectile (1 entry)
+    // FireKind::Projectile. `pellets` entries — ONE for every aimed weapon, and N for
+    // a STREAM weapon (flamethrower/freezeray fire a cone of puffs/crystals). Bounded
+    // by kMaxStreamSpawns. The old "1 entry" comment was never true of the container,
+    // only of the producer; Arsenal::fire now fills it properly.
+    std::vector<ProjectileSpawn> projectiles;
     float                        recoilPitchDeg = 0.0f;
 };
 
