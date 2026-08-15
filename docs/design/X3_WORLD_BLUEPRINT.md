@@ -107,6 +107,13 @@ Each floor = **open eastern arrival/combat hall** (the existing encounters) + **
 - **The "descent tube" is canonically the ALIEN TUNNELS** — a network of **MASSIVE alien slide-tubes** connecting **F1 Detention (Y=0) down to Club 1127 (Y=−200)**; a human "easily slides down them" (~200 m, ~12 s slide). The −178 m **caves** + the hidden **SUB level (−170)** branch off these tunnels (the **Salvari crystals** live in these caves).
 - **The elevator strata are LITERAL / reachable** (not merely atmospheric): the deep layers — Crystal Veins → Magma → **Alien Substrate (down to −400)** — are **real explorable zones** reached via the alien-tunnel network (the alien / Overlord-origin depths beneath the facility). The native world must extend down into them — not stop at the elevator's −175 SUB stop.
 
+### 2.7 The Confection Annex (feat/factory-annex — `app/factory_annex.*`, spec `specs/FACTORY.spec.md`)
+A hidden five-floor **wonder-works** beside the shaft — the facility's eccentric **founder's private wonder-works behind the wall**, built before the dark tenants moved in. Discovery beat: the cab keypad knows more than the panel does — code **4790** (the garage CPU) lights a golden button and opens the hidden **lateral bore rail** (the elevator learns *sideways, slantways, and longways* — the **Anywhere Elevator**).
+- **Position:** annex center **+60 m X from the shaft** (local `x=+60`), five 40×40 m floors at baseY {2, 15, 28, 41, 54}, connected by a 4 m octagonal brass-ribbed **bore** at y=15 the cab traverses. Shaft-facing wall is a glass curtain — riders see the rooms slide by.
+- **Floors:** A Mixture Atrium (raspberry confection river + stirring vats) · B Invention Works (8 whimsy machines + conveyor) · C Fizz Gallery (bubble columns + **low-grav zone**, jump ×1.8) · D Sorting Hall (gold-orb ring + the Chute of Dubious Quality) · E Tube Junction (pneumatic capsule + the golden **burst dais**).
+- **The burst:** keypad **9999** at A5 arms `ElevState::Burst` — the cab seals, punches up past the roof plane at y=65 (glass-shatter FX + debris), hovers 8 s at y=105 over the world, then Freefall home with the emergency brakes catching below the roofline.
+- **Canon-safety:** the Spire floors keep their §2.4 dark-facility canon untouched; the Annex is *additive*, behind the wall, IP-clean (Dahl-*style* whimsy, 100% original names — no Dahl/Wonka anything).
+
 ---
 
 ## 3. SYSTEMS CATALOG — native: HAS / EXTEND / NEW
