@@ -27,9 +27,13 @@
 #include "../elevator.h"
 #include "../player.h"
 #include "../fx.h"
+#include "../audio_root.h"
+
+#include "engine/audio/IAudioSystem.h"
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 namespace x3 { namespace apphost {
@@ -213,6 +217,74 @@ int hostFactory(HostContext& hc) {
                                 kShaftZ };
     faplayer.spawn(*faphys, spawn.x, spawn.y, spawn.z);
 
+    // ===== Task 12: the AUDIO PASS (asset-optional, the rifthub pattern) =====
+    // Every cue probes a factory-specific WAV first, then falls back to a
+    // committed in-repo cue so a fresh clone still hums; a miss on BOTH loads
+    // graceful-silent (IAudioSystem::load logs once and returns invalid — no
+    // crash, no retry). Windowed path only (captures stay deterministic).
+    std::unique_ptr<x3::audio::IAudioSystem> faaudio(x3::audio::createAudioSystem());
+    x3::audio::SoundHandle sndGlorp, sndBuzz, sndThunk, sndWhoosh, sndCrash, sndChime;
+    x3::audio::LoopHandle  windLoop;                 // apex wind (Burst)
+    const float aX = annex.annexX(), aZ = annex.annexZ();
+    if (faaudio && faaudio->init()) {
+        auto cue = [&](const char* primary, const char* fallback) {
+            x3::audio::SoundHandle h = faaudio->load(x3::game::resolveAudio(primary));
+            if (!h.valid() && fallback) {
+                x3::logWarn(std::string("[factory] audio cue missing (") + primary +
+                            ") — falling back to " + fallback);
+                h = faaudio->load(x3::game::resolveAudio(fallback));
+            }
+            return h;
+        };
+        // The annex ambience bed (plan: vol 0.25).
+        {
+            const std::string amb = x3::game::resolveAudio("factory/annex_ambience.wav");
+            const std::string fb  = x3::game::resolveAudio("echotropolis/ambient/mine_hum.wav");
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            faaudio->playMusic(fs::exists(amb, ec) ? amb : fb, /*loop*/true, /*vol*/0.25f);
+        }
+        // Per-room 3D beds at the room centers (machine floors only; A gets
+        // random glorps below, E gets docking events).
+        x3::audio::SoundHandle sndServo = cue("factory/servo_loop.wav", "interact/servo_loop.wav");
+        x3::audio::SoundHandle sndFizz  = cue("factory/fizz_loop.wav", "ambient/fluorescent_buzz.wav");
+        if (sndServo.valid()) {
+            faaudio->startLoop3D(sndServo, aX + 5.0f,
+                                 x3::game::FactoryAnnex::kFloorBaseY[1] + 1.5f, aZ,
+                                 /*vol*/0.16f, /*pitch*/0.9f);     // B: conveyor clank
+            faaudio->startLoop3D(sndServo, aX,
+                                 x3::game::FactoryAnnex::kFloorBaseY[3] + 2.0f, aZ,
+                                 /*vol*/0.20f, /*pitch*/0.7f);     // D: sorter servos
+        }
+        if (sndFizz.valid())
+            faaudio->startLoop3D(sndFizz, aX,
+                                 x3::game::FactoryAnnex::kFloorBaseY[2] + 3.0f, aZ,
+                                 /*vol*/0.15f, /*pitch*/1.35f);    // C: the fizz
+        sndGlorp  = cue("factory/vat_glorp.wav",     "water/splash_enter.wav");
+        sndBuzz   = cue("factory/chute_buzz.wav",    "interact/buzz.wav");
+        sndThunk  = cue("factory/capsule_dock.wav",  "interact/door_thunk.wav");
+        sndWhoosh = cue("factory/tube_whoosh.wav",   "rifthub/rifthub_whoosh.wav");
+        sndCrash  = cue("factory/glass_crash.wav",   "rifthub/rifthub_kawoosh.wav");
+        sndChime  = cue("factory/unlock_fanfare.wav","interact/chime.wav");
+        // The burst finale: chain crash + apex wind ONTO the FX-only shatter
+        // hook (the elevator stays render- and audio-pure).
+        auto fxShatter = elev.onRoofShatter;
+        elev.onRoofShatter = [&, fxShatter](const x3::phys::Vec3& p) {
+            if (fxShatter) fxShatter(p);
+            if (faaudio) {
+                if (sndCrash.valid()) faaudio->playSound3D(sndCrash, p.x, p.y, p.z, 1.0f, 0.8f);
+                if (sndWhoosh.valid())
+                    windLoop = faaudio->startLoop3D(sndWhoosh, p.x, p.y + 30.0f, p.z,
+                                                    /*vol*/0.5f, /*pitch*/0.7f);
+            }
+        };
+    }
+    // Audio edge-detect state (heapless).
+    bool     prevUnlocked = elev.hiddenUnlocked();
+    uint32_t prevSortEv = annex.room(3).eventCount, prevTubeEv = annex.room(4).eventCount;
+    float    nextGlorpT = 4.0f, worldT = 0.0f;
+    int      glorpVat = 0;
+
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported())
         glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
@@ -336,6 +408,44 @@ int hostFactory(HostContext& hc) {
         pushLights();
         pushWater(fdt);
 
+        // ---- Task 12 audio: listener + event edges (heapless per frame).
+        if (faaudio) {
+            worldT += fdt;
+            faaudio->setListener(camX, camY, camZ, camYaw, camPitch);
+            if (!prevUnlocked && elev.hiddenUnlocked()) {   // 4790: golden fanfare
+                if (sndChime.valid()) faaudio->playSound2D(sndChime, 0.85f, 1.0f);
+                prevUnlocked = true;
+            }
+            const uint32_t se = annex.room(3).eventCount;
+            if (se != prevSortEv) {          // the hatch lets go: the buzz of judgment
+                const float* p = annex.room(3).eventPos;
+                if (sndBuzz.valid()) faaudio->playSound3D(sndBuzz, p[0], p[1], p[2], 0.9f, 0.85f);
+                prevSortEv = se;
+            }
+            const uint32_t te = annex.room(4).eventCount;
+            if (te != prevTubeEv) {          // capsule docks: thunk + whoosh tail
+                const float* p = annex.room(4).eventPos;
+                if (sndThunk.valid())  faaudio->playSound3D(sndThunk, p[0], p[1], p[2], 0.8f, 1.05f);
+                if (sndWhoosh.valid()) faaudio->playSound3D(sndWhoosh, p[0], p[1], p[2], 0.35f, 1.3f);
+                prevTubeEv = te;
+            }
+            if (worldT >= nextGlorpT) {      // vat glorp, ~0.12 Hz, wandering vats
+                const float vats[3][2] = { { 13.0f, 0.0f }, { 0.0f, -13.0f }, { 2.0f, 13.0f } };
+                if (sndGlorp.valid())
+                    faaudio->playSound3D(sndGlorp, aX + vats[glorpVat][0],
+                                         x3::game::FactoryAnnex::kFloorBaseY[0] + 4.0f,
+                                         aZ + vats[glorpVat][1], 0.35f,
+                                         0.55f + 0.15f * (float)glorpVat);
+                glorpVat = (glorpVat + 1) % 3;
+                nextGlorpT = worldT + 7.0f + 2.5f * std::sin(worldT * 1.7f);
+            }
+            // The apex wind dies with the Burst (Freefall home = quiet fall).
+            if (windLoop.valid() && elev.state() != x3::game::ElevState::Burst) {
+                faaudio->stopLoop(windLoop);
+                windLoop = x3::audio::LoopHandle{};
+            }
+        }
+
         // HUD line (dependency-free): the window title.
         {
             std::string title = "CONFECTION ANNEX  |  " +
@@ -363,6 +473,7 @@ int hostFactory(HostContext& hc) {
         device->endFrame(frame);
     }
 
+    if (faaudio) faaudio->shutdown();
     fafx.shutdown(*device);
     annex.shutdown(*device);
     faphys->shutdown();
