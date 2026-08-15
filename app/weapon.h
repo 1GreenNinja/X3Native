@@ -309,6 +309,42 @@ struct WeaponDef {
     float       chargeRegenTo      = 0.0f;   // regen ceiling; <= 0 -> chargeCap (the 300 cap)
     float       chargeRegenSlowAbove = 0.0f; // charge at/above which regen halves (0 = no slow band)
     float       chargeRegenSlowMult  = 0.5f; // rate multiplier in the slow band
+    // ---- CANON-12 ROSTER mechanics (2026-08; additive, all default 0/false so every
+    // pre-existing weapon is byte-identical). Sourced from the C++ port of the original
+    // game at D:\GameDev\EscapeLab3D (src/game/weapon.cpp InitWeaponDefs + game_types.h),
+    // which is the design authority for the canonical 12-weapon arsenal.
+    //
+    // RAILGUN pierce: the slug passes THROUGH enemies instead of stopping at the first.
+    // The port models this as `penetrates = true` ("through ALL enemies"); a raw bool
+    // gives the host no bound to walk, so this is the same idea as an explicit count of
+    // EXTRA bodies the slug continues through beyond the first. The host resolves up to
+    // this many additional targets along the same ray. 0 = stops at the first hit
+    // (every existing weapon).
+    int         pierceTargets  = 0;     // extra enemies a hitscan slug passes through
+    // FLAMETHROWER / NAPALM burn: a damage-over-time the host applies to anything the
+    // shot connects with. 0 duration = no burn (every existing weapon).
+    float       burnDuration   = 0.0f;  // seconds of burn DOT applied on hit
+    int         burnDps        = 0;     // damage per second while burning
+    // FREEZE RAY slow: the port's `appliesFreeze`. The real payload is the SLOW, not the
+    // 5 damage — freezeSlowFactor is the multiplier applied to the victim's move speed
+    // for freezeDuration seconds (0.35 = down to 35% speed). 0 duration = no freeze.
+    float       freezeDuration   = 0.0f; // seconds the target stays slowed
+    float       freezeSlowFactor = 1.0f; // move-speed multiplier while frozen (1 = none)
+    // NAPALM LAUNCHER area denial: the impact leaves a burning GROUND POOL that keeps
+    // dealing damage in place. This is the behaviour that makes napalm a distinct weapon
+    // from the rocket (which is a pure one-shot blast). 0 duration = no pool.
+    float       firePoolDuration = 0.0f; // seconds the ground fire burns
+    int         firePoolDps      = 0;    // damage per second inside the pool
+    float       firePoolRadius   = 0.0f; // pool radius (m)
+    // BFG 11k: secondary bolts that lash out from the detonation to nearby targets.
+    int         secondaryBolts   = 0;    // extra bolts spawned at detonation (0 = none)
+    // Rounds consumed per trigger pull. The BFG canonically eats FIVE (port: ammoPerShot
+    // = 5 on a 5-round pool — one full pickup is one shot). 1 for every other weapon.
+    int         ammoPerShot      = 1;    // mag rounds consumed per shot
+    // LASER: a genuinely CONTINUOUS beam (port: `isContinuous`), as opposed to the
+    // Lightning Gun's fast-but-discrete zaps. Purely a host/FX hint that the beam should
+    // read as an unbroken line while held rather than a per-shot flash.
+    bool        continuous     = false; // held fire = one unbroken beam
     // Viewmodel: the GLB filename (in the rigged-GLB dir) + the convention-correct
     // viewmodel pose offsets (degrees / meters about the camera basis — same basis
     // the existing pistol viewmodel uses; see WeaponSystem::drawViewmodel + §3 of
@@ -395,6 +431,19 @@ struct ProjectileSpawn {
     // direct-hit `damage`). 0 radius -> plain single-target bolt.
     float          splashRadius = 0; // AoE radius on impact (m)
     int            splashDamage = 0; // AoE damage at the impact center
+    // ---- CANON-12 payloads (stamped from the firing WeaponDef; 0 = absent) --------
+    // Napalm: the burning ground pool the host lays down at the impact point.
+    float          firePoolDuration = 0.0f; // seconds the ground fire burns
+    int            firePoolDps      = 0;    // damage per second inside the pool
+    float          firePoolRadius   = 0.0f; // pool radius (m)
+    // Flamethrower / napalm: burn DOT applied to whatever the bolt strikes.
+    float          burnDuration     = 0.0f;
+    int            burnDps          = 0;
+    // Freeze ray: slow applied to whatever the particle strikes.
+    float          freezeDuration   = 0.0f;
+    float          freezeSlowFactor = 1.0f;
+    // BFG: secondary bolts spawned at detonation.
+    int            secondaryBolts   = 0;
 };
 
 // One resolved hitscan ray (after spread). The host raycasts each one and applies
@@ -414,6 +463,17 @@ struct HitscanRay {
     bool           beam  = false;
     bool           chain = false;
     float          falloffStart = 0; // m where damage starts falling off (0 = none)
+    // ---- CANON-12 payloads (stamped from the firing WeaponDef; 0 = absent) --------
+    // Railgun: extra enemies this ray continues through beyond the first it hits.
+    int            pierceTargets = 0;
+    // Laser: this ray is an unbroken continuous beam (render as a solid line).
+    bool           continuous    = false;
+    // Flamethrower: burn DOT applied to whatever this ray strikes.
+    float          burnDuration  = 0.0f;
+    int            burnDps       = 0;
+    // Freeze ray: slow applied to whatever this ray strikes.
+    float          freezeDuration   = 0.0f;
+    float          freezeSlowFactor = 1.0f;
 };
 
 // Result of a successful fire (gating already passed). Exactly one of the two
