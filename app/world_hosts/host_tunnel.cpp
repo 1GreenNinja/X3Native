@@ -15,6 +15,7 @@
 #include "../tunnel_corridor.h"
 #include "../tunnel_fitout.h"
 #include "../tunnel_rooms.h"
+#include "../player.h"
 
 #include <array>
 #include "../road_network.h"
@@ -290,6 +291,20 @@ int hostTunnel(HostContext& hc) {
             plantHumPos.push_back({ wx, sp.floorY + 1.2f, wz });
         }
     }
+
+    // ---- ON FOOT ---------------------------------------------------------
+    // E gets you OUT. The bore now has walkways, lay-bys, service doors and
+    // eleven rooms behind them, and until this existed every one of those was
+    // scenery you drove past at 90 mph and could never touch. A tunnel you can
+    // only ever drive through does not need a walkway.
+    //
+    // The Player controller already existed, complete with capsule, stances and
+    // ground handling -- it had simply never been wired into this host. Same
+    // shape as the rest of today: the feature was built and the door was shut.
+    x3::game::Player onFoot;
+    bool  driving      = true;
+    bool  footSpawned  = false;
+    float parkedAt[3]  = { 0, 0, 0 };   // where the car was left, for the re-entry prompt
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
     x3::game::DriveDemo car;
@@ -687,8 +702,71 @@ int hostTunnel(HostContext& hc) {
         if (camPitch < -1.2f) camPitch = -1.2f;
         auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
 
+        // ---- E: GET OUT / GET IN ----------------------------------------
+        // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
+        // to the car. Without that gate E teleports you into a car you left half
+        // a mile behind, which is not a vehicle so much as a summoning.
+        {
+            static bool eWasDown = false;
+            const bool eDown = glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
+            if (eDown && !eWasDown && carBuilt) {
+                if (driving) {
+                    float vp[3]; car.chassisPos(vp);
+                    parkedAt[0] = vp[0]; parkedAt[1] = vp[1]; parkedAt[2] = vp[2];
+                    // Step out on the LEFT, a car's width clear of the shell, and
+                    // above the floor -- spawning inside the car's own collision
+                    // launches the capsule through the roof.
+                    // LEFT of travel. tunnel_corridor builds its frame as
+                    // right = (-dirZ, 0, dirX), so left is its negation -- taken
+                    // from the route rather than the car's own heading so you
+                    // always step toward the walkway, even if you stopped skewed.
+                    const float ox =  route.dirZ * 2.4f, oz = -route.dirX * 2.4f;
+                    if (!footSpawned) {
+                        onFoot.spawn(*phys, vp[0] + ox, vp[1] + 1.2f, vp[2] + oz);
+                        footSpawned = true;
+                    } else {
+                        onFoot.setFeetPosition(*phys, x3::phys::Vec3{ vp[0] + ox, vp[1] + 1.2f, vp[2] + oz });
+                    }
+                    driving = false;
+                    x3::logInfo("[tunnel] on foot - E near the car to get back in");
+                } else {
+                    float fx, fy, fz, fyaw, fpit;
+                    onFoot.camera(fx, fy, fz, fyaw, fpit);
+                    const float dxc = fx - parkedAt[0], dzc = fz - parkedAt[2];
+                    if (dxc*dxc + dzc*dzc <= 16.0f) {          // within 13 ft
+                        driving = true;
+                        x3::logInfo("[tunnel] back in the car");
+                    }
+                }
+            }
+            eWasDown = eDown;
+        }
+
+        // ---- ON-FOOT MOVEMENT. The car keeps its own WASD; on foot the same
+        // keys drive the capsule, and the mouse deltas already gathered above
+        // are handed to the Player so look feels identical in both modes.
+        if (!driving && footSpawned) {
+            x3::game::PlayerInput pin;
+            pin.moveFwd    = (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ? 1.0f : 0.0f)
+                           - (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ? 1.0f : 0.0f);
+            pin.moveStrafe = (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ? 1.0f : 0.0f)
+                           - (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ? 1.0f : 0.0f);
+            pin.sprint     = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+            static bool spaceWas = false;
+            const bool spaceNow = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+            pin.jumpPressed = spaceNow && !spaceWas;
+            pin.jumpHeld    = spaceNow;
+            spaceWas = spaceNow;
+            pin.lookDX = ddx; pin.lookDY = ddy;
+            onFoot.update(pin, fdt, *phys);
+        }
+
         x3::phys::VehicleInput in;
-        if (carBuilt) {
+        // A PARKED CAR STAYS PARKED. Leaving the throttle live while you walk
+        // away means the handbrake is the only thing between you and a driverless
+        // car rolling down the grade you just stopped on.
+        if (!driving) { in = x3::phys::VehicleInput{}; in.handBrake = 1.0f; }
+        else if (carBuilt) {
             in.throttle = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
             in.steer    = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
             if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
@@ -888,7 +966,20 @@ int hostTunnel(HostContext& hc) {
             const float want = 72.0f + 16.0f * t * t;            // eased, not linear
             static float fovNow = 72.0f;
             fovNow += (want - fovNow) * std::min(1.0f, fdt * 3.0f);   // smooth
-            device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
+            // ON FOOT the camera IS the player's eye, not a chase rig pulled back
+            // off a capsule. The speed-eased FOV above belongs to driving and is
+            // deliberately dropped here: a walking FOV that breathes with your
+            // pace is nauseating. Both modes still land on ONE setCamera, so the
+            // precipitation volume and the sky-visibility ray follow the eye
+            // without a second code path to keep in step.
+            if (!driving && footSpawned) {
+                float fyaw = 0.0f, fpit = 0.0f;
+                onFoot.camera(cx, cy, cz, fyaw, fpit);
+                camYaw = fyaw; camPitch = fpit;
+                device->setCamera(cx, cy, cz, camYaw, camPitch, 74.0f);
+            } else {
+                device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
+            }
             if (weatherOn)
                 precip.update(fdt, precipKind, precipAmt, cx, cy, cz, 0.0f, 0.0f,
                               skyVisibleAt(*phys, cx, cy, cz));
@@ -946,6 +1037,30 @@ int hostTunnel(HostContext& hc) {
             // adds no particle pass at all when the count is zero, so clear
             // weather costs literally nothing.
             if (weatherOn) precip.submit(*device, frame);
+
+            // ---- THE E PROMPT. A control nobody can see is a control nobody
+            // has: the walkways, doors and rooms are only reachable if the player
+            // is told they can get out at all. It CHANGES with range, so walking
+            // back to the car is a target rather than a guess.
+            {
+                uint32_t hw2 = 0, hh2 = 0; device->hudSize(hw2, hh2);
+                const char* prompt = nullptr;
+                if (driving) prompt = "E  GET OUT";
+                else if (footSpawned) {
+                    const float dxc = cx - parkedAt[0], dzc = cz - parkedAt[2];
+                    prompt = (dxc*dxc + dzc*dzc <= 16.0f) ? "E  GET IN"
+                                                          : "WALK BACK TO THE CAR TO DRIVE";
+                }
+                if (prompt && hw2 && hh2) {
+                    const float px = std::floor((float)hh2 * 0.026f);
+                    const float tw = (float)std::strlen(prompt) * px;
+                    const float tx = ((float)hw2 - tw) * 0.5f, ty = (float)hh2 * 0.86f;
+                    const float sh[4]  = { 0.0f, 0.0f, 0.0f, 0.75f };
+                    const float fgc[4] = { 1.0f, 0.93f, 0.72f, 1.0f };
+                    device->drawHudText(frame, prompt, tx + 1.0f, ty + 1.0f, px, sh);
+                    device->drawHudText(frame, prompt, tx, ty, px, fgc);
+                }
+            }
 
             // THE THERMOMETER, beside the speedo. Only when weather is running:
             // a gauge pinned at a constant is worse than no gauge, because it
