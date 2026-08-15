@@ -54,11 +54,56 @@ namespace x3 { namespace apphost {
 // query per frame) and GENERAL -- it knows nothing about tunnels, so it will do
 // the same job under a bridge, an overpass or a gas-station canopy the day those
 // exist, with no new code. Returns a huge value under open sky.
-static float skyVisibleAt(x3::phys::IPhysicsWorld& phys, float x, float y, float z) {
-    const x3::phys::RayHit h = phys.rayCastStrict(
-        x3::phys::Vec3{ x, y + 0.5f, z }, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
-        60.0f, x3::phys::Layer::Static);
-    return h.hit ? 0.0f : 1.0f;
+// How much sky is over this point, 0..1 -- and the answer near a portal is not
+// zero.
+//
+// The first cut of this was BINARY: a roof overhead meant no precipitation, full
+// stop. That is wrong in the way that is obvious the moment you stand in a real
+// tunnel mouth in weather. Snow does not stop at the portal line; the wind
+// drives a wedge of it in, and you get flakes in the air and drift on the road
+// for the first eighty feet or so before it dies out. Cutting it dead at the
+// threshold reads as a rendering boundary, which is exactly what it was.
+//
+// So when the up-ray IS blocked, march OUTWARD along the travel axis until it
+// stops being blocked. The distance to that opening drives the falloff, which
+// gives blown-in snow at both mouths tapering inward, and full darkness deep in
+// the middle -- with no knowledge of tunnels anywhere in it. The same code puts
+// spray under a bridge deck and rain at the lip of a canopy.
+//
+// Cost is at most kSteps*2 extra static raycasts on frames where you are under
+// cover, and none at all under open sky (the common case exits on the first ray).
+// The console eats typed characters, so GLFW's char callback needs to reach the
+// Hud. File-scope for the same reason every other host does it: glfwSetCharCallback
+// takes a plain function pointer with no user data.
+static x3::game::Hud* g_tunnelHud = nullptr;
+static void tunnelCharCB(GLFWwindow*, unsigned int c) {
+    if (g_tunnelHud && g_tunnelHud->consoleOpen()) g_tunnelHud->onChar(c);
+}
+
+static float skyVisibleAt(x3::phys::IPhysicsWorld& phys, float x, float y, float z,
+                          float dirX, float dirZ) {
+    auto blocked = [&](float px, float pz) {
+        return phys.rayCastStrict(x3::phys::Vec3{ px, y + 0.5f, pz },
+                                  x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+                                  60.0f, x3::phys::Layer::Static).hit;
+    };
+    if (!blocked(x, z)) return 1.0f;              // open sky: one ray, done
+
+    // BLOW-IN RANGE. 25 m (82 ft) is the distance over which a portal's weather
+    // gives up; past it a bore is genuinely still air. Marched in 8 steps, which
+    // resolves the mouth to about 10 ft -- finer than the eye reads at speed.
+    const float kBlowInM = 25.0f;
+    const int   kSteps   = 8;
+    float nearest = kBlowInM;
+    for (int i = 1; i <= kSteps; ++i) {
+        const float d = kBlowInM * (float)i / (float)kSteps;
+        if (!blocked(x + dirX * d, z + dirZ * d) ||
+            !blocked(x - dirX * d, z - dirZ * d)) { nearest = d; break; }
+    }
+    // Nearer the opening = more gets in. Eased, and capped below 1 because even
+    // standing ON the threshold the roof is taking most of it.
+    const float t = 1.0f - (nearest / kBlowInM);
+    return 0.85f * (t * t * (3.0f - 2.0f * t));
 }
 
 int hostTunnel(HostContext& hc) {
@@ -137,6 +182,7 @@ int hostTunnel(HostContext& hc) {
     x3::game::WetnessModel wetness;
     x3::game::StormSystem storm;
     x3::game::PrecipFx precip;
+    bool precipInit = false;
     x3::game::PrecipKind precipKind = x3::game::PrecipKind::None;
     float precipAmt = 0.0f;
     bool weatherOn = false;
@@ -146,7 +192,7 @@ int hostTunnel(HostContext& hc) {
         if (weatherOn) {
             weather.setBiome(x3::game::Biome::Temperate);
             storm.reset();
-            precip.init(x3::game::PrecipConfig{});
+            precip.init(x3::game::PrecipConfig{}); precipInit = true;
             if (e && std::strcmp(e, "storm") == 0)      weather.forceState(x3::game::WeatherState::Storm, true);
             else if (std::strcmp(e, "rain")  == 0)      weather.forceState(x3::game::WeatherState::Rain,  true);
             else if (std::strcmp(e, "fog")   == 0)      weather.forceState(x3::game::WeatherState::Fog,   true);
@@ -301,6 +347,33 @@ int hostTunnel(HostContext& hc) {
     // The Player controller already existed, complete with capsule, stances and
     // ground handling -- it had simply never been wired into this host. Same
     // shape as the rest of today: the feature was built and the door was shut.
+    // ---- THE CONSOLE, and weather on it -------------------------------
+    // X3_WEATHER is an env var, which means changing the sky costs a restart --
+    // and the whole point of a weather model with a diurnal clock and an
+    // accumulating snowpack is watching it CHANGE. A cvar you can retype mid-
+    // drive is the difference between a feature you inspect and one you play
+    // with. Backtick opens it.
+    std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
+    x3::game::Hud hud;
+    bool conQuit = false;
+    hud.init(*console, &conQuit);
+    g_tunnelHud = &hud;
+    glfwSetCharCallback(window, tunnelCharCB);
+    console->registerCVar("wx", "off",
+        "weather: off | clear | cloudy | rain | storm | fog | snow");
+    console->registerCVar("wx_snow_in", "0",
+        "lying snow depth to prime, INCHES (applied when wx changes)");
+    console->registerCVar("wx_hour", "14",
+        "time of day, 0-24, drives the diurnal temperature swing");
+    // Seed them from the env var so the documented X3_WEATHER path still works
+    // and the console simply shows what you already asked for.
+    {
+        const char* e = std::getenv("X3_WEATHER");
+        if (e && e[0] && std::strcmp(e, "0") != 0) console->set("wx", e);
+        if (const char* si = std::getenv("X3_SNOW_IN")) console->set("wx_snow_in", si);
+    }
+    std::string wxApplied = "off";
+
     x3::game::Player onFoot;
     bool  driving      = true;
     bool  footSpawned  = false;
@@ -481,7 +554,7 @@ int hostTunnel(HostContext& hc) {
                                               : (ws.precipitation > 0.0f ? x3::game::PrecipKind::Rain
                                                                          : x3::game::PrecipKind::None),
                                   ws.precipitation, cam[0], cam[1], cam[2], 0.0f, 0.0f,
-                                  skyVisibleAt(*phys, cam[0], cam[1], cam[2]));
+                                  skyVisibleAt(*phys, cam[0], cam[1], cam[2], route.dirX, route.dirZ));
                 }
 
                 if (i == kFrames - 1) device->armCapture(out.c_str());
@@ -640,8 +713,13 @@ int hostTunnel(HostContext& hc) {
         // sit through twenty-four hours to watch the desert cool off.
         if (weatherOn) {
             weather.tick(fdt);
-            static float todHours = 14.0f;             // start mid-afternoon
-            todHours += fdt * (24.0f / 600.0f);        // 10 real minutes per day
+            // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
+            // pre-dawn trough to see ice form instead of waiting out the cycle.
+            static float todHours = 14.0f;
+            static float lastHourCvar = -1.0f;
+            const float hourCvar = console->getFloat("wx_hour");
+            if (hourCvar != lastHourCvar) { todHours = hourCvar; lastHourCvar = hourCvar; }
+            todHours += fdt * (24.0f / 600.0f);        // 10 real minutes per in-world day
             if (todHours >= 24.0f) todHours -= 24.0f;
             weather.setTimeOfDay(todHours);
 
@@ -697,10 +775,95 @@ int hostTunnel(HostContext& hc) {
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         const float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
         lastMX = mx; lastMY = my;
-        camYaw += ddx * 0.0025f; camPitch -= ddy * 0.0025f;
+        if (!hud.consoleOpen()) { camYaw += ddx * 0.0025f; camPitch -= ddy * 0.0025f; }
         if (camPitch >  1.2f) camPitch =  1.2f;
         if (camPitch < -1.2f) camPitch = -1.2f;
-        auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+        // ---- CONSOLE KEYS. Backtick toggles; while it is open the game must
+        // NOT also read WASD, or typing "clear" drives the car into a wall.
+        {
+            static bool graveWas = false, bkWas = false, entWas = false,
+                        upWas = false, dnWas = false, tabWas = false;
+            const bool gr = glfwGetKey(window, GLFW_KEY_GRAVE_ACCENT) == GLFW_PRESS;
+            if (gr && !graveWas) hud.toggleConsole();
+            graveWas = gr;
+            if (hud.consoleOpen()) {
+                const bool bk = glfwGetKey(window, GLFW_KEY_BACKSPACE) == GLFW_PRESS;
+                if (bk && !bkWas) hud.onBackspace();
+                bkWas = bk;
+                const bool en = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
+                if (en && !entWas) hud.onEnter(*console);
+                entWas = en;
+                const bool up = glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
+                if (up && !upWas) hud.historyPrev();
+                upWas = up;
+                const bool dn = glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
+                if (dn && !dnWas) hud.historyNext();
+                dnWas = dn;
+                const bool tb = glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS;
+                if (tb && !tabWas) hud.complete(*console);
+                tabWas = tb;
+            }
+        }
+        const bool typing = hud.consoleOpen();
+
+        // ---- WEATHER FROM THE CONSOLE. Re-read every frame; act only when the
+        // string CHANGES, because forcing the state every frame would restart
+        // the transition continuously and the sky would never actually arrive.
+        {
+            const std::string wxWant = console->getString("wx");
+            if (wxWant != wxApplied) {
+                wxApplied = wxWant;
+                weatherOn = (wxWant != "off" && !wxWant.empty());
+                if (weatherOn) {
+                    if (!precipInit) { precip.init(x3::game::PrecipConfig{}); storm.reset(); precipInit = true; }
+                    using WS = x3::game::WeatherState;
+                    weather.setBiome(x3::game::Biome::Temperate);
+                    if (wxWant == "snow") {
+                        weather.setBiome(x3::game::Biome::Snow);
+                        weather.forceState(WS::Snow, true);
+                    }
+                    else if (wxWant == "storm")  weather.forceState(WS::Storm,  true);
+                    else if (wxWant == "rain")   weather.forceState(WS::Rain,   true);
+                    else if (wxWant == "fog")    weather.forceState(WS::Fog,    true);
+                    else if (wxWant == "cloudy") weather.forceState(WS::Cloudy, true);
+                    else                          weather.forceState(WS::Clear,  true);
+                    // Re-prime the snowpack to whatever depth was asked for. The
+                    // model integrates in real time at an inch an hour, so
+                    // without this "wx snow" on a bare road stays bare for forty
+                    // minutes and reads as broken.
+                    // ONE RULE for the starting depth. The boot path primed 2.6 in
+                    // when it was snowing; this path then reset it to wx_snow_in's
+                    // default of ZERO and wiped it -- two owners of one number,
+                    // the same defect as the fitout seed. Snowfall with no depth
+                    // asked for gets the settled default; anything else honours
+                    // the cvar exactly.
+                    float wantIn = console->getFloat("wx_snow_in");
+                    if (wantIn <= 0.0f && weather.sample().snowfall) wantIn = 2.6f;
+                    wetness.reset();
+                    if (wantIn > 0.0f) {
+                        const x3::game::WeatherSample& ps = weather.sample();
+                        for (int i = 0; i < 60 * 60 * 24 && wetness.snowDepthIn() < wantIn; ++i)
+                            wetness.tick(1.0f, ps.precipitation, ps.tempC, ps.snowfall);
+                    }
+                    char wb[128];
+                    std::snprintf(wb, sizeof(wb), "weather: %s, %.1f in lying",
+                                  wxWant.c_str(), wetness.snowDepthIn());
+                    console->print(wb);
+                } else {
+                    x3::rhi::IRenderDevice::SkyParams sp{};
+                    sp.enabled = true;
+                    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
+                    sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+                    sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f; sp.cloud = 0.42f;
+                    device->setSkyParams(sp);
+                    device->setSnowCover(0.0f);
+                    device->setWetness(x3::rhi::IRenderDevice::WetnessParams{});
+                    console->print("weather: off (the demo's fixed bright sky)");
+                }
+            }
+        }
+
+        auto kd = [&](int k){ return typing ? false : glfwGetKey(window, k) == GLFW_PRESS; };
 
         // ---- E: GET OUT / GET IN ----------------------------------------
         // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
@@ -982,7 +1145,7 @@ int hostTunnel(HostContext& hc) {
             }
             if (weatherOn)
                 precip.update(fdt, precipKind, precipAmt, cx, cy, cz, 0.0f, 0.0f,
-                              skyVisibleAt(*phys, cx, cy, cz));
+                              skyVisibleAt(*phys, cx, cy, cz, route.dirX, route.dirZ));
         }
         auto frame = device->beginFrame();
         if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
@@ -1061,6 +1224,8 @@ int hostTunnel(HostContext& hc) {
                     device->drawHudText(frame, prompt, tx, ty, px, fgc);
                 }
             }
+
+            if (hud.consoleOpen()) hud.drawConsole(*device, frame, *console, fdt);
 
             // THE THERMOMETER, beside the speedo. Only when weather is running:
             // a gauge pinned at a constant is worse than no gauge, because it
