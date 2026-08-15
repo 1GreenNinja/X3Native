@@ -45,6 +45,9 @@ add_executable(X3Engine WIN32
     world_hosts/host_tunnel.cpp
     tunnel_corridor.cpp
     rifthub.cpp
+    # PHASE 2 (feat/factory-annex): the Confection Annex shell + per-room hooks
+    factory_annex.cpp
+    factory_rooms.cpp
     rift_depths.cpp
     rift_console.cpp
     # W-MENU — the ONE destination registry + the world/place selection menu
