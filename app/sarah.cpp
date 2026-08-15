@@ -102,10 +102,32 @@ void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
     //        via tools/glb-merge-anims.mjs rather than the old Blender script) —
     //        reproduces the 7/27 "DEFORMS her badly" exactly: she splays and
     //        inflates. The 7/27 diagnosis was right.
-    //   What is NOT yet tried: authoring clips against HER rig (Blender, hand-
-    //   keyed or retargeted with a real rest-pose solve), or Meshy Smart Rig from
-    //   the web UI. Until one of those lands she stays a one-pose figure, and the
-    //   LIVE F7 path (AnnaCasual.glb) is unaffected — it has its own clips. ----
+    //     4. tools/retarget_glb.py — a proper WORLD-SPACE orientation retarget
+    //        (rest pose divided out), written for exactly this case. It FIXES
+    //        her arms: the 94.5 deg LeftArm / 86.2 deg RightArm rest delta vs
+    //        JakeClone stops mattering. Her legs still tear.
+    //
+    //   ROOT CAUSE (measured 2026-08-15) — HER SKELETON IS BROKEN IN THE LEGS,
+    //   and no clip source or retarget method can fix a bad rig. Rest-pose world
+    //   X separation of the leg chains:
+    //                       Sarah    JakeClone
+    //       Left/RightUpLeg  0.080      0.202
+    //       Left/RightLeg    0.115      0.286
+    //       Left/RightFoot   0.075      0.341
+    //   Both her leg chains sit almost on the centreline, and not even
+    //   symmetrically about it (LeftFoot x=+0.014 vs RightFoot x=-0.061). There
+    //   are effectively not two separate legs to drive, so ANY clip that steps
+    //   tears or fuses the mesh — which is why every attempt above failed in the
+    //   legs while the torso read fine.
+    //
+    //   THE FIX is therefore a RE-RIG OF HER LEGS, not more clip hunting:
+    //   reposition the eight leg joints symmetrically over the actual leg
+    //   geometry and re-weight (Blender automatic weights, then verify by posing
+    //   ONE leg and confirming the other does not move), after which
+    //   retarget_glb.py should transfer any Meshy clip set cleanly. Alternative:
+    //   Meshy Smart Rig from the web UI (web-only; Tim drives it).
+    //   Until then she stays a one-pose figure, and the LIVE F7 path
+    //   (AnnaCasual.glb) is unaffected — it has its own clips. ----
     std::string file = std::string(modelFile.empty() ? std::string_view("Sarah.glb")
                                                      : modelFile);
     {
