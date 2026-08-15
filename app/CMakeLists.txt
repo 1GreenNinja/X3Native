@@ -59,6 +59,7 @@ add_library(x3app SHARED
     world_hosts/host_gallery.cpp
     world_hosts/host_tunnel.cpp
     tunnel_corridor.cpp
+    road_network.cpp    # chained-corridor road routes (the ring tours)
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp

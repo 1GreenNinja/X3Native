@@ -76,7 +76,8 @@ struct TestFlags {
     bool listClips = false;
     bool testTerrain = false, testTerrainPlace = false, testStreaming = false;
     bool testTerrainCorridor = false;  // --test-terraincorridor (corridor heightfield depression)
-    bool testRouteFrame = false;      // --test-routeframe (polyline frame, P1)
+    bool testRouteFrame = false;
+    bool testRoadNetwork = false;     // --test-roadnetwork (the ring tours)      // --test-routeframe (polyline frame, P1)
     bool testTunnelDrive = false;      // --test-tunneldrive (drive-through the demo bore, negative-controlled)
     bool testTunnelMouth = false;     // --test-tunnelmouth (THE tunnel-mouth defect gate)
     bool testWorldStream = false, testWorldMap = false, testAi = false, testBestiary = false;

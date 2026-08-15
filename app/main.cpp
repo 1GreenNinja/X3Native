@@ -356,6 +356,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testTerrainCorridor = o.testTerrainCorridor;
         _tf.testTunnelMouth     = o.testTunnelMouth;
         _tf.testRouteFrame = o.testRouteFrame;
+        _tf.testRoadNetwork = o.testRoadNetwork;
         _tf.testTunnelDrive = o.testTunnelDrive;
         _tf.testStreaming = o.testStreaming;
         _tf.testWorldStream = o.testWorldStream;

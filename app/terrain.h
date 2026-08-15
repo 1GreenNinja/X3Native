@@ -225,12 +225,31 @@ float terrainCorridorDepthAt(const TerrainCorridor& c, float x, float z);
 // run, which is what keeps generation on worker threads race-free. Mutating it
 // while tiles are generating is NOT supported (tiles already built would keep
 // the old field — the same rule as setKeepOut()).
-// 16, not 8: a dressed tunnel now registers up to THREE corridors (the main
-// route + one tight PORTAL PLUG per mouth — see app/tunnel_corridor.cpp), so
-// the city's four freeway tunnels alone want 12. The early-out is 4 float
-// compares per registered corridor, so doubling the cap costs nothing where
-// no corridor is near.
-constexpr uint32_t kMaxTerrainCorridors = 16;
+// 192, not 16. The cap was sized for TUNNELS — a dressed bore registers up to
+// three corridors (route + a portal plug per mouth), so the city's four freeway
+// tunnels alone wanted 12 and 16 left a little headroom.
+//
+// ROADS changed the unit of demand. A corridor is a 32-node polyline, so a long
+// route is not one corridor — it is a CHAIN of them sharing endpoint nodes. In
+// the road network's units:
+//
+//     15-mile inner ring @ 200 ft node spacing = 396 nodes = 13 corridors
+//     31-mile outer ring                       =            ~27 corridors
+//     spokes + valley route + city bores        =            ~20 corridors
+//     the decided ~62-mile scope               =           ~156 corridors
+//
+// MEMORY IS NOT THE COST: sizeof(TerrainCorridor) is ~396 bytes (three 32-float
+// arrays plus a header), so 192 of them is ~76 KB — noise against a single
+// terrain tile's vertex buffer.
+//
+// THE COST THAT MATTERS is per-height-query: the early-out is a handful of
+// float compares per REGISTERED corridor, paid on every query whether or not a
+// corridor is near. At 192 that is ~12x today's worst case, and terrain
+// generation makes millions of queries. If that shows up in the P0 measurement,
+// the answer is a spatial index over the registry (a coarse grid of corridor
+// ids), NOT a smaller cap — because the cap is set by how much ROAD the world
+// has, and that is a design decision, not a performance one.
+constexpr uint32_t kMaxTerrainCorridors = 192;
 
 // Returns false if the registry is full or the corridor is degenerate
 // (nodeCount < 2 or > kMaxNodes, non-finite halfWidth/falloff, negative width).

@@ -110,6 +110,7 @@
 #include "world_map.h"
 #include "city.h"
 #include "tunnel_corridor.h"   // x3::game::runTunnelDriveSelfTest (--test-tunneldrive)
+#include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
@@ -714,6 +715,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running TERRAIN CORRIDOR DEPRESSION self-test (no-regression / "
                     "centreline depth / tile seam / joint continuity / determinism)...");
         return x3::game::runTerrainCorridorSelfTest() ? 0 : 1;
+    }
+    if (tf.testRoadNetwork) {
+        x3::logInfo("running ROAD NETWORK self-test (lay the 15-mile inner tour as "
+                    "chained corridors; grade, length and cap)...");
+        return x3::game::runRoadNetworkSelfTest() ? 0 : 1;
     }
     if (tf.testRouteFrame) {
         x3::logInfo("running ROUTE FRAME self-test (polyline frame: straight unchanged, "

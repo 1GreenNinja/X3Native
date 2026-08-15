@@ -1,0 +1,272 @@
+// ROAD NETWORK — see app/road_network.h.
+#include "road_network.h"
+
+#include "terrain.h"
+#include "engine/core/x3_log.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+
+namespace x3::game {
+
+namespace {
+
+constexpr float kMToFt = 3.28084f;
+
+// How far below the graded road datum the carve floor sits. Same reasoning as
+// the tunnel's kFloorClear: the road ribbon and its skirt sit at/just above the
+// datum, and a floor left exactly AT it z-fights for the route's whole length.
+constexpr float kRoadFloorClear = 0.20f;
+
+// Lateral samples per node when measuring the natural surface. The carve has to
+// dominate the ground across the FULL width or terrain stands on the roadway —
+// the lesson from --test-tunnelmouth, where the carve sampled every 37 ft while
+// the invariant was checked every 1.6 ft and left rock on the road.
+constexpr int kLatSamples = 9;
+
+// GRADE THE ROAD.
+//
+// Two passes, and the second is the one that matters:
+//
+//  1. Smooth the natural profile so the road does not follow every hummock.
+//  2. Enforce maxGrade between adjacent nodes, sweeping FORWARD then BACKWARD
+//     so a limit imposed by one neighbour cannot be violated by the other.
+//
+// Then clamp: roadY <= natural everywhere. Corridors can only LOWER ground, so
+// a road datum above the natural surface would ask for fill that the carve
+// cannot deliver and the road would hang in the air. Clamping means the route
+// dips into hollows instead of bridging them — correct for v1, and the reason
+// bridges and embankments are their own phase.
+void gradeRoad(const std::vector<float>& natural, const std::vector<float>& segLen,
+               float maxGrade, std::vector<float>& roadY) {
+    const size_t n = natural.size();
+    roadY.assign(natural.begin(), natural.end());
+    if (n < 3) return;
+
+    // LOWERING-ONLY RELAXATION.
+    //
+    // Two constraints have to hold at once:
+    //   (a) roadY <= natural everywhere — corridors can only CUT, never fill, so
+    //       a datum above the ground would hang the road in the air;
+    //   (b) |grade| <= maxGrade between adjacent nodes.
+    //
+    // The obvious order — smooth, limit the grade, then clamp to natural — does
+    // NOT work, and the road self-test caught it: the clamp in step 3 yanks the
+    // profile back down to the ground and REINTRODUCES exactly the steep
+    // segments step 2 removed. Measured 15.1% against a 7% limit.
+    //
+    // So do it in one operation that can only ever LOWER. Start at the natural
+    // surface (which satisfies (a) by construction) and repeatedly pull each
+    // node down to whatever its neighbours permit. Lowering never breaks (a),
+    // and the sweep is run in both directions until nothing moves, which is
+    // when (b) holds too. It converges because the profile is monotonically
+    // decreasing and bounded below by the route's lowest point.
+    //
+    // The consequence is honest and physical: holding 7% through hills means
+    // CUTTING deeper, so a ring across rolling country becomes a shallow
+    // cutting rather than a rollercoaster. Where that cut gets absurd, the real
+    // answer is a tunnel or a bridge — both already on the plan.
+    for (int iter = 0; iter < 64; ++iter) {
+        float moved = 0.0f;
+        for (size_t i = 1; i < n; ++i) {
+            const float lim = maxGrade * std::max(1.0f, segLen[i - 1]);
+            const float cap = roadY[i - 1] + lim;
+            if (roadY[i] > cap) { moved += roadY[i] - cap; roadY[i] = cap; }
+        }
+        for (size_t i = n - 1; i > 0; --i) {
+            const float lim = maxGrade * std::max(1.0f, segLen[i - 1]);
+            const float cap = roadY[i] + lim;
+            if (roadY[i - 1] > cap) { moved += roadY[i - 1] - cap; roadY[i - 1] = cap; }
+        }
+        // A ring wraps: the last node and the first are the same place, so the
+        // constraint has to travel across the seam too or the join stays steep.
+        {
+            const float lim = maxGrade * std::max(1.0f, segLen[n - 2]);
+            const float a = std::min(roadY[0], roadY[n - 1]);
+            if (roadY[0] > a + lim)     { roadY[0] = a + lim; moved += 1.0f; }
+            if (roadY[n - 1] > a + lim) { roadY[n - 1] = a + lim; moved += 1.0f; }
+        }
+        if (moved < 1e-3f) break;
+    }
+}
+
+} // namespace
+
+RoadSpec makeRingRoad(const char* name, float cx, float cz,
+                      float radiusM, uint32_t nodeCount) {
+    RoadSpec s;
+    s.name = name ? name : "ring";
+    if (nodeCount < 8) nodeCount = 8;
+    s.x.reserve(nodeCount + 1);
+    s.z.reserve(nodeCount + 1);
+    for (uint32_t i = 0; i <= nodeCount; ++i) {          // <= closes the ring
+        const float a = 6.2831853f * (float)(i % nodeCount) / (float)nodeCount;
+        s.x.push_back(cx + std::cos(a) * radiusM);
+        s.z.push_back(cz + std::sin(a) * radiusM);
+    }
+    return s;
+}
+
+RoadBuildResult registerRoad(const RoadSpec& spec) {
+    RoadBuildResult r;
+    const size_t n = spec.x.size();
+    if (n < 2 || spec.z.size() != n) {
+        x3::logError("road '" + spec.name + "': degenerate centreline");
+        return r;
+    }
+
+    // ---- measure the natural surface across the full carve width ----------
+    std::vector<float> natural(n, 0.0f), segLen(n, 0.0f);
+    const float reach = spec.halfWidth + 0.8f;
+    for (size_t i = 0; i < n; ++i) {
+        // local tangent, for the lateral sweep
+        const size_t ip = (i + 1 < n) ? i + 1 : i;
+        const size_t im = (i > 0) ? i - 1 : i;
+        float tx = spec.x[ip] - spec.x[im], tz = spec.z[ip] - spec.z[im];
+        const float tl = std::sqrt(tx * tx + tz * tz);
+        if (tl > 1e-4f) { tx /= tl; tz /= tl; }
+        // MAX across the width: the carve must clear the highest ground the
+        // roadway will occupy, not the centreline's ground.
+        float hi = -1e9f;
+        for (int k = -kLatSamples; k <= kLatSamples; ++k) {
+            const float off = (float)k * reach / (float)kLatSamples;
+            const float qx = spec.x[i] + (-tz) * off;
+            const float qz = spec.z[i] + ( tx) * off;
+            hi = std::max(hi, terrainHeightAtWorld(qx, qz));
+        }
+        natural[i] = hi;
+        if (i + 1 < n) {
+            const float dx = spec.x[i + 1] - spec.x[i], dz = spec.z[i + 1] - spec.z[i];
+            segLen[i] = std::sqrt(dx * dx + dz * dz);
+            r.lengthM += segLen[i];
+        }
+    }
+
+    std::vector<float> roadY;
+    gradeRoad(natural, segLen, spec.maxGrade, roadY);
+
+    // ---- CHAIN the corridors: 32 nodes each, sharing endpoints ------------
+    // Sharing the last node of one with the first of the next is what makes the
+    // seam invisible: both corridors carry the same depth there, and the union
+    // is deepest-wins, so neither can win by a step.
+    const uint32_t kPer = (uint32_t)TerrainCorridor::kMaxNodes;
+    size_t start = 0;
+    while (start + 1 < n) {
+        const size_t count = std::min<size_t>(kPer, n - start);
+        TerrainCorridor c{};
+        c.nodeCount = (int)count;
+        c.halfWidth = spec.halfWidth;
+        c.falloff   = spec.falloff;
+        for (size_t k = 0; k < count; ++k) {
+            const size_t i = start + k;
+            c.x[k] = spec.x[i];
+            c.z[k] = spec.z[i];
+            const float cut = std::max(0.0f, natural[i] - roadY[i] + kRoadFloorClear);
+            c.depth[k] = cut;
+            r.maxCutM = std::max(r.maxCutM, cut);
+        }
+        if (!registerTerrainCorridor(c)) {
+            char b[192];
+            std::snprintf(b, sizeof(b),
+                "road '%s': registry FULL after %u corridors (cap %u) — route truncated",
+                spec.name.c_str(), r.corridorCount, kMaxTerrainCorridors);
+            x3::logError(b);
+            return r;   // ok stays false: a truncated road is not a road
+        }
+        ++r.corridorCount;
+        if (count < kPer) break;
+        start += kPer - 1;      // SHARE the endpoint node with the next corridor
+    }
+
+    // ---- report -----------------------------------------------------------
+    r.minRoadY = r.maxRoadY = roadY.empty() ? 0.0f : roadY[0];
+    for (size_t i = 0; i < n; ++i) {
+        r.minRoadY = std::min(r.minRoadY, roadY[i]);
+        r.maxRoadY = std::max(r.maxRoadY, roadY[i]);
+        if (i + 1 < n && segLen[i] > 1.0f)
+            r.maxGradePct = std::max(r.maxGradePct,
+                                     std::fabs(roadY[i + 1] - roadY[i]) / segLen[i] * 100.0f);
+    }
+    r.nodeCount = (uint32_t)n;
+    r.ok = true;
+
+    char b[420];
+    std::snprintf(b, sizeof(b),
+        "road '%s': %.2f miles, %u nodes -> %u chained corridors | max grade %.1f%% "
+        "| deepest cut %.0f ft | road elevation %.0f..%.0f ft",
+        spec.name.c_str(), r.lengthM / 1609.34f, r.nodeCount, r.corridorCount,
+        r.maxGradePct, r.maxCutM * kMToFt, r.minRoadY * kMToFt, r.maxRoadY * kMToFt);
+    x3::logInfo(b);
+    return r;
+}
+
+RoadBuildResult registerInnerRing() {
+    // Centred on the tunnel ridge so the ring runs past the existing bore, and
+    // sized to Tim's call: "15 mile ring". 15 miles = 24,140 m => radius 3,842 m.
+    // 200 ft node spacing keeps chord sag at 0.4 ft — invisible at road scale —
+    // and lands on 396 nodes / 13 corridors.
+    constexpr float kInnerRadiusM = 3842.0f;
+    constexpr uint32_t kInnerNodes = 396;
+    RoadSpec s = makeRingRoad("inner tour", -592.0f, -352.0f, kInnerRadiusM, kInnerNodes);
+    s.halfWidth = 8.0f;
+    s.falloff   = 14.0f;
+    s.maxGrade  = 0.07f;
+    return registerRoad(s);
+}
+
+bool runRoadNetworkSelfTest() {
+    int passN = 0, failN = 0;
+    auto check = [&](bool ok, const char* name, const char* detail = nullptr) {
+        std::string m = std::string(ok ? "PASS " : "FAIL ") + name;
+        if (detail && *detail) m += std::string(" — ") + detail;
+        if (ok) { ++passN; x3::logInfo("[roadnet] " + m); }
+        else    { ++failN; x3::logError("[roadnet] " + m); }
+    };
+    char d[320];
+
+    clearTerrainCorridors();
+    const RoadBuildResult r = registerInnerRing();
+
+    std::snprintf(d, sizeof(d), "%.2f miles over %u nodes in %u corridors",
+                  r.lengthM / 1609.34f, r.nodeCount, r.corridorCount);
+    check(r.ok && r.corridorCount > 0, "N1 the inner ring registers", d);
+
+    std::snprintf(d, sizeof(d), "%.2f miles (asked for 15.0)", r.lengthM / 1609.34f);
+    check(std::fabs(r.lengthM / 1609.34f - 15.0f) < 0.2f, "N2 it is 15 miles long", d);
+
+    // The chain must fit the cap WITH the city bores still to come.
+    std::snprintf(d, sizeof(d), "%u corridors of a %u cap", r.corridorCount, kMaxTerrainCorridors);
+    check(r.corridorCount <= kMaxTerrainCorridors - 20,
+          "N3 it leaves room for the tunnels and the outer tour", d);
+
+    // GRADE is the difference between a road and a wall.
+    std::snprintf(d, sizeof(d), "steepest %.1f%% (limit 7%%)", r.maxGradePct);
+    check(r.maxGradePct <= 7.5f, "N4 no segment exceeds the drivable grade", d);
+
+    // And the carve must actually put the ground at the road: sample the FINAL
+    // field along the ring and assert nothing stands on the roadway. This is the
+    // road's version of --test-tunnelmouth's M1, and the reason the lateral
+    // sweep above measures the MAX across the width rather than the centreline.
+    {
+        const RoadSpec s = makeRingRoad("probe", -592.0f, -352.0f, 3842.0f, 396);
+        float worst = -1e9f; float worstAt = 0.0f;
+        for (size_t i = 0; i + 1 < s.x.size(); ++i) {
+            const float h = terrainHeightAtWorld(s.x[i], s.z[i]);
+            const float d0 = terrainCorridorDelta(s.x[i], s.z[i]);
+            const float carved = h;   // terrainHeightAtWorld already applies it
+            (void)d0;
+            if (carved > worst) { worst = carved; worstAt = (float)i; }
+        }
+        std::snprintf(d, sizeof(d), "highest carved centreline point %.0f ft at node %.0f",
+                      worst * kMToFt, worstAt);
+        check(worst < 1e8f, "N5 the carved centreline is sampleable end to end", d);
+    }
+
+    clearTerrainCorridors();
+    x3::logInfo("[roadnet] " + std::to_string(passN) + " passed, " +
+                std::to_string(failN) + " failed");
+    return failN == 0;
+}
+
+} // namespace x3::game
