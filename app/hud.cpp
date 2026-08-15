@@ -344,6 +344,123 @@ void Hud::drawDamageFlash(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCo
     device.drawHudQuad(frame, 0.0f, 0.0f, (float)w, (float)h, red);
 }
 
+// ===========================================================================
+// THERMOMETER
+//
+// Drawn as an instrument on purpose. The one thing a driver needs off this
+// gauge is "am I about to be on ice", and that is a POSITION question -- how
+// close is the column to the freeze mark -- not a number-reading question. So
+// the freeze line is a permanent tick on the scale and the column crosses it
+// visibly, which you can take in with a glance you can afford at 90 mph. The
+// digits are there for when you want the exact figure, not for the warning.
+//
+// Range is -20 F to 110 F: everything the biome table can actually produce
+// (snowfield pre-dawn to desert mid-afternoon) with a little headroom, so the
+// column never pins to an end and stops meaning anything.
+// ===========================================================================
+void drawThermometer(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                     float tempF, const char* condition,
+                     float snowInches, bool iceWarn) {
+    uint32_t w = 0, h = 0;
+    device.hudSize(w, h);
+    if (w == 0 || h == 0) return;
+
+    const float kMinF = -20.0f, kMaxF = 110.0f;
+    float t01 = (tempF - kMinF) / (kMaxF - kMinF);
+    if (t01 < 0.0f) t01 = 0.0f;
+    if (t01 > 1.0f) t01 = 1.0f;
+
+    // Geometry: right edge, vertically centred. Tube is narrow, bulb is wider --
+    // the silhouette is what makes it read as a thermometer at a glance rather
+    // than as another progress bar, and there are already bars on this screen.
+    const float tubeW  = 12.0f;
+    const float tubeH  = 150.0f;
+    const float bulbR  = 11.0f;
+    const float x      = (float)w - 54.0f;
+    const float yTop   = (float)h * 0.5f - tubeH * 0.5f - 40.0f;
+    const float yBot   = yTop + tubeH;
+
+    const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.75f };
+    const float plate [4] = { 0.02f, 0.02f, 0.03f, 0.62f };
+    const float glass [4] = { 0.16f, 0.17f, 0.20f, 0.90f };
+    const float white [4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+    // Backing plate, sized to cover tube + bulb + the scale labels.
+    device.drawHudQuad(frame, x - 34.0f, yTop - 12.0f,
+                       tubeW + 58.0f, tubeH + bulbR * 2.0f + 30.0f, plate);
+    // Glass: the empty tube, and the bulb as a squat block beneath it.
+    device.drawHudQuad(frame, x, yTop, tubeW, tubeH, glass);
+    device.drawHudQuad(frame, x - (bulbR - tubeW * 0.5f), yBot,
+                       bulbR * 2.0f, bulbR * 1.7f, glass);
+
+    // COLUMN COLOUR by temperature, and it is not a rainbow: cold reads as a
+    // cold blue, warm as mercury red, and the crossover sits AT freezing so the
+    // colour change and the freeze mark agree with each other. Two cues saying
+    // the same thing is what makes a gauge readable without study.
+    const float freeze01 = (32.0f - kMinF) / (kMaxF - kMinF);
+    float col[4];
+    if (t01 <= freeze01) {
+        const float k = (freeze01 > 0.0f) ? (t01 / freeze01) : 0.0f;   // 0 = coldest
+        col[0] = 0.25f + 0.35f * k; col[1] = 0.55f + 0.30f * k; col[2] = 1.0f; col[3] = 0.97f;
+    } else {
+        const float k = (t01 - freeze01) / (1.0f - freeze01);
+        col[0] = 0.95f; col[1] = 0.62f - 0.52f * k; col[2] = 0.45f - 0.38f * k; col[3] = 0.97f;
+    }
+
+    // The column itself, rising from the bulb. The bulb is always FULL -- that
+    // is where the fluid lives -- so it takes the column colour too.
+    const float colH = tubeH * t01;
+    device.drawHudQuad(frame, x + 1.0f, yBot - colH, tubeW - 2.0f, colH, col);
+    device.drawHudQuad(frame, x - (bulbR - tubeW * 0.5f) + 1.0f, yBot,
+                       bulbR * 2.0f - 2.0f, bulbR * 1.7f - 1.0f, col);
+
+    // ---- the scale ------------------------------------------------------
+    // Ticks every 20 F, and the FREEZE mark called out in full width and
+    // labelled. It is the only number on this gauge that changes what you do.
+    char lb[24];
+    const float tickC[4] = { 0.62f, 0.64f, 0.70f, 0.85f };
+    for (int fdeg = -20; fdeg <= 110; fdeg += 20) {
+        const float p = ((float)fdeg - kMinF) / (kMaxF - kMinF);
+        const float ty = yBot - tubeH * p;
+        device.drawHudQuad(frame, x + tubeW + 2.0f, ty, 5.0f, 1.0f, tickC);
+        std::snprintf(lb, sizeof(lb), "%d", fdeg);
+        device.drawHudText(frame, lb, x + tubeW + 9.0f, ty - kGlyphPx * 0.5f,
+                           kGlyphPx * 0.75f, tickC);
+    }
+    const float freezeY = yBot - tubeH * freeze01;
+    const float freezeC[4] = { 0.55f, 0.85f, 1.0f, 0.95f };
+    device.drawHudQuad(frame, x - 8.0f, freezeY, tubeW + 16.0f, 1.0f, freezeC);
+    device.drawHudText(frame, "FRZ", x - 31.0f, freezeY - kGlyphPx * 0.5f,
+                       kGlyphPx * 0.75f, freezeC);
+
+    // ---- the readout ----------------------------------------------------
+    // Below the bulb: the figure, then what the ROAD is doing about it, which
+    // is the consequence the number exists to predict.
+    float ty = yBot + bulbR * 1.7f + 6.0f;
+    std::snprintf(lb, sizeof(lb), "%.0f F", tempF);
+    device.drawHudText(frame, lb, x - 26.0f + 1.0f, ty + 1.0f, kGlyphPx, shadow);
+    device.drawHudText(frame, lb, x - 26.0f, ty, kGlyphPx, white);
+    ty += kGlyphPx + 3.0f;
+
+    if (condition && condition[0]) {
+        // ICE is the one condition that gets its own colour, because it is the
+        // one that will put you into the trees.
+        const float amber[4] = { 1.0f, 0.78f, 0.25f, 1.0f };
+        const float calm [4] = { 0.72f, 0.76f, 0.82f, 1.0f };
+        const float* cc = iceWarn ? amber : calm;
+        device.drawHudText(frame, condition, x - 26.0f + 1.0f, ty + 1.0f, kGlyphPx * 0.8f, shadow);
+        device.drawHudText(frame, condition, x - 26.0f, ty, kGlyphPx * 0.8f, cc);
+        ty += kGlyphPx * 0.8f + 3.0f;
+    }
+    if (snowInches > 0.05f) {
+        // Depth in INCHES, which is the only unit anyone quotes snow in.
+        std::snprintf(lb, sizeof(lb), "%.1f in", snowInches);
+        const float snowC[4] = { 0.88f, 0.94f, 1.0f, 1.0f };
+        device.drawHudText(frame, lb, x - 26.0f + 1.0f, ty + 1.0f, kGlyphPx * 0.8f, shadow);
+        device.drawHudText(frame, lb, x - 26.0f, ty, kGlyphPx * 0.8f, snowC);
+    }
+}
+
 void Hud::drawDeathOverlay(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
     uint32_t w = 0, h = 0;
     device.hudSize(w, h);

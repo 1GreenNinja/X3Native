@@ -74,4 +74,5 @@ No machine used a third-party engine checkout as a source for this code.
 | 2026-05-19 | Engine architecture decided; stack locked (C++20 / Vulkan 1.3 / Jolt / Lua / miniaudio) |
 | 2026-05-20 | Repo seeded with planning + specs |
 | 2026-05-20 → | Clean-room engine built from scratch on the 13700K (render device, pak/VFS, console, glTF, physics, lighting, animation, Level 1 graybox) |
+| 2026-08-15 | Thunder audio (`assets/audio/weather/thunder_{crack,roll}.wav`) sourced from **UniStorm Weather System**, a Unity Asset Store product licensed to Tim (on `Z:`). Two of its six samples, downmixed to mono; chosen by MEASUREMENT (attack time + zero-crossing brightness), not by filename. Third-party ART under an Asset Store license - not engine code, and not clean-room. If the project ever needs an unencumbered set, these are the two slots to re-record. |
 | 2026-05-21 | Docs corrected: the engine was built clean-room from scratch; the earlier "fork RBDOOM then de-GPL" plan was **never executed**. `GPL_DEBT.md` retired in favor of this originality record. |

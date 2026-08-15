@@ -75,6 +75,7 @@ public:
     // "YOU DIED" overlay while dead: a dark vignette + centered red text, plus a
     // small "Respawning..." line. Drawn while the player is in the death state.
     void drawDeathOverlay(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+
     // ---- LIVING WORLD: facility alert indicator (pillar 3) -----------------
     // Subtle top-right indicator: four pips (filled up to the alert level) + the
     // level name, tinting amber -> red as it climbs; pulses + adds a faint red
@@ -120,5 +121,21 @@ private:
     // state; the panel Y is lerped by the eased value so it slides down/up.
     float       m_consoleAnim = 0.0f;
 };
+
+// THE THERMOMETER. A real instrument -- bulb, tube, a column that rises,
+// and a scale with the freezing mark on it -- rather than a number in a
+// corner. The point of drawing it as a thermometer at all is that you can
+// read "nearly freezing" from the column's position against that mark
+// WITHOUT reading the digits, at speed, which is exactly when it matters.
+//
+//   tempF        -- air temperature, FAHRENHEIT (the sample stores C;
+//                   convert at this boundary and nowhere else)
+//   condition    -- surfaceConditionName(): "dry"/"wet"/"ice"/"snow"...
+//   snowInches   -- lying depth; the depth line is drawn only when > 0
+//   iceWarn      -- the surface is actually icy, not merely cold
+void drawThermometer(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                     float tempF, const char* condition,
+                     float snowInches, bool iceWarn);
+
 
 } // namespace x3::game

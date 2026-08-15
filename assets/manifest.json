@@ -6,6 +6,18 @@
   },
   "assets": [
     {
+      "repo_path": "assets/audio/weather/thunder_crack.wav",
+      "sha256": "e48bd6f5f917989a09973638493e4e86fc060d46af63e50ab98813287c086f3d",
+      "size": 561424,
+      "source_note": "UniStorm Weather System thunder (Unity Asset Store, licensed to Tim); Thunder 5 -> near crack (41 ms attack, brightest), Thunder 3 -> far roll (274 ms attack, darkest); both downmixed to mono for 3D spatialization"
+    },
+    {
+      "repo_path": "assets/audio/weather/thunder_roll.wav",
+      "sha256": "e6cf3f237a2ab38b6f0d8554aa5edb1104f1151efec42745b7a777559deefcaa",
+      "size": 913132,
+      "source_note": "UniStorm Weather System thunder (Unity Asset Store, licensed to Tim); Thunder 5 -> near crack (41 ms attack, brightest), Thunder 3 -> far roll (274 ms attack, darkest); both downmixed to mono for 3D spatialization"
+    },
+    {
       "repo_path": "assets/converted_glb/Characters/Drone.glb",
       "sha256": "9b3830ebfa8172485fb38ed8fee26ade67c60b43770088f756238f7f3ba1283c",
       "size": 15302204,

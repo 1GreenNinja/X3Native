@@ -17,6 +17,10 @@
 #include "../vehicle.h"
 #include "../asset_root.h"
 #include "engine/audio/IAudioSystem.h"   // ENGINE NOTE: RPM-driven loop
+#include "../weather.h"
+#include "../wetness.h"
+#include "../storm.h"
+#include "../hud.h"
 // stb_image: file-local static copy (the cinematic.cpp / descent_slide.cpp
 // recipe — the engine's implementation is file-local in ModelLoader.cpp, so each
 // app TU that decodes PNGs instantiates its own).
@@ -95,6 +99,48 @@ int hostTunnel(HostContext& hc) {
     std::unique_ptr<x3::jobs::IJobSystem> jobs(x3::jobs::createJobSystem());
     jobs->init(0);
     x3::game::Scene scene;
+
+    // ==== LIVE WEATHER =======================================================
+    // The sky below used to be set ONCE at boot and never touched again, which
+    // is why it was always the same bright afternoon. These four objects are the
+    // whole chain, and they are wired in this order because each one feeds the
+    // next:
+    //
+    //   Weather  -> what the sky is doing, and the AIR TEMPERATURE
+    //   Wetness  -> what that does to the road: soak, ice, and now snow DEPTH
+    //   Storm    -> lightning flash + thunder, delayed by its own distance
+    //   gauge    -> the thermometer, which reads the temperature back out
+    //
+    // Off by default so the tunnel/road demos keep the deterministic bright sky
+    // they were tuned against. X3_WEATHER=1 turns the weather on; X3_WEATHER=
+    // storm|rain|snow|clear|fog forces one and holds it, which is the only sane
+    // way to actually look at a specific effect instead of waiting for the
+    // scheduler to roll it.
+    x3::game::Weather weather;
+    x3::game::WetnessModel wetness;
+    x3::game::StormSystem storm;
+    bool weatherOn = false;
+    {
+        const char* e = std::getenv("X3_WEATHER");
+        weatherOn = (e && e[0] && std::strcmp(e, "0") != 0);
+        if (weatherOn) {
+            weather.setBiome(x3::game::Biome::Temperate);
+            storm.reset();
+            if (e && std::strcmp(e, "storm") == 0)      weather.forceState(x3::game::WeatherState::Storm, true);
+            else if (std::strcmp(e, "rain")  == 0)      weather.forceState(x3::game::WeatherState::Rain,  true);
+            else if (std::strcmp(e, "fog")   == 0)      weather.forceState(x3::game::WeatherState::Fog,   true);
+            else if (std::strcmp(e, "clear") == 0)      weather.forceState(x3::game::WeatherState::Clear, true);
+            else if (std::strcmp(e, "snow")  == 0) {
+                // Snow is not legal in a temperate biome -- the gate is there on
+                // purpose. Asking for snow asks for a snowfield.
+                weather.setBiome(x3::game::Biome::Snow);
+                weather.forceState(x3::game::WeatherState::Snow, true);
+            }
+            x3::logInfo(std::string("weather: ON (") +
+                        x3::game::weatherStateName(weather.sample().state) + " in " +
+                        x3::game::biomeName(weather.biome()) + ")");
+        }
+    }
 
     {   // Bright, high sun: the point of the shot is READING THE GROUND, and a
         // low sun would fill the cutting with shadow and hide the very seams
@@ -185,6 +231,12 @@ int hostTunnel(HostContext& hc) {
     // the car, and so it echoes correctly once RtAcoustics is in the path.
     std::unique_ptr<x3::audio::IAudioSystem> audio(x3::audio::createAudioSystem());
     const bool audioOn = audio && audio->init();
+    // THUNDER VOICES. Two, not one: a near CRACK and a far ROLL, because air
+    // strips the top end out of a strike over distance and one sample played at
+    // two volumes does not fake that. Missing files are non-fatal -- the storm
+    // then flashes in silence rather than refusing to run, which is the right
+    // failure for an effect nobody has recorded yet.
+    x3::audio::SoundHandle thunderNear{}, thunderFar{};
     x3::audio::SoundHandle engineSnd{};
     x3::audio::LoopHandle  engineLoop{};
     if (audioOn) {
@@ -203,6 +255,24 @@ int hostTunnel(HostContext& hc) {
             x3::logInfo("[tunnel] engine note online");
         } else if (!engineSnd.valid()) {
             x3::logWarn("[tunnel] engine_loop.wav failed to load — driving stays silent");
+        }
+
+        // The two thunder voices. Neither exists in the tree yet, so this is
+        // expected to warn once and go quiet; the storm still flashes, and the
+        // moment a file lands at either path it is heard with no code change.
+        if (weatherOn) {
+            const std::string nearWav =
+                (std::filesystem::path(x3::game::assetRoot()) / "audio/weather/thunder_crack.wav").string();
+            const std::string farWav =
+                (std::filesystem::path(x3::game::assetRoot()) / "audio/weather/thunder_roll.wav").string();
+            thunderNear = audio->load(nearWav);
+            thunderFar  = audio->load(farWav);
+            storm.setVoices(thunderNear.id, thunderFar.id);
+            if (!thunderNear.valid() && !thunderFar.valid())
+                x3::logWarn("[tunnel] no thunder samples at assets/audio/weather/ — "
+                            "lightning will flash silently");
+            else
+                x3::logInfo("[tunnel] thunder online");
         }
     }
     // ==== GAUGE ARTWORK =====================================================
@@ -394,6 +464,55 @@ int hostTunnel(HostContext& hc) {
         const double now = glfwGetTime();
         float fdt = (float)(now - prevTime); prevTime = now;
         if (fdt > 0.1f) fdt = 0.1f;
+
+        // ==== WEATHER TICK ===================================================
+        // Chained in dependency order. Note the CLOCK: an in-world day is
+        // compressed to ten real minutes, because the diurnal temperature swing
+        // is the most interesting thing the model does and nobody is going to
+        // sit through twenty-four hours to watch the desert cool off.
+        if (weatherOn) {
+            weather.tick(fdt);
+            static float todHours = 14.0f;             // start mid-afternoon
+            todHours += fdt * (24.0f / 600.0f);        // 10 real minutes per day
+            if (todHours >= 24.0f) todHours -= 24.0f;
+            weather.setTimeOfDay(todHours);
+
+            const x3::game::WeatherSample& ws = weather.sample();
+            wetness.tick(fdt, ws.precipitation, ws.tempC, ws.snowfall);
+
+            // Lightning only under an actual storm; hazardLevel already carries
+            // "how bad", so intensity comes free and correct.
+            const float stormI = (ws.state == x3::game::WeatherState::Storm)
+                               ? ws.hazardLevel : 0.0f;
+            float lp[3] = { 0.0f, 0.0f, 0.0f };
+            if (carBuilt) car.chassisPos(lp);
+            storm.tick(fdt, stormI, audioOn ? audio.get() : nullptr, lp[0], lp[1], lp[2]);
+
+            // Push the sky. The storm FLASH rides on exposure rather than on the
+            // sun: a strike lights the whole cloud deck from inside, so raising
+            // the sun would throw hard directional shadows from a light source
+            // that is not there and give the whole thing away.
+            x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
+            sp.enabled = true;
+            sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
+            // Cloud cover tracks the haze the state already asked for, so an
+            // overcast sky is actually overcast instead of clear-with-fog.
+            sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
+            sp.exposure = ws.sky.exposure + storm.flash();
+            device->setSkyParams(sp);
+
+            // Wet ground for the renderer. Lying SNOW suppresses the wet look
+            // rather than adding to it -- snow is bright and near-matte where
+            // water is dark and mirror-like, so handing both over as one "shiny
+            // ground" number would make a snowfield glisten like a wet street.
+            x3::rhi::IRenderDevice::WetnessParams wp{};
+            wp.amount = wetness.wetness() * (1.0f - wetness.snowCover());
+            // Ice is glassier than water: it converges to a lower roughness and
+            // pools less, because it froze flat.
+            wp.minRough = 0.06f - 0.03f * wetness.iciness();
+            wp.puddles  = 1.0f - 0.7f * wetness.iciness();
+            device->setWetness(wp);
+        }
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         const float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
         lastMX = mx; lastMY = my;
@@ -652,6 +771,17 @@ int hostTunnel(HostContext& hc) {
                 const float gw = gateH * 2.0f, gh = gateH;
                 device->drawHudImage(frame, texGate, gcx - gw * 0.5f,
                                      gcy + R + R * 0.12f, gw, gh, white);
+            }
+
+            // THE THERMOMETER, beside the speedo. Only when weather is running:
+            // a gauge pinned at a constant is worse than no gauge, because it
+            // teaches the player to stop looking at it.
+            if (weatherOn) {
+                x3::game::drawThermometer(
+                    *device, frame, weather.sample().tempF(),
+                    x3::game::surfaceConditionName(wetness.condition()),
+                    wetness.snowDepthIn(),
+                    wetness.condition() == x3::game::SurfaceCondition::Ice);
             }
 
             char gbuf[64];
