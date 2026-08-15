@@ -51,6 +51,77 @@ the boundary only.
    but gearing and terrain. Do not tune the road to a speed we have not honestly
    measured on real road.
 
+## RIVERS, FISH, BRIDGES — added by Tim 2026-08-15
+
+> "AHH yes.. Make rivers.. Deep ones, with fish .. and Beautiful lit concrete
+> bridges"
+
+This belongs in THIS plan, not a separate one: a bridge exists precisely where a
+road meets a river, so the crossings are decided by the ring/spoke layout above.
+Rivers are also what stop a 31-mile ring from being a circle on a lawn.
+
+**What is REAL today — checked in the source, not assumed. (I oversold reuse
+once already on echo_roads; this is the audited version.)**
+
+* **The river carve EXISTS and is good.** `terrain.h:116-131`: `WorldRiverNode
+  {x, z, waterY}` is ONE authored spline shared by the height-field carve
+  (`terrain.cpp kRiver*`) and the water ribbon (`world_regions.cpp`), so the
+  water can never sit outside its own channel. `waterY` descends monotonically
+  downstream — it actually flows. An authored levee term holds the bank crests
+  above the water where the natural country is low.
+  Current dimensions: **223 ft wide**, bed **10.5 ft** below the surface, banks
+  **7.2 ft** proud. And `TerrainCorridor` is explicitly "the polyline
+  generalization of the river carve" — the roads and the river are the SAME
+  primitive, which is why they will compose.
+* **The fish EXIST, and they are RIVER fish.** `app/fish.cpp` (38 KB): rudd,
+  bream, perch — hand-sized — plus a metre-long pike that spawns ALONE as an
+  ambush predator. Real Rodin species GLBs with pose-baked swim and a PBR
+  fallback; the body is a lofted three-piece hull that S-flexes at two hinges,
+  laterally compressed so it shows a knife edge from above and a slab from the
+  side. Already built through `worldFish.build()` in `app_run.cpp`.
+* **BRIDGES DO NOT EXIST.** Every `bridge` hit in the codebase is INTERIOR
+  facility geometry (corridor spans in `level_loader.cpp`, tube gaps in
+  `cave_atmosphere.cpp`). There is no road bridge, no pier, no abutment, no
+  deck. This is the genuinely new build.
+* **There is exactly ONE river.** "Rivers" plural is new authoring.
+
+**So the honest split:** the channel and its fish are a tuning-and-multiplying
+job; the bridges are a from-scratch build.
+
+### The interaction that will bite, and it is the same one as the switchbacks
+
+Corridors merge **deepest-wins**. A river carve and a road carve that cross will
+BOTH cut, and the river is deeper — so a road crossing a river gets its roadbed
+erased and the ring drives into the water. **A bridge is not decoration here; it
+is the only correct answer to the crossing**, and the road must be excluded from
+carving across the span (deck carried on geometry, not on ground).
+
+That is the same deepest-wins hazard as gate G5 (switchback undercut), which
+means one mechanism explains both and one fix can serve both.
+
+### River conditions
+- [ ] R1. DEEPER: bed at least **20 ft** below the water surface in the main
+      channel (today 10.5 ft), with banks that still read as banks — measured by
+      probe across the channel, not by eye.
+- [ ] R2. The water surface stays INSIDE its channel for the whole run: no
+      sample where the terrain crest is below `waterY`. This is the river's
+      equivalent of "no earth on the roadway" and it must be a gate.
+- [ ] R3. Fish are visibly in the river (not just constructed): a capture from
+      the bank AND one from a bridge deck looking down.
+- [ ] R4. `waterY` still descends monotonically after any re-authoring — a river
+      that flows uphill is the one defect nobody forgives.
+
+### Bridge conditions
+- [ ] B3. A road crosses the river on a DECK, and the terrain under the span is
+      untouched river — no carve, no fill, no z-fight.
+- [ ] B4. The deck is drivable end to end: a car crosses without leaving the
+      surface and without a step over **0.2 ft** at either abutment.
+- [ ] B5. LIT: the bridge reads at night. Lights on the deck, and the concrete
+      catches them — this is the "beautiful" half of the ask and it is judged by
+      capture, at night, not asserted.
+- [ ] B6. Piers stand ON the riverbed at their true height (they are carved
+      terrain's problem, not a floating mesh) and do not dam the water ribbon.
+
 ## Sharpening pass (Fable, 2026-08-15) — what changed and why
 
 1. **"The carve cannot follow a curve" was WRONG — deleted.** `terrain.h`'s
