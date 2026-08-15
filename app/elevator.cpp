@@ -846,8 +846,15 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
         L.push_back({ "GEOLOGICAL SURVEY", 0.25f, 0.55f, 0.85f, 13.0f });
         std::snprintf(buf, sizeof(buf), "DEPTH   %7.1f m", depth);
         L.push_back({ buf, 0.15f, 0.85f, 1.0f, 20.0f });
-        std::snprintf(buf, sizeof(buf), "STRATUM %s", currentStratum());
-        L.push_back({ buf, 0.55f, 0.65f, 0.80f, 14.0f });
+        // T3: on a lateral leg the geology readout is meaningless (the cab is not
+        // descending through anything) — the survey line becomes the ANNEX
+        // TRANSIT label band instead, matching the panorama on the strata plane.
+        const bool lateralOled = moving() && m_segLen > 1e-3f &&
+                                 std::fabs(m_segDir.y) < 0.3f && m_fsmSpeed > 0.05f;
+        std::snprintf(buf, sizeof(buf), "STRATUM %s",
+                      lateralOled ? ">> ANNEX TRANSIT <<" : currentStratum());
+        if (lateralOled) L.push_back({ buf, 0.95f, 0.72f, 0.25f, 14.0f });
+        else             L.push_back({ buf, 0.55f, 0.65f, 0.80f, 14.0f });
         std::snprintf(buf, sizeof(buf), "SPEED   %5.1f m/s", m_fsmSpeed);
         L.push_back({ buf, 0.30f, 0.70f, 0.55f, 14.0f });
         std::snprintf(buf, sizeof(buf), "AMBIENT %5.1f C", 18.0f + depth * 0.03f);
@@ -1022,6 +1029,23 @@ bool ElevatorSystem::keypadDigit(int digit) {
                         ". Travelling to Y=" + std::to_string(stopY(m_secretStop)));
             startTravelTo(m_secretStop);
             return true;
+        }
+        // ---- THE ANNEX RAIL (T3): 4790 on a cab that HAS hidden graph stops
+        // (a rift cab consumed the code above — the gates are disjoint) reveals
+        // them + lights the golden button. UNLOCK ONLY: the rider still presses
+        // the button — the reveal is the moment, the ride is theirs to take.
+        if (tail == kAnnexCode) {
+            bool anyHidden = false;
+            for (const Stop& s : m_stops) if (s.hidden) { anyHidden = true; break; }
+            if (anyHidden) {
+                m_codeBuf.clear();
+                const bool first = !m_unlocked;
+                unlockHidden();
+                playOneShot(m_snd.ding, 1.0f, 1.25f);   // access granted
+                x3::logInfo(std::string("[elevator] ANNEX ACCESS — code 4790 accepted") +
+                            (first ? "; the golden button is lit" : ""));
+                return true;
+            }
         }
         const bool ok = (tail == kDiscoCode);
         m_codeBuf.clear();
@@ -1404,6 +1428,14 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
     { const float tHousing[3] = { 0.16f, 0.17f, 0.20f };
       m_eTerm = addKitTex(scene, device, 0.05f, 0.30f, 0.18f, sTrim, tHousing, 1.2f); }
 
+    // T3 — THE GOLDEN BUTTON (annex rail). Authored DARK (emissive 0.05) beside
+    // the terminal; code 4790 lights it to 3.0 (driven per frame in
+    // layoutVisuals from m_unlocked). It exists from build so the unlock is a
+    // light-up beat, not a pop-in.
+    { const float c[4] = { 0.55f, 0.42f, 0.10f, 1.0f };
+      const float em[4] = { 1.0f, 0.75f, 0.18f, 0.05f };
+      m_eGoldBtn = addKit(scene, device, 0.03f, 0.05f, 0.05f, c, em); }
+
     // Ceiling disco ball (hidden until disco — emissive 0 until then). R11: SHRUNK from a
     // 0.6 m box to a 0.36 m one, and hung clear of the practical (see the light-position
     // note in layoutVisuals: the ball used to swallow the cab's only light source whole).
@@ -1571,6 +1603,7 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
     place(m_eOledL,     -0.9f,                   carH * 0.5f - 1.2f, carD * 0.5f - 0.18f);
     place(m_eOledR,      carW * 0.5f - 0.18f,    0.0f,          -carD * 0.25f);
     place(m_eTerm,       carW * 0.5f - 0.18f,   -0.30f,          carD * 0.25f);
+    place(m_eGoldBtn,    carW * 0.5f - 0.16f,    0.08f,          carD * 0.25f);  // above the keypad
     place(m_eDiscoBall,  0.0f,                   carH * 0.5f - 0.75f, 0.0f);  // BELOW the key
     place(m_eCeil,       0.0f,                   carH * 0.5f - 0.1f, 0.0f);
     // Shaft cables: from the roof corners, 60 m half-height columns rising up.
@@ -1618,6 +1651,15 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
             m_indTex = fresh;
         }
     }
+    // T3 — the golden button's light rides the unlock state: dark ember until
+    // code 4790, then HOT gold (0.05 -> 3.0). Color stays put; only the strength
+    // moves, so the lit button reads as the same object waking up.
+    if (m_eGoldBtn != kNoLink && m_eGoldBtn < scene.size()) {
+        Entity& e = scene.get(m_eGoldBtn);
+        e.emissive[0] = 1.0f; e.emissive[1] = 0.75f; e.emissive[2] = 0.18f;
+        e.emissive[3] = m_unlocked ? 3.0f : 0.05f;
+    }
+
     // Terminal glow: cool blue normally, MAGENTA while disco is live (JS parity).
     // R11: the housing is TEXTURED METAL now, and the glow strength is a fraction of what
     // it was (1.0 -> 0.28). It reads as a keypad with a lit face, not a lightbox. The
@@ -1661,7 +1703,27 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
     // Drive the strata-plane tint/glow from the cab's current stratum.
     if (m_eStrata != kNoLink && m_eStrata < scene.size()) {
         Entity& e = scene.get(m_eStrata);
-        for (const StrataLayer& s : kStrata) {
+        // T3 — ANNEX TRANSIT PANORAMA: on a LATERAL leg (|dir.y| < 0.3) there is
+        // no geology rushing past vertically, so the display swaps its scroll
+        // axis — the band slides through the strata palette by LEG PROGRESS
+        // (scroll = m_s / m_segLen across the 9 layers) with a soft amber
+        // transit glow, so the observation window reads as sideways MOTION.
+        const bool lateralLeg = moving() && m_segLen > 1e-3f &&
+                                std::fabs(m_segDir.y) < 0.3f && m_fsmSpeed > 0.05f;
+        if (lateralLeg) {
+            const float scroll = (m_s / m_segLen) * (float)(kStrata.size() - 1);
+            int i0 = (int)scroll;
+            if (i0 > (int)kStrata.size() - 1) i0 = (int)kStrata.size() - 1;
+            const int i1 = (i0 + 1 <= (int)kStrata.size() - 1) ? i0 + 1 : i0;
+            const float f = scroll - (float)i0;
+            const float kRockValue = 0.42f;   // same VALUE renorm as the vertical path
+            for (int c = 0; c < 3; ++c)
+                e.baseColor[c] = (kStrata[i0].rgb[c] * (1.0f - f) +
+                                  kStrata[i1].rgb[c] * f) * kRockValue;
+            e.emissive[0] = 0.90f; e.emissive[1] = 0.65f; e.emissive[2] = 0.25f;
+            e.emissive[3] = 0.50f + 0.30f * std::sin(m_s * 2.1f);
+        }
+        else for (const StrataLayer& s : kStrata) {
             if (m_pos.y >= s.yMin && m_pos.y <= s.yMax) {
                 // VALUE, not lumens (recipe #3): the strata plane sits 1.4 m from the cab's
                 // practical, so at its authored albedo (limestone = 0.55) it metered as the

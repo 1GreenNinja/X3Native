@@ -312,11 +312,23 @@ public:
     void unlockSecret();
     bool secretUnlocked() const { return m_secretUnlocked; }
 
-    // True iff `stopIndex` is a code-locked stop (rift / 4.5) still locked (the OLED
-    // directory shows it as a dead row; the HUD refuses to offer it).
+    // ===== THE ANNEX RAIL (feat/factory-annex) ================================
+    // Hidden graph stops (Stop::hidden) are the Confection Annex's lateral rail:
+    // dead on the directory, skipped by callTo()/callNext(), until the keypad
+    // code below runs unlockHidden() and lights the golden button. Same
+    // machinery as the RIFT/4.5 stops, generalized to the 3D graph. kAnnexCode
+    // deliberately reuses the 4790 numerology (the garage CPU); a rift cab and
+    // an annex cab never share a shaft (the rift gate m_riftStop wins first).
+    static constexpr const char* kAnnexCode = "4790";
+
+    // True iff `stopIndex` is a code-locked stop (rift / 4.5 / hidden annex rail)
+    // still locked (the OLED directory shows it as a dead row; the HUD refuses
+    // to offer it).
     bool stopLocked(int stopIndex) const {
         return (m_riftStop >= 0 && stopIndex == m_riftStop && !m_riftUnlocked) ||
-               (m_secretStop >= 0 && stopIndex == m_secretStop && !m_secretUnlocked);
+               (m_secretStop >= 0 && stopIndex == m_secretStop && !m_secretUnlocked) ||
+               (stopIndex >= 0 && stopIndex < (int)m_stops.size() &&
+                m_stops[stopIndex].hidden && !m_unlocked);
     }
 
     // ----- Keypad (terminal code entry; 1127 = DISCO + descend to the club,
@@ -445,6 +457,9 @@ private:
     // Twin sliding door panels (front +X wall) that part along Z with m_doorPct, an
     // indicator strip above the doors that tints by state, and a floor numeral plate.
     uint32_t m_eDoorL = kNoLink, m_eDoorR = kNoLink, m_eIndicator = kNoLink;
+    // T3 — the GOLDEN BUTTON (annex rail): a panel quad that exists dark from
+    // buildVisuals (emissive 0.05) and LIGHTS (3.0) when code 4790 unlocks.
+    uint32_t m_eGoldBtn = kNoLink;
     // ---- R11 "RIFT HUB GLOW-UP" cab (see the block comment in buildVisuals) --------
     // The cab had NO WALLS: it was a physics platform plus a handful of flat-tinted
     // floating boxes. You could stand in it and see the shaft's graybox around you.

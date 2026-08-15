@@ -1469,6 +1469,31 @@ bool runElevatorSelfTest() {
               "E9b BFS routes 0->1->2 across the corner and arrives at (60,12)");
     }
 
+    // ---- E10: the annex keypad code (4790) reveals the hidden rail. Before the
+    // code a call to the hidden stop is a no-op (the panel does not know the
+    // floor exists); after the code the cab departs for it.
+    {
+        ElevatorSystem ev;
+        std::vector<ElevatorSystem::Stop> stops = {
+            { {0.0f,  2.0f, 0.0f}, "F1",    false },
+            { {0.0f, 12.0f, 0.0f}, "F3",    false },
+            { {60.0f, 12.0f, 0.0f}, "ANNEX", true },
+        };
+        std::vector<std::pair<int, int>> rails = { {0, 1}, {1, 2} };
+        ev.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 1);
+        ev.enableFsm(true);
+        check(!ev.hiddenUnlocked(), "E10 hidden rail starts locked");
+        ev.callTo(2);                        // locked: buzzes, goes nowhere
+        check(ev.state() == ElevState::Idle, "E10b locked hidden stop: callTo is a no-op");
+        // Wrong code first (negative control): 4791 unlocks nothing.
+        ev.keypadDigit(4); ev.keypadDigit(7); ev.keypadDigit(9); ev.keypadDigit(1);
+        check(!ev.hiddenUnlocked(), "E10c wrong code 4791 does NOT unlock the annex rail");
+        ev.keypadDigit(4); ev.keypadDigit(7); ev.keypadDigit(9); ev.keypadDigit(0);
+        check(ev.hiddenUnlocked(), "E10d code 4790 unlocks the annex rail");
+        ev.callTo(2);
+        check(ev.state() != ElevState::Idle, "E10e unlocked hidden stop: the cab departs");
+    }
+
     physics->shutdown();
     x3::logInfo(std::string("[elevator-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
