@@ -1,0 +1,14 @@
+{
+  "rig_task_id": "01a005e5-edc8-7d32-9e17-854329c28542",
+  "prefix": "canon_saurian",
+  "clips": [
+    { "name": "Idle",        "action_id": 0   },
+    { "name": "Walk",        "action_id": 106 },
+    { "name": "Run",         "action_id": 16  },
+    { "name": "Attack",      "action_id": 4   },
+    { "name": "Attack2",     "action_id": 97  },
+    { "name": "Death",       "action_id": 8   },
+    { "name": "Hitreaction", "action_id": 178 },
+    { "name": "Taunt",       "action_id": 88  }
+  ]
+}

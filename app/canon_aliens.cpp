@@ -62,9 +62,9 @@ MonsterSystem::Tuning saurianSoldierTuning() {
     t.attackWindup   = combat::kMeleeWindup;
     t.chaseSpeed     = kChaseSpeed;
     t.aiStrafeBias   = 0.15f;                                // apex; charges, low strafe
-    t.modelScale     = 1.10f;                                // 6–8 ft canon
+    t.modelScale     = 1.00f;                                // 6–8 ft canon
     t.tint[0] = 0.55f; t.tint[1] = 0.50f; t.tint[2] = 0.30f; t.tint[3] = 1.0f;
-    setCanonModel(t, "canon_saurian");             // authored 2.182 m -> x1.10 = 2.4 m lore
+    setCanonModel(t, "canon_saurian");             // authored 2.396 m -> x1.00 = 2.4 m lore
     return t;
 }
 
@@ -86,7 +86,7 @@ MonsterSystem::Tuning saurianWarlordTuning() {
     t.attackCooldown        = combat::kMeleeCooldownDefault;
     t.chaseSpeed            = kChaseSpeed * 1.10f;
     t.aiStrafeBias          = 0.10f;                          // apex bruiser
-    t.modelScale            = 1.20f;
+    t.modelScale            = 1.09f;
     t.tint[0] = 0.45f; t.tint[1] = 0.40f; t.tint[2] = 0.25f; t.tint[3] = 1.0f;
     // Phase machine — defaults (Phase2 @ 66%, Phase3 @ 33%).
     t.phase2Frac            = 0.66f;
@@ -99,7 +99,7 @@ MonsterSystem::Tuning saurianWarlordTuning() {
     // Memory-flash = the "rotate damage type" vulnerability beat (1.2 s @ 1.5x).
     t.memoryFlashTime       = 1.2f;
     t.memoryFlashDamageMul  = 1.5f;
-    setCanonModel(t, "canon_saurian");             // same GLB as the Soldier; x1.20 = 2.62 m boss bulk
+    setCanonModel(t, "canon_saurian");             // same GLB as the Soldier; x1.09 = 2.62 m boss bulk
     return t;
 }
 
