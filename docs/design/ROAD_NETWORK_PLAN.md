@@ -6,8 +6,18 @@ Author: InspectorX, 2026-08-15. Ask: Tim —
 > "We NEED a LONGER ROAD.... and then a road that curves up over the mountain
 > through passes... goes somewhere else... circles back.. intersections..."
 
-Distances in FEET throughout, per Tim. Engine data stays SI; conversion is at
-the boundary only.
+UNITS: **feet and miles**, per Tim — feet for anything you could stand next to
+(kerbs, widths, node spacing), miles once it is a journey (route length, network
+scale), mph for speed. Engine data stays SI; conversion happens at the boundary
+only, never in the code.
+
+Scale check for this ask, in those units:
+
+| | today | Tim's ask |
+|---|---|---|
+| drivable route | **0.4 miles** (2,100 ft), straight | miles, curving, looping |
+| bends available | **0** (corridor is straight by construction) | switchbacks + intersections |
+| absolute ceiling on straights | **6.4 miles** (16 corridors x 0.4) | not a way to get curves |
 
 ## The good news: the graph already exists, and it is switched off
 
