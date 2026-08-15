@@ -159,6 +159,7 @@ const char* ElevatorSystem::stateName(ElevState s) {
         case ElevState::DoorsClosing:  return "DOORS_CLOSING";
         case ElevState::EmergencyStop: return "EMERGENCY_STOP";
         case ElevState::Freefall:      return "FREEFALL";
+        case ElevState::Burst:         return "BURST";
     }
     return "?";
 }
@@ -565,6 +566,26 @@ void ElevatorSystem::freefall() {
     x3::logInfo("[elevator] FREEFALL");
 }
 
+// T4 — arm the scripted roof burst. Only from the burst dais, only while the
+// cab is parked there (Idle / doors open); the doors seal first, then the cab
+// punches up. A cab with no burst configured (m_burstStop = -1) never arms.
+void ElevatorSystem::armBurst() {
+    if (!m_fsm || m_burstStop < 0) return;
+    if (m_curStop != m_burstStop) return;
+    if (m_state != ElevState::Idle && m_state != ElevState::DoorsOpen) return;
+    m_burstPhase = 0;
+    m_fsmSpeed = 0.0f;
+    m_stateTime = 0.0f;
+    if (m_doorPct > 0.0f) {
+        m_burstPending = true;               // seal the doors, then Burst
+        m_state = ElevState::DoorsClosing;
+    } else {
+        m_burstPending = false;
+        m_state = ElevState::Burst;
+    }
+    x3::logInfo("[elevator] BURST ARMED — the roof is not the limit");
+}
+
 float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics) {
     m_stateTime += dt;
     const x3::phys::Vec3 prevPos = m_pos;
@@ -604,7 +625,10 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             if (m_doorPct <= 0.0f) {
                 m_doorPct = 0.0f;
                 playOneShot(m_snd.doorThunk, 0.8f, 0.95f);   // panels SEAT (layered close)
-                m_state = ElevState::Accelerating;
+                // T4: a sealed cab with the burst armed goes UP, not to a stop.
+                if (m_burstPending) { m_burstPending = false; m_burstPhase = 0;
+                                      m_state = ElevState::Burst; }
+                else                { m_state = ElevState::Accelerating; }
                 m_stateTime = 0.0f;
             }
             break;
@@ -752,6 +776,46 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             break;
         }
 
+        case ElevState::Burst: {
+            // T4 — THE ROOF BURST (scripted). Phase 0: punch UP at 2x accel,
+            // uncapped to 1.6x cruise; the roof plane shatters (host callback,
+            // once ever) on the way past; a decel window eases the cab into a
+            // hover at the apex. Phase 1: hold 8 s over the world, then hand the
+            // return to Freefall — the existing state does the drop theatrics.
+            if (m_burstPhase == 0) {
+                const float toApex = m_burstApexY - m_pos.y;
+                if (toApex < m_tune.decelDist)
+                    m_fsmSpeed = std::max(m_fsmSpeed - 2.0f * m_tune.decel * dt, 1.2f);
+                else
+                    m_fsmSpeed = std::min(m_fsmSpeed + 2.0f * m_tune.accel * dt,
+                                          1.6f * m_tune.maxSpeed);
+                m_pos.y += m_fsmSpeed * dt;
+                m_totalDist += m_fsmSpeed * dt;
+                if (!m_burstFired && m_pos.y >= m_burstRoofY) {
+                    m_burstFired = true;               // a shattered roof stays shattered
+                    if (onRoofShatter) onRoofShatter(m_pos);
+                    x3::logInfo("[elevator] ...THROUGH THE ROOF.");
+                }
+                if (m_pos.y >= m_burstApexY) {
+                    m_pos.y = m_burstApexY;
+                    m_fsmSpeed = 0.0f;
+                    m_burstPhase = 1;
+                    m_holdT = 0.0f;
+                    x3::logInfo("[elevator] hovering over the world");
+                }
+            } else {
+                m_holdT += dt;
+                if (m_holdT >= 8.0f) {
+                    m_burstReturning = true;
+                    m_state = ElevState::Freefall;
+                    m_stateTime = 0.0f;
+                    m_fsmSpeed = 0.0f;
+                    x3::logInfo("[elevator] ...and the sky lets go.");
+                }
+            }
+            break;
+        }
+
         case ElevState::Freefall: {
             // Dramatic drop (ported from STATE.FREEFALL): accelerate down hard.
             m_fsmSpeed = std::min(m_fsmSpeed + 20.0f * dt, 40.0f);
@@ -761,6 +825,19 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             if (!m_slipAlarmed && m_stateTime > 0.35f) {
                 m_slipAlarmed = true;
                 playOneShot(m_snd.buzz, 1.0f, 0.60f);
+            }
+            // T4 — the BURST RETURN catches below the roofline (roofY - 2), NOT
+            // on the cable-slip's 14 m rule (the apex drop is far longer), then
+            // resumes as a normal arrival back at the burst stop.
+            if (m_burstReturning) {
+                if (m_pos.y <= m_burstRoofY - 2.0f) {
+                    m_burstReturning = false;
+                    m_resumeStop = m_burstStop;
+                    m_pendingResume = true;
+                    emergencyStop();
+                    x3::logInfo("[elevator] ...the emergency brakes CATCH below the roofline.");
+                }
+                break;
             }
             // THE BRAKES CATCH: after ~14 m of fall, or before the pit. Restore
             // the lights, hand off to EmergencyStop (shake + klaxon + 3 s recover),
@@ -1046,6 +1123,17 @@ bool ElevatorSystem::keypadDigit(int digit) {
                             (first ? "; the golden button is lit" : ""));
                 return true;
             }
+        }
+        // ---- T4: 9999 AT THE BURST DAIS — the roof is not the limit. Arms the
+        // scripted roof-burst ride. On any cab with no burst configured (or away
+        // from the dais) the code falls through to the wrong-code buzz, which is
+        // exactly what the FSM self-test's 9999 negative control expects.
+        if (tail == kBurstCode && m_burstStop >= 0 && m_curStop == m_burstStop &&
+            (m_state == ElevState::Idle || m_state == ElevState::DoorsOpen)) {
+            m_codeBuf.clear();
+            playOneShot(m_snd.ding, 1.0f, 1.4f);   // access granted — going UP
+            armBurst();
+            return true;
         }
         const bool ok = (tail == kDiscoCode);
         m_codeBuf.clear();

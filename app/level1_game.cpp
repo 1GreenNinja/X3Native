@@ -1494,6 +1494,49 @@ bool runElevatorSelfTest() {
         check(ev.state() != ElevState::Idle, "E10e unlocked hidden stop: the cab departs");
     }
 
+    // ---- E11: THE BURST (roof finale, scripted). armBurst() from the burst stop
+    // rides the cab up through the roof plane (onRoofShatter fires EXACTLY once),
+    // hovers at the apex, then returns via Freefall -> brakes -> a normal arrival
+    // with the doors opening back at the burst stop — all inside 40 s of sim.
+    {
+        ElevatorSystem ev;
+        std::vector<ElevatorSystem::Stop> stops = {
+            { {0.0f,  2.0f, 0.0f}, "F1", false },
+            { {0.0f, 60.0f, 0.0f}, "A5", false },
+        };
+        std::vector<std::pair<int, int>> rails = { {0, 1} };
+        ev.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 1);
+        ev.enableFsm(true);
+        ev.setBurst(1, /*roofY*/70.0f, /*apexY*/100.0f);
+        int shatters = 0;
+        ev.onRoofShatter = [&](const x3::phys::Vec3&) { ++shatters; };
+        check(!ev.burstFired(), "E11 burstFired starts false");
+        ev.armBurst();
+        bool sawBurst = false, sawFall = false, doneOpen = false;
+        float maxY = -1e9f;
+        for (int i = 0; i < 60 * 40; ++i) {
+            ev.update(kFixedDt, scene, *physics);
+            sawBurst |= (ev.state() == ElevState::Burst);
+            sawFall  |= (ev.state() == ElevState::Freefall);
+            if (ev.cabCenter().y > maxY) maxY = ev.cabCenter().y;
+            if (sawBurst && sawFall && ev.state() == ElevState::DoorsOpen) { doneOpen = true; break; }
+        }
+        check(sawBurst && maxY > 70.0f, "E11b Burst rides the cab past the roof plane");
+        check(ev.burstFired() && shatters == 1, "E11c onRoofShatter fired exactly once");
+        check(sawFall && doneOpen && std::fabs(ev.cabCenter().y - 60.0f) < 0.1f,
+              "E11d Freefall return -> brakes -> DoorsOpen at the burst stop (within 40 s)");
+
+        // E11e: keypad 9999 at the burst stop arms the same sequence (the code
+        // is a no-op on cabs with no burst configured — F4 keeps that green).
+        ElevatorSystem ev2;
+        ev2.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 1);
+        ev2.enableFsm(true);
+        ev2.setBurst(1, 70.0f, 100.0f);
+        ev2.keypadDigit(9); ev2.keypadDigit(9); ev2.keypadDigit(9); ev2.keypadDigit(9);
+        check(ev2.state() == ElevState::DoorsClosing || ev2.state() == ElevState::Burst,
+              "E11e keypad 9999 at the burst stop arms the burst");
+    }
+
     physics->shutdown();
     x3::logInfo(std::string("[elevator-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

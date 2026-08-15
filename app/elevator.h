@@ -33,6 +33,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,11 @@ enum class ElevState : uint32_t {
     DoorsClosing  = 7,
     EmergencyStop = 8,
     Freefall      = 9,
+    // T4 (feat/factory-annex): the scripted ROOF BURST — the 11th state. The cab
+    // punches up a dedicated vertical rail past the roof plane, hovers at the
+    // apex, then hands back to Freefall/EmergencyStop for the return. All ten
+    // original states are untouched.
+    Burst         = 10,
 };
 
 // One earth-strata layer for the scroll display (ported from CFG.STRATA). Y
@@ -351,6 +357,25 @@ public:
     void armCableSlip() { m_slipArmed = true; }
     void freefall();
 
+    // ===== THE BURST (T4 — roof finale, scripted, feat/factory-annex) ========
+    // From the designated burst stop, keypad code 9999 (or armBurst()) seals the
+    // doors and rides the cab UP past the roof plane: on crossing roofY the cab
+    // fires onRoofShatter (the host wires glass debris / FX — the elevator stays
+    // render-pure) EXACTLY ONCE, glides to a hover at apexY, holds 8 s over the
+    // world, then returns via Freefall (the existing state!) until roofY-2 where
+    // the emergency brakes CATCH it and the ride resumes as a normal arrival
+    // back at the burst stop, doors opening.
+    static constexpr const char* kBurstCode = "9999";
+    void setBurst(int fromStop, float roofY, float apexY) {
+        m_burstStop = fromStop; m_burstRoofY = roofY; m_burstApexY = apexY;
+    }
+    void armBurst();
+    // Latched on the roof crossing and NEVER reset (a shattered roof stays
+    // shattered): the callback can only ever fire once per run.
+    bool burstFired() const { return m_burstFired; }
+    // Host callback: the roof SHATTERS here (world position of the cab center).
+    std::function<void(const x3::phys::Vec3&)> onRoofShatter;
+
     // The current facility-relative stratum name for the cab Y (geo-survey OLED).
     const char* currentStratum() const;
     // Total distance travelled (odometer; m). Read by the geo-survey OLED.
@@ -424,6 +449,16 @@ private:
     // ---- The hidden 4.5 stop (fix/spire-hollow-core) ----
     int         m_secretStop     = -1;    // stop index of level 4.5 (-1 = none on this cab)
     bool        m_secretUnlocked = false; // code 4455 accepted (or a story beat opened it)
+
+    // ---- The Burst (T4 — roof finale) ----
+    int   m_burstStop  = -1;             // launch/return stop (-1 = no burst on this cab)
+    float m_burstRoofY = 0.0f;           // roof plane the cab shatters through
+    float m_burstApexY = 0.0f;           // hover height over the world
+    bool  m_burstPending   = false;      // doors sealing; enter Burst when shut
+    bool  m_burstReturning = false;      // the live Freefall is the burst return
+    bool  m_burstFired     = false;      // latched on the roof crossing (once, ever)
+    int   m_burstPhase = 0;              // 0 = ascend, 1 = apex hold
+    float m_holdT      = 0.0f;           // apex hover timer (8 s)
 
     // ---- Disco / keypad ----
     bool        m_disco = false;
