@@ -194,6 +194,40 @@ void addSlabFloorA(Scene& scene, x3::rhi::IRenderDevice& device,
     }
 }
 
+// Floors B/C/D (Task 10): the standard slab-with-cab-opening PLUS the Chute of
+// Dubious Quality's drop-shaft hole at local (kChuteX, kChuteZ) — the +Z strip
+// (which contains the chute column) splits into four boxes around the hole.
+// Seven segments total; render + physics both.
+void addSlabWithChuteHole(Scene& scene, x3::rhi::IRenderDevice& device,
+                          x3::phys::IPhysicsWorld& physics,
+                          std::vector<x3::rhi::MeshHandle>& meshes,
+                          float cx, float topY, float cz, float half,
+                          const SurfaceSet* sf, const float tint[3]) {
+    const float cy = topY - kSlabHalfT;
+    const float hx0 = FactoryAnnex::kChuteX - FactoryAnnex::kChuteHoleHalf;   // 6.9
+    const float hx1 = FactoryAnnex::kChuteX + FactoryAnnex::kChuteHoleHalf;   // 9.1
+    const float hz0 = FactoryAnnex::kChuteZ - FactoryAnnex::kChuteHoleHalf;
+    const float hz1 = FactoryAnnex::kChuteZ + FactoryAnnex::kChuteHoleHalf;
+    struct Seg { float x0, z0, x1, z1; };
+    const Seg segs[7] = {
+        { -half,     -half,      half,      -kOpenHalf },   // -Z strip (full width)
+        {  kOpenHalf, -kOpenHalf, half,      kOpenHalf },   // +X side block
+        { -half,     -kOpenHalf, -kOpenHalf, kOpenHalf },   // -X side block
+        { -half,      kOpenHalf,  hx0,       half      },   // +Z strip: west of hole
+        {  hx1,       kOpenHalf,  half,      half      },   // +Z strip: east of hole
+        {  hx0,       kOpenHalf,  hx1,       hz0       },   // +Z strip: south of hole
+        {  hx0,       hz1,        hx1,       half      },   // +Z strip: north of hole
+    };
+    for (const Seg& s : segs) {
+        const float scx = cx + (s.x0 + s.x1) * 0.5f, scz = cz + (s.z0 + s.z1) * 0.5f;
+        const float shx = (s.x1 - s.x0) * 0.5f,      shz = (s.z1 - s.z0) * 0.5f;
+        addSurfBox(scene, device, meshes, scx, cy, scz, shx, kSlabHalfT, shz, sf, tint);
+        physics.addBox(x3::phys::Vec3{ shx, kSlabHalfT, shz },
+                       x3::phys::Vec3{ scx, cy, scz },
+                       0.0f, x3::phys::Layer::Static);
+    }
+}
+
 } // namespace
 
 const float FactoryAnnex::kFloorBaseY[FactoryAnnex::kFloorCount] =
@@ -278,9 +312,13 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // standard slab-with-cab-opening.
     addSlabFloorA(scene, device, physics, m_meshes,
                   ax, kFloorBaseY[0], az, kFloorHalf, &sDeck, kFloorTint);
-    for (uint32_t i = 1; i < kFloorCount; ++i)
-        addSlabWithOpening(scene, device, physics, m_meshes,
-                           ax, kFloorBaseY[i], az, kFloorHalf, &sDeck, kFloorTint);
+    // B/C/D carry the chute drop-shaft hole (Task 10: the hatch on D opens
+    // into a glass shaft that falls THROUGH B and C to the padded room on A).
+    for (uint32_t i = 1; i <= 3; ++i)
+        addSlabWithChuteHole(scene, device, physics, m_meshes,
+                             ax, kFloorBaseY[i], az, kFloorHalf, &sDeck, kFloorTint);
+    addSlabWithOpening(scene, device, physics, m_meshes,
+                       ax, kFloorBaseY[4], az, kFloorHalf, &sDeck, kFloorTint);
     addSlabWithOpening(scene, device, physics, m_meshes,
                        ax, kRoofY + 2.0f * kSlabHalfT, az, kFloorHalf,
                        &sIron, kIronTint);   // roof slab: top at 65.5, bottom at 65
@@ -514,9 +552,11 @@ void FactoryAnnex::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // 310 sorter chute (Floor D): the 2x2 hatch footprint.
         add(FT::SorterChute, ax + 7.0f, kFloorBaseY[3], az + 7.0f,
                              ax + 9.0f, kFloorBaseY[3] + 2.5f, az + 9.0f);
-        // 311 fizz low-grav (Floor C): the central 16x16 zone.
-        add(FT::FizzLowGrav, ax - 8.0f, kFloorBaseY[2], az - 8.0f,
-                             ax + 8.0f, kFloorBaseY[2] + 3.5f, az + 8.0f);
+        // 311 fizz low-grav (Floor C): the central zone. +-7.5 (not the plan's
+        // +-8): the chute drop-shaft column at (8,8) must NOT clip the zone —
+        // a player falling the shaft through floor C is not in the gallery.
+        add(FT::FizzLowGrav, ax - 7.5f, kFloorBaseY[2], az - 7.5f,
+                             ax + 7.5f, kFloorBaseY[2] + 3.5f, az + 7.5f);
         // 312 burst-arm dais (Floor E): under the roof opening, ringing the cab.
         add(FT::BurstArm, ax - 4.0f, kFloorBaseY[4], az - 4.0f,
                           ax + 4.0f, kFloorBaseY[4] + 2.5f, az + 4.0f);
@@ -584,6 +624,10 @@ void FactoryAnnex::tick(float dt, Scene& scene) {
         Entity& e = scene.get(m_accentFirst + i);
         e.emissive[3] = 1.5f + 0.4f * std::sin(t * 0.5f + (float)i * 1.3f);
     }
+    // The Chute of Dubious Quality (Task 10): once trigger 310 latches, the
+    // Sorting Hall's clock runs — tickRoomSorting slides the hatch open after
+    // the 1.5 s stand-on beat.
+    if (m_chute && m_rooms.size() > 3) m_rooms[3].stateA += dt;
     // Room content animation (Phase 3): per-room hooks + a gentle accent pulse
     // on whatever glow span a room registers.
     tickRoomMixture  (scene, m_rooms[0], t);
@@ -735,7 +779,8 @@ bool runFactoryAnnexSelfTest() {
             { 40, 15 },  // B INVENTION WORKS: 8 movers + 24 slats + 8 gizmos;
                          //   5 studs + 8 organ keys + centrifuge + maybe-panel
             { 49, 4 },   // C FIZZ GALLERY: 40 bubbles + 9 fan blades; 4 collars
-            { 0, 0 },    // D (Task 10)
+            { 15, 56 },  // D SORTING HALL: 12 orbs + 2 arms + hatch;
+                         //   4 hatch rims + 52 sign strokes (25 + 27)
             { 0, 0 },    // E (Task 11)
         };
         bool pinsOk = true;
@@ -840,6 +885,45 @@ bool runFactoryAnnexSelfTest() {
     {
         annex.onTrigger((uint32_t)FactoryTrigger::FizzLowGrav);
         faCheck(annex.lowGravActive(), "F7 fizz low-grav zone latches (311)");
+    }
+
+    // ---- F8: the orb ring ORBITS — radius pinned at 8 m from the center,
+    // angle advancing (0.5 rad/s), duds riding the same ring.
+    {
+        const AnnexRoom& rD = annex.room(3);
+        const uint32_t orb = rD.propEntFirst;
+        const Entity& e0 = scene.get(orb);
+        const float a0 = std::atan2(e0.transform[14] - rD.centerZ,
+                                    e0.transform[12] - rD.centerX);
+        bool radiusOk = true;
+        for (int i = 0; i < 60 * 2; ++i) {                  // 2 s => ~1 rad
+            annex.tick(dt, scene);
+            const float dx = scene.get(orb).transform[12] - rD.centerX;
+            const float dz = scene.get(orb).transform[14] - rD.centerZ;
+            const float r = std::sqrt(dx * dx + dz * dz);
+            if (std::fabs(r - 8.0f) > 0.05f) radiusOk = false;
+        }
+        const Entity& e1 = scene.get(orb);
+        const float a1 = std::atan2(e1.transform[14] - rD.centerZ,
+                                    e1.transform[12] - rD.centerX);
+        float swept = a1 - a0;
+        while (swept < -3.1415926f) swept += 6.2831853f;
+        while (swept >  3.1415926f) swept -= 6.2831853f;
+        faCheck(radiusOk && std::fabs(swept - 1.0f) < 0.15f,
+                "F8 orb ring orbits the center (r=8, 0.5 rad/s)");
+    }
+
+    // ---- F9: the Chute of Dubious Quality — trigger 310 + the 1.5 s beat
+    // slides the hatch open (visual x moves the full 2.4 m slide).
+    {
+        const AnnexRoom& rD = annex.room(3);
+        const uint32_t hatch = rD.propEntFirst + 14;
+        const float x0 = scene.get(hatch).transform[12];
+        annex.onTrigger((uint32_t)FactoryTrigger::SorterChute);
+        faCheck(annex.chuteTripped(), "F9 chute trigger (310) latches");
+        for (int i = 0; i < 60 * 3; ++i) annex.tick(dt, scene);   // 3 s > 1.5 + 0.8
+        const float slid = scene.get(hatch).transform[12] - x0;
+        faCheck(slid > 2.3f, "F9b hatch slides open after the 1.5 s stand-on beat");
     }
 
     // ---- F11: all 10 triggers registered with the exact 300-313 id map.

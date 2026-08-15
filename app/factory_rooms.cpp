@@ -829,10 +829,336 @@ void tickRoomFizz(Scene& scene, AnnexRoom& room, float t) {
 }
 
 // ============================================================================
-// FLOOR D (y=41) — THE SORTING HALL (Task 10): lands with its task.
+// FLOOR D (y=41) — THE SORTING HALL (Task 10)
 // ============================================================================
-void buildRoomSorting  (FactoryRoomCtx& ctx, AnnexRoom& room) { (void)ctx; (void)room; }
-void tickRoomSorting   (Scene& scene, AnnexRoom& room, float t) { (void)scene; (void)room; (void)t; }
+// A 12-orb ring (10 gold, 2 dull duds) orbiting the center at r=8, 0.5 rad/s,
+// two brass sorter arms sweeping +-1.2 rad @ 0.7 Hz over the ring, and the
+// CHUTE OF DUBIOUS QUALITY: stand on the 2x2 hatch at local (8,8) — trigger
+// 310 — for 1.5 s and it slides open (moved-static physics, the elevator-cab
+// technique), dropping you down a GLASS shaft through floors C and B into a
+// padded room on Floor A, where a box-serif sign renders its verdict:
+// QUALITY: DUBIOUS. (The plan offered font-atlas quads or box letters; box
+// letters are cheaper — no atlas dependency.)
+constexpr int   kSortOrbs   = 12;
+constexpr float kSortOrbR   = 8.0f;       // ring radius (plan)
+constexpr float kSortOrbW   = 0.5f;       // rad/s (plan)
+constexpr float kSortOrbY   = 1.3f;       // orb height above baseY
+constexpr int   kSortDud[2] = { 3, 8 };   // the two dud indices
+constexpr float kSortArmPivot[2][2] = { { 0.0f, 11.0f }, { 0.0f, -11.0f } };
+constexpr float kHatchSlide = 2.4f;       // hatch open slide distance (+X)
+constexpr float kHatchDelay = 1.5f;       // stand-on beat before it opens
+constexpr float kHatchOpenT = 0.8f;       // slide duration
+
+// ---- Box-serif stroke font (Task 10's sign; axis-aligned strokes in a unit
+// cell, x = width along the sign line, y = height). ORIGINAL glyphs.
+struct SignStroke { float cx, cy, hw, hh; };
+namespace signfont {
+constexpr SignStroke Q[] = { {0.50f,0.93f,0.42f,0.07f}, {0.50f,0.07f,0.42f,0.07f},
+                             {0.08f,0.50f,0.08f,0.36f}, {0.92f,0.50f,0.08f,0.36f},
+                             {0.78f,0.10f,0.14f,0.10f} };
+constexpr SignStroke U[] = { {0.08f,0.55f,0.08f,0.38f}, {0.92f,0.55f,0.08f,0.38f},
+                             {0.50f,0.07f,0.42f,0.07f} };
+constexpr SignStroke A[] = { {0.08f,0.45f,0.08f,0.45f}, {0.92f,0.45f,0.08f,0.45f},
+                             {0.50f,0.93f,0.42f,0.07f}, {0.50f,0.50f,0.34f,0.06f} };
+constexpr SignStroke L[] = { {0.08f,0.50f,0.08f,0.43f}, {0.50f,0.07f,0.42f,0.07f} };
+constexpr SignStroke I[] = { {0.50f,0.50f,0.08f,0.36f}, {0.50f,0.93f,0.30f,0.07f},
+                             {0.50f,0.07f,0.30f,0.07f} };
+constexpr SignStroke T[] = { {0.50f,0.93f,0.42f,0.07f}, {0.50f,0.43f,0.08f,0.43f} };
+constexpr SignStroke Y[] = { {0.15f,0.78f,0.08f,0.22f}, {0.85f,0.78f,0.08f,0.22f},
+                             {0.50f,0.52f,0.36f,0.06f}, {0.50f,0.25f,0.08f,0.25f} };
+constexpr SignStroke Colon[] = { {0.50f,0.68f,0.09f,0.09f}, {0.50f,0.28f,0.09f,0.09f} };
+constexpr SignStroke D[] = { {0.10f,0.50f,0.08f,0.43f}, {0.38f,0.93f,0.26f,0.07f},
+                             {0.38f,0.07f,0.26f,0.07f}, {0.70f,0.50f,0.08f,0.30f} };
+constexpr SignStroke B[] = { {0.10f,0.50f,0.08f,0.43f}, {0.50f,0.93f,0.36f,0.07f},
+                             {0.50f,0.50f,0.36f,0.06f}, {0.50f,0.07f,0.36f,0.07f},
+                             {0.88f,0.50f,0.08f,0.34f} };
+constexpr SignStroke O[] = { {0.50f,0.93f,0.42f,0.07f}, {0.50f,0.07f,0.42f,0.07f},
+                             {0.08f,0.50f,0.08f,0.36f}, {0.92f,0.50f,0.08f,0.36f} };
+constexpr SignStroke S[] = { {0.50f,0.93f,0.42f,0.07f}, {0.50f,0.50f,0.42f,0.06f},
+                             {0.50f,0.07f,0.42f,0.07f}, {0.10f,0.72f,0.08f,0.15f},
+                             {0.90f,0.28f,0.08f,0.15f} };
+struct Glyph { const SignStroke* s; int n; };
+inline Glyph glyph(char c) {
+    switch (c) {
+    case 'Q': return { Q, 5 };  case 'U': return { U, 3 };
+    case 'A': return { A, 4 };  case 'L': return { L, 2 };
+    case 'I': return { I, 3 };  case 'T': return { T, 2 };
+    case 'Y': return { Y, 4 };  case ':': return { Colon, 2 };
+    case 'D': return { D, 4 };  case 'B': return { B, 5 };
+    case 'O': return { O, 4 };  case 'S': return { S, 5 };
+    default:  return { nullptr, 0 };                       // space etc.
+    }
+}
+} // namespace signfont
+
+// Emissive box-serif text on a plane of constant world X, facing -X: for a
+// viewer looking +X, screen-right is world +Z, so the line advances +Z
+// (verified on the padded-room capture — the -Z variant renders mirrored).
+// Returns the stroke count it authored (glow span).
+int addSignText(FactoryRoomCtx& ctx, const char* text, float wallX,
+                float centerZ, float baseTextY, float cellW, float cellH,
+                const float glow[3], float strength) {
+    int total = 0, n = 0;
+    for (const char* p = text; *p; ++p) ++n;
+    const float adv   = cellW * 1.18f;
+    const float lineW = (float)n * adv - (adv - cellW);
+    for (int i = 0; i < n; ++i) {
+        const signfont::Glyph g = signfont::glyph(text[i]);
+        for (int k = 0; k < g.n; ++k) {
+            const SignStroke& st = g.s[k];
+            addGlow(ctx, wallX,
+                    baseTextY + st.cy * cellH,
+                    centerZ - lineW * 0.5f + ((float)i * adv + st.cx * cellW),
+                    0.03f, st.hh * cellH, st.hw * cellW, 0.0f, glow, strength);
+            ++total;
+        }
+    }
+    return total;
+}
+
+void buildRoomSorting(FactoryRoomCtx& ctx, AnnexRoom& room) {
+    Scene& s = ctx.scene;
+    const float ax = ctx.centerX, az = ctx.centerZ, y0 = room.baseY;   // 41
+    const float aY = FactoryAnnex::kFloorBaseY[0];                     // 2 (pad room)
+    const float hx = ax + FactoryAnnex::kChuteX, hz = az + FactoryAnnex::kChuteZ;
+    const float hole = FactoryAnnex::kChuteHoleHalf;                   // 1.1
+    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "mw_metal_trim_b");
+    const SurfaceSet& sIron  = ctx.surf.get(ctx.device, "mw_metal_panels_a");
+    const SurfaceSet& sPad   = ctx.surf.get(ctx.device, "mw_thermal_padding");
+    constexpr float kPadTint[3] = { 0.72f, 0.66f, 0.58f };   // quilted cream
+
+    // ---- The orbit track: one flat brass torus under the orb ring ----------
+    {
+        x3::prims::PrimMesh pm = x3::prims::makeTorus(kSortOrbR, 0.07f, 64, 10);
+        Entity e;
+        e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                       pm.index.data(), (uint32_t)pm.index.size());
+        ctx.meshes.push_back(e.mesh);
+        if (sBrass.ok) { e.tex = sBrass.albedo; e.normalTex = sBrass.normal; e.mrTex = sBrass.mr; }
+        e.baseColor[0] = kBrassTint[0]; e.baseColor[1] = kBrassTint[1];
+        e.baseColor[2] = kBrassTint[2]; e.baseColor[3] = 1.0f;
+        e.emissive[0] = kBrassGlow[0]; e.emissive[1] = kBrassGlow[1];
+        e.emissive[2] = kBrassGlow[2]; e.emissive[3] = 0.30f;
+        e.tag = (uint32_t)Tag::Static;
+        // Torus is authored in XY (hole axis +Z); lay it flat (hole axis +Y).
+        const float xA[3] = { 1, 0, 0 }, yA[3] = { 0, 0, -1 }, zA[3] = { 0, 1, 0 };
+        makeXform(e.transform, xA, yA, zA, ax, y0 + kSortOrbY - 0.45f, az);
+        s.add(e);
+    }
+    // ---- Sorter arm pivot posts (static; arms are prop span) ---------------
+    for (int a = 0; a < 2; ++a) {
+        const float px = ax + kSortArmPivot[a][0], pz = az + kSortArmPivot[a][1];
+        addBox(ctx, px, y0 + 0.9f, pz, 0.30f, 0.9f, 0.30f, 0.4f, &sBrass, kBrassTint);
+        ctx.physics.addBox({ 0.35f, 0.9f, 0.35f }, { px, y0 + 0.9f, pz }, 0.0f,
+                           x3::phys::Layer::Static);
+    }
+
+    // ---- THE GLASS DROP SHAFT: four near-clear panes INSIDE the chute hole
+    // column, floor A up to floor D's slab — falling through the Fizz Gallery
+    // and the Invention Works behind glass is the whole joke.
+    {
+        const float sy0 = aY + 3.0f;             // above the padded room's door
+        const float sy1 = y0 - 0.5f;             // floor D slab bottom
+        const float cy = (sy0 + sy1) * 0.5f, hy = (sy1 - sy0) * 0.5f;
+        const float in = hole - 0.14f;           // panes just inside the hole
+        struct Pane { float ox, oz, hx2, hz2; };
+        const Pane panes[4] = {
+            {  in, 0, 0.06f, in }, { -in, 0, 0.06f, in },
+            { 0,  in, in, 0.06f }, { 0, -in, in, 0.06f },
+        };
+        for (const Pane& p : panes) {
+            x3::prims::PrimMesh pm = x3::prims::makeBox(p.hx2, hy, p.hz2, 0, 0, 0);
+            Entity e;
+            e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                           pm.index.data(), (uint32_t)pm.index.size());
+            ctx.meshes.push_back(e.mesh);
+            e.baseColor[0] = 0.72f; e.baseColor[1] = 0.88f; e.baseColor[2] = 0.94f;
+            e.baseColor[3] = 1.0f;
+            e.transparent = true;
+            e.glass.opacity = 0.06f; e.glass.refraction = 0.010f;
+            e.glass.roughness = 0.05f; e.glass.specular = 0.6f;
+            e.glass.tint[0] = 0.72f; e.glass.tint[1] = 0.88f; e.glass.tint[2] = 0.94f;
+            e.tag = (uint32_t)Tag::Static;
+            yawXform(e.transform, 0.0f, hx + p.ox, cy, hz + p.oz);
+            s.add(e);
+            ctx.physics.addBox({ p.hx2, hy, p.hz2 }, { hx + p.ox, cy, hz + p.oz },
+                               0.0f, x3::phys::Layer::Static);
+        }
+    }
+
+    // ---- THE PADDED ROOM (Floor A, under the shaft): quilted walls, soft
+    // mats, a west doorway back into the Mixture Atrium, and the verdict sign.
+    {
+        const float wallH = 1.5f, wallCy = aY + 1.5f;   // walls y 2..5
+        // East / north / south walls (full), west wall split around the door.
+        struct W { float cx, cz, hx2, hz2; };
+        const W walls[3] = {
+            { hx + 2.5f, hz, 0.15f, 2.65f },            // east (the sign wall)
+            { hx, hz + 2.5f, 2.65f, 0.15f },            // north
+            { hx, hz - 2.5f, 2.65f, 0.15f },            // south
+        };
+        for (const W& w : walls) {
+            addBox(ctx, w.cx, wallCy, w.cz, w.hx2, wallH, w.hz2, 0.0f, &sPad, kPadTint,
+                   0.0f, nullptr, false, 0.6f);
+            ctx.physics.addBox({ w.hx2, wallH, w.hz2 }, { w.cx, wallCy, w.cz },
+                               0.0f, x3::phys::Layer::Static);
+        }
+        // West wall: two segments + lintel (1.4 m doorway at the middle).
+        for (int sgn = -1; sgn <= 1; sgn += 2) {
+            addBox(ctx, hx - 2.5f, wallCy, hz + sgn * 1.725f, 0.15f, wallH, 0.925f,
+                   0.0f, &sPad, kPadTint, 0.0f, nullptr, false, 0.6f);
+            ctx.physics.addBox({ 0.15f, wallH, 0.925f },
+                               { hx - 2.5f, wallCy, hz + sgn * 1.725f }, 0.0f,
+                               x3::phys::Layer::Static);
+        }
+        addBox(ctx, hx - 2.5f, aY + 2.6f, hz, 0.15f, 0.4f, 0.8f, 0.0f, &sPad, kPadTint,
+               0.0f, nullptr, false, 0.6f);
+        // Roof ring (y 5) leaving the shaft mouth open in the middle.
+        struct R { float ox, oz, hx2, hz2; };
+        const float rIn = hole + 0.05f;
+        const R roof[4] = {
+            { 0,  (2.65f + rIn) * 0.5f, 2.65f, (2.65f - rIn) * 0.5f },
+            { 0, -(2.65f + rIn) * 0.5f, 2.65f, (2.65f - rIn) * 0.5f },
+            {  (2.65f + rIn) * 0.5f, 0, (2.65f - rIn) * 0.5f, rIn },
+            { -(2.65f + rIn) * 0.5f, 0, (2.65f - rIn) * 0.5f, rIn },
+        };
+        for (const R& r : roof) {
+            addBox(ctx, hx + r.ox, aY + 3.05f, hz + r.oz, r.hx2, 0.08f, r.hz2,
+                   0.0f, &sPad, kPadTint, 0.0f, nullptr, false, 0.6f);
+            ctx.physics.addBox({ r.hx2, 0.08f, r.hz2 },
+                               { hx + r.ox, aY + 3.05f, hz + r.oz }, 0.0f,
+                               x3::phys::Layer::Static);
+        }
+        // Soft landing mats (two stacked, slightly offset — quilted look).
+        addBox(ctx, hx, aY + 0.18f, hz, 2.3f, 0.18f, 2.3f, 0.0f, &sPad, kPadTint,
+               0.0f, nullptr, false, 0.8f);
+        addBox(ctx, hx + 0.2f, aY + 0.50f, hz - 0.15f, 1.7f, 0.14f, 1.7f, 0.06f,
+               &sPad, kPadTint, 0.0f, nullptr, false, 0.8f);
+        ctx.physics.addBox({ 2.3f, 0.34f, 2.3f }, { hx, aY + 0.34f, hz }, 0.0f,
+                           x3::phys::Layer::Static);
+    }
+
+    // ---- PROP SPAN: 12 orbs, 2 sorter arms, 1 hatch (contiguous) -----------
+    x3::prims::PrimMesh sph = x3::prims::makeUVSphere(12, 18);
+    x3::rhi::MeshHandle orbMesh = ctx.device.createMesh(
+        sph.verts.data(), (uint32_t)sph.verts.size(),
+        sph.index.data(), (uint32_t)sph.index.size());
+    ctx.meshes.push_back(orbMesh);   // shared: ONCE
+    room.propEntFirst = s.size();
+    constexpr float kGoldOrb[3] = { 1.00f, 0.84f, 0.30f };
+    constexpr float kDudOrb[3]  = { 0.35f, 0.33f, 0.30f };
+    for (int i = 0; i < kSortOrbs; ++i) {
+        const bool dud = (i == kSortDud[0] || i == kSortDud[1]);
+        const float r = 0.35f;
+        const float xA[3] = { r, 0, 0 }, yA[3] = { 0, r, 0 }, zA[3] = { 0, 0, r };
+        const float a = ((float)i / kSortOrbs) * kTwoPi;
+        addShared(ctx, orbMesh, xA, yA, zA,
+                  ax + kSortOrbR * std::cos(a), y0 + kSortOrbY, az + kSortOrbR * std::sin(a),
+                  dud ? kDudOrb : kGoldOrb, dud ? 0.05f : 1.1f, nullptr);
+    }
+    // Sorter arms: mesh offset from the pivot origin — rotating the transform
+    // sweeps the arm. Base yaw aims each arm at the center.
+    for (int a = 0; a < 2; ++a) {
+        const float px = ax + kSortArmPivot[a][0], pz = az + kSortArmPivot[a][1];
+        x3::prims::PrimMesh pm = x3::prims::makeBox(1.9f, 0.08f, 0.22f,
+                                                    2.2f, 0.0f, 0.0f, 0.35f);
+        Entity e;
+        e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                       pm.index.data(), (uint32_t)pm.index.size());
+        ctx.meshes.push_back(e.mesh);
+        if (sBrass.ok) { e.tex = sBrass.albedo; e.normalTex = sBrass.normal; e.mrTex = sBrass.mr; }
+        e.baseColor[0] = kBrassTint[0]; e.baseColor[1] = kBrassTint[1];
+        e.baseColor[2] = kBrassTint[2]; e.baseColor[3] = 1.0f;
+        e.emissive[0] = kBrassGlow[0]; e.emissive[1] = kBrassGlow[1];
+        e.emissive[2] = kBrassGlow[2]; e.emissive[3] = 0.25f;
+        e.tag = (uint32_t)Tag::Prop;
+        yawXform(e.transform, (a == 0) ? 1.5708f : -1.5708f, px, y0 + 1.9f, pz);
+        s.add(e);
+    }
+    // The hatch: a brass plate over the chute hole; its MOVED-STATIC physics
+    // body slides aside with the visual (tickRoomSorting does the poke).
+    {
+        addBox(ctx, hx, y0 + 0.07f, hz, hole + 0.05f, 0.07f, hole + 0.05f, 0.0f,
+               &sBrass, kBrassTint, 0.20f, kBrassGlow, /*isProp*/true);
+        room.physRef   = &ctx.physics;
+        room.hatchBody = ctx.physics.addBox({ hole + 0.05f, 0.07f, hole + 0.05f },
+                                            { hx, y0 + 0.07f, hz }, 0.0f,
+                                            x3::phys::Layer::Static);
+    }
+    room.propEntCount = s.size() - room.propEntFirst;
+
+    // ---- GLOW SPAN: 4 hatch rim strips + the sign's strokes ----------------
+    room.glowEntFirst = s.size();
+    constexpr float kGold2[3] = { 1.00f, 0.84f, 0.30f };
+    for (int i = 0; i < 4; ++i) {
+        const float o = hole + 0.18f;
+        const bool xSide = (i < 2);
+        const float sgn2 = (i & 1) ? 1.0f : -1.0f;
+        addGlow(ctx, hx + (xSide ? sgn2 * o : 0.0f), y0 + 0.05f,
+                hz + (xSide ? 0.0f : sgn2 * o),
+                xSide ? 0.06f : o, 0.05f, xSide ? o : 0.06f, 0.0f, kGold2, 0.9f);
+    }
+    // The verdict, two lines on the padded room's east wall (facing the mats;
+    // wall runs y 2..5, mats top ~2.7 — the lines sit in the clear band).
+    addSignText(ctx, "QUALITY:", hx + 2.30f, hz, aY + 1.90f, 0.42f, 0.55f, kGold2, 1.2f);
+    addSignText(ctx, "DUBIOUS",  hx + 2.30f, hz, aY + 1.05f, 0.42f, 0.55f, kGold2, 1.2f);
+    room.glowEntCount = s.size() - room.glowEntFirst;
+}
+
+void tickRoomSorting(Scene& scene, AnnexRoom& room, float t) {
+    if (room.propEntCount == 0) return;
+    const float ax = room.centerX, az = room.centerZ, y0 = room.baseY;
+    // Orbs: orbit the center at 0.5 rad/s with a light per-orb bob.
+    for (int i = 0; i < kSortOrbs; ++i) {
+        Entity& e = scene.get(room.propEntFirst + (uint32_t)i);
+        const float a = ((float)i / kSortOrbs) * kTwoPi + kSortOrbW * t;
+        e.transform[12] = ax + kSortOrbR * std::cos(a);
+        e.transform[13] = y0 + kSortOrbY + 0.15f * std::sin(t * 2.0f + (float)i);
+        e.transform[14] = az + kSortOrbR * std::sin(a);
+    }
+    // Sorter arms: sweep +-1.2 rad @ 0.7 Hz, phase-offset, about their pivots.
+    for (int a = 0; a < 2; ++a) {
+        const float base = (a == 0) ? 1.5708f : -1.5708f;
+        pokeYaw(scene.get(room.propEntFirst + 12u + (uint32_t)a).transform,
+                base + 1.2f * std::sin(t * (0.7f * kTwoPi) + (float)a * 2.4f));
+    }
+    // The hatch: stateA (fed by FactoryAnnex::tick once trigger 310 latches)
+    // counts the stand-on beat; after kHatchDelay it slides open over
+    // kHatchOpenT seconds — visual AND physics (moved-static).
+    {
+        Entity& e = scene.get(room.propEntFirst + 14u);
+        float openT = (room.stateA - kHatchDelay) / kHatchOpenT;
+        openT = openT < 0.0f ? 0.0f : (openT > 1.0f ? 1.0f : openT);
+        const float ease = openT * openT * (3.0f - 2.0f * openT);   // smoothstep
+        const float hx = ax + FactoryAnnex::kChuteX + kHatchSlide * ease;
+        e.transform[12] = hx;
+        if (openT > 0.0f && openT < 1.001f && room.physRef && room.hatchBody.valid() &&
+            room.stateB < 1.5f) {
+            room.physRef->setBodyPosition(room.hatchBody,
+                { hx, y0 + 0.07f, az + FactoryAnnex::kChuteZ });
+            if (openT >= 1.0f) {
+                // Fully open exactly once: bump the host-audible event (buzz).
+                room.stateB = 2.0f;
+                room.eventCount += 1;
+                room.eventPos[0] = ax + FactoryAnnex::kChuteX;
+                room.eventPos[1] = y0 + 0.5f;
+                room.eventPos[2] = az + FactoryAnnex::kChuteZ;
+            }
+        }
+    }
+    // Glow: hatch rims pulse gold — urgently while the stand-on beat runs;
+    // the sign strokes hold a steady judicial glow with a faint shimmer.
+    for (uint32_t i = 0; i < room.glowEntCount; ++i) {
+        Entity& e = scene.get(room.glowEntFirst + i);
+        if (i < 4) {
+            const bool arming = room.stateA > 0.0f && room.stateA < kHatchDelay;
+            e.emissive[3] = arming ? 1.2f + 0.8f * std::sin(t * 14.0f)
+                                   : 0.9f + 0.3f * std::sin(t * 1.3f + (float)i);
+        } else {
+            e.emissive[3] = 1.1f + 0.15f * std::sin(t * 2.1f + (float)i * 0.9f);
+        }
+    }
+}
 
 // ============================================================================
 // FLOOR E (y=54) — THE TUBE JUNCTION (Task 11): lands with its task.

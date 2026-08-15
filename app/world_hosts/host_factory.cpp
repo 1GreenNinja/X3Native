@@ -255,7 +255,7 @@ int hostFactory(HostContext& hc) {
             const float ax = annex.annexX(), az = annex.annexZ();
             const float cy = x3::game::FactoryAnnex::kFloorBaseY[2];
             const bool inFizz = annex.lowGravActive() &&
-                std::fabs(pf.x - ax) < 8.0f && std::fabs(pf.z - az) < 8.0f &&
+                std::fabs(pf.x - ax) < 7.5f && std::fabs(pf.z - az) < 7.5f &&
                 pf.y > cy - 0.5f && pf.y < cy + 4.0f;
             faplayer.setJumpScale(inFizz ? 1.8f : 1.0f);
         }
