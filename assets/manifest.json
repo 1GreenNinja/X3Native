@@ -354,6 +354,18 @@
       "source_note": "mines lane: Armory mine kit regenerated 2026-08-11 (FireWatchTower/CaveOfHiddenTomb/ShatterStone Minerals/1900sIndustrial, Blender FBX->GLB LOD0-only, no Draco) + FW wood/rock PBR sets"
     },
     {
+      "repo_path": "assets/converted_glb/nature/OakBigTree01.glb",
+      "sha256": "5e16dd9cadecb3b0982aeae3b23839b343fd28c8a0a5e9e2495645262a8db94a",
+      "size": 303648,
+      "source_note": "tall broadleaf trees (NOT evergreens) \u2014 Tim 2026-08-15: roadside + mountain scatter"
+    },
+    {
+      "repo_path": "assets/converted_glb/nature/PoplarTree001.glb",
+      "sha256": "ba3fc47b9d49868e8422f3bc7b764828902df7ca3c2c2be87b84e255fff4e415",
+      "size": 9702336,
+      "source_note": "tall broadleaf trees (NOT evergreens) \u2014 Tim 2026-08-15: roadside + mountain scatter"
+    },
+    {
       "repo_path": "assets/rigged_glb/AnnaBodySuit.glb",
       "sha256": "1dc934ab0161c7848b3e0abfed558f793da1852e2fd9ac0b15e15c872f4f3de2",
       "size": 16440740,
