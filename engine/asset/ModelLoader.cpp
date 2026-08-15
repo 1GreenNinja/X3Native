@@ -777,8 +777,12 @@ private:
 
     void buildPrimitives(const cgltf_data& data, Model& model, GpuUploader& up) {
         size_t totalVerts = 0;
+        // Mesh names, indexed by meshIndex. makeDrawables() needs these to spot a
+        // COLLISION PROXY among orphaned meshes (see the safety net there).
+        model.meshNames.assign(data.meshes_count, std::string());
         for (size_t mi = 0; mi < data.meshes_count; ++mi) {
             const cgltf_mesh& mesh = data.meshes[mi];
+            if (mesh.name) model.meshNames[mi] = mesh.name;
             for (size_t pi = 0; pi < mesh.primitives_count; ++pi) {
                 const cgltf_primitive& prim = mesh.primitives[pi];
                 if (prim.type != cgltf_primitive_type_triangles) {
@@ -1420,12 +1424,50 @@ std::vector<ModelDrawable> makeDrawables(const Model& m) {
 
     // ---- Safety net: any mesh referenced by NO node (orphaned — non-conformant,
     // but don't silently drop it) is emitted once at identity. ----
+    //
+    // THE "MINI CAR" (Tim, 2026-08-14). This net is well-intentioned and it was
+    // drawing a whole second car. Vehicles/CTR.glb carries 35 meshes but only 34
+    // are referenced by nodes: mesh 34 'Collider' — a 60,349-triangle collision
+    // hull — is orphaned, because the converter wrote a 'Collider' NODE with no
+    // mesh pointer. Every real car part hangs off a node scaled 2.54, so the
+    // orphan emitted at IDENTITY rendered at 1/2.54 = 39% size, at the origin,
+    // underneath the car. Hence "a tiny black car under the red car".
+    //
+    // A collision proxy must never be RENDERED. Orphans that are not proxies are
+    // still emitted (the net's original purpose) but now say so in the log
+    // instead of appearing as a mystery object.
+    //
+    // NOTE the proxy is otherwise CORRECT — its geometry is car-sized once the
+    // node scale is applied, so the asset should parent it and the physics could
+    // use it as a real hull instead of the crude box the vehicle runs on today.
     {
         std::unordered_set<uint32_t> nodeMeshes;
         for (const Node& nd : m.nodes) if (nd.meshIndex >= 0) nodeMeshes.insert((uint32_t)nd.meshIndex);
         const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        auto isCollisionProxy = [](const std::string& nm) {
+            if (nm.empty()) return false;
+            std::string s; s.reserve(nm.size());
+            for (char c : nm) s += (char)std::tolower((unsigned char)c);
+            // The usual authoring conventions across DCCs and engines.
+            return s.find("collider")   != std::string::npos ||
+                   s.find("collision")  != std::string::npos ||
+                   s.rfind("ucx_", 0)   == 0 ||
+                   s.rfind("usp_", 0)   == 0 ||
+                   s.rfind("ubx_", 0)   == 0 ||
+                   s.find("_phys")      != std::string::npos;
+        };
         for (const auto& p : m.primitives) {
             if (nodeMeshes.count(p.meshIndex)) continue;
+            const std::string& nm = (p.meshIndex < m.meshNames.size())
+                                        ? m.meshNames[p.meshIndex] : std::string();
+            if (isCollisionProxy(nm)) {
+                logInfo("[gltf] orphaned COLLISION PROXY mesh '" + nm +
+                        "' not rendered (parent it in the asset to use it as a hull)");
+                continue;
+            }
+            logWarn("[gltf] orphaned mesh '" + nm + "' referenced by no node — "
+                    "emitted at IDENTITY, so it ignores any node scale and may "
+                    "appear at the wrong size/position");
             ModelDrawable d;
             if (fillDrawable(m, p, ident, d)) out.push_back(d);
         }
