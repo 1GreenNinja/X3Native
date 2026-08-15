@@ -178,10 +178,20 @@ void HostShell::setPaused(bool on) {
 }
 
 void HostShell::beginFrame() {
-    // Nothing to poll: open/close, pause and nav all arrive as key EVENTS, which
-    // is what makes them reliable. The old hand-rolled version in host_tunnel
-    // polled glfwGetKey and hand-tracked a `escWasDown` edge, which drops a
-    // press whenever the frame time is longer than the keypress.
+    // Open/close, pause and nav all arrive as key EVENTS, which is what makes
+    // them reliable. The hand-rolled version this replaces polled glfwGetKey
+    // and tracked its own `escWasDown` edge, which drops a press whenever the
+    // frame runs longer than the keypress.
+    //
+    // The only per-frame work is the clock, so draw(frame) can be called
+    // without the host having to hand over its own delta under whichever of
+    // four names it happens to use.
+    const double t = glfwGetTime();
+    if (m_lastTime <= 0.0) m_lastTime = t;
+    m_dt = (float)(t - m_lastTime);
+    m_lastTime = t;
+    if (m_dt > 0.1f)  m_dt = 0.1f;      // hitch clamp, same as the hosts use
+    if (m_dt < 0.0f)  m_dt = 0.0f;
 }
 
 bool HostShell::keyRaw(int glfwKey) const {
@@ -249,8 +259,8 @@ void HostShell::drawPauseMenu(const x3::rhi::FrameContext& frame) {
     m_ui.panel(px, py, pw, ph, panelCol);
 
     const float titleCol[4] = { 0.40f, 0.88f, 1.0f, 1.0f };
-    m_ui.textCentered("PAUSED", w * 0.5f, py + 22.0f, titlePx, titleCol,
-                      x3::ui::UiContext::FontRole::Title);
+    m_ui.textCentered(m_freezesSim ? "PAUSED" : "MENU", w * 0.5f, py + 22.0f,
+                      titlePx, titleCol, x3::ui::UiContext::FontRole::Title);
 
     const float bw = pw - 48.0f;
     float by = py + 22.0f + titlePx + 22.0f;
@@ -266,7 +276,9 @@ void HostShell::drawPauseMenu(const x3::rhi::FrameContext& frame) {
     by += bh + gap;
 
     const float hint[4] = { 0.55f, 0.58f, 0.64f, 1.0f };
-    m_ui.textCentered("ESC resumes  -  the sim is stopped, this is not a freeze",
+    m_ui.textCentered(m_freezesSim
+                          ? "ESC resumes  -  the sim is stopped, this is not a freeze"
+                          : "ESC resumes  -  input is released, the world keeps running",
                       w * 0.5f, by + 8.0f, std::max(11.0f, h * 0.016f), hint);
 
     m_ui.end();

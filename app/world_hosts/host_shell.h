@@ -76,6 +76,13 @@ public:
     bool paused()      const { return m_paused; }
     bool wantQuit()    const { return m_quit; }
 
+    // False while the console or the menu owns input. Gate MOUSE-LOOK on this:
+    // the cursor is released when the console opens, so a host that keeps
+    // integrating (mx - lastMX) will spin the view across the screen while you
+    // type. Multiply the deltas by it rather than branching, so the `const
+    // float ddx = ...` hosts need no restructuring.
+    bool inputEnabled() const { return !m_paused && !m_hud.consoleOpen(); }
+
     // Gameplay-safe key poll. False while the console or the pause menu holds
     // the keyboard; otherwise identical to glfwGetKey(...) == GLFW_PRESS.
     bool key(int glfwKey) const;
@@ -85,10 +92,23 @@ public:
     // exists so a host never has to reach around the shell to get it).
     bool keyRaw(int glfwKey) const;
 
+    // Does this host actually FREEZE its simulation while the menu is up?
+    // Hosts that skip their sim step when paused() should say so; the menu then
+    // says PAUSED instead of MENU. A menu that claims the game is paused while
+    // physics keeps running behind it is a lie, and hosts differ in whether
+    // they can cheaply stop — so the shell asks rather than assumes.
+    void setFreezesSim(bool yes) { m_freezesSim = yes; }
+
     // ---- Draw --------------------------------------------------------------
     // Console panel, pause menu and FPS/stats overlay, in that stacking order.
     // Call after the world has rendered and before endFrame().
     void draw(const x3::rhi::FrameContext& frame, float dt);
+    // Same, using the shell's own frame clock. Hosts all spell their delta
+    // differently (dt / fdt / frameDt / dtSec), and the overlay only needs it
+    // for the FPS average and the console slide — so it keeps its own rather
+    // than making 30 call sites agree on a name.
+    void draw(const x3::rhi::FrameContext& frame) { draw(frame, m_dt); }
+    float frameDt() const { return m_dt; }
 
     // The console, for registering host-specific commands and cvars. Never null
     // after attach(); null before it.
@@ -119,8 +139,12 @@ private:
     x3::game::Hud           m_hud;
     x3::ui::UiContext       m_ui;
 
-    bool m_paused = false;
-    bool m_quit   = false;
+    bool m_paused     = false;
+    bool m_quit       = false;
+    bool m_freezesSim = false;
+
+    double m_lastTime = 0.0;    // shell's own frame clock (see draw(frame))
+    float  m_dt       = 1.0f / 60.0f;
 
     // Cursor mode to restore when the menu closes: hosts differ (a driving host
     // captures the cursor, a showroom may not), so the shell remembers rather

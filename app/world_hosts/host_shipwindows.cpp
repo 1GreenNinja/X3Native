@@ -16,6 +16,7 @@
 
 #include "../world_hosts.h"
 #include "../host_context.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../scene.h"
 #include "../player.h"
 #include "../space/ship_interior.h"
@@ -156,9 +157,16 @@ int hostShipWindows(HostContext& hc) {
     int  activeStation = -1;         // station in range this frame (-1 none)
     std::vector<float> stationPulse(art.stations().size(), 0.0f);
 
-    while (!glfwWindowShouldClose(window)) {
+    // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+    // the engine has had all three for a long time and 28 of ~31 hosts
+    // wired none of them, so the worlds you could actually launch and play
+    // were the one place in the engine with no developer tools at all.
+    HostShell shell;
+    shell.attach(hc);
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
 
         double now = glfwGetTime();
         float dt = (float)(now - prevTime); prevTime = now;
@@ -166,7 +174,8 @@ int hostShipWindows(HostContext& hc) {
         const float t = (float)(now - startTime);
 
         double mx, my; glfwGetCursorPos(window, &mx, &my);
-        float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+        const float look = shell.inputEnabled() ? 1.0f : 0.0f;   // no mouse-look while typing
+        float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
         lastMX = mx; lastMY = my;
 
         auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
@@ -238,6 +247,7 @@ int hostShipWindows(HostContext& hc) {
                                      (float)lastHs * 0.62f, 20.0f, cy2);
             }
         }
+        shell.draw(frame);
         device->endFrame(frame);
     }
 
