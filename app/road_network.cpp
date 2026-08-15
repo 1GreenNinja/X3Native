@@ -2,6 +2,9 @@
 #include "road_network.h"
 
 #include "terrain.h"
+#include "scene.h"
+#include "surface_library.h"
+#include "asset_root.h"
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -216,6 +219,152 @@ RoadBuildResult registerInnerRing() {
     s.falloff   = 18.0f;                // a wider road wants a longer batter
     s.maxGrade  = 0.07f;
     return registerRoad(s);
+}
+
+// ---------------------------------------------------------------------------
+// THE RIBBON — the surface you actually drive on.
+// ---------------------------------------------------------------------------
+namespace {
+
+// One surface library for every road, same reasoning as the shared tunnel sets:
+// decode the 2K asphalt/cement once per process, not once per route.
+SurfaceLibrary& roadSurfaces() { static SurfaceLibrary lib; return lib; }
+
+struct RibbonMesh {
+    std::vector<x3::rhi::MeshVertex> v;
+    std::vector<uint32_t>            i;
+    void quad(const float a[3], const float b[3], const float c[3], const float d[3],
+              float u0, float u1, float w0, float w1) {
+        const float nrm[3] = { 0.0f, 1.0f, 0.0f };
+        const uint32_t base = (uint32_t)v.size();
+        auto push = [&](const float p[3], float u, float w) {
+            x3::rhi::MeshVertex mv{};
+            mv.pos[0]=p[0]; mv.pos[1]=p[1]; mv.pos[2]=p[2];
+            mv.normal[0]=nrm[0]; mv.normal[1]=nrm[1]; mv.normal[2]=nrm[2];
+            mv.uv[0]=u; mv.uv[1]=w;
+            v.push_back(mv);
+        };
+        push(a,u0,w0); push(b,u1,w0); push(c,u1,w1); push(d,u0,w1);
+        i.push_back(base+0); i.push_back(base+1); i.push_back(base+2);
+        i.push_back(base+0); i.push_back(base+2); i.push_back(base+3);
+    }
+    bool empty() const { return i.empty(); }
+};
+
+// Sit the pavement just above the carve floor. The carve cuts to
+// (datum - kRoadFloorClear), so this puts the driving surface back AT the datum
+// with a hair of clearance -- the same trick as the tunnel slab, and
+// deliberately 0.02 m rather than the 0.14 m that had Tim's tunnel road
+// standing 1.18 ft proud of its own shoulder.
+constexpr float kPaveProud = 0.02f;
+
+} // namespace
+
+RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
+                                 x3::rhi::IRenderDevice& device,
+                                 x3::phys::IPhysicsWorld& phys) {
+    RoadRibbonResult out;
+    const size_t n = spec.x.size();
+    if (n < 2) return out;
+
+    SurfaceLibrary& surf = roadSurfaces();
+    surf.mount(assetRoot() + "/surface_library");
+    const SurfaceSet& asphalt = surf.get(device, "rd_asphalt_01");
+    const SurfaceSet& cement  = surf.get(device, "mw_concrete_panels_a");
+    if (!asphalt.ok || !cement.ok)
+        x3::logWarn("road ribbon: surface set(s) unavailable - flat colour fallback");
+
+    const float run = kRunningHalfM;   // 24 ft: half of the 4-lane running width
+    const float pav = kPavedHalfM;     // 44 ft: running + a 20 ft apron each side
+
+    RibbonMesh road, apronL, apronR, paint;
+    float uRun = 0.0f;
+
+    auto at = [&](size_t idx, float lat, float o[3]) {
+        const size_t ip = (idx + 1 < n) ? idx + 1 : idx;
+        const size_t im = (idx > 0) ? idx - 1 : idx;
+        float tx = spec.x[ip] - spec.x[im], tz = spec.z[ip] - spec.z[im];
+        const float tl = std::sqrt(tx*tx + tz*tz);
+        if (tl > 1e-4f) { tx /= tl; tz /= tl; }
+        o[0] = spec.x[idx] + (-tz) * lat;
+        o[2] = spec.z[idx] + ( tx) * lat;
+        // Recover the DATUM from the carved field: the corridor cut to
+        // (datum - clear), so the surface goes back on top of that.
+        o[1] = terrainHeightAtWorld(o[0], o[2]) + kRoadFloorClear + kPaveProud;
+    };
+
+    for (size_t k = 0; k + 1 < n; ++k) {
+        const float dx = spec.x[k+1] - spec.x[k], dz = spec.z[k+1] - spec.z[k];
+        const float seg = std::sqrt(dx*dx + dz*dz);
+        const float u0 = uRun, u1 = uRun + seg;
+        uRun = u1;
+        out.lengthM += seg;
+
+        float aL[3], aR[3], bL[3], bR[3];
+        at(k, -run, aL); at(k, run, aR); at(k+1, -run, bL); at(k+1, run, bR);
+        road.quad(aL, aR, bR, bL, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+
+        float aLo[3], bLo[3], aRo[3], bRo[3];
+        at(k, -pav, aLo); at(k+1, -pav, bLo);
+        at(k,  pav, aRo); at(k+1,  pav, bRo);
+        apronL.quad(aLo, aL, bL, bLo, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+        apronR.quad(aR, aRo, bRo, bR, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+
+        // LANE MARKINGS: solid at both edges of the running surface, DASHED on
+        // the three interior lines. 40 ft cycle at 60% duty is the US
+        // convention, and dashes are what tell you at speed which way it bends.
+        const float laneM = kLaneFt * kFtToM;
+        const float halfPaint = 0.06f;              // ~5 in stripe
+        for (int lane = 0; lane <= kLaneCount; ++lane) {
+            const float lat = -run + (float)lane * laneM;
+            const bool edge = (lane == 0 || lane == kLaneCount);
+            if (!edge) {
+                const float cycle = 12.19f;         // 40 ft
+                if (std::fmod(u0, cycle) > cycle * 0.6f) continue;
+            }
+            float pa[3], pb[3], pc[3], pd[3];
+            at(k,   lat - halfPaint, pa); at(k,   lat + halfPaint, pb);
+            at(k+1, lat + halfPaint, pc); at(k+1, lat - halfPaint, pd);
+            pa[1] += 0.012f; pb[1] += 0.012f; pc[1] += 0.012f; pd[1] += 0.012f;
+            paint.quad(pa, pb, pc, pd, 0.0f, 1.0f, 0.0f, 1.0f);
+        }
+    }
+
+    auto upload = [&](RibbonMesh& m, const SurfaceSet* set, const float tint[4], bool collide) {
+        if (m.empty()) return;
+        Entity e;
+        e.mesh = device.createMesh(m.v.data(), (uint32_t)m.v.size(),
+                                   m.i.data(), (uint32_t)m.i.size());
+        if (!e.mesh.valid()) return;
+        if (set && set->ok) { e.tex = set->albedo; e.mrTex = set->mr; e.normalTex = set->normal; }
+        for (int c = 0; c < 4; ++c) e.baseColor[c] = tint[c];
+        scene.add(e);
+        ++out.meshCount;
+        out.quadCount += (uint32_t)(m.i.size() / 6);
+        if (collide) {
+            std::vector<float> cv; cv.reserve(m.v.size() * 3);
+            for (const auto& vv : m.v) { cv.push_back(vv.pos[0]); cv.push_back(vv.pos[1]); cv.push_back(vv.pos[2]); }
+            phys.addStaticMesh(cv.data(), (uint32_t)(cv.size() / 3),
+                               m.i.data(), (uint32_t)m.i.size());
+        }
+    };
+
+    const float white [4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    const float pale  [4] = { 0.86f, 0.85f, 0.82f, 1.0f };
+    const float paintC[4] = { 1.8f, 1.8f, 1.7f, 1.0f };
+    upload(road,   &asphalt, white,  true);
+    upload(apronL, &cement,  pale,   true);
+    upload(apronR, &cement,  pale,   true);
+    upload(paint,  nullptr,  paintC, false);
+
+    out.ok = out.meshCount > 0;
+    char b[256];
+    std::snprintf(b, sizeof(b),
+        "road ribbon: %.2f miles | %u meshes, %u quads | 4 lanes x %.0f ft + %.0f ft aprons = %.0f ft paved",
+        out.lengthM / 1609.34f, out.meshCount, out.quadCount,
+        kLaneFt, kApronFt, kPavedHalfM * 2.0f / kFtToM);
+    x3::logInfo(b);
+    return out;
 }
 
 bool runRoadNetworkSelfTest() {

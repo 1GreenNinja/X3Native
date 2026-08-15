@@ -24,6 +24,9 @@
 // BOOT CONTRACT: like every corridor producer, these must be registered BEFORE
 // the first terrain height query / TerrainStreamer::init(). See app/terrain.h.
 // ---------------------------------------------------------------------------
+#include "engine/rhi/IRenderDevice.h"
+#include "engine/physics/IPhysicsWorld.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -81,6 +84,37 @@ RoadSpec makeRingRoad(const char* name, float cx, float cz,
 // THE INNER TOUR — Tim's 15-mile ring, laid around the tunnel ridge. One call so
 // a host or a self-test can put it on the ground identically.
 RoadBuildResult registerInnerRing();
+
+// ---------------------------------------------------------------------------
+// THE RIBBON — the surface you actually drive on.
+//
+// registerRoad() only CARVES: it grades a datum and tells the height field to
+// cut down to it, which leaves an 88 ft graded cutting and nothing to drive on.
+// This lays the pavement into that cutting:
+//
+//   * ASPHALT running surface, 48 ft of it, 4 lanes wide
+//   * CEMENT APRONS, 20 ft each side, a different material because they are a
+//     different surface — you can tell you have left the running lane
+//   * LANE MARKINGS: solid white at both edges of the running surface, dashed
+//     white on the three interior lane lines
+//   * collision, so the car drives ON it rather than through it
+//
+// Must be called AFTER the terrain streamer exists (it reads the carved field)
+// and after registerRoad() put the corridor in — the ribbon follows the GRADED
+// datum, not the raw ground.
+// ---------------------------------------------------------------------------
+class Scene;
+
+struct RoadRibbonResult {
+    bool     ok        = false;
+    uint32_t meshCount = 0;
+    uint32_t quadCount = 0;
+    float    lengthM   = 0.0f;
+};
+
+RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
+                                 x3::rhi::IRenderDevice& device,
+                                 x3::phys::IPhysicsWorld& phys);
 
 // --test-roadnetwork
 bool runRoadNetworkSelfTest();

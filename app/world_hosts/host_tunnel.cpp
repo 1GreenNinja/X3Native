@@ -13,6 +13,7 @@
 #include "../scene.h"
 #include "../terrain.h"
 #include "../tunnel_corridor.h"
+#include "../road_network.h"
 #include "../vehicle.h"
 #include "../asset_root.h"
 
@@ -48,6 +49,25 @@ int hostTunnel(HostContext& hc) {
     // this line, so they all agree by construction.
     const x3::game::TunnelRoute& route = x3::game::registerTunnelCorridor();
 
+    // THE 15-MILE INNER TOUR. X3_RING=1 lays it in this world so it can be
+    // driven; off by default so the tunnel demo is untouched. Registered HERE,
+    // beside the corridor above, because app/terrain.h's contract is "register
+    // before the first height query" and this is the last moment that is true.
+    x3::game::RoadSpec ringSpec;
+    bool ringOn = false;
+    {
+        const char* e = std::getenv("X3_RING");
+        ringOn = (e && e[0] == '1');
+        if (ringOn) {
+            ringSpec = x3::game::makeRingRoad("inner tour", -592.0f, -352.0f, 3842.0f, 396);
+            ringSpec.halfWidth = x3::game::kPavedHalfM + 1.0f;
+            ringSpec.falloff   = 18.0f;
+            ringSpec.maxGrade  = 0.07f;
+            const x3::game::RoadBuildResult rr = x3::game::registerRoad(ringSpec);
+            if (!rr.ok) { x3::logError("--world tunnel: ring registration FAILED"); ringOn = false; }
+        }
+    }
+
     std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
     if (!phys->init()) {
         x3::logError("--world tunnel: physics init failed");
@@ -77,6 +97,12 @@ int hostTunnel(HostContext& hc) {
     // On the road, out on open ground, far enough back that the whole approach
     // cutting + the portal are ahead of you (and in frame on the approach shot).
     route.posAt(std::max(8.0f, route.boreS0 - 55.0f), startPos);
+    if (ringOn && ringSpec.x.size() > 2) {
+        // Stand on the ring itself: its first node, lifted to the graded datum.
+        startPos[0] = ringSpec.x[0];
+        startPos[2] = ringSpec.z[0];
+        startPos[1] = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]) + 1.0f;
+    }
 
     x3::game::TerrainStreamer streamer;
     const x3::game::TerrainConfig& cfg = x3::game::worldTerrainConfig();
@@ -103,6 +129,9 @@ int hostTunnel(HostContext& hc) {
     // height/slope splat as the streamed tiles instead of reading as a separate
     // object draped over the hill. Without it the build warns and falls back.
     tunnel.build(scene, *device, *phys, route, streamer.groundTexture());
+    // The ribbon: 4 lanes of asphalt plus a 20 ft cement apron each side, laid
+    // into the cutting the corridor already graded.
+    if (ringOn) x3::game::buildRoadRibbon(ringSpec, scene, *device, *phys);
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
