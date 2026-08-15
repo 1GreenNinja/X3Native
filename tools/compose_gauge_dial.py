@@ -121,16 +121,14 @@ def compose():
             d.line([polar(c, c, r_min, a), polar(c, c, r_out, a)],
                    fill=(C_RED if hot else C_TICK_D), width=int(2.4 * SS))
 
-    ctext(d, c, c - Rf * 0.42, "RPM x1000", font(int(Rf * 0.095)), C_LABEL)
-
-    # redline badge, lower face
-    bw, bh = Rf * 0.92, Rf * 0.245
-    bx, by = c - bw / 2, c + Rf * 0.50
-    d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=int(9 * SS),
-                        outline=(40, 110, 130, 220), width=int(2 * SS))
-    ctext(d, c, by + bh * 0.30, "%d RPM" % int(REDLINE_RPM), font(int(Rf * 0.088)), C_LABEL)
-    ctext(d, c, by + bh * 0.72, "REDLINE", font(int(Rf * 0.095)), C_RED)
-
+    # NOTHING else goes on the face. The two vertical strips between the hub and
+    # the numerals are the only clear areas on a dial this dense, and the HOST
+    # owns them: the gear digit above the hub, the MPH readout below it. Earlier
+    # passes printed "RPM x1000" and a REDLINE badge exactly there, so the live
+    # text landed on top of baked text. The red arc and the red 8 already say
+    # where the limiter is; good instruments label very little.
+    #
+    # A boxed badge was tried here too and read as web UI, not as an instrument.
     return img.resize((bez.size[0] // SS, bez.size[1] // SS), Image.LANCZOS)
 
 
@@ -141,13 +139,32 @@ def needle_atlas():
     base = Image.new("RGBA", (cell_ss, cell_ss), (0, 0, 0, 0))
     bd = ImageDraw.Draw(base)
     c = cell_ss / 2.0
-    L, tail = cell_ss * 0.400, cell_ss * 0.070
-    wr, wt = cell_ss * 0.016, cell_ss * 0.007
-    bd.polygon([(c - tail, c - wr * 0.65), (c - tail, c + wr * 0.65),
-                (c + L, c + wt), (c + L, c - wt)], fill=C_NEEDLE)
-    hr = cell_ss * 0.050
-    bd.ellipse([c - hr, c - hr, c + hr, c + hr], fill=(20, 22, 28, 255))
-    hr2 = hr * 0.52
+    L, tail = cell_ss * 0.400, cell_ss * 0.085
+    wr, wt = cell_ss * 0.027, cell_ss * 0.0085
+
+    def blade(off, col):
+        bd.polygon([(c - tail + off, c - wr * 0.62 + off),
+                    (c - tail + off, c + wr * 0.62 + off),
+                    (c + L + off,    c + wt + off),
+                    (c + L + off,    c - wt + off)], fill=col)
+
+    # drop shadow first: the needle must separate from the dark face even where
+    # it crosses the unlit lower half.
+    blade(cell_ss * 0.012, (0, 0, 0, 150))
+    blade(0.0, C_NEEDLE)
+    # a lighter top edge so the blade reads as a formed part, not a flat decal
+    bd.polygon([(c - tail, c - wr * 0.62), (c - tail, c - wr * 0.20),
+                (c + L, c - wt * 0.25), (c + L, c - wt)], fill=(255, 142, 128, 220))
+
+    # hub: dark boss, brushed ring, red cap — the chrome centre of the bezel
+    hr = cell_ss * 0.062
+    bd.ellipse([c - hr, c - hr, c + hr, c + hr], fill=(14, 15, 19, 255))
+    for i, (rr, col) in enumerate(((0.92, (172, 178, 188, 255)),
+                                   (0.80, (86, 92, 102, 255)),
+                                   (0.62, (26, 28, 34, 255)))):
+        r = hr * rr
+        bd.ellipse([c - r, c - r, c + r, c + r], fill=col)
+    hr2 = hr * 0.36
     bd.ellipse([c - hr2, c - hr2, c + hr2, c + hr2], fill=C_NEEDLE)
 
     cell = NEEDLE_PX // ATLAS_N

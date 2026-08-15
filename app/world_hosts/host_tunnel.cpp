@@ -557,7 +557,12 @@ int hostTunnel(HostContext& hc) {
         // quads because the brief said "rectangles only" — but drawHudImage
         // takes a TEXTURE with UV sub-rects, so the right reading was "put real
         // art IN the rectangle". Owner's verdict on the quad build: "slop in
-        // Carbon esque shape". Art lives in tools/make_gauge_textures.py.
+        // Carbon esque shape". Art pipeline: tools/render_gauge_bezel.py renders
+        // the chrome rim in Blender (metal IS reflection — 2D fake gloss never
+        // convinces), tools/compose_gauge_dial.py draws the scale over it and
+        // bakes the needle atlas, tools/make_gauge_textures.py makes the gate.
+        // The dial face carries NO text: the gear digit and the MPH readout
+        // below own those two strips, and baked labels collided with them.
         if (frame.valid && carBuilt && texDial.valid()) {
             int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
             const float fw = (float)fbw, fh = (float)fbh;
@@ -602,13 +607,15 @@ int hostTunnel(HostContext& hc) {
 
             std::snprintf(gbuf, sizeof(gbuf), "%d", (int)(mph + 0.5f));
             {
-                const float px = R * 0.34f;
+                // 0.275R, not 0.34R: at three digits the wider face ran into the
+                // "0" and "8" numerals, which sit at x = +-0.455R.
+                const float px = R * 0.275f;
                 const float w  = (float)std::strlen(gbuf) * px;
                 const float col[4] = { 0.97f, 0.98f, 1.0f, 1.0f };
-                device->drawHudText(frame, gbuf, gcx - w * 0.5f, gcy + R * 0.20f, px, col);
+                device->drawHudText(frame, gbuf, gcx - w * 0.5f, gcy + R * 0.235f, px, col);
                 const float lp = R * 0.095f;
                 const float lc[4] = { 0.35f, 0.78f, 0.95f, 1.0f };   // cyan, per the reference
-                device->drawHudText(frame, "MPH", gcx - 1.5f * lp, gcy + R * 0.58f, lp, lc);
+                device->drawHudText(frame, "MPH", gcx - 1.5f * lp, gcy + R * 0.55f, lp, lc);
             }
             {
                 const char* gs = (gnum < 0) ? "R" : (gnum == 0 ? "N" : "123456" + ((gnum - 1) % 6));
