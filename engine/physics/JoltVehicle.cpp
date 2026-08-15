@@ -81,10 +81,24 @@ constexpr float kGravity = 9.81f;
 //   power peak; shifting earlier drops below the peak and bogs.
 //   down at 0.50 * redline leaves a wide band between the two so the box does
 //   not hunt (a downshift must not immediately re-trigger an upshift).
-constexpr float kShiftUpFrac   = 0.92f;
-constexpr float kShiftDownFrac = 0.50f;
+// 0.92 -> 0.975. At 0.92 the box upshifted ~600 rpm short of the limiter, so the
+// engine never actually screamed — Tim: "Right now, it seems like the engine
+// doesnt ever rev to redline!" / "Scream to 7200. 7500 since it has titanium
+// retainers". A high-revving flat-six is SUPPOSED to be taken to the stop; the
+// original 0.92 was tuned to land the next gear on the 0.55 torque peak, and at
+// 0.975 the next gear lands at 0.975/1.49 = 0.65 — still on the fat part of the
+// curve, just the far side of the peak. Worth the trade for the noise.
+constexpr float kShiftUpFrac   = 0.975f;
+// 0.50 -> 0.58. At 0.50 the box would not drop a gear until 3750 rpm, so
+// flooring it while cruising in a tall gear just LUGGED — Tim, 2026-08-15: "The
+// engine seems bogged and lugging, overall". Jolt has no throttle kickdown, only
+// this rpm threshold, so it has to sit high enough to catch a real overtake.
+// Ceiling: an upshift at 0.975 lands the next gear at 0.975/1.47 = 0.66 of
+// redline, so anything at or above 0.66 would immediately re-upshift and hunt.
+// 0.58 (4350 rpm) is eager without touching that.
+constexpr float kShiftDownFrac = 0.58f;
 // Fallback redline for vehicles authored without one, matching VehicleEngine's
-// own default so behaviour is unchanged for them.
+// own default so behavior is unchanged for them.
 constexpr float kDefaultRedlineRPM = 6000.0f;
 
 inline void applyShiftPoints(JPH::VehicleTransmissionSettings& tr, float redlineRPM) {
@@ -171,6 +185,34 @@ public:
         m_baseMaxTorque = d.maxEngineTorque;            // tuning/boost baseline
         cs->mEngine.mMaxTorque = d.maxEngineTorque;
         cs->mEngine.mMaxRPM    = d.maxEngineRPM;
+        // Flywheel inertia — see WheeledVehicleDesc::engineInertia. Lower spins
+        // up faster, which is what "peppy" actually is.
+        if (d.engineInertia > 0.0f) cs->mEngine.mInertia = d.engineInertia;
+        // SHIFT DEBOUNCE. Jolt will re-evaluate a gear change every step, and with
+        // a light flywheel + big torque the rpm crosses the threshold repeatedly
+        // — Tim, 2026-08-15: "It literally shifts five times before it actually
+        // changes a gear!" mSwitchTime is how long a change TAKES; mSwitchLatency
+        // is the minimum quiet period before another is allowed. Both must be
+        // non-zero or the box machine-guns.
+        cs->mTransmission.mSwitchTime    = 0.28f;   // a quick but real shift
+        cs->mTransmission.mSwitchLatency = 0.55f;   // no re-shift inside this window
+        cs->mTransmission.mClutchReleaseTime = 0.20f;
+
+        // Torque curve (see WheeledVehicleDesc::curveRpm/curveTq).
+        if (d.curveCount > 1) {
+            cs->mEngine.mNormalizedTorque.Clear();
+            for (uint32_t ci = 0; ci < d.curveCount && ci < 8; ++ci)
+                cs->mEngine.mNormalizedTorque.AddPoint(d.curveRpm[ci], d.curveTq[ci]);
+            cs->mEngine.mNormalizedTorque.Sort();
+        }
+
+        // Gearbox (see WheeledVehicleDesc::gearRatios).
+        if (d.gearCount > 0) {
+            cs->mTransmission.mGearRatios.clear();
+            for (uint32_t gi = 0; gi < d.gearCount && gi < 8; ++gi)
+                if (d.gearRatios[gi] > 0.0f)
+                    cs->mTransmission.mGearRatios.push_back(d.gearRatios[gi]);
+        }
         cs->mTransmission.mClutchStrength = d.clutchStrength;
         // SHIFT POINTS SCALE WITH THE REDLINE. Jolt's transmission defaults are
         // ABSOLUTE (mShiftUpRPM 4000 / mShiftDownRPM 2000) and know nothing about
@@ -197,7 +239,28 @@ public:
         JPH::VehicleDifferentialSettings diff;
         diff.mLeftWheel  = leftPowered;
         diff.mRightWheel = (rightPowered >= 0) ? rightPowered : -1;
+        if (d.finalDrive > 0.0f) diff.mDifferentialRatio = d.finalDrive;
         cs->mDifferentials.push_back(diff);
+        // Report the ACTUAL gearbox Jolt ends up with. Guessing at this from the
+        // outside cost real time — "it still shifts when in 6th, it KEEPS going"
+        // is unanswerable without knowing how many ratios the constraint holds
+        // and where the shift points landed.
+        {
+            std::string gl;
+            for (size_t gi = 0; gi < cs->mTransmission.mGearRatios.size(); ++gi) {
+                if (gi) gl += ", ";
+                gl += std::to_string(cs->mTransmission.mGearRatios[gi]);
+            }
+            x3::logInfo("[vehicle] gearbox: " +
+                        std::to_string(cs->mTransmission.mGearRatios.size()) + " gears [" + gl +
+                        "]  final " + std::to_string(diff.mDifferentialRatio) +
+                        "  shift up " + std::to_string(cs->mTransmission.mShiftUpRPM) +
+                        " / down " + std::to_string(cs->mTransmission.mShiftDownRPM) +
+                        "  switchTime " + std::to_string(cs->mTransmission.mSwitchTime) +
+                        " latency " + std::to_string(cs->mTransmission.mSwitchLatency) +
+                        "  redline " + std::to_string(cs->mEngine.mMaxRPM) +
+                        "  inertia " + std::to_string(cs->mEngine.mInertia));
+        }
         vs.mController = cs;
 
         // ---- Create the constraint, register it as a step listener ----

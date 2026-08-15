@@ -108,6 +108,31 @@ struct WheeledVehicleDesc {
     float maxEngineTorque = 600.0f;  // engine peak torque (Nm)
     float maxEngineRPM    = 6000.0f; // engine redline (rpm)
     float clutchStrength  = 10.0f;   // transmission clutch strength
+    // ENGINE FLYWHEEL INERTIA (kg m^2). How fast the crank can CHANGE speed —
+    // the single parameter that separates a peaky flat-six from a lazy V8, and
+    // it is felt long before peak torque is. Jolt's default is 0.5, which revs
+    // like a truck. A light-flywheel sports engine is ~0.15-0.25.
+    // <= 0 leaves Jolt's default untouched.
+    // Tim, 2026-08-15: "the engine is a porsche boxer engine, it should rev WAY
+    // faster and higher like a real porsche, which would give the car a more
+    // peppy feel."
+    float engineInertia   = 0.0f;
+    // GEARBOX. Leave gearCount 0 to keep Jolt's defaults — which are a 5-speed
+    // TOP-SPEED set (1st redlines around 64 mph, 5th near 230). On a sports car
+    // that means the engine never leaves the bottom of its range: it neither
+    // revs nor feels quick, however much torque you give it.
+    // Tim, 2026-08-15: "the engine revving Never seems to get high".
+    // Ratios run 1st..Nth; finalDrive <= 0 leaves Jolt's differential ratio.
+    float    gearRatios[8] = {0,0,0,0,0,0,0,0};
+    uint32_t gearCount     = 0;
+    float    finalDrive    = 0.0f;
+    // NORMALIZED TORQUE CURVE — rpmFrac -> torqueFrac, ascending, max 8 points.
+    // curveCount 0 leaves Jolt's default, which is nearly FLAT and is why a
+    // forced-induction engine feels like a lump: a turbo's character is the
+    // SHAPE, soft off boost then a hard surge, not the peak number.
+    float    curveRpm[8]    = {0,0,0,0,0,0,0,0};
+    float    curveTq [8]    = {0,0,0,0,0,0,0,0};
+    uint32_t curveCount     = 0;
     // The object layer the wheel ground-rays are cast AS. A ray on this layer hits
     // a body when the engine's collision matrix says the two layers collide. The
     // terrain/world ground is layer Static, and (per the matrix) Static-vs-Static
