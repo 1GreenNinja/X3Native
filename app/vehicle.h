@@ -100,11 +100,37 @@ public:
         return m_ctl ? m_ctl->applyWheeledTuning(t) : false;
     }
     // Nitrous: temporary torque multiplier (1 = off). Host owns the tank timer.
-    void  setTorqueBoost(float mult) { if (m_ctl) m_ctl->setTorqueBoost(mult); }
-    float torqueBoost() const { return m_ctl ? m_ctl->torqueBoost() : 1.0f; }
+    // NOTE this is now COMBINED with the turbo model's multiplier rather than
+    // written straight through, so a nitrous bottle and a spooling turbo can
+    // both be live without one clobbering the other every step.
+    void  setTorqueBoost(float mult) { m_userTorqueMult = mult; }
+    float torqueBoost() const { return m_userTorqueMult; }
     // Traction control (default ON — see setInput). Off = full burnout mode.
     void  setTractionControl(bool on) { m_tcEnabled = on; }
     bool  tractionControl() const { return m_tcEnabled; }
+
+    // ---- TURBO: a manifold-pressure model (see updateTurbo in vehicle.cpp) --
+    // The torque CURVE is the full-boost delivery; this supplies the transient
+    // that a curve cannot express — the lag before it arrives and the shove
+    // when it does. Peak power is unchanged, only its timing.
+    struct TurboParams {
+        float maxPsi        = 16.0f;   // peak manifold pressure over atmosphere
+        float spoolStartRpm = 1800.0f; // nothing below this
+        float spoolFullRpm  = 4200.0f; // full compressor above this
+        float spoolTau      = 0.45f;   // seconds to build (compressor inertia)
+        float dumpTau       = 0.11f;   // seconds to bleed off (wastegate/BOV)
+        float vacuumPsi     = 8.5f;    // depth of vacuum at a closed throttle
+        float floorTorque   = 0.60f;   // torque fraction with no boost at all
+    };
+    TurboParams&       turbo()       { return m_turbo; }
+    const TurboParams& turbo() const { return m_turbo; }
+    void  setTurboEnabled(bool on)   { m_turboOn = on; }
+    bool  turboEnabled() const       { return m_turboOn; }
+    // Manifold pressure, psi. NEGATIVE is vacuum, which is where a real boost
+    // gauge spends most of its life.
+    float boostPsi() const { return m_boostPsi; }
+    // Multiplier the turbo is currently applying to engine torque.
+    float turboMult() const { return m_turboMult; }
 
     // ---- Per-instance paint tint (WORLD CARS variants) ----------------------
     // Replaces the CLEARCOAT drawables' baseColor RGB (the car-paint panels;
@@ -131,6 +157,15 @@ private:
     x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD)
     float m_effThrottle = 0.0f;          // post-TC throttle (engine audio load)
     bool m_tcEnabled = true;             // traction control (see setInput)
+    bool m_tcCutting = false;            // TC hysteresis latch — stays cut until slip falls (see setInput)
+
+    void  updateTurbo(float dt);         // called from preStep
+    TurboParams m_turbo;
+    bool  m_turboOn         = true;
+    float m_boostPsi        = 0.0f;      // manifold pressure (negative = vacuum)
+    float m_turboMult       = 1.0f;      // torque multiplier the turbo is applying
+    float m_userTorqueMult  = 1.0f;      // nitrous / console override, multiplied in
+
     bool  m_tintOn = false;              // paint tint (see setPaintTint)
     float m_tint[3] = { 1, 1, 1 };
 

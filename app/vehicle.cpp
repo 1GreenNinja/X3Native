@@ -382,15 +382,86 @@ void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
             slip = std::max(slip, m_ctl->longitudinalSlip(i));
         constexpr float kSlipTarget = 0.10f;   // hold just past the friction peak
         constexpr float kSlipGain   = 4.0f;    // trim slope per unit excess slip
-        if (slip > kSlipTarget) {
+        // HYSTERESIS. The old single-threshold cut (slip > kSlipTarget -> cut,
+        // instant restore below it) chattered at the traction limit: cut -> slip
+        // drops -> restore -> slip spikes -> cut, which is the "wahhh brrp" heard
+        // in top gear. Real TC cuts above one threshold and stays cut until slip
+        // falls well below a LOWER one — that deadband is the anti-oscillation.
+        // Frame-rate safe: the latch only toggles on threshold crossings, never
+        // accumulates per frame.
+        if (slip > 0.12f)      m_tcCutting = true;
+        else if (slip < 0.06f) m_tcCutting = false;
+        if (m_tcCutting) {
             const float trim = 1.0f - kSlipGain * (slip - kSlipTarget);
             eff.throttle *= std::clamp(trim, 0.15f, 1.0f);
         }
-        m_effThrottle = eff.throttle;   // POST-TC: what the engine is actually given
     }
+    // OUTSIDE the TC branch. This used to be assigned only when TC was active
+    // and the throttle positive, so with TC off — or the instant you lifted —
+    // it kept whatever value it last had. The engine audio reads it as "load",
+    // so the note stayed pinned at the last trimmed value while coasting.
+    m_effThrottle = eff.throttle;
     m_ctl->setInput(eff);
 }
-void DriveDemo::preStep(float dt)  { if (m_ctl) m_ctl->preStep(dt); }
+
+// ---------------------------------------------------------------------------
+// TURBO — a manifold-pressure model, not a curve.
+//
+// The engine already had a turbo-SHAPED torque curve: soft off the bottom, a
+// hard step around 0.32-0.45 of the rev range, a plateau, then taper. That is
+// the right STEADY-STATE shape, and it is what the engine makes at full boost.
+// What it cannot express is the part of a turbo you actually feel, which is all
+// transient: the half-second where you have asked for everything and the engine
+// has not yet given it, and the shove when it arrives.
+//
+// So the curve stays as the full-boost delivery and this supplies the lag. The
+// torque multiplier runs from floorTorque (off boost) to 1.0 (on boost) as
+// manifold pressure builds, which means peak power and the tuned curve shape
+// are both unchanged — the difference is entirely in WHEN you get them.
+//
+// Asymmetric time constants, because a turbo is asymmetric: the compressor has
+// inertia and takes ~0.45 s to come up, but lift and the wastegate and the
+// recirculation valve dump it in ~0.1 s. That asymmetry is why part-throttle
+// driving in a turbo car feels like it does, and why short-shifting keeps you
+// on boost while a lift-and-coast does not.
+//
+// Below the throttle, the model reads VACUUM — the engine pumping against a
+// closed plate. It is what a real boost gauge shows for most of its life, and
+// it is the reason the needle sitting at zero would have looked wrong.
+// ---------------------------------------------------------------------------
+void DriveDemo::updateTurbo(float dt) {
+    if (!m_ctl) { m_turboMult = 1.0f; return; }
+    if (!m_turboOn) {
+        m_boostPsi = 0.0f;
+        m_turboMult = 1.0f;
+        m_ctl->setTorqueBoost(m_userTorqueMult);
+        return;
+    }
+    const TurboParams& tp = m_turbo;
+    const float rpm = m_ctl->engineRPM();
+    const float thr = std::clamp(m_effThrottle, 0.0f, 1.0f);
+
+    // Spool: the compressor needs exhaust energy, which needs revs.
+    float spool = (rpm - tp.spoolStartRpm) / std::max(1.0f, tp.spoolFullRpm - tp.spoolStartRpm);
+    spool = std::clamp(spool, 0.0f, 1.0f);
+    spool = spool * spool * (3.0f - 2.0f * spool);          // smoothstep
+
+    const float boostTarget = tp.maxPsi * spool * thr;
+    // Vacuum deepens with revs and a closed throttle; it vanishes as the plate
+    // opens. Needs some revs to exist at all, hence the rpm ramp.
+    const float vacTarget = -tp.vacuumPsi * (1.0f - thr)
+                          * std::clamp(rpm / 2500.0f, 0.0f, 1.0f);
+    const float target = boostTarget + vacTarget;
+
+    const float tau = (target > m_boostPsi) ? tp.spoolTau : tp.dumpTau;
+    m_boostPsi += (target - m_boostPsi) * (1.0f - std::exp(-dt / std::max(0.01f, tau)));
+
+    const float frac = std::clamp(m_boostPsi / std::max(0.01f, tp.maxPsi), 0.0f, 1.0f);
+    m_turboMult = tp.floorTorque + (1.0f - tp.floorTorque) * frac;
+    m_ctl->setTorqueBoost(m_userTorqueMult * m_turboMult);
+}
+
+void DriveDemo::preStep(float dt)  { updateTurbo(dt); if (m_ctl) m_ctl->preStep(dt); }
 void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
 
 void DriveDemo::chassisPos(float out[3]) const {
