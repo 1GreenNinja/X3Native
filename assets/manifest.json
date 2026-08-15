@@ -1393,21 +1393,21 @@
     },
     {
       "repo_path": "assets/surface_library/terrain_snow/albedo.png",
-      "sha256": "8880acedc71d2ad23c95c3d799ca919e5a8e36b1c42d519a87ae2080c97d709b",
-      "size": 3389472,
-      "source_note": "Real snow, replacing MarbleWhite00 (cracked white marble). Source: UniStorm Weather System Snow.jpg + Snow Bump.png (Unity Asset Store, licensed to Tim), photographic 700px pair upscaled to 2K with fine crystal grain added; mr authored (metallic 0, roughness ~0.86 varied)"
+      "sha256": "e5d99404e9a9deb169bf72f060a1ae7d5146ea87dbf72497699bbaf04a87ce11",
+      "size": 4329008,
+      "source_note": "NatureManufacture Landscape Ground Pack 3, T_Ground_32_Snow (BC_SM/N) - native uncompressed 2K, SAME vendor as the grass and sand layers; roughness from the authored smoothness alpha (mean 0.57, varying)"
     },
     {
       "repo_path": "assets/surface_library/terrain_snow/mr.png",
-      "sha256": "0cbf75347f9ba419f346bf1ab7000e26589abd53378e7d31f47d5e2608a80a8c",
-      "size": 3534588,
-      "source_note": "Real snow, replacing MarbleWhite00 (cracked white marble). Source: UniStorm Weather System Snow.jpg + Snow Bump.png (Unity Asset Store, licensed to Tim), photographic 700px pair upscaled to 2K with fine crystal grain added; mr authored (metallic 0, roughness ~0.86 varied)"
+      "sha256": "52ecf196128f33b99a06c8cc10a881c8e9b9a28faa362d65c71082bc91d92f70",
+      "size": 4249131,
+      "source_note": "NatureManufacture Landscape Ground Pack 3, T_Ground_32_Snow (BC_SM/N) - native uncompressed 2K, SAME vendor as the grass and sand layers; roughness from the authored smoothness alpha (mean 0.57, varying)"
     },
     {
       "repo_path": "assets/surface_library/terrain_snow/normal.png",
-      "sha256": "45a034446a160332cb120d330d14867f0b9e70a86ff8d19c517b024486408308",
-      "size": 10199794,
-      "source_note": "Real snow, replacing MarbleWhite00 (cracked white marble). Source: UniStorm Weather System Snow.jpg + Snow Bump.png (Unity Asset Store, licensed to Tim), photographic 700px pair upscaled to 2K with fine crystal grain added; mr authored (metallic 0, roughness ~0.86 varied)"
+      "sha256": "d0f7e025edb9fed5aef05804f04eec97db79a49b3062f799793f29b69eadfc02",
+      "size": 6300889,
+      "source_note": "NatureManufacture Landscape Ground Pack 3, T_Ground_32_Snow (BC_SM/N) - native uncompressed 2K, SAME vendor as the grass and sand layers; roughness from the authored smoothness alpha (mean 0.57, varying)"
     }
   ]
 }

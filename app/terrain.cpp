@@ -400,21 +400,34 @@ x3::rhi::TextureHandle loadTerrainNormal(x3::rhi::IRenderDevice& device,
 //     built seamless natural cliff tile from the SAME pack as the grass, so the
 //     two read as one landscape.
 //   sand  -> terrain_sand  (Landscape Ground Pack 3, T_ground_sand_01)
-//   snow  -> terrain_snow  (UniStorm Weather System, Snow.jpg + Snow Bump.png).
+//   snow  -> terrain_snow  (Landscape Ground Pack 3, T_Ground_32_Snow_BC_SM +
+//            _N -- the SAME NatureManufacture pack as grass and sand above, so
+//            all three read as one landscape rather than three purchases).
 //            REAL SNOW as of 2026-08-15. It was MarbleWhite00 -- cracked white
 //            marble -- because the CURATED catalog has no snow in its 2626
-//            entries. The raw fleet share does: UniStorm is a weather system and
-//            ships a photographic snow albedo WITH a matched tangent normal.
-//            Marble's failure was not resolution or tiling; the stochastic
-//            sampler was already doing its job. Marble simply HAS large
-//            directional veins, and no anti-tiling technique can remove a
+//            entries. The raw fleet share has several; this is the best of them.
+//            Marble's failure was NOT resolution or tiling: both were 2048, and
+//            the stochastic sampler was already doing its job. Marble simply HAS
+//            large directional veins, and no anti-tiling technique can remove a
 //            distinctive feature from a source -- it can only stop it landing on
-//            a grid. Real snow tiles invisibly because it has nothing to repeat.
-//            The 700px pair is upscaled to 2K (macro structure the photo really
-//            has) with fine crystal grain added (micro detail it cannot carry at
-//            that size); grain goes into the NORMAL and ROUGHNESS, barely into
-//            the albedo, because snow's variation is in how it catches light and
-//            not in its colour. Push colour instead and you get white concrete.
+//            a grid. Snow tiles invisibly because it has nothing to repeat.
+//
+//            MEASURED, because "more detail" is not the same as "better": the
+//            marble carried 10.97 HF energy at sd 42.1 against this set's 1.11
+//            at sd 2.3. That collapse is CORRECT. A real snow albedo is nearly
+//            flat white; all of its structure lives in the normal and the
+//            roughness. High albedo contrast is what made the marble read as
+//            cracked stone, and would make any snow read as white concrete.
+//
+//            Nothing is synthesised on top. An earlier pass here upscaled a
+//            700px 20 KB JPEG (blocking ratio 2.51) to 2K and added procedural
+//            crystal grain to cover the softness; this is native uncompressed
+//            2K with an authored normal, so grain would be synthetic detail
+//            REPLACING real detail. Roughness likewise comes from the pack's own
+//            smoothness alpha -- mean 0.57 and varying (sd 22.9), which is
+//            crusted facets against packed powder. The flat 0.86 guess it
+//            replaces was both too rough and too uniform: a matte sheet that
+//            never glints as you drive past it.
 x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
     auto grass = loadTerrainAlbedo(device, "terrain_grass", 1001u,  78, 116,  56, 18); // green
     // BOTH halves of the 2026-08-14 terrain work, kept whole:
