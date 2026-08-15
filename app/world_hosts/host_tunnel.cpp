@@ -152,6 +152,78 @@ int hostTunnel(HostContext& hc) {
         }
     }
 
+    // ==== STEP 1.5 — THE ROOMS' AIR RIGHTS ==================================
+    // Found by the FIRST interior capture (09_garage_lnss): the corridor CARVE
+    // does not stop at the bore wall — its 14 m falloff shoulder climbs from
+    // trench depth back to the natural hill across lat 10.1..24.1 m, which is
+    // exactly the band the service rooms occupy (latIn 12.1 m). The carved
+    // STREAMER surface therefore passes through the room volumes — worst in
+    // the GARAGE, whose floor is 13 ft below the roadway, where it crossed the
+    // bay as a rock wedge at chest-to-truss height, render AND collision.
+    //
+    // R1's "109.5 ft of cover" is NOT wrong, and that is the trap: it measures
+    // tunnelLidHeightAt(), the RESTORED hillside of the cut-and-cover story.
+    // The streamed field renders the CARVED surface under that lid. Two
+    // surfaces, one word ("the ground"), and the proof was reading the other
+    // one. The lid hides the carved shoulder from OUTSIDE; the rooms live
+    // inside it.
+    //
+    // The fix is the machinery terrain.h already ships for exactly this class
+    // of defect: a TerrainPortalHole drops terrain triangles (mesh + collision)
+    // whose centroid lies in a prism and whose lowest vertex dips under yTop
+    // ("no depth profile fixes that; the MESHER has to skip those triangles").
+    // MEASURED, not assumed: the room program is rebuilt here (pure data, same
+    // route/seed/tier as every other builder of it), the real field is sampled
+    // over each space's footprint, and a hole is registered ONLY where the
+    // field actually enters a space. On this route that is the garage + its
+    // ramp; the road-level rooms stay under the shoulder and register nothing.
+    // Every dropped patch sits beneath the backfill lid mesh (which runs to
+    // lat 29.1 m), so nothing opens to the sky. MUST run before STEP 2: holes
+    // are read at tile generation.
+    {
+        x3::game::FitoutConfig fcfg;
+        x3::game::TunnelFitout fitout;
+        fitout.build(route.boreS0, route.boreS1, fcfg, x3::game::kTunnelFitoutSeed);
+        x3::game::TunnelRoomProgram rooms;
+        rooms.build(route, fitout, x3::game::TunnelTier::A);
+        for (const x3::game::TunnelSpace& sp : rooms.spaces()) {
+            const float ceilY = sp.floorY + sp.clearH;
+            float worstIn = -1e9f;                    // deepest the field dips into the space
+            for (float s = sp.s0; s <= sp.s1 + 0.01f; s += 1.0f)
+                for (float lat = sp.latIn; lat <= sp.latOut + 0.01f; lat += 1.0f) {
+                    float wx = 0.0f, wz = 0.0f;
+                    route.worldAt(s, (float)sp.side * lat, wx, wz);
+                    const float h = x3::game::terrainHeightAtWorld(wx, wz);
+                    if (h < ceilY + 0.3f)             // at/below the ceiling = inside (or under the floor,
+                        worstIn = std::max(worstIn, h - sp.floorY);   // which is fine — negative)
+                }
+            if (worstIn <= 0.05f) continue;           // field stays under the floor: no hole needed
+            x3::game::TerrainPortalHole hole;
+            // 3 m margins on every side, and this number was CAPTURED, not
+            // chosen: with a 0.8 m margin the first probe shot still had a rock
+            // band crossing the bay wall, because the drop test is by triangle
+            // CENTROID — a full-LOD quad centred 1 m behind the wall reaches
+            // ~1 m past it into the room and survives a snug prism. 3 m clears
+            // a full-LOD quad from any side. Everything the wider prism drops
+            // is still under the backfill lid mesh (which runs to lat 29.1 m,
+            // vs latOut + 3 = 28.2 m here), so nothing opens to the sky.
+            const float kM = 3.0f;
+            route.worldAt(sp.s0 - kM, (float)sp.side * (sp.latIn + sp.latOut) * 0.5f, hole.x0, hole.z0);
+            route.worldAt(sp.s1 + kM, (float)sp.side * (sp.latIn + sp.latOut) * 0.5f, hole.x1, hole.z1);
+            hole.halfWidth = (sp.latOut - sp.latIn) * 0.5f + kM;
+            hole.yTop      = ceilY + 0.3f;
+            const bool ok2 = x3::game::registerTerrainPortalHole(hole);
+            char hb[240];
+            std::snprintf(hb, sizeof(hb),
+                "tunnel rooms: carved ground enters the %s %.1f ft above its floor -> %s "
+                "(prism %.0f ft long, half-width %.1f ft, ceiling %.1f ft)",
+                x3::game::spaceKindName(sp.kind), worstIn * 3.28084f,
+                ok2 ? "terrain hole registered" : "HOLE REGISTRY FULL — left intruding",
+                (sp.s1 - sp.s0) * 3.28084f, hole.halfWidth * 3.28084f, sp.clearH * 3.28084f);
+            if (ok2) x3::logInfo(hb); else x3::logError(hb);
+        }
+    }
+
     std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
     if (!phys->init()) {
         x3::logError("--world tunnel: physics init failed");
@@ -700,6 +772,7 @@ int hostTunnel(HostContext& hc) {
                 { 5, "06_mouth_headon" },
                 { 6, "07_inside_looking_out" },
                 { 7, "08_exit_portal" },
+                { 8, "09_garage_lnss" },   // inside the Late Night Speed bay
             };
             for (const Shot& sh : shots) {
                 float cam[5]; tunnel.showcaseCamera(route, sh.which, cam);

@@ -5,6 +5,8 @@
 #include "tunnel_corridor.h"
 #include "tunnel_fitout.h"
 #include "tunnel_rooms.h"
+#include "lns_shop.h"     // LATE NIGHT SPEED shop kit (authored in club1127,
+                          // shared): CMU walls, checker floor, neon letters
 
 #include <functional>
 #include "mesh_prims.h"
@@ -300,6 +302,11 @@ struct Material {
     float tint[4] = { 1, 1, 1, 1 };
     float emissive[4] = { 0, 0, 0, 0 };
 };
+// (An emissive-MAP field was tried here for the garage's neon and REMOVED: the
+// lone emissiveTex entity rendered in `--screenshot` runs and vanished in
+// `--screenshot-tunnel` runs — same world, same camera by pixel-diff. The sign
+// is channel-letter GEOMETRY on the flat-emissive path instead; if a per-texel
+// emissive is ever needed in this host, start from that repro.)
 
 } // namespace
 
@@ -1369,7 +1376,39 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 TunnelRoomProgram prog;
                 prog.build(route, fit, TunnelTier::A);
 
+                // ==========================================================
+                // ★ THE VEHICLE BAY IS LATE NIGHT SPEED. Not "inspired by" —
+                // the second premises of the SAME shop. The claim was already
+                // made before this pass: tunnel_rooms.h inventories the bay as
+                // "Tim's own shop, LATE NIGHT SPEED, inventoried by its owner"
+                // (3 Rotary two-posts, the Hunter rack, Road Force, tire
+                // machine, Miller, Robinair), and RACING_WORLD.md records that
+                // Club 1127 IS the real Miami shop. A bay that carries the
+                // owner's exact machine inventory but generic tunnel concrete
+                // was the wrong half of a decision — so it now DRESSES from the
+                // same authored kit (app/lns_shop.h, moved out of club1127):
+                //   * painted CMU block walls (running bond + mortar normal),
+                //   * the glossy checkerboard floor (wet MR 8/255 — light
+                //     pools in it, "exactly like the photos"),
+                //   * the industrial ceiling bones (trusses / purlins /
+                //     conduit / a galvanised duct — the club's authored
+                //     layout, re-set to this room's frame),
+                //   * the LATE NIGHT SPEED neon on the far wall — the Miami
+                //     mount says CLUB 1127 because that shop is a club by
+                //     night; a bay under 323 ft of rock has no night trade,
+                //     so it wears the day name.
+                // LEFT BEHIND on purpose: the DIY dome party-projectors, the
+                // ceiling starburst, the laser floor patterns and the mirror
+                // ball. Those are Club 1127's after-dark signature; down here
+                // the same checkerboard reflects WORKLIGHTS. Dressing a
+                // working bay as a party is exactly the slop the anti-slop
+                // line exists to stop.
+                // ==========================================================
                 MeshBuf room, fixture, fglow;
+                MeshBuf lnsWall, lnsFloor;                    // the shop shell
+                MeshBuf lnsSteel, lnsDuct, lnsCond;           // ceiling bones
+                MeshBuf lnsEquip, lnsLamp;                    // Rotary red / worklights
+                MeshBuf lnsNeon, lnsCab;                      // channel letters / sign cabinet
                 const auto& sp = prog.spaces();
 
                 auto frameAtS = [&](float sPos) -> const Frame& {
@@ -1418,7 +1457,16 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     // quads around a rectangle. The result is watertight by
                     // construction, and the doorway is the size of the thing that
                     // actually connects rather than the size of the smaller room.
-                    auto faceWithHole = [&](float uMin, float uMax, float yMin, float yMax,
+                    // `dst` picks the batch (the garage's walls go to the CMU
+                    // buffer, everything else stays on the bore concrete) and
+                    // `uvm` > 0 switches the face to METRIC UVs: texture
+                    // coordinates are the face's own in-plane metres * uvm, so
+                    // the CMU blocks come out 16x8 IN at any wall size and the
+                    // strips around a doorway stay registered with each other
+                    // (they all read the same absolute metres). uvm == 0 keeps
+                    // the legacy stretch-to-face 0..1 mapping byte-identical.
+                    auto faceWithHole = [&](MeshBuf& dst, float uvm,
+                                            float uMin, float uMax, float yMin, float yMax,
                                             float oU0, float oU1, float oY0, float oY1,
                                             const float nrm[3], bool flip,
                                             const std::function<void(float,float,float*)>& place) {
@@ -1432,8 +1480,16 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                             float P0[3], P1[3], P2[3], P3[3];
                             place(a0, b0, P0); place(a1, b0, P1);
                             place(a1, b1, P2); place(a0, b1, P3);
-                            if (flip) room.quad(P3, P2, P1, P0, nrm, 0, 1, 0, 1);
-                            else      room.quad(P0, P1, P2, P3, nrm, 0, 1, 0, 1);
+                            const float u0 = uvm > 0.0f ? a0 * uvm : 0.0f;
+                            const float u1 = uvm > 0.0f ? a1 * uvm : 1.0f;
+                            const float w0 = uvm > 0.0f ? b0 * uvm : 0.0f;
+                            const float w1 = uvm > 0.0f ? b1 * uvm : 1.0f;
+                            // The flipped branch swaps the w params so each
+                            // vertex keeps u(a), w(b) — mirrored UVs would
+                            // shear the block courses at every strip seam.
+                            if (flip) dst.quad(P3, P2, P1, P0, nrm, u0, u1,
+                                               uvm > 0.0f ? w1 : 0.0f, uvm > 0.0f ? w0 : 1.0f);
+                            else      dst.quad(P0, P1, P2, P3, nrm, u0, u1, w0, w1);
                         };
                         if (!hasHole) { strip(uMin, uMax, yMin, yMax); return; }
                         strip(uMin, oU0, yMin, yMax);   // left of the opening
@@ -1468,11 +1524,34 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     float A[3], B[3], C[3], D[3];
                     const float nU[3] = { 0, 1, 0 }, nD[3] = { 0, -1, 0 };
 
+                    // THE GARAGE WEARS THE SHOP. Its walls leave the bore-
+                    // concrete batch for the painted CMU block, its floor for
+                    // the glossy checkerboard — see the LNS banner above. The
+                    // CMU texture spans 1.6 m (4 blocks x 8 courses of real
+                    // 16x8 in units), the checker 8 m (8 one-metre tiles), so
+                    // the metric-UV factors are 1/1.6 and 1/8. The RAMP stays
+                    // concrete on purpose: it is a driveway through rock; the
+                    // shop starts where the floor levels out.
+                    const bool isShop = (sc.kind == SpaceKind::Garage);
+                    MeshBuf&    wallDst = isShop ? lnsWall : room;
+                    const float wallUvm = isShop ? (1.0f / 1.6f) : 0.0f;
+
                     // Floor + ceiling: never shared (a stair carries level change),
                     // so these are always solid.
                     PA(fa, li, fy, A); PA(fa, lo, fy, B); PA(fb, lo, fy, C); PA(fb, li, fy, D);
-                    if (sc.side > 0) room.quad(A, B, C, D, nU, 0, 1, 0, 1);
-                    else             room.quad(D, C, B, A, nU, 0, 1, 0, 1);
+                    if (isShop) {
+                        // Metric UVs (u = lateral metres, w = station metres,
+                        // both * 1/8) so the checker tiles land 1 m square.
+                        const float fu = 1.0f / 8.0f;
+                        if (sc.side > 0) lnsFloor.quad(A, B, C, D, nU, li * fu, lo * fu,
+                                                       sc.s0 * fu, sc.s1 * fu);
+                        else             lnsFloor.quad(D, C, B, A, nU, li * fu, lo * fu,
+                                                       sc.s1 * fu, sc.s0 * fu);
+                    } else if (sc.side > 0) room.quad(A, B, C, D, nU, 0, 1, 0, 1);
+                    else                    room.quad(D, C, B, A, nU, 0, 1, 0, 1);
+                    // The ceiling deck stays bore concrete even in the shop —
+                    // the club's deck is a plain slab too; what makes it an
+                    // INDUSTRIAL ceiling is the steel slung under it (below).
                     PA(fa, li, cy, A); PA(fa, lo, cy, B); PA(fb, lo, cy, C); PA(fb, li, cy, D);
                     if (sc.side > 0) room.quad(D, C, B, A, nD, 0, 1, 0, 1);
                     else             room.quad(A, B, C, D, nD, 0, 1, 0, 1);
@@ -1487,7 +1566,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                              high ? -route.dirZ : route.dirZ };
                         const float lmin = std::min(sc.latIn, sc.latOut);
                         const float lmax = std::max(sc.latIn, sc.latOut);
-                        faceWithHole(lmin, lmax, fy, cy,
+                        faceWithHole(wallDst, wallUvm, lmin, lmax, fy, cy,
                                      hole ? u0 : 1e9f, hole ? u1 : -1e9f, y0, y1,
                                      n, high != (sc.side > 0),
                                      [&](float u, float y, float* out) { PA(fe, sgn * u, y, out); });
@@ -1507,7 +1586,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                         }
                         const float n[3] = { (outer ? -sgn : sgn) * right[0], 0.0f,
                                              (outer ? -sgn : sgn) * right[2] };
-                        faceWithHole(sc.s0, sc.s1, fy, cy,
+                        faceWithHole(wallDst, wallUvm, sc.s0, sc.s1, fy, cy,
                                      hole ? u0 : 1e9f, hole ? u1 : -1e9f, y0, y1,
                                      n, outer != (sc.side > 0),
                                      [&](float u, float y, float* out) {
@@ -1587,13 +1666,17 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                 float post[3];
                                 PA(frameAtS(ls), sgn * (ll + (float)side2 * 1.45f),
                                    fy + kTrLiftPostHM * 0.5f, post);
-                                obox(fixture, post, right, ax, 0.15f, kTrLiftPostHM * 0.5f, 0.15f, 1.0f);
+                                // Columns + beam wear ROTARY RED (club1127's
+                                // kLiftRed shop-equipment red, via the lnsEquip
+                                // material below) — same geometry, same count;
+                                // this is paint, not inventory.
+                                obox(lnsEquip, post, right, ax, 0.15f, kTrLiftPostHM * 0.5f, 0.15f, 1.0f);
                                 // The overhead beam that ties the columns is the
                                 // silhouette people actually recognise a lift by.
                                 if (side2 < 0) {
                                     float beam[3];
                                     PA(frameAtS(ls), sgn * ll, fy + kTrLiftPostHM, beam);
-                                    obox(fixture, beam, right, ax, 1.60f, 0.10f, 0.13f, 1.0f);
+                                    obox(lnsEquip, beam, right, ax, 1.60f, 0.10f, 0.13f, 1.0f);
                                 }
                                 // Swing arms, parked low and reaching inward.
                                 for (int arm2 = -1; arm2 <= 1; arm2 += 2) {
@@ -1728,6 +1811,201 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                 obox(fixture, tb, right, ax, 0.34f, 0.38f, 0.55f, 1.0f);
                             }
                         }
+
+                        // EXACT station placement for the LNS dressing. The
+                        // room kit places via frameAtS(), which SNAPS to the
+                        // 4 m road-frame grid — fine for a pump skid, FATAL for
+                        // layered sign work: the neon quad's 4 in wall standoff
+                        // snapped to ZERO and the quad sat co-planar inside the
+                        // end wall, winning or losing the depth test by capture
+                        // mode (THAT was the "vanishing sign" — not a culler,
+                        // my own quantized placement); the 3 m truss spacing
+                        // snapped to the 4 m grid and stacked trusses onto each
+                        // other. This helper offsets from the snapped frame
+                        // along the route axis by the exact remainder.
+                        auto PAx = [&](float sE, float r, float absY, float out[3]) {
+                            const Frame& f2 = frameAtS(sE);
+                            out[0] = f2.p[0] + ax[0] * (sE - f2.s) + right[0] * r;
+                            out[1] = absY;
+                            out[2] = f2.p[2] + ax[2] * (sE - f2.s) + right[2] * r;
+                        };
+
+                        // ---- THE INDUSTRIAL CEILING (club1127's "working-shop
+                        // bones", re-set to this room's frame). Steel trusses on
+                        // 3 m centres spanning the 43 ft depth, purlins tying
+                        // the top chords, EMT conduit slung along both long
+                        // walls, and one galvanised HVAC trunk with a crossing
+                        // branch — the unmistakable shop-ceiling silhouette.
+                        // All above the 11 ft lift posts (chords at 22-23 ft),
+                        // decorative (the deck slab carries the collision).
+                        {
+                            const float yBot = fy + 6.72f, yTop = fy + 7.10f;   // 22.0 / 23.3 ft
+                            const float yMid = (yBot + yTop) * 0.5f;
+                            const float latMidRaw = sc.latIn + gDep * 0.5f;
+                            const float dHalf = gDep * 0.5f - 0.30f;
+                            for (float ts2 = sc.s0 + 1.74f; ts2 < sc.s1 - 1.0f; ts2 += 3.0f) {
+                                float c[3];
+                                PAx(ts2, sgn * latMidRaw, yBot, c);
+                                obox(lnsSteel, c, right, ax, dHalf, 0.05f, 0.05f, 1.0f);   // bottom chord
+                                PAx(ts2, sgn * latMidRaw, yTop, c);
+                                obox(lnsSteel, c, right, ax, dHalf, 0.05f, 0.05f, 1.0f);   // top chord
+                                for (int w2 = 0; w2 < 7; ++w2) {                            // Vierendeel webs
+                                    const float wl2 = sc.latIn + 0.65f
+                                                    + (float)w2 * (gDep - 1.3f) / 6.0f;
+                                    PAx(ts2, sgn * wl2, yMid, c);
+                                    obox(lnsSteel, c, right, ax, 0.035f, (yTop - yBot) * 0.5f, 0.035f, 1.0f);
+                                }
+                            }
+                            // Purlins (four lines, running the bay's length).
+                            for (int pn = 0; pn < 4; ++pn) {
+                                const float pl2 = sc.latIn + gDep * (0.16f + 0.2266f * (float)pn);
+                                float c[3];
+                                PAx((sc.s0 + sc.s1) * 0.5f, sgn * pl2, yTop + 0.06f, c);
+                                obox(lnsSteel, c, right, ax, 0.03f, 0.03f, gLen * 0.5f - 0.3f, 1.0f);
+                            }
+                            // EMT conduit, doubled runs under the chords along both long walls.
+                            for (int cw = 0; cw < 2; ++cw) {
+                                const float cl2 = cw ? (sc.latOut - 0.22f) : (sc.latIn + 0.22f);
+                                float c[3];
+                                PAx((sc.s0 + sc.s1) * 0.5f, sgn * cl2, yBot - 0.12f, c);
+                                obox(lnsCond, c, right, ax, 0.028f, 0.028f, gLen * 0.5f - 0.6f, 1.0f);
+                                PAx((sc.s0 + sc.s1) * 0.5f, sgn * cl2, yBot - 0.20f, c);
+                                obox(lnsCond, c, right, ax, 0.022f, 0.022f, gLen * 0.5f - 0.6f, 1.0f);
+                            }
+                            // The HVAC trunk along the back wall + one branch
+                            // crossing to the bore side, with the elbow boxed.
+                            {
+                                float c[3];
+                                PAx((sc.s0 + sc.s1) * 0.5f, sgn * (sc.latOut - 0.75f), fy + 6.35f, c);
+                                obox(lnsDuct, c, right, ax, 0.24f, 0.26f, gLen * 0.5f - 1.8f, 1.0f);
+                                const float bs2 = sc.s0 + gLen * 0.30f;
+                                PAx(bs2, sgn * latMidRaw, fy + 6.35f, c);
+                                obox(lnsDuct, c, right, ax, dHalf - 0.9f, 0.24f, 0.22f, 1.0f);
+                                PAx(bs2, sgn * (sc.latOut - 0.75f), fy + 6.35f, c);
+                                obox(lnsDuct, c, right, ax, 0.30f, 0.30f, 0.30f, 1.0f);
+                            }
+                        }
+
+                        // ---- WORKLIGHTS, not gels. Three caged shop lamps on
+                        // drop wires over the work line (the club hangs ONE of
+                        // these over its hoist; a 100 ft working bay earns
+                        // three), each backed by a REAL point light so the
+                        // checkerboard has something to pool. The pool uploader
+                        // ranks lights by camera distance, so these cost the
+                        // bore nothing while you are driving it.
+                        for (int wl3 = 0; wl3 < 3; ++wl3) {
+                            const float ws3 = sc.s0 + gLen * (0.22f + 0.28f * (float)wl3);
+                            const float ll3 = sc.latIn + gDep * 0.45f;
+                            float c[3];
+                            PAx(ws3, sgn * ll3, fy + 5.85f, c);
+                            obox(lnsLamp, c, right, ax, 0.09f, 0.06f, 0.09f, 1.0f);   // lamp head
+                            PAx(ws3, sgn * ll3, fy + 6.30f, c);
+                            obox(lnsCond, c, right, ax, 0.012f, 0.42f, 0.012f, 1.0f); // drop wire
+                            x3::rhi::PointLight pl{};
+                            PAx(ws3, sgn * ll3, fy + 5.35f, c);
+                            pl.pos[0] = c[0]; pl.pos[1] = c[1]; pl.pos[2] = c[2];
+                            pl.range = 16.0f;
+                            // Warm shop key — club1127's hoist worklight hue.
+                            pl.color[0] = 2.1f; pl.color[1] = 1.62f; pl.color[2] = 0.96f;
+                            m_lights.push_back(pl);
+                        }
+
+                        // Which end you DRIVE IN at is read off the RAMP space
+                        // (it abuts one end of the bay), not assumed from `dir`
+                        // — the sign and the camera below both hang off it.
+                        bool entryAtS0 = true;
+                        for (const TunnelSpace& o : sp)
+                            if (o.kind == SpaceKind::Ramp && o.side == sc.side)
+                                entryAtS0 = (std::fabs(o.s1 - sc.s0) < std::fabs(o.s0 - sc.s1));
+
+                        // ---- ★ THE NEON. "LATE NIGHT SPEED" across the far
+                        // end wall — the wall that faces you for the whole 87 ft
+                        // of ramp. Built as CHANNEL LETTERS: one small emissive
+                        // block per lit glyph cell, rasterized from the SAME 5x7
+                        // font the club's sign bakes (lns::makeSignRGBA at
+                        // 1 px per cell), mounted on a dark cabinet 20 in off
+                        // the block with standoff struts — the way a real sign
+                        // hangs. GEOMETRY, not a texture, for a measured reason:
+                        // the first cut was a quad with a per-texel emissive
+                        // map, and that quad rendered in `--screenshot` runs but
+                        // VANISHED in `--screenshot-tunnel` runs — same world,
+                        // pixel-diff-identical camera (the sole emissiveTex
+                        // entity in this host loses some per-run renderer coin
+                        // toss the club never hits). Channel letters ride the
+                        // same flat-emissive path as the lighting strips and
+                        // bay markings, which render in every mode; and the
+                        // blocky cell build is what a fat neon channel letter
+                        // actually looks like from across a bay.
+                        {
+                            const float sFar  = entryAtS0 ? sc.s1 - 0.50f : sc.s0 + 0.50f;
+                            const float hw2 = 5.5f;                            // 36 ft of letters on the 43 ft wall
+                            const float cyS = fy + 4.6f;                       // 15 ft up the 24 ft wall
+                            const float lC  = sgn * (sc.latIn + gDep * 0.5f);  // panel centre, signed lat
+                            // Text runs the VIEWER's left-to-right. Facing the
+                            // far wall the viewer faces +axis when the entry is
+                            // at s0, so their screen-right is +right-of-travel
+                            // (= increasing SIGNED lat); entry at s1 flips it.
+                            const float eDir = entryAtS0 ? 1.0f : -1.0f;
+                            // Rasterize the line at 1 px per font cell (16
+                            // chars x 6 cells = 96 x 7) and emit a block per
+                            // LIT core cell (halo texels stay off — the glow
+                            // pass adds the halo in-shader via bloom).
+                            const char* kSignLine = "LATE NIGHT SPEED";
+                            const uint32_t sw2 = 96, sh2 = 7;
+                            auto sgPx = lns::makeSignRGBA(sw2, sh2, kSignLine,
+                                                          lns::kNeonRed[0], lns::kNeonRed[1], lns::kNeonRed[2]);
+                            const float cell = 2.0f * hw2 / (float)sw2;        // 0.11 m — letters 2.6 ft tall
+                            const float yTop2 = cyS + cell * (float)sh2 * 0.5f;
+                            for (uint32_t iy = 0; iy < sh2; ++iy)
+                                for (uint32_t ix = 0; ix < sw2; ++ix) {
+                                    if (sgPx[((size_t)iy * sw2 + ix) * 4 + 0] < 200) continue;   // core cells only
+                                    const float lat2 = lC + eDir * (-hw2 + cell * ((float)ix + 0.5f));
+                                    const float y2   = yTop2 - cell * ((float)iy + 0.5f);
+                                    float c[3];
+                                    PAx(sFar, lat2, y2, c);
+                                    obox(lnsNeon, c, right, ax, cell * 0.46f, cell * 0.46f, 0.045f, 1.0f);
+                                }
+                            // The CABINET the letters mount on, and the two
+                            // standoff struts back to the block.
+                            {
+                                const float toWall = entryAtS0 ? 1.0f : -1.0f;   // deeper s = the wall side here
+                                float c[3];
+                                PAx(sFar + toWall * 0.14f, lC, cyS, c);
+                                obox(lnsCab, c, right, ax, hw2 + 0.25f, cell * 4.5f, 0.07f, 1.0f);
+                                for (int st2 = -1; st2 <= 1; st2 += 2) {
+                                    PAx(sFar + toWall * 0.30f,
+                                       lC + (float)st2 * hw2 * 0.7f, cyS, c);
+                                    obox(lnsCond, c, right, ax, 0.03f, 0.03f, 0.16f, 1.0f);
+                                }
+                            }
+                            // A red wash under the sign so the letters answer in
+                            // the floor gloss, the way neon actually behaves.
+                            x3::rhi::PointLight pl{};
+                            float c[3];
+                            PAx(sFar + (entryAtS0 ? -1.2f : 1.2f), lC, cyS - 0.6f, c);
+                            pl.pos[0] = c[0]; pl.pos[1] = c[1]; pl.pos[2] = c[2];
+                            pl.range = 10.0f;
+                            pl.color[0] = 1.6f; pl.color[1] = 0.16f; pl.color[2] = 0.16f;
+                            m_lights.push_back(pl);
+                        }
+
+                        // ---- The proof shot's camera: just inside the entry
+                        // end, off the aisle, eye height, looking down the bay
+                        // at the lifts / checker / neon. Stored for
+                        // showcaseCamera(8); headless captures use it.
+                        {
+                            const float sEye = entryAtS0 ? sc.s0 + 3.0f : sc.s1 - 3.0f;
+                            const float sTgt = entryAtS0 ? sc.s1 - 2.0f : sc.s0 + 2.0f;
+                            float eye[3], tgt[3];
+                            PAx(sEye, sgn * (sc.latIn + gDep * 0.24f), fy + 1.75f, eye);
+                            PAx(sTgt, sgn * (sc.latIn + gDep * 0.52f), fy + 3.4f, tgt);
+                            const float dx2 = tgt[0] - eye[0], dy2 = tgt[1] - eye[1], dz2 = tgt[2] - eye[2];
+                            const float hl2 = std::sqrt(dx2 * dx2 + dz2 * dz2);
+                            m_garageCam[0] = eye[0]; m_garageCam[1] = eye[1]; m_garageCam[2] = eye[2];
+                            m_garageCam[3] = std::atan2(dz2, dx2);
+                            m_garageCam[4] = std::atan2(dy2, std::max(0.01f, hl2));
+                            m_garageCamValid = true;
+                        }
                     } else if (sc.kind == SpaceKind::ControlRoom) {
                         // THE COMMAND CONSOLE -- a desk with a lit face. This is
                         // the thing the whole chain of door -> hall -> room exists
@@ -1767,6 +2045,87 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 Material fg; fg.alb = paintTex; fg.mr = roughMR;
                 fg.emissive[0] = 0.35f; fg.emissive[1] = 1.0f; fg.emissive[2] = 0.65f; fg.emissive[3] = 1.6f;
                 upload(fglow, fg, /*collide*/false);
+
+                // ---- THE LNS MATERIALS (only built when the bay exists —
+                // Tier B/C programs leave every lns* buffer empty and upload()
+                // skips empties, so other bores pay nothing).
+                if (!lnsWall.empty() || !lnsFloor.empty()) {
+                    // Painted CMU block: the shared kit's albedo + mortar-groove
+                    // normal + matte MR. Tinted LIGHTER than the club's 0.36
+                    // venue grey on purpose: same paint, different hour — the
+                    // club dims its walls for the night trade, a working bay
+                    // runs them at shop brightness under the worklights.
+                    Material wm2;
+                    wm2.alb = tex(lns::makeCmuBlockRGBA(256), 256, true);
+                    wm2.nrm = tex(lns::makeCmuNormalRGBA(256), 256, false);
+                    {
+                        auto mrPx = lns::makeMr1x1(lns::kCmuRoughPx, lns::kCmuMetalPx);
+                        x3::rhi::TextureHandle t = device.createTexture(mrPx.data(), 1, 1, false);
+                        if (t.valid()) m_textures.push_back(t);
+                        wm2.mr = t;
+                    }
+                    wm2.tint[0] = 0.62f; wm2.tint[1] = 0.62f; wm2.tint[2] = 0.68f;
+                    upload(lnsWall, wm2, /*collide*/true);
+
+                    // The glossy checkerboard, baked from the SAME two albedo
+                    // numbers the club's tiles read (lns::kCheckerBright/Dark,
+                    // linear -> srgb=false) over the SAME wet-mirror MR (8/255)
+                    // — so the worklights and the neon POOL in the floor,
+                    // "exactly like the photos". No beat-pulsed under-glow down
+                    // here: that is the club's night layer, not the shop's.
+                    Material fm3;
+                    fm3.alb = tex(lns::makeCheckerFloorRGBA(512, 8), 512, false);
+                    {
+                        auto mrPx = lns::makeMr1x1(lns::kFloorRoughPx, lns::kFloorMetalPx);
+                        x3::rhi::TextureHandle t = device.createTexture(mrPx.data(), 1, 1, false);
+                        if (t.valid()) m_textures.push_back(t);
+                        fm3.mr = t;
+                    }
+                    upload(lnsFloor, fm3, /*collide*/true);
+
+                    // Ceiling bones — club1127's post-gamma self-read values,
+                    // verbatim: enough emissive to lift the silhouette out of
+                    // the dark, far too little to read as a lightbox.
+                    Material sm2; sm2.alb = paintTex; sm2.mr = wallMR;
+                    sm2.tint[0] = 0.085f; sm2.tint[1] = 0.088f; sm2.tint[2] = 0.100f;   // dark shop steel
+                    sm2.emissive[0] = 0.130f; sm2.emissive[1] = 0.140f; sm2.emissive[2] = 0.170f; sm2.emissive[3] = 0.26f;
+                    upload(lnsSteel, sm2, /*collide*/false);
+                    Material dm2; dm2.alb = paintTex; dm2.mr = wallMR;
+                    dm2.tint[0] = 0.300f; dm2.tint[1] = 0.310f; dm2.tint[2] = 0.340f;   // galvanised duct
+                    dm2.emissive[0] = 0.170f; dm2.emissive[1] = 0.180f; dm2.emissive[2] = 0.200f; dm2.emissive[3] = 0.20f;
+                    upload(lnsDuct, dm2, /*collide*/false);
+                    Material cm2; cm2.alb = paintTex; cm2.mr = wallMR;
+                    cm2.tint[0] = 0.110f; cm2.tint[1] = 0.095f; cm2.tint[2] = 0.075f;   // EMT conduit
+                    cm2.emissive[0] = 0.115f; cm2.emissive[1] = 0.100f; cm2.emissive[2] = 0.078f; cm2.emissive[3] = 0.18f;
+                    upload(lnsCond, cm2, /*collide*/false);
+
+                    // Rotary red for the lift columns/beams (club1127's
+                    // kLiftRed) + the warm caged worklight heads.
+                    Material em2; em2.alb = paintTex; em2.mr = wallMR;
+                    em2.tint[0] = 0.42f; em2.tint[1] = 0.045f; em2.tint[2] = 0.045f;
+                    upload(lnsEquip, em2, /*collide*/true);
+                    Material lm2; lm2.alb = paintTex; lm2.mr = wallMR;
+                    lm2.emissive[0] = 1.0f; lm2.emissive[1] = 0.86f; lm2.emissive[2] = 0.55f; lm2.emissive[3] = 3.4f;
+                    upload(lnsLamp, lm2, /*collide*/false);
+
+                    // The sign: hot red channel-letter blocks (flat emissive —
+                    // the path every strip and marking in this file already
+                    // proves in every capture mode) over a near-black cabinet.
+                    Material nm2; nm2.alb = paintTex; nm2.mr = wallMR;
+                    nm2.tint[0] = 0.30f; nm2.tint[1] = 0.02f; nm2.tint[2] = 0.02f;
+                    nm2.emissive[0] = lns::kNeonRed[0]; nm2.emissive[1] = lns::kNeonRed[1];
+                    nm2.emissive[2] = lns::kNeonRed[2];
+                    nm2.emissive[3] = 3.2f;   // neon-bright, same strength as the club mount
+                    upload(lnsNeon, nm2, /*collide*/false);
+                    Material cbm; cbm.alb = paintTex; cbm.mr = wallMR;
+                    cbm.tint[0] = 0.022f; cbm.tint[1] = 0.020f; cbm.tint[2] = 0.026f;   // near-black cabinet
+                    upload(lnsCab, cbm, /*collide*/false);
+                    { char db[220]; std::snprintf(db, sizeof(db),
+                        "tunnel garage: dressed as LATE NIGHT SPEED — CMU walls, glossy checker "
+                        "floor, industrial ceiling, neon (%u letter cells; kit: app/lns_shop.h)",
+                        (uint32_t)(lnsNeon.v.size() / 24));
+                      x3::logInfo(db); }
+                }
 
                 char rb[240];
                 uint32_t opened = 0;
@@ -1887,8 +2246,24 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                         P(sb, l1, fillY(sb, l1, fillFrom), p2);
                         P(sb, l0, fillY(sb, l0, fillFrom), p3);
                         qn(p0, p1, p2, n);
-                        verge.quad(p0, p1, p2, p3, n, p0[0]*0.05f, p1[0]*0.05f,
-                                   p0[2]*0.05f, p2[2]*0.05f);
+                        // ...UNLESS a registered portal hole owns this patch.
+                        // "Buried under the backfill and costs only triangles"
+                        // (above) stopped being true the day the GARAGE moved in
+                        // under the roofed span: this embankment follows ground()
+                        // — the CARVED field — so over the bay it re-drew, WITH
+                        // COLLISION, the exact rock band the tile mesher's hole
+                        // had just dropped, as a grass wedge crossing the shop
+                        // wall at truss height (found by capture 09_garage_lnss;
+                        // survived a 20 m hole-margin experiment, which is what
+                        // proved it was not the streamer's mesh). Same predicate,
+                        // same registry, so a bore with no rooms is byte-identical.
+                        const float cxq = (p0[0]+p1[0]+p2[0]+p3[0]) * 0.25f;
+                        const float czq = (p0[2]+p1[2]+p2[2]+p3[2]) * 0.25f;
+                        const float mYq = std::min(std::min(p0[1], p1[1]),
+                                                   std::min(p2[1], p3[1]));
+                        if (!terrainPortalHoleDrops(cxq, czq, mYq))
+                            verge.quad(p0, p1, p2, p3, n, p0[0]*0.05f, p1[0]*0.05f,
+                                       p0[2]*0.05f, p2[2]*0.05f);
                         if (fillY(sa, l1, fillFrom) <= ground(sa, l1) + 0.06f &&
                             fillY(sb, l1, fillFrom) <= ground(sb, l1) + 0.06f) break;
                     }
@@ -2470,6 +2845,14 @@ void TunnelCorridorWorld::shutdown(x3::rhi::IRenderDevice& device, x3::phys::IPh
 }
 
 void TunnelCorridorWorld::showcaseCamera(const TunnelRoute& route, int which, float cam[5]) const {
+    // Shot 8 — INSIDE THE LNS GARAGE. The pose was solved in build() while the
+    // bay was being emitted (only the rooms program knows which door won it).
+    // A bore with no garage falls back to the mid-bore frame instead of
+    // pointing a camera at rock.
+    if (which == 8) {
+        if (m_garageCamValid) { for (int k = 0; k < 5; ++k) cam[k] = m_garageCam[k]; return; }
+        which = 1;
+    }
     const float yawFwd  = std::atan2(route.dirZ, route.dirX);
     const float yawBack = yawFwd + 3.14159265f;
     // The road GRADES (up to kTcMaxGrade). A level camera inside a climbing bore
