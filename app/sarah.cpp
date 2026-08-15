@@ -80,7 +80,32 @@ void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
     //     locomotion. It carries NO aim/fire and NO death clip, so m_aimClip /
     //     m_deathClip stay -1 and she shoots from the locomotion pose (see driveAnim).
     //     That is a KNOWN art gap, not a wiring bug: bake an Aim + Death clip onto
-    //     AnnaCasual_anim.glb and both are picked up with ZERO code change. ----
+    //     AnnaCasual_anim.glb and both are picked up with ZERO code change.
+    //
+    // STATUS 2026-08-15 — ROOT CAUSE FOUND; DO NOT RE-RIG SARAH THROUGH MESHY.
+    //   Sarah.glb ALREADY carries a Meshy 24-joint skeleton (Hips/LeftUpLeg/.../
+    //   headfront — byte-identical in name AND order to JakeClone_player.glb and
+    //   the canon aliens). Feeding an ALREADY-MESHY-RIGGED mesh back through the
+    //   rigging endpoint DESTROYS it: her 49,976 tris came back as 208. The same
+    //   endpoint left canon_saurian (1 joint), OverLordEnforcer99 (19) and
+    //   BossTheSiren (20) intact, so the trigger is specifically re-rigging an
+    //   existing Meshy rig. 26 credits were spent proving this.
+    //   Three routes tried and all REJECTED, each verified by a grounded
+    //   floor+level-cam render against Sarah.glb's own rest pose as the control:
+    //     1. clips baked on the re-rig, merged onto her ORIGINAL mesh — legs fuse
+    //        into one column (that rig's rest orientations were fitted to the
+    //        208-tri wreck, so its rotations do not mean the same thing on her).
+    //     2. same, with per-bone translation/scale channels stripped and only
+    //        rotations + Hips translation kept — IDENTICAL result, so the
+    //        translations were never the culprit.
+    //     3. JakeClone_player.glb's 20 clips merged by bone name (the 7/27 route,
+    //        via tools/glb-merge-anims.mjs rather than the old Blender script) —
+    //        reproduces the 7/27 "DEFORMS her badly" exactly: she splays and
+    //        inflates. The 7/27 diagnosis was right.
+    //   What is NOT yet tried: authoring clips against HER rig (Blender, hand-
+    //   keyed or retargeted with a real rest-pose solve), or Meshy Smart Rig from
+    //   the web UI. Until one of those lands she stays a one-pose figure, and the
+    //   LIVE F7 path (AnnaCasual.glb) is unaffected — it has its own clips. ----
     std::string file = std::string(modelFile.empty() ? std::string_view("Sarah.glb")
                                                      : modelFile);
     {
