@@ -734,7 +734,7 @@ bool runFactoryAnnexSelfTest() {
             { 6, 56 },   // A MIXTURE ATRIUM: 6 stir arms; 48 rim studs + 8 river glow
             { 40, 15 },  // B INVENTION WORKS: 8 movers + 24 slats + 8 gizmos;
                          //   5 studs + 8 organ keys + centrifuge + maybe-panel
-            { 0, 0 },    // C (Task 9)
+            { 49, 4 },   // C FIZZ GALLERY: 40 bubbles + 9 fan blades; 4 collars
             { 0, 0 },    // D (Task 10)
             { 0, 0 },    // E (Task 11)
         };
@@ -814,6 +814,32 @@ bool runFactoryAnnexSelfTest() {
         }
         faCheck(moved && wrapped && onBelt,
                 "F5 conveyor slat scrolls, wraps, and never leaves the belt");
+    }
+
+    // ---- F6: Fizz Gallery bubbles RISE and WRAP at the ceiling (rise span
+    // 10 m at 1.1 m/s => a wrap inside 10 s; the bubble never leaves its column).
+    {
+        const AnnexRoom& rC = annex.room(2);
+        const uint32_t bub = rC.propEntFirst;                // column 0, bubble 0
+        bool rose = false, wrapped = false, inColumn = true;
+        float prevY = scene.get(bub).transform[13];
+        for (int i = 0; i < 60 * 10; ++i) {
+            annex.tick(dt, scene);
+            const float y = scene.get(bub).transform[13];
+            if (y > prevY + 1e-5f) rose = true;
+            if (y < prevY - 5.0f)  wrapped = true;           // the ceiling wrap
+            if (y < rC.baseY + 0.4f || y > rC.baseY + 11.0f) inColumn = false;
+            prevY = y;
+        }
+        faCheck(rose && wrapped && inColumn,
+                "F6 fizz bubbles rise, wrap at the ceiling, stay in the column");
+    }
+
+    // ---- F7: the low-grav zone latches (trigger 311; the HOST scales the
+    // jump impulse x1.8 off lowGravActive — wiring lives in host_factory.cpp).
+    {
+        annex.onTrigger((uint32_t)FactoryTrigger::FizzLowGrav);
+        faCheck(annex.lowGravActive(), "F7 fizz low-grav zone latches (311)");
     }
 
     // ---- F11: all 10 triggers registered with the exact 300-313 id map.

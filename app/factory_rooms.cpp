@@ -686,10 +686,147 @@ void tickRoomInvention(Scene& scene, AnnexRoom& room, float t) {
 }
 
 // ============================================================================
-// FLOOR C (y=28) — THE FIZZ GALLERY (Task 9): lands with its task.
+// FLOOR C (y=28) — THE FIZZ GALLERY (Task 9)
 // ============================================================================
-void buildRoomFizz     (FactoryRoomCtx& ctx, AnnexRoom& room) { (void)ctx; (void)room; }
-void tickRoomFizz      (Scene& scene, AnnexRoom& room, float t) { (void)scene; (void)room; (void)t; }
+// Four glass bubble columns (2 m dia, floor-to-ceiling) at local (+-11, +-11),
+// each with 10 rising emissive bubbles (mesh_prims HAS a real sphere —
+// makeUVSphere — so the plan's 6-box fallback is not needed; ONE shared unit
+// sphere, instanced 40x, per-bubble radius via basis scale). Bubble motion is
+// DETERMINISTIC in t (y = fmod(rise), XZ sine wobble), so tick() rebuilds each
+// transform from formula — no per-bubble state, no heap. Three 3-blade ceiling
+// fans at 0.6 rad/s. The low-grav zone is trigger 311 (Phase-2 shell) — the
+// host scales jump x1.8 while inside (verified wired in host_factory.cpp).
+constexpr float kFizzColPos[4][2] = {
+    { -11.0f, -11.0f }, { 11.0f, -11.0f }, { -11.0f, 11.0f }, { 11.0f, 11.0f },
+};
+constexpr float kFizzFanPos[3][2] = { { 0.0f, -12.0f }, { -11.0f, 5.0f }, { 11.0f, -3.0f } };
+constexpr int   kFizzBubbles = 10;          // per column
+constexpr float kFizzRise    = 1.1f;        // m/s (plan)
+constexpr float kFizzSpan    = 10.0f;       // rise span before the ceiling wrap
+constexpr float kFizzFanY    = 10.3f;       // fan hub above baseY
+// Bubble radius: deterministic per bubble index (tick re-derives it when it
+// rebuilds the scaled basis).
+inline float fizzBubbleR(int j) { return 0.13f + 0.045f * (float)(j % 5); }
+
+void buildRoomFizz(FactoryRoomCtx& ctx, AnnexRoom& room) {
+    Scene& s = ctx.scene;
+    const float ax = ctx.centerX, az = ctx.centerZ, y0 = room.baseY;
+    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "mw_metal_trim_b");
+    const SurfaceSet& sIron  = ctx.surf.get(ctx.device, "mw_metal_panels_a");
+
+    // ---- Glass columns (the real glass pipeline, near-clear) + base plinths.
+    for (int c = 0; c < 4; ++c) {
+        const float cx = ax + kFizzColPos[c][0], cz = az + kFizzColPos[c][1];
+        x3::prims::PrimMesh pm = x3::prims::makeCylinder(1.0f, 1.0f, 5.4f, 22);
+        Entity e;
+        e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                       pm.index.data(), (uint32_t)pm.index.size());
+        ctx.meshes.push_back(e.mesh);
+        e.baseColor[0] = 0.72f; e.baseColor[1] = 0.88f; e.baseColor[2] = 0.94f;
+        e.baseColor[3] = 1.0f;
+        e.transparent = true;
+        e.glass.opacity    = 0.05f;    // the bubbles must READ through it
+        e.glass.refraction = 0.010f;
+        e.glass.roughness  = 0.05f;
+        e.glass.specular   = 0.6f;
+        e.glass.tint[0] = 0.72f; e.glass.tint[1] = 0.88f; e.glass.tint[2] = 0.94f;
+        e.tag = (uint32_t)Tag::Static;
+        yawXform(e.transform, 0.0f, cx, y0 + 5.6f, cz);
+        s.add(e);
+        // Base plinth + top collar (brass), physics around the column.
+        addBox(ctx, cx, y0 + 0.25f, cz, 1.25f, 0.25f, 1.25f, 0.0f, &sIron, kDarkIron);
+        addBox(ctx, cx, y0 + 10.85f, cz, 1.2f, 0.15f, 1.2f, 0.0f, &sBrass, kBrassTint);
+        ctx.physics.addBox({ 1.05f, 5.5f, 1.05f }, { cx, y0 + 5.5f, cz }, 0.0f,
+                           x3::phys::Layer::Static);
+    }
+    // ---- Fan hubs + drop rods (static; the blades are the animated span).
+    for (int f = 0; f < 3; ++f) {
+        const float fx = ax + kFizzFanPos[f][0], fz = az + kFizzFanPos[f][1];
+        addBox(ctx, fx, y0 + kFizzFanY + 0.45f, fz, 0.10f, 0.35f, 0.10f, 0.0f,
+               &sBrass, kBrassTint);
+        addBox(ctx, fx, y0 + kFizzFanY, fz, 0.28f, 0.14f, 0.28f, 0.0f,
+               &sBrass, kBrassTint, 0.30f, kBrassGlow);
+    }
+
+    // ---- PROP SPAN: 40 bubbles (ONE shared sphere, scaled per instance),
+    // then 9 fan blades. Contiguous.
+    x3::prims::PrimMesh sph = x3::prims::makeUVSphere(10, 14);   // small: 40 instances
+    x3::rhi::MeshHandle sphMesh = ctx.device.createMesh(
+        sph.verts.data(), (uint32_t)sph.verts.size(),
+        sph.index.data(), (uint32_t)sph.index.size());
+    ctx.meshes.push_back(sphMesh);   // shared: pushed ONCE
+    room.propEntFirst = s.size();
+    for (int c = 0; c < 4; ++c) {
+        const float cx = ax + kFizzColPos[c][0], cz = az + kFizzColPos[c][1];
+        for (int j = 0; j < kFizzBubbles; ++j) {
+            const float r = fizzBubbleR(j);
+            const float xA[3] = { r, 0, 0 }, yA[3] = { 0, r, 0 }, zA[3] = { 0, 0, r };
+            const float by = y0 + 0.6f + ((float)j / kFizzBubbles) * kFizzSpan;
+            const bool white = (j % 3) == 0;
+            const float colW[3] = { 1.0f, 0.97f, 0.90f };
+            addShared(ctx, sphMesh, xA, yA, zA, cx, by, cz,
+                      white ? colW : room.accent, white ? 1.3f : 1.0f, nullptr);
+        }
+    }
+    for (int f = 0; f < 3; ++f) {
+        const float fx = ax + kFizzFanPos[f][0], fz = az + kFizzFanPos[f][1];
+        for (int b = 0; b < 3; ++b) {
+            // Blade authored with its mesh OFFSET from the origin (the hub):
+            // rotating the transform sweeps it around the hub.
+            x3::prims::PrimMesh pm = x3::prims::makeBox(1.1f, 0.04f, 0.32f,
+                                                        1.65f, 0.0f, 0.0f, 0.35f);
+            Entity e;
+            e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                           pm.index.data(), (uint32_t)pm.index.size());
+            ctx.meshes.push_back(e.mesh);
+            if (sBrass.ok) { e.tex = sBrass.albedo; e.normalTex = sBrass.normal; e.mrTex = sBrass.mr; }
+            e.baseColor[0] = kBrassTint[0]; e.baseColor[1] = kBrassTint[1];
+            e.baseColor[2] = kBrassTint[2]; e.baseColor[3] = 1.0f;
+            e.tag = (uint32_t)Tag::Prop;
+            yawXform(e.transform, (float)b * (kTwoPi / 3.0f), fx, y0 + kFizzFanY, fz);
+            s.add(e);
+        }
+    }
+    room.propEntCount = s.size() - room.propEntFirst;
+
+    // ---- GLOW SPAN: one amber fizz collar per column base ------------------
+    room.glowEntFirst = s.size();
+    for (int c = 0; c < 4; ++c)
+        addGlow(ctx, ax + kFizzColPos[c][0], y0 + 0.62f, az + kFizzColPos[c][1],
+                1.15f, 0.10f, 1.15f, 0.0f, room.accent, 1.2f);
+    room.glowEntCount = s.size() - room.glowEntFirst;
+}
+
+void tickRoomFizz(Scene& scene, AnnexRoom& room, float t) {
+    if (room.propEntCount == 0) return;
+    const float ax = room.centerX, az = room.centerZ, y0 = room.baseY;
+    // Bubbles: rise at 1.1 m/s, wrap at the ceiling, gentle XZ wobble. Fully
+    // deterministic in t — the transform is REBUILT from formula each tick
+    // (scaled basis re-derived from the per-index radius).
+    for (int c = 0; c < 4; ++c) {
+        const float cx = ax + kFizzColPos[c][0], cz = az + kFizzColPos[c][1];
+        for (int j = 0; j < kFizzBubbles; ++j) {
+            Entity& e = scene.get(room.propEntFirst + (uint32_t)(c * kFizzBubbles + j));
+            const float r  = fizzBubbleR(j);
+            const float ph = (float)j * 1.7f + (float)c * 0.9f;
+            const float by = y0 + 0.6f + std::fmod(
+                ((float)j / kFizzBubbles) * kFizzSpan + kFizzRise * t, kFizzSpan);
+            const float wx = 0.22f * std::sin(t * 1.3f + ph);
+            const float wz = 0.22f * std::cos(t * 1.1f + ph * 1.3f);
+            const float xA[3] = { r, 0, 0 }, yA[3] = { 0, r, 0 }, zA[3] = { 0, 0, r };
+            makeXform(e.transform, xA, yA, zA, cx + wx, by, cz + wz);
+        }
+    }
+    // Fans: 0.6 rad/s, blades 120 degrees apart (rotation-basis poke).
+    for (int f = 0; f < 3; ++f)
+        for (int b = 0; b < 3; ++b)
+            pokeYaw(scene.get(room.propEntFirst + 40u + (uint32_t)(f * 3 + b)).transform,
+                    t * 0.6f + (float)b * (kTwoPi / 3.0f) + (float)f * 0.5f);
+    // Collars: a slow amber fizz-breathe.
+    for (uint32_t i = 0; i < room.glowEntCount; ++i)
+        scene.get(room.glowEntFirst + i).emissive[3] =
+            1.0f + 0.4f * std::sin(t * 0.7f + (float)i * 1.4f);
+}
 
 // ============================================================================
 // FLOOR D (y=41) — THE SORTING HALL (Task 10): lands with its task.
