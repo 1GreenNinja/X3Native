@@ -35,7 +35,11 @@
 
 #include "mesh_prims.h"
 
+#include "engine/core/x3_log.h"
+
 #include <cmath>
+#include <cstdio>
+#include <string>
 
 namespace x3::game {
 
@@ -44,10 +48,17 @@ namespace {
 constexpr float kTwoPi = 6.2831853f;
 
 // ---- Palette (matches factory_annex.cpp's shell constants) -----------------
-constexpr float kCopperTint[3] = { 0.74f, 0.40f, 0.26f };   // candy-copper vats
-constexpr float kBrassTint[3]  = { 0.69f, 0.55f, 0.34f };   // brass #b08d57
+// Phase 5: these are MULTIPLIERS over curated fa_* albedos now. fa_copper_aged
+// already carries its orange patina in the albedo, so the copper tint is a
+// light warm lift (the old 0.74/0.40/0.26 flat tint over it went mud);
+// fa_brass_worn is a neutral bright metal, so the brass hue stays in the tint.
+constexpr float kCopperTint[3] = { 1.00f, 0.88f, 0.78f };   // over fa_copper_aged
+constexpr float kBrassTint[3]  = { 0.69f, 0.55f, 0.34f };   // brass #b08d57 over fa_brass_worn
 constexpr float kBrassGlow[3]  = { 1.00f, 0.78f, 0.42f };   // warm brass emissive
-constexpr float kDarkIron[3]   = { 0.15f, 0.13f, 0.18f };   // aubergine iron
+constexpr float kDarkIron[3]   = { 0.15f, 0.13f, 0.18f };   // aubergine iron (dark furniture)
+constexpr float kEnamelTint[3] = { 1.00f, 0.94f, 0.80f };   // cream over fa_enamel_cream
+constexpr float kWoodTint[3]   = { 0.95f, 0.85f, 0.74f };   // warm over fa_wood_planks
+constexpr float kArchTint[3]   = { 1.00f, 0.82f, 0.62f };   // Glimvale arch: grey stone -> sandstone
 
 // Column-major basis+translation (the rifthub makeXform, verbatim convention).
 inline void makeXform(float m[16],
@@ -159,8 +170,9 @@ uint32_t addRingGlow(FactoryRoomCtx& ctx, float ringX, float y, float ringZ,
     e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
                                    pm.index.data(), (uint32_t)pm.index.size());
     ctx.meshes.push_back(e.mesh);
-    e.baseColor[0] = glow[0] * 0.25f; e.baseColor[1] = glow[1] * 0.25f;
-    e.baseColor[2] = glow[2] * 0.25f; e.baseColor[3] = 1.0f;
+    e.baseColor[0] = glow[0] * 0.14f; e.baseColor[1] = glow[1] * 0.14f;
+    e.baseColor[2] = glow[2] * 0.14f; e.baseColor[3] = 1.0f;   // darker body: the
+    // stud reads as a lit jewel on the metal, not a pastel taffy chunk
     e.emissive[0] = glow[0]; e.emissive[1] = glow[1]; e.emissive[2] = glow[2];
     e.emissive[3] = emStrength;
     e.tag = (uint32_t)Tag::Prop;
@@ -171,7 +183,131 @@ uint32_t addRingGlow(FactoryRoomCtx& ctx, float ringX, float y, float ringZ,
     return ctx.scene.add(e);
 }
 
+// ============================================================================
+// Phase-5 GLB authoring (Glimvale dressing + StarForge hero hooks). One
+// build-lifetime drawable cache per annex build (lives on FactoryArtHooks via
+// the annex's m_models registry + this TU-local cache keyed per build) — each
+// GLB is loaded ONCE, then instanced per placement; a missing file is recorded
+// once so 30 flower placements on an asset-less clone log one warn, not 30.
+// ============================================================================
+struct GlbCacheEntry {
+    std::string path;
+    bool ok = false;
+    std::vector<x3::asset::ModelDrawable> draws;
+};
+// Cleared by FactoryAnnex::build via factoryGlbCacheReset() so a rebuild
+// (self-test F15 builds twice) starts fresh — the cached meshIds are only
+// valid for the build whose Models are still loaded.
+std::vector<GlbCacheEntry> g_glbCache;
+
+const GlbCacheEntry& glbLookup(FactoryRoomCtx& ctx, const char* relPath) {
+    for (const GlbCacheEntry& e : g_glbCache)
+        if (e.path == relPath) return e;
+    GlbCacheEntry e;
+    e.path = relPath;
+    if (ctx.art && ctx.art->loader) {
+        x3::asset::Model m = ctx.art->loader->load(relPath);
+        if (m.ok) {
+            e.draws = x3::asset::makeDrawables(m);
+            e.ok = !e.draws.empty();
+            ctx.art->models->push_back(std::move(m));   // annex unloads at shutdown
+        }
+    }
+    g_glbCache.push_back(std::move(e));
+    return g_glbCache.back();
+}
+
+// Author one Scene entity per drawable of `relPath` at obj = T(x,y,z) * R_y(yaw)
+// * S(scale) (each drawable's baked nodeTransform rides on top — the M2 loader
+// convention). Loader-owned meshes are NOT pushed into ctx.meshes; the annex
+// unloads the Models instead. Returns the entity count (0 = missing/failed).
+// When outXf != null the per-drawable node transforms are appended (16 floats
+// each) so tick() can re-pose animated heroes: entity = liveObj * outXf[i].
+int addModelEntities(FactoryRoomCtx& ctx, const char* relPath,
+                     float x, float y, float z, float yaw, float scale,
+                     bool isProp, std::vector<float>* outXf = nullptr,
+                     const float* tint = nullptr) {
+    const GlbCacheEntry& g = glbLookup(ctx, relPath);
+    if (!g.ok) return 0;
+    const float c = std::cos(yaw), sn = std::sin(yaw), s = scale;
+    const float obj[16] = { c*s, 0, -sn*s, 0,  0, s, 0, 0,  sn*s, 0, c*s, 0,
+                            x, y, z, 1 };
+    int n = 0;
+    for (const auto& d : g.draws) {
+        if (!d.meshId) continue;
+        Entity e;
+        e.mesh        = x3::rhi::MeshHandle{ d.meshId };
+        e.tex         = x3::rhi::TextureHandle{ d.baseColorTexId };
+        e.normalTex   = x3::rhi::TextureHandle{ d.normalTexId };
+        e.mrTex       = x3::rhi::TextureHandle{ d.mrTexId };
+        e.emissiveTex = x3::rhi::TextureHandle{ d.emissiveTexId };
+        for (int i = 0; i < 4; ++i) e.baseColor[i] = d.baseColorFactor[i];
+        if (tint) {   // hue nudge over the authored texture (e.g. the grey
+                      // stone arch warmed toward sandstone)
+            e.baseColor[0] *= tint[0]; e.baseColor[1] *= tint[1];
+            e.baseColor[2] *= tint[2];
+        }
+        e.alphaBlend = d.alphaBlend;
+        e.tag = (uint32_t)(isProp ? Tag::Prop : Tag::Static);
+        x3::asset::mulMat4(obj, d.nodeTransform, e.transform);
+        ctx.scene.add(e);
+        if (outXf) outXf->insert(outXf->end(), d.nodeTransform, d.nodeTransform + 16);
+        ++n;
+    }
+    return n;
+}
+
+// Glimvale set dressing (tallied, never warns per-placement — an asset-less
+// clone builds clean with dressEntities == 0).
+int dress(FactoryRoomCtx& ctx, const char* relPath,
+          float x, float y, float z, float yaw = 0.0f, float scale = 1.0f,
+          const float* tint = nullptr) {
+    const int n = addModelEntities(ctx, relPath, x, y, z, yaw, scale, false,
+                                   nullptr, tint);
+    if (ctx.art) ctx.art->dressEntities += (uint32_t)n;
+    return n;
+}
+
+// A little deterministic hash jitter for organic dressing (flowers/grass) —
+// no RNG dependency, stable across builds (deterministic captures).
+inline float jit(int i, int salt) {
+    const float v = std::sin((float)(i * 37 + salt * 101) * 12.9898f) * 43758.547f;
+    return v - std::floor(v);   // [0,1)
+}
+
 } // namespace
+
+// Called by FactoryAnnex::build() before the room hooks run: the drawable
+// cache from a previous build points at unloaded Models' mesh ids.
+void factoryGlbCacheReset() { g_glbCache.clear(); }
+
+// STARFORGE HERO HOOK (load-if-present; the barrels.cpp Barrel.glb pattern).
+// Returns >0 (entities authored, heroPresent++) when the forge has delivered
+// the GLB; 0 (heroFallback++, LOG-WARN with the exact probed path so the forge
+// knows the contract) when the caller must build its procedural fallback.
+// When the forge delivers, the hero auto-appears on rebuild — zero code change.
+// EXTERNAL linkage: the self-test (factory_annex.cpp F16) probes both branches
+// directly.
+int heroHook(FactoryRoomCtx& ctx, const char* relPath, const char* what,
+             float x, float y, float z, float yaw, float scale,
+             bool isProp, std::vector<float>* outXf = nullptr) {
+    const int n = addModelEntities(ctx, relPath, x, y, z, yaw, scale, isProp, outXf);
+    if (!ctx.art) return n;
+    if (n > 0) {
+        ctx.art->heroPresent += 1;
+        char b[192];
+        std::snprintf(b, sizeof(b), "[factory] hero %s <- %s (%d prim entities)",
+                      what, relPath, n);
+        x3::logInfo(b);
+    } else {
+        ctx.art->heroFallback += 1;
+        // Once per path per build the loader remembers the miss, but the WARN
+        // fires per hook site so the forge sees every open slot.
+        x3::logWarn(std::string("[factory] hero ") + what + " not delivered (" +
+                    relPath + ") — procedural fallback stands in");
+    }
+    return n;
+}
 
 // ============================================================================
 // FLOOR A (y=2) — THE MIXTURE ATRIUM (Task 7)
@@ -199,9 +335,10 @@ constexpr int   kMixRimN   = 8;       // rim glow studs per vat
 void buildRoomMixture(FactoryRoomCtx& ctx, AnnexRoom& room) {
     Scene& s = ctx.scene;
     const float ax = ctx.centerX, az = ctx.centerZ, y0 = room.baseY;
-    const SurfaceSet& sCopper = ctx.surf.get(ctx.device, "mw_metal_trim_a");
-    const SurfaceSet& sBrass  = ctx.surf.get(ctx.device, "mw_metal_trim_b");
+    const SurfaceSet& sCopper = ctx.surf.get(ctx.device, "fa_copper_aged");
+    const SurfaceSet& sBrass  = ctx.surf.get(ctx.device, "fa_brass_worn");
     const SurfaceSet& sIron   = ctx.surf.get(ctx.device, "mw_metal_panels_a");
+    const SurfaceSet& sWood   = ctx.surf.get(ctx.device, "fa_wood_planks");
 
     const float rx0 = ax + FactoryAnnex::kRiverX0, rx1 = ax + FactoryAnnex::kRiverX1;
     const float rcx = (rx0 + rx1) * 0.5f, rhx = (rx1 - rx0) * 0.5f;
@@ -210,14 +347,17 @@ void buildRoomMixture(FactoryRoomCtx& ctx, AnnexRoom& room) {
     // ---- The river channel: bed + banks + end culverts (all physical) ------
     // Bed: a full-channel slab whose top is the wading floor (water is ~0.9 m
     // deep — you can fall in, and you can climb back out on the east steps).
-    addBox(ctx, rcx, bedY - 0.30f, az, rhx, 0.30f, 20.0f, 0.0f, &sIron, kDarkIron);
+    // Phase 5: the bed is CHOCOLATE — under a metre of raspberry syrup the
+    // old dark-iron tint read as a black pit.
+    constexpr float kCocoa[3] = { 0.34f, 0.19f, 0.13f };
+    addBox(ctx, rcx, bedY - 0.30f, az, rhx, 0.30f, 20.0f, 0.0f, &sIron, kCocoa);
     ctx.physics.addBox({ rhx, 0.30f, 20.0f }, { rcx, bedY - 0.30f, az },
                        0.0f, x3::phys::Layer::Static);
     // Banks: bed-to-slab walls on both sides (the slab itself covers 1.5..2.0).
     for (int sgn = -1; sgn <= 1; sgn += 2) {
         const float bx = (sgn < 0) ? rx0 - 0.15f : rx1 + 0.15f;
         const float hy = (1.5f - bedY) * 0.5f, cy = (1.5f + bedY) * 0.5f;
-        addBox(ctx, bx, cy, az, 0.15f, hy, 20.0f, 0.0f, &sIron, kDarkIron);
+        addBox(ctx, bx, cy, az, 0.15f, hy, 20.0f, 0.0f, &sIron, kCocoa);
         ctx.physics.addBox({ 0.15f, hy, 20.0f }, { bx, cy, az },
                            0.0f, x3::phys::Layer::Static);
     }
@@ -244,8 +384,9 @@ void buildRoomMixture(FactoryRoomCtx& ctx, AnnexRoom& room) {
         }
     }
 
-    // ---- Two brass footbridges over the river (z = -10 / +10): three stepped
-    // deck boxes each (0.3 m risers — walkable without ramp physics) + rails.
+    // ---- Two footbridges over the river (z = -10 / +10): DARK WOOD PLANK
+    // decks (Phase 5 art direction) on three stepped boxes each (0.3 m risers
+    // — walkable without ramp physics) + brass rails.
     for (int b = 0; b < 2; ++b) {
         const float bz = az + (b == 0 ? -10.0f : 10.0f);
         struct Deck { float cx, topY, hx; };
@@ -256,74 +397,162 @@ void buildRoomMixture(FactoryRoomCtx& ctx, AnnexRoom& room) {
         };
         for (const Deck& d : decks) {
             addBox(ctx, d.cx, d.topY - 0.15f, bz, d.hx, 0.15f, 1.3f, 0.0f,
-                   &sBrass, kBrassTint);
+                   &sWood, kWoodTint, 0.0f, nullptr, false, 0.45f);
             ctx.physics.addBox({ d.hx, 0.15f, 1.3f }, { d.cx, d.topY - 0.15f, bz },
                                0.0f, x3::phys::Layer::Static);
         }
-        // Handrails: one warm-glow strip per side, full span (visual only).
-        for (int sgn = -1; sgn <= 1; sgn += 2)
-            addBox(ctx, rcx, 3.35f, bz + sgn * 1.25f, rhx + 1.6f, 0.06f, 0.06f,
-                   0.0f, &sBrass, kBrassTint, 0.30f, kBrassGlow);
+        // Brass rails: worn-brass PBR posts + a faint warm-glow thread per
+        // side (the glow ACCENTS the rail, it is not the rail).
+        for (int sgn = -1; sgn <= 1; sgn += 2) {
+            addBox(ctx, rcx, 3.35f, bz + sgn * 1.25f, rhx + 1.6f, 0.05f, 0.05f,
+                   0.0f, &sBrass, kBrassTint, 0.14f, kBrassGlow);
+            for (int p = -1; p <= 1; ++p)   // crown rail posts (feet ON the deck)
+                addBox(ctx, rcx + (float)p * 2.0f, 2.975f, bz + sgn * 1.25f,
+                       0.045f, 0.375f, 0.045f, 0.0f, &sBrass, kBrassTint);
+        }
     }
 
-    // ---- Six copper vats (bodies + syrup tops + physics) --------------------
+    // ---- Six copper vats: STARFORGE HERO HOOK first (FactoryProps/
+    // CopperVat.glb — real turned-copper body when the forge delivers), else
+    // the Phase-3 tangent-box cylinder re-skinned in AGED-COPPER PBR. The
+    // physics block, stir arm and rim-stud ring are shared by both branches.
     for (int v = 0; v < 6; ++v) {
         const float vx = ax + kVatPos[v][0], vz = az + kVatPos[v][1];
-        for (int i = 0; i < 10; ++i) {   // 10-segment tangent-box cylinder
-            const float a = (i / 10.0f) * kTwoPi;
-            const float c = std::cos(a), sn = std::sin(a);
-            x3::prims::PrimMesh pm = x3::prims::makeBox(0.47f, kVatH * 0.5f, 0.12f,
-                                                        0, 0, 0, 0.35f);
-            Entity e;
-            e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
-                                           pm.index.data(), (uint32_t)pm.index.size());
-            ctx.meshes.push_back(e.mesh);
-            if (sCopper.ok) { e.tex = sCopper.albedo; e.normalTex = sCopper.normal; e.mrTex = sCopper.mr; }
-            e.baseColor[0] = kCopperTint[0]; e.baseColor[1] = kCopperTint[1];
-            e.baseColor[2] = kCopperTint[2]; e.baseColor[3] = 1.0f;
-            e.tag = (uint32_t)Tag::Static;
-            const float xA[3] = { -sn, 0, c }, yA[3] = { 0, 1, 0 }, zA[3] = { -c, 0, -sn };
-            makeXform(e.transform, xA, yA, zA,
-                      vx + kVatR * c, y0 + kVatH * 0.5f, vz + kVatR * sn);
-            s.add(e);
-        }
-        // Syrup surface: a glowing accent disc just under the rim (static glow —
-        // the ANIMATED glow lives in the rim ring span below).
-        {
-            x3::prims::PrimMesh pm = x3::prims::makeCylinder(1.35f, 1.35f, 0.06f, 20);
-            Entity e;
-            e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
-                                           pm.index.data(), (uint32_t)pm.index.size());
-            ctx.meshes.push_back(e.mesh);
-            e.baseColor[0] = room.accent[0] * 0.35f; e.baseColor[1] = room.accent[1] * 0.35f;
-            e.baseColor[2] = room.accent[2] * 0.35f; e.baseColor[3] = 1.0f;
-            e.emissive[0] = room.accent[0]; e.emissive[1] = room.accent[1];
-            e.emissive[2] = room.accent[2]; e.emissive[3] = 0.55f;
-            e.tag = (uint32_t)Tag::Static;
-            const float xA[3] = { 1, 0, 0 }, yA[3] = { 0, 1, 0 }, zA[3] = { 0, 0, 1 };
-            makeXform(e.transform, xA, yA, zA, vx, y0 + kVatH - 0.35f, vz);
-            s.add(e);
+        const bool hero = heroHook(ctx, "FactoryProps/CopperVat.glb", "CopperVat",
+                                   vx, y0, vz, (float)v * 1.047f, 1.0f,
+                                   /*isProp*/false) > 0;
+        if (!hero) {
+            for (int i = 0; i < 10; ++i) {   // 10-segment tangent-box cylinder
+                const float a = (i / 10.0f) * kTwoPi;
+                const float c = std::cos(a), sn = std::sin(a);
+                x3::prims::PrimMesh pm = x3::prims::makeBox(0.47f, kVatH * 0.5f, 0.12f,
+                                                            0, 0, 0, 0.35f);
+                Entity e;
+                e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                               pm.index.data(), (uint32_t)pm.index.size());
+                ctx.meshes.push_back(e.mesh);
+                if (sCopper.ok) { e.tex = sCopper.albedo; e.normalTex = sCopper.normal; e.mrTex = sCopper.mr; }
+                e.baseColor[0] = kCopperTint[0]; e.baseColor[1] = kCopperTint[1];
+                e.baseColor[2] = kCopperTint[2]; e.baseColor[3] = 1.0f;
+                e.tag = (uint32_t)Tag::Static;
+                const float xA[3] = { -sn, 0, c }, yA[3] = { 0, 1, 0 }, zA[3] = { -c, 0, -sn };
+                makeXform(e.transform, xA, yA, zA,
+                          vx + kVatR * c, y0 + kVatH * 0.5f, vz + kVatR * sn);
+                s.add(e);
+            }
+            // Brass rim collar caps the segment tops (the raw box ends read
+            // graybox from the bridges — the collar finishes the silhouette).
+            {
+                x3::prims::PrimMesh pm = x3::prims::makeTorus(kVatR + 0.02f, 0.09f, 28, 10);
+                Entity e;
+                e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                               pm.index.data(), (uint32_t)pm.index.size());
+                ctx.meshes.push_back(e.mesh);
+                if (sBrass.ok) { e.tex = sBrass.albedo; e.normalTex = sBrass.normal; e.mrTex = sBrass.mr; }
+                e.baseColor[0] = kBrassTint[0]; e.baseColor[1] = kBrassTint[1];
+                e.baseColor[2] = kBrassTint[2]; e.baseColor[3] = 1.0f;
+                e.tag = (uint32_t)Tag::Static;
+                const float xA[3] = { 1, 0, 0 }, yA[3] = { 0, 0, -1 }, zA[3] = { 0, 1, 0 };
+                makeXform(e.transform, xA, yA, zA, vx, y0 + kVatH, vz);
+                s.add(e);
+            }
+            // Syrup surface just under the rim — raspberry glow WITHIN the vat,
+            // restrained (warm <= 0.45; the old 0.55 disc read as a pink light).
+            {
+                x3::prims::PrimMesh pm = x3::prims::makeCylinder(1.35f, 1.35f, 0.06f, 20);
+                Entity e;
+                e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                               pm.index.data(), (uint32_t)pm.index.size());
+                ctx.meshes.push_back(e.mesh);
+                e.baseColor[0] = room.accent[0] * 0.30f; e.baseColor[1] = room.accent[1] * 0.30f;
+                e.baseColor[2] = room.accent[2] * 0.30f; e.baseColor[3] = 1.0f;
+                e.emissive[0] = room.accent[0]; e.emissive[1] = room.accent[1];
+                e.emissive[2] = room.accent[2]; e.emissive[3] = 0.42f;
+                e.tag = (uint32_t)Tag::Static;
+                const float xA[3] = { 1, 0, 0 }, yA[3] = { 0, 1, 0 }, zA[3] = { 0, 0, 1 };
+                makeXform(e.transform, xA, yA, zA, vx, y0 + kVatH - 0.35f, vz);
+                s.add(e);
+            }
         }
         // Physics: one square-footprint block per vat (climb-proof, walk-solid).
         ctx.physics.addBox({ kVatR, kVatH * 0.5f, kVatR },
                            { vx, y0 + kVatH * 0.5f, vz }, 0.0f,
                            x3::phys::Layer::Static);
-        // Canopy drop-pipe into the vat (visual only, overhead).
+        // Canopy drop-pipe into the vat (aged copper, visual only, overhead).
         addBox(ctx, vx, (y0 + kVatH + 11.3f) * 0.5f, vz,
                0.16f, (11.3f - kVatH) * 0.5f + 0.4f, 0.16f, 0.0f,
                &sCopper, kCopperTint);
     }
 
-    // ---- Pipe canopy: a brass square RINGING the center at y ~+11.5 + two
-    // outer runs (visual only — well above head height).
+    // ---- Pipe canopy: an AGED-COPPER square RINGING the center at y ~+11.5
+    // + two outer runs (Phase 5: copper PBR throughout; visual only, overhead).
     {
         const float py = y0 + 9.5f;
-        addBox(ctx, ax, py, az + 5.0f, 18.0f, 0.25f, 0.25f, 0.0f, &sBrass, kBrassTint);
-        addBox(ctx, ax, py, az - 5.0f, 18.0f, 0.25f, 0.25f, 0.0f, &sBrass, kBrassTint);
-        addBox(ctx, ax + 5.0f, py, az, 0.25f, 0.25f, 18.0f, 0.0f, &sBrass, kBrassTint);
-        addBox(ctx, ax - 5.0f, py, az, 0.25f, 0.25f, 18.0f, 0.0f, &sBrass, kBrassTint);
+        addBox(ctx, ax, py, az + 5.0f, 18.0f, 0.25f, 0.25f, 0.0f, &sCopper, kCopperTint);
+        addBox(ctx, ax, py, az - 5.0f, 18.0f, 0.25f, 0.25f, 0.0f, &sCopper, kCopperTint);
+        addBox(ctx, ax + 5.0f, py, az, 0.25f, 0.25f, 18.0f, 0.0f, &sCopper, kCopperTint);
+        addBox(ctx, ax - 5.0f, py, az, 0.25f, 0.25f, 18.0f, 0.0f, &sCopper, kCopperTint);
         addBox(ctx, ax, py + 0.8f, az + 12.0f, 18.0f, 0.22f, 0.22f, 0.0f, &sCopper, kCopperTint);
         addBox(ctx, ax, py + 0.8f, az - 12.0f, 18.0f, 0.22f, 0.22f, 0.0f, &sCopper, kCopperTint);
+        // Brass junction collars where the ring meets the outer runs — pipe
+        // hardware, not floating boxes.
+        for (int sgn = -1; sgn <= 1; sgn += 2) {
+            addBox(ctx, ax + 5.0f, py, az + sgn * 5.0f, 0.34f, 0.34f, 0.34f, 0.0f,
+                   &sBrass, kBrassTint);
+            addBox(ctx, ax - 5.0f, py, az + sgn * 5.0f, 0.34f, 0.34f, 0.34f, 0.0f,
+                   &sBrass, kBrassTint);
+        }
+    }
+
+    // ---- GLIMVALE DRESSING (Phase 5): the river banks bloom — sunflower
+    // stands + blue-flower plants down both banks with low pink/red/yellow
+    // blooms sunk into the deck seams (the kit's grass/wheat cards ship as
+    // UNTINTED alpha masks — shader-tinted in Unity, black-and-white here —
+    // so the garden is built from the PLANTS, which carry a real painted
+    // atlas). Crates + a barrel in the north-east work corner, twin lamps at
+    // the bridge heads, an arch framing the east walk. All Static, ringing
+    // the center per the shell law.
+    {
+        const char* lowBloom[3] = { "Glimvale/SM_Pink_Flower.glb",
+                                    "Glimvale/SM_Red_Flower.glb",
+                                    "Glimvale/SM_Yellow_Flower.glb" };
+        for (int i = 0; i < 9; ++i) {   // west bank: between the wall and the channel
+            const float gz = az - 16.0f + 4.0f * (float)i + 1.6f * jit(i, 1);
+            const float gx = rx0 - 0.9f - 1.6f * jit(i, 2);
+            dress(ctx, "Glimvale/SM_Blue_Flower.glb", gx, y0, gz, jit(i, 3) * kTwoPi,
+                  1.4f + 0.5f * jit(i, 12));
+            // Low bloom sunk so its floating head reads as ground cover.
+            dress(ctx, lowBloom[i % 3], gx + 0.35f, y0 - 0.11f, gz + 0.25f,
+                  jit(i, 4) * kTwoPi, 1.3f);
+            if (i % 3 == 1)
+                dress(ctx, "Glimvale/SM_Sunflower.glb", gx - 0.4f, y0, gz - 0.5f,
+                      jit(i, 5) * kTwoPi);
+        }
+        for (int i = 0; i < 7; ++i) {   // east bank: along the vat walk
+            const float gz = az - 13.0f + 4.3f * (float)i + 1.2f * jit(i, 6);
+            const float gx = rx1 + 0.85f + 1.1f * jit(i, 7);
+            dress(ctx, "Glimvale/SM_Blue_Flower.glb", gx, y0, gz, jit(i, 8) * kTwoPi,
+                  1.3f + 0.5f * jit(i, 13));
+            dress(ctx, lowBloom[(i + 1) % 3], gx + 0.3f, y0 - 0.11f, gz - 0.3f,
+                  jit(i, 9) * kTwoPi, 1.3f);
+        }
+        dress(ctx, "Glimvale/SM_Sunflower.glb", rx0 - 0.6f, y0, az - 15.6f, 0.7f);
+        dress(ctx, "Glimvale/SM_Sunflower.glb", rx1 + 0.7f, y0, az + 15.8f, 2.4f);
+        dress(ctx, "Glimvale/SM_Sunflower.glb", rcx - 2.0f, y0, az + 18.4f, 1.1f);
+        dress(ctx, "Glimvale/SM_Sunflower.glb", rcx + 2.4f, y0, az - 18.4f, 2.8f);
+        // NE work corner: crate stack + barrel (one catch-all physics block).
+        dress(ctx, "Glimvale/SM_Stylized_Box_var2.glb", ax + 17.2f, y0 + 0.35f, az + 17.0f, 0.3f);
+        dress(ctx, "Glimvale/SM_Stylized_Box_var1.glb", ax + 16.6f, y0 + 0.25f, az + 15.6f, 1.2f);
+        dress(ctx, "Glimvale/SM_Stylized_Box.glb",      ax + 17.6f, y0 + 0.70f, az + 16.9f, 0.9f);
+        dress(ctx, "Glimvale/SM_Stylized_Barrel.glb",   ax + 15.4f, y0, az + 17.6f, 0.0f);
+        ctx.physics.addBox({ 1.6f, 0.6f, 1.5f }, { ax + 16.6f, y0 + 0.6f, az + 16.6f },
+                           0.0f, x3::phys::Layer::Static);
+        // Bridge-head lamps (east side) + the east-walk arch.
+        dress(ctx, "Glimvale/SM_Stylized_Lamp_A.glb", rx1 + 1.6f, y0, az - 10.0f, 1.5708f);
+        dress(ctx, "Glimvale/SM_Stylized_Lamp_A.glb", rx1 + 1.6f, y0, az + 10.0f, 1.5708f);
+        // The arch's stone atlas is grey — warm it toward sandstone.
+        dress(ctx, "Glimvale/SM_Stylized_Arch.glb", ax + 6.0f, y0, az, 0.0f, 0.85f,
+              kArchTint);
     }
 
     // ---- PROP SPAN: the six stir arms (contiguous; tick yaws them in place).
@@ -345,15 +574,16 @@ void buildRoomMixture(FactoryRoomCtx& ctx, AnnexRoom& room) {
                         (i / (float)kMixRimN) * kTwoPi,
                         0.30f, 0.05f, 0.08f, room.accent, 1.1f);
     }
-    // River under-glow: emissive strips on the bed, BELOW the water surface —
-    // the raspberry river glows from within (pulse 0.18 Hz in tick()).
-    // (Deep-red strips, not the pink accent: under ~1 m of raspberry water the
-    // accent's green/blue leak white-clipped the channel on the first capture.)
+    // River under-glow: 8 NARROW RIBBONS running WITH the flow, staggered
+    // across the channel, below the surface — glowing veins IN the syrup.
+    // (The Phase-3 full-width slabs read as a pink lightbox under the water —
+    // the exact neon-slab failure the Phase-5 art direction bans.)
     constexpr float kRiverGlowCol[3] = { 0.85f, 0.08f, 0.26f };
     for (int i = 0; i < 8; ++i) {
-        const float gz = az - 17.5f + 5.0f * (float)i;
-        addGlow(ctx, rcx, bedY + 0.10f, gz, rhx - 1.5f, 0.05f, 0.9f, 0.0f,
-                kRiverGlowCol, 0.55f);
+        const float gz = az - 15.5f + 4.5f * (float)i + 1.3f * jit(i, 30);
+        const float gx = rcx + ((i & 1) ? 2.1f : -1.9f) + 1.4f * (jit(i, 31) - 0.5f);
+        addGlow(ctx, gx, bedY + 0.10f, gz, 0.28f, 0.04f, 2.1f, 0.35f * jit(i, 32),
+                kRiverGlowCol, 0.30f);
     }
     room.glowEntCount = s.size() - room.glowEntFirst;
 
@@ -362,19 +592,30 @@ void buildRoomMixture(FactoryRoomCtx& ctx, AnnexRoom& room) {
         auto& wp = *ctx.river;
         wp.enabled    = true;
         wp.seaLevel   = FactoryAnnex::kRiverSurfY;
-        wp.amplitude  = 0.05f;      // syrup, not surf
-        wp.steepness  = 0.30f;
-        wp.waveLength = 2.8f;
-        wp.speed      = 0.45f;
-        // Deep raspberry syrup — the pale first-cut tints read washed-out
-        // cream at glancing angles (sky reflection dominates); keep both
-        // colors saturated and the glints modest so the sea stays CANDY.
-        wp.deepColor[0]    = 0.20f; wp.deepColor[1]    = 0.010f; wp.deepColor[2]    = 0.060f;
-        wp.shallowColor[0] = 0.42f; wp.shallowColor[1] = 0.06f;  wp.shallowColor[2] = 0.18f;
+        // NEAR-FLAT heavy syrup: steep Gerstner normals were tilting every
+        // facet into the grazing band, so the whole channel MIRRORED the sky
+        // and rendered bubblegum — flat syrup keeps the facets face-on, which
+        // is where the raspberry-chocolate body color lives.
+        wp.amplitude  = 0.022f;
+        wp.steepness  = 0.10f;
+        wp.waveLength = 5.5f;
+        wp.speed      = 0.35f;
+        // Phase-5 art direction: deeper raspberry-CHOCOLATE swirl. These are
+        // MUCH darker than they look — the water pass sits pre-tonemap and
+        // the channel is shallow (85% shallowColor), so ~0.06-linear lands as
+        // a deep plum body on screen with cream reflection swirls (probed
+        // through green/dark calibration shots; 0.28-linear rendered candy-
+        // floss pink).
+        wp.deepColor[0]    = 0.028f; wp.deepColor[1]    = 0.008f; wp.deepColor[2]    = 0.006f;
+        wp.shallowColor[0] = 0.060f; wp.shallowColor[1] = 0.007f; wp.shallowColor[2] = 0.020f;
         // Sun matches applyAtmosphere's toffee-dusk sun.
         wp.sunDir[0] = -0.25f; wp.sunDir[1] = 0.72f; wp.sunDir[2] = 0.35f;
-        wp.specular = 3.5f;
-        wp.fresnel  = 0.02f;
+        wp.specular = 1.8f;
+        wp.fresnel  = 0.010f;
+        // The far patch fades into COCOA, not the toffee sky — from the glass
+        // curtain the outside reads as the confection sea, not milk (the first
+        // Phase-5 capture showed the glancing sky-fade washing it white).
+        wp.horizonColor[0] = 0.085f; wp.horizonColor[1] = 0.035f; wp.horizonColor[2] = 0.038f;
     }
 }
 
@@ -385,19 +626,18 @@ void tickRoomMixture(Scene& scene, AnnexRoom& room, float t) {
     for (uint32_t i = 0; i < room.propEntCount; ++i)
         pokeYaw(scene.get(room.propEntFirst + i).transform,
                 t * 0.8f + (float)i * 1.047f);
-    // Rim rings: per-vat/per-stud phased breathe. Raspberry is warm — capped
-    // ~1.6 peak (the ACES-clip law; the plan's 2.0+1.2 clips to cream).
+    // Rim rings: per-vat/per-stud phased breathe. Phase-5 EMISSIVE RESTRAINT:
+    // raspberry is WARM, so the studs hold the <= 0.45 accent band — they are
+    // jewelry on the copper rim now, not the light source of the room.
     for (uint32_t i = 0; i < room.glowEntCount; ++i) {
         Entity& e = scene.get(room.glowEntFirst + i);
         if (i < 48) {
-            e.emissive[3] = 1.1f + 0.5f * std::sin(t * 1.1f
+            e.emissive[3] = 0.36f + 0.09f * std::sin(t * 1.1f
                               + (float)(i >> 3) * 0.7f + (float)(i & 7) * 0.35f);
         } else {
-            // River under-glow: the plan's 0.18 Hz swell (1.2 -> 2.6 adapted
-            // WAY down: raspberry is warm, and the first capture showed the
-            // strip white-clipping the whole channel — 0.45 -> 1.15 reads as
-            // glow WITHIN the syrup instead of a lightbox).
-            e.emissive[3] = 0.55f + 0.25f * std::sin(t * (0.18f * kTwoPi)
+            // River under-glow: the 0.18 Hz swell, held inside the warm band —
+            // a glow WITHIN the syrup, never a lightbox under it.
+            e.emissive[3] = 0.34f + 0.10f * std::sin(t * (0.18f * kTwoPi)
                               + (float)(i - 48) * 0.65f);
         }
     }
@@ -442,26 +682,56 @@ constexpr float kConvSpeed = 1.2f;
 void buildRoomInvention(FactoryRoomCtx& ctx, AnnexRoom& room) {
     Scene& s = ctx.scene;
     const float ax = ctx.centerX, az = ctx.centerZ, y0 = room.baseY;
-    const SurfaceSet& sIron  = ctx.surf.get(ctx.device, "mw_metal_panels_a");
-    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "mw_metal_trim_b");
-    const SurfaceSet& sCop   = ctx.surf.get(ctx.device, "mw_metal_trim_a");
+    const SurfaceSet& sIron   = ctx.surf.get(ctx.device, "fa_iron_wall");
+    const SurfaceSet& sBrass  = ctx.surf.get(ctx.device, "fa_brass_worn");
+    const SurfaceSet& sCop    = ctx.surf.get(ctx.device, "fa_copper_aged");
+    const SurfaceSet& sEnamel = ctx.surf.get(ctx.device, "fa_enamel_cream");
+    const SurfaceSet& sRubber = ctx.surf.get(ctx.device, "sr_rubberfloor");
+    const SurfaceSet& sCheck  = ctx.surf.get(ctx.device, "fa_tile_checker");
+    constexpr float kIronBody[3]   = { 0.42f, 0.37f, 0.48f };   // aubergine over corrugated
+    constexpr float kRubberTint[3] = { 1.0f, 1.0f, 1.0f };      // the 4% albedo IS the belt
     auto physBox = [&](float wx, float wy, float wz, float hx, float hy, float hz) {
         ctx.physics.addBox({ hx, hy, hz }, { wx, wy, wz }, 0.0f,
                            x3::phys::Layer::Static);
     };
+    // Phase 5: every machine body is a STARFORGE HERO HOOK first (the forge's
+    // contraption-body contract: FactoryProps/Machine_<Slug>.glb, metres,
+    // origin at the floor contact, -Z facing); the procedural fallback bodies
+    // below are re-dressed in the brass/enamel mix per the spec table. Physics
+    // + movers + glow studs are shared by both branches.
+    const char* kMachineGlb[8] = {
+        "FactoryProps/Machine_GumStretcher.glb",
+        "FactoryProps/Machine_FizzCompressor.glb",
+        "FactoryProps/Machine_IdeaBellows.glb",
+        "FactoryProps/Machine_SprocketFountain.glb",
+        "FactoryProps/Machine_WobbleBoiler.glb",
+        "FactoryProps/Machine_ButtonOrgan.glb",
+        "FactoryProps/Machine_NotionCentrifuge.glb",
+        "FactoryProps/Machine_MaybeMachine.glb",
+    };
+    const char* kMachineName[8] = {
+        "Gum-Stretcher", "Fizz Compressor", "Idea Bellows", "Sprocket Fountain",
+        "Wobble Boiler", "Button Organ", "Notion Centrifuge", "The Maybe Machine",
+    };
+    bool heroBody[8];
+    for (int m = 0; m < 8; ++m)
+        heroBody[m] = heroHook(ctx, kMachineGlb[m], kMachineName[m],
+                               ax + kInvPos[m][0], y0, az + kInvPos[m][1],
+                               0.0f, 1.0f, /*isProp*/false) > 0;
 
     // ---- Machine bodies (static furniture; the movers land in the prop span).
-    // 0 Gum-Stretcher: two pillars + crown beam; the piston plate bobs between.
-    {
+    // 0 Gum-Stretcher: cream-enamel pillars + brass crown; the piston bobs between.
+    if (!heroBody[0]) {
         const float mx = ax + kInvPos[0][0], mz = az + kInvPos[0][1];
         for (int sgn = -1; sgn <= 1; sgn += 2)
             addBox(ctx, mx + sgn * 1.8f, y0 + 1.5f, mz, 0.22f, 1.5f, 0.35f, 0.0f,
-                   &sBrass, kBrassTint);
+                   &sEnamel, kEnamelTint);
         addBox(ctx, mx, y0 + 3.05f, mz, 2.1f, 0.15f, 0.45f, 0.0f, &sBrass, kBrassTint);
-        physBox(mx, y0 + 1.5f, mz, 2.0f, 1.5f, 1.5f);
     }
-    // 1 Fizz Compressor: squat drum + dome cap; rotor spins above.
-    {
+    { const float mx = ax + kInvPos[0][0], mz = az + kInvPos[0][1];
+      physBox(mx, y0 + 1.5f, mz, 2.0f, 1.5f, 1.5f); }
+    // 1 Fizz Compressor: aged-copper drum + brass dome cap; rotor spins above.
+    if (!heroBody[1]) {
         const float mx = ax + kInvPos[1][0], mz = az + kInvPos[1][1];
         for (int i = 0; i < 8; ++i) {
             const float a = (i / 8.0f) * kTwoPi, c = std::cos(a), sn = std::sin(a);
@@ -480,63 +750,73 @@ void buildRoomInvention(FactoryRoomCtx& ctx, AnnexRoom& room) {
         }
         addBox(ctx, mx, y0 + 2.8f, mz, 0.9f, 0.3f, 0.9f, 0.0f, &sBrass, kBrassTint);
         addBox(ctx, mx, y0 + 3.3f, mz, 0.18f, 0.5f, 0.18f, 0.0f, &sBrass, kBrassTint);
-        physBox(mx, y0 + 1.4f, mz, 1.5f, 1.4f, 1.5f);
     }
-    // 2 Idea Bellows: plinth + cap; the bellows block squashes between them.
-    {
+    { const float mx = ax + kInvPos[1][0], mz = az + kInvPos[1][1];
+      physBox(mx, y0 + 1.4f, mz, 1.5f, 1.4f, 1.5f); }
+    // 2 Idea Bellows: enamel plinth + brass cap; the bellows squashes between.
+    if (!heroBody[2]) {
         const float mx = ax + kInvPos[2][0], mz = az + kInvPos[2][1];
-        addBox(ctx, mx, y0 + 0.25f, mz, 1.0f, 0.25f, 1.0f, 0.0f, &sIron, kDarkIron);
+        addBox(ctx, mx, y0 + 0.25f, mz, 1.0f, 0.25f, 1.0f, 0.0f, &sEnamel, kEnamelTint);
         addBox(ctx, mx, y0 + 3.6f, mz, 0.8f, 0.12f, 0.8f, 0.6f, &sBrass, kBrassTint);
-        physBox(mx, y0 + 1.0f, mz, 1.0f, 1.0f, 1.0f);
     }
-    // 3 Sprocket Fountain: a fluted column; the sprocket spins + bobs on it.
-    {
+    { const float mx = ax + kInvPos[2][0], mz = az + kInvPos[2][1];
+      physBox(mx, y0 + 1.0f, mz, 1.0f, 1.0f, 1.0f); }
+    // 3 Sprocket Fountain: brass fluted column on an enamel base.
+    if (!heroBody[3]) {
         const float mx = ax + kInvPos[3][0], mz = az + kInvPos[3][1];
         addBox(ctx, mx, y0 + 2.75f, mz, 0.45f, 2.75f, 0.45f, 0.785f, &sBrass, kBrassTint);
-        addBox(ctx, mx, y0 + 0.3f, mz, 1.4f, 0.3f, 1.4f, 0.0f, &sIron, kDarkIron);
-        physBox(mx, y0 + 2.75f, mz, 0.7f, 2.75f, 0.7f);
+        addBox(ctx, mx, y0 + 0.3f, mz, 1.4f, 0.3f, 1.4f, 0.0f, &sEnamel, kEnamelTint);
     }
-    // 4 Wobble Boiler: plinth only — the 4x4x4 tank ITSELF sways (prop span).
-    {
+    { const float mx = ax + kInvPos[3][0], mz = az + kInvPos[3][1];
+      physBox(mx, y0 + 2.75f, mz, 0.7f, 2.75f, 0.7f); }
+    // 4 Wobble Boiler: enamel plinth — the 4x4x4 copper tank ITSELF sways.
+    if (!heroBody[4]) {
         const float mx = ax + kInvPos[4][0], mz = az + kInvPos[4][1];
-        addBox(ctx, mx, y0 + 0.2f, mz, 2.2f, 0.2f, 2.2f, 0.0f, &sIron, kDarkIron);
-        physBox(mx, y0 + 2.2f, mz, 2.0f, 2.0f, 2.0f);
+        addBox(ctx, mx, y0 + 0.2f, mz, 2.2f, 0.2f, 2.2f, 0.0f, &sEnamel, kEnamelTint);
     }
-    // 5 Button Organ: console + five ranked pipes (a machine that plays ideas).
-    {
+    { const float mx = ax + kInvPos[4][0], mz = az + kInvPos[4][1];
+      physBox(mx, y0 + 2.2f, mz, 2.0f, 2.0f, 2.0f); }
+    // 5 Button Organ: cream-enamel console + ranked aged-copper pipes.
+    if (!heroBody[5]) {
         const float mx = ax + kInvPos[5][0], mz = az + kInvPos[5][1];
-        addBox(ctx, mx, y0 + 0.8f, mz, 1.0f, 0.8f, 3.0f, 0.0f, &sBrass, kBrassTint);
+        addBox(ctx, mx, y0 + 0.8f, mz, 1.0f, 0.8f, 3.0f, 0.0f, &sEnamel, kEnamelTint);
         for (int i = 0; i < 5; ++i) {
             const float ph = 0.9f + 0.45f * (float)i;   // ranked pipe heights
             addBox(ctx, mx + 0.55f, y0 + 1.6f + ph * 0.5f, mz - 2.0f + (float)i * 1.0f,
                    0.28f, ph * 0.5f, 0.28f, 0.0f, &sCop, kCopperTint);
         }
-        physBox(mx, y0 + 1.2f, mz, 1.2f, 1.2f, 3.2f);
     }
-    // 6 Notion Centrifuge: low wide drum; the arm spins fast above it.
-    {
+    { const float mx = ax + kInvPos[5][0], mz = az + kInvPos[5][1];
+      physBox(mx, y0 + 1.2f, mz, 1.2f, 1.2f, 3.2f); }
+    // 6 Notion Centrifuge: low wide enamel drum; the arm spins fast above it.
+    if (!heroBody[6]) {
         const float mx = ax + kInvPos[6][0], mz = az + kInvPos[6][1];
         x3::prims::PrimMesh pm = x3::prims::makeCylinder(2.2f, 2.2f, 0.5f, 18, 0.3f);
         Entity e;
         e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
                                        pm.index.data(), (uint32_t)pm.index.size());
         ctx.meshes.push_back(e.mesh);
-        if (sIron.ok) { e.tex = sIron.albedo; e.normalTex = sIron.normal; e.mrTex = sIron.mr; }
-        e.baseColor[0] = kDarkIron[0]; e.baseColor[1] = kDarkIron[1];
-        e.baseColor[2] = kDarkIron[2]; e.baseColor[3] = 1.0f;
+        if (sEnamel.ok) { e.tex = sEnamel.albedo; e.normalTex = sEnamel.normal; e.mrTex = sEnamel.mr; }
+        e.baseColor[0] = kEnamelTint[0]; e.baseColor[1] = kEnamelTint[1];
+        e.baseColor[2] = kEnamelTint[2]; e.baseColor[3] = 1.0f;
         e.tag = (uint32_t)Tag::Static;
         yawXform(e.transform, 0.0f, mx, y0 + 0.5f, mz);
         s.add(e);
-        physBox(mx, y0 + 0.5f, mz, 2.2f, 0.5f, 2.2f);
     }
-    // 7 The Maybe Machine: a tall enigmatic cabinet (it might do anything).
-    {
+    { const float mx = ax + kInvPos[6][0], mz = az + kInvPos[6][1];
+      physBox(mx, y0 + 0.5f, mz, 2.2f, 0.5f, 2.2f); }
+    // 7 The Maybe Machine: the one DARK cabinet — corrugated aubergine iron
+    // with brass edge banding (it might do anything; it says nothing).
+    if (!heroBody[7]) {
         const float mx = ax + kInvPos[7][0], mz = az + kInvPos[7][1];
-        addBox(ctx, mx, y0 + 3.5f, mz, 1.0f, 3.5f, 1.0f, 0.3f, &sIron, kDarkIron);
-        physBox(mx, y0 + 3.5f, mz, 1.2f, 3.5f, 1.2f);
+        addBox(ctx, mx, y0 + 3.5f, mz, 1.0f, 3.5f, 1.0f, 0.3f, &sIron, kIronBody);
+        addBox(ctx, mx, y0 + 7.05f, mz, 1.08f, 0.06f, 1.08f, 0.3f, &sBrass, kBrassTint);
+        addBox(ctx, mx, y0 + 0.08f, mz, 1.08f, 0.08f, 1.08f, 0.3f, &sBrass, kBrassTint);
     }
+    { const float mx = ax + kInvPos[7][0], mz = az + kInvPos[7][1];
+      physBox(mx, y0 + 3.5f, mz, 1.2f, 3.5f, 1.2f); }
 
-    // ---- Conveyor frame (rails + legs + a walk-solid underbody) -------------
+    // ---- Conveyor frame: brass side rails + iron legs + a walk-solid body.
     {
         const float hz = kConvLen * 0.5f + 0.2f;
         for (int sgn = -1; sgn <= 1; sgn += 2)
@@ -544,9 +824,33 @@ void buildRoomInvention(FactoryRoomCtx& ctx, AnnexRoom& room) {
                    0.12f, 0.14f, hz, 0.0f, &sBrass, kBrassTint);
         for (int i = 0; i < 4; ++i)
             addBox(ctx, ax + kConvX, y0 + 0.35f, az - 6.0f + (float)i * 4.0f,
-                   0.9f, 0.35f, 0.18f, 0.0f, &sIron, kDarkIron);
+                   0.9f, 0.35f, 0.18f, 0.0f, &sIron, kIronBody);
         physBox(ax + kConvX, y0 + 0.45f, az, 1.15f, 0.45f, hz);
     }
+
+    // ---- Checkered-tile INLAY zone (Phase 5): a glazed checker apron under
+    // the conveyor + organ walk — a real material change in the floor, clear
+    // of the center cylinder, the bore strip and the chute drop column.
+    addBox(ctx, ax + 8.0f, y0 + 0.015f, az, 5.5f, 0.015f, 6.5f, 0.0f,
+           &sCheck, kWhite, 0.0f, nullptr, false, 0.5f);
+
+    // ---- GLIMVALE DRESSING: the workshop arch over the bore approach (the
+    // cab glides in under it), invention-clutter crates in the north corner,
+    // and timber wall sections breaking the long east iron wall.
+    dress(ctx, "Glimvale/SM_Stylized_Arch.glb", ax - 7.0f, y0, az, 0.0f, 1.15f, kArchTint);
+    dress(ctx, "Glimvale/SM_Stylized_Box_var1.glb", ax - 16.4f, y0 + 0.25f, az + 16.4f, 0.5f);
+    dress(ctx, "Glimvale/SM_Stylized_Box_var2.glb", ax - 15.2f, y0 + 0.35f, az + 17.2f, 1.9f);
+    dress(ctx, "Glimvale/SM_Stylized_Box.glb", ax - 16.8f, y0 + 0.75f, az + 16.6f, 0.2f);
+    dress(ctx, "Glimvale/SM_Stylized_Barrel.glb", ax - 17.3f, y0, az + 14.8f, 0.0f);
+    ctx.physics.addBox({ 1.6f, 0.6f, 1.6f }, { ax - 16.2f, y0 + 0.6f, az + 16.2f },
+                       0.0f, x3::phys::Layer::Static);
+    // Timber wall sections along the north/south iron walls, slotted BETWEEN
+    // the brass columns (the accent cove owns the east wall). The wall piece's
+    // geometry runs local z 0..4 / x -0.35..0; yaw +-pi/2 lays it flush along
+    // the +-Z walls with its face into the room.
+    dress(ctx, "Glimvale/SM_Large_Wall_01.glb", ax - 13.5f, y0, az - 19.72f, 1.5708f);
+    dress(ctx, "Glimvale/SM_Large_Wall_02.glb", ax + 1.5f,  y0, az - 19.72f, 1.5708f);
+    dress(ctx, "Glimvale/SM_Large_Wall_01.glb", ax + 5.5f,  y0, az + 19.72f, -1.5708f);
 
     // ---- PROP SPAN: 8 machine movers, 24 slats, 8 gizmos (contiguous) -------
     room.propEntFirst = s.size();
@@ -558,7 +862,7 @@ void buildRoomInvention(FactoryRoomCtx& ctx, AnnexRoom& room) {
            1.5f, 0.10f, 0.26f, 0.0f, &sBrass, kBrassTint, 0.0f, nullptr, true);
     // 2 bellows block (squash pose: tick rewrites scaleY + re-anchors)
     addBox(ctx, ax + kInvPos[2][0], y0 + 1.5f, az + kInvPos[2][1],
-           0.9f, 1.0f, 0.9f, 0.0f, &sCop, kCopperTint, 0.0f, nullptr, true);
+           0.9f, 1.0f, 0.9f, 0.0f, &sEnamel, kEnamelTint, 0.0f, nullptr, true);
     // 3 sprocket (spin + bob)
     addBox(ctx, ax + kInvPos[3][0], y0 + 4.0f, az + kInvPos[3][1],
            1.3f, 0.08f, 0.4f, 0.0f, &sBrass, kBrassTint, 0.0f, nullptr, true);
@@ -574,41 +878,46 @@ void buildRoomInvention(FactoryRoomCtx& ctx, AnnexRoom& room) {
     // 7 maybe-machine beacon (the flicker; emissive poked in tick)
     addBox(ctx, ax + kInvPos[7][0], y0 + 7.3f, az + kInvPos[7][1],
            0.32f, 0.32f, 0.32f, 0.0f, nullptr, kGold, 0.4f, kGold, true);
-    // Conveyor slats (scroll along Z; wrap at the belt end).
+    // Conveyor slats (scroll along Z; wrap at the belt end) — DARK RUBBER
+    // (the shooting-range rubber-floor set: 4% albedo + tread relief IS a
+    // conveyor belt; Phase-5 art direction "dark rubber-ish surface").
     for (int i = 0; i < kConvSlats; ++i) {
         const float z0 = -kConvLen * 0.5f + ((float)i + 0.5f) * (kConvLen / kConvSlats);
         addBox(ctx, ax + kConvX, y0 + kConvTopY, az + z0,
-               0.92f, 0.05f, 0.24f, 0.0f, &sIron, kDarkIron, 0.0f, nullptr, true);
+               0.92f, 0.05f, 0.24f, 0.0f, &sRubber, kRubberTint, 0.0f, nullptr, true);
     }
-    // Gizmo cubes riding the belt (emissive whatsits — mint/amber alternating).
+    // Gizmo cubes riding the belt (emissive whatsits — mint/amber alternating;
+    // Phase-5 restraint: amber is warm -> 0.42, mint is cool -> 0.8).
     for (int i = 0; i < kConvGizmos; ++i) {
         const float z0 = -kConvLen * 0.5f + ((float)i + 0.5f) * (kConvLen / kConvGizmos);
         addGlow(ctx, ax + kConvX, y0 + kConvTopY + 0.34f, az + z0,
                 0.26f, 0.26f, 0.26f, (float)i * 0.7f,
-                (i & 1) ? kAmber : kMint, 1.0f);
+                (i & 1) ? kAmber : kMint, (i & 1) ? 0.42f : 0.80f);
     }
     room.propEntCount = s.size() - room.propEntFirst;
 
     // ---- GLOW SPAN: 5 machine studs, 8 organ keys, centrifuge, maybe-panel --
+    // Phase-5 restraint: warm accents (amber/brass/raspberry/gold) <= 0.45,
+    // cool (mint/violet/cyan/white) <= 0.9 — accents over PBR bodies.
     room.glowEntFirst = s.size();
     addGlow(ctx, ax + kInvPos[0][0], y0 + 3.25f, az + kInvPos[0][1],
-            1.6f, 0.06f, 0.10f, 0.0f, kMint, 1.6f);                      // 0 gum
+            1.6f, 0.06f, 0.10f, 0.0f, kMint, 0.80f);                     // 0 gum
     addGlow(ctx, ax + kInvPos[1][0], y0 + 2.55f, az + kInvPos[1][1],
-            1.35f, 0.07f, 0.07f, 0.0f, kAmber, 1.0f);                    // 1 fizz
+            1.35f, 0.07f, 0.07f, 0.0f, kAmber, 0.42f);                   // 1 fizz
     addGlow(ctx, ax + kInvPos[2][0], y0 + 3.35f, az + kInvPos[2][1],
-            0.7f, 0.06f, 0.7f, 0.6f, kViolet, 1.6f);                     // 2 bellows
+            0.7f, 0.06f, 0.7f, 0.6f, kViolet, 0.80f);                    // 2 bellows
     addGlow(ctx, ax + kInvPos[3][0], y0 + 5.35f, az + kInvPos[3][1],
-            0.3f, 0.3f, 0.3f, 0.785f, kBrassGlow, 0.6f);                 // 3 sprocket
+            0.3f, 0.3f, 0.3f, 0.785f, kBrassGlow, 0.40f);                // 3 sprocket
     addGlow(ctx, ax + kInvPos[4][0], y0 + 4.55f, az + kInvPos[4][1],
-            1.2f, 0.07f, 1.2f, 0.0f, kRasp, 1.1f);                       // 4 boiler
+            1.2f, 0.07f, 1.2f, 0.0f, kRasp, 0.42f);                      // 4 boiler
     for (int k = 0; k < 8; ++k)                                          // 5..12 keys
         addGlow(ctx, ax + kInvPos[5][0] - 1.06f, y0 + 1.15f,
                 az + kInvPos[5][1] - 2.45f + (float)k * 0.7f,
-                0.05f, 0.16f, 0.28f, 0.0f, kWhite, 0.35f);
+                0.05f, 0.16f, 0.28f, 0.0f, kWhite, 0.20f);
     addGlow(ctx, ax + kInvPos[6][0], y0 + 1.06f, az + kInvPos[6][1],
-            2.25f, 0.05f, 2.25f, 0.785f, kCyan, 1.5f);                   // 13 centrifuge
+            2.25f, 0.05f, 2.25f, 0.785f, kCyan, 0.80f);                  // 13 centrifuge
     addGlow(ctx, ax + kInvPos[7][0], y0 + 4.2f, az + kInvPos[7][1] - 1.02f,
-            0.6f, 1.4f, 0.05f, 0.3f, kGold, 0.5f);                       // 14 maybe
+            0.6f, 1.4f, 0.05f, 0.3f, kGold, 0.35f);                      // 14 maybe
     room.glowEntCount = s.size() - room.glowEntFirst;
 }
 
@@ -651,7 +960,7 @@ void tickRoomInvention(Scene& scene, AnnexRoom& room, float t) {
     {
         Entity& e = scene.get(p0 + 7);
         const float h = std::fabs(std::sin(std::floor(t * 13.7f) * 12.9898f));
-        e.emissive[3] = 0.25f + 1.05f * h * h;
+        e.emissive[3] = 0.14f + 0.30f * h * h;   // gold is warm: flicker <= ~0.45
         pokeYaw(e.transform, t * 0.6f);
     }
     // Conveyor slats + gizmos: pose-scroll at 1.2 m/s, wrapping at the ends.
@@ -667,21 +976,23 @@ void tickRoomInvention(Scene& scene, AnnexRoom& room, float t) {
         pokeYaw(e.transform, t * 1.3f + (float)i * 0.7f);
     }
     // Glow span: machine studs breathe; the organ keys CHASE (0.12 s step);
-    // the maybe-panel flickers with its beacon.
+    // the maybe-panel flickers with its beacon. Phase-5 restraint: steady
+    // warm <= 0.45 / cool <= 0.9; only the chase LEAD blinks brighter for a
+    // step (a moving highlight, not a lightbox).
     const uint32_t g0 = room.glowEntFirst;
-    const float breathe[5] = { 1.6f, 1.0f, 1.6f, 0.6f, 1.1f };
+    const float breathe[5] = { 0.80f, 0.42f, 0.80f, 0.40f, 0.42f };
     for (int i = 0; i < 5; ++i)
         scene.get(g0 + i).emissive[3] =
-            breathe[i] * (0.8f + 0.25f * std::sin(t * 0.9f + (float)i * 1.2f));
+            breathe[i] * (0.8f + 0.2f * std::sin(t * 0.9f + (float)i * 1.2f));
     {
         const int lit = (int)(t / 0.12f) % 8;
         for (int k = 0; k < 8; ++k)
-            scene.get(g0 + 5 + (uint32_t)k).emissive[3] = (k == lit) ? 2.4f : 0.30f;
+            scene.get(g0 + 5 + (uint32_t)k).emissive[3] = (k == lit) ? 0.85f : 0.16f;
     }
-    scene.get(g0 + 13).emissive[3] = 1.5f * (0.8f + 0.25f * std::sin(t * 1.7f));
+    scene.get(g0 + 13).emissive[3] = 0.80f * (0.8f + 0.2f * std::sin(t * 1.7f));
     {
         const float h = std::fabs(std::sin(std::floor(t * 13.7f) * 12.9898f));
-        scene.get(g0 + 14).emissive[3] = 0.2f + 0.8f * h;
+        scene.get(g0 + 14).emissive[3] = 0.10f + 0.32f * h;
     }
 }
 
@@ -711,7 +1022,7 @@ inline float fizzBubbleR(int j) { return 0.13f + 0.045f * (float)(j % 5); }
 void buildRoomFizz(FactoryRoomCtx& ctx, AnnexRoom& room) {
     Scene& s = ctx.scene;
     const float ax = ctx.centerX, az = ctx.centerZ, y0 = room.baseY;
-    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "mw_metal_trim_b");
+    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "fa_brass_worn");
     const SurfaceSet& sIron  = ctx.surf.get(ctx.device, "mw_metal_panels_a");
 
     // ---- Glass columns (the real glass pipeline, near-clear) + base plinths.
@@ -748,6 +1059,26 @@ void buildRoomFizz(FactoryRoomCtx& ctx, AnnexRoom& room) {
                &sBrass, kBrassTint, 0.30f, kBrassGlow);
     }
 
+    // ---- GLIMVALE GREENERY (Phase 5, sparingly): each column grows a little
+    // garden at its plinth foot — grass tufts + one bloom on the checker —
+    // and one lounge corner gets a crate + barrel to sit on. The soda garden.
+    for (int c = 0; c < 4; ++c) {
+        const float cx = ax + kFizzColPos[c][0], cz = az + kFizzColPos[c][1];
+        const float px = (kFizzColPos[c][0] > 0) ? -1.55f : 1.55f;   // inner corner
+        const float pz = (kFizzColPos[c][1] > 0) ? -1.55f : 1.55f;
+        dress(ctx, "Glimvale/SM_Grass_A.glb", cx + px, y0, cz + pz, jit(c, 20) * kTwoPi);
+        dress(ctx, "Glimvale/SM_Grass_B.glb", cx + px + 0.5f, y0, cz + pz - 0.4f,
+              jit(c, 21) * kTwoPi);
+        dress(ctx, (c & 1) ? "Glimvale/SM_Pink_Flower.glb"
+                           : "Glimvale/SM_Yellow_Flower.glb",
+              cx + px + 0.2f, y0, cz + pz + 0.3f, jit(c, 22) * kTwoPi);
+    }
+    dress(ctx, "Glimvale/SM_Stylized_Barrel.glb", ax + 17.4f, y0, az - 17.0f, 0.4f);
+    dress(ctx, "Glimvale/SM_Stylized_Box_var2.glb", ax + 16.2f, y0 + 0.35f, az - 17.6f, 1.1f);
+    dress(ctx, "Glimvale/SM_Sunflower.glb", ax + 18.2f, y0, az - 15.8f, 1.9f);
+    ctx.physics.addBox({ 1.4f, 0.55f, 1.2f }, { ax + 16.8f, y0 + 0.55f, az - 17.2f },
+                       0.0f, x3::phys::Layer::Static);
+
     // ---- PROP SPAN: 40 bubbles (ONE shared sphere, scaled per instance),
     // then 9 fan blades. Contiguous.
     x3::prims::PrimMesh sph = x3::prims::makeUVSphere(10, 14);   // small: 40 instances
@@ -764,8 +1095,10 @@ void buildRoomFizz(FactoryRoomCtx& ctx, AnnexRoom& room) {
             const float by = y0 + 0.6f + ((float)j / kFizzBubbles) * kFizzSpan;
             const bool white = (j % 3) == 0;
             const float colW[3] = { 1.0f, 0.97f, 0.90f };
+            // Phase-5 restraint: the old 1.3/1.0 bubbles ACES-clipped to
+            // identical cream balls — at 0.85/0.60 the amber ones stay AMBER.
             addShared(ctx, sphMesh, xA, yA, zA, cx, by, cz,
-                      white ? colW : room.accent, white ? 1.3f : 1.0f, nullptr);
+                      white ? colW : room.accent, white ? 0.85f : 0.60f, nullptr);
         }
     }
     for (int f = 0; f < 3; ++f) {
@@ -789,11 +1122,11 @@ void buildRoomFizz(FactoryRoomCtx& ctx, AnnexRoom& room) {
     }
     room.propEntCount = s.size() - room.propEntFirst;
 
-    // ---- GLOW SPAN: one amber fizz collar per column base ------------------
+    // ---- GLOW SPAN: one amber fizz collar per column base (warm <= 0.45) ---
     room.glowEntFirst = s.size();
     for (int c = 0; c < 4; ++c)
         addGlow(ctx, ax + kFizzColPos[c][0], y0 + 0.62f, az + kFizzColPos[c][1],
-                1.15f, 0.10f, 1.15f, 0.0f, room.accent, 1.2f);
+                1.15f, 0.10f, 1.15f, 0.0f, room.accent, 0.40f);
     room.glowEntCount = s.size() - room.glowEntFirst;
 }
 
@@ -822,10 +1155,10 @@ void tickRoomFizz(Scene& scene, AnnexRoom& room, float t) {
         for (int b = 0; b < 3; ++b)
             pokeYaw(scene.get(room.propEntFirst + 40u + (uint32_t)(f * 3 + b)).transform,
                     t * 0.6f + (float)b * (kTwoPi / 3.0f) + (float)f * 0.5f);
-    // Collars: a slow amber fizz-breathe.
+    // Collars: a slow amber fizz-breathe held in the warm accent band.
     for (uint32_t i = 0; i < room.glowEntCount; ++i)
         scene.get(room.glowEntFirst + i).emissive[3] =
-            1.0f + 0.4f * std::sin(t * 0.7f + (float)i * 1.4f);
+            0.36f + 0.09f * std::sin(t * 0.7f + (float)i * 1.4f);
 }
 
 // ============================================================================
@@ -891,13 +1224,16 @@ inline Glyph glyph(char c) {
 }
 } // namespace signfont
 
-// Emissive box-serif text on a plane of constant world X, facing -X: for a
-// viewer looking +X, screen-right is world +Z, so the line advances +Z
-// (verified on the padded-room capture — the -Z variant renders mirrored).
+// Box-serif text on a plane of constant world X, facing -X: for a viewer
+// looking +X, screen-right is world +Z, so the line advances +Z (verified on
+// the padded-room capture — the -Z variant renders mirrored). Phase 5: the
+// letters are ENAMEL-bodied (cream PBR strokes) with a restrained warm glow —
+// a painted verdict sign that happens to be lit, not floating neon.
 // Returns the stroke count it authored (glow span).
 int addSignText(FactoryRoomCtx& ctx, const char* text, float wallX,
                 float centerZ, float baseTextY, float cellW, float cellH,
                 const float glow[3], float strength) {
+    const SurfaceSet& sEn = ctx.surf.get(ctx.device, "fa_enamel_cream");
     int total = 0, n = 0;
     for (const char* p = text; *p; ++p) ++n;
     const float adv   = cellW * 1.18f;
@@ -906,11 +1242,23 @@ int addSignText(FactoryRoomCtx& ctx, const char* text, float wallX,
         const signfont::Glyph g = signfont::glyph(text[i]);
         for (int k = 0; k < g.n; ++k) {
             const SignStroke& st = g.s[k];
-            addGlow(ctx, wallX,
-                    baseTextY + st.cy * cellH,
-                    centerZ - lineW * 0.5f + ((float)i * adv + st.cx * cellW),
-                    0.03f, st.hh * cellH, st.hw * cellW, 0.0f, glow, strength);
+            x3::prims::PrimMesh pm = x3::prims::makeBox(0.03f, st.hh * cellH,
+                                                        st.hw * cellW, 0, 0, 0);
+            Entity e;
+            e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                           pm.index.data(), (uint32_t)pm.index.size());
+            ctx.meshes.push_back(e.mesh);
+            if (sEn.ok) { e.tex = sEn.albedo; e.normalTex = sEn.normal; e.mrTex = sEn.mr; }
+            e.baseColor[0] = kEnamelTint[0]; e.baseColor[1] = kEnamelTint[1];
+            e.baseColor[2] = kEnamelTint[2]; e.baseColor[3] = 1.0f;
+            e.emissive[0] = glow[0]; e.emissive[1] = glow[1]; e.emissive[2] = glow[2];
+            e.emissive[3] = strength;
+            e.tag = (uint32_t)Tag::Prop;
+            yawXform(e.transform, 0.0f, wallX,
+                     baseTextY + st.cy * cellH,
+                     centerZ - lineW * 0.5f + ((float)i * adv + st.cx * cellW));
             ++total;
+            ctx.scene.add(e);
         }
     }
     return total;
@@ -922,10 +1270,12 @@ void buildRoomSorting(FactoryRoomCtx& ctx, AnnexRoom& room) {
     const float aY = FactoryAnnex::kFloorBaseY[0];                     // 2 (pad room)
     const float hx = ax + FactoryAnnex::kChuteX, hz = az + FactoryAnnex::kChuteZ;
     const float hole = FactoryAnnex::kChuteHoleHalf;                   // 1.1
-    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "mw_metal_trim_b");
+    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "fa_brass_worn");
     const SurfaceSet& sIron  = ctx.surf.get(ctx.device, "mw_metal_panels_a");
-    const SurfaceSet& sPad   = ctx.surf.get(ctx.device, "mw_thermal_padding");
-    constexpr float kPadTint[3] = { 0.72f, 0.66f, 0.58f };   // quilted cream
+    // Phase 5: the padded room wears the Industrial Fabric Pack's strapped
+    // bale weave (fa_fabric_pad) — real cloth folds under the verdict sign.
+    const SurfaceSet& sPad   = ctx.surf.get(ctx.device, "fa_fabric_pad");
+    constexpr float kPadTint[3] = { 1.00f, 0.96f, 0.86f };   // buttercream cloth
 
     // ---- The orbit track: one flat brass torus under the orb ring ----------
     {
@@ -938,7 +1288,7 @@ void buildRoomSorting(FactoryRoomCtx& ctx, AnnexRoom& room) {
         e.baseColor[0] = kBrassTint[0]; e.baseColor[1] = kBrassTint[1];
         e.baseColor[2] = kBrassTint[2]; e.baseColor[3] = 1.0f;
         e.emissive[0] = kBrassGlow[0]; e.emissive[1] = kBrassGlow[1];
-        e.emissive[2] = kBrassGlow[2]; e.emissive[3] = 0.30f;
+        e.emissive[2] = kBrassGlow[2]; e.emissive[3] = 0.16f;
         e.tag = (uint32_t)Tag::Static;
         // Torus is authored in XY (hole axis +Z); lay it flat (hole axis +Y).
         const float xA[3] = { 1, 0, 0 }, yA[3] = { 0, 0, -1 }, zA[3] = { 0, 1, 0 };
@@ -1045,6 +1395,9 @@ void buildRoomSorting(FactoryRoomCtx& ctx, AnnexRoom& room) {
         sph.index.data(), (uint32_t)sph.index.size());
     ctx.meshes.push_back(orbMesh);   // shared: ONCE
     room.propEntFirst = s.size();
+    // Phase 5: the orbs are GOLD-PBR spheres (worn-metal set under a gold
+    // tint) with a RESTRAINED inner glow — treasure, not lightbulbs. The two
+    // duds stay dull dielectric grey (no glow at all: the joke reads better).
     constexpr float kGoldOrb[3] = { 1.00f, 0.84f, 0.30f };
     constexpr float kDudOrb[3]  = { 0.35f, 0.33f, 0.30f };
     for (int i = 0; i < kSortOrbs; ++i) {
@@ -1054,12 +1407,21 @@ void buildRoomSorting(FactoryRoomCtx& ctx, AnnexRoom& room) {
         const float a = ((float)i / kSortOrbs) * kTwoPi;
         addShared(ctx, orbMesh, xA, yA, zA,
                   ax + kSortOrbR * std::cos(a), y0 + kSortOrbY, az + kSortOrbR * std::sin(a),
-                  dud ? kDudOrb : kGoldOrb, dud ? 0.05f : 1.1f, nullptr);
+                  dud ? kDudOrb : kGoldOrb, dud ? 0.0f : 0.26f, nullptr,
+                  &sBrass);
     }
-    // Sorter arms: mesh offset from the pivot origin — rotating the transform
-    // sweeps the arm. Base yaw aims each arm at the center.
+    // Sorter arms: STARFORGE HERO HOOK (FactoryProps/SorterArm.glb — contract:
+    // metres, PIVOT at the origin, arm reaching +X, sweep height baked at 0 so
+    // the hook lifts it to the post top). Fallback: the Phase-3 offset box in
+    // worn-brass PBR. Both branches: base yaw aims the arm at the center;
+    // tick() sweeps obj(yaw) [* heroXf per drawable when the hero is real].
     for (int a = 0; a < 2; ++a) {
         const float px = ax + kSortArmPivot[a][0], pz = az + kSortArmPivot[a][1];
+        const float baseYaw = (a == 0) ? 1.5708f : -1.5708f;
+        const int n = heroHook(ctx, "FactoryProps/SorterArm.glb", "SorterArm",
+                               px, y0 + 1.9f, pz, baseYaw, 1.0f, /*isProp*/true,
+                               &room.heroXf);
+        if (n > 0) { room.heroArmPrims = (uint32_t)n; continue; }
         x3::prims::PrimMesh pm = x3::prims::makeBox(1.9f, 0.08f, 0.22f,
                                                     2.2f, 0.0f, 0.0f, 0.35f);
         Entity e;
@@ -1072,7 +1434,7 @@ void buildRoomSorting(FactoryRoomCtx& ctx, AnnexRoom& room) {
         e.emissive[0] = kBrassGlow[0]; e.emissive[1] = kBrassGlow[1];
         e.emissive[2] = kBrassGlow[2]; e.emissive[3] = 0.25f;
         e.tag = (uint32_t)Tag::Prop;
-        yawXform(e.transform, (a == 0) ? 1.5708f : -1.5708f, px, y0 + 1.9f, pz);
+        yawXform(e.transform, baseYaw, px, y0 + 1.9f, pz);
         s.add(e);
     }
     // The hatch: a brass plate over the chute hole; its MOVED-STATIC physics
@@ -1087,7 +1449,7 @@ void buildRoomSorting(FactoryRoomCtx& ctx, AnnexRoom& room) {
     }
     room.propEntCount = s.size() - room.propEntFirst;
 
-    // ---- GLOW SPAN: 4 hatch rim strips + the sign's strokes ----------------
+    // ---- GLOW SPAN: 4 hatch rim strips + the sign's strokes (warm <= 0.45) --
     room.glowEntFirst = s.size();
     constexpr float kGold2[3] = { 1.00f, 0.84f, 0.30f };
     for (int i = 0; i < 4; ++i) {
@@ -1096,13 +1458,24 @@ void buildRoomSorting(FactoryRoomCtx& ctx, AnnexRoom& room) {
         const float sgn2 = (i & 1) ? 1.0f : -1.0f;
         addGlow(ctx, hx + (xSide ? sgn2 * o : 0.0f), y0 + 0.05f,
                 hz + (xSide ? 0.0f : sgn2 * o),
-                xSide ? 0.06f : o, 0.05f, xSide ? o : 0.06f, 0.0f, kGold2, 0.9f);
+                xSide ? 0.06f : o, 0.05f, xSide ? o : 0.06f, 0.0f, kGold2, 0.40f);
     }
     // The verdict, two lines on the padded room's east wall (facing the mats;
     // wall runs y 2..5, mats top ~2.7 — the lines sit in the clear band).
-    addSignText(ctx, "QUALITY:", hx + 2.30f, hz, aY + 1.90f, 0.42f, 0.55f, kGold2, 1.2f);
-    addSignText(ctx, "DUBIOUS",  hx + 2.30f, hz, aY + 1.05f, 0.42f, 0.55f, kGold2, 1.2f);
+    // Enamel strokes, judicial gold glow held at the warm accent cap.
+    addSignText(ctx, "QUALITY:", hx + 2.30f, hz, aY + 1.90f, 0.42f, 0.55f, kGold2, 0.45f);
+    addSignText(ctx, "DUBIOUS",  hx + 2.30f, hz, aY + 1.05f, 0.42f, 0.55f, kGold2, 0.45f);
     room.glowEntCount = s.size() - room.glowEntFirst;
+
+    // ---- GLIMVALE DRESSING: sorting overflow — crates the duds ended up in,
+    // by the south wall, well off the orbit ring.
+    dress(ctx, "Glimvale/SM_Stylized_Box_var1.glb", ax - 15.8f, y0 + 0.25f, az - 16.8f, 0.9f);
+    dress(ctx, "Glimvale/SM_Stylized_Box.glb", ax - 16.9f, y0 + 0.0f, az - 17.4f, 2.1f);
+    dress(ctx, "Glimvale/SM_Stylized_Barrel.glb", ax - 17.6f, y0, az - 15.4f, 1.2f);
+    ctx.physics.addBox({ 1.5f, 0.55f, 1.4f }, { ax - 16.6f, y0 + 0.55f, az - 16.4f },
+                       0.0f, x3::phys::Layer::Static);
+    dress(ctx, "Glimvale/SM_Large_Wall_02.glb", ax - 6.5f, y0, az - 19.72f, 1.5708f);
+    dress(ctx, "Glimvale/SM_Large_Wall_01.glb", ax + 1.5f, y0, az + 19.72f, -1.5708f);
 }
 
 void tickRoomSorting(Scene& scene, AnnexRoom& room, float t) {
@@ -1117,16 +1490,30 @@ void tickRoomSorting(Scene& scene, AnnexRoom& room, float t) {
         e.transform[14] = az + kSortOrbR * std::sin(a);
     }
     // Sorter arms: sweep +-1.2 rad @ 0.7 Hz, phase-offset, about their pivots.
+    // Hero branch: each arm is heroArmPrims drawable entities re-posed as
+    // obj(yaw at pivot) * heroXf[i] (node transforms baked at build; zero
+    // per-frame heap — mulMat4 into the entity transform in place).
+    const uint32_t armN = room.heroArmPrims ? room.heroArmPrims : 1u;
     for (int a = 0; a < 2; ++a) {
         const float base = (a == 0) ? 1.5708f : -1.5708f;
-        pokeYaw(scene.get(room.propEntFirst + 12u + (uint32_t)a).transform,
-                base + 1.2f * std::sin(t * (0.7f * kTwoPi) + (float)a * 2.4f));
+        const float yaw  = base + 1.2f * std::sin(t * (0.7f * kTwoPi) + (float)a * 2.4f);
+        if (room.heroArmPrims == 0) {
+            pokeYaw(scene.get(room.propEntFirst + 12u + (uint32_t)a).transform, yaw);
+        } else {
+            const float px = ax + kSortArmPivot[a][0], pz = az + kSortArmPivot[a][1];
+            const float c = std::cos(yaw), sn = std::sin(yaw);
+            const float obj[16] = { c,0,-sn,0, 0,1,0,0, sn,0,c,0, px, y0 + 1.9f, pz, 1 };
+            for (uint32_t j = 0; j < armN; ++j) {
+                Entity& e = scene.get(room.propEntFirst + 12u + (uint32_t)a * armN + j);
+                x3::asset::mulMat4(obj, &room.heroXf[((size_t)a * armN + j) * 16], e.transform);
+            }
+        }
     }
     // The hatch: stateA (fed by FactoryAnnex::tick once trigger 310 latches)
     // counts the stand-on beat; after kHatchDelay it slides open over
     // kHatchOpenT seconds — visual AND physics (moved-static).
     {
-        Entity& e = scene.get(room.propEntFirst + 14u);
+        Entity& e = scene.get(room.propEntFirst + 12u + 2u * armN);
         float openT = (room.stateA - kHatchDelay) / kHatchOpenT;
         openT = openT < 0.0f ? 0.0f : (openT > 1.0f ? 1.0f : openT);
         const float ease = openT * openT * (3.0f - 2.0f * openT);   // smoothstep
@@ -1146,16 +1533,18 @@ void tickRoomSorting(Scene& scene, AnnexRoom& room, float t) {
             }
         }
     }
-    // Glow: hatch rims pulse gold — urgently while the stand-on beat runs;
-    // the sign strokes hold a steady judicial glow with a faint shimmer.
+    // Glow: hatch rims pulse gold — urgently while the stand-on beat runs
+    // (a transient event pulse may briefly top the steady cap); the sign
+    // strokes hold a steady judicial glow with a faint shimmer, in the warm
+    // accent band.
     for (uint32_t i = 0; i < room.glowEntCount; ++i) {
         Entity& e = scene.get(room.glowEntFirst + i);
         if (i < 4) {
             const bool arming = room.stateA > 0.0f && room.stateA < kHatchDelay;
-            e.emissive[3] = arming ? 1.2f + 0.8f * std::sin(t * 14.0f)
-                                   : 0.9f + 0.3f * std::sin(t * 1.3f + (float)i);
+            e.emissive[3] = arming ? 0.55f + 0.35f * std::sin(t * 14.0f)
+                                   : 0.34f + 0.10f * std::sin(t * 1.3f + (float)i);
         } else {
-            e.emissive[3] = 1.1f + 0.15f * std::sin(t * 2.1f + (float)i * 0.9f);
+            e.emissive[3] = 0.42f + 0.05f * std::sin(t * 2.1f + (float)i * 0.9f);
         }
     }
 }
@@ -1193,8 +1582,9 @@ inline float capsTotalLen() { return capsSegLen(0) + capsSegLen(1) + capsSegLen(
 void buildRoomTube(FactoryRoomCtx& ctx, AnnexRoom& room) {
     Scene& s = ctx.scene;
     const float ax = ctx.centerX, az = ctx.centerZ, y0 = room.baseY;   // 54
-    const SurfaceSet& sBrass = ctx.surf.get(ctx.device, "mw_metal_trim_b");
-    const SurfaceSet& sIron  = ctx.surf.get(ctx.device, "mw_metal_panels_a");
+    const SurfaceSet& sBrass  = ctx.surf.get(ctx.device, "fa_brass_worn");
+    const SurfaceSet& sIron   = ctx.surf.get(ctx.device, "mw_metal_panels_a");
+    const SurfaceSet& sMarble = ctx.surf.get(ctx.device, "fa_marble_white");
     constexpr float kGold[3] = { 1.00f, 0.84f, 0.30f };
 
     // ---- The five glass tubes: tilted near-clear cylinders, wall to ceiling.
@@ -1237,52 +1627,117 @@ void buildRoomTube(FactoryRoomCtx& ctx, AnnexRoom& room) {
         ctx.physics.addBox({ 2.0f, 0.15f, 2.0f }, { ax - 12.0f, y0 + 0.15f, az - 12.0f },
                            0.0f, x3::phys::Layer::Static);
     }
-    // ---- The golden burst dais: a brass ring torus around the cab opening.
+    // ---- The golden burst dais (Phase 5): a POLISHED MARBLE inlay disc
+    // around the cab opening, ringed by the gold-tinted brass torus — the one
+    // precious surface in the works, under the roof it is about to lose.
     {
-        x3::prims::PrimMesh pm = x3::prims::makeTorus(3.2f, 0.16f, 48, 10);
-        Entity e;
-        e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
-                                       pm.index.data(), (uint32_t)pm.index.size());
-        ctx.meshes.push_back(e.mesh);
-        if (sBrass.ok) { e.tex = sBrass.albedo; e.normalTex = sBrass.normal; e.mrTex = sBrass.mr; }
-        e.baseColor[0] = kGold[0] * 0.8f; e.baseColor[1] = kGold[1] * 0.8f;
-        e.baseColor[2] = kGold[2] * 0.8f; e.baseColor[3] = 1.0f;
-        e.emissive[0] = kGold[0]; e.emissive[1] = kGold[1]; e.emissive[2] = kGold[2];
-        e.emissive[3] = 0.35f;
-        e.tag = (uint32_t)Tag::Static;
+        // Marble annulus: 12 tangent slabs ringing the cab opening (the
+        // opening itself stays OPEN — the cab rises through it). Visual
+        // inlay 7 cm proud of the deck; the slab keeps the physics.
+        for (int i = 0; i < 12; ++i) {
+            const float a = ((float)i + 0.5f) * (kTwoPi / 12.0f);
+            const float c = std::cos(a), sn = std::sin(a);
+            x3::prims::PrimMesh pm = x3::prims::makeBox(1.02f, 0.035f, 0.85f,
+                                                        0, 0, 0, 0.22f);
+            Entity e;
+            e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                           pm.index.data(), (uint32_t)pm.index.size());
+            ctx.meshes.push_back(e.mesh);
+            if (sMarble.ok) { e.tex = sMarble.albedo; e.normalTex = sMarble.normal; e.mrTex = sMarble.mr; }
+            e.baseColor[0] = 1.0f; e.baseColor[1] = 0.98f; e.baseColor[2] = 0.94f;
+            e.baseColor[3] = 1.0f;
+            e.tag = (uint32_t)Tag::Static;
+            const float xA[3] = { -sn, 0, c }, yA[3] = { 0, 1, 0 }, zA[3] = { -c, 0, -sn };
+            // Tiny per-segment y stagger: the tangent slabs overlap near the
+            // inner radius; 0.2 mm steps kill the coplanar z-fight invisibly.
+            makeXform(e.transform, xA, yA, zA,
+                      ax + 3.75f * c, y0 + 0.035f + 0.0002f * (float)i, az + 3.75f * sn);
+            s.add(e);
+        }
+        // Outer gold trim ring seating the marble into the deck.
+        x3::prims::PrimMesh tr = x3::prims::makeTorus(4.6f, 0.055f, 48, 8);
+        Entity t2;
+        t2.mesh = ctx.device.createMesh(tr.verts.data(), (uint32_t)tr.verts.size(),
+                                        tr.index.data(), (uint32_t)tr.index.size());
+        ctx.meshes.push_back(t2.mesh);
+        if (sBrass.ok) { t2.tex = sBrass.albedo; t2.normalTex = sBrass.normal; t2.mrTex = sBrass.mr; }
+        t2.baseColor[0] = kGold[0]; t2.baseColor[1] = kGold[1]; t2.baseColor[2] = kGold[2];
+        t2.baseColor[3] = 1.0f;
+        t2.emissive[0] = kGold[0]; t2.emissive[1] = kGold[1]; t2.emissive[2] = kGold[2];
+        t2.emissive[3] = 0.22f;
+        t2.tag = (uint32_t)Tag::Static;
+        const float xA2[3] = { 1, 0, 0 }, yA2[3] = { 0, 0, -1 }, zA2[3] = { 0, 1, 0 };
+        makeXform(t2.transform, xA2, yA2, zA2, ax, y0 + 0.10f, az);
+        s.add(t2);
+        // The brass ring torus (gold-tinted, restrained glow — the studs chase).
+        x3::prims::PrimMesh pm2 = x3::prims::makeTorus(3.2f, 0.16f, 48, 10);
+        Entity e2;
+        e2.mesh = ctx.device.createMesh(pm2.verts.data(), (uint32_t)pm2.verts.size(),
+                                        pm2.index.data(), (uint32_t)pm2.index.size());
+        ctx.meshes.push_back(e2.mesh);
+        if (sBrass.ok) { e2.tex = sBrass.albedo; e2.normalTex = sBrass.normal; e2.mrTex = sBrass.mr; }
+        e2.baseColor[0] = kGold[0] * 0.8f; e2.baseColor[1] = kGold[1] * 0.8f;
+        e2.baseColor[2] = kGold[2] * 0.8f; e2.baseColor[3] = 1.0f;
+        e2.emissive[0] = kGold[0]; e2.emissive[1] = kGold[1]; e2.emissive[2] = kGold[2];
+        e2.emissive[3] = 0.30f;
+        e2.tag = (uint32_t)Tag::Static;
         const float xA[3] = { 1, 0, 0 }, yA[3] = { 0, 0, -1 }, zA[3] = { 0, 1, 0 };
-        makeXform(e.transform, xA, yA, zA, ax, y0 + 0.18f, az);
-        s.add(e);
+        makeXform(e2.transform, xA, yA, zA, ax, y0 + 0.18f, az);
+        s.add(e2);
     }
 
-    // ---- PROP SPAN: the pneumatic capsule (ONE entity; pose = path formula).
+    // ---- GLIMVALE DRESSING: dispatch clutter by the boarding platform, and
+    // an arch framing the walk from the dais toward the tube fan.
+    dress(ctx, "Glimvale/SM_Stylized_Box_var2.glb", ax + 16.8f, y0 + 0.35f, az + 16.6f, 0.8f);
+    dress(ctx, "Glimvale/SM_Stylized_Box_var1.glb", ax + 17.6f, y0 + 0.25f, az + 15.2f, 2.6f);
+    dress(ctx, "Glimvale/SM_Stylized_Barrel.glb", ax + 15.2f, y0, az + 17.4f, 2.0f);
+    ctx.physics.addBox({ 1.5f, 0.55f, 1.5f }, { ax + 16.6f, y0 + 0.55f, az + 16.4f },
+                       0.0f, x3::phys::Layer::Static);
+    dress(ctx, "Glimvale/SM_Stylized_Arch.glb", ax - 7.5f, y0, az - 4.0f, 0.6f, 0.85f, kArchTint);
+    dress(ctx, "Glimvale/SM_Large_Wall_01.glb", ax + 1.5f, y0, az - 19.72f, 1.5708f);
+
+    // ---- PROP SPAN: the pneumatic capsule. STARFORGE HERO HOOK first
+    // (FactoryProps/PneumaticCapsule.glb — contract: metres, origin at the
+    // capsule CENTER, travel axis +Y so the path basis carries it); fallback:
+    // the Phase-3 brass cylinder in worn-brass PBR. Pose = path formula.
     room.propEntFirst = s.size();
     {
-        x3::prims::PrimMesh pm = x3::prims::makeCylinder(0.30f, 0.30f, 0.45f, 14);
-        Entity e;
-        e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
-                                       pm.index.data(), (uint32_t)pm.index.size());
-        ctx.meshes.push_back(e.mesh);
-        if (sBrass.ok) { e.tex = sBrass.albedo; e.normalTex = sBrass.normal; e.mrTex = sBrass.mr; }
-        e.baseColor[0] = kBrassTint[0]; e.baseColor[1] = kBrassTint[1];
-        e.baseColor[2] = kBrassTint[2]; e.baseColor[3] = 1.0f;
-        e.emissive[0] = kBrassGlow[0]; e.emissive[1] = kBrassGlow[1];
-        e.emissive[2] = kBrassGlow[2]; e.emissive[3] = 0.45f;
-        e.tag = (uint32_t)Tag::Prop;
-        yawXform(e.transform, 0.0f, ax + kCapsPath[0][0], y0 + kCapsPath[0][1],
-                 az + kCapsPath[0][2]);
-        s.add(e);
+        const int n = heroHook(ctx, "FactoryProps/PneumaticCapsule.glb",
+                               "PneumaticCapsule",
+                               ax + kCapsPath[0][0], y0 + kCapsPath[0][1],
+                               az + kCapsPath[0][2], 0.0f, 1.0f, /*isProp*/true,
+                               &room.heroXf);
+        if (n > 0) {
+            room.heroCapsPrims = (uint32_t)n;
+        } else {
+            x3::prims::PrimMesh pm = x3::prims::makeCylinder(0.30f, 0.30f, 0.45f, 14);
+            Entity e;
+            e.mesh = ctx.device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                           pm.index.data(), (uint32_t)pm.index.size());
+            ctx.meshes.push_back(e.mesh);
+            if (sBrass.ok) { e.tex = sBrass.albedo; e.normalTex = sBrass.normal; e.mrTex = sBrass.mr; }
+            e.baseColor[0] = kBrassTint[0]; e.baseColor[1] = kBrassTint[1];
+            e.baseColor[2] = kBrassTint[2]; e.baseColor[3] = 1.0f;
+            e.emissive[0] = kBrassGlow[0]; e.emissive[1] = kBrassGlow[1];
+            e.emissive[2] = kBrassGlow[2]; e.emissive[3] = 0.42f;
+            e.tag = (uint32_t)Tag::Prop;
+            yawXform(e.transform, 0.0f, ax + kCapsPath[0][0], y0 + kCapsPath[0][1],
+                     az + kCapsPath[0][2]);
+            s.add(e);
+        }
     }
     room.propEntCount = s.size() - room.propEntFirst;
 
     // ---- GLOW SPAN: 12 dais studs (chase) + 5 tube base collars ------------
+    // Studs authored at the warm cap (the chase lead brightens transiently);
+    // collars are cyan (cool) and live under the 0.9 cool cap.
     room.glowEntFirst = s.size();
     for (int i = 0; i < 12; ++i)
         addRingGlow(ctx, ax, y0 + 0.32f, az, 3.2f, ((float)i / 12.0f) * kTwoPi,
-                    0.22f, 0.05f, 0.07f, kGold, 0.9f);
+                    0.22f, 0.05f, 0.07f, kGold, 0.40f);
     for (int i = 0; i < 5; ++i)
         addGlow(ctx, ax - 18.7f, y0 + 1.75f, az + kTubeBase[i][0],
-                0.10f, 0.10f, 0.75f, 0.0f, room.accent, 1.6f);
+                0.10f, 0.10f, 0.75f, 0.0f, room.accent, 0.75f);
     room.glowEntCount = s.size() - room.glowEntFirst;
 }
 
@@ -1317,11 +1772,22 @@ void tickRoomTube(Scene& scene, AnnexRoom& room, float t) {
     const float zA[3] = { xA[1]*d[2] - xA[2]*d[1],
                           xA[2]*d[0] - xA[0]*d[2],
                           xA[0]*d[1] - xA[1]*d[0] };
-    Entity& cap = scene.get(room.propEntFirst);
-    makeXform(cap.transform, xA, d, zA,
-              ax + kCapsPath[seg][0] + (kCapsPath[seg + 1][0] - kCapsPath[seg][0]) * u,
-              y0 + kCapsPath[seg][1] + (kCapsPath[seg + 1][1] - kCapsPath[seg][1]) * u,
-              az + kCapsPath[seg][2] + (kCapsPath[seg + 1][2] - kCapsPath[seg][2]) * u);
+    const float capX = ax + kCapsPath[seg][0] + (kCapsPath[seg + 1][0] - kCapsPath[seg][0]) * u;
+    const float capY = y0 + kCapsPath[seg][1] + (kCapsPath[seg + 1][1] - kCapsPath[seg][1]) * u;
+    const float capZ = az + kCapsPath[seg][2] + (kCapsPath[seg + 1][2] - kCapsPath[seg][2]) * u;
+    if (room.heroCapsPrims == 0) {
+        Entity& cap = scene.get(room.propEntFirst);
+        makeXform(cap.transform, xA, d, zA, capX, capY, capZ);
+    } else {
+        // Hero capsule: re-pose every drawable as obj(path basis) * heroXf[j]
+        // (baked node transforms; no per-frame heap — mulMat4 in place).
+        float obj[16];
+        makeXform(obj, xA, d, zA, capX, capY, capZ);
+        for (uint32_t j = 0; j < room.heroCapsPrims; ++j) {
+            Entity& e = scene.get(room.propEntFirst + j);
+            x3::asset::mulMat4(obj, &room.heroXf[(size_t)j * 16], e.transform);
+        }
+    }
     // Arrival edge (fwd -> pause@L, back -> pause@0): bump the host's cue
     // counter once per docking. stateB remembers the previous phase state.
     if ((float)phState != room.stateB) {
@@ -1335,16 +1801,17 @@ void tickRoomTube(Scene& scene, AnnexRoom& room, float t) {
         }
         room.stateB = (float)phState;
     }
-    // Glow: the dais studs run a golden CHASE (the burst invitation); the tube
-    // collars breathe cyan.
+    // Glow: the dais studs run a golden CHASE (the burst invitation — the
+    // moving lead is a transient highlight over the marble, tail in the warm
+    // band); the tube collars breathe cyan under the cool cap.
     for (uint32_t i = 0; i < room.glowEntCount; ++i) {
         Entity& e = scene.get(room.glowEntFirst + i);
         if (i < 12) {
             const int lead = (int)(t * 6.0f) % 12;
             const int dist = ((int)i - lead + 12) % 12;
-            e.emissive[3] = (dist == 0) ? 1.8f : (dist < 3 ? 0.9f : 0.35f);
+            e.emissive[3] = (dist == 0) ? 0.85f : (dist < 3 ? 0.42f : 0.16f);
         } else {
-            e.emissive[3] = 1.3f + 0.5f * std::sin(t * 1.1f + (float)i * 1.9f);
+            e.emissive[3] = 0.70f + 0.15f * std::sin(t * 1.1f + (float)i * 1.9f);
         }
     }
 }
