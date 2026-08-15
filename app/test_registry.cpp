@@ -156,6 +156,7 @@
 #include "storm.h"
 #include "precip_fx.h"
 #include "tunnel_fitout.h"
+#include "tunnel_rooms.h"        // x3::game::runTunnelRoomsSelfTest (--test-tunnelrooms)
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
 #include "speaking_monster.h"    // x3::apphost::SpeakingMonster (--demo-dialog)
 
@@ -1110,6 +1111,13 @@ int dispatchTests(const TestFlags& tf) {
                     "(lay-by placement + portal tangent + SH4 profile rate + lamp burnout as "
                     "MAINTENANCE not noise + walkway breaks + determinism)...");
         return x3::game::runTunnelFitoutSelfTest() ? 0 : 1;
+    }
+    if (tf.testTunnelRooms) {
+        x3::logInfo("running TUNNEL ROOMS/HALLS/STAIRS self-test "
+                    "(room envelope measured against the real backfill lid + depth behind the door + "
+                    "a stair that is a stair + reach AND escape + a mile of bore is still 3 rooms + "
+                    "THREE NEGATIVE CONTROLS)...");
+        return x3::game::runTunnelRoomsSelfTest() ? 0 : 1;
     }
     if (tf.testPrecip) {
         x3::logInfo("running PRECIPITATION self-test "

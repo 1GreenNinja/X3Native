@@ -424,6 +424,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testStorm    = o.testStorm;
         _tf.testPrecip   = o.testPrecip;
         _tf.testTunnelFitout = o.testTunnelFitout;
+        _tf.testTunnelRooms = o.testTunnelRooms;
         _tf.testEcology = o.testEcology;
         _tf.testCrowd = o.testCrowd;
         _tf.testNpcLife = o.testNpcLife;
