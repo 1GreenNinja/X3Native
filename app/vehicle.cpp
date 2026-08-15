@@ -176,6 +176,10 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // 2400 Nm peak, but the CURVE is what makes it a Turbo. Tim, 2026-08-15:
     // "The engine really sucks. I need it to rev faster, and pull HARD. Make
     // this Porsche Turbo Feel like it should."
+    // NOTE (2026-08-15, measured --test-vehicle): at this torque the rears spin
+    // hard enough that traction control sits at its 0.15 floor for the whole
+    // launch — the "lead weights" feel is TC cutting the throttle, not a lack of
+    // power. Live-tune with `car_torque` / `car_grip` / `car_tc` in the console.
     vd.maxEngineTorque = 2400.0f;
     // FLAT-SIX CHARACTER. A 993-era Porsche runs to ~7200 and gets there fast;
     // the old 6500 with Jolt's default 0.5 flywheel felt like a diesel.
@@ -194,13 +198,17 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // 0.28: revs noticeably faster than 0.35 without the gear-hunting 0.18 caused
     // (the debounce in JoltVehicle now guards that anyway).
     vd.engineInertia = 0.28f;
-    // Clutch strong enough that the ENGINE is the bottleneck, not the coupling.
-    // Jolt's clutch is a viscous drag (torque ~ clutchStrength * slip): at the
-    // default 10 the engine pins at redline and the transmitted torque becomes
-    // INDEPENDENT of engine torque — every power upgrade would be masked. 100
-    // keeps the coupling tight so peak-torque changes are felt at the wheels
-    // (verified by --test-vehparts P3/P6 tick ordering).
-    vd.clutchStrength = 100.0f;
+    // Clutch must LOCK, not drag. Jolt's clutch is viscous — Torque =
+    // clutchStrength * (engine_rpm - wheel_rpm) — so too low a value lets the
+    // engine free-rev away from the wheels. Measured (--test-vehicle) at 100: the
+    // engine sat 6000 rpm while the car did 15 mph, and after 4 s of full throttle
+    // it had only reached 15 m/s. That slip is the "lead weights" feel, and it is
+    // why every torque escalation (700 -> 2400 Nm) never made the car faster —
+    // the power was burned in the clutch, not sent to the road. A real clutch
+    // locks (near-zero slip), so the engine must drag the CAR's reflected inertia,
+    // which is what actually accelerates it. 10000 keeps slip under ~2 rpm at
+    // 2400 Nm (2400 / 10000 = 0.24 rad/s).
+    vd.clutchStrength = 10000.0f;
     // SIX-SPEED, SHORT. 993-family ratios with a 4.2 final drive instead of
     // Jolt's 3.42, which pulls 1st down from a ludicrous 64 mph at redline to
     // ~44 and puts 6th at ~168. Now the engine actually sweeps its range in
@@ -587,6 +595,11 @@ bool runDriveEnterExitSelfTest() {
         x3::phys::VehicleInput in{};
         in.throttle = 1.0f;
         car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+        if ((i % 60) == 59)
+            x3::logInfo("[drive-test] t=" + std::to_string((i + 1) * dt) + "s v=" +
+                        std::to_string(car.forwardSpeed()) + " rpm=" + std::to_string(car.engineRPM()) +
+                        " gear=" + std::to_string(car.gear()) + " thr=" +
+                        std::to_string(car.effectiveThrottle()));
     }
     float c1[3]; car.chassisPos(c1);
     const float dx = c1[0] - c0[0], dz = c1[2] - c0[2];
