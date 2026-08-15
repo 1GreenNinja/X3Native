@@ -421,7 +421,22 @@ int dispatchTests(const TestFlags& tf) {
         // Mock plumbing always; the real-model round-trip is gated on the .gguf
         // existing (see assets/models/llm/README.md for the download command).
         x3::logInfo("running in-engine LLM (NPC minds) self-test...");
-        const std::string llmModel = x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+        // RESOLVE ANY .gguf, like app_run.cpp does. Hardcoding the 3B filename
+        // here meant the real-model half of this suite SKIPPED silently on a box
+        // that had a perfectly good 7B sitting next to it -- and reported 26/26
+        // green while doing it. A test that goes quiet when the asset it needs is
+        // present under a different name is worse than one that fails: it tells
+        // you the thing works when nothing ever ran it. Third place in this tree
+        // with the same hardcoded string; the other two were the editor and the
+        // game, which had already drifted apart from each other.
+        namespace fs = std::filesystem;
+        const std::string llmDir = x3::game::assetRoot() + "/models/llm";
+        std::string llmModel = llmDir + "/qwen2.5-3b-instruct-q4_k_m.gguf";
+        if (!fs::exists(llmModel)) {
+            std::error_code lec;
+            for (const auto& e : fs::directory_iterator(llmDir, lec))
+                if (e.path().extension() == ".gguf") { llmModel = e.path().string(); break; }
+        }
         return x3::llm::runLlmSelfTest(llmModel.c_str()) ? 0 : 1;
     }
     if (tf.testEcs) {

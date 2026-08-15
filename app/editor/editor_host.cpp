@@ -4,6 +4,8 @@
 // the edit-mode fly-cam, and bridges the headless brushes[] list into the live
 // Scene + Jolt so the greybox is walkable in Play mode.
 #include "editor_host.h"
+
+#include <filesystem>
 #include "editor_armory.h"
 #include "canon_import.h"
 
@@ -512,17 +514,51 @@ void EditorHost::aiEnsureModel() {
     m_aiTried = true;
     m_llm = x3::llm::createLlmSystem();
     if (!m_llm) { m_aiStatus = "no LLM backend compiled in"; return; }
-    const std::string gguf = x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+    // RESOLVE THE MODEL THE SAME WAY THE GAME DOES. This used to hardcode the
+    // 3B filename with no fallback, while app_run.cpp (VIGIL's path) scans the
+    // directory for ANY .gguf. The two disagreeing is a silent trap: drop a 7B
+    // in to get an Apache-2.0 model for a commercial build and VIGIL picks it up
+    // in-game while the Level Architect goes on reporting "model not found" --
+    // the same feature working in one binary and dead in the other, for no
+    // reason a user could ever guess. Same rule in both places now.
+    namespace fs = std::filesystem;
+    const std::string dir = x3::game::assetRoot() + "/models/llm";
+    std::string gguf = dir + "/qwen2.5-3b-instruct-q4_k_m.gguf";
+    if (!fs::exists(gguf)) {
+        gguf.clear();
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(dir, ec)) {
+            if (e.path().extension() == ".gguf") { gguf = e.path().string(); break; }
+        }
+        if (gguf.empty()) {
+            m_aiStatus = "no .gguf in assets/models/llm (the AI panel needs a model)";
+            m_llm.reset();
+            return;
+        }
+    }
+    aiLoadModel(gguf);
+}
+
+// Load one specific model. Shared by the lazy path above and the settings
+// picker, so a model chosen from the dropdown gets EXACTLY the same options as
+// one found automatically -- a picker that quietly loaded at a different context
+// size would make "it works when it autoloads but not when I choose it" a real
+// and completely baffling bug report.
+void EditorHost::aiLoadModel(const std::string& ggufPath) {
+    if (!m_llm) m_llm = x3::llm::createLlmSystem();
+    if (!m_llm) { m_aiStatus = "no LLM backend compiled in"; return; }
     x3::llm::ModelOpts opts;
     opts.contextTokens   = 4096;   // the level description + the schema is not small
     opts.maxOutputTokens = 768;    // a room is ~6 ops; give it room to finish the JSON
     opts.temperature     = 0.2f;   // this is a STRUCTURED-OUTPUT task, not a poem
     opts.seed            = 1;      // reproducible plans for the same sentence
-    if (!m_llm->loadModel(gguf, opts)) {
+    if (!m_llm->loadModel(ggufPath, opts)) {
         m_llm.reset();
-        m_aiStatus = "model not found: assets/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+        m_aiModelPath.clear();
+        m_aiStatus = "model failed to load: " + ggufPath;
         return;
     }
+    m_aiModelPath = ggufPath;
     m_aiChat = m_llm->startChat(aiSystemPrompt());
     m_aiStatus = (m_aiChat != x3::llm::kInvalidChat) ? "ready" : "could not open a chat";
 }
@@ -769,6 +805,42 @@ void EditorHost::drawAiPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& sc
 
     if (!m_aiStatus.empty()) {
         ImGui::TextDisabled("%s", m_aiStatus.c_str());
+    }
+
+    // ---- MODEL PICKER ---------------------------------------------------
+    // Which brain is loaded, and a way to change it without restarting. This
+    // exists because the model is not one fixed file: the default 3B ships under
+    // a NON-COMMERCIAL research licence while its 7B sibling is Apache-2.0, so a
+    // build meant to be sold has to run a different one -- and until now the
+    // filename was compiled in, which made that a code change instead of a
+    // choice. Sizes are shown because on a 4 GB model the difference between
+    // "loading" and "hung" is the only question you actually have.
+    if (ImGui::CollapsingHeader("Model")) {
+        namespace fs = std::filesystem;
+        const std::string dir = x3::game::assetRoot() + "/models/llm";
+        ImGui::TextDisabled("Loaded: %s",
+                            m_aiModelPath.empty() ? "(none)"
+                                                  : fs::path(m_aiModelPath).filename().string().c_str());
+        std::error_code ec;
+        bool any = false;
+        for (const auto& e : fs::directory_iterator(dir, ec)) {
+            if (e.path().extension() != ".gguf") continue;
+            any = true;
+            const std::string full = e.path().string();
+            const std::string base = e.path().filename().string();
+            const double gb = (double)fs::file_size(e.path(), ec) / 1073741824.0;
+            char row[192];
+            std::snprintf(row, sizeof(row), "%s  (%.2f GB)##m_%s", base.c_str(), gb, base.c_str());
+            const bool isCur = (full == m_aiModelPath);
+            if (ImGui::Selectable(row, isCur) && !isCur) {
+                m_aiStatus = "loading " + base + " ...";
+                aiLoadModel(full);
+            }
+        }
+        if (!any) {
+            ImGui::TextWrapped("No .gguf in assets/models/llm. Drop one in; "
+                               "any file with that extension is offered here.");
+        }
     }
 
     // ---- the PROPOSED plan (read-only until Apply) ----
@@ -1197,9 +1269,44 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     if (m_state.hasBrushSelection()) {
         int si = m_state.selIndex();
         BlockoutBrush& b = m_doc.brushes[si];
-        ImGui::Text("Selected: %s  [%s]", b.name.c_str(), EditorState::brushTypeName(b.type));
         const float step = kGridSteps[m_gridSel];
         bool moved = false, resized = false, rotated = false;
+
+        // ---- NAME. It was display-only, which meant the Outliner filled up with
+        // "Box 7 / Box 8 / Box 9" and stayed that way: the one field that makes a
+        // 200-brush level navigable could not be edited anywhere in the tool.
+        {
+            char nameBuf[96];
+            std::snprintf(nameBuf, sizeof(nameBuf), "%s", b.name.c_str());
+            if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf),
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                m_state.beginBrushEdit(si);
+                b.name = nameBuf;
+                m_state.commitBrushEdit();
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit() && b.name != nameBuf) {
+                m_state.beginBrushEdit(si);
+                b.name = nameBuf;
+                m_state.commitBrushEdit();
+            }
+        }
+
+        // ---- TYPE. Also fixed at creation until now: picking Box when you meant
+        // Ramp meant deleting and rebuilding, losing the brush's position, size,
+        // material and name with it. The shape is just a field; let it be one.
+        {
+            const char* kTypes[] = { "Box", "Ramp", "Cylinder", "Stairs" };
+            int cur = (int)b.type; if (cur < 0 || cur > 3) cur = 0;
+            if (ImGui::Combo("Type", &cur, kTypes, 4)) {
+                if ((uint32_t)cur != b.type) {
+                    m_state.beginBrushEdit(si);
+                    b.type = (uint32_t)cur;
+                    m_state.commitBrushEdit();
+                    resized = true;                 // the mesh is a different shape now
+                }
+            }
+        }
+        ImGui::Separator();
 
         // Tool readout (drives the viewport gizmo). Q select / W move.
         ImGui::TextDisabled("Tool: %s  (Q select, W move, Ctrl+Z/Y undo/redo)",
@@ -1254,6 +1361,36 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         }
         if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
         if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+
+        // ---- PROPORTIONAL SCALE. A genuine slider, not another drag: the three
+        // Size rows above can already set any box, but the common operation --
+        // "same shape, bigger" -- took three coordinated drags and usually came
+        // out slightly wrong. Anchored on the size the brush had when the drag
+        // STARTED, not on its live size, because compounding a multiplier against
+        // its own output every frame makes the brush run away exponentially while
+        // you hold the mouse still. That bug is the reason this is a two-line
+        // snapshot rather than one line.
+        {
+            static float uniform = 1.0f;
+            static float baseSize[3] = { 1, 1, 1 };
+            static int   uniformFor = -1;
+            if (ImGui::SliderFloat("Scale x", &uniform, 0.1f, 8.0f, "%.2fx")) {
+                if (uniformFor == si) {
+                    for (int a = 0; a < 3; ++a)
+                        b.size[a] = std::max(0.25f, m_state.snapValue(baseSize[a] * uniform));
+                    resized = true;
+                }
+            }
+            if (ImGui::IsItemActivated()) {
+                m_state.beginBrushEdit(si);
+                for (int a = 0; a < 3; ++a) baseSize[a] = b.size[a];
+                uniformFor = si;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                m_state.commitBrushEdit();
+                uniform = 1.0f; uniformFor = -1;    // re-arm at 1x for the next brush
+            }
+        }
 
         ImGui::PopItemWidth();   // MUST balance the PushItemWidth above: an unbalanced
                                  // push leaks into every panel drawn after this one.

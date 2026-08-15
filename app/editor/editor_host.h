@@ -270,6 +270,12 @@ private:
     AiPlan          m_aiPlan;             // the parsed, VALIDATED, not-yet-applied plan
     bool            m_aiHavePlan = false;
     void aiEnsureModel();                 // lazy load (safe to call every frame)
+    // Load a SPECIFIC .gguf, replacing whatever is loaded. Separate from
+    // aiEnsureModel() because that one is a once-per-session lazy path guarded by
+    // m_aiTried; the settings picker must be able to switch models mid-session
+    // without restarting the editor, which is the whole point of a picker.
+    void aiLoadModel(const std::string& ggufPath);
+    std::string     m_aiModelPath;        // the .gguf actually loaded (empty = none)
     void aiSubmit();                      // build context + prompt, fire the generation
     void aiPoll();                        // drain tokens; parse when the reply completes
     void drawAiPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
