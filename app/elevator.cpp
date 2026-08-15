@@ -312,6 +312,83 @@ int ElevatorSystem::insertStopY(float centerY) {
 }
 
 // ===========================================================================
+// T2 — STRAIGHT-SEGMENT 3D MOTION. A ride is a ROUTE (BFS over the rails) of
+// straight legs; each leg runs the full trapezoid accel/cruise/decel profile
+// on its arclength (the cab STOPS at corners — deliberate, no curve math).
+// ===========================================================================
+int ElevatorSystem::nearestStopTo3D(const x3::phys::Vec3& p) const {
+    int best = 0; float bd = 1e30f;
+    for (int i = 0; i < (int)m_stops.size(); ++i) {
+        const float dx = m_stops[i].center.x - p.x;
+        const float dy = m_stops[i].center.y - p.y;
+        const float dz = m_stops[i].center.z - p.z;
+        const float d = dx * dx + dy * dy + dz * dz;
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+
+void ElevatorSystem::beginLeg(int stopIndex) {
+    m_segFrom = m_pos;
+    m_segTo   = m_stops[stopIndex].center;
+    const float dx = m_segTo.x - m_segFrom.x;
+    const float dy = m_segTo.y - m_segFrom.y;
+    const float dz = m_segTo.z - m_segFrom.z;
+    m_segLen = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (m_segLen > 1e-6f)
+        m_segDir = x3::phys::Vec3{ dx / m_segLen, dy / m_segLen, dz / m_segLen };
+    else
+        m_segDir = x3::phys::Vec3{};
+    m_s = 0.0f;
+}
+
+void ElevatorSystem::buildRouteTo(int stopIndex) {
+    m_route.clear();
+    const int n = (int)m_stops.size();
+    const int start = nearestStopTo3D(m_pos);
+    if (n > 0 && start != stopIndex) {
+        std::vector<int> prev(n, -1);
+        std::vector<int> q; q.reserve(n);
+        q.push_back(start);
+        prev[start] = start;
+        for (size_t h = 0; h < q.size(); ++h) {
+            const int u = q[h];
+            if (u == stopIndex) break;
+            for (int v : m_adj[u])
+                if (prev[v] < 0) { prev[v] = u; q.push_back(v); }
+        }
+        if (prev[stopIndex] >= 0) {
+            for (int v = stopIndex; v != start; v = prev[v]) m_route.push_back(v);
+            std::reverse(m_route.begin(), m_route.end());
+        }
+    }
+    // Same stop, or a disconnected graph: one direct leg (legacy behavior — the
+    // old scalar core drove straight at the target Y no matter what).
+    if (m_route.empty()) m_route.push_back(stopIndex);
+    // Collapse collinear runs so a straight chain rides as ONE leg. This is what
+    // keeps legacy vertical cabs identical: a call 0->5 over the full chain is a
+    // single segment — floors pass without stopping, exactly the old behavior.
+    {
+        x3::phys::Vec3 prevPt = m_pos;
+        size_t i = 0;
+        while (i + 1 < m_route.size()) {
+            const x3::phys::Vec3& a = m_stops[m_route[i]].center;
+            const x3::phys::Vec3& b = m_stops[m_route[i + 1]].center;
+            const float d1x = a.x - prevPt.x, d1y = a.y - prevPt.y, d1z = a.z - prevPt.z;
+            const float d2x = b.x - a.x,      d2y = b.y - a.y,      d2z = b.z - a.z;
+            const float l1 = std::sqrt(d1x * d1x + d1y * d1y + d1z * d1z);
+            const float l2 = std::sqrt(d2x * d2x + d2y * d2y + d2z * d2z);
+            if (l1 < 1e-4f) { m_route.erase(m_route.begin() + i); continue; }   // already there
+            const float dot = (l2 < 1e-4f) ? 1.0f
+                            : (d1x * d2x + d1y * d2y + d1z * d2z) / (l1 * l2);
+            if (dot > 0.9999f) { m_route.erase(m_route.begin() + i); continue; } // collinear
+            prevPt = a; ++i;
+        }
+    }
+    beginLeg(m_route.front());
+}
+
+// ===========================================================================
 // CALL VERBS
 // ===========================================================================
 void ElevatorSystem::callTo(int stopIndex) {
@@ -380,12 +457,12 @@ bool ElevatorSystem::playerRiding(const x3::phys::Vec3& feet) const {
 // UPDATE — dispatch to the legacy linear move or the souped-up FSM.
 // ===========================================================================
 float ElevatorSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics) {
-    if (!m_built || dt <= 0.0f) return 0.0f;
+    if (!m_built || dt <= 0.0f) { m_carry = x3::phys::Vec3{}; return 0.0f; }
     return m_fsm ? fsmUpdate(dt, scene, physics) : legacyUpdate(dt, scene, physics);
 }
 
 float ElevatorSystem::legacyUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics) {
-    if (m_state == ElevState::Idle) return 0.0f;
+    if (m_state == ElevState::Idle) { m_carry = x3::phys::Vec3{}; return 0.0f; }
 
     const float target = m_stopsY[m_target];
     const float dy = target - m_pos.y;
@@ -402,6 +479,7 @@ float ElevatorSystem::legacyUpdate(float dt, Scene& scene, x3::phys::IPhysicsWor
         m_pos.y += moved;
     }
     syncBodyAndTransform(scene, physics);
+    m_carry = x3::phys::Vec3{ 0.0f, moved, 0.0f };   // legacy core is vertical-only
     return moved;
 }
 
@@ -453,6 +531,9 @@ std::string ElevatorSystem::floorLabel(int stopIndex) const {
 
 void ElevatorSystem::startTravelTo(int stopIndex) {
     m_target = std::clamp(stopIndex, 0, (int)m_stopsY.size() - 1);
+    // T2: plan the route (BFS over the rails; collapses to a single straight leg
+    // on legacy vertical cabs) and arm the first segment.
+    buildRouteTo(m_target);
     // Begin by closing the doors (DOORS_CLOSING -> ACCELERATING when shut). If the
     // doors are already shut, jump straight to acceleration.
     if (m_doorPct > 0.0f) {
@@ -486,14 +567,23 @@ void ElevatorSystem::freefall() {
 
 float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics) {
     m_stateTime += dt;
-    const float startY = m_pos.y;
+    const x3::phys::Vec3 prevPos = m_pos;
 
-    const float targetY = m_stopsY[m_target];
-    const float dist = std::fabs(targetY - m_pos.y);
-    const float dir  = (targetY > m_pos.y) ? 1.0f : -1.0f;
+    // T2: travel is the active straight segment — the trapezoid profile advances
+    // arclength m_s toward m_segLen (vertical graphs degenerate to the old
+    // scalar math exactly: same profile on L = |dY|).
+    const float dist = std::max(0.0f, m_segLen - m_s);   // remaining leg arclength
     // In disco slow mode the EFFECTIVE motion dt is scaled down while travelling
     // (ported from eDt in _updateElevator) — a dreamy 1/4-speed glide.
     const float eDt = (m_discoSlow && m_fsmSpeed > 0.5f) ? dt * kDiscoSlow : dt;
+    // Advance the cab along the segment by a step of arclength.
+    auto advance = [&](float step) {
+        m_s = std::min(m_segLen, m_s + step);
+        m_pos.x = m_segFrom.x + m_segDir.x * m_s;
+        m_pos.y = m_segFrom.y + m_segDir.y * m_s;
+        m_pos.z = m_segFrom.z + m_segDir.z * m_s;
+        m_totalDist += step;
+    };
 
     switch (m_state) {
         case ElevState::Idle:
@@ -521,20 +611,19 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
 
         case ElevState::Accelerating:
             m_fsmSpeed = std::min(m_fsmSpeed + m_tune.accel * eDt, m_tune.maxSpeed);
-            m_pos.y += dir * m_fsmSpeed * eDt;
-            m_totalDist += m_fsmSpeed * eDt;
+            advance(m_fsmSpeed * eDt);
             if (m_fsmSpeed >= m_tune.maxSpeed) { m_state = ElevState::Cruising; m_stateTime = 0.0f; }
             if (dist < m_tune.decelDist)       { m_state = ElevState::Decelerating; m_stateTime = 0.0f; }
             break;
 
         case ElevState::Cruising:
             m_fsmSpeed = m_tune.maxSpeed * (m_discoSlow ? kDiscoSlow : 1.0f);
-            m_pos.y += dir * m_fsmSpeed * eDt;
-            m_totalDist += m_fsmSpeed * eDt;
+            advance(m_fsmSpeed * eDt);
             // THE CABLE SLIPS (armed, once, never in disco): on a LONG descent,
             // past the shaft's halfway line, the cable lets go. Lights die, the
             // muzak cuts, the cab drops — the brakes catch it in the Freefall case.
-            if (m_slipArmed && !m_slipDone && !m_disco && dir < 0.0f &&
+            // (T2: "descending" is the leg direction now — a lateral leg never slips.)
+            if (m_slipArmed && !m_slipDone && !m_disco && m_segDir.y < -0.5f &&
                 dist > 18.0f && !m_stopsY.empty() &&
                 m_pos.y < (m_stopsY.front() + m_stopsY.back()) * 0.5f) {
                 m_slipDone = true;
@@ -562,12 +651,21 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
 
         case ElevState::Decelerating:
             m_fsmSpeed = std::max(m_fsmSpeed - m_tune.decel * eDt, 0.5f);
-            m_pos.y += dir * m_fsmSpeed * eDt;
-            m_totalDist += m_fsmSpeed * eDt;
+            advance(m_fsmSpeed * eDt);
             if (dist < 0.08f) {
-                m_pos.y = targetY;
+                m_pos = m_segTo;                 // snap to the waypoint (old: targetY)
+                m_s = m_segLen;
                 m_fsmSpeed = 0.0f;
-                m_state = ElevState::Arriving;
+                if (m_route.size() > 1) {
+                    // Corner waypoint: the cab STOPS here, then runs the next
+                    // leg's full accel/decel profile (deliberate, no curve math;
+                    // doors stay sealed — this is a waypoint, not an arrival).
+                    m_route.erase(m_route.begin());
+                    beginLeg(m_route.front());
+                    m_state = ElevState::Accelerating;
+                } else {
+                    m_state = ElevState::Arriving;
+                }
                 m_stateTime = 0.0f;
             }
             break;
@@ -709,8 +807,14 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
         // (`nearest`, not `near`: asset_root.h reaches windows.h, whose ancient
         //  `near`/`far` segment-model macros would eat the identifier.)
         int nearest = -1; float nd = 1.0e30f;
-        for (int i = 0; i < (int)m_stopsY.size(); ++i) {
-            float d = std::fabs(m_pos.y - m_stopsY[i]);
+        for (int i = 0; i < (int)m_stops.size(); ++i) {
+            // T2: 3D distance (identical to the old |dY| on vertical cabs, where
+            // every stop shares the shaft XZ; on a lateral leg the blip fires as
+            // the cab actually PASSES a stop, not any stop at the same height).
+            const float ddx = m_pos.x - m_stops[i].center.x;
+            const float ddy = m_pos.y - m_stops[i].center.y;
+            const float ddz = m_pos.z - m_stops[i].center.z;
+            float d = std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
             if (d < nd) { nd = d; nearest = i; }
         }
         if (nearest != m_lastDingStop && nd < 1.5f) {
@@ -808,7 +912,12 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
 
     syncBodyAndTransform(scene, physics);
     layoutVisuals(scene);
-    return m_pos.y - startY;
+    // T2: publish the FULL cab delta; the legacy return is its Y (exact old
+    // semantics — vertical rides return exactly what they always did).
+    m_carry.x = m_pos.x - prevPos.x;
+    m_carry.y = m_pos.y - prevPos.y;
+    m_carry.z = m_pos.z - prevPos.z;
+    return m_carry.y;
 }
 
 void ElevatorSystem::updateMotorAudio(float dt) {

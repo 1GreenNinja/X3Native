@@ -1424,6 +1424,51 @@ bool runElevatorSelfTest() {
               "E7b legacy stopY reads the Y of a lateral stop (center intact)");
     }
 
+    // ---- E8/E9: a lateral leg travels on X with the trapezoid profile (Y flat),
+    // and carryDelta() integrates to the full segment vector (the Vec3 rider
+    // carry — hosts add this to rider positions to carry them sideways).
+    {
+        ElevatorSystem ev;
+        std::vector<ElevatorSystem::Stop> stops = {
+            { {0.0f,  2.0f, 0.0f}, "F1",    false },
+            { {0.0f, 12.0f, 0.0f}, "F3",    false },
+            { {60.0f, 12.0f, 0.0f}, "ANNEX", true },
+        };
+        std::vector<std::pair<int, int>> rails = { {0, 1}, {1, 2} };
+        ev.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 1);
+        ev.enableFsm(true);
+        ev.unlockHidden();
+        ev.callTo(2);                        // from stop 1 (0,12,0) to (60,12,0)
+        float maxYDev = 0.0f, endX = 0.0f;
+        x3::phys::Vec3 acc{};                // E9: carryDelta integrates the leg
+        for (int i = 0; i < 3000; ++i) {     // 50 s at 60 Hz — plenty
+            ev.update(kFixedDt, scene, *physics);
+            const x3::phys::Vec3& d = ev.carryDelta();
+            acc.x += d.x; acc.y += d.y; acc.z += d.z;
+            const float yDev = std::fabs(ev.cabTopY() - (12.0f + 0.25f));
+            if (yDev > maxYDev) maxYDev = yDev;
+            endX = ev.cabCenter().x;
+            if (ev.state() == ElevState::DoorsOpen) break;
+        }
+        check(maxYDev < 0.01f, "E8 lateral leg keeps Y flat");
+        check(std::fabs(endX - 60.0f) < 0.05f, "E8b lateral leg arrives at x=60");
+        check(std::fabs(acc.x - 60.0f) < 0.1f && std::fabs(acc.y) < 0.1f,
+              "E9 carryDelta sums to (60,0,0) across the lateral leg");
+
+        // E9b: BFS multi-leg routing — a call across the corner stop rides the
+        // vertical leg, stops at the corner (deliberate), then the lateral leg.
+        ElevatorSystem ev2;
+        ev2.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 0);
+        ev2.enableFsm(true);
+        ev2.unlockHidden();
+        ev2.callTo(2);                       // 0 -> 1 (corner) -> 2
+        for (int i = 0; i < 6000 && ev2.state() != ElevState::DoorsOpen; ++i)
+            ev2.update(kFixedDt, scene, *physics);
+        check(std::fabs(ev2.cabCenter().x - 60.0f) < 0.05f &&
+              std::fabs(ev2.cabCenter().y - 12.0f) < 0.05f,
+              "E9b BFS routes 0->1->2 across the corner and arrives at (60,12)");
+    }
+
     physics->shutdown();
     x3::logInfo(std::string("[elevator-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

@@ -166,6 +166,11 @@ public:
     // (0 when idle). The host adds this to every rider's Y to carry them.
     float update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
 
+    // T2 — the FULL per-frame cab delta (Vec3). Legacy float update() keeps its
+    // exact old semantics (it returns this vector's Y); hosts that ride lateral
+    // rails add carryDelta() to every rider position instead.
+    const x3::phys::Vec3& carryDelta() const { return m_carry; }
+
     bool  built() const { return m_built; }
     // "moving" == any travel/door/emergency/freefall state (NOT Idle / DoorsOpen).
     bool  moving() const;
@@ -371,6 +376,19 @@ private:
     bool m_chainGraph = false;                // built via legacy build() (sorted vertical chain)
     bool m_unlocked   = false;                // hidden stops revealed (annex code)
     int  insertStopY(float centerY);          // mirror-preserving insert (disco club stop)
+
+    // ---- Straight-segment 3D motion (T2). One leg = one straight segment; the
+    // EXISTING trapezoid speed profile advances arclength m_s in [0, m_segLen]
+    // instead of m_pos.y. Vertical graphs degenerate to the old math exactly.
+    std::vector<int> m_route;                 // remaining waypoint stops (last == m_target)
+    x3::phys::Vec3   m_segFrom{}, m_segTo{};  // active leg endpoints (world)
+    x3::phys::Vec3   m_segDir{};              // normalized leg direction
+    float            m_segLen = 0.0f;         // leg arclength
+    float            m_s      = 0.0f;         // arclength progressed on the leg
+    x3::phys::Vec3   m_carry{};               // last update()'s full cab delta
+    void  buildRouteTo(int stopIndex);        // BFS over m_adj + collinear collapse
+    void  beginLeg(int stopIndex);            // set the segment from m_pos to a stop
+    int   nearestStopTo3D(const x3::phys::Vec3& p) const;
     int      m_target = 0;
     int      m_curStop = 0;                   // last-arrived/nearest stop (FSM tracking)
     ElevState m_state = ElevState::Idle;
