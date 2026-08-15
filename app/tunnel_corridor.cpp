@@ -446,15 +446,52 @@ void deriveRoute(const RouteSeed& seed, TunnelRoute& route, TerrainCorridor& c) 
         route.worldAt(n.s, 0.0f, n.x, n.z);
         n.ground = tunnelNaturalHeightAt(n.x, n.z);
         n.latMin = n.latMax = n.ground;
-        for (int k = -3; k <= 3; ++k) {
-            const float off = (float)k * (kTcCorridorHalfW + 0.8f) / 3.0f;
-            for (int m = -1; m <= 1; ++m) {
-                const float sl = clampf(n.s + (float)m * ds * 0.55f, 0.0f, route.totalLen);
-                float qx = 0.0f, qz = 0.0f;
-                route.worldAt(sl, off, qx, qz);
-                const float h = tunnelNaturalHeightAt(qx, qz);
-                n.latMin = std::min(n.latMin, h);
-                n.latMax = std::max(n.latMax, h);
+        // SAMPLE THE GROUND AT THE RESOLUTION THE INVARIANT IS CHECKED AT.
+        //
+        // This was a 7x3 grid spanning +-0.55*ds. With kRouteNodes pinned to
+        // TerrainCorridor::kMaxNodes (32) over a 640 m route, ds is 20.6 m — so
+        // the carve looked at the natural surface every ~11 m while M1 checks
+        // every 0.5 m across the full roadway. On a smooth hummock that is
+        // harmless. On the 5-range rocky massif, whose relief runs at 0.061
+        // frequency (~16 m wavelength), peaks simply fall between samples: the
+        // depth is then derived from a max that is not the max, and rock stands
+        // on the road. That is the M1/M2/M6 failure, and it is why merely
+        // DENSIFYING the old span (13x5 over the same +-0.56*ds) moved the
+        // residual by 0.012 m — it was still 20x coarser than the probe.
+        //
+        // Two things are required, not one:
+        //   (a) resolution — step ~1 m longitudinally and ~1.2 m laterally, at
+        //       least as fine as the crag wavelength, over the full corridor
+        //       width (the road is +-6 m, the corridor +-8.8 m);
+        //   (b) OVERLAP — depth is INTERPOLATED between adjacent nodes, so a
+        //       peak is only safe if BOTH bracketing nodes are deep enough for
+        //       it. Each node therefore scans +-ds (its own span AND its
+        //       neighbours'), which makes any linear blend of two adequate
+        //       depths itself adequate.
+        //
+        // Boot-time only: 32 nodes x ~41 longitudinal x 15 lateral height
+        // queries, once, against a pure function.
+        {
+            const float kLatReach  = kTcCorridorHalfW + 0.8f;
+            // MATCH THE PROBE EXACTLY. M1 walks the roadway every 0.5 m
+            // longitudinally and every kTcRoadHalfWidth/8 = 0.75 m laterally, so
+            // anything coarser can miss a crag it will then measure. At ~1.2 m
+            // lateral / ~1 m longitudinal the residual fell 2.0 ft -> 0.6 ft but
+            // did not close; at the probe's own resolution there is no gap left
+            // for a peak to hide in.
+            const int   kLatSteps  = 13;                   // +-13 -> 27 samples, 0.74 m apart
+            const int   kLongSteps = 41;                   // +-41 -> 83 samples, 0.50 m apart
+            for (int k = -kLatSteps; k <= kLatSteps; ++k) {
+                const float off = (float)k * kLatReach / (float)kLatSteps;
+                for (int m = -kLongSteps; m <= kLongSteps; ++m) {
+                    const float sl = clampf(n.s + (float)m * ds / (float)kLongSteps,
+                                            0.0f, route.totalLen);
+                    float qx = 0.0f, qz = 0.0f;
+                    route.worldAt(sl, off, qx, qz);
+                    const float h = tunnelNaturalHeightAt(qx, qz);
+                    n.latMin = std::min(n.latMin, h);
+                    n.latMax = std::max(n.latMax, h);
+                }
             }
         }
     }
