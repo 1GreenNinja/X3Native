@@ -1363,6 +1363,22 @@ bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[
 }
 } // namespace
 
+// True when an ORPHANED mesh's name marks it a physics proxy. Shared by both
+// drawable builders — makeDrawables and makeDrawablesNamed each carry their own
+// orphan safety net, and fixing only one is exactly how the "mini car" survived
+// its first fix (the vehicle skin path uses the Named variant).
+bool isOrphanCollisionProxy(const std::string& nm) {
+    if (nm.empty()) return false;
+    std::string s; s.reserve(nm.size());
+    for (char c : nm) s += (char)std::tolower((unsigned char)c);
+    return s.find("collider")  != std::string::npos ||
+           s.find("collision") != std::string::npos ||
+           s.rfind("ucx_", 0)  == 0 ||
+           s.rfind("usp_", 0)  == 0 ||
+           s.rfind("ubx_", 0)  == 0 ||
+           s.find("_phys")     != std::string::npos;
+}
+
 std::vector<ModelDrawable> makeDrawables(const Model& m) {
     std::vector<ModelDrawable> out;
     out.reserve(m.primitives.size());
@@ -1444,23 +1460,11 @@ std::vector<ModelDrawable> makeDrawables(const Model& m) {
         std::unordered_set<uint32_t> nodeMeshes;
         for (const Node& nd : m.nodes) if (nd.meshIndex >= 0) nodeMeshes.insert((uint32_t)nd.meshIndex);
         const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-        auto isCollisionProxy = [](const std::string& nm) {
-            if (nm.empty()) return false;
-            std::string s; s.reserve(nm.size());
-            for (char c : nm) s += (char)std::tolower((unsigned char)c);
-            // The usual authoring conventions across DCCs and engines.
-            return s.find("collider")   != std::string::npos ||
-                   s.find("collision")  != std::string::npos ||
-                   s.rfind("ucx_", 0)   == 0 ||
-                   s.rfind("usp_", 0)   == 0 ||
-                   s.rfind("ubx_", 0)   == 0 ||
-                   s.find("_phys")      != std::string::npos;
-        };
         for (const auto& p : m.primitives) {
             if (nodeMeshes.count(p.meshIndex)) continue;
             const std::string& nm = (p.meshIndex < m.meshNames.size())
                                         ? m.meshNames[p.meshIndex] : std::string();
-            if (isCollisionProxy(nm)) {
+            if (isOrphanCollisionProxy(nm)) {
                 logInfo("[gltf] orphaned COLLISION PROXY mesh '" + nm +
                         "' not rendered (parent it in the asset to use it as a hull)");
                 continue;
@@ -1518,11 +1522,24 @@ std::vector<ModelDrawable> makeDrawablesNamed(const Model& m,
         }
     }
     {
+        // SAME orphan rule as makeDrawables — a collision proxy must never be
+        // rendered. This copy is why the "mini car" survived the first fix: the
+        // vehicle skin path calls makeDrawablesNamed, not makeDrawables, and the
+        // net was duplicated here. Kept in sync via isOrphanCollisionProxy().
         std::unordered_set<uint32_t> nodeMeshes;
         for (const Node& nd : m.nodes) if (nd.meshIndex >= 0) nodeMeshes.insert((uint32_t)nd.meshIndex);
         const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         for (const auto& p : m.primitives) {
             if (nodeMeshes.count(p.meshIndex)) continue;
+            const std::string& nm = (p.meshIndex < m.meshNames.size())
+                                        ? m.meshNames[p.meshIndex] : std::string();
+            if (isOrphanCollisionProxy(nm)) {
+                logInfo("[gltf] orphaned COLLISION PROXY mesh '" + nm + "' not rendered");
+                continue;
+            }
+            if (!nm.empty())
+                logWarn("[gltf] orphaned mesh '" + nm + "' referenced by no node — "
+                        "emitted at IDENTITY (ignores node scale)");
             ModelDrawable d;
             if (fillDrawable(m, p, ident, d)) { out.push_back(d); outNodeNames.push_back(std::string()); }
         }
