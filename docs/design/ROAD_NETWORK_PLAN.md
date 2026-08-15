@@ -1,152 +1,340 @@
 # Plan — a road NETWORK: longer, curving, over the pass, and back
 
-Status: DRAFT, pre-execution. Conditions written before any code, on purpose.
-Author: InspectorX, 2026-08-15. Ask: Tim —
+Status: DRAFT v2, pre-execution. Conditions written before any code, on purpose.
+Author: InspectorX, 2026-08-15. Sharpened: Fable, 2026-08-15.
+Ask: Tim —
 
 > "We NEED a LONGER ROAD.... and then a road that curves up over the mountain
 > through passes... goes somewhere else... circles back.. intersections..."
+> "...a road that goes up to a parking lot on top of the mountain, with nice
+> curves we can speed around"
 
-UNITS: **feet and miles**, per Tim — feet for anything you could stand next to
-(kerbs, widths, node spacing), miles once it is a journey (route length, network
-scale), mph for speed. Engine data stays SI; conversion happens at the boundary
-only, never in the code.
+UNITS: **feet and miles**, per Tim — feet for anything you could stand next to,
+miles once it is a journey, mph for speed. Engine data stays SI; conversion at
+the boundary only.
 
-Scale check for this ask, in those units:
+## DECIDED BY TIM, 2026-08-15 (after the sharpening pass — these WIN)
+
+1. **BOTH rings, not one.** *"15 mile ring"* … *"Still make the big ring too"*.
+   * INNER ~15 miles, radius ~2.4 miles — the tunnel ridge, the pass, the summit
+     lot. Rolling country the whole way; it does NOT reach the ranges, and that
+     is accepted, not an oversight.
+   * OUTER ~31 miles, radius ~5 miles — tours all four ranges (N snow, E
+     volcanic, S mesa, W crystal hills).
+   * **The SPOKES between them are where the intersections come from free.**
+     Four radial connectors give eight junctions without inventing a reason for
+     roads to meet — which is exactly the structure Tim asked for.
+
+2. **THE GOAL IS NOT LAP TIME.** *"Lap times dont matter so much now.. we just
+   need roads for structure and realism and beauty."* This retires the racing
+   framing. A closed loop is no longer proof of anything; the question is
+   whether the world reads as a PLACE. Every acceptance condition phrased as
+   "the car returns to the start" is downgraded, and the load-bearing gates
+   become the ones about how it LOOKS and whether the network makes sense as
+   built infrastructure.
+   * Consequence: the 31-mile outer ring stops being a "19-minute lap" problem.
+     Long is fine. Structure is the point.
+
+3. **STREET LIGHTS, SMALL TOWNS, GAS STATIONS.** *"We will add street lights,
+   small towns with gas stations."* Settlements are what make a road mean
+   something — a road with no destination is a racetrack. Towns want: a reason
+   to be where they are (junction, pass foot, water), lighting that reads at
+   night, and a gas station as the recognisable anchor.
+   * `street_lights.cpp` already exists in the app layer — check before writing.
+   * The junctions from (1) are the natural town sites.
+
+4. **SPEED IS NOT THE MEASURE, and the numbers we have are unreliable.** Tim
+   driving: *"It never went past 120 in the non turbo version."* A headless
+   probe reporting 370 mph was INVALID — it ran on a 984 ft slab, drove off the
+   edge, and sampled the car falling. There is no aero drag on the wheeled
+   vehicle (verified in code, not by probe), so nothing sets a terminal speed
+   but gearing and terrain. Do not tune the road to a speed we have not honestly
+   measured on real road.
+
+## Sharpening pass (Fable, 2026-08-15) — what changed and why
+
+1. **"The carve cannot follow a curve" was WRONG — deleted.** `terrain.h`'s
+   `TerrainCorridor` is a polyline BY CONSTRUCTION: capsule-union per segment,
+   crease-free at joints, tile-seam exact, and `--test-terraincorridor` C4
+   already proves joint continuity. The straight-only limitation lives ONLY in
+   `TunnelRoute`'s frame/grading layer (`tunnel_corridor.h`: one `dirX/dirZ`,
+   "the frame is constant"). P1 shrinks accordingly: generalize the ROUTE
+   layer, leave the carve primitive alone.
+2. **"The graph already exists so this is mostly wiring" was OVERSOLD —
+   reframed.** `EchoRoads::build()` is hard-wired to the Echo Harbor island
+   `Heightfield` (`hf.heightAt` rim probes from `kCrownX/kCrownZ`, shore
+   probing, mesa-rim topology, city blocks). It cannot be pointed at the
+   unbounded terrain. What IS reusable — and it is a lot — is the data shapes
+   (`RoadGraph/RoadEdge/RoadSample` with `bank`), the welded ribbon mesher,
+   the zigzag law + curvature-derived rebank, the junction patcher, and the
+   collision export. The route AUTHORING for mountain terrain is new work.
+3. **"16 corridors buys 16 bends" was a misdiagnosis — corrected.** Each
+   corridor is a 32-node polyline, so the registry buys ~496 bends today. The
+   real limits are the TOTAL NODE BUDGET (16×32 nodes at 68 ft spacing ≈ 6.6
+   miles of network) and per-tile evaluation cost. Consequence: **do not raise
+   `kMaxNodes`; CHAIN 32-node corridors** (shared endpoint node; deepest-wins
+   union makes the joint seamless and keeps every bounding box tight). Only
+   `kMaxTerrainCorridors` rises.
+4. **The 12–15 mile "still touches every biome" ring was FALSE — replaced.**
+   The four ranges sit 4.3–5.7 miles out. A 12–15 mile ring is radius ~2
+   miles: it never leaves the rolling country. Two honest options are given.
+5. **New hazard: SWITCHBACK UNDERCUT.** Overlapping carves merge deepest-wins,
+   so a hairpin's lower leg erases the upper leg's bench when legs come within
+   ~150 ft laterally (2× the 75 ft carve influence width). New gate G5.
+6. **Phases reordered** so the riskiest unknown (carve cost at scale) is
+   measured FIRST, something drivable exists by P2, and the summit lot — the
+   deliverable Tim judges by driving — lands in P3, not last.
+7. **Cost arithmetic corrected**: a 31-mile ring at today's density is ~2,400
+   nodes ≈ **5.4M** boot queries, not 1,300/2.9M. Recommendation: boot-time +
+   job-system parallel + curvature-adaptive longitudinal sampling; carve-near-
+   player is REJECTED (violates the registry's boot-only/read-only contract →
+   seams + lost determinism).
+8. **Added what was missing**: banked-deck carve interplay (the low edge digs
+   ~3.5 ft deeper), superelevation runoff, LOD-at-distance (the ridge-LOD bug
+   applies to cut edges; `terrainCorridorContains()` already exists to cap
+   corridor tiles at Half LOD), streaming/boot contract, determinism gates,
+   junction drive-through gate, and concrete summit-climb geometry grounded in
+   AASHTO numbers so G3 is a choice between options, not an invention.
+
+## Scale check
 
 | | today | Tim's ask |
 |---|---|---|
 | drivable route | **0.4 miles** (2,100 ft), straight | miles, curving, looping |
-| bends available | **0** (corridor is straight by construction) | switchbacks + intersections |
-| absolute ceiling on straights | **6.4 miles** (16 corridors x 0.4) | not a way to get curves |
+| bends available | ~496 in the carve layer, **0 in the route layer** | switchbacks + intersections |
+| network ceiling at current caps | **6.6 miles** (16 corridors × 32 nodes × 68 ft) | ~15–33 miles |
 
-## The good news: the graph already exists, and it is switched off
+## What "around the world" can mean — the world has NO EDGE
 
-`app/world_hosts/echo_roads.h` already defines exactly the thing being asked
-for, and it is far more than a stub:
+Tim drove **16.7 miles** at 100 mph and would not have hit an edge at any
+distance: `app/terrain.h` is explicit — an unbounded world, a camera-centred
+residency ring over infinite procedural terrain. "Around the world" therefore
+means A LOOP OF CHOSEN SIZE, and choosing it is design, not tech.
 
-* `RoadGraph { nodes, edges }` — **nodes ARE intersections** (positional joins).
-* `RoadEdge` carries a real curved centerline: `std::vector<RoadSample>`,
-  arc-length-even at ~13 ft (~6.5 ft on ramps), each sample with a unit tangent
-  AND a `bank` angle (superelevation — the road leans into its curves).
-* `RoadClass { Freeway, Ramp, Avenue, HarborStreet }` — freeway is an elevated
-  2+2 deck with barriers, banked curves and pillar rows; **Ramp already exists
-  as the interchange link that grades deck-to-ground**.
-* Lane maths (`laneOffset`) with right-hand traffic already worked out.
+The finite INTERESTING region is already authored. `terrain.cpp`'s five ranges:
 
-It is deliberately UNWIRED. Per `app/CMakeLists.txt`, the sole consumer today is
-`--test-echoroads`, which locks the emitted graph to a checksum. Nothing draws
-it, nothing carves terrain for it, no host boots it.
-
-**So "curving roads with intersections" is mostly a WIRING job, not an invention
-job.** That is the single most important fact in this document.
-
-## The blocker: the CARVE cannot follow a curve
-
-The road can curve. What cannot curve is the terrain corridor that makes the
-ground accept a road. From `app/tunnel_corridor.h`:
-
-```
-float dirX = 1.0f, dirZ = 0.0f;   // unit XZ heading (constant — a straight run)
-...
-// The corridor is a straight run, so the frame is constant.
-```
-
-Three hard limits, all in the corridor layer, none in the road layer:
-
-| limit | value | what it costs us |
+| range | position | peak height above the plain |
 |---|---|---|
-| `TunnelRoute` heading | **straight only** | a road cannot bend into a pass |
-| `TerrainCorridor::kMaxNodes` | **32** | 2,100 ft at 68 ft spacing |
-| `kMaxTerrainCorridors` | **16** | at best ~6.4 miles of straight segments |
+| N snow | ~5.2 miles north | ~1,250 ft, jagged |
+| E volcanic | ~5.7 miles east | ~1,500 ft, tallest |
+| S mesa | ~5.6 miles south | ~640 ft, flat-capped |
+| W crystal hills | ~5.3 miles west | ~1,050 ft, rolling |
+| **tunnel ridge** | **near centre, over the existing bore** | **~935 ft** |
 
-Chaining straight corridors is not a way out: a switchback road up a pass wants
-a bend every few hundred feet, and 16 corridors buys 16 bends.
+RING SIZE IS TIM'S CALL — but between two HONEST options:
 
-## Cost warning, from yesterday's fix
+* **Option A — the Grand Tour, ~29–33 miles.** Radius ~4.7–5.3 miles, actually
+  reaches all four ranges. ~19-minute lap at 100 mph — long between landmarks.
+* **Option B — the Home Circuit, ~13–15 miles.** Hill country + OVER the tunnel
+  ridge + past the city pads + the ocean shore. It does NOT touch the outer
+  ranges (they are 4.3+ miles out — the draft's claim that a tight ring
+  "touches every biome" was wrong); spur roads to each range come later and
+  give four out-and-back drives instead of one huge lap.
 
-The carve now samples the natural surface at the resolution the invariant is
-checked at (27 x 83 per node — that is what took the mouth gate to 7/7). That is
-~71,000 height queries for today's 32 nodes. A 5-mile network at the same node
-density is ~1,300 nodes and ~2.9 MILLION queries at boot.
+Default proposal: **B now, spurs later** — the loop stays dense with things to
+see, and every spur is independently shippable. Ask before building.
 
-That is not fatal (pure function, boot-time, parallelisable over the job system)
-but it MUST be measured, not assumed, and it is a real reason to make the sample
-window adaptive: dense where the ground is rough, sparse where it is smooth.
+## The summit: a parking lot you drive UP to
+
+The mountain is chosen for us: **the tunnel ridge** — climb over the top of the
+very hill the bore goes under. Drive through it, then drive over it. The summit
+is ~935 ft above the plain, near the centre of the map, next to everything.
+
+"Nice curves we can speed around" means SWEEPERS, NOT HAIRPINS. A hairpin is a
+15–25 mph corner; nothing about it is "speed around". Design geometry, grounded
+in AASHTO curve mechanics (R ≈ V²/(15(e+f)), then checked against game grip
+μ≈1.0 where flat-out speed ≈ √(gR)):
+
+| element | number | why |
+|---|---|---|
+| signature sweepers | radius **1,200–1,600 ft**, 4–6 of them | holds 90–110 mph at game grip with bank; AASHTO 80 mph design ≈ 2,370 ft, game tires are grippier |
+| technical pair below the summit | radius **500–700 ft** | 60–75 mph rhythm change so the climb isn't one note |
+| hairpins | **none** by default | wrong feel for the ask; if Tim wants one rally moment, ONE, legs ≥ 200 ft apart (G5) |
+| superelevation | up to **10°** on the sweepers, 6° on the technical pair | real e_max is ~5.7°; games read 8–12° as "banked" without reading as a wall |
+| bank runoff | full bank develops over **≥ 250 ft** (≤ 1° per 25 ft) | snap-on bank is the #1 "procedural road" tell |
+| grade | **6.5% average, 8% max pitch**, ≤ 4% inside curves tighter than 800 ft | see G3; flattening grade in tight curves is real practice and reads right |
+| climb | **~920 ft vertical over ~2.7 miles** | falls straight out of 935 ft at 6.5% |
+| arrival | final 180° sweep, radius ~300 ft, opening onto the lot | arrival should be a moment, not a stop |
+| the lot | **350 × 250 ft** flattened pad, overlook edge on the bore axis | fits a 150 ft skidpad circle for messing around; you park above the portal you drove through |
+
+The pad flattens the summit the way `kPads` flattens the city districts (same
+blend construction, authored addition). Note the benching-does-not-read defect
+(see NOT in this plan) is loudest exactly here — a parked car is the closest
+eyes ever get to that rock.
+
+## What exists, honestly
+
+* **Carve layer (`terrain.h/.cpp`) — READY.** Polyline corridors, crease-free,
+  seam-exact, deterministic, deepest-wins union, per-corridor bbox early-out,
+  `terrainCorridorContains()` for mesher decisions. C1–C5 tested.
+* **Route layer (`tunnel_corridor.h/.cpp`) — STRAIGHT ONLY.** Stations,
+  grading (4.5% cap), the 27×83-per-node carve derivation that took
+  `--test-tunnelmouth` to 7/7, portal machinery. The frame is one constant
+  heading; `worldAt(s, lat)` cannot turn. THIS is the blocker, and only this.
+* **Road art layer (`echo_roads.cpp`) — REUSABLE PARTS, WRONG WORLD.** The
+  welded banked ribbon mesher, curvature law + rebank, junction patches,
+  lane paint, collision export all exist and are battle-tested — against the
+  Echo Harbor island heightfield. The graph BUILDER is a city generator
+  (rim probes, shore finding, city blocks) and does not transplant. Plan on
+  porting FUNCTIONS (ribbon/junction/law over a `RoadGraph`), not the builder.
 
 ## Phases
 
-Sequenced so each one is independently useful and independently verifiable. If
-the work stops after any phase, what shipped still works.
+Reordered so the riskiest unknowns fail first and something is drivable early.
 
-### P1 — POLYLINE corridors (the unblock)
-Give `TerrainCorridor`/`TunnelRoute` a per-node heading instead of one route
-heading. `posAt`/`worldAt` walk the polyline by arc length; the frame becomes
-per-node instead of constant. Raise `kMaxNodes` from 32 to whatever the carve
-cost supports (measure first — see A5).
+### P0 — MEASURE (half a day, before anything)
+The riskiest unknown is carve cost at scale, and the draft had it unmeasured at
+the end. Time, on the 14900k: (a) today's 71k-query derivation; (b) per-tile
+generation with a long-bbox corridor registered vs without; (c) extrapolate to
+2,400 nodes / ~96 corridors. Exit: a table in this doc and a chosen sampling
+strategy (see COST). If the numbers are fine, adaptive sampling is DEFERRED,
+not built on faith.
 
-Nothing visible ships here. This is the load-bearing change and everything else
-waits on it.
+### P1 — POLYLINE ROUTE LAYER (the real unblock, smaller than drafted)
+The carve already curves; generalize the ROUTE: per-station frame from the
+polyline tangent (`posAt`/`worldAt` walk arc length), grading over the
+polyline, and carve registration that CHAINS ≤32-node corridors with shared
+endpoint nodes instead of raising `kMaxNodes`. Raise `kMaxTerrainCorridors`
+16 → 96 (memory ~400 bytes/corridor — trivial; the cost that matters is
+per-tile evaluation, gated in B2). Banked reaches deepen their carve by
+halfWidth × sin(bank) (~3.5 ft at 10°) so the low edge never meets dirt.
+Exit gate (visible, can fail): the demo tunnel route re-expressed as a
+polyline WITH a deliberate 30° bend passes the full G-suite, and one banked
+curve stands on open ground.
 
-### P2 — LONGER, still straight-ish
-Take the demo route from 2,100 ft to ~1 mile using the new node budget. Proves
-the polyline maths on geometry we already understand before adding curvature.
+### P2 — THE SWEEPER SPIKE (first drivable feel)
+ONE 1,500 ft-radius banked curve on open terrain, full treatment: carve, verge
++ seam on a curve (the straight case needed a skirt and a verge; the curved
+case gets per-station frames from P1), ribbon collision, superelevation
+runoff. Drive it at 90 mph. This is 1/6 of the climb built early precisely so
+the feel, the seam, and the banked-deck physics can fail CHEAP. If the seam
+strategy is wrong, we find out here, not on a 2.7-mile mountain.
 
-### P3 — THE PASS
-A curving climb over the ridge: switchbacks, real grade limits, banked curves
-(the `bank` field is already in `RoadSample` and already unused). This is the
-first phase Tim can drive and feel.
+### P3 — THE CLIMB + THE SUMMIT LOT (the payoff, moved up)
+The tunnel-ridge hillclimb per the geometry table, plus the summit pad. Tim
+drives it (E3 applies from here on, per phase, not only at the end). E1
+capture. This ships alone: a mountain road with a summit lot is a feature even
+if nothing after it lands.
 
-### P4 — SOMEWHERE ELSE
-A second destination on the far side. Not scenery — a place with a reason to
-drive to it.
+### P4 — SOMEWHERE ELSE + THE FIRST INTERSECTION
+A destination with a reason: proposal — the ocean shore at the basin (~1.2
+miles from the ridge; water already exists there), reached via the network's
+first true 3-way junction (junction carve union is free — deepest-wins — but
+the surface patch/stop-bar/paint-trim machinery is a port from echo_roads,
+not a rewrite). N1 gates here.
 
-### P5 — THE LOOP + INTERSECTIONS
-Circle back, and make `RoadNode` junctions real on the ground: merged carve at
-the join, no z-fighting deck-on-deck, drivable through the intersection.
+### P5 — THE LOOP
+Close the ring (Option A or B — Tim's call from the ring section), N2 lap
+test, and the at-scale gates (B1/B2/B3, D1) run on the full network.
 
 ## Acceptance conditions
 
-Iterate until ALL hold. Each is checkable by a test, a log line, or a named
-capture. None is "looks good".
+Iterate until ALL hold. Each is a test, a log line, or a named capture.
 
 ### Geometry
-- [ ] G1. A corridor follows a polyline: max deviation between the carved
-      centreline and the authored centreline under **1.6 ft** anywhere.
-- [ ] G2. The mouth invariant STILL holds on every curved corridor —
-      `--test-tunnelmouth`'s "no earth on the roadway" check, run per segment.
-      This is the gate that just went 4/7 -> 7/7; it must not regress.
-- [ ] G3. No carved segment exceeds the drivable grade. Pick the number with
-      Tim: a real mountain highway tops out near **7 %**, hairpins ~10 %.
-- [ ] G4. Banked curves actually bank: `RoadSample::bank` reaches the authored
-      superelevation on the tightest curve and returns to 0 on the straights.
+- [ ] G1. At every station of every route: |carved floor − road datum| ≤
+      **1.6 ft**, AND natural-minus-carve never rises above the datum anywhere
+      across the paved width + a 3 ft verge, sampled at ≤ 2 ft longitudinally
+      (the M1 discipline, applied per route).
+- [ ] G2. The mouth invariant still holds on every curved corridor — the
+      "no earth on the roadway" check runs per segment, INCLUDING the low edge
+      of banked reaches. The 7/7 gate must not regress.
+- [ ] G3. Grade limits, concrete defaults (Tim picks a lane, not a number):
+      **Interstate profile** — 6% max everywhere (AASHTO mountainous
+      interstate); or **Alpine profile** — 6% mainline, 8% sustained on the
+      climb, 10% only for runs under 200 ft (real alpine-pass practice).
+      DEFAULT: Alpine for the climb, Interstate elsewhere. Additionally: ≤ 4%
+      inside any curve tighter than 800 ft radius. Worst grade per route
+      logged at boot.
+- [ ] G4. Banking is real, not vestigial: every curve of radius ≤ 2,000 ft
+      reaches ≥ 60% of its design superelevation; runoff develops over
+      ≥ 250 ft (≤ 1° per 25 ft); bank returns to 0 on straights; max 10°.
+      Boot log per route: tightest radius / max bank / max grade.
+      (The draft's G4 passed trivially if the authored bank was tiny.)
+- [ ] G5. **SWITCHBACK SEPARATION** (new): no two reaches whose road datums
+      differ by > 6 ft pass within **150 ft** laterally (2× the 75 ft carve
+      influence half-width). Asserted at boot; a violation is an authoring
+      error — the lower carve undercuts the upper bench and the upper road
+      floats over a hole.
 
 ### Network
-- [ ] N1. At least one true intersection where three or more edges meet, and the
-      carve at the junction is ONE surface — no seam, no z-fight, no lip over
-      **0.2 ft**.
-- [ ] N2. The loop closes: a car driven from the start reaches the far
-      destination and returns to the start without leaving the road surface.
-- [ ] N3. `--test-echoroads`' existing checksum still passes, or is deliberately
+- [ ] N1. At least one true 3-way intersection: the junction carve is ONE
+      surface (deepest-wins gives this), the SURFACE patch has no seam, no
+      z-fight, no lip over **0.2 ft** — and a scripted 60 mph drive through it
+      shows no vertical acceleration spike over **0.5 g**.
+- [ ] N2. The loop closes, MEASURABLY (the tunneldrive pattern, not eyeball):
+      a scripted car at 60 mph target completes the full lap; wheel contacts
+      are on road collision ≥ 99% of samples; never airborne > 0.5 s; no
+      fall-through; start position re-reached within 50 ft.
+- [ ] N3. `--test-echoroads`' checksum still passes, or is deliberately
       re-baselined in its own commit with the diff explained.
 
 ### Budget
-- [ ] B1. Boot-time carve cost measured and logged in ms, before and after.
-      If it exceeds ~500 ms, make the sampling adaptive rather than shipping it.
-- [ ] B2. Corridor count stays inside `kMaxTerrainCorridors`, or that constant is
-      raised deliberately with its memory cost stated.
+- [ ] B1. Boot-time carve derivation for the FULL network measured and logged
+      in ms on the 14900k. Budget **500 ms**. If over: job-system parallel
+      first, adaptive sampling second, disk cache keyed by (seed, route hash)
+      third — in that order, each measured before reaching for the next.
+- [ ] B2. Per-tile generation cost with the full network registered stays
+      within **+25%** of the no-road baseline (logged both ways). This is the
+      REAL cost of raising `kMaxTerrainCorridors` — memory is noise. If it
+      fails: per-corridor bboxes are already tight from chaining; next lever
+      is a coarse spatial grid over corridor bboxes.
+- [ ] B3. (new) LOD: tiles whose footprint intersects a corridor cap at Half
+      LOD (`terrainCorridorContains()` already answers this per point, cheap).
+      Rationale: the known ridge-LOD defect — 4 m-stride point sampling erases
+      narrow crests — applies equally to a 58 ft-wide cut's edges, and a
+      mountain road is mostly seen from far away.
+
+### Determinism
+- [ ] D1. (new) Boot twice: identical network checksum (routes are authored
+      polylines + pure derivation, so this is free unless someone breaks it).
+      The climb route also passes an M6-style perturbation proof: re-derive
+      against three shifted route centres, G1/G2 still hold.
 
 ### Evidence
-- [ ] E1. One capture from the pass summit looking back down the switchbacks.
-- [ ] E2. One capture of an intersection from the driver's seat.
-- [ ] E3. Tim drives the loop. That is the acceptance that counts; the gates
-      above exist to stop me wasting his time before it is worth driving.
+- [ ] E1. Capture from the summit lot looking back down the sweepers.
+- [ ] E2. Capture of the intersection from the driver's seat.
+- [ ] E3. Tim drives it — PER PHASE from P2 onward, not once at the end. The
+      gates above exist to stop wasting his time before it is worth driving.
+- [ ] E4. (new) Capture of the climb from **2+ miles out**: the road must read
+      as a continuous line on the mountain — no shimmer, no vanishing
+      segments. This is the ridge-LOD bug's ambush point.
+
+## Cost — corrected numbers and the recommendation
+
+The 27×83-per-node sampling is load-bearing (it is exactly what took the mouth
+gate from 4/7 to 7/7: the carve must sample at least as finely as the
+invariant is checked). Do not thin it blindly.
+
+Corrected arithmetic: a 31-mile ring at 68 ft node spacing is ~**2,400 nodes**
+≈ **5.4M** height queries (the draft undercounted at 1,300/2.9M). Estimated
+1.5–3 s single-threaded. Recommendation, in order, each step measured (P0/B1):
+
+1. **Stay boot-time.** Carve-near-player is rejected outright: the corridor
+   registry is boot-only/read-only BY CONTRACT (`terrain.h`) — that contract
+   is what makes worker-thread tile generation race-free and tile seams
+   bit-exact. Lazy carving trades a solved determinism story for a saved
+   second.
+2. **Parallelise over IJobSystem** — the derivation is pure per-node work;
+   ÷8–16 on the 14900k.
+3. **Adaptive LONGITUDINAL sampling only** — dense (0.5 ft-class) where
+   lateral relief or curvature is high, sparse on smooth ground; keep the
+   lateral 27 as-is. Expected ÷3–5. G1's 2 ft check grid is the safety net
+   that keeps "adaptive" honest.
+4. **Disk cache** keyed by (terrain seed, route polyline hash) — the
+   derivation is deterministic, so this is legal; it is also the last resort,
+   not the first.
+
+Plausible landing: 30–120 ms. If P0 says today's cost extrapolates under
+500 ms with (2) alone, ship that and stop.
 
 ## Explicitly NOT in this plan
 
-* The mountain steppes. Benching constants exist (`kBluffStart` 180 ft,
-  `kBluffBandH` 85 ft, strength 0.55) but do NOT read in the saddle capture —
-  the slope is textured, not stepped. That is its own defect, filed separately,
-  and it matters MORE once a road climbs the thing at eye level.
-* Retiring `--test-tunneldrive`'s obsolete assertions (A2/A3/B1 assert an earth
-  ramp and portal holes that cut-and-cover deleted). Separate debt.
+* The mountain steppes/benching defect (`kBluffStart` 180 ft, band 85 ft,
+  strength 0.55 — textured, not stepped, in the saddle capture). Separate
+  defect; it gets LOUD at the summit lot, which is one more reason P3 ships
+  early enough to see it.
+* Retiring `--test-tunneldrive`'s obsolete assertions (A2/A3/B1 assert the
+  earth ramp and portal holes cut-and-cover deleted). Separate debt.
 * Traffic, AI drivers, or anything that moves on the network.
+* Spur roads to the four outer ranges (follow-on to Option B).
