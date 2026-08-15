@@ -310,6 +310,49 @@ bool runTunnelDriveSelfTest();
 // physics, no assets.
 bool runRouteFrameSelfTest();
 
+// Release the SHARED tunnel surface sets. Call ONCE, after the last
+// TunnelCorridorWorld has shut down — a single bore's shutdown must not free
+// textures its neighbours are still drawing with. Safe to call with no tunnels
+// ever built.
+void shutdownTunnelSurfaces(x3::rhi::IRenderDevice& device);
+
+// ---------------------------------------------------------------------------
+// THE MERGED TUNNEL LIGHT POOL.
+//
+// A dressed bore spends EIGHT real point lights — kTcMaxBoreLights (6) down the
+// barrel plus one at each mouth. That was sized for ONE showcase tunnel. It does
+// not survive multiplication:
+//
+//     4 city freeway bores  = 32 lights  (CITY_BORES_PLAN B1's cap, exactly,
+//                                         with zero headroom for street lighting)
+//     8 network bores       = 64 lights  (the ENTIRE legacy pooled budget)
+//
+// and the ring roads bore through four mountain ranges, so eight is the plan,
+// not the worst case.
+//
+// The fix is not fewer lights per bore — it is to stop pretending every bore in
+// the world needs to be lit at once. You can only be inside one tunnel. Each
+// frame, merge every live bore's lights, keep the nearest K to the camera, and
+// upload those. Cost becomes O(K) regardless of how many tunnels exist.
+//
+// This also cures a SECOND defect on its own: the host used to call
+// setPointLights ONCE at build time, so anything else that touched the light
+// array left the bore black for the rest of the run (the "lit in headless
+// capture, black when driven" bug). A per-frame upload cannot go stale.
+constexpr uint32_t kMaxTunnelLightsInFlight = 16;
+
+// Upload the nearest tunnel lights to `camPos`, merged across every built
+// TunnelCorridorWorld. Returns how many were uploaded. Call once per frame,
+// AFTER any other system that sets point lights. With no tunnels built it
+// uploads nothing and is free.
+uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3]);
+
+// A built bore joins the pool; shutdown() leaves it. Called by
+// TunnelCorridorWorld itself — callers do not need these.
+class TunnelCorridorWorld;
+void registerTunnelLightSource(const TunnelCorridorWorld* t);
+void unregisterTunnelLightSource(const TunnelCorridorWorld* t);
+
 // The built world: road ribbon, tunnel shell, portals, markings, lights.
 class TunnelCorridorWorld {
 public:
@@ -355,7 +398,10 @@ private:
     // checkers this demo booted on — see build() for which sets and why. The
     // LIBRARY owns those textures; m_textures holds only the ones this class
     // created itself, so shutdown() has to release both.
-    SurfaceLibrary                      m_surf;
+    // NOTE: the surface sets are NOT owned per tunnel any more — see
+    // tunnelSurfaces() in the .cpp. Every dressed bore used to mount its own
+    // SurfaceLibrary and decode the same 2K albedo/normal/mr sets again, which
+    // was fine for one showcase bore and is not fine for eight.
     uint32_t m_entities = 0;
 };
 

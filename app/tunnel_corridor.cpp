@@ -762,6 +762,87 @@ namespace {
 std::deque<TunnelRoute>& routeStore() { static std::deque<TunnelRoute> v; return v; }
 } // namespace
 
+// ---------------------------------------------------------------------------
+// THE SHARED TUNNEL SURFACE LIBRARY (CITY_BORES_PLAN B3, finally done).
+//
+// Every TunnelCorridorWorld used to own a SurfaceLibrary and mount it itself, so
+// each dressed bore decoded the SAME 2K sets again — cc_cement_white alone is a
+// 3.1 MB albedo, a 4.8 MB mr and a 9.4 MB normal. One showcase bore: invisible.
+// Four city bores: four copies. Eight network bores (the ring roads bore through
+// four ranges): eight copies of every set, and eight PNG-decode hitches.
+//
+// This is the same fix, and the same reasoning, that SurfaceLibrary's own header
+// already documents for the WorldStreamer: "a streamer-lifetime library means
+// textures are decoded ONCE per process, not per region realize (a city rebuild
+// was a 2 s PNG-decode hitch)". Tunnels get the streamer's treatment.
+//
+// OWNERSHIP MOVES WITH IT. TunnelCorridorWorld::shutdown() used to call
+// m_surf.destroyAll(). Against a shared library that is a double-free waiting to
+// happen: the first bore to shut down would delete the textures the others are
+// still drawing with. Release is now explicit and process-wide —
+// shutdownTunnelSurfaces().
+// ---------------------------------------------------------------------------
+namespace {
+SurfaceLibrary& tunnelSurfaces() { static SurfaceLibrary lib; return lib; }
+} // namespace
+
+void shutdownTunnelSurfaces(x3::rhi::IRenderDevice& device) {
+    tunnelSurfaces().destroyAll(device);
+}
+
+// ---- the merged light pool (see kMaxTunnelLightsInFlight in the header) -----
+namespace {
+// Every BUILT bore, in build order. Raw pointers: a TunnelCorridorWorld owns its
+// own lights and removes itself in shutdown(), so an entry can never outlive the
+// object it points at.
+std::vector<const TunnelCorridorWorld*>& liveTunnels() {
+    static std::vector<const TunnelCorridorWorld*> v; return v;
+}
+} // namespace
+
+void registerTunnelLightSource(const TunnelCorridorWorld* t) {
+    if (!t) return;
+    auto& v = liveTunnels();
+    if (std::find(v.begin(), v.end(), t) == v.end()) v.push_back(t);
+}
+
+void unregisterTunnelLightSource(const TunnelCorridorWorld* t) {
+    auto& v = liveTunnels();
+    v.erase(std::remove(v.begin(), v.end(), t), v.end());
+}
+
+uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3]) {
+    const auto& v = liveTunnels();
+    if (v.empty()) return 0;
+
+    // Gather with the squared distance to the camera. Squared: the ordering is
+    // identical and it avoids a sqrt per light per frame.
+    struct Scored { float d2; x3::rhi::PointLight l; };
+    static std::vector<Scored> pool;          // reused; this runs every frame
+    pool.clear();
+    for (const TunnelCorridorWorld* t : v) {
+        for (const x3::rhi::PointLight& l : t->lights()) {
+            const float dx = l.pos[0] - camPos[0];
+            const float dy = l.pos[1] - camPos[1];
+            const float dz = l.pos[2] - camPos[2];
+            pool.push_back({ dx*dx + dy*dy + dz*dz, l });
+        }
+    }
+    if (pool.empty()) return 0;
+
+    const uint32_t k = (uint32_t)std::min<size_t>(pool.size(), kMaxTunnelLightsInFlight);
+    // partial_sort, not sort: we need the nearest K in order, not all of them.
+    std::partial_sort(pool.begin(), pool.begin() + k, pool.end(),
+                      [](const Scored& a, const Scored& b) { return a.d2 < b.d2; });
+
+    static std::vector<x3::rhi::PointLight> out;
+    out.clear();
+    out.reserve(k);
+    for (uint32_t i = 0; i < k; ++i) out.push_back(pool[i].l);
+    device.setPointLights(out.data(), k);
+    return k;
+}
+
 const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
     const float len = std::sqrt(spec.dirX * spec.dirX + spec.dirZ * spec.dirZ);
     if (!(len > 1e-4f) || !(spec.halfLen > 1.0f)) {
@@ -942,10 +1023,13 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     //     wearing a 128 px procedural checker for four days because nobody
     //     re-read the premise after the library grew. Falls back to that same
     //     checker when the set is absent, so a bare checkout is unchanged.
-    m_surf.mount(x3::game::assetRoot() + "/surface_library");
-    const SurfaceSet& boreSet   = m_surf.get(device, "cc_cement_white");
-    const SurfaceSet& portalSet = m_surf.get(device, "mw_concrete_panels_a");
-    const SurfaceSet& roadSet   = m_surf.get(device, "rd_asphalt_01");
+    // Mount is idempotent (it just records the root), and get() caches per set,
+    // so the SECOND and later bores pay ZERO texture uploads for these.
+    SurfaceLibrary& surf = tunnelSurfaces();
+    surf.mount(x3::game::assetRoot() + "/surface_library");
+    const SurfaceSet& boreSet   = surf.get(device, "cc_cement_white");
+    const SurfaceSet& portalSet = surf.get(device, "mw_concrete_panels_a");
+    const SurfaceSet& roadSet   = surf.get(device, "rd_asphalt_01");
     if (!boreSet.ok || !portalSet.ok || !roadSet.ok)
         x3::logWarn("tunnel corridor: surface_library set(s) unavailable — "
                     "falling back to the procedural checker concrete/asphalt");
@@ -1696,6 +1780,10 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 span, nStrip, (unsigned)m_lights.size(), (unsigned)(nStrip / 3 + 1));
             x3::logInfo(b);
         }
+        // JOIN THE MERGED POOL. From here the bore's lights are uploaded by
+        // uploadTunnelLights() per frame against the camera, not owned by
+        // whichever host happened to build last.
+        registerTunnelLightSource(this);
 
         // ---- HONEST SELF-CHECK, rewritten for cut-and-cover. The old one
         // asked whether the TERRAIN stayed off the shell; under cut-and-cover
@@ -1750,8 +1838,11 @@ void TunnelCorridorWorld::shutdown(x3::rhi::IRenderDevice& device, x3::phys::IPh
     m_meshes.clear();
     for (auto t : m_textures) device.destroyTexture(t);
     m_textures.clear();
-    m_surf.destroyAll(device);   // the library owns the bore/portal set textures
+    // NOT the surface sets: they are SHARED across every bore now, so freeing
+    // them here would pull the lining out from under the other tunnels. Released
+    // process-wide by shutdownTunnelSurfaces().
     m_lights.clear();
+    unregisterTunnelLightSource(this);   // leaves the merged pool
 }
 
 void TunnelCorridorWorld::showcaseCamera(const TunnelRoute& route, int which, float cam[5]) const {

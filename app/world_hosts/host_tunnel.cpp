@@ -189,6 +189,10 @@ int hostTunnel(HostContext& hc) {
 
         if (carBuilt) car.shutdown();
         tunnel.shutdown(*device, *phys);
+        // Shared across every bore, so it is released ONCE here rather than by
+        // each tunnel's own shutdown (which would free textures its neighbours
+        // are still drawing with).
+        x3::game::shutdownTunnelSurfaces(*device);
         streamer.shutdown(scene, *device, *phys);
         jobs->shutdown(); phys->shutdown(); device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -212,7 +216,6 @@ int hostTunnel(HostContext& hc) {
         // PITCH BLACK the moment you drive it, both from inside and looking in through
         // the portal from outside. The interactive loop streams tiles and draws other
         // content, and the light array does not survive that. Cheap: 6 cached lights.
-        device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
         glfwPollEvents();
         // ESC OPENS THE MENU, IT DOES NOT QUIT. Tim was losing his session every
         // time he reached for it. ESC toggles a PAUSE: the sim stops, the cursor
@@ -377,6 +380,15 @@ int hostTunnel(HostContext& hc) {
 
         int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
         if (cw != lastW || ch != lastH) { lastW = cw; lastH = ch; if (cw > 0 && ch > 0) device->onResize((uint32_t)cw, (uint32_t)ch); }
+        // MERGED NEAREST-K TUNNEL LIGHTS, keyed on the camera we are about to
+        // render from — not this bore's whole array. A dressed bore spends 8
+        // real lights (6 down the barrel + 1 per mouth); four city bores would
+        // take 32 and eight network bores 64, the entire legacy budget. You can
+        // only be inside one tunnel, so upload the nearest K and let the rest
+        // cost nothing. Per-frame, so it also cannot go stale — which is the
+        // other half of the "lit in headless capture, black when driven" bug.
+        { const float cp[3] = { cx, cy, cz };
+          x3::game::uploadTunnelLights(*device, cp); }
         device->setCamera(cx, cy, cz, camYaw, camPitch, 72.0f);
         auto frame = device->beginFrame();
         if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
@@ -384,6 +396,7 @@ int hostTunnel(HostContext& hc) {
     }
 
     tunnel.shutdown(*device, *phys);
+    x3::game::shutdownTunnelSurfaces(*device);   // shared sets, released once
     streamer.shutdown(scene, *device, *phys);
     jobs->shutdown(); phys->shutdown(); device->shutdown();
     if (window) glfwDestroyWindow(window);
