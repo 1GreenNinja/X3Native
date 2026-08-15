@@ -85,6 +85,16 @@ void makeUnitCylinderY(uint32_t segments,
     }
 }
 
+namespace {
+// BODY WIDTH. Scales the hero car's bodywork on X. 1.0 = the GLB's stock
+// 1.808 m (5.93 ft); 1.18 -> 2.13 m (7.0 ft).
+// The WHEEL TRACK below is multiplied by the SAME factor, because the arches
+// move out with the body — widening one without the other is what made it look
+// like a donk (Tim, 2026-08-14). Change this single constant and the stance
+// stays coherent.
+constexpr float kBodyWiden = 1.18f;
+} // namespace
+
 // ===========================================================================
 // DriveDemo
 // ===========================================================================
@@ -92,7 +102,7 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     m_physics = &physics;
 
     // --- Chassis dynamic body (a box). Layer Dynamic. ---
-    // CENTRE OF MASS dropped 0.30 m below the box centre (new addBox param).
+    // CENTER OF MASS dropped 0.30 m below the box center (new addBox param).
     // CoM height above ground goes 0.76 -> 0.46 m against a 0.677 m half-track,
     // lifting the rollover threshold from ~42 deg to ~56 — a real sports-car
     // number. This is what stops "the car still rolls" without touching grip.
@@ -106,11 +116,16 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // Front steered, rear powered + handbrake — grippy arcade RWD. ---
     m_wheels.clear();
     struct P { float wx, wz; bool steer, hb; bool powered; };
+    // Track = the GLB's OWN wheel stations. An earlier attempt pushed these out
+    // to +-0.85/0.90 to "make the car wider" and it read as a DONK — wheels proud
+    // of the arches. Width belongs to the BODY (kBodyWiden below), not the track.
+    // x stations are the GLB's own (+-0.677 / +-0.723) SCALED BY kBodyWiden, so
+    // the wheels stay centered under the widened arches instead of poking out.
     P p[4] = {
-        { -0.677f, -1.186f, true,  false, false },   // front-left
-        {  0.677f, -1.186f, true,  false, false },   // front-right
-        { -0.723f,  1.088f, false, true,  true  },   // rear-left  (drive; wider track)
-        {  0.723f,  1.088f, false, true,  true  },   // rear-right (drive)
+        { -0.677f * kBodyWiden, -1.186f, true,  false, false },   // front-left
+        {  0.677f * kBodyWiden, -1.186f, true,  false, false },   // front-right
+        { -0.723f * kBodyWiden,  1.088f, false, true,  true  },   // rear-left  (drive)
+        {  0.723f * kBodyWiden,  1.088f, false, true,  true  },   // rear-right (drive)
     };
     for (int i = 0; i < 4; ++i) {
         x3::phys::WheelDesc w;
@@ -126,7 +141,16 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
         // Sports-car compound baseline (Jolt's default curve is a generic economy
         // tire — a 700 Nm RWD on it lives in a permanent torque-independent
         // burnout; see WheelDesc::gripScale). Shop tire tiers multiply this.
-        w.gripScale = 1.7f;
+        // 1.7 was tuned against 700 Nm. At 3200 the rears just lit up, traction
+        // control cut the torque, and the car made noise instead of going —
+        // Tim: "The car does NOT feel fast". Grip has to scale with the power or
+        // the power is thrown away. Rears get more than fronts (they are the
+        // driven axle and carry a rear-engined car's weight).
+        // WAY GRIPPIER (Tim, 2026-08-15). Semi-slick territory: the car should
+        // hook up and go rather than scrabble, and with TC switchable off the
+        // tyres are now the only thing holding the torque, so they need to be
+        // able to. Rears carry the drive and a rear-engined car's weight.
+        w.gripScale = p[i].powered ? 5.2f : 4.4f;
         m_wheels.push_back(w);
     }
     x3::phys::WheeledVehicleDesc vd;
@@ -140,7 +164,36 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // and a 3x jump will spin the rears up unless traction control catches it
     // (setInput's TC is on by default). If it just smokes instead of going,
     // raise gripScale rather than backing the torque off.
-    vd.maxEngineTorque = 3200.0f; vd.maxEngineRPM = 6500.0f;
+    // 1600 Nm. 3200 was my escalation and it was ~6x a real 993 Turbo (540 Nm):
+    // the tyres never left the friction plateau, so traction control sat on the
+    // throttle permanently — Tim, 2026-08-15: "Throttle doesnt seem to go to max"
+    // and, in top gear against the limiter, "Wahhhhhh, brrp, wahhhhhh, brrp".
+    // That surge IS TC cutting and restoring. He also asked for it to behave
+    // "like a real car".
+    // 1600 is still ~3x stock (his original "triple the Hp/tq") and with the
+    // short 6-speed + gripScale 3.4 it is genuinely quick, but the tyres can now
+    // actually hold it, so TC only intervenes when it should.
+    // 2400 Nm peak, but the CURVE is what makes it a Turbo. Tim, 2026-08-15:
+    // "The engine really sucks. I need it to rev faster, and pull HARD. Make
+    // this Porsche Turbo Feel like it should."
+    vd.maxEngineTorque = 2400.0f;
+    // FLAT-SIX CHARACTER. A 993-era Porsche runs to ~7200 and gets there fast;
+    // the old 6500 with Jolt's default 0.5 flywheel felt like a diesel.
+    // 7500: titanium valve retainers (Tim, 2026-08-15) — the light valvetrain is
+    // exactly what lets a flat-six carry revs past where a steel one lets go.
+    vd.maxEngineRPM  = 7500.0f;
+    // 0.18 was TOO light. Combined with 3200 Nm the crank hit the 0.92-redline
+    // shift point instantly, dropped to 0.62, and slammed back up — the box
+    // cycled one gearchange forever and the note never dwelt long enough to
+    // climb. Tim, 2026-08-15: "you shift even when not accelerating... it KEEPS
+    // repeating the same shift and rpm.. the engine note does not get higher".
+    // It also made engine speed track wheel speed with almost no smoothing, so
+    // coasting tripped shifts.
+    // 0.35 still revs noticeably quicker than Jolt's 0.5 default (the flat-six
+    // pep) without turning the transmission into a metronome.
+    // 0.28: revs noticeably faster than 0.35 without the gear-hunting 0.18 caused
+    // (the debounce in JoltVehicle now guards that anyway).
+    vd.engineInertia = 0.28f;
     // Clutch strong enough that the ENGINE is the bottleneck, not the coupling.
     // Jolt's clutch is a viscous drag (torque ~ clutchStrength * slip): at the
     // default 10 the engine pins at redline and the transmitted torque becomes
@@ -148,6 +201,27 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // keeps the coupling tight so peak-torque changes are felt at the wheels
     // (verified by --test-vehparts P3/P6 tick ordering).
     vd.clutchStrength = 100.0f;
+    // SIX-SPEED, SHORT. 993-family ratios with a 4.2 final drive instead of
+    // Jolt's 3.42, which pulls 1st down from a ludicrous 64 mph at redline to
+    // ~44 and puts 6th at ~168. Now the engine actually sweeps its range in
+    // every gear — that is what makes it rev AND feel fast, far more than peak
+    // torque does. Six gears also matches the 1-6 shift-pattern HUD.
+    vd.gearRatios[0] = 3.154f; vd.gearRatios[1] = 2.150f; vd.gearRatios[2] = 1.560f;
+    vd.gearRatios[3] = 1.242f; vd.gearRatios[4] = 1.024f; vd.gearRatios[5] = 0.821f;
+    vd.gearCount  = 6;
+    // 993 TURBO CHARACTER CURVE. Soft off boost, a hard step as it spools around
+    // 0.32-0.45 of redline (~2400-3400 rpm), a long fat plateau to 0.85, then it
+    // signs off toward the limiter. That step is the shove you feel in a real
+    // turbo car, and a flat curve cannot produce it at any peak value.
+    vd.curveRpm[0]=0.00f; vd.curveTq[0]=0.42f;   // off boost — deliberately weak
+    vd.curveRpm[1]=0.22f; vd.curveTq[1]=0.55f;
+    vd.curveRpm[2]=0.32f; vd.curveTq[2]=0.82f;   // spool
+    vd.curveRpm[3]=0.45f; vd.curveTq[3]=1.00f;   // full boost — the hit
+    vd.curveRpm[4]=0.70f; vd.curveTq[4]=1.00f;   // plateau
+    vd.curveRpm[5]=0.85f; vd.curveTq[5]=0.94f;
+    vd.curveRpm[6]=1.00f; vd.curveTq[6]=0.78f;   // sign-off
+    vd.curveCount = 7;
+    vd.finalDrive = 4.2f;
     // Wheel rays cast as Dynamic so they stand on the Static terrain (Static-vs-
     // Static doesn't collide in the engine matrix; Dynamic-vs-Static does).
     vd.groundLayer = x3::phys::Layer::Dynamic;
@@ -188,7 +262,12 @@ namespace {
 // (chassis center = wheel attach (-0.15) + rest suspension (~0.28) + wheel
 // radius 0.33 above the ground plane => drop the skin by the sum.)
 constexpr float kBodyDropY = -0.76f;
-const float kBodySkin[16] = { -1,0,0,0,  0,1,0,0,  0,0,-1,0,  0,kBodyDropY,0,1 };
+// BODY WIDTH (Tim, 2026-08-14: "The MODEL needs to be wider"). Scales the skin's
+// X axis only, so the bodywork widens while the wheels — which are drawn from
+// the physics wheel poses, not from this matrix — stay on the model's own track.
+// That is the opposite of widening the track, which made it look like a donk.
+// 1.0 = stock 1.808 m (5.93 ft); 1.18 -> 2.13 m (7.0 ft) of hips.
+const float kBodySkin[16] = { -kBodyWiden,0,0,0,  0,1,0,0,  0,0,-1,0,  0,kBodyDropY,0,1 };
 // Mesh-local wheel axis is +-X (car lateral); the physics wheel pose maps a unit
 // Y-cylinder (axis = axle). Rotate mesh X onto pose Y (Rz +90deg, column-major).
 // EXPERIMENT (Tim live-testing 2026-08-13): the Rz+90 below assumes the GLB's
@@ -287,7 +366,7 @@ bool DriveDemo::allWheelsInContact() const {
 }
 
 void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
-    m_lastIn = in;
+    m_lastIn = in;   // RAW driver ask (HUD)
     if (!m_ctl) return;
     // ---- TRACTION CONTROL (game layer). Jolt's tire friction peaks near slip
     // ratio ~0.06 and falls to a plateau beyond it; a powerful RWD launch lives
@@ -307,6 +386,7 @@ void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
             const float trim = 1.0f - kSlipGain * (slip - kSlipTarget);
             eff.throttle *= std::clamp(trim, 0.15f, 1.0f);
         }
+        m_effThrottle = eff.throttle;   // POST-TC: what the engine is actually given
     }
     m_ctl->setInput(eff);
 }
