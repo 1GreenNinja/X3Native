@@ -1393,21 +1393,21 @@
     },
     {
       "repo_path": "assets/surface_library/terrain_snow/albedo.png",
-      "sha256": "19b2f4dacc565fb54ff6531882e2b2b034b1b11ca82faecb2880a73736a23264",
-      "size": 8067886,
-      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+      "sha256": "8880acedc71d2ad23c95c3d799ca919e5a8e36b1c42d519a87ae2080c97d709b",
+      "size": 3389472,
+      "source_note": "Real snow, replacing MarbleWhite00 (cracked white marble). Source: UniStorm Weather System Snow.jpg + Snow Bump.png (Unity Asset Store, licensed to Tim), photographic 700px pair upscaled to 2K with fine crystal grain added; mr authored (metallic 0, roughness ~0.86 varied)"
     },
     {
       "repo_path": "assets/surface_library/terrain_snow/mr.png",
-      "sha256": "e2a4e417b6f4f2ce49a374564f096f2e4a8da58b374fdfb29a3ff97a1bf9fe41",
-      "size": 16914,
-      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+      "sha256": "0cbf75347f9ba419f346bf1ab7000e26589abd53378e7d31f47d5e2608a80a8c",
+      "size": 3534588,
+      "source_note": "Real snow, replacing MarbleWhite00 (cracked white marble). Source: UniStorm Weather System Snow.jpg + Snow Bump.png (Unity Asset Store, licensed to Tim), photographic 700px pair upscaled to 2K with fine crystal grain added; mr authored (metallic 0, roughness ~0.86 varied)"
     },
     {
       "repo_path": "assets/surface_library/terrain_snow/normal.png",
-      "sha256": "ce5216f40795f21c54c698202bb317be41b0fd070e1e63085b64a609d5dea25b",
-      "size": 6616577,
-      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+      "sha256": "45a034446a160332cb120d330d14867f0b9e70a86ff8d19c517b024486408308",
+      "size": 10199794,
+      "source_note": "Real snow, replacing MarbleWhite00 (cracked white marble). Source: UniStorm Weather System Snow.jpg + Snow Bump.png (Unity Asset Store, licensed to Tim), photographic 700px pair upscaled to 2K with fine crystal grain added; mr authored (metallic 0, roughness ~0.86 varied)"
     }
   ]
 }

@@ -400,10 +400,21 @@ x3::rhi::TextureHandle loadTerrainNormal(x3::rhi::IRenderDevice& device,
 //     built seamless natural cliff tile from the SAME pack as the grass, so the
 //     two read as one landscape.
 //   sand  -> terrain_sand  (Landscape Ground Pack 3, T_ground_sand_01)
-//   snow  -> terrain_snow  (Ancient Desert Town, MarbleWhite00 -- the catalog has
-//            NO texture set with "snow"/"ice"/"arctic"/"frost" anywhere in its
-//            2626 entries; this light cracked-white marble is the closest visual
-//            substitute and is used deliberately, not by oversight)
+//   snow  -> terrain_snow  (UniStorm Weather System, Snow.jpg + Snow Bump.png).
+//            REAL SNOW as of 2026-08-15. It was MarbleWhite00 -- cracked white
+//            marble -- because the CURATED catalog has no snow in its 2626
+//            entries. The raw fleet share does: UniStorm is a weather system and
+//            ships a photographic snow albedo WITH a matched tangent normal.
+//            Marble's failure was not resolution or tiling; the stochastic
+//            sampler was already doing its job. Marble simply HAS large
+//            directional veins, and no anti-tiling technique can remove a
+//            distinctive feature from a source -- it can only stop it landing on
+//            a grid. Real snow tiles invisibly because it has nothing to repeat.
+//            The 700px pair is upscaled to 2K (macro structure the photo really
+//            has) with fine crystal grain added (micro detail it cannot carry at
+//            that size); grain goes into the NORMAL and ROUGHNESS, barely into
+//            the albedo, because snow's variation is in how it catches light and
+//            not in its colour. Push colour instead and you get white concrete.
 x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
     auto grass = loadTerrainAlbedo(device, "terrain_grass", 1001u,  78, 116,  56, 18); // green
     // BOTH halves of the 2026-08-14 terrain work, kept whole:

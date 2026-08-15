@@ -311,15 +311,48 @@ TerrainSplat terrainSplatWeights(vec3 wpos, vec3 wn) {
     // At full cover the band bottoms out below sea level, so even flat ground
     // is under it -- but it arrives there LAST, having swept down the range.
     float snowW = clamp(ssao.precip.x, 0.0, 1.0);
-    float snowBot = mix(kSnowBottom, -8.0,  snowW);
-    float snowTop = mix(kSnowFull,   20.0,  snowW);
+    // At full cover the band sits well BELOW the valleys, so even the ragged
+    // edge below cannot punch bare holes in a whiteout. A blizzard buries
+    // everything; the raggedness is a property of a MARGINAL snowline.
+    float snowBot = mix(kSnowBottom, -45.0, snowW);
+    float snowTop = mix(kSnowFull,   -12.0, snowW);
+
+    // ---- A RAGGED SNOWLINE -------------------------------------------------
+    // A snowline is never a contour. It wanders tens of metres vertically with
+    // aspect and wind, and it sends FINGERS down gullies while leaving ribs
+    // bare. The clean smoothstep this replaces drew a perfect horizontal band
+    // around the massif, and a perfect band is the single loudest tell that a
+    // mountain was generated rather than observed -- no amount of texture work
+    // fixes a line that straight.
+    //
+    // Two octaves, because one is a wobble and two is terrain: the coarse term
+    // (~240 m) makes the whole line rise and fall across the range, the fine
+    // one (~28 m) breaks its edge into fingers and islands.
+    //
+    // JITTER THE INPUT, NOT THE OUTPUT -- the same rule the slope-rock band
+    // below learned the hard way. Adding noise to the RESULT would sprinkle
+    // snow onto ground nowhere near the line; moving the height the band is
+    // measured at keeps deep valleys bare and high peaks white by construction.
+    float snowCoarse = tnoise(wpos.xz * (kMacroScale * 0.35)) - 0.5;
+    float snowFine   = tnoise(wpos.xz * (kMacroScale * 3.00)) - 0.5;
+    // Fade the raggedness as cover rises: the line is only ragged while it is
+    // marginal. Under a full fall there is no edge left to be ragged.
+    float ragged = 1.0 - 0.6 * snowW;
+    float hSnow  = hN + (snowCoarse * 26.0 + snowFine * 7.0) * ragged;
+
     // Deep snow also holds on ground it would otherwise slide off. Relaxing the
     // slope gate is what lets it climb the cutting walls and the road banks
     // instead of leaving them bare in a whiteout.
     float slopeLo = 0.55 - 0.28 * snowW;
     float slopeHi = 0.80 - 0.22 * snowW;
-    s.snow = clamp(smoothstep(snowBot, snowTop, hN)
-                 * smoothstep(slopeLo, slopeHi, slope)
+    // WIND SCOUR. Snow does not lie evenly on exposed ground -- wind strips it
+    // off ribs and packs it into hollows, which is why a real snowfield is
+    // mottled rather than a bedsheet. Fed into the SLOPE for the same reason as
+    // above: dead-flat ground stays covered no matter what the noise says,
+    // because flat ground is where snow actually collects.
+    float scour = snowFine * 0.10;
+    s.snow = clamp(smoothstep(snowBot, snowTop, hSnow)
+                 * smoothstep(slopeLo, slopeHi, slope + scour)
                  * (1.0 - s.volc), 0.0, 1.0);
 
     // ---- Slope rock: overrides whatever band where the surface is steep. ----
@@ -360,7 +393,15 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
     // ---- Base sample the four materials (world-space UVs) ----
     vec3 grass = detailXZ(grassIdx, wpos.xz);
     vec3 sand  = detailXZ(sandIdx,  wpos.xz);
-    vec3 snow  = detailXZ(snowIdx,  wpos.xz);
+    // SNOW IS TRIPLANAR, like the rock it lies on. It was top-down only, which
+    // is fine on a field and wrong on a mountain: a near-vertical face has
+    // almost no XZ footprint, so the top-down projection SMEARS the tile into
+    // vertical streaks down the whole massif. Those streaks were the last thing
+    // reading as fake once the texture itself was fixed -- and the fix is the
+    // one rock already had for exactly this reason, sitting one line below.
+    // Snow is the only other layer that lives on steep ground, so it is the only
+    // other one that needs it; grass and sand stay cheap and top-down.
+    vec3 snow  = triplanar(snowIdx, wpos, wn);
     // Rock uses triplanar so cliffs aren't stretched.
     vec3 rock  = triplanar(rockIdx, wpos, wn);
 
@@ -456,6 +497,13 @@ vec3 terrainNormal(vec3 wpos, vec3 wn, uvec2 nrmPack) {
     if (s.sand > kLayerEps && sandN != 0u)
         N = mix(N, whiteoutY(stochNormalTS(sandN, uvY, dYx, dYy), wn), s.sand);
 
+    // SNOW'S NORMAL IS TRIPLANAR TOO, matching its albedo one function up. If
+    // only the colour were reprojected the two would disagree on every steep
+    // face -- unstretched snow lit by stretched slopes -- which is a worse
+    // artefact than the stretch was, because it looks like a lighting bug
+    // rather than a texture one. Sampled once here and reused by both branches.
+    vec3 snowNrm = (snowN != 0u) ? triplanarNormal(snowN, wpos, wn) : wn;
+
     // Rock is wanted by BOTH the alpine band and the slope band; sample once.
     float rockW1 = s.alpine * 0.9;
     float rockW2 = s.rock * (1.0 - s.snow * 0.55);
@@ -463,10 +511,10 @@ vec3 terrainNormal(vec3 wpos, vec3 wn, uvec2 nrmPack) {
         vec3 rockNrm = triplanarNormal(rockN, wpos, wn);
         N = mix(N, rockNrm, rockW1);
         if (s.snow > kLayerEps && snowN != 0u)
-            N = mix(N, whiteoutY(stochNormalTS(snowN, uvY, dYx, dYy), wn), s.snow);
+            N = mix(N, snowNrm, s.snow);
         N = mix(N, rockNrm, rockW2);
     } else if (s.snow > kLayerEps && snowN != 0u) {
-        N = mix(N, whiteoutY(stochNormalTS(snowN, uvY, dYx, dYy), wn), s.snow);
+        N = mix(N, snowNrm, s.snow);
     }
 
     // A degenerate blend (opposing layers cancelling) would normalize to noise;
