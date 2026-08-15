@@ -15,6 +15,8 @@
 #include "../tunnel_corridor.h"
 #include "../tunnel_fitout.h"
 #include "../tunnel_rooms.h"
+
+#include <array>
 #include "../road_network.h"
 #include "../vehicle.h"
 #include "../asset_root.h"
@@ -255,10 +257,13 @@ int hostTunnel(HostContext& hc) {
     // nobody logs is a wish, and because the "built but not wired" failure this
     // codebase keeps hitting starts exactly here: a module that decides
     // correctly and silently.
+    // Where the plant rooms ended up, so their hums can start once the audio
+    // system exists (STEP 3b below).
+    std::vector<std::array<float, 3>> plantHumPos;
     {
         x3::game::FitoutConfig fcfg;
         x3::game::TunnelFitout fitout;
-        fitout.build(route.boreS0, route.boreS1, fcfg, 7u);
+        fitout.build(route.boreS0, route.boreS1, fcfg, x3::game::kTunnelFitoutSeed);
         x3::game::TunnelRoomProgram rooms;
         // The demo ridge is the census's one and only Tier A bore -- the
         // showcase. Every other bore in the world is B or C and gets no rooms.
@@ -267,11 +272,23 @@ int hostTunnel(HostContext& hc) {
         std::snprintf(rb, sizeof(rb),
             "tunnel interior: %u service doors, %u opening onto a program "
             "(%u spaces, %u entities of the Tier-A budget of 40); least rock over any "
-            "room ceiling %.0f ft [NOT YET DRAWN -- placement only]",
+            "room ceiling %.0f ft",
             (uint32_t)rooms.doors().size(), rooms.programmedDoorCount(),
             (uint32_t)rooms.spaces().size(), rooms.entityCount(),
             rooms.worstRockCoverM() * 3.28084f);
         x3::logInfo(rb);
+
+        // The plant rooms want a hum, but the audio system is not created until
+        // further down. Carry their POSITIONS out of here rather than reordering
+        // engine startup around an ambience detail.
+        for (const x3::game::TunnelSpace& sp : rooms.spaces()) {
+            if (sp.kind != x3::game::SpaceKind::PlantRoom) continue;
+            const float sMid   = (sp.s0 + sp.s1) * 0.5f;
+            const float latMid = (float)sp.side * (sp.latIn + sp.latOut) * 0.5f;
+            float wx = 0.0f, wz = 0.0f;
+            route.worldAt(sMid, latMid, wx, wz);
+            plantHumPos.push_back({ wx, sp.floorY + 1.2f, wz });
+        }
     }
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
@@ -349,6 +366,32 @@ int hostTunnel(HostContext& hc) {
                             "lightning will flash silently");
             else
                 x3::logInfo("[tunnel] thunder online");
+        }
+
+        // ---- THE ROOMS MAKE A NOISE ------------------------------------
+        // A plant room is pumps and vent plant; the one thing it must never be
+        // is silent. startLoop3D rather than a one-shot on a timer: the position
+        // is set once and miniaudio re-derives attenuation and panning against
+        // the live listener every mix callback, so the hum swells as you walk
+        // the hall toward it and falls away behind you. That is the difference
+        // between a machine in a room and a sound on a trigger.
+        //
+        // It is also the ONLY cue that the door you just drove past leads
+        // anywhere. Standing in the bore you cannot see a room; you can hear one.
+        if (!plantHumPos.empty()) {
+            const std::string humWav =
+                (std::filesystem::path(x3::game::assetRoot()) / "audio/echotropolis/ambient/mine_hum.wav").string();
+            const x3::audio::SoundHandle hum = audio->load(humWav);
+            if (hum.valid()) {
+                for (const auto& p : plantHumPos)
+                    audio->startLoop3D(hum, p[0], p[1], p[2], 0.55f, 0.85f);
+                char hb[96];
+                std::snprintf(hb, sizeof(hb), "[tunnel] %u plant-room hum(s) running",
+                              (uint32_t)plantHumPos.size());
+                x3::logInfo(hb);
+            } else {
+                x3::logWarn("[tunnel] mine_hum.wav missing - the plant rooms stay silent");
+            }
         }
     }
     // ==== GAUGE ARTWORK =====================================================

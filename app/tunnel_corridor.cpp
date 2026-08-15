@@ -4,6 +4,7 @@
 // §2.2/§2.3/§3.2/§3.3/§4.3/§4.4 and re-implemented here from first principles.
 #include "tunnel_corridor.h"
 #include "tunnel_fitout.h"
+#include "tunnel_rooms.h"
 #include "mesh_prims.h"
 #include "asset_root.h"        // assetRoot() — the surface_library mount point
 #include "vehicle.h"           // DriveDemo — the drive-through self-test rig
@@ -1180,7 +1181,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         if (route.boreValid) {
             TunnelFitout fit;
             FitoutConfig fcfg;
-            fit.build(route.boreS0, route.boreS1, fcfg, /*seed*/ 0x7A11u);
+            fit.build(route.boreS0, route.boreS1, fcfg, kTunnelFitoutSeed);
 
             MeshBuf walk, rail, band, panel, glow;
             const float deckY = kTcWalkKerbH;              // deck top, above the road datum
@@ -1351,6 +1352,185 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             Material gm; gm.alb = paintTex; gm.mr = roughMR;
             gm.emissive[0] = 0.55f; gm.emissive[1] = 0.80f; gm.emissive[2] = 1.0f; gm.emissive[3] = 1.4f;
             upload(glow, gm, /*collide*/false);
+
+            // ================= 1c) BEHIND THE DOORS =====================
+            // The halls, rooms and stairs. WHERE they go, how much rock is over
+            // them and which door earns a program was decided (and proved, 15/15)
+            // in tunnel_rooms.h against the real lid height -- this draws it.
+            //
+            // Each space is an axis-aligned box in ROUTE coordinates, so it is
+            // emitted INWARD-FACING: you are inside it, and the faces you would
+            // see from the bore are the ones skipped. Two spaces that touch skip
+            // their shared face, which is what makes a doorway without a single
+            // boolean cut -- the openings ARE the omissions.
+            {
+                TunnelRoomProgram prog;
+                prog.build(route, fit, TunnelTier::A);
+
+                MeshBuf room, fixture, fglow;
+                const auto& sp = prog.spaces();
+
+                auto frameAtS = [&](float sPos) -> const Frame& {
+                    const size_t idx = (size_t)clampf(
+                        (sPos / std::max(1e-3f, route.totalLen)) * (float)(roadFrames.size() - 1),
+                        0.0f, (float)(roadFrames.size() - 1));
+                    return roadFrames[idx];
+                };
+                // Do two boxes touch on a face? Axis-aligned in (station, lateral),
+                // so "touching" is one pair of bounds meeting while the other
+                // overlaps. Tolerance is generous (4 in): these are authored
+                // numbers, not solved ones, and a hairline gap between a hall and
+                // its room would leave a wall standing across the doorway.
+                auto touchS = [&](const TunnelSpace& a, const TunnelSpace& b, bool aHigh) {
+                    const float av = aHigh ? a.s1 : a.s0;
+                    const float bv = aHigh ? b.s0 : b.s1;
+                    if (std::fabs(av - bv) > 0.1f) return false;
+                    return !(a.latOut < b.latIn - 0.1f || b.latOut < a.latIn - 0.1f)
+                        && a.side == b.side;
+                };
+                auto touchLat = [&](const TunnelSpace& a, const TunnelSpace& b, bool aOut) {
+                    const float av = aOut ? a.latOut : a.latIn;
+                    const float bv = aOut ? b.latIn  : b.latOut;
+                    if (std::fabs(av - bv) > 0.1f) return false;
+                    return !(a.s1 < b.s0 - 0.1f || b.s1 < a.s0 - 0.1f) && a.side == b.side;
+                };
+
+                for (size_t i = 0; i < sp.size(); ++i) {
+                    const TunnelSpace& sc = sp[i];
+                    const float fy = sc.floorY, cy = sc.floorY + sc.clearH;
+                    const float sgn = (float)sc.side;
+                    const Frame& fa = frameAtS(sc.s0);
+                    const Frame& fb = frameAtS(sc.s1);
+
+                    // Which faces are shared with a neighbour and must be left open.
+                    bool openS0 = false, openS1 = false, openIn = false, openOut = false;
+                    for (size_t j = 0; j < sp.size(); ++j) {
+                        if (j == i) continue;
+                        const TunnelSpace& o = sp[j];
+                        if (touchS(sc, o, false)) openS0 = true;
+                        if (touchS(sc, o, true))  openS1 = true;
+                        if (touchLat(sc, o, false)) openIn = true;
+                        if (touchLat(sc, o, true))  openOut = true;
+                    }
+                    // The entry stub's inner face is the DOORWAY onto the bore --
+                    // always open, and it is the only place the program touches
+                    // the tunnel the player can see.
+                    if (sc.kind == SpaceKind::EntryStub) openIn = true;
+
+                    const float li = sgn * sc.latIn, lo = sgn * sc.latOut;
+                    float A[3], B[3], C[3], D[3];
+                    const float nU[3] = { 0, 1, 0 }, nD[3] = { 0, -1, 0 };
+
+                    // Floor + ceiling (never shared: a stair handles level change).
+                    PA(fa, li, fy, A); PA(fa, lo, fy, B); PA(fb, lo, fy, C); PA(fb, li, fy, D);
+                    if (sc.side > 0) room.quad(A, B, C, D, nU, 0, 1, 0, 1);
+                    else             room.quad(D, C, B, A, nU, 0, 1, 0, 1);
+                    PA(fa, li, cy, A); PA(fa, lo, cy, B); PA(fb, lo, cy, C); PA(fb, li, cy, D);
+                    if (sc.side > 0) room.quad(D, C, B, A, nD, 0, 1, 0, 1);
+                    else             room.quad(A, B, C, D, nD, 0, 1, 0, 1);
+
+                    // End walls (station bounds).
+                    if (!openS0) {
+                        PA(fa, li, fy, A); PA(fa, lo, fy, B); PA(fa, lo, cy, C); PA(fa, li, cy, D);
+                        const float n[3] = { route.dirX, 0, route.dirZ };
+                        room.quad(A, B, C, D, n, 0, 1, 0, 1);
+                    }
+                    if (!openS1) {
+                        PA(fb, li, fy, A); PA(fb, lo, fy, B); PA(fb, lo, cy, C); PA(fb, li, cy, D);
+                        const float n[3] = { -route.dirX, 0, -route.dirZ };
+                        room.quad(D, C, B, A, n, 0, 1, 0, 1);
+                    }
+                    // Side walls (lateral bounds).
+                    if (!openIn) {
+                        PA(fa, li, fy, A); PA(fb, li, fy, B); PA(fb, li, cy, C); PA(fa, li, cy, D);
+                        const float n[3] = { sgn*right[0], 0, sgn*right[2] };
+                        room.quad(A, B, C, D, n, 0, 1, 0, 1);
+                    }
+                    if (!openOut) {
+                        PA(fa, lo, fy, A); PA(fb, lo, fy, B); PA(fb, lo, cy, C); PA(fa, lo, cy, D);
+                        const float n[3] = { -sgn*right[0], 0, -sgn*right[2] };
+                        room.quad(D, C, B, A, n, 0, 1, 0, 1);
+                    }
+
+                    // ---- WHAT MAKES THE ROOM A ROOM. Tim: the rooms "are not
+                    // empty volume -- they have a purpose and something to
+                    // interact with." An empty concrete box behind a door is
+                    // worse than no door, because it promises and then reveals
+                    // nothing. Each role gets the hardware its NAME implies.
+                    const float mid = (sc.s0 + sc.s1) * 0.5f;
+                    const Frame& fm = frameAtS(mid);
+                    const float latMid = sgn * (sc.latIn + sc.latOut) * 0.5f;
+                    const float ax[3] = { route.dirX, 0.0f, route.dirZ };
+                    if (sc.kind == SpaceKind::PlantRoom) {
+                        // Two pump skids + a vent trunk. Drainage goes to the low
+                        // point, so this is the room that has a reason to be here.
+                        for (int k = -1; k <= 1; k += 2) {
+                            float c[3]; PA(fm, latMid + (float)k * 1.3f, fy + 0.55f, c);
+                            obox(fixture, c, right, ax, 0.55f, 0.55f, 0.9f, 1.0f);
+                        }
+                        float t[3]; PA(fm, sgn * (sc.latOut - 0.5f), cy - 0.45f, t);
+                        obox(fixture, t, right, ax, 0.4f, 0.4f, (sc.s1 - sc.s0) * 0.42f, 1.0f);
+                    } else if (sc.kind == SpaceKind::SignalRoom) {
+                        // A rank of relay cabinets against the far wall, with the
+                        // status lamps that make a dark room read as LIVE.
+                        for (int k = 0; k < 4; ++k) {
+                            float c[3];
+                            PA(fm, sgn * (sc.latOut - 0.45f), fy + 0.95f, c);
+                            c[0] += route.dirX * ((float)k - 1.5f) * 1.05f;
+                            c[2] += route.dirZ * ((float)k - 1.5f) * 1.05f;
+                            obox(fixture, c, right, ax, 0.35f, 0.95f, 0.45f, 1.0f);
+                            float g[3] = { c[0], c[1] + 0.62f, c[2] };
+                            obox(fglow, g, right, ax, 0.30f, 0.05f, 0.06f, 1.0f);
+                        }
+                    } else if (sc.kind == SpaceKind::ControlRoom) {
+                        // THE COMMAND CONSOLE -- a desk with a lit face. This is
+                        // the thing the whole chain of door -> hall -> room exists
+                        // to arrive at.
+                        float c[3]; PA(fm, latMid, fy + 0.45f, c);
+                        obox(fixture, c, right, ax, 0.7f, 0.45f, 1.6f, 1.0f);
+                        float scr[3]; PA(fm, latMid, fy + 1.35f, scr);
+                        obox(fglow, scr, right, ax, 0.06f, 0.42f, 1.45f, 1.0f);
+                    }
+                }
+
+                // ---- KEYPADS at the doors that open. A denied door gets none,
+                // which is the honest tell: no keypad means no way in, rather
+                // than a keypad that silently refuses every code.
+                for (const RoomDoor& d : prog.doors()) {
+                    if (!d.hasProgram) continue;
+                    const Frame& fd = frameAtS(d.s);
+                    const float sgn = (float)d.side;
+                    float k[3]; PA(fd, sgn * (kTcTubeHalfWidth - 0.10f),
+                                   fd.p[1] + kTcWalkKerbH + 1.35f, k);
+                    k[0] += route.dirX * 0.85f; k[2] += route.dirZ * 0.85f;
+                    const float ax2[3] = { route.dirX, 0.0f, route.dirZ };
+                    obox(fixture, k, right, ax2, 0.05f, 0.14f, 0.10f, 1.0f);
+                    float kg[3] = { k[0], k[1], k[2] };
+                    obox(fglow, kg, right, ax2, 0.055f, 0.09f, 0.065f, 1.0f);
+                }
+
+                Material rmm; if (boreSet.ok) { rmm.alb = boreSet.albedo; rmm.mr = boreSet.mr; rmm.nrm = boreSet.normal; }
+                              else { rmm.alb = concreteTex; rmm.mr = roughMR; }
+                for (int c = 0; c < 3; ++c) rmm.tint[c] = 0.74f;   // service spaces are dimmer than the bore
+                upload(room, rmm, /*collide*/true);
+
+                Material fm2; fm2.alb = concreteTex; fm2.mr = roughMR;
+                fm2.tint[0] = 0.34f; fm2.tint[1] = 0.36f; fm2.tint[2] = 0.40f;
+                upload(fixture, fm2, /*collide*/true);
+
+                Material fg; fg.alb = paintTex; fg.mr = roughMR;
+                fg.emissive[0] = 0.35f; fg.emissive[1] = 1.0f; fg.emissive[2] = 0.65f; fg.emissive[3] = 1.6f;
+                upload(fglow, fg, /*collide*/false);
+
+                char rb[240];
+                uint32_t opened = 0;
+                for (const RoomDoor& d : prog.doors()) if (d.hasProgram) ++opened;
+                std::snprintf(rb, sizeof(rb),
+                    "tunnel rooms: %u spaces behind %u of %u doors | worst cover %.0f ft",
+                    (uint32_t)sp.size(), opened, (uint32_t)prog.doors().size(),
+                    prog.worstRockCoverM() * 3.28084f);
+                x3::logInfo(rb);
+            }
 
             char fb[220];
             std::snprintf(fb, sizeof(fb),

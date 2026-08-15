@@ -76,6 +76,15 @@ struct FitoutConfig {
     float maintLenM       = 34.0f;
 };
 
+// THE SEED, named once. The geometry pass and the host census each built their
+// own TunnelFitout with a DIFFERENT literal (0x7A11 vs 7), which meant the log
+// confidently described a door layout that was not the one drawn -- two halves
+// of the same feature disagreeing about reality, which is the defect this
+// codebase keeps producing wherever a number is written down twice. A bore that
+// wants its own character overrides this deliberately; nobody gets a different
+// bore by accident.
+constexpr uint32_t kTunnelFitoutSeed = 0x7A11u;
+
 // What kind of thing sits at a station on the wall.
 enum class FittingKind : uint32_t {
     Lamp     = 0,
