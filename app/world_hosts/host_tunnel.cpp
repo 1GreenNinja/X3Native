@@ -27,6 +27,8 @@
 #include "../storm.h"
 #include "../precip_fx.h"
 #include "../hud.h"
+#include "engine/asset/IModelLoader.h"
+#include "engine/asset/IAssetSource.h"
 // stb_image: file-local static copy (the cinematic.cpp / descent_slide.cpp
 // recipe — the engine's implementation is file-local in ModelLoader.cpp, so each
 // app TU that decodes PNGs instantiates its own).
@@ -373,6 +375,16 @@ int hostTunnel(HostContext& hc) {
         if (const char* si = std::getenv("X3_SNOW_IN")) console->set("wx_snow_in", si);
     }
     std::string wxApplied = "off";
+
+    // ---- JAKE. The on-foot camera was a first-person eye, which is exactly
+    // why you could not see him: you were inside his head. A body nobody can see
+    // is a body nobody has, so getting out now pulls the camera back and puts
+    // the man on screen.
+    std::unique_ptr<x3::asset::IAssetSource> jakeSrc;
+    std::unique_ptr<x3::asset::IModelLoader> jakeLoader;
+    x3::asset::Model jakeModel;
+    std::vector<x3::asset::ModelDrawable> jakeDraw;
+    bool jakeTried = false;
 
     x3::game::Player onFoot;
     bool  driving      = true;
@@ -891,6 +903,31 @@ int hostTunnel(HostContext& hc) {
                         onFoot.setFeetPosition(*phys, x3::phys::Vec3{ vp[0] + ox, vp[1] + 1.2f, vp[2] + oz });
                     }
                     driving = false;
+                    // Load him ONCE, on the first exit rather than at boot: most
+                    // runs of this world never leave the car, and a 1.4 MB rig
+                    // plus its textures is not worth paying for on the chance.
+                    if (!jakeTried) {
+                        jakeTried = true;
+                        jakeSrc.reset(x3::asset::createAssetSource());
+                        const std::string glbDir = x3::game::assetRoot() + "/rigged_glb";
+                        if (jakeSrc && jakeSrc->mountDir(glbDir, 0)) {
+                            jakeLoader.reset(x3::asset::createModelLoader(device, jakeSrc.get()));
+                            // JakeClone_player, not Jake_44_actions: same man, and
+                            // 1.4 MB against 26 MB. The 44-clip rig earns its size
+                            // when something plays those clips; nothing here does
+                            // yet, so paying for it would be paying for nothing.
+                            jakeModel = jakeLoader->load("JakeClone_player.glb");
+                            if (jakeModel.ok) {
+                                jakeDraw = x3::asset::makeDrawables(jakeModel);
+                                char jb[128];
+                                std::snprintf(jb, sizeof(jb), "[tunnel] Jake: %u drawable(s)",
+                                              (uint32_t)jakeDraw.size());
+                                x3::logInfo(jb);
+                            } else {
+                                x3::logWarn("[tunnel] JakeClone_player.glb failed to load - no body on foot");
+                            }
+                        }
+                    }
                     x3::logInfo("[tunnel] on foot - E near the car to get back in");
                 } else {
                     float fx, fy, fz, fyaw, fpit;
@@ -1136,9 +1173,20 @@ int hostTunnel(HostContext& hc) {
             // precipitation volume and the sky-visibility ray follow the eye
             // without a second code path to keep in step.
             if (!driving && footSpawned) {
-                float fyaw = 0.0f, fpit = 0.0f;
-                onFoot.camera(cx, cy, cz, fyaw, fpit);
+                float ex, ey, ez, fyaw = 0.0f, fpit = 0.0f;
+                onFoot.camera(ex, ey, ez, fyaw, fpit);
                 camYaw = fyaw; camPitch = fpit;
+                // OVER THE SHOULDER. Pulled back along the look vector and offset
+                // to the right, the way every third-person game frames a walking
+                // character -- dead-centre behind the head means the body hides
+                // exactly what you are walking toward.
+                const float cp = std::cos(fpit), sp2 = std::sin(fpit);
+                const float fx = cp * std::cos(fyaw), fy2 = sp2, fz = cp * std::sin(fyaw);
+                const float rx = -std::sin(fyaw), rz = std::cos(fyaw);
+                const float back = 3.1f, shoulder = 0.55f;
+                cx = ex - fx * back + rx * shoulder;
+                cy = ey - fy2 * back + 0.35f;
+                cz = ez - fz * back + rz * shoulder;
                 device->setCamera(cx, cy, cz, camYaw, camPitch, 74.0f);
             } else {
                 device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
@@ -1222,6 +1270,37 @@ int hostTunnel(HostContext& hc) {
                     const float fgc[4] = { 1.0f, 0.93f, 0.72f, 1.0f };
                     device->drawHudText(frame, prompt, tx + 1.0f, ty + 1.0f, px, sh);
                     device->drawHudText(frame, prompt, tx, ty, px, fgc);
+                }
+            }
+
+            // ---- DRAW JAKE, at the capsule's feet, facing where he walks.
+            // The rig is authored +Z forward and the camera convention is
+            // yaw about +Y from +X, so the model yaw is (camYaw + 90 deg).
+            if (!driving && footSpawned && !jakeDraw.empty()) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                const float a = camYaw + 1.5707963f;
+                const float ca = std::cos(a), sa = std::sin(a);
+                // Column-major 4x4: rotation about +Y, translation at the feet.
+                const float world[16] = {
+                     ca, 0.0f, -sa, 0.0f,
+                   0.0f, 1.0f, 0.0f, 0.0f,
+                     sa, 0.0f,  ca, 0.0f,
+                   ft.x, ft.y, ft.z, 1.0f
+                };
+                for (const x3::asset::ModelDrawable& d : jakeDraw) {
+                    const float bc[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
+                                          d.baseColorFactor[2], d.baseColorFactor[3] };
+                    const float emis[3] = { d.emissiveFactor[0], d.emissiveFactor[1],
+                                            d.emissiveFactor[2] };
+                    device->drawMeshPBR(frame,
+                        x3::rhi::MeshHandle{ d.meshId },
+                        x3::rhi::TextureHandle{ d.baseColorTexId },
+                        x3::rhi::TextureHandle{ d.normalTexId },
+                        x3::rhi::TextureHandle{ d.mrTexId },
+                        bc, emis, world, d.alphaMask, d.alphaBlend,
+                        x3::rhi::TextureHandle{ d.emissiveTexId },
+                        x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
+                        d.clearcoat, d.clearcoatRough);
                 }
             }
 
