@@ -17,6 +17,7 @@
 #include "../tunnel_fitout.h"
 #include "../tunnel_rooms.h"
 #include "../player.h"
+#include "../anim.h"                     // Skinner — Jake's idle/walk/run rig
 
 #include <array>
 #include <memory>
@@ -571,6 +572,18 @@ int hostTunnel(HostContext& hc) {
     x3::asset::Model jakeModel;
     std::vector<x3::asset::ModelDrawable> jakeDraw;
     bool jakeTried = false;
+    // ANIMATION (the Sarah recipe, sarah.cpp): a Skinner drives idle/walk/run
+    // by planar speed. Tim: "Jake isn't rigged... He needs his textures.. his
+    // animations" — he was right on both counts, and both had one cause: the
+    // host loaded JakeClone_player.glb, which has 20 COMBAT clips and ZERO
+    // textures (that is why he rendered white), while Jake_44_actions.glb —
+    // sitting in the same directory — has the baseColor texture AND the
+    // Idle / walking / run clips. The 26 MB earns its keep the moment
+    // something plays those clips, and now something does.
+    x3::anim::Skinner jakeSkin;
+    bool  jakeAnimated = false;
+    float jakeYaw = 0.0f;                    // faces his MOVEMENT, not the camera
+    float jakePrevFeet[3] = { 0, 0, 0 };
 
     x3::game::Player onFoot;
     bool  driving      = true;
@@ -636,32 +649,27 @@ int hostTunnel(HostContext& hc) {
     //     ORIENTED to the car's heading at the moment they were laid — a mark
     //     laid mid-drift stays skewed on the road the way the tire actually
     //     drew it, instead of snapping to the world axes.
-    x3::rhi::MeshHandle fxMarkMesh, fxPuffMesh;
-    x3::rhi::TextureHandle fxSkidTex, fxSmokeTex;
+    // Marks are geometry (rubber lies ON the road); SMOKE is not — it goes
+    // through IRenderDevice::submitParticles, the engine's own billboard pass:
+    // camera-facing quads, alpha blend, depth-test-no-write, soft-particle
+    // depth fade. Exactly the pipeline the Vulkan references Tim sent describe,
+    // already built and already carrying the rain and snow — the first cut of
+    // this feature drew CUBES because I reached for drawMesh instead of
+    // checking what the device offered.
+    x3::rhi::MeshHandle fxMarkMesh;
+    x3::rhi::TextureHandle fxSkidTex;
     {
         std::vector<x3::rhi::MeshVertex> qv; std::vector<uint32_t> qi;
         x3::prims::makeCube(0.5f, qv, qi);
         fxMarkMesh = device->createMesh(qv.data(), (uint32_t)qv.size(), qi.data(), (uint32_t)qi.size());
-        x3::prims::PrimMesh sph = x3::prims::makeUVSphere(12, 18);   // a puff needs no 8k tris
-        fxPuffMesh = device->createMesh(sph.verts.data(), (uint32_t)sph.verts.size(),
-                                        sph.index.data(), (uint32_t)sph.index.size());
         auto sk = x3::prims::makeSolidRGBA(8, 16, 16, 19);
         fxSkidTex = device->createTexture(sk.data(), 8, 8, true);
-        // Smoke texture: gray with soft vertical banding so the sphere reads
-        // as vapor with structure instead of a billiard ball.
-        std::vector<uint8_t> sm(32 * 32 * 4);
-        for (int y = 0; y < 32; ++y)
-            for (int x = 0; x < 32; ++x) {
-                const float n = 0.82f + 0.18f * std::sin(y * 0.7f + x * 0.23f);
-                uint8_t* p = &sm[(y * 32 + x) * 4];
-                p[0] = (uint8_t)(158 * n); p[1] = (uint8_t)(158 * n);
-                p[2] = (uint8_t)(163 * n); p[3] = 255;
-            }
-        fxSmokeTex = device->createTexture(sm.data(), 32, 32, true);
     }
     struct SpinFx { float x, y, z, age, yaw; uint8_t kind; };  // 0=skid, 1=smoke
     SpinFx fx[512]; uint32_t fxN = 0;
     float fxSpawnAcc = 0.0f;
+    std::vector<x3::rhi::IRenderDevice::ParticleInstance> fxPuffs;
+    fxPuffs.reserve(512 * 3);
 
     // ==== ENGINE NOTE =======================================================
     // Everything for this already existed and nothing played it: the sample is
@@ -1204,19 +1212,39 @@ int hostTunnel(HostContext& hc) {
                         const std::string glbDir = x3::game::assetRoot() + "/rigged_glb";
                         if (jakeSrc && jakeSrc->mountDir(glbDir, 0)) {
                             jakeLoader.reset(x3::asset::createModelLoader(device, jakeSrc.get()));
-                            // JakeClone_player, not Jake_44_actions: same man, and
-                            // 1.4 MB against 26 MB. The 44-clip rig earns its size
-                            // when something plays those clips; nothing here does
-                            // yet, so paying for it would be paying for nothing.
-                            jakeModel = jakeLoader->load("JakeClone_player.glb");
+                            // Jake_44_actions, NOT JakeClone_player. The clone is
+                            // 1.4 MB but has ZERO textures (the white statue) and
+                            // only combat clips; the 44-action rig carries the
+                            // baseColor texture and Idle / walking / run.
+                            jakeModel = jakeLoader->load("Jake_44_actions.glb");
                             if (jakeModel.ok) {
                                 jakeDraw = x3::asset::makeDrawables(jakeModel);
+                                if (jakeSkin.bind(jakeModel)) {
+                                    // ROOT-Y LOCK: the Jake clips are the family
+                                    // with the -0.9488 armature-offset root Y
+                                    // (anim.h setRootYLock documents exactly this
+                                    // rig); his world Y is owned by the capsule.
+                                    jakeSkin.setRootYLock(true);
+                                    jakeSkin.enableGpuSkinning(*device, jakeModel);
+                                    int idle = jakeSkin.findClip({ "idle", "stand", "breath" });
+                                    int walk = jakeSkin.findClip({ "walking", "walk" });
+                                    int run  = jakeSkin.findClip({ "run", "sprint", "jog" });
+                                    if (idle < 0) idle = 0;
+                                    jakeSkin.setLocomotionClips(idle, walk, run, 0.2f, 2.0f);
+                                    jakeSkin.setLocomotionSpeed(0.0f);
+                                    jakeSkin.applyLocomotion(jakeModel, *device, 0.0f);
+                                    jakeAnimated = true;
+                                    x3::logInfo("[tunnel] Jake animated: idle=" + std::to_string(idle)
+                                                + " walk=" + std::to_string(walk)
+                                                + " run=" + std::to_string(run));
+                                }
                                 char jb[128];
-                                std::snprintf(jb, sizeof(jb), "[tunnel] Jake: %u drawable(s)",
-                                              (uint32_t)jakeDraw.size());
+                                std::snprintf(jb, sizeof(jb), "[tunnel] Jake: %u drawable(s)%s",
+                                              (uint32_t)jakeDraw.size(),
+                                              jakeAnimated ? " (rigged)" : " (STATIC - no skin)");
                                 x3::logInfo(jb);
                             } else {
-                                x3::logWarn("[tunnel] JakeClone_player.glb failed to load - no body on foot");
+                                x3::logWarn("[tunnel] Jake_44_actions.glb failed to load - no body on foot");
                             }
                         }
                     }
@@ -1249,6 +1277,26 @@ int hostTunnel(HostContext& hc) {
             spaceWas = spaceNow;
             pin.lookDX = ddx; pin.lookDY = ddy;
             onFoot.update(pin, fdt, *phys);
+
+            // Drive the rig from what the capsule actually DID: planar speed
+            // picks idle/walk/run (the locomotion blend), and he faces his
+            // direction of travel — not the camera — turning smoothly.
+            if (jakeAnimated) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                const float vx = (ft.x - jakePrevFeet[0]) / std::max(fdt, 1e-4f);
+                const float vz = (ft.z - jakePrevFeet[2]) / std::max(fdt, 1e-4f);
+                jakePrevFeet[0] = ft.x; jakePrevFeet[1] = ft.y; jakePrevFeet[2] = ft.z;
+                const float planar = std::sqrt(vx * vx + vz * vz);
+                if (planar > 0.4f) {
+                    const float want = std::atan2(vz, vx) + 1.5707963f;
+                    float d = want - jakeYaw;
+                    while (d >  3.14159265f) d -= 6.2831853f;
+                    while (d < -3.14159265f) d += 6.2831853f;
+                    jakeYaw += d * std::min(1.0f, fdt * 10.0f);
+                }
+                jakeSkin.setLocomotionSpeed(planar);
+                jakeSkin.applyLocomotion(jakeModel, *device, fdt);
+            }
         }
 
         x3::phys::VehicleInput in;
@@ -1605,16 +1653,33 @@ int hostTunnel(HostContext& hc) {
                          f.x, f.y + 0.015f, f.z, 1.0f };
                     device->drawMesh(frame, fxMarkMesh, fxSkidTex, col, m);
                 } else {
-                    // A soft sphere: born at the contact patch, growing as it
-                    // rises, gone in ~1.6 s. Low alpha is what sells vapor.
+                    // TRANSLUCENT, WISPY: three overlapping soft billboards per
+                    // puff, deterministically jittered by particle index (no
+                    // rand — the LCG discipline precip_fx documents), each low
+                    // alpha so wisps come from OVERLAP, not from any one quad.
+                    // They grow, rise, drift apart, and thin to nothing.
                     const float t = f.age / 1.6f;
-                    col[3] = std::max(0.0f, 1.0f - t) * 0.30f;
-                    const float s = 0.30f + 1.1f * t;
-                    const float m[16] = {
-                        s, 0, 0, 0,  0, s, 0, 0,  0, 0, s, 0,
-                        f.x, f.y + 0.25f + 0.3f * t, f.z, 1.0f };
-                    device->drawMesh(frame, fxPuffMesh, fxSmokeTex, col, m);
+                    const float fade = std::max(0.0f, 1.0f - t);
+                    for (int k = 0; k < 3; ++k) {
+                        const uint32_t h = (i * 2654435761u) ^ (uint32_t)(k * 40503u);
+                        const float jx = (((h >> 3) & 255) / 255.0f - 0.5f) * (0.25f + 0.9f * t);
+                        const float jz = (((h >> 11) & 255) / 255.0f - 0.5f) * (0.25f + 0.9f * t);
+                        const float jy = (((h >> 19) & 255) / 255.0f) * 0.30f * t;
+                        x3::rhi::IRenderDevice::ParticleInstance pi;
+                        pi.pos[0] = f.x + jx;
+                        pi.pos[1] = f.y + 0.20f + 0.55f * t + jy;
+                        pi.pos[2] = f.z + jz;
+                        pi.size   = 0.22f + 0.85f * t;
+                        pi.color[0] = 0.62f; pi.color[1] = 0.62f; pi.color[2] = 0.65f;
+                        pi.color[3] = fade * fade * 0.16f;   // quadratic out — vapor thins fast
+                        fxPuffs.push_back(pi);
+                    }
                 }
+            }
+            if (!fxPuffs.empty()) {
+                device->submitParticles(fxPuffs.data(), (uint32_t)fxPuffs.size(),
+                                        x3::rhi::IRenderDevice::ParticleBlend::Alpha);
+                fxPuffs.clear();
             }
         }
         // ---- INSTRUMENT CLUSTER (textured) ---------------------------------
@@ -1699,11 +1764,12 @@ int hostTunnel(HostContext& hc) {
             }
 
             // ---- DRAW JAKE, at the capsule's feet, facing where he walks.
-            // The rig is authored +Z forward and the camera convention is
-            // yaw about +Y from +X, so the model yaw is (camYaw + 90 deg).
+            // The rig is authored +Z forward; jakeYaw tracks his direction of
+            // TRAVEL (smoothed in the movement block) — a man who faces his
+            // camera instead of his path moonwalks every time you strafe.
             if (!driving && footSpawned && !jakeDraw.empty()) {
                 const x3::phys::Vec3 ft = onFoot.feet();
-                const float a = camYaw + 1.5707963f;
+                const float a = jakeAnimated ? jakeYaw : camYaw + 1.5707963f;
                 const float ca = std::cos(a), sa = std::sin(a);
                 // Column-major 4x4: rotation about +Y, translation at the feet.
                 const float world[16] = {
