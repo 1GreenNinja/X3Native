@@ -176,6 +176,7 @@ add_library(x3app SHARED
     dialog.cpp
     env_art.cpp
     club1127.cpp
+    lns_shop.cpp        # the LNS shop material kit (CMU/checker/neon) — shared by club1127 + tunnel garage
     club_bedrock.cpp
     cave_atmosphere.cpp
     descent_fall.cpp

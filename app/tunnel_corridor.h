@@ -415,8 +415,11 @@ public:
     //     this is the shot the old build could not survive: it is where the
     //     earth ramp filled the arch)
     //   7 far-mouth three-quarter (the exit portal from the side, on the bank)
+    //   8 THE GARAGE — inside the Late Night Speed bay, from the entry end,
+    //     looking down the lifts / checker floor / neon (falls back to shot 1
+    //     on a bore with no garage program)
     void showcaseCamera(const TunnelRoute& route, int which, float cam[5]) const;
-    static constexpr int kShowcaseShots = 8;
+    static constexpr int kShowcaseShots = 9;
 
 private:
     std::vector<x3::rhi::MeshHandle>    m_meshes;
@@ -433,6 +436,12 @@ private:
     // SurfaceLibrary and decode the same 2K albedo/normal/mr sets again, which
     // was fine for one showcase bore and is not fine for eight.
     uint32_t m_entities = 0;
+    // Camera pose for showcase shot 8 (the LNS garage interior), captured while
+    // the bay's geometry is being emitted — the bay's placement is decided by
+    // the rooms program (the door with the most rock), so build() is the only
+    // party that knows where it ended up. Invalid on Tier B/C bores.
+    bool  m_garageCamValid = false;
+    float m_garageCam[5] = { 0, 0, 0, 0, 0 };
 };
 
 // ---------------------------------------------------------------------------
