@@ -1662,12 +1662,26 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                             const float ll = sc.latIn + gDep * 0.34f;
                             // Forward of the column line by the asymmetric offset.
                             const float spotAhead = 1.15f;      // 3.8 ft
-                            for (int side3 = -1; side3 <= 1; side3 += 2) {
-                                float pl[3];
-                                PA(frameAtS(ls + spotAhead), sgn * (ll + (float)side3 * 0.95f),
-                                   fy + 0.006f, pl);
-                                obox(baypaint, pl, right, ax, 0.24f, 0.003f, 0.30f, 1.0f);
-                            }
+                            // RAISED STEEL, AND YOU FEEL IT. My first pass drew
+                            // these 6 mm flat, which made them decals -- and a
+                            // decal is exactly what a spotting plate is not. It
+                            // is a plate you drive UP ONTO: the bump through the
+                            // driver's front wheel is how you know you are on
+                            // the mark, because you cannot see the floor over
+                            // your own bonnet at that distance. Half an inch
+                            // proud, and it COLLIDES, so the car actually feels
+                            // it instead of the player being told it is there.
+                            //
+                            // DRIVER'S SIDE ONLY. It is a reference for one
+                            // wheel, not a symmetric pair -- you line the near
+                            // front tyre up and the rest follows from the
+                            // asymmetric arms. A matched pair either side would
+                            // read as a parking stall again.
+                            const float kPlateProud = 0.0127f;   // 1/2 in steel
+                            float pl[3];
+                            PA(frameAtS(ls + spotAhead), sgn * (ll - 0.95f),
+                               fy + kPlateProud * 0.5f, pl);
+                            obox(baypaint, pl, right, ax, 0.26f, kPlateProud * 0.5f, 0.32f, 1.0f);
                         }
 
                         // ---- TWO-POST LIFTS (Rotary-style, 10,000 lb). Two
@@ -2071,7 +2085,10 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 // floor that is allowed to shout -- you are meant to find them
                 // through a windscreen while creeping forward.
                 bp.tint[0] = 1.00f; bp.tint[1] = 0.76f; bp.tint[2] = 0.06f;
-                upload(baypaint, bp, /*collide*/false);
+                // COLLIDES. The plate is the one prop in this room whose whole
+                // job is haptic -- drawn but not solid, it would be a picture of
+                // a spotting plate.
+                upload(baypaint, bp, /*collide*/true);
 
                 // ---- THE LNS MATERIALS (only built when the bay exists —
                 // Tier B/C programs leave every lns* buffer empty and upload()
