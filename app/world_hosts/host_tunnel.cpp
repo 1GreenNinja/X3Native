@@ -32,6 +32,8 @@
 #include "../storm.h"
 #include "../precip_fx.h"
 #include "../hud.h"
+#include "../world_map.h"        // the M map: camera/waypoint/screen (host_streamed's system)
+#include "../input_globals.h"    // g_weaponScroll + scrollCallback -> map wheel zoom
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
 // stb_image: file-local static copy (the cinematic.cpp / descent_slide.cpp
@@ -180,6 +182,68 @@ int hostTunnel(HostContext& hc) {
                 riverOn = false;
             }
         }
+    }
+
+    // ==== THE MAP'S ROAD LAYER ==============================================
+    // 46 miles of road exist above; this is what lets the player FIND them.
+    // The routes just registered are handed to WorldMapSystem (host_streamed's
+    // M map) as centreline overlays — no new map system, just the geometry the
+    // registries already hold. Solid = open road, dashed = a reach something
+    // else owns (a tunnel bore, the bridge deck), which is exactly what
+    // RoadSpec::gaps and TunnelRoute::boreS0/S1 already record.
+    std::vector<x3::game::MapRouteOverlay> mapRoutes;
+    {
+        // A TunnelRoute spine, sampled at 25 m: solid approach, dashed bore,
+        // solid exit. Used for the spawn corridor AND the outer tour's bores.
+        auto addTunnelRoute = [&](const x3::game::TunnelRoute& r, const char* nm) {
+            auto span = [&](float s0, float s1, bool dashed) {
+                if (s1 - s0 < 5.0f) return;
+                x3::game::MapRouteOverlay o; o.name = nm; o.dashed = dashed;
+                const float step = 25.0f;
+                for (float s = s0; ; s += step) {
+                    const float sc = std::min(s, s1);
+                    float p[3]; r.posAt(sc, p);
+                    o.x.push_back(p[0]); o.z.push_back(p[2]);
+                    if (sc >= s1) break;
+                }
+                if (o.x.size() >= 2) mapRoutes.push_back(std::move(o));
+            };
+            if (r.boreValid) {
+                span(0.0f, r.boreS0, false);
+                span(r.boreS0, r.boreS1, true);
+                span(r.boreS1, r.totalLen, false);
+            } else {
+                span(0.0f, r.totalLen, false);
+            }
+        };
+        // A RoadSpec centreline: nodes verbatim, split at its gaps so bored /
+        // decked reaches draw dashed. Gaps are authored in ascending node order.
+        auto addSpec = [&](const x3::game::RoadSpec& sp, const char* nm) {
+            const size_t n = std::min(sp.x.size(), sp.z.size());
+            if (n < 2) return;
+            auto emit = [&](size_t a, size_t b, bool dashed) {
+                if (b >= n) b = n - 1;
+                if (b <= a) return;
+                x3::game::MapRouteOverlay o; o.name = nm; o.dashed = dashed;
+                for (size_t k = a; k <= b; ++k) { o.x.push_back(sp.x[k]); o.z.push_back(sp.z[k]); }
+                mapRoutes.push_back(std::move(o));
+            };
+            size_t at = 0;
+            for (const x3::game::RoadSpec::Gap& g : sp.gaps) {
+                emit(at, g.i0, false);
+                emit(g.i0, g.i1, true);
+                at = g.i1;
+            }
+            emit(at, n - 1, false);
+        };
+        addTunnelRoute(route, "spawn corridor");
+        if (ringOn)  addSpec(ringSpec, "inner tour");
+        if (outerOn) addSpec(outerRing.spec, "outer tour");
+        if (riverOn) addSpec(riverRoad.spec, "river road");
+        char mb[128];
+        std::snprintf(mb, sizeof(mb), "[tunnel] map: %u road overlay polyline(s) staged",
+                      (uint32_t)mapRoutes.size());
+        x3::logInfo(mb);
     }
 
     // ==== STEP 1.5 — THE ROOMS' AIR RIGHTS ==================================
@@ -923,17 +987,48 @@ int hostTunnel(HostContext& hc) {
     float camYaw = std::atan2(route.dirZ, route.dirX), camPitch = -0.10f;
     int lastW = (int)W, lastH = (int)H;
     x3::logInfo("--world tunnel: WASD drives, Space handbrake, mouse orbits the chase cam, "
-                "~ console, ESC menu, SHIFT+ESC quits");
+                "M map, ~ console, ESC menu, SHIFT+ESC quits");
 
     // ---- DEV SHELL: console, pause menu, FPS -------------------------------
     // The reason the whole vehicle-feel pass was slow: every torque figure, grip
     // scale and centre-of-mass nudge cost an edit-rebuild-relaunch-drive-back
     // cycle, and those are values you have to judge by feel, one at a time. They
     // are all live now.
+    // Wheel -> map zoom. Installed BEFORE shell.attach so the shell's own scroll
+    // callback (console scrollback) chains to it, same order host_streamed uses.
+    glfwSetScrollCallback(window, scrollCallback);
+    g_weaponScroll = 0.0;
+
     HostShell shell;
     shell.attach(hc);
     shell.setFreezesSim(true);          // this host really does stop the sim on ESC
     console = shell.console();
+
+    // ---- WORLD MAP (M) ------------------------------------------------------
+    // host_streamed's WorldMapSystem, reused whole: the open/close lifecycle,
+    // the cursor-anchored zoom camera, and the click/ENTER waypoint. What this
+    // world feeds it is different CONTENT: no POI table, no Spire floors — the
+    // road-network overlays staged at boot are the map.
+    x3::game::WorldMapSystem wmap;
+    wmap.init("", "");                       // empty POI/floor set, logged, not fatal
+    wmap.setRouteOverlays(std::move(mapRoutes));
+    x3::game::StoryFlags mapFlags;           // no POIs yet: nothing to discover/persist
+    x3::ui::UiContext wmapUi;
+    bool mapOpen = false;
+    bool prevMapM = false, prevMapEnter = false, prevMapLmb = false;
+    bool mapEsc = false;                     // ESC edge, delivered by the shell handler
+    // ESC FIRST-REFUSAL: close the map's confirm prompt, then the map itself,
+    // and only then let the shell open its pause menu (host_streamed's layering).
+    shell.setEscapeHandler([&]() -> bool {
+        if (mapOpen && wmap.confirmOpen()) { mapEsc = true; return true; }
+        if (mapOpen) {
+            mapOpen = false; wmap.close();
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            glfwGetCursorPos(window, &lastMX, &lastMY);
+            return true;
+        }
+        return false;                        // nothing open: shell menu
+    });
     if (auto* con = shell.console()) {
         // ---- weather (moved from the old host-local console) ----
         con->registerCVar("wx", "off",
@@ -1033,6 +1128,7 @@ int hostTunnel(HostContext& hc) {
         // PITCH BLACK the moment you drive it, both from inside and looking in through
         // the portal from outside. The interactive loop streams tiles and draws other
         // content, and the light array does not survive that. Cheap: 6 cached lights.
+        mapEsc = false;   // BEFORE the poll: the escape handler runs inside it
         glfwPollEvents();
         shell.beginFrame();
 
@@ -1131,8 +1227,8 @@ int hostTunnel(HostContext& hc) {
         // Gate the LOOK, not just the camera apply: the deltas also feed the
         // on-foot Player below, and the cursor is released while typing — an
         // ungated delta would spin Jake's view across the screen on the way to
-        // the scrollback.
-        const float look = shell.inputEnabled() ? 1.0f : 0.0f;
+        // the scrollback. Same rule while the MAP owns the cursor.
+        const float look = (shell.inputEnabled() && !mapOpen) ? 1.0f : 0.0f;
         const float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
         lastMX = mx; lastMY = my;
         camYaw += ddx * 0.0025f; camPitch -= ddy * 0.0025f;
@@ -1203,8 +1299,39 @@ int hostTunnel(HostContext& hc) {
 
         // shell.key(), not glfwGetKey(): false while the console or the menu
         // owns the keyboard, so typing `car_grip 6` no longer also steers
-        // right, brakes and applies the handbrake.
-        auto kd = [&](int k){ return shell.key(k); };
+        // right, brakes and applies the handbrake. The MAP gates it too: while
+        // it is open the same WASD pans the map (its own raw reads below), and
+        // the CAR must not receive it — auto-hold then brings you to a stop.
+        auto kd = [&](int k){ return !mapOpen && shell.key(k); };
+
+        // ---- M: THE MAP. shell.key so typing `m` in the console does not
+        // toggle it; edge-triggered like E/T/C above. Opens centered on the
+        // car (or Jake, on foot) at a drive-scale zoom — wheel zooms out to the
+        // whole 46-mile network from there.
+        {
+            const bool mNow = shell.key(GLFW_KEY_M);
+            if (mNow && !prevMapM) {
+                if (mapOpen) { mapOpen = false; wmap.close(); }
+                else {
+                    float pp[3] = { startPos[0], startPos[1], startPos[2] };
+                    if (carBuilt) car.chassisPos(pp);
+                    if (!driving && footSpawned) {
+                        const x3::phys::Vec3 ft = onFoot.feet();
+                        pp[0] = ft.x; pp[1] = ft.y; pp[2] = ft.z;
+                    }
+                    int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
+                    wmap.open(pp[0], pp[1], pp[2], (float)fbw, (float)fbh);
+                    // open() lands at interior zoom (6 px/m); a road world reads
+                    // at ~2.5 miles across, so re-anchor the camera there.
+                    wmap.camera().jumpTo(pp[0], pp[2], 0.32f);
+                    mapOpen = true;
+                }
+                glfwSetInputMode(window, GLFW_CURSOR,
+                                 mapOpen ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+                glfwGetCursorPos(window, &lastMX, &lastMY);
+            }
+            prevMapM = mNow;
+        }
 
         // ---- E: GET OUT / GET IN ----------------------------------------
         // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
@@ -1971,10 +2098,72 @@ int hostTunnel(HostContext& hc) {
                                     gcy - R * 1.30f, px, c4);
             }
         }
+        // ---- THE MAP SCREEN (M). Drawn over the world and the cluster, under
+        // the shell (the console stays reachable over the map). Input assembly
+        // is host_streamed's: raw WASD/arrows pan (the car's WASD is gated off
+        // above), wheel zooms at the cursor, click/ENTER sets the waypoint,
+        // and the ESC edge arrives through the shell's escape handler.
+        if (frame.valid && mapOpen) {
+            // OPAQUE UNDERLAY. The map's own backdrop is 0.97 alpha, which is
+            // invisible over an interior but lets 3% of this world's HDR sky
+            // through — enough to wash the whole screen. The map system is
+            // shared, so the host lays its own alpha-1 slab under it instead
+            // of changing everyone's backdrop.
+            {
+                int ufw = 0, ufh = 0; glfwGetFramebufferSize(window, &ufw, &ufh);
+                const float mapBg[4] = { 0.014f, 0.025f, 0.045f, 1.0f };
+                device->drawHudQuad(frame, 0.0f, 0.0f, (float)ufw, (float)ufh, mapBg);
+            }
+            double cmx = 0.0, cmy = 0.0; glfwGetCursorPos(window, &cmx, &cmy);
+            const bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            x3::ui::UiInput ui0{};
+            ui0.mouseX = (float)cmx; ui0.mouseY = (float)cmy;
+            ui0.mouseDown = lmb; ui0.mousePressed = lmb && !prevMapLmb;
+            wmapUi.begin(*device, frame, ui0);
+            x3::game::WorldMapSystem::ScreenInput msi{};
+            msi.mouseX = ui0.mouseX; msi.mouseY = ui0.mouseY;
+            msi.mouseDown = ui0.mouseDown; msi.mousePressed = ui0.mousePressed;
+            msi.wheel = (float)g_weaponScroll;
+            msi.keyW = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS;
+            msi.keyS = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS;
+            msi.keyA = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT)  == GLFW_PRESS;
+            msi.keyD = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+            const bool entNow = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS ||
+                                glfwGetKey(window, GLFW_KEY_KP_ENTER) == GLFW_PRESS;
+            msi.enterEdge = entNow && !prevMapEnter;
+            prevMapEnter = entNow;
+            msi.escEdge = mapEsc;
+            // The blip is the CAR (or Jake, on foot), with its real heading.
+            float ppx = vp[0], ppy = vp[1], ppz = vp[2];
+            float mapYaw = camYaw;
+            if (driving && carBuilt) {
+                float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                // forward = q * (0,0,-1) (rest forward is -Z, CONVENTIONS §3);
+                // the map's arrow wants that forward as a world-XZ angle.
+                const float fwdX = -2.0f * (cq[0] * cq[2] + cq[3] * cq[1]);
+                const float fwdZ = -(1.0f - 2.0f * (cq[0] * cq[0] + cq[1] * cq[1]));
+                mapYaw = std::atan2(fwdZ, fwdX);
+            } else if (footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                ppx = ft.x; ppy = ft.y; ppz = ft.z;
+            }
+            msi.playerX = ppx; msi.playerY = ppy; msi.playerZ = ppz;
+            msi.playerYaw = mapYaw;
+            msi.locationName = "TUNNEL RIDGE - ROAD NETWORK";
+            wmap.drawScreen(wmapUi, *device, frame, msi, mapFlags, fdt);
+            wmapUi.end();
+            prevMapLmb = lmb;
+        } else {
+            prevMapLmb   = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            prevMapEnter = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
+        }
+        g_weaponScroll = 0.0;        // consumed (or discarded) every frame
+
         shell.draw(frame, fdt);      // console + FPS/stats, over everything
         device->endFrame(frame);
     }
 
+    wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     tunnel.shutdown(*device, *phys);
     for (auto& w : tourBores) w->shutdown(*device, *phys);
     x3::game::shutdownTunnelSurfaces(*device);   // shared sets, released once

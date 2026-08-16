@@ -557,6 +557,64 @@ void WorldMapSystem::drawPoiIcon(x3::ui::UiContext& ui, const MapPoi& poi, float
     (void)t;
 }
 
+// The ROAD NETWORK, as stamped polylines. The HUD layer only has axis-aligned
+// quads (the same constraint the player heading line and the gauge ticks live
+// with), so a line is a run of small overlapping squares stepped along the
+// segment. Two passes — the lighter concrete outline first, the dark asphalt
+// fill over it — so the fill is never crossed by a neighbour stamp's rim.
+//
+// BUDGET: the device's HUD vertex ring is ~4k quads a frame and the rest of
+// the screen needs its share. The stamp step tracks the drawn width, which
+// keeps the whole 46-mile network at world-overview zoom near ~2k stamps; the
+// hard cap below is the guard rail, not the expected case.
+void WorldMapSystem::drawRouteOverlays(x3::ui::UiContext& ui, float W, float H) const {
+    if (m_routes.empty()) return;
+    const float margin = 32.0f;
+    int stampsLeft = 3200;
+    const float outCol[4]  = { 0.62f, 0.68f, 0.75f, 0.85f };   // concrete rim
+    const float fillCol[4] = { 0.10f, 0.11f, 0.13f, 1.00f };   // asphalt
+    for (int pass = 0; pass < 2 && stampsLeft > 0; ++pass) {
+        const float* col = (pass == 0) ? outCol : fillCol;
+        for (const MapRouteOverlay& r : m_routes) {
+            const size_t n = std::min(r.x.size(), r.z.size());
+            if (n < 2) continue;
+            // True width at scale when zoomed in, floored so the overview still
+            // reads as a line rather than vanishing.
+            const float wFill = std::clamp(r.widthM * m_cam.scale, 2.0f, 14.0f);
+            const float wPx   = (pass == 0) ? wFill + 2.0f : wFill;
+            const float step  = std::max((wFill + 2.0f) * 0.45f, 3.5f);
+            float distPx = 0.0f;              // along-route px — the dash phase
+            for (size_t i = 0; i + 1 < n && stampsLeft > 0; ++i) {
+                float ax, ay, bx, by;
+                m_cam.worldToPx(r.x[i], r.z[i], ax, ay);
+                m_cam.worldToPx(r.x[i + 1], r.z[i + 1], bx, by);
+                const float sdx = bx - ax, sdy = by - ay;
+                const float len = std::sqrt(sdx * sdx + sdy * sdy);
+                // Trivial reject only when BOTH ends are off the SAME side — a
+                // zoomed-in segment can cross the whole screen with neither
+                // endpoint visible.
+                if ((ax < -margin && bx < -margin) || (ax > W + margin && bx > W + margin) ||
+                    (ay < -margin && by < -margin) || (ay > H + margin && by > H + margin)) {
+                    distPx += len; continue;
+                }
+                const int steps = std::max(1, (int)(len / step));
+                for (int k = 0; k <= steps && stampsLeft > 0; ++k) {
+                    const float t = (float)k / (float)steps;
+                    if (r.dashed) {   // ~14 px on / 10 px off, phased by arc length
+                        if (std::fmod(distPx + t * len, 24.0f) > 14.0f) continue;
+                    }
+                    const float px = ax + sdx * t, py = ay + sdy * t;
+                    if (px < -margin || px > W + margin || py < -margin || py > H + margin)
+                        continue;
+                    ui.quad(px - wPx * 0.5f, py - wPx * 0.5f, wPx, wPx, col);
+                    --stampsLeft;
+                }
+                distPx += len;
+            }
+        }
+    }
+}
+
 void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& device,
                                 const x3::rhi::FrameContext& frame, const ScreenInput& in,
                                 StoryFlags& flags, float dt) {
@@ -646,6 +704,10 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
             ui.quad(0, py, W, 1, gc);
         }
     }
+
+    // ---- Route overlays: the road network (road worlds; empty elsewhere).
+    // Under the tiles/POIs/player so everything positional reads on top of it.
+    drawRouteOverlays(ui, W, H);
 
     // ---- Tiles: regions (fogged when unseen), then the Spire's selected floor.
     auto drawTile = [&](const MapTile& t, bool seen) {
