@@ -121,12 +121,31 @@ public:
     void  setTractionControl(bool on) { m_tcEnabled = on; }
     bool  tractionControl() const { return m_tcEnabled; }
 
+    // ---- CLIMB MODE: crawl traction for steep terrain -----------------------
+    // The car is already AWD; what stops it on a mountainside is wheelspin —
+    // all four spun deep into the friction plateau where grip FALLS. Climb
+    // mode runs the traction controller with crawl numbers (slip held at the
+    // friction peak, trim floor nearly zero) and kills the turbo so torque is
+    // the full curve INSTANTLY at crawl rpm instead of arriving half a second
+    // after you asked, spinning the wheels you just hooked. It overrides a
+    // TC-off setting while active; leaving it restores your TC choice.
+    void setClimbMode(bool on) {
+        m_climbMode = on;
+        setTurboEnabled(!on);
+    }
+    bool climbMode() const { return m_climbMode; }
+
     // ---- TURBO: a manifold-pressure model (see updateTurbo in vehicle.cpp) --
     // The torque CURVE is the full-boost delivery; this supplies the transient
     // that a curve cannot express — the lag before it arrives and the shove
     // when it does. Peak power is unchanged, only its timing.
     struct TurboParams {
-        float maxPsi        = 35.0f;   // peak manifold pressure over atmosphere (a hot 911 turbo)
+        // 16, not 35. 35 psi is drag-build boost; a hot street 993 runs ~1.1
+        // bar = 16 psi, and — the part that actually matters — THE GAUGE ART
+        // IS DRAWN -10..+20 WITH RED FROM 16. At 35 the needle pinned off the
+        // end of the scale while the digits read +34.5 (Tim's screenshot).
+        // The dial and the model must agree; whichever changes, both change.
+        float maxPsi        = 16.0f;   // peak manifold pressure over atmosphere
         float spoolStartRpm = 1800.0f; // nothing below this
         float spoolFullRpm  = 4200.0f; // full compressor above this
         float spoolTau      = 0.45f;   // seconds to build (compressor inertia)
@@ -171,6 +190,7 @@ private:
     bool m_tcEnabled = false;            // TC off — grip 10 hooks up and the box shifts; T toggles
     bool m_tcCutting = false;            // TC hysteresis latch — stays cut until slip falls (see setInput)
     float m_tcTrim = 1.0f;               // smoothed TC trim (one-pole, see setInput)
+    bool m_climbMode = false;            // crawl traction (see setClimbMode)
 
     void  updateTurbo(float dt);         // called from preStep
     void  updateEngineModel(float dt);   // called from preStep

@@ -592,7 +592,17 @@ int hostTunnel(HostContext& hc) {
         //
         // Checking the pack BEFORE modelling anything is the whole lesson of
         // today: the interior did not need building, it needed finding.
-        car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/E46_New.glb");
+        // BACK TO CTR (2026-08-16). The E46 swap was made for the interior, but
+        // the model is not ready to be the hero: its materials trip the
+        // "full-metal with no MR texture renders BLACK" rule (the seven [gltf]
+        // L5 clamp warnings at boot are exactly this car), and DriveDemo's
+        // chassis box + wheel stations are still sized to the CTR, so the E46
+        // body sits mis-scaled over CTR-position wheels — Tim's screenshot of
+        // the "broken red sedan" is both defects at once. The interior car
+        // comes back when it has had the convert_car_glb material pass and its
+        // own wheel stations; until then the hero must be the car that is
+        // actually finished.
+        car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
         // E46_New is the INTERIOR car: Seats, Dashboard, SteeringWheel,
         // Interior, GearHandle and a pair of emissive Needle_KM / Needle_RPM
         // gauges. Same Wheel_FL/FR/RL/RR names and the same misspelled `Buttom`
@@ -615,18 +625,41 @@ int hostTunnel(HostContext& hc) {
     }
 
     // ---- WHEEL-SPIN FX (skid marks + smoke) --------------------------------
-    x3::rhi::MeshHandle fxQuadMesh;
+    // Tim, on the first cut: "smoke is square boxes.. and tire marks float".
+    // Both were real: the smoke was a CUBE with a flat gray texture, and both
+    // effects spawned at worldTransform[13] — the wheel HUB, a wheel-radius
+    // above the road. "NFS in 2010 had NO SUCH GHOST" is a fair bar.
+    //
+    //   * smoke is now a SPHERE with a vertically-noised gray texture, drawn
+    //     at low alpha, growing as it rises — a puff, not a crate;
+    //   * marks are thin slabs ON the contact patch (hub minus wheel radius),
+    //     ORIENTED to the car's heading at the moment they were laid — a mark
+    //     laid mid-drift stays skewed on the road the way the tire actually
+    //     drew it, instead of snapping to the world axes.
+    x3::rhi::MeshHandle fxMarkMesh, fxPuffMesh;
     x3::rhi::TextureHandle fxSkidTex, fxSmokeTex;
     {
         std::vector<x3::rhi::MeshVertex> qv; std::vector<uint32_t> qi;
         x3::prims::makeCube(0.5f, qv, qi);
-        fxQuadMesh = device->createMesh(qv.data(), (uint32_t)qv.size(), qi.data(), (uint32_t)qi.size());
-        auto sk = x3::prims::makeSolidRGBA(8, 18, 18, 22);
-        auto sm = x3::prims::makeSolidRGBA(8, 150, 150, 155);
-        fxSkidTex  = device->createTexture(sk.data(), 8, 8, true);
-        fxSmokeTex = device->createTexture(sm.data(), 8, 8, true);
+        fxMarkMesh = device->createMesh(qv.data(), (uint32_t)qv.size(), qi.data(), (uint32_t)qi.size());
+        x3::prims::PrimMesh sph = x3::prims::makeUVSphere(12, 18);   // a puff needs no 8k tris
+        fxPuffMesh = device->createMesh(sph.verts.data(), (uint32_t)sph.verts.size(),
+                                        sph.index.data(), (uint32_t)sph.index.size());
+        auto sk = x3::prims::makeSolidRGBA(8, 16, 16, 19);
+        fxSkidTex = device->createTexture(sk.data(), 8, 8, true);
+        // Smoke texture: gray with soft vertical banding so the sphere reads
+        // as vapor with structure instead of a billiard ball.
+        std::vector<uint8_t> sm(32 * 32 * 4);
+        for (int y = 0; y < 32; ++y)
+            for (int x = 0; x < 32; ++x) {
+                const float n = 0.82f + 0.18f * std::sin(y * 0.7f + x * 0.23f);
+                uint8_t* p = &sm[(y * 32 + x) * 4];
+                p[0] = (uint8_t)(158 * n); p[1] = (uint8_t)(158 * n);
+                p[2] = (uint8_t)(163 * n); p[3] = 255;
+            }
+        fxSmokeTex = device->createTexture(sm.data(), 32, 32, true);
     }
-    struct SpinFx { float x, y, z, age; uint8_t kind; };  // 0=skid, 1=smoke
+    struct SpinFx { float x, y, z, age, yaw; uint8_t kind; };  // 0=skid, 1=smoke
     SpinFx fx[512]; uint32_t fxN = 0;
     float fxSpawnAcc = 0.0f;
 
@@ -932,6 +965,9 @@ int hostTunnel(HostContext& hc) {
         shell.addToggleCommand("car_tc", "traction control (also bound to T)",
             [&]{ return car.tractionControl(); },
             [&](bool on) { car.setTractionControl(on); });
+        shell.addToggleCommand("climb", "crawl traction for steep terrain (also bound to C)",
+            [&]{ return car.climbMode(); },
+            [&](bool on) { car.setClimbMode(on); });
         con->registerCommand("car_reset", [&](const std::vector<std::string>&) {
             car.setTorqueBoost(1.0f);
             x3::phys::WheeledTuning t;
@@ -1238,6 +1274,18 @@ int hostTunnel(HostContext& hc) {
                 }
                 tcWasDown = tcDown;
             }
+            {   // C: CLIMB MODE — crawl traction for the mountainsides. See
+                // DriveDemo::setClimbMode: slip held at the friction peak, trim
+                // floor near zero, turbo bypassed so crawl torque is instant.
+                static bool climbWasDown = false;
+                const bool climbDown = kd(GLFW_KEY_C);
+                if (climbDown && !climbWasDown) {
+                    car.setClimbMode(!car.climbMode());
+                    x3::logInfo(car.climbMode() ? "[tunnel] CLIMB mode ON"
+                                                : "[tunnel] climb mode off");
+                }
+                climbWasDown = climbDown;
+            }
             if (in.throttle < 0.0f && car.forwardSpeed() > 0.5f) { in.brake = 1.0f; in.throttle = 0.0f; }
 
             // AUTO-HOLD. Tim, 2026-08-15: "It should be Unable to roll when not
@@ -1508,14 +1556,26 @@ int hostTunnel(HostContext& hc) {
             fxSpawnAcc += fdt;
             if (slip > 0.06f && fxSpawnAcc > 0.03f) {
                 fxSpawnAcc = 0.0f;
+                // The car's heading NOW — baked into the mark at spawn, so a
+                // drift leaves skewed rubber the way the tire actually drew it.
+                float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                const float carYawNow = std::atan2(2.0f * (cq[3] * cq[1] + cq[0] * cq[2]),
+                                                   1.0f - 2.0f * (cq[1] * cq[1] + cq[0] * cq[0]));
                 x3::phys::WheelState ws;
                 for (uint32_t i = 0; i < car.controller()->wheelCount(); ++i) {
                     if (!car.controller()->wheelState(i, ws)) continue;
                     if (i < 2) continue;                       // rear wheels only
+                    if (!ws.hasContact) continue;              // airborne wheels mark nothing
                     if (fxN < 512) {
                         SpinFx& f = fx[fxN++];
-                        f.x = ws.worldTransform[12]; f.y = ws.worldTransform[13]; f.z = ws.worldTransform[14];
+                        f.x = ws.worldTransform[12];
+                        // CONTACT PATCH, not hub: worldTransform[13] is the wheel
+                        // CENTER, a full radius off the ground — the "tire marks
+                        // float" bug in one index.
+                        f.y = ws.worldTransform[13] - ws.radius;
+                        f.z = ws.worldTransform[14];
                         f.age = 0.0f;
+                        f.yaw = carYawNow;
                         f.kind = (slip > 0.18f) ? 1 : 0;       // hard spin -> smoke
                     }
                 }
@@ -1525,28 +1585,35 @@ int hostTunnel(HostContext& hc) {
                 SpinFx& f = fx[i];
                 f.age += fdt;
                 if (f.kind == 0) { if (f.age > 12.0f) continue; }
-                else { f.y += fdt * 1.6f; if (f.age > 1.8f) continue; }
+                else { f.y += fdt * 1.1f; if (f.age > 1.6f) continue; }
                 fx[w++] = f;
             }
             fxN = w;
             for (uint32_t i = 0; i < fxN; ++i) {
                 SpinFx& f = fx[i];
-                float m[16] = {0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1};
+                const float cy = std::cos(f.yaw), sy = std::sin(f.yaw);
                 float col[4] = {1,1,1,0};
                 if (f.kind == 0) {
-                    const float a = std::max(0.0f, 1.0f - f.age / 12.0f) * 0.75f;
+                    // A thin slab lying ON the road, long axis down the heading.
+                    const float a = std::max(0.0f, 1.0f - f.age / 12.0f) * 0.70f;
                     col[3] = a;
-                    m[0] = 0.22f; m[5] = 0.02f; m[10] = 1.1f;
-                    m[12] = f.x; m[13] = f.y + 0.04f; m[14] = f.z;
-                    device->drawMesh(frame, fxQuadMesh, fxSkidTex, col, m);
+                    const float sx = 0.22f, sz = 1.1f;
+                    const float m[16] = {
+                         cy * sx, 0.0f, -sy * sx, 0.0f,
+                         0.0f,    0.015f, 0.0f,   0.0f,
+                         sy * sz, 0.0f,  cy * sz, 0.0f,
+                         f.x, f.y + 0.015f, f.z, 1.0f };
+                    device->drawMesh(frame, fxMarkMesh, fxSkidTex, col, m);
                 } else {
-                    const float t = f.age / 1.8f;
-                    const float a = std::max(0.0f, 1.0f - t) * 0.45f;
-                    col[3] = a;
-                    const float s = 0.25f + 0.9f * t;
-                    m[0] = m[5] = m[10] = s;
-                    m[12] = f.x; m[13] = f.y + 0.4f; m[14] = f.z;
-                    device->drawMesh(frame, fxQuadMesh, fxSmokeTex, col, m);
+                    // A soft sphere: born at the contact patch, growing as it
+                    // rises, gone in ~1.6 s. Low alpha is what sells vapor.
+                    const float t = f.age / 1.6f;
+                    col[3] = std::max(0.0f, 1.0f - t) * 0.30f;
+                    const float s = 0.30f + 1.1f * t;
+                    const float m[16] = {
+                        s, 0, 0, 0,  0, s, 0, 0,  0, 0, s, 0,
+                        f.x, f.y + 0.25f + 0.3f * t, f.z, 1.0f };
+                    device->drawMesh(frame, fxPuffMesh, fxSmokeTex, col, m);
                 }
             }
         }
@@ -1775,6 +1842,8 @@ int hostTunnel(HostContext& hc) {
                                     gcy - R * 1.64f, hp, hcol);
                 device->drawHudText(frame, "T  TRACTION",     gcx - R * 0.95f,
                                     gcy - R * 1.52f, hp, hcol);
+                device->drawHudText(frame, "C  CLIMB",        gcx - R * 0.95f,
+                                    gcy - R * 1.76f, hp, hcol);
                 device->drawHudText(frame, "SPACE  HANDBRAKE", gcx - R * 0.95f,
                                     gcy - R * 1.40f, hp, hcol);
             }
@@ -1783,7 +1852,7 @@ int hostTunnel(HostContext& hc) {
                 const float px = R * 0.105f;
                 const float c4[4] = { tcOn ? 0.35f : 1.0f, tcOn ? 0.78f : 0.58f,
                                       tcOn ? 0.95f : 0.20f, 1.0f };
-                const char* t = tcOn ? "TC" : "TC OFF";
+                const char* t = car.climbMode() ? "CLIMB" : (tcOn ? "TC" : "TC OFF");
                 device->drawHudText(frame, t, gcx - (float)std::strlen(t) * px * 0.5f,
                                     gcy - R * 1.30f, px, c4);
             }

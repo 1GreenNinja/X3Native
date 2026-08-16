@@ -88,7 +88,16 @@ constexpr float kGravity = 9.81f;
 // original 0.92 was tuned to land the next gear on the 0.55 torque peak, and at
 // 0.975 the next gear lands at 0.975/1.49 = 0.65 — still on the fat part of the
 // curve, just the far side of the peak. Worth the trade for the noise.
-constexpr float kShiftUpFrac   = 0.975f;
+//
+// 0.975 -> 0.94 (2026-08-16). 0.975 requires the engine to PULL to 97.5% of
+// redline before the box will hand over the next gear — fine in 1st-4th where
+// torque is abundant, but in 5th at speed the resistive load flattens the pull
+// and the crank plateaus a few hundred rpm short of 7312. The box then simply
+// never offers 6th: Tim, "i cannot get to 140mph or 6th gear". 0.94 (7050) is
+// still a scream — the tach needle is visibly inside the red band before the
+// shift — but it is a bar the engine can actually clear under load in the
+// tall gears.
+constexpr float kShiftUpFrac   = 0.94f;
 // Downshift point. 0.50 (3750) still hunted on grades: an upshift lands the next
 // gear at ~0.68 redline, and on a climb the car decelerates into the 3750
 // threshold, downshifts, revs, upshifts, repeats — "7x or more on 4th". 0.33

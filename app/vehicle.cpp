@@ -390,20 +390,30 @@ void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
     // box holds the gear, and the engine sits at redline — the "high<->low rpm
     // swing". Hold slip just under 10% so the wheels hook up and the box can
     // shift: a light trim, NOT the old 0.15-floor cut that caused "lead weights".
-    if (m_tcEnabled && eff.throttle > 0.0f) {
+    if ((m_tcEnabled || m_climbMode) && eff.throttle > 0.0f) {
         float slip = 0.0f;
         for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i)
             slip = std::max(slip, m_ctl->longitudinalSlip(i));
-        constexpr float kSlipTarget = 0.07f;   // just under Jolt's 0.10 upshift gate
-        constexpr float kSlipGain   = 1.5f;
-        if (slip > 0.10f)      m_tcCutting = true;
-        else if (slip < 0.04f) m_tcCutting = false;
+        // CLIMB MODE runs the same controller with crawl numbers. On a steep
+        // grade the failure is not "not enough torque", it is all four wheels
+        // spun deep into the friction plateau where grip FALLS — Tim's
+        // screenshot of the smoke ladder up the rock face is exactly that. A
+        // crawl holds slip AT the friction peak and is allowed to trim the
+        // throttle almost to nothing, because at 5 mph up a wall, almost
+        // nothing is precisely how much throttle the tires can use.
+        const float slipTarget = m_climbMode ? 0.05f : 0.07f;
+        const float slipGain   = m_climbMode ? 6.0f  : 1.5f;
+        const float trimFloor  = m_climbMode ? 0.06f : 0.35f;
+        const float cutOn      = m_climbMode ? 0.06f : 0.10f;
+        const float cutOff     = m_climbMode ? 0.03f : 0.04f;
+        if (slip > cutOn)       m_tcCutting = true;
+        else if (slip < cutOff) m_tcCutting = false;
         // Smooth the trim so the throttle GLIDES instead of snapping. The snap is
         // what the audio layers track as a "shift" (whine/turbo ride throttle),
         // and the cut/restore oscillation is the residual "Wahh". Cut fast,
         // restore slow — the asymmetry is the anti-oscillation.
         const float target = m_tcCutting
-            ? std::clamp(1.0f - kSlipGain * (slip - kSlipTarget), 0.35f, 1.0f)
+            ? std::clamp(1.0f - slipGain * (slip - slipTarget), trimFloor, 1.0f)
             : 1.0f;
         const float rate = (target < m_tcTrim) ? 0.25f : 0.08f;
         m_tcTrim += (target - m_tcTrim) * rate;
