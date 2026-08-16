@@ -4,6 +4,7 @@
 // (R-3). The body is the VERBATIM strata host loop; the ONLY edits are reaching
 // shared state via the HostContext (raw device pointer), mirroring host_space.cpp.
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../scene.h"
 #include "../trigger.h"
 #include "../strata.h"
@@ -95,16 +96,24 @@ int hostStrata(HostContext& hc) {
         float flyXs = stspawn.x, flyYs = stspawn.y + 1.6f, flyZs = stspawn.z, flyYawS = 3.14159f, flyPitchS = -0.3f;
         x3::logInfo("--world strata: descend THE STRATA — WASD, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
         int lastWs = (int)W, lastHs = (int)H;
-        while (!glfwWindowShouldClose(window)) {
+        // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+        // the engine has had all three for a long time and 28 of ~31 hosts
+        // wired none of them, so the worlds you could actually launch and play
+        // were the one place in the engine with no developer tools at all.
+        HostShell shell;
+        shell.attach(hc);
+
+        while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
             glfwPollEvents();
-            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
 
             double now = glfwGetTime();
             float dt = (float)(now - prevTime); prevTime = now;
             if (dt > 0.1f) dt = 0.1f;
 
             double mx, my; glfwGetCursorPos(window, &mx, &my);
-            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            const float look = shell.inputEnabled() ? 1.0f : 0.0f;   // no mouse-look while typing
+            float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
             lastMX = mx; lastMY = my;
 
             auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
@@ -164,6 +173,7 @@ int hostStrata(HostContext& hc) {
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
             auto frame = device->beginFrame();
             if (frame.valid) stscene.render(*device, frame);
+            shell.draw(frame);
             device->endFrame(frame);
         }
 

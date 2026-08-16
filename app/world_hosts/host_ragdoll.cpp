@@ -1,5 +1,6 @@
 // --world ragdoll host — lifted VERBATIM from main() (#28 deep split).
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../ragdoll_demo.h"
 
 namespace x3 { namespace apphost {
@@ -67,14 +68,21 @@ int hostRagdoll(HostContext& hc) {
         float fx = 0.0f, fy = 1.2f, fz = 3.5f, fyaw = -1.5708f, fpitch = -0.05f;
         bool prevR = false, prevT = false;
         x3::logInfo("--world ragdoll: fly WASD + mouse, R to ragdoll, T to nudge, Esc to quit");
-        while (!glfwWindowShouldClose(window)) {
+        // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+        // the engine has had all three for a long time and 28 of ~31 hosts
+        // wired none of them, so the worlds you could actually launch and play
+        // were the one place in the engine with no developer tools at all.
+        HostShell shell;
+        shell.attach(hc);
+
+        while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
             glfwPollEvents();
-            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
             double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
             if (fdt > 0.1f) fdt = 0.1f;
             double mx, my; glfwGetCursorPos(window, &mx, &my);
             float ddx=(float)(mx-lastMX), ddy=(float)(my-lastMY); lastMX=mx; lastMY=my;
-            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            auto kd = [&](int k){ return shell.key(k); };   // false while the console/menu owns input
             fyaw += ddx*0.0025f; fpitch -= ddy*0.0025f;
             if (fpitch> 1.55f) fpitch= 1.55f; if (fpitch<-1.55f) fpitch=-1.55f;
             float dx=std::cos(fpitch)*std::cos(fyaw), dy=std::sin(fpitch), dz=std::cos(fpitch)*std::sin(fyaw);
@@ -96,6 +104,7 @@ int hostRagdoll(HostContext& hc) {
             device->setCamera(fx, fy, fz, fyaw, fpitch, 60.0f);
             auto frame = device->beginFrame();
             if (frame.valid) demo.render(frame);
+            shell.draw(frame);
             device->endFrame(frame);
         }
         demo.shutdown(); rphys->shutdown(); device->shutdown();

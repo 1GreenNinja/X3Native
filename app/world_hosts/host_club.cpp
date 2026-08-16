@@ -1,5 +1,6 @@
 // --world club host (+ --screenshot-crowd) — lifted VERBATIM from main() (#28).
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../scene.h"
 #include "../club1127.h"
 #include "../club_bedrock.h"                 // solid-earth encasement (underground)
@@ -487,16 +488,24 @@ int hostClub(HostContext& hc) {
                         " track(s)) — N = next, Shift+N = previous");
 
         int lastWc = (int)W, lastHc = (int)H;
-        while (!glfwWindowShouldClose(window)) {
+        // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+        // the engine has had all three for a long time and 28 of ~31 hosts
+        // wired none of them, so the worlds you could actually launch and play
+        // were the one place in the engine with no developer tools at all.
+        HostShell shell;
+        shell.attach(hc);
+
+        while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
             glfwPollEvents();
-            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
 
             double now = glfwGetTime();
             float dt = (float)(now - prevTime); prevTime = now;
             if (dt > 0.1f) dt = 0.1f;
 
             double mx, my; glfwGetCursorPos(window, &mx, &my);
-            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            const float look = shell.inputEnabled() ? 1.0f : 0.0f;   // no mouse-look while typing
+            float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
             lastMX = mx; lastMY = my;
 
             auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
@@ -693,6 +702,7 @@ int hostClub(HostContext& hc) {
                     device->drawHudText(frame, txt, x, y, px, ink);
                 }
             }
+            shell.draw(frame);
             device->endFrame(frame);
         }
 

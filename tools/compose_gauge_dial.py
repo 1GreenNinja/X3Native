@@ -121,15 +121,100 @@ def compose():
             d.line([polar(c, c, r_min, a), polar(c, c, r_out, a)],
                    fill=(C_RED if hot else C_TICK_D), width=int(2.4 * SS))
 
-    ctext(d, c, c - Rf * 0.42, "RPM x1000", font(int(Rf * 0.095)), C_LABEL)
+    # NOTHING else goes on the face. The two vertical strips between the hub and
+    # the numerals are the only clear areas on a dial this dense, and the HOST
+    # owns them: the gear digit above the hub, the MPH readout below it. Earlier
+    # passes printed "RPM x1000" and a REDLINE badge exactly there, so the live
+    # text landed on top of baked text. The red arc and the red 8 already say
+    # where the limiter is; good instruments label very little.
+    #
+    # A boxed badge was tried here too and read as web UI, not as an instrument.
+    return img.resize((bez.size[0] // SS, bez.size[1] // SS), Image.LANCZOS)
 
-    # redline badge, lower face
-    bw, bh = Rf * 0.92, Rf * 0.245
-    bx, by = c - bw / 2, c + Rf * 0.50
-    d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=int(9 * SS),
-                        outline=(40, 110, 130, 220), width=int(2 * SS))
-    ctext(d, c, by + bh * 0.30, "%d RPM" % int(REDLINE_RPM), font(int(Rf * 0.088)), C_LABEL)
-    ctext(d, c, by + bh * 0.72, "REDLINE", font(int(Rf * 0.095)), C_RED)
+
+# ---------------------------------------------------------------------------
+# BOOST GAUGE — the same bezel, a pressure scale.
+#
+# It reads in PSI and it goes NEGATIVE, because a boost gauge spends most of its
+# life in vacuum: the engine pumping against a closed throttle plate. A gauge
+# that sat at zero off-throttle would be the tell that there is no real manifold
+# model behind it. Zero gets a brighter tick, since crossing into positive
+# pressure is the event the driver is actually watching for.
+#
+# Smaller than the tach on screen, so the scale is coarser on purpose: fewer
+# numerals, heavier ticks, no minor ticks below zero.
+# ---------------------------------------------------------------------------
+BOOST_MIN_PSI = -10.0
+BOOST_MAX_PSI =  20.0
+BOOST_HOT_PSI =  16.0          # matches TurboParams::maxPsi — over this is overboost
+
+C_VAC = (150, 162, 178, 255)   # vacuum side reads cool grey, not "active" cyan
+
+
+def boost_frac(psi):
+    return (psi - BOOST_MIN_PSI) / (BOOST_MAX_PSI - BOOST_MIN_PSI)
+
+
+def compose_boost():
+    bez = Image.open(BEZEL).convert("RGBA")
+    S = bez.size[0] * SS
+    bez = bez.resize((S, S), Image.LANCZOS)
+
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    img.alpha_composite(bez)
+    d = ImageDraw.Draw(img)
+    c = S / 2.0
+    Rf = S * 0.5 * FACE_R_FRAC
+
+    steps = 130
+    for i in range(steps, 0, -1):
+        t = i / steps
+        rr = Rf * t
+        d.ellipse([c - rr, c - rr, c + rr, c + rr],
+                  fill=(6, 7, 10, int(236 * (1.0 - 0.30 * t))))
+
+    r_out = Rf * 0.965
+    r_maj = Rf * 0.795
+    r_min = Rf * 0.880
+    r_num = Rf * 0.650
+
+    ra = Rf * 0.995
+    z = boost_frac(0.0)
+    hotf = boost_frac(BOOST_HOT_PSI)
+    d.arc([c - ra, c - ra, c + ra, c + ra], start=-ang_for(0.0), end=-ang_for(z),
+          fill=C_VAC, width=int(3 * SS))                        # vacuum
+    d.arc([c - ra, c - ra, c + ra, c + ra], start=-ang_for(z), end=-ang_for(hotf),
+          fill=C_TICK, width=int(4 * SS))                       # useful boost
+    d.arc([c - ra, c - ra, c + ra, c + ra], start=-ang_for(hotf), end=-ang_for(1.0),
+          fill=C_RED, width=int(9 * SS))                        # overboost
+
+    # Bigger numerals than the tach's proportionally, because this dial is drawn
+    # at ~0.70 of the tach's radius on screen and 0.150 put it under 12 px.
+    fnum = font(int(Rf * 0.165))
+    psi = BOOST_MIN_PSI
+    while psi <= BOOST_MAX_PSI + 0.01:
+        f = boost_frac(psi)
+        a = ang_for(f)
+        major = (abs(psi) % 5.0) < 0.01
+        hot = psi >= BOOST_HOT_PSI
+        if major:
+            zero = abs(psi) < 0.01
+            col = C_RED if hot else ((240, 246, 255, 255) if zero
+                                     else (C_TICK if psi > 0 else C_VAC))
+            d.line([polar(c, c, r_maj, a), polar(c, c, r_out, a)],
+                   fill=col, width=int((7.0 if zero else 5.5) * SS))
+            tx, ty = polar(c, c, r_num, a)
+            ctext(d, tx, ty, "%d" % int(round(psi)), fnum,
+                  C_RED if hot else (C_NUM if psi >= 0 else C_VAC))
+        elif psi > 0:      # no minor ticks on the vacuum side — it is coarser
+            d.line([polar(c, c, r_min, a), polar(c, c, r_out, a)],
+                   fill=(C_RED if hot else C_TICK_D), width=int(2.4 * SS))
+        psi += 1.0
+
+    # This face DOES get a label. Unlike the tach, nothing else is drawn on it,
+    # and a bare needle over unlabelled numbers is genuinely ambiguous — 0 to 20
+    # of what? The host writes the live psi under the hub; this names the unit.
+    ctext(d, c, c - Rf * 0.40, "BOOST  psi", font(int(Rf * 0.128)), C_LABEL)
 
     return img.resize((bez.size[0] // SS, bez.size[1] // SS), Image.LANCZOS)
 
@@ -141,13 +226,32 @@ def needle_atlas():
     base = Image.new("RGBA", (cell_ss, cell_ss), (0, 0, 0, 0))
     bd = ImageDraw.Draw(base)
     c = cell_ss / 2.0
-    L, tail = cell_ss * 0.400, cell_ss * 0.070
-    wr, wt = cell_ss * 0.016, cell_ss * 0.007
-    bd.polygon([(c - tail, c - wr * 0.65), (c - tail, c + wr * 0.65),
-                (c + L, c + wt), (c + L, c - wt)], fill=C_NEEDLE)
-    hr = cell_ss * 0.050
-    bd.ellipse([c - hr, c - hr, c + hr, c + hr], fill=(20, 22, 28, 255))
-    hr2 = hr * 0.52
+    L, tail = cell_ss * 0.400, cell_ss * 0.085
+    wr, wt = cell_ss * 0.027, cell_ss * 0.0085
+
+    def blade(off, col):
+        bd.polygon([(c - tail + off, c - wr * 0.62 + off),
+                    (c - tail + off, c + wr * 0.62 + off),
+                    (c + L + off,    c + wt + off),
+                    (c + L + off,    c - wt + off)], fill=col)
+
+    # drop shadow first: the needle must separate from the dark face even where
+    # it crosses the unlit lower half.
+    blade(cell_ss * 0.012, (0, 0, 0, 150))
+    blade(0.0, C_NEEDLE)
+    # a lighter top edge so the blade reads as a formed part, not a flat decal
+    bd.polygon([(c - tail, c - wr * 0.62), (c - tail, c - wr * 0.20),
+                (c + L, c - wt * 0.25), (c + L, c - wt)], fill=(255, 142, 128, 220))
+
+    # hub: dark boss, brushed ring, red cap — the chrome centre of the bezel
+    hr = cell_ss * 0.062
+    bd.ellipse([c - hr, c - hr, c + hr, c + hr], fill=(14, 15, 19, 255))
+    for i, (rr, col) in enumerate(((0.92, (172, 178, 188, 255)),
+                                   (0.80, (86, 92, 102, 255)),
+                                   (0.62, (26, 28, 34, 255)))):
+        r = hr * rr
+        bd.ellipse([c - r, c - r, c + r, c + r], fill=col)
+    hr2 = hr * 0.36
     bd.ellipse([c - hr2, c - hr2, c + hr2, c + hr2], fill=C_NEEDLE)
 
     cell = NEEDLE_PX // ATLAS_N
@@ -165,6 +269,13 @@ def main():
     p1 = os.path.join(UI_DIR, "gauge_dial.png")
     dial.save(p1)
     print("wrote", p1, dial.size)
+    # The boost gauge shares the needle atlas: same bezel, same sweep start and
+    # span, so frame i points at the same angle on both faces. Only the meaning
+    # of the angle differs, and that lives in the scale, not the needle.
+    boost = compose_boost()
+    p3 = os.path.join(UI_DIR, "gauge_boost.png")
+    boost.save(p3)
+    print("wrote", p3, boost.size)
     na = needle_atlas()
     p2 = os.path.join(UI_DIR, "gauge_needle.png")
     na.save(p2)

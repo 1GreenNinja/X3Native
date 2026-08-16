@@ -8,6 +8,7 @@
 // when audio exists and stay graceful-silent headless; the showcase's own
 // defaults still keep MUSIC off per Tim's preference.
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../scene.h"
 #include "../elevator_showcase.h"
 #include "../player.h"
@@ -166,16 +167,24 @@ int hostElevator(HostContext& hc) {
                     "select, type 1-1-2-7 WHILE RIDING (or numpad anywhere) for the DISCO descent to "
                     "CLUB 1127, C = club, Space jump, Esc quit");
         int lastWe = (int)W, lastHe = (int)H;
-        while (!glfwWindowShouldClose(window)) {
+        // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+        // the engine has had all three for a long time and 28 of ~31 hosts
+        // wired none of them, so the worlds you could actually launch and play
+        // were the one place in the engine with no developer tools at all.
+        HostShell shell;
+        shell.attach(hc);
+
+        while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
             glfwPollEvents();
-            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
             double now = glfwGetTime();
             float dt = (float)(now - prevTime); prevTime = now;
             if (dt > 0.1f) dt = 0.1f;
             double mx, my; glfwGetCursorPos(window, &mx, &my);
-            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            const float look = shell.inputEnabled() ? 1.0f : 0.0f;   // no mouse-look while typing
+            float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
             lastMX = mx; lastMY = my;
-            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            auto kd = [&](int k){ return shell.key(k); };   // false while the console/menu owns input
 
             // Rider craft (JS checkRider parity): digit keys are CAPTURED BY THE
             // KEYPAD while riding (so typing 1-1-2-7 enters the disco code instead
@@ -229,6 +238,7 @@ int hostElevator(HostContext& hc) {
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
             auto frame = device->beginFrame();
             if (frame.valid) escene.render(*device, frame);
+            shell.draw(frame);
             device->endFrame(frame);
         }
         ephys->shutdown(); device->shutdown();

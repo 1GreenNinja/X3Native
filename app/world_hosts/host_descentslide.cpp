@@ -13,6 +13,7 @@
 
 #include "../world_hosts.h"
 #include "../host_context.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../scene.h"
 #include "../player.h"
 #include "../descent_slide.h"
@@ -142,9 +143,16 @@ int hostDescentSlide(HostContext& hc) {
     x3::game::TrackRider rider;
     x3::logInfo("--world descentslide: WASD walk, step into the chute mouth to RIDE (A/D steer), Esc quits");
 
-    while (!glfwWindowShouldClose(window)) {
+    // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+    // the engine has had all three for a long time and 28 of ~31 hosts
+    // wired none of them, so the worlds you could actually launch and play
+    // were the one place in the engine with no developer tools at all.
+    HostShell shell;
+    shell.attach(hc);
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
         double now = glfwGetTime();
         float dt = (float)(now - prevTime); prevTime = now;
         if (dt > 0.1f) dt = 0.1f;
@@ -157,7 +165,8 @@ int hostDescentSlide(HostContext& hc) {
 
         if (mode == Mode::Walk) {
             double mx, my; glfwGetCursorPos(window, &mx, &my);
-            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            const float look = shell.inputEnabled() ? 1.0f : 0.0f;   // no mouse-look while typing
+            float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
             lastMX = mx; lastMY = my;
             bool spaceNow = kd(GLFW_KEY_SPACE);
             x3::game::PlayerInput in;
@@ -200,6 +209,7 @@ int hostDescentSlide(HostContext& hc) {
         device->setCamera(camX, camY, camZ, camYaw, camPitch, fov);
         auto frame = device->beginFrame();
         if (frame.valid) sscene.render(*device, frame);
+        shell.draw(frame);
         device->endFrame(frame);
     }
 

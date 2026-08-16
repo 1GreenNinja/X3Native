@@ -15,6 +15,7 @@
 
 #include "../world_hosts.h"
 #include "../host_context.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../mesh_prims.h"
 #include "engine/physics/BodyContact.h"
 #include "engine/rhi/IRenderDevice.h"
@@ -223,9 +224,16 @@ int hostBodyContact(HostContext& hc) {
     int lastW = 0, lastH = 0;
     glfwGetFramebufferSize(window, &lastW, &lastH);
     x3::logInfo("--world bodycontact: orbiting; Esc to quit");
-    while (!glfwWindowShouldClose(window)) {
+    // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+    // the engine has had all three for a long time and 28 of ~31 hosts
+    // wired none of them, so the worlds you could actually launch and play
+    // were the one place in the engine with no developer tools at all.
+    HostShell shell;
+    shell.attach(hc);
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
         const float t = (float)(glfwGetTime() - t0);
         const float yaw = -1.5708f + 0.35f * std::sin(t * 0.25f);
         const float cx = 0.0f - 3.2f * std::cos(yaw), cz = 0.0f - 3.2f * std::sin(yaw);
@@ -234,6 +242,7 @@ int hostBodyContact(HostContext& hc) {
         device->setCamera(cx, 1.8f, cz, yaw, -0.40f, 62.0f);
         auto frame = device->beginFrame();
         if (frame.valid) drawScene(frame);
+        shell.draw(frame);
         device->endFrame(frame);
     }
     device->shutdown();

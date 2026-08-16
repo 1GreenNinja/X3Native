@@ -24,6 +24,7 @@
 
 #include "../world_hosts.h"
 #include "../host_context.h"
+#include "host_shell.h"                    // console (~), menu (ESC), FPS (F3)
 #include "../mesh_prims.h"                 // x3::prims box/checker builders (tractor scene)
 #include "../space/space_layer.h"
 #include "../space/wormhole_vfx.h"
@@ -76,7 +77,7 @@ int hostWormholeTransit(HostContext& hc) {
             if (i == kFrames - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
             if (frame.valid) wt.render(*device, frame, nullptr, t);
-            device->endFrame(frame);
+        device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
         if (wrote) x3::logInfo("--world wormhole-transit: wrote " + outPath +
@@ -95,9 +96,16 @@ int hostWormholeTransit(HostContext& hc) {
     double prevTimeWT  = startTimeWT;
     x3::logInfo("--world wormhole-transit: the jump plays then holds; Esc to quit");
     int lastWsWT = (int)hc.W, lastHsWT = (int)hc.H;
-    while (!glfwWindowShouldClose(window)) {
+    // Console (~), ESC menu and the FPS/stats overlay. Three hosts live in this
+    // file, each with its own loop, so each gets its own shell — the shell
+    // installs GLFW callbacks in attach() and tears them down in its
+    // destructor, so one per scope is the correct lifetime, not one shared.
+    HostShell shell;
+    shell.attach(hc);
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
         double now = glfwGetTime();
         float dt = (float)(now - prevTimeWT); prevTimeWT = now;
         float t = (float)(now - startTimeWT);
@@ -108,6 +116,7 @@ int hostWormholeTransit(HostContext& hc) {
         device->setCamera(0.0f, 0.0f, camZ, 0.0f, 0.0f, 75.0f);
         auto frame = device->beginFrame();
         if (frame.valid) wt.render(*device, frame, nullptr, t);
+        shell.draw(frame);
         device->endFrame(frame);
     }
 
@@ -181,7 +190,7 @@ int hostWormhole(HostContext& hc) {
             if (frame.valid) {
                 wh.render(*device, frame, nullptr, t, prog, whT);
             }
-            device->endFrame(frame);
+        device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
         if (wrote) x3::logInfo("--world wormhole: wrote " + outPath);
@@ -198,9 +207,16 @@ int hostWormhole(HostContext& hc) {
     double startTimeW = glfwGetTime();
     x3::logInfo("--world wormhole: flying through the crystal-matrix jump, Esc to quit");
     int lastWsW = (int)hc.W, lastHsW = (int)hc.H;
-    while (!glfwWindowShouldClose(window)) {
+    // Console (~), ESC menu and the FPS/stats overlay. Three hosts live in this
+    // file, each with its own loop, so each gets its own shell — the shell
+    // installs GLFW callbacks in attach() and tears them down in its
+    // destructor, so one per scope is the correct lifetime, not one shared.
+    HostShell shell;
+    shell.attach(hc);
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
         double now = glfwGetTime();
         float t = (float)(now - startTimeW);
         float u = std::fmod(t, 6.0f) / 6.0f;
@@ -217,6 +233,7 @@ int hostWormhole(HostContext& hc) {
         if (frame.valid) {
             wh.render(*device, frame, nullptr, t, u, whT);
         }
+        shell.draw(frame);
         device->endFrame(frame);
     }
 
@@ -330,7 +347,7 @@ int hostTractor(HostContext& hc) {
             if (frame.valid) {
                 drawTractorScene(frame, figX, intensity, t);
             }
-            device->endFrame(frame);
+        device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
         if (wrote) x3::logInfo("--world tractor: wrote " + outPath);
@@ -349,9 +366,16 @@ int hostTractor(HostContext& hc) {
     double startTimeT = glfwGetTime();
     x3::logInfo("--world tractor: the capital ship reels Jake's fighter in; Esc to quit");
     int lastWsT = (int)hc.W, lastHsT = (int)hc.H;
-    while (!glfwWindowShouldClose(window)) {
+    // Console (~), ESC menu and the FPS/stats overlay. Three hosts live in this
+    // file, each with its own loop, so each gets its own shell — the shell
+    // installs GLFW callbacks in attach() and tears them down in its
+    // destructor, so one per scope is the correct lifetime, not one shared.
+    HostShell shell;
+    shell.attach(hc);
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
         double now = glfwGetTime();
         float t = (float)(now - startTimeT);
         // Loop the capture beat every 5s so the showcase repeats.
@@ -365,6 +389,7 @@ int hostTractor(HostContext& hc) {
         if (frame.valid) {
             drawTractorScene(frame, figX, intensity, t);
         }
+        shell.draw(frame);
         device->endFrame(frame);
     }
 
