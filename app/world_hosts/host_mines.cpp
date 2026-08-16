@@ -16,6 +16,7 @@
 // clustered path affords real light counts, r_clusterlights doctrine). The
 // host turns clustered lighting ON for this world.
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../scene.h"
 #include "../mine_fx.h"
 #include "../mesh_prims.h"
@@ -197,16 +198,24 @@ int hostMines(HostContext& hc) {
     bool nHeld = false;
     int lastW = (int)hc.W, lastH = (int)hc.H;
     x3::logInfo("--world mines: WASD + mouse, Space/Ctrl up-down, Shift sprint, N day/night, Esc quits");
-    while (!glfwWindowShouldClose(window)) {
+    // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+    // the engine has had all three for a long time and 28 of ~31 hosts
+    // wired none of them, so the worlds you could actually launch and play
+    // were the one place in the engine with no developer tools at all.
+    HostShell shell;
+    shell.attach(hc);
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
         double now = glfwGetTime();
         float fdt = (float)(now - prevTime); prevTime = now;
         if (fdt > 0.1f) fdt = 0.1f;
         double mx, my; glfwGetCursorPos(window, &mx, &my);
-        float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+        const float look = shell.inputEnabled() ? 1.0f : 0.0f;   // no mouse-look while typing
+        float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
         lastMX = mx; lastMY = my;
-        auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+        auto kd = [&](int k){ return shell.key(k); };   // false while the console/menu owns input
         fyaw += ddx * 0.0025f; fpitch -= ddy * 0.0025f;
         if (fpitch >  1.55f) fpitch =  1.55f;
         if (fpitch < -1.55f) fpitch = -1.55f;
@@ -231,6 +240,7 @@ int hostMines(HostContext& hc) {
         device->setCamera(fx, fy, fz, fyaw, fpitch, 70.0f);
         auto frame = device->beginFrame();
         if (frame.valid) scene.render(*device, frame);
+        shell.draw(frame);
         device->endFrame(frame);
     }
     device->shutdown();

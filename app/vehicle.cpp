@@ -107,13 +107,14 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // lifting the rollover threshold from ~42 deg to ~56 — a real sports-car
     // number. This is what stops "the car still rolls" without touching grip.
     m_chassis = physics.addBox(x3::phys::Vec3{m_hx, m_hy, m_hz},
-                               x3::phys::Vec3{x, y, z}, 1300.0f, x3::phys::Layer::Dynamic,
+                               x3::phys::Vec3{x, y, z}, 1083.2f, x3::phys::Layer::Dynamic,
                                x3::phys::Vec3{0.0f, -0.30f, 0.0f});
     if (!m_chassis.valid()) return false;
 
     // --- 4 wheels at the HERO-CAR GLB stations (CTR, after the nose flip to the
     // engine's -Z forward: fronts z=-1.186, rears z=+1.088, track +-0.677 m).
-    // Front steered, rear powered + handbrake — grippy arcade RWD. ---
+    // AWD (all four driven) — a 911 Turbo is AWD, and four driven wheels is also
+    // what lets the high torque hook up instead of spinning one axle. ---
     m_wheels.clear();
     struct P { float wx, wz; bool steer, hb; bool powered; };
     // Track = the GLB's OWN wheel stations. An earlier attempt pushed these out
@@ -122,8 +123,8 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // x stations are the GLB's own (+-0.677 / +-0.723) SCALED BY kBodyWiden, so
     // the wheels stay centered under the widened arches instead of poking out.
     P p[4] = {
-        { -0.677f * kBodyWiden, -1.186f, true,  false, false },   // front-left
-        {  0.677f * kBodyWiden, -1.186f, true,  false, false },   // front-right
+        { -0.677f * kBodyWiden, -1.186f, true,  false, true  },   // front-left  (AWD drive)
+        {  0.677f * kBodyWiden, -1.186f, true,  false, true  },   // front-right
         { -0.723f * kBodyWiden,  1.088f, false, true,  true  },   // rear-left  (drive)
         {  0.723f * kBodyWiden,  1.088f, false, true,  true  },   // rear-right (drive)
     };
@@ -146,11 +147,10 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
         // Tim: "The car does NOT feel fast". Grip has to scale with the power or
         // the power is thrown away. Rears get more than fronts (they are the
         // driven axle and carry a rear-engined car's weight).
-        // WAY GRIPPIER (Tim, 2026-08-15). Semi-slick territory: the car should
-        // hook up and go rather than scrabble, and with TC switchable off the
-        // tyres are now the only thing holding the torque, so they need to be
-        // able to. Rears carry the drive and a rear-engined car's weight.
-        w.gripScale = p[i].powered ? 5.2f : 4.4f;
+        // Grip high enough that 800 Nm AWD hooks up at full throttle, so the
+        // launch control has nothing to trim and the car accelerates HARD.
+        // Rears carry more of a rear-engined car's weight. Live-tune: `car_grip`.
+        w.gripScale = p[i].powered ? 10.0f : 8.0f;
         m_wheels.push_back(w);
     }
     x3::phys::WheeledVehicleDesc vd;
@@ -176,7 +176,11 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // 2400 Nm peak, but the CURVE is what makes it a Turbo. Tim, 2026-08-15:
     // "The engine really sucks. I need it to rev faster, and pull HARD. Make
     // this Porsche Turbo Feel like it should."
-    vd.maxEngineTorque = 2400.0f;
+    // Stock spec = the 992 Turbo S hybrid: 590 ft-lb (800 Nm) / 701 HP.
+    // (HP = ft-lb * rpm / 5252.) AWD splits it across four wheels so it hooks up
+    // at sane grip without TC. The shop soups it up from here. Live-tune
+    // `car_torque` (ft-lb).
+    vd.maxEngineTorque = 800.0f;   // 590 ft-lb (992 Turbo S)
     // FLAT-SIX CHARACTER. A 993-era Porsche runs to ~7200 and gets there fast;
     // the old 6500 with Jolt's default 0.5 flywheel felt like a diesel.
     // 7500: titanium valve retainers (Tim, 2026-08-15) — the light valvetrain is
@@ -193,13 +197,16 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // pep) without turning the transmission into a metronome.
     // 0.28: revs noticeably faster than 0.35 without the gear-hunting 0.18 caused
     // (the debounce in JoltVehicle now guards that anyway).
-    vd.engineInertia = 0.28f;
-    // Clutch strong enough that the ENGINE is the bottleneck, not the coupling.
-    // Jolt's clutch is a viscous drag (torque ~ clutchStrength * slip): at the
-    // default 10 the engine pins at redline and the transmitted torque becomes
-    // INDEPENDENT of engine torque — every power upgrade would be masked. 100
-    // keeps the coupling tight so peak-torque changes are felt at the wheels
-    // (verified by --test-vehparts P3/P6 tick ordering).
+    // 0.35: revs fast without hunting. 0.5 was tried to damp the "Wahh", but the
+    // oscillation was the launch-control throttle, not the flywheel — so keep the
+    // light flywheel Tim wants ("rev FAST") and let grip + no-TC handle the rest.
+    vd.engineInertia = 0.35f;
+    // Clutch. Jolt's clutch is viscous — Torque = clutchStrength * (engine_rpm -
+    // wheel_rpm). Default 10 lets the engine free-rev ~600 rpm above the wheels
+    // at 800 Nm; 100 (~60 rpm slip) was the lane's original tight value. 10000
+    // was tried and made the engine HUNT at idle and stick at redline — the
+    // clutch time constant (inertia/strength) fell far below the 1/60 s physics
+    // substep, so the integrator oscillates (the "rpm cycles even at idle").
     vd.clutchStrength = 100.0f;
     // SIX-SPEED, SHORT. 993-family ratios with a 4.2 final drive instead of
     // Jolt's 3.42, which pulls 1st down from a ludicrous 64 mph at redline to
@@ -222,8 +229,10 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     vd.curveRpm[6]=1.00f; vd.curveTq[6]=0.78f;   // sign-off
     vd.curveCount = 7;
     vd.finalDrive = 4.2f;
-    // Wheel rays cast as Dynamic so they stand on the Static terrain (Static-vs-
-    // Static doesn't collide in the engine matrix; Dynamic-vs-Static does).
+    // Wheel rays filter on Dynamic (the chassis layer): Jolt's vehicle object filter
+    // is the COLLISION MATRIX, and Dynamic-vs-Static collides, so a Dynamic-masked
+    // ray hits the Static ground. (Static-vs-Static does NOT collide — a Static mask
+    // would pass through the ground.)
     vd.groundLayer = x3::phys::Layer::Dynamic;
     m_ctl.reset(x3::phys::createWheeledVehicle(physics, vd));
     if (!m_ctl) { physics.removeBody(m_chassis); m_chassis = {}; return false; }
@@ -376,21 +385,109 @@ void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
     // constraint — the reason every power part is FELT. dt-independent: the trim
     // factor is recomputed from the CURRENT slip each call (no accumulation).
     x3::phys::VehicleInput eff = in;
+    // LAUNCH CONTROL (light). Jolt's box REFUSES to upshift while any driven
+    // wheel slips >10% (its own Update), so a hard launch spins the tyres, the
+    // box holds the gear, and the engine sits at redline — the "high<->low rpm
+    // swing". Hold slip just under 10% so the wheels hook up and the box can
+    // shift: a light trim, NOT the old 0.15-floor cut that caused "lead weights".
     if (m_tcEnabled && eff.throttle > 0.0f) {
         float slip = 0.0f;
         for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i)
             slip = std::max(slip, m_ctl->longitudinalSlip(i));
-        constexpr float kSlipTarget = 0.10f;   // hold just past the friction peak
-        constexpr float kSlipGain   = 4.0f;    // trim slope per unit excess slip
-        if (slip > kSlipTarget) {
-            const float trim = 1.0f - kSlipGain * (slip - kSlipTarget);
-            eff.throttle *= std::clamp(trim, 0.15f, 1.0f);
-        }
-        m_effThrottle = eff.throttle;   // POST-TC: what the engine is actually given
+        constexpr float kSlipTarget = 0.07f;   // just under Jolt's 0.10 upshift gate
+        constexpr float kSlipGain   = 1.5f;
+        if (slip > 0.10f)      m_tcCutting = true;
+        else if (slip < 0.04f) m_tcCutting = false;
+        // Smooth the trim so the throttle GLIDES instead of snapping. The snap is
+        // what the audio layers track as a "shift" (whine/turbo ride throttle),
+        // and the cut/restore oscillation is the residual "Wahh". Cut fast,
+        // restore slow — the asymmetry is the anti-oscillation.
+        const float target = m_tcCutting
+            ? std::clamp(1.0f - kSlipGain * (slip - kSlipTarget), 0.35f, 1.0f)
+            : 1.0f;
+        const float rate = (target < m_tcTrim) ? 0.25f : 0.08f;
+        m_tcTrim += (target - m_tcTrim) * rate;
+        eff.throttle *= m_tcTrim;
     }
+    // OUTSIDE the TC branch. This used to be assigned only when TC was active
+    // and the throttle positive, so with TC off — or the instant you lifted —
+    // it kept whatever value it last had. The engine audio reads it as "load",
+    // so the note stayed pinned at the last trimmed value while coasting.
+    m_effThrottle = eff.throttle;
     m_ctl->setInput(eff);
 }
-void DriveDemo::preStep(float dt)  { if (m_ctl) m_ctl->preStep(dt); }
+
+// ---------------------------------------------------------------------------
+// TURBO — a manifold-pressure model, not a curve.
+//
+// The engine already had a turbo-SHAPED torque curve: soft off the bottom, a
+// hard step around 0.32-0.45 of the rev range, a plateau, then taper. That is
+// the right STEADY-STATE shape, and it is what the engine makes at full boost.
+// What it cannot express is the part of a turbo you actually feel, which is all
+// transient: the half-second where you have asked for everything and the engine
+// has not yet given it, and the shove when it arrives.
+//
+// So the curve stays as the full-boost delivery and this supplies the lag. The
+// torque multiplier runs from floorTorque (off boost) to 1.0 (on boost) as
+// manifold pressure builds, which means peak power and the tuned curve shape
+// are both unchanged — the difference is entirely in WHEN you get them.
+//
+// Asymmetric time constants, because a turbo is asymmetric: the compressor has
+// inertia and takes ~0.45 s to come up, but lift and the wastegate and the
+// recirculation valve dump it in ~0.1 s. That asymmetry is why part-throttle
+// driving in a turbo car feels like it does, and why short-shifting keeps you
+// on boost while a lift-and-coast does not.
+//
+// Below the throttle, the model reads VACUUM — the engine pumping against a
+// closed plate. It is what a real boost gauge shows for most of its life, and
+// it is the reason the needle sitting at zero would have looked wrong.
+// ---------------------------------------------------------------------------
+void DriveDemo::updateTurbo(float dt) {
+    if (!m_ctl) { m_turboMult = 1.0f; return; }
+    if (!m_turboOn) {
+        m_boostPsi = 0.0f;
+        m_turboMult = 1.0f;
+        m_ctl->setTorqueBoost(m_userTorqueMult);
+        return;
+    }
+    const TurboParams& tp = m_turbo;
+    const float rpm = m_ctl->engineRPM();
+    const float thr = std::clamp(m_effThrottle, 0.0f, 1.0f);
+
+    // Spool: the compressor needs exhaust energy, which needs revs.
+    float spool = (rpm - tp.spoolStartRpm) / std::max(1.0f, tp.spoolFullRpm - tp.spoolStartRpm);
+    spool = std::clamp(spool, 0.0f, 1.0f);
+    spool = spool * spool * (3.0f - 2.0f * spool);          // smoothstep
+
+    const float boostTarget = tp.maxPsi * spool * thr;
+    // Vacuum deepens with revs and a closed throttle; it vanishes as the plate
+    // opens. Needs some revs to exist at all, hence the rpm ramp.
+    const float vacTarget = -tp.vacuumPsi * (1.0f - thr)
+                          * std::clamp(rpm / 2500.0f, 0.0f, 1.0f);
+    const float target = boostTarget + vacTarget;
+
+    const float tau = (target > m_boostPsi) ? tp.spoolTau : tp.dumpTau;
+    m_boostPsi += (target - m_boostPsi) * (1.0f - std::exp(-dt / std::max(0.01f, tau)));
+
+    const float frac = std::clamp(m_boostPsi / std::max(0.01f, tp.maxPsi), 0.0f, 1.0f);
+    m_turboMult = tp.floorTorque + (1.0f - tp.floorTorque) * frac;
+    m_ctl->setTorqueBoost(m_userTorqueMult * m_turboMult);
+}
+
+void DriveDemo::preStep(float dt)  { updateTurbo(dt); updateEngineModel(dt); if (m_ctl) m_ctl->preStep(dt); }
+
+// REAL ENGINE MODEL. The engine RPM is its own state, not Jolt's road-speed-
+// locked value. Idles ~800, is pulled toward the locked (wheel-speed) RPM when
+// in gear, with the flywheel's lag. The audio follows THIS, so the note revs up
+// and settles like a real engine instead of mirroring road speed frame-for-frame.
+void DriveDemo::updateEngineModel(float dt) {
+    constexpr float kIdle = 800.0f;
+    const float locked = m_ctl ? m_ctl->lockedRPM() : 0.0f;
+    const float target = std::max(kIdle, locked);
+    const float tau = 0.14f;   // flywheel response (a quick-revving flat-six)
+    m_engineRpm += (target - m_engineRpm) * (1.0f - std::exp(-dt / tau));
+    if (m_engineRpm < kIdle) m_engineRpm = kIdle;
+}
 void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
 
 void DriveDemo::chassisPos(float out[3]) const {
@@ -483,8 +580,10 @@ bool runDriveEnterExitSelfTest() {
     std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
     if (!phys->init()) { x3::logError("[drive-test] physics init failed"); return false; }
     {
-        // Flat static slab the wheel rays can stand on.
-        x3::prims::PrimMesh g = x3::prims::makeBox(200.0f, 0.5f, 200.0f, 0.0f, -0.5f, 0.0f, 0.02f);
+        // Flat static slab the wheel rays can stand on. Big enough that a car
+        // accelerating 0->95 mph over 10 s (~325 m) stays on it (was 200 m, which
+        // the car drove off of, tripping the "kept ground contact" check).
+        x3::prims::PrimMesh g = x3::prims::makeBox(2000.0f, 0.5f, 2000.0f, 0.0f, -0.5f, 0.0f, 0.02f);
         phys->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
                             g.cindex.data(), (uint32_t)g.cindex.size());
     }
@@ -511,16 +610,22 @@ bool runDriveEnterExitSelfTest() {
     if (dEnter <= 5.0f) inCar = true;
     check(inCar, "enter: player within range takes the wheel");
 
-    // Full throttle for 240 fixed ticks (4 s).
-    for (int i = 0; i < 240; ++i) {
+    // Full throttle for 600 fixed ticks (10 s) — long enough for the turbo to
+    // spool up and the car to run through the gears to its top end.
+    for (int i = 0; i < 600; ++i) {
         x3::phys::VehicleInput in{};
         in.throttle = 1.0f;
         car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+        if ((i % 60) == 59)
+            x3::logInfo("[drive-test] t=" + std::to_string((i + 1) * dt) + "s v=" +
+                        std::to_string(car.forwardSpeed()) + " rpm=" + std::to_string(car.engineRPM()) +
+                        " gear=" + std::to_string(car.gear()) + " thr=" +
+                        std::to_string(car.effectiveThrottle()));
     }
     float c1[3]; car.chassisPos(c1);
     const float dx = c1[0] - c0[0], dz = c1[2] - c0[2];
     const float disp = std::sqrt(dx*dx + dz*dz);
-    x3::logInfo("[drive-test] displacement after 4 s full throttle: " + std::to_string(disp) +
+    x3::logInfo("[drive-test] displacement after 10 s full throttle: " + std::to_string(disp) +
                 " m, fwdSpeed=" + std::to_string(car.forwardSpeed()) + " m/s");
     check(disp > 10.0f, "drive: forward displacement > 10 m");
     check(dz < -5.0f, "drive: displacement is along -Z (the car's forward)");

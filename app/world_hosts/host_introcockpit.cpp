@@ -18,6 +18,7 @@
 // IRenderDevice) + in-tree precedents (leveldoc_world's drawable->Entity bridge,
 // club1127's emissiveTex + glass recipes, host_space's deep-space sky) only.
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../fx.h"
 #include "../intro_cockpit_rig.h"
 #include "../asset_root.h"
@@ -516,9 +517,16 @@ int hostIntroCockpit(HostContext& hc) {
     x3::logInfo("--world introcockpit: pilot's-eye showcase — Esc to quit");
     double prevTime = glfwGetTime(); float t = 0.0f;
     int lastWd = (int)hc.W, lastHd = (int)hc.H;
-    while (!glfwWindowShouldClose(window)) {
+    // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+    // the engine has had all three for a long time and 28 of ~31 hosts
+    // wired none of them, so the worlds you could actually launch and play
+    // were the one place in the engine with no developer tools at all.
+    HostShell shell;
+    shell.attach(hc);
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
         double now = glfwGetTime();
         float dt = (float)(now - prevTime); prevTime = now;
         if (dt > 0.1f) dt = 0.1f;
@@ -546,6 +554,7 @@ int hostIntroCockpit(HostContext& hc) {
             fx.draw(*device, frame, cam[0], cam[1], cam[2], yaw, pitch);
             fx.submit(*device, frame);
         }
+        shell.draw(frame);
         device->endFrame(frame);
     }
     fx.shutdown(*device);

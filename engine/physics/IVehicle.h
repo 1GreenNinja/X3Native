@@ -133,12 +133,13 @@ struct WheeledVehicleDesc {
     float    curveRpm[8]    = {0,0,0,0,0,0,0,0};
     float    curveTq [8]    = {0,0,0,0,0,0,0,0};
     uint32_t curveCount     = 0;
-    // The object layer the wheel ground-rays are cast AS. A ray on this layer hits
-    // a body when the engine's collision matrix says the two layers collide. The
-    // terrain/world ground is layer Static, and (per the matrix) Static-vs-Static
-    // does NOT collide while Dynamic-vs-Static DOES — so the wheel rays must be cast
-    // as Dynamic to stand on the Static ground. Default Dynamic (the chassis's own
-    // layer); the tester excludes the chassis body so a wheel never hits its own car.
+    // The object layer the wheel ground-rays are filtered ON. Jolt's
+    // VehicleCollisionTesterRay uses DefaultObjectLayerFilter, which is the
+    // COLLISION MATRIX (not exact match): a ray on layer X hits a body on layer Y
+    // only if X-vs-Y collides. The world ground is Layer::Static, and the matrix
+    // says Static-vs-Static does NOT collide while Dynamic-vs-Static DOES — so the
+    // wheel rays MUST filter on Dynamic (the chassis's own layer) to stand on the
+    // Static ground. Filtering on Static makes the rays pass straight through.
     Layer groundLayer = Layer::Dynamic;
     // Forward / up of the chassis in its LOCAL frame (CONVENTIONS.md: -Z fwd, +Y up).
     float forward[3] = { 0.0f, 0.0f, -1.0f };
@@ -296,6 +297,10 @@ public:
     // false if i is out of range or the controller has no wheels.
     virtual bool wheelState(uint32_t i, WheelState& out) const { (void)i; (void)out; return false; }
     virtual float engineRPM() const { return 0.0f; }
+    // Engine RPM if the clutch were LOCKED to the wheels: wheelSpeed * gear * final.
+    // 0 in neutral. Drives the audio's "real engine" model, independent of the
+    // viscous-clutch free-rev.
+    virtual float lockedRPM() const { return 0.0f; }
     virtual int   gear() const { return 0; }
 
     // Longitudinal slip RATIO of wheel i: (wheelSurfaceSpeed - vehicleSpeed) /

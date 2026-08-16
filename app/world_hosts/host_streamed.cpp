@@ -1,5 +1,6 @@
 // --world streamed host — lifted VERBATIM from main() (#28 deep split).
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "../scene.h"
 #include "../player.h"
 #include "../terrain.h"
@@ -304,7 +305,7 @@ int hostStreamed(HostContext& hc) {
         wflags.loadFile("save/worldmap_streamed.flags");
         x3::ui::UiContext wmapUi;
         bool wmapOpen = false;
-        bool prevMW = false, prevEnterW = false, prevEscW = false, prevLmbW = false;
+        bool prevMW = false, prevEnterW = false, prevLmbW = false;   // prevEscW gone: ESC is an edge from the shell's callback now
         float wTravelFade = 0.0f;
         glfwSetScrollCallback(window, scrollCallback);   // wheel -> map zoom
         g_weaponScroll = 0.0;
@@ -320,22 +321,37 @@ int hostStreamed(HostContext& hc) {
                     "F noclip, Esc to quit — regions stream around you (watch the log)");
 
         int lastWw = (int)W, lastHw = (int)H;
-        while (!glfwWindowShouldClose(window)) {
-            glfwPollEvents();
-            // Esc: close the map first (back out of the confirm prompt, then the
-            // map), only then quit the streamed world.
-            const bool escNowW = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-            const bool escEdgeW = escNowW && !prevEscW;
-            prevEscW = escNowW;
-            bool mapEscW = false;
-            if (escEdgeW) {
-                if (wmapOpen && wmap.confirmOpen()) mapEscW = true;
-                else if (wmapOpen) {
-                    wmapOpen = false; wmap.close();
-                    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-                    glfwGetCursorPos(window, &lastMX, &lastMY);
-                } else break;
+
+        // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h.
+        HostShell shell;
+        shell.attach(hc);
+        // ESC keeps its layered meaning here — back out of the confirm prompt,
+        // then the world map — and only reaches the shell's menu once no host
+        // modal is open. Without this first-refusal the shell would swallow ESC
+        // in its key callback and the map would have no way to close.
+        //
+        // It is also an EDGE now, delivered by the callback, rather than the
+        // polled escNowW/prevEscW pair: a press shorter than a frame used to be
+        // dropped entirely.
+        bool mapEscW = false;
+        shell.setEscapeHandler([&]() -> bool {
+            if (wmapOpen && wmap.confirmOpen()) { mapEscW = true; return true; }
+            if (wmapOpen) {
+                wmapOpen = false; wmap.close();
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                glfwGetCursorPos(window, &lastMX, &lastMY);
+                return true;
             }
+            return false;          // nothing open: let the shell open its menu
+        });
+
+        while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
+            // Cleared BEFORE the poll: the escape handler runs inside
+            // glfwPollEvents(), so clearing after it would wipe the very flag
+            // the handler just set.
+            mapEscW = false;
+            glfwPollEvents();
+            shell.beginFrame();
 
             double now = glfwGetTime();
             float dt = (float)(now - prevTime); prevTime = now;
@@ -513,6 +529,7 @@ int hostStreamed(HostContext& hc) {
                     device->drawHudQuad(frame, 0.0f, 0.0f, (float)fbw, (float)fbh, blk);
                 }
             }
+            shell.draw(frame);
             device->endFrame(frame);
         }
 

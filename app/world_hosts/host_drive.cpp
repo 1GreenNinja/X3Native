@@ -1,6 +1,7 @@
 // --world drive | boat | fly host (+ --screenshot-perfshop) — lifted VERBATIM
 // from main() (#28 deep split).
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3)
 #include "engine/core/IJobSystem.h"
 #include "engine/physics/IVehicle.h"
 #include "engine/audio/IAudioSystem.h"
@@ -408,9 +409,16 @@ int hostDrive(HostContext& hc) {
         x3::game::vehcam::FlyCamState  flyCam;
         x3::game::vehcam::BoatCamState boatCam;
         const float kFlyYaw0 = camYaw, kFlyPitch0 = camPitch;  // freelook zero
-        while (!glfwWindowShouldClose(window)) {
+        // Console (~), ESC menu and the FPS/stats overlay. See host_shell.h:
+        // the engine has had all three for a long time and 28 of ~31 hosts
+        // wired none of them, so the worlds you could actually launch and play
+        // were the one place in the engine with no developer tools at all.
+        HostShell shell;
+        shell.attach(hc);
+
+        while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
             glfwPollEvents();
-            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            shell.beginFrame();   // ESC opens the menu now; SHIFT+ESC quits
             double now = glfwGetTime();
             float fdt = (float)(now - prevTime); prevTime = now;
             if (fdt > 0.1f) fdt = 0.1f;
@@ -420,7 +428,7 @@ int hostDrive(HostContext& hc) {
             if (camPitch >  1.4f) camPitch =  1.4f;
             if (camPitch < -1.4f) camPitch = -1.4f;
             lastMX = mx; lastMY = my;
-            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            auto kd = [&](int k){ return shell.key(k); };   // false while the console/menu owns input
 
             // ---- DRIVE: E toggles in-car <-> on-foot (edge-triggered). ----
             if (isDrive) {
@@ -719,6 +727,7 @@ int hostDrive(HostContext& hc) {
             }
             auto frame = device->beginFrame();
             if (frame.valid) vrender(frame);
+            shell.draw(frame);
             device->endFrame(frame);
         }
         if (engineLoop.valid()) vaudio->stopLoop(engineLoop);
