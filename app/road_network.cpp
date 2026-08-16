@@ -861,6 +861,173 @@ SpawnConnectorResult registerSpawnConnector(const TunnelRoute& spawnRoute,
 }
 
 // ---------------------------------------------------------------------------
+// THE OUTER CONNECTOR — see road_network.h. Registered after BOTH tours.
+// ---------------------------------------------------------------------------
+OuterConnectorResult registerOuterConnector(const RoadSpec& ringSpec,
+                                            const std::vector<float>& ringRoadY,
+                                            const RoadSpec& outerSpec,
+                                            const std::vector<float>& outerRoadY) {
+    OuterConnectorResult out;
+    const size_t rn = ringSpec.x.size(), on = outerSpec.x.size();
+    if (rn < 3 || on < 3 || ringRoadY.size() != rn || outerRoadY.size() != on ||
+        ringSpec.z.size() != rn || outerSpec.z.size() != on) {
+        x3::logError("outer connector: bad inputs (ring or tour datum missing)");
+        return out;
+    }
+    // The natural (pre-carve) hillside — the same derivation the summit spur
+    // uses. Scoring against the CARVED field would let a candidate score well
+    // just because it runs along a cutting somebody else already made.
+    auto naturalAt = [](float x, float z) {
+        return terrainHeightAtWorld(x, z) - terrainCorridorDelta(x, z);
+    };
+
+    // NO LANDING IN A BORE. The tour's gap reaches are tunnels; keep a portal's
+    // worth of daylight clear of them too (6 nodes ~ 366 m at the tour's 61 m
+    // spacing) so the junction mouth is not cut into a portal headwall.
+    constexpr uint32_t kGapClearNodes = 6;
+    auto inGapOrPortal = [&](size_t j) {
+        for (const auto& g : outerSpec.gaps) {
+            const uint32_t lo = (g.i0 > kGapClearNodes) ? g.i0 - kGapClearNodes : 0u;
+            const uint32_t hi = g.i1 + kGapClearNodes;
+            if (j >= lo && j <= hi) return true;
+        }
+        return false;
+    };
+
+    // MEASURE THE ISLAND first — the audit number, kept in the boot log,
+    // independent of which crossing gets chosen.
+    {
+        float gap = 1e18f;
+        for (size_t i = 0; i + 1 < rn; ++i)
+            for (size_t j = 0; j + 1 < on; ++j) {
+                const float dx = outerSpec.x[j] - ringSpec.x[i];
+                const float dz = outerSpec.z[j] - ringSpec.z[i];
+                const float d = dx * dx + dz * dz;
+                if (d < gap) gap = d;
+            }
+        out.gapBeforeM = std::sqrt(gap);
+    }
+
+    // THE CROSSING. For each legal outer landing, take the nearest ring node
+    // (concentric tours, so that line is radial) and score the WORST cut-or-
+    // fill it would need: the straight datum from one graded tour to the other
+    // against the natural ground under it. Cheapest wins. Distance is only a
+    // tie-break — 200 m of extra road is far cheaper than a 60 m cutting.
+    size_t I = 0, J = 0; float bestCost = 1e18f, bestFit = 0.0f;
+    for (size_t j = 0; j + 1 < on; j += 4) {          // ~every 240 m of tour
+        if (inGapOrPortal(j)) continue;
+        size_t bi = 0; float bd = 1e18f;
+        for (size_t i = 0; i + 1 < rn; ++i) {
+            const float dx = outerSpec.x[j] - ringSpec.x[i];
+            const float dz = outerSpec.z[j] - ringSpec.z[i];
+            const float d = dx * dx + dz * dz;
+            if (d < bd) { bd = d; bi = i; }
+        }
+        const float L = std::sqrt(bd);
+        if (L < 1.0f) continue;
+        const float y0 = ringRoadY[bi], y1 = outerRoadY[j];
+        float worst = 0.0f;
+        for (int k = 0; k <= 40; ++k) {
+            const float t = (float)k / 40.0f;
+            const float px = ringSpec.x[bi] + (outerSpec.x[j] - ringSpec.x[bi]) * t;
+            const float pz = ringSpec.z[bi] + (outerSpec.z[j] - ringSpec.z[bi]) * t;
+            worst = std::max(worst, std::fabs(naturalAt(px, pz) - (y0 + (y1 - y0) * t)));
+        }
+        const float cost = worst + L * 0.004f;        // 1 m of cut ~ 250 m of road
+        if (cost < bestCost) { bestCost = cost; bestFit = worst; I = bi; J = j; }
+    }
+    if (bestCost >= 1e18f) {
+        x3::logError("outer connector: no legal landing on the tour (every node in a bore?)");
+        return out;
+    }
+    out.worstFitM = bestFit;
+
+    const float rx = ringSpec.x[I],  rz = ringSpec.z[I],  ry = ringRoadY[I];
+    const float ox = outerSpec.x[J], oz = outerSpec.z[J], oy = outerRoadY[J];
+    float adx = ox - rx, adz = oz - rz;
+    const float L0 = std::sqrt(adx * adx + adz * adz);
+    adx /= L0; adz /= L0;
+
+    // Both ends stand back by the junction setback the mouth patch owns.
+    const float bx0 = rx + adx * kJctSetbackM, bz0 = rz + adz * kJctSetbackM;
+    const float bx1 = ox - adx * kJctSetbackM, bz1 = oz - adz * kJctSetbackM;
+    const float run = L0 - 2.0f * kJctSetbackM;
+    if (run < 120.0f) {
+        x3::logError("outer connector: the tours are too close here for a junction pair");
+        return out;
+    }
+    const int   nseg = std::max(8, (int)std::ceil(run / 61.0f));
+    const float amp  = std::min(120.0f, run * 0.04f);   // the same gentle S
+    const float pxd  = -adz, pzd = adx;
+
+    RoadSpec s;
+    s.name      = "outer connector";
+    s.halfWidth = kPavedHalfM + 1.0f;
+    s.falloff   = 18.0f;
+    s.maxGrade  = 0.07f;
+    for (int k = 0; k <= nseg; ++k) {
+        const float t = (float)k / (float)nseg;
+        float lat = amp * std::sin(6.2831853f * t) * std::sin(3.1415926f * t);
+        if (k <= 1 || k >= nseg - 1) lat = 0.0f;        // straight ends, square joints
+        s.x.push_back(bx0 + (bx1 - bx0) * t + pxd * lat);
+        s.z.push_back(bz0 + (bz1 - bz0) * t + pzd * lat);
+    }
+    const float kNaN = std::numeric_limits<float>::quiet_NaN();
+    s.pinY.assign(s.x.size(), kNaN);
+    s.pinY.front() = ry;    // leave the inner tour at ITS datum...
+    s.pinY.back()  = oy;    // ...and arrive on the outer tour at ITS datum.
+
+    out.spec = s;
+    out.road = registerRoad(out.spec, &out.roadY);
+    out.ringNode = (uint32_t)I; out.outerNode = (uint32_t)J;
+    if (!out.road.ok || out.roadY.empty()) {
+        x3::logError("outer connector: registerRoad FAILED");
+        return out;
+    }
+    registerJunctionBox(bx0, bz0, rx, rz, ry);
+    registerJunctionBox(bx1, bz1, ox, oz, oy);
+
+    // The two mouths. Each needs its MAIN road's tangent and longitudinal grade
+    // at the junction — taken across the neighbouring nodes, wrapping past the
+    // closing duplicate exactly as the spawn connector does.
+    auto mouth = [&](const RoadSpec& main, const std::vector<float>& mainY, size_t K,
+                     float ex, float ez, float ey, RoadJunction& j) {
+        const size_t n = main.x.size();
+        const size_t kp = (K + 1 < n - 1) ? K + 1 : 0;
+        const size_t km = (K > 0) ? K - 1 : n - 2;
+        float mtx = main.x[kp] - main.x[km], mtz = main.z[kp] - main.z[km];
+        const float mtl = std::sqrt(mtx * mtx + mtz * mtz);
+        j.valid = true;
+        j.jx = main.x[K]; j.jz = main.z[K]; j.jy = mainY[K];
+        j.mainGrade = 0.0f; j.mainTX = 1.0f; j.mainTZ = 0.0f;
+        if (mtl > 1e-4f) {
+            j.mainTX = mtx / mtl; j.mainTZ = mtz / mtl;
+            j.mainGrade = (mainY[kp] - mainY[km]) / mtl;
+        }
+        j.endX = ex; j.endZ = ez; j.endY = ey;
+    };
+    mouth(ringSpec,  ringRoadY,  I, out.spec.x.front(), out.spec.z.front(),
+          out.roadY.front(), out.ringJct);
+    mouth(outerSpec, outerRoadY, J, out.spec.x.back(),  out.spec.z.back(),
+          out.roadY.back(),  out.outerJct);
+
+    char b[520];
+    std::snprintf(b, sizeof(b),
+        "outer connector: the tour is no longer an island (narrowest gap anywhere "
+        "was %.0f m / %.0f ft) — inner node %u (%.0f, %.0f, y %.1f) -> tour node %u "
+        "(%.0f, %.0f, y %.1f), a %.0f m crossing taking %.2f miles of road. Chosen "
+        "for FIT, not shortness: worst cut-or-fill %.0f ft against the natural "
+        "hillside. Max grade %.1f%%, pin deficit %.2f ft, end datums %.2f/%.2f ft "
+        "off their pins.",
+        out.gapBeforeM, out.gapBeforeM * kMToFt, out.ringNode, rx, rz, ry,
+        out.outerNode, ox, oz, oy, L0, out.road.lengthM / 1609.34f,
+        out.worstFitM * kMToFt, out.road.maxGradePct, out.road.pinErrM * kMToFt,
+        (out.roadY.front() - ry) * kMToFt, (out.roadY.back() - oy) * kMToFt);
+    x3::logInfo(b);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // THE SUMMIT SPUR — see road_network.h.
 // ---------------------------------------------------------------------------
 SummitSpurResult registerSummitSpur(const RoadSpec& fromSpec,

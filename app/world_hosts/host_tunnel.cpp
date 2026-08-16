@@ -157,24 +157,33 @@ int hostTunnel(HostContext& hc) {
             if (!rr.ok) { x3::logError("--world tunnel: ring registration FAILED"); ringOn = false; }
         }
     }
-    // THE 31-MILE OUTER TOUR (X3_OUTER_RING=1) — the four-range loop with its
-    // five bores — and THE RIVER CROSSING (X3_RIVER_ROAD=1) — the valley road
-    // over Bridge No.1. Registered in the same boot slot, for the same reason:
-    // the corridor registry closes at the first height query below.
+    // THE 31-MILE OUTER TOUR — the four-range loop with its five bores — and
+    // THE RIVER CROSSING (X3_RIVER_ROAD=1) — the valley road over Bridge No.1.
+    // Registered in the same boot slot, for the same reason: the corridor
+    // registry closes at the first height query below.
     x3::game::OuterRingResult outerRing;
     bool outerOn = false;
     {
         const char* e = std::getenv("X3_OUTER_RING");
-        // DEFAULT OFF — deliberately, two reasons, both measured by W-ROADS:
-        // (1) one of its five bores builds a KILOMETRE-SCALE floating shell
-        //     tower over the spawn country (the "black spike" in Tim's
-        //     screenshots; proven by A/B probes — present with the connector
-        //     off, gone with the outer ring off), and (2) it is an island —
-        //     2,958 m from the nearest ring point, so until its own connector
-        //     lands there is nothing to reach anyway. X3_OUTER_RING=1 to work
-        //     on it. Fix the bore in tunnel_corridor dressing, connect it,
-        //     THEN flip this back on.
-        outerOn = (e && e[0] == '1');
+        // DEFAULT ON again, 2026-08-16. It was switched OFF because one of the
+        // five bores was said to build a kilometre-scale floating shell tower
+        // over the spawn country. The AABB instrumentation added to
+        // TunnelCorridorWorld::build says it was not one bore, it was ALL FIVE,
+        // and the cause was not the dressing's arithmetic: build()'s frameAt
+        // lambda was still reading the file-scope DEMO tunnel constants
+        // (kRouteCX/kRouteDirX/kRouteHalfLen) left over from the one-tunnel era.
+        // Every tour bore therefore laid its ribbon, shell and portals on the
+        // demo axis over spawn while its CUTTING (which goes through
+        // route.worldAt) landed correctly 7 km out on its own chord — and the
+        // quads bridging the two stretched across the gap. Measured X extents
+        // 3.1-7.1 km; after the fix each bore's AABB sits on its own chord.
+        // build() now also REFUSES any bore whose frame strays >150 m from its
+        // own spine, so this cannot come back silently.
+        //
+        // Still true, and still open: the tour is an ISLAND — 2,958 m from the
+        // nearest inner-ring point, with no connector yet. X3_OUTER_RING=0 to
+        // switch it off.
+        outerOn = !(e && e[0] == '0');
         if (outerOn) {
             outerRing = x3::game::registerOuterRing();
             if (!outerRing.road.ok) {
@@ -227,6 +236,24 @@ int hostTunnel(HostContext& hc) {
                 if (!summitSpur.built)
                     summitSpur = x3::game::registerSummitSpur(ringSpec, ringRoadY,
                                                               &route, &avoid);
+            }
+        }
+    }
+    // THE OUTER CONNECTOR — the road that stops the 31-mile tour being an
+    // island. Registered after BOTH tours so its end pins can read their graded
+    // datums, and last of all the roads for the same reason the spawn connector
+    // is: its natural sweep then reads every carve already in.
+    x3::game::OuterConnectorResult outerConn;
+    bool outerConnOn = false;
+    {
+        const char* e = std::getenv("X3_OUTER_CONNECTOR");
+        outerConnOn = ringOn && outerOn && !(e && e[0] == '0');
+        if (outerConnOn) {
+            outerConn = x3::game::registerOuterConnector(ringSpec, ringRoadY,
+                                                         outerRing.spec, outerRing.roadY);
+            if (!outerConn.road.ok) {
+                x3::logError("--world tunnel: outer connector registration FAILED");
+                outerConnOn = false;
             }
         }
         char cb[128];
@@ -560,6 +587,14 @@ int hostTunnel(HostContext& hc) {
             if (w->build(scene, *device, *phys, *r, streamer.groundTexture()))
                 tourBores.push_back(std::move(w));
         }
+    }
+    // The outer connector's pavement and a junction mouth at EACH end — it is
+    // the only road here that lands on two different tours.
+    if (outerConnOn) {
+        x3::game::buildRoadRibbon(outerConn.spec, scene, *device, *phys,
+                                  &outerConn.roadY);
+        x3::game::buildJunctionMouth(outerConn.ringJct, scene, *device, *phys);
+        x3::game::buildJunctionMouth(outerConn.outerJct, scene, *device, *phys);
     }
     if (riverOn) {
         x3::game::buildRoadRibbon(riverRoad.spec, scene, *device, *phys,

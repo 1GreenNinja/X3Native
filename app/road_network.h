@@ -252,6 +252,38 @@ SpawnConnectorResult registerSpawnConnector(const TunnelRoute& spawnRoute,
                                             const std::vector<float>& ringRoadY);
 
 // ---------------------------------------------------------------------------
+// THE OUTER CONNECTOR — the road off the inner tour out to the 31-mile outer
+// tour. Until it existed the outer tour was an ISLAND: audited at 2,958 m
+// (9,705 ft) from the nearest inner-ring point, five real bores and thirty
+// miles of pavement that nothing could drive to.
+//
+// Both tours are concentric about the same centre, so the shortest crossing is
+// RADIAL and arrives square at both ends with no contrivance. Which radius it
+// takes is chosen by MEASUREMENT, not by picking the minimum distance and
+// hoping: every candidate landing is scored by the worst cut-or-fill its line
+// would need against the natural hillside, and the cheapest wins. Landings
+// inside (or within a portal's reach of) one of the tour's BORE GAPS are
+// excluded outright — a slip road into the middle of a tunnel is not a road.
+//
+// Registered AFTER both tours, like the spawn connector and for the same
+// reason: its end pins read their graded datums.
+// ---------------------------------------------------------------------------
+struct OuterConnectorResult {
+    RoadBuildResult    road;
+    RoadSpec           spec;
+    std::vector<float> roadY;       // graded datum per node (the ribbon rides this)
+    RoadJunction       ringJct;     // where it leaves the inner tour
+    RoadJunction       outerJct;    // where it lands on the outer tour
+    uint32_t           ringNode = 0, outerNode = 0;
+    float gapBeforeM = 0.0f;        // measured inner->outer gap this closes
+    float worstFitM  = 0.0f;        // worst cut-or-fill of the chosen line
+};
+OuterConnectorResult registerOuterConnector(const RoadSpec& ringSpec,
+                                            const std::vector<float>& ringRoadY,
+                                            const RoadSpec& outerSpec,
+                                            const std::vector<float>& outerRoadY);
+
+// ---------------------------------------------------------------------------
 // THE SUMMIT SPUR — one climbing road from the connector up to a real local
 // peak, found by hill-climbing the natural (pre-carve) height field from seeds
 // beside the connector. Steeper than the tours (maxGrade up to 14%) and built
