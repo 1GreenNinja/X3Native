@@ -138,6 +138,10 @@ int hostTunnel(HostContext& hc) {
     // beside the corridor above, because app/terrain.h's contract is "register
     // before the first height query" and this is the last moment that is true.
     x3::game::RoadSpec ringSpec;
+    std::vector<float> ringRoadY;   // graded datum per ring node — the connector
+                                    // pins its landing to it, and the ring ribbon
+                                    // rides it (load-bearing where the connector's
+                                    // own carve crosses under the ring pavement)
     bool ringOn = false;
     {
         const char* e = std::getenv("X3_RING");
@@ -147,7 +151,7 @@ int hostTunnel(HostContext& hc) {
             ringSpec.halfWidth = x3::game::kPavedHalfM + 1.0f;
             ringSpec.falloff   = 18.0f;
             ringSpec.maxGrade  = 0.07f;
-            const x3::game::RoadBuildResult rr = x3::game::registerRoad(ringSpec);
+            const x3::game::RoadBuildResult rr = x3::game::registerRoad(ringSpec, &ringRoadY);
             if (!rr.ok) { x3::logError("--world tunnel: ring registration FAILED"); ringOn = false; }
         }
     }
@@ -180,6 +184,44 @@ int hostTunnel(HostContext& hc) {
                 riverOn = false;
             }
         }
+    }
+    // THE SPAWN CONNECTOR (X3_CONNECTOR=0 to disable) — the road the spawn
+    // corridor was missing: measured 3,522 m of nothing between the exit portal
+    // and the inner tour. Registered LAST among the roads so its junction pins
+    // read the ring's graded datum and its natural sweep reads every carve
+    // already in. THE SUMMIT SPUR rides on it ("roads that go UP on top of the
+    // mountain") — skipped honestly if no peak within reach earns a road.
+    x3::game::SpawnConnectorResult connector;
+    x3::game::SummitSpurResult summitSpur;
+    bool connOn = false;
+    {
+        const char* e = std::getenv("X3_CONNECTOR");
+        connOn = ringOn && !(e && e[0] == '0');   // needs a ring to land on
+        if (connOn) {
+            connector = x3::game::registerSpawnConnector(route, ringSpec, ringRoadY);
+            if (!connector.road.ok) {
+                x3::logError("--world tunnel: spawn connector registration FAILED");
+                connOn = false;
+            } else {
+                // Spur off the connector if its country has a mountain; the
+                // measured answer is it does not (rolling lowland), so it falls
+                // back to the RING, which skirts the ranges. Either way it must
+                // stay off every other registered route's centreline.
+                std::vector<const x3::game::RoadSpec*> avoid;
+                avoid.push_back(&connector.spec);
+                if (outerOn) avoid.push_back(&outerRing.spec);
+                if (riverOn) avoid.push_back(&riverRoad.spec);
+                summitSpur = x3::game::registerSummitSpur(connector.spec,
+                                                          connector.roadY, &route, &avoid);
+                if (!summitSpur.built)
+                    summitSpur = x3::game::registerSummitSpur(ringSpec, ringRoadY,
+                                                              &route, &avoid);
+            }
+        }
+        char cb[128];
+        std::snprintf(cb, sizeof(cb), "--world tunnel: corridor registry %u of %u used",
+                      x3::game::terrainCorridorCount(), x3::game::kMaxTerrainCorridors);
+        x3::logInfo(cb);
     }
 
     // ==== STEP 1.5 — THE ROOMS' AIR RIGHTS ==================================
@@ -391,8 +433,24 @@ int hostTunnel(HostContext& hc) {
     // object draped over the hill. Without it the build warns and falls back.
     tunnel.build(scene, *device, *phys, route, streamer.groundTexture());
     // The ribbon: 4 lanes of asphalt plus a 20 ft cement apron each side, laid
-    // into the cutting the corridor already graded.
-    if (ringOn) x3::game::buildRoadRibbon(ringSpec, scene, *device, *phys);
+    // into the cutting the corridor already graded. The ring's ribbon rides its
+    // graded DATUM now — the spawn connector's carve crosses under the ring at
+    // the junction, and a field-derived ribbon would dip into that cut.
+    if (ringOn) x3::game::buildRoadRibbon(ringSpec, scene, *device, *phys,
+                                          ringRoadY.empty() ? nullptr : &ringRoadY);
+    // The spawn connector + the summit spur, and the junction mouths that BLEND
+    // them into the roads they meet (ruled patch lapped over the main pavement
+    // + cement flare wings — not a butt joint).
+    if (connOn) {
+        x3::game::buildRoadRibbon(connector.spec, scene, *device, *phys,
+                                  &connector.roadY);
+        x3::game::buildJunctionMouth(connector.ringJct, scene, *device, *phys);
+        if (summitSpur.built) {
+            x3::game::buildRoadRibbon(summitSpur.spec, scene, *device, *phys,
+                                      &summitSpur.roadY);
+            x3::game::buildJunctionMouth(summitSpur.jct, scene, *device, *phys);
+        }
+    }
     // The outer tour's pavement + its five dressed bores. The ribbon rides the
     // graded DATUM (not the carved field) so it stays level across the
     // portal-ramp approaches; gap reaches are skipped — each tunnel lays its

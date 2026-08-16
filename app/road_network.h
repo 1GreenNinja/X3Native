@@ -69,6 +69,16 @@ struct RoadSpec {
     // carves meet without a step; for a bridge y0 == y1 == the deck elevation.
     struct Gap { uint32_t i0 = 0, i1 = 0; float y0 = 0.0f, y1 = 0.0f; };
     std::vector<Gap> gaps;
+
+    // OPTIONAL PER-NODE DATUM PINS (NaN = free; empty = none). Same machinery
+    // the gaps use internally, exposed for the case a JUNCTION needs: a road
+    // that BRANCHES from another road must arrive at the other road's graded
+    // datum exactly, or the two pavements meet with a step. A pinned node is
+    // held through the grade relaxation and gets the same bounded ceiling-raise
+    // ramp as a portal pin, so the approach can climb to it at maxGrade. If a
+    // pin cannot be honoured the deficit lands in RoadBuildResult::pinErrM,
+    // loudly — never silently.
+    std::vector<float> pinY;
 };
 
 // What actually got built, for logging and for the gates.
@@ -185,6 +195,88 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
                                  x3::rhi::IRenderDevice& device,
                                  x3::phys::IPhysicsWorld& phys,
                                  const std::vector<float>* roadY = nullptr);
+
+// ---------------------------------------------------------------------------
+// JUNCTIONS — where one road MEETS another.
+//
+// Measured before this existed (scripts/audit_connectivity.py, 2026-08-16):
+// the spawn corridor's far end dead-ends 3,522 m (11,555 ft) short of the
+// inner tour, 6,480 m short of the outer tour, 778 m short of the river road.
+// Tim: "They need to CONNECT to the roads you spawn on." So: a CONNECTOR from
+// the spawn corridor's far end to the inner ring, and a SUMMIT SPUR climbing
+// off the connector ("roads that go UP on top of the mountain").
+//
+// A junction is where two independently-graded ribbons meet, and a butt joint
+// there shows a seam (and, where the main road has grade, a wedge-shaped gap:
+// the branch's end edge is laterally FLAT while the main road's surface slopes
+// along its own axis under it). buildJunctionMouth() closes that with a ruled
+// transition patch: it starts at the branch ribbon's flat terminal edge and
+// twists onto the main road's sloped surface, overlapping the main pavement a
+// couple of metres with a few millimetres of lift (lapped, not coplanar — no
+// z-fight), plus cement flare wings so the mouth reads as a widened apron
+// rather than a T of butted rectangles. An honest v1: a real intersection
+// system (kerb radii, stop lines, signage, traffic priority) is future work.
+// ---------------------------------------------------------------------------
+struct RoadJunction {
+    bool  valid = false;
+    float jx = 0.0f, jz = 0.0f, jy = 0.0f;  // junction point ON the main road's centreline + datum
+    float mainTX = 1.0f, mainTZ = 0.0f;     // main road unit tangent there
+    float mainGrade = 0.0f;                 // main datum slope along (mainTX, mainTZ), m/m
+    float endX = 0.0f, endZ = 0.0f, endY = 0.0f;  // branch ribbon's terminal node + datum
+};
+
+// The mouth patch (asphalt transition + cement flare wings), with collision.
+RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
+                                    x3::rhi::IRenderDevice& device,
+                                    x3::phys::IPhysicsWorld& phys);
+
+// ---------------------------------------------------------------------------
+// THE SPAWN CONNECTOR — the road from the spawn corridor's far end (past the
+// tunnel exit portal) to the inner tour. Registered AFTER the ring (its
+// junction pin needs the ring's graded datum, and its natural-surface sweep
+// then reads the ring's already-carved cutting at the landing). The centreline
+// is a gentle S-curve — Tim: "they do not curve" — with both ends pinned:
+// node 0 to the spawn route's exit datum, the last node to the ring's datum at
+// the landing node. The last leg arrives radially (square to the ring).
+// ---------------------------------------------------------------------------
+struct SpawnConnectorResult {
+    RoadBuildResult    road;
+    RoadSpec           spec;
+    std::vector<float> roadY;      // graded datum per node (the ribbon rides this)
+    RoadJunction       ringJct;    // where it lands on the inner ring
+    uint32_t           ringNode = 0;   // ring spec node index of the landing
+    float gapBeforeM = 0.0f;       // measured spawn-route -> ring gap this closes
+};
+SpawnConnectorResult registerSpawnConnector(const TunnelRoute& spawnRoute,
+                                            const RoadSpec& ringSpec,
+                                            const std::vector<float>& ringRoadY);
+
+// ---------------------------------------------------------------------------
+// THE SUMMIT SPUR — one climbing road from the connector up to a real local
+// peak, found by hill-climbing the natural (pre-carve) height field from seeds
+// beside the connector. Steeper than the tours (maxGrade up to 14%) and built
+// with sawtooth switchback legs when the direct line is steeper than that.
+// The peak is required to stay clear of the spawn tunnel's spine so the spur's
+// carve can never undermine the backfill lid. If no peak within reach earns a
+// road (prominence < ~35 m), it reports why and builds nothing — honestly.
+// ---------------------------------------------------------------------------
+struct SummitSpurResult {
+    bool               built = false;
+    const char*        whyNot = "";
+    RoadBuildResult    road;
+    RoadSpec           spec;
+    std::vector<float> roadY;
+    RoadJunction       jct;        // where it leaves the connector
+    float peakX = 0.0f, peakZ = 0.0f, peakNaturalY = 0.0f;
+    float climbM = 0.0f;           // datum climb, junction -> summit
+    float summitCutM = 0.0f;       // how far below the true peak the road tops out
+};
+// `avoid` (optional): other routes' centrelines the spur must stay off — its
+// carve would trench across their pavement otherwise.
+SummitSpurResult registerSummitSpur(const RoadSpec& fromSpec,
+                                    const std::vector<float>& fromRoadY,
+                                    const TunnelRoute* keepClearOf,
+                                    const std::vector<const RoadSpec*>* avoid = nullptr);
 
 // --test-roadnetwork
 bool runRoadNetworkSelfTest();
