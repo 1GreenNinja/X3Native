@@ -1677,11 +1677,68 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                             // front tyre up and the rest follows from the
                             // asymmetric arms. A matched pair either side would
                             // read as a parking stall again.
-                            const float kPlateProud = 0.0127f;   // 1/2 in steel
-                            float pl[3];
-                            PA(frameAtS(ls + spotAhead), sgn * (ll - 0.95f),
-                               fy + kPlateProud * 0.5f, pl);
-                            obox(baypaint, pl, right, ax, 0.26f, kPlateProud * 0.5f, 0.32f, 1.0f);
+                            // THE SHAPE IS A CRADLE, NOT A SLAB. My second pass
+                            // made it a solid raised block, which gives ONE bump
+                            // and then leaves the wheel perched on top of it.
+                            // The real plate is flat with a RAISED EDGE AT EACH
+                            // END: you roll over the first bar, the tyre drops
+                            // into the flat between them, and the second bar
+                            // says stop. Two bumps and a detent -- that is the
+                            // signal, and it is why you can spot the car without
+                            // seeing the floor. A single lump cannot tell you
+                            // whether you are short, on, or past the mark.
+                            // SMOOTH TRIANGLE, half an inch. Not a square bar --
+                            // a square bar is a kerb, and a kerb is something you
+                            // hit. This is a shallow RAMP you ride up and over,
+                            // which is why the signal arrives as a swell through
+                            // the wheel rather than a knock: at 1/2 in over a
+                            // 2.4 in run it is about a 12 degree face, gentle
+                            // enough to roll on at idle and unmistakable through
+                            // the rim.
+                            //
+                            // Symmetric, so it reads the same rolling on as
+                            // backing off. Two of them, fore and aft, with the
+                            // tyre resting in the flat between.
+                            const float kBarPitchM  = 0.42f;    // 16.5 in between apexes
+                            const float kBarTallM   = 0.0127f;  // 1/2 in proud
+                            const float kBarHalfRun = 0.06f;    // 2.4 in each face
+                            const float kPlateHalfW = 0.20f;    // 15.7 in across
+                            const float lat3 = sgn * (ll - 0.95f);
+
+                            // The deck the tyre settles onto, near flush.
+                            float deckP[3];
+                            PA(frameAtS(ls + spotAhead), lat3, fy + 0.003f, deckP);
+                            obox(baypaint, deckP, right, ax,
+                                 kPlateHalfW, 0.003f, kBarPitchM * 0.5f + kBarHalfRun, 1.0f);
+
+                            // A triangular prism across the wheel's path: two
+                            // sloped faces meeting at an apex line, capped at the
+                            // ends. obox() cannot do this -- it is boxes only --
+                            // so the faces go in by hand.
+                            auto wedgeBar = [&](float sAt) {
+                                float b0[3], b1[3], b2[3], b3[3], a0[3], a1[3];
+                                PA(frameAtS(sAt - kBarHalfRun), lat3 - kPlateHalfW, fy, b0);
+                                PA(frameAtS(sAt - kBarHalfRun), lat3 + kPlateHalfW, fy, b1);
+                                PA(frameAtS(sAt + kBarHalfRun), lat3 + kPlateHalfW, fy, b2);
+                                PA(frameAtS(sAt + kBarHalfRun), lat3 - kPlateHalfW, fy, b3);
+                                PA(frameAtS(sAt), lat3 - kPlateHalfW, fy + kBarTallM, a0);
+                                PA(frameAtS(sAt), lat3 + kPlateHalfW, fy + kBarTallM, a1);
+                                // Face normals lean back off the apex by the ramp
+                                // angle -- a flat-up normal would light both faces
+                                // identically and kill the ridge line that makes
+                                // the shape readable under the worklights.
+                                const float ny = 0.978f, nz = 0.208f;
+                                const float nUp[3] = { ax[0] * -nz, ny, ax[2] * -nz };
+                                const float nDn[3] = { ax[0] *  nz, ny, ax[2] *  nz };
+                                baypaint.quad(b0, b1, a1, a0, nUp, 0, 1, 0, 1);   // rising face
+                                baypaint.quad(a0, a1, b2, b3, nDn, 0, 1, 0, 1);   // falling face
+                                const float nL[3] = { -right[0], 0.0f, -right[2] };
+                                const float nR[3] = {  right[0], 0.0f,  right[2] };
+                                baypaint.quad(b0, a0, b3, b3, nL, 0, 1, 0, 1);    // end caps
+                                baypaint.quad(b1, b2, a1, a1, nR, 0, 1, 0, 1);
+                            };
+                            wedgeBar(ls + spotAhead - kBarPitchM * 0.5f);
+                            wedgeBar(ls + spotAhead + kBarPitchM * 0.5f);
                         }
 
                         // ---- TWO-POST LIFTS (Rotary-style, 10,000 lb). Two
