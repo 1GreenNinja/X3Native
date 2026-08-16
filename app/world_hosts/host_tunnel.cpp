@@ -165,7 +165,16 @@ int hostTunnel(HostContext& hc) {
     bool outerOn = false;
     {
         const char* e = std::getenv("X3_OUTER_RING");
-        outerOn = !(e && e[0] == '0');   // DEFAULT ON — X3_OUTER_RING=0 to disable
+        // DEFAULT OFF — deliberately, two reasons, both measured by W-ROADS:
+        // (1) one of its five bores builds a KILOMETRE-SCALE floating shell
+        //     tower over the spawn country (the "black spike" in Tim's
+        //     screenshots; proven by A/B probes — present with the connector
+        //     off, gone with the outer ring off), and (2) it is an island —
+        //     2,958 m from the nearest ring point, so until its own connector
+        //     lands there is nothing to reach anyway. X3_OUTER_RING=1 to work
+        //     on it. Fix the bore in tunnel_corridor dressing, connect it,
+        //     THEN flip this back on.
+        outerOn = (e && e[0] == '1');
         if (outerOn) {
             outerRing = x3::game::registerOuterRing();
             if (!outerRing.road.ok) {
