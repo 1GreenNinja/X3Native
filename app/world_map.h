@@ -129,6 +129,24 @@ struct Waypoint {
 };
 
 // ---------------------------------------------------------------------------
+// Route overlays (road-network worlds).
+//
+// A road world (--world tunnel) has no region ledgers to bake tiles from; its
+// map content IS the road network — polylines the host already owns (RoadSpec
+// centrelines, TunnelRoute spines). Each overlay is a world-XZ centreline the
+// map screen draws as a dark asphalt line with a lighter outline; `dashed`
+// marks reaches that run under something else (tunnel bores, bridge decks).
+// Purely additive: worlds that never call setRouteOverlays draw exactly as
+// before.
+// ---------------------------------------------------------------------------
+struct MapRouteOverlay {
+    std::string name;
+    std::vector<float> x, z;   // centreline nodes, world XZ (same length, >= 2)
+    bool  dashed = false;      // bored / decked reach
+    float widthM = 26.8f;      // drawn width, metres (the 88 ft paved section)
+};
+
+// ---------------------------------------------------------------------------
 // Tile bake — CPU top-down rasterization into RGBA8 (uploaded via createTexture).
 // ---------------------------------------------------------------------------
 struct MapTile {
@@ -180,6 +198,10 @@ public:
     const Waypoint& waypoint() const { return m_waypoint; }
     void setWaypoint(float x, float z, int floor);
     void clearWaypoint() { m_waypoint = Waypoint{}; }
+
+    // ---- Route overlays (road worlds; see MapRouteOverlay) -----------------
+    void setRouteOverlays(std::vector<MapRouteOverlay> routes) { m_routes = std::move(routes); }
+    const std::vector<MapRouteOverlay>& routeOverlays() const { return m_routes; }
 
     // ---- Fast travel (host polls after drawScreen) -------------------------
     bool travelRequested() const { return m_travelRequested; }
@@ -254,6 +276,7 @@ private:
     int spireFloorIndex(int floorNum) const;
     void drawPoiIcon(x3::ui::UiContext& ui, const MapPoi& poi, float px, float py,
                      bool hovered, float t) const;
+    void drawRouteOverlays(x3::ui::UiContext& ui, float W, float H) const;
 
     MapPoiTable m_pois;
     std::string m_spireDocPath;
@@ -262,6 +285,8 @@ private:
 
     struct RegionTileEntry { std::string id; MapTile tile; };
     std::vector<RegionTileEntry> m_regionTiles;
+
+    std::vector<MapRouteOverlay> m_routes;   // road-network worlds (else empty)
 
     Waypoint m_waypoint;
     bool m_open = false;
