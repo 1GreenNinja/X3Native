@@ -15,6 +15,7 @@
 #include "../terrain.h"
 #include "../tunnel_corridor.h"
 #include "../vehicle.h"
+#include "../mesh_prims.h"
 #include "../asset_root.h"
 #include "engine/audio/IAudioSystem.h"   // ENGINE NOTE: RPM-driven loop
 // stb_image: file-local static copy (the cinematic.cpp / descent_slide.cpp
@@ -131,6 +132,22 @@ int hostTunnel(HostContext& hc) {
         x3::logWarn("--world tunnel: car build failed — walk/fly only");
     }
 
+    // ---- WHEEL-SPIN FX (skid marks + smoke) --------------------------------
+    x3::rhi::MeshHandle fxQuadMesh;
+    x3::rhi::TextureHandle fxSkidTex, fxSmokeTex;
+    {
+        std::vector<x3::rhi::MeshVertex> qv; std::vector<uint32_t> qi;
+        x3::prims::makeCube(0.5f, qv, qi);
+        fxQuadMesh = device->createMesh(qv.data(), (uint32_t)qv.size(), qi.data(), (uint32_t)qi.size());
+        auto sk = x3::prims::makeSolidRGBA(8, 18, 18, 22);
+        auto sm = x3::prims::makeSolidRGBA(8, 150, 150, 155);
+        fxSkidTex  = device->createTexture(sk.data(), 8, 8, true);
+        fxSmokeTex = device->createTexture(sm.data(), 8, 8, true);
+    }
+    struct SpinFx { float x, y, z, age; uint8_t kind; };  // 0=skid, 1=smoke
+    SpinFx fx[512]; uint32_t fxN = 0;
+    float fxSpawnAcc = 0.0f;
+
     // ==== ENGINE NOTE =======================================================
     // Everything for this already existed and nothing played it: the sample is
     // committed at assets/audio/vehicles/engine_loop.wav, IAudioSystem has
@@ -145,10 +162,16 @@ int hostTunnel(HostContext& hc) {
     const bool audioOn = audio && audio->init();
     x3::audio::SoundHandle engineSnd{};
     x3::audio::LoopHandle  engineLoop{};
+    x3::audio::LoopHandle  whineLoop{};   // supercharger whine (throttle-gated)
+    x3::audio::LoopHandle  turboLoop{};   // turbo whistle (spool-gated)
+    float turboSpool = 0.0f, prevSpool = 0.0f;
+    x3::audio::SoundHandle squealSnd{};
+    x3::audio::LoopHandle  squealLoop{};   // tire squeal (slip-gated)
     if (audioOn) {
         const std::string wav =
             (std::filesystem::path(x3::game::assetRoot()) / "audio/vehicles/engine_loop.wav").string();
         engineSnd = audio->load(wav);
+        squealSnd = audio->load((std::filesystem::path(x3::game::assetRoot()) / "audio/vehicles/tire_squeal_loop.wav").string());
         if (engineSnd.valid() && carBuilt) {
             float ep[3]; car.chassisPos(ep);
             (void)ep;
@@ -279,8 +302,8 @@ int hostTunnel(HostContext& hc) {
     HostShell shell;
     shell.attach(hc);
     if (auto* con = shell.console()) {
-        shell.addFloatCommand("car_torque", "peak engine torque, Nm (stock 2400)",
-            [&](float v) { x3::phys::WheeledTuning t; t.maxEngineTorque = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_torque", "peak engine torque, ft-lb (stock 590)",
+            [&](float v) { x3::phys::WheeledTuning t; t.maxEngineTorque = v * 1.35582f; car.applyTuning(t); });
         shell.addFloatCommand("car_redline", "engine redline, rpm (stock 7500)",
             [&](float v) { x3::phys::WheeledTuning t; t.maxEngineRPM = v; car.applyTuning(t); });
         shell.addFloatCommand("car_grip", "tyre grip multiplier (stock 5.2; 1 = Jolt's economy tyre)",
@@ -459,7 +482,7 @@ int hostTunnel(HostContext& hc) {
         // parameter updates on ONE voice — no retriggering, so the loop stays
         // seamless through gearchanges.
         if (audioOn && engineLoop.valid() && carBuilt) {
-            const float rpm    = car.engineRPM();
+            const float rpm    = car.audioRPM();
             const float redline = 7500.0f;                       // matches vd.maxEngineRPM
             const float frac   = std::min(1.0f, std::max(0.0f, rpm / redline));
             // PITCH tracks RPM PROPORTIONALLY — real engine-note frequency scales
@@ -471,7 +494,15 @@ int hostTunnel(HostContext& hc) {
             // (~800) therefore sits at ~0.75x — a genuinely low idle note. If
             // that reads "rattly", the real fix is a second higher-RPM loop
             // crossfaded in, not compressing the range again.
-            const float pitch  = rpm / 1071.0f;
+            const float rawPitch = rpm / 1071.0f;
+            // IDLE HOLD. A flat-six idles at a steady ~800 rpm, but the physics
+            // engine has no idle governor and hunts around zero throttle — so the
+            // note must NOT wobble with it. Parked + off-throttle -> fixed idle
+            // pitch; the moment the driver asks for power or the car rolls, it
+            // tracks rpm again (overrun still follows rpm, as it should).
+            const bool idling = (car.throttleInput() < 0.01f &&
+                                 std::fabs(car.forwardSpeed()) < 1.0f);
+            const float pitch = idling ? 0.75f : rawPitch;
 
             // VOLUME follows LOAD, not speed. Tim, 2026-08-15: "In a real car..
             // engine tone shifts with load.. and load changes with torque, and
@@ -503,7 +534,38 @@ int hostTunnel(HostContext& hc) {
             // so it stays audible and keeps its pitch but drops right back in
             // level. That contrast is most of what makes a car sound driven.
             const float vol  = 0.16f + 0.62f * load + 0.10f * frac;
-            audio->setLoopParams(engineLoop, vol, pitch);
+            // LOW-PASS the note. The physics engine can jitter its RPM (the
+            // clutch/gearbox hunt this lane has been chasing), but a real engine
+            // note does NOT wobble frame to frame — it glides. One-pole smooth
+            // (~0.1 s) so it reads as one continuous engine, not a stutter.
+            static float sPitch = 0.75f, sVol = 0.16f;
+            const float k = 1.0f - std::exp(-9.0f * fdt);
+            sPitch += (pitch - sPitch) * k;
+            sVol   += (vol   - sVol)   * k;
+            audio->setLoopParams(engineLoop, sVol, sPitch);
+
+            // Supercharger whine + turbo whistle — the old --world drive host's
+            // extra layers, pitched variants of the SAME engine loop (Tim: "use
+            // the old host drive sounds"). Whine is throttle-gated; whistle rides
+            // the spool; lifting off above ~55% spool = a blowoff psshh.
+            if (!whineLoop.valid()) whineLoop = audio->startLoop(engineSnd, 0.0f, 2.4f);
+            if (whineLoop.valid())
+                audio->setLoopParams(whineLoop, thr * 0.20f, 2.4f + 1.3f * frac);
+
+            const float spoolLag = 0.45f;   // == TurboParams::spoolTau
+            if (thr > 0.6f) turboSpool = std::min(1.0f, turboSpool + fdt / spoolLag);
+            else            turboSpool = std::max(0.0f, turboSpool - fdt * 2.5f);
+            if (prevSpool > 0.55f && thr < 0.2f) {
+                audio->playSound2D(engineSnd, 0.45f, 4.2f);   // blowoff psshh
+                turboSpool = 0.0f;
+            }
+            prevSpool = turboSpool;
+            if (!turboLoop.valid()) turboLoop = audio->startLoop(engineSnd, 0.0f, 3.0f);
+            if (turboLoop.valid())
+                audio->setLoopParams(turboLoop, turboSpool * 0.18f, 3.0f + 1.2f * turboSpool);
+
+            // (tire squeal removed — the synthesized tone read as a DJ effect;
+            //  a real squeal needs a noise-based sample, not a sine sweep)
         }
 
         // Chase camera.
@@ -595,6 +657,55 @@ int hostTunnel(HostContext& hc) {
         }
         auto frame = device->beginFrame();
         if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
+
+        // ---- WHEEL-SPIN FX: spawn skid marks + smoke when the rears slip ----
+        if (frame.valid && carBuilt) {
+            const float slip = car.maxSlip();
+            fxSpawnAcc += fdt;
+            if (slip > 0.06f && fxSpawnAcc > 0.03f) {
+                fxSpawnAcc = 0.0f;
+                x3::phys::WheelState ws;
+                for (uint32_t i = 0; i < car.controller()->wheelCount(); ++i) {
+                    if (!car.controller()->wheelState(i, ws)) continue;
+                    if (i < 2) continue;                       // rear wheels only
+                    if (fxN < 512) {
+                        SpinFx& f = fx[fxN++];
+                        f.x = ws.worldTransform[12]; f.y = ws.worldTransform[13]; f.z = ws.worldTransform[14];
+                        f.age = 0.0f;
+                        f.kind = (slip > 0.18f) ? 1 : 0;       // hard spin -> smoke
+                    }
+                }
+            }
+            uint32_t w = 0;
+            for (uint32_t i = 0; i < fxN; ++i) {
+                SpinFx& f = fx[i];
+                f.age += fdt;
+                if (f.kind == 0) { if (f.age > 12.0f) continue; }
+                else { f.y += fdt * 1.6f; if (f.age > 1.8f) continue; }
+                fx[w++] = f;
+            }
+            fxN = w;
+            for (uint32_t i = 0; i < fxN; ++i) {
+                SpinFx& f = fx[i];
+                float m[16] = {0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1};
+                float col[4] = {1,1,1,0};
+                if (f.kind == 0) {
+                    const float a = std::max(0.0f, 1.0f - f.age / 12.0f) * 0.75f;
+                    col[3] = a;
+                    m[0] = 0.22f; m[5] = 0.02f; m[10] = 1.1f;
+                    m[12] = f.x; m[13] = f.y + 0.04f; m[14] = f.z;
+                    device->drawMesh(frame, fxQuadMesh, fxSkidTex, col, m);
+                } else {
+                    const float t = f.age / 1.8f;
+                    const float a = std::max(0.0f, 1.0f - t) * 0.45f;
+                    col[3] = a;
+                    const float s = 0.25f + 0.9f * t;
+                    m[0] = m[5] = m[10] = s;
+                    m[12] = f.x; m[13] = f.y + 0.4f; m[14] = f.z;
+                    device->drawMesh(frame, fxQuadMesh, fxSmokeTex, col, m);
+                }
+            }
+        }
         // ---- INSTRUMENT CLUSTER (textured) ---------------------------------
         // Three drawHudImage calls plus a little text. The dial and the shift
         // gate are real anti-aliased artwork; the needle is a 64-frame rotation
@@ -647,50 +758,58 @@ int hostTunnel(HostContext& hc) {
                                      gcy + R + R * 0.12f, gw, gh, white);
             }
 
-            // ---- BOOST GAUGE ----------------------------------------------
-            // Left of the tach, bottom-aligned with it, at 0.70 of its radius:
-            // the secondary instrument, not a second primary. It shares the
-            // needle atlas — same bezel, same sweep start and span, so frame i
-            // points at the same angle on both faces; only the scale differs.
-            //
-            // It reads NEGATIVE off-throttle. A boost gauge pinned at zero
-            // whenever you lift would be the tell that there is no manifold
-            // model behind it, and vacuum is where a real one lives most of
-            // the time.
-            if (texBoost.valid()) {
-                const float R2  = R * 0.70f;
-                const float bcx = gcx - R - R2 - R * 0.10f;
-                const float bcy = gcy + R - R2;              // bottoms line up
+            // ---- BOOST GAUGE — vertical segmented bar (NFS style) ----------
+            // A slim vertical bar along the LEFT of the tach, outside it, ~60% of
+            // the dial height. Discrete segments fill bottom-up: green -> bright
+            // orange -> blue at max. "BOOST" label + digital psi. Off-throttle it
+            // reads vacuum, which just empties the bar (a real gauge's tell).
+            {
+                const float barW = R * 0.30f;              // slim
+                const float barH = R * 1.20f;              // ~60% of the 2R dial
+                const float gap  = R * 0.44f;              // clear of the tach
+                const float bx   = gcx - R - gap - barW;   // outside, left
+                const float by   = gcy + R - barH;         // bottom-aligned with the dial
 
-                constexpr float kPsiMin = -10.0f, kPsiMax = 20.0f;   // == the art
                 const float psi = car.boostPsi();
-                const float bf  = std::min(1.0f, std::max(0.0f,
-                                    (psi - kPsiMin) / (kPsiMax - kPsiMin)));
-
+                const float bf  = std::min(1.0f, std::max(0.0f, psi / 35.0f)); // 35 psi = full
                 static float shownBoost = 0.0f;
                 shownBoost += (bf - shownBoost) * (1.0f - std::exp(-12.0f * fdt));
 
-                device->drawHudImage(frame, texBoost, bcx - R2, bcy - R2,
-                                     2.0f * R2, 2.0f * R2, white);
-                if (texNeedle.valid()) {
-                    const int NF = 64, AT = 8;
-                    int bi = (int)(shownBoost * (NF - 1) + 0.5f);
-                    bi = bi < 0 ? 0 : (bi > NF - 1 ? NF - 1 : bi);
-                    const float u0 = (float)(bi % AT) / (float)AT;
-                    const float v0 = (float)(bi / AT) / (float)AT;
-                    device->drawHudImage(frame, texNeedle, bcx - R2, bcy - R2,
-                                         2.0f * R2, 2.0f * R2, white,
-                                         u0, v0, u0 + 1.0f / AT, v0 + 1.0f / AT);
+                // Background + thin border (reads as a rounded, finished bezel).
+                const float bgc[4] = { 0.05f, 0.07f, 0.09f, 0.90f };
+                device->drawHudQuad(frame, bx - 1.5f, by - 1.5f, barW + 3.0f, barH + 3.0f, bgc);
+                const float bdc[4] = { 0.42f, 0.47f, 0.52f, 1.0f };
+                device->drawHudQuad(frame, bx - 1.5f, by - 1.5f, barW + 3.0f, 1.0f, bdc);
+                device->drawHudQuad(frame, bx - 1.5f, by + barH + 0.5f, barW + 3.0f, 1.0f, bdc);
+                device->drawHudQuad(frame, bx - 1.5f, by - 1.5f, 1.0f, barH + 3.0f, bdc);
+                device->drawHudQuad(frame, bx + barW + 0.5f, by - 1.5f, 1.0f, barH + 3.0f, bdc);
+
+                // Lit segments fill bottom-up: green -> bright orange -> blue.
+                constexpr int kSegs = 10;
+                const float segH = barH / kSegs;
+                const int lit = (int)(shownBoost * kSegs + 0.5f);
+                for (int i = 0; i < lit; ++i) {
+                    const float p = (float)i / (kSegs - 1);
+                    float sc[4];
+                    if (p < 0.33f)      { sc[0]=0.20f; sc[1]=0.95f; sc[2]=0.35f; } // green
+                    else if (p < 0.66f) { sc[0]=1.00f; sc[1]=0.55f; sc[2]=0.08f; } // bright orange
+                    else                { sc[0]=0.28f; sc[1]=0.62f; sc[2]=1.00f; } // blue
+                    sc[3] = 1.0f;
+                    const float sy = by + barH - (i + 1) * segH;
+                    device->drawHudQuad(frame, bx, sy + 0.5f, barW, segH - 1.0f, sc);
                 }
+
+                // Digital psi above, "BOOST" label below.
                 char bbuf[32];
-                std::snprintf(bbuf, sizeof(bbuf), "%+.1f", (double)psi);
-                const float bp = R2 * 0.26f;
+                std::snprintf(bbuf, sizeof(bbuf), "%+.0f", (double)psi);
+                const float bp = R * 0.20f;
                 const float bw = (float)std::strlen(bbuf) * bp;
-                const bool  over = psi >= 16.0f;
-                const float bc[4] = { over ? 1.0f : 0.97f, over ? 0.32f : 0.98f,
-                                      over ? 0.24f : 1.0f, 1.0f };
-                device->drawHudText(frame, bbuf, bcx - bw * 0.5f,
-                                    bcy + R2 * 0.26f, bp, bc);
+                const float tc[4] = { 0.90f, 0.95f, 1.0f, 1.0f };
+                device->drawHudText(frame, bbuf, bx + barW * 0.5f - bw * 0.5f,
+                                    by - R * 0.36f, bp, tc);
+                const float lp = R * 0.12f;
+                device->drawHudText(frame, "BOOST", bx + barW * 0.5f - 2.5f * lp,
+                                    by + barH + R * 0.10f, lp, tc);
             }
 
             char gbuf[64];

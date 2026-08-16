@@ -85,6 +85,15 @@ public:
     float forwardSpeed() const { return m_ctl ? m_ctl->forwardSpeed() : 0.0f; }
     float engineRPM()    const { return m_ctl ? m_ctl->engineRPM() : 0.0f; }
     int   gear()         const { return m_ctl ? m_ctl->gear() : 0; }
+    // Peak longitudinal slip across all wheels (0 = rolling, 1 = full spin) —
+    // drives the tire-squeal audio and the wheel-spin FX.
+    float maxSlip()      const {
+        if (!m_ctl) return 0.0f;
+        float s = 0.0f;
+        for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i)
+            s = std::max(s, m_ctl->longitudinalSlip(i));
+        return s;
+    }
     // Raw driver throttle, pre-traction-control. For HUD + engine AUDIO: tone
     // must follow LOAD, and load starts with what the driver is asking for.
     float throttleInput() const { return m_lastIn.throttle; }
@@ -92,6 +101,9 @@ public:
     // therefore what the engine NOTE should follow. When TC trims for slip the
     // sound must trim with it, or the audio lies about what the car is doing.
     float effectiveThrottle() const { return m_effThrottle; }
+    // The audio engine model's RPM (idle + flywheel lag, decoupled from Jolt's
+    // road-speed-locked RPM). The engine NOTE follows THIS, not engineRPM().
+    float audioRPM() const { return m_engineRpm; }
 
     // ---- Performance-shop live tuning passthrough (engine WheeledTuning). ----
     // Re-tunes the RUNNING Jolt vehicle in place (engine curve/torque, mass, grip,
@@ -114,13 +126,13 @@ public:
     // that a curve cannot express — the lag before it arrives and the shove
     // when it does. Peak power is unchanged, only its timing.
     struct TurboParams {
-        float maxPsi        = 16.0f;   // peak manifold pressure over atmosphere
+        float maxPsi        = 35.0f;   // peak manifold pressure over atmosphere (a hot 911 turbo)
         float spoolStartRpm = 1800.0f; // nothing below this
         float spoolFullRpm  = 4200.0f; // full compressor above this
         float spoolTau      = 0.45f;   // seconds to build (compressor inertia)
         float dumpTau       = 0.11f;   // seconds to bleed off (wastegate/BOV)
         float vacuumPsi     = 8.5f;    // depth of vacuum at a closed throttle
-        float floorTorque   = 0.60f;   // torque fraction with no boost at all
+        float floorTorque   = 0.85f;   // off-boost torque fraction — high so the launch still pulls
     };
     TurboParams&       turbo()       { return m_turbo; }
     const TurboParams& turbo() const { return m_turbo; }
@@ -156,15 +168,18 @@ private:
 
     x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD)
     float m_effThrottle = 0.0f;          // post-TC throttle (engine audio load)
-    bool m_tcEnabled = true;             // traction control (see setInput)
+    bool m_tcEnabled = false;            // TC off — grip 10 hooks up and the box shifts; T toggles
     bool m_tcCutting = false;            // TC hysteresis latch — stays cut until slip falls (see setInput)
+    float m_tcTrim = 1.0f;               // smoothed TC trim (one-pole, see setInput)
 
     void  updateTurbo(float dt);         // called from preStep
+    void  updateEngineModel(float dt);   // called from preStep
     TurboParams m_turbo;
     bool  m_turboOn         = true;
     float m_boostPsi        = 0.0f;      // manifold pressure (negative = vacuum)
     float m_turboMult       = 1.0f;      // torque multiplier the turbo is applying
     float m_userTorqueMult  = 1.0f;      // nitrous / console override, multiplied in
+    float m_engineRpm       = 800.0f;   // audio engine-model RPM (idle + flywheel lag)
 
     bool  m_tintOn = false;              // paint tint (see setPaintTint)
     float m_tint[3] = { 1, 1, 1 };

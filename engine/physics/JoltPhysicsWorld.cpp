@@ -145,9 +145,10 @@ bool objectLayersCollide(JPH::ObjectLayer a, JPH::ObjectLayer b) {
     }
     // Static: never collides with Static.
     if (a == Static && b == Static) return false;
-    // Projectile: Static, Enemy only (owner filtered separately, never Player/Dynamic/Projectile).
+    // Projectile: Static, Enemy, and Dynamic (cars/props — shootable) only; owner
+    // filtered separately per-body, never Player/Projectile.
     if (a == Projectile || b == Projectile) {
-        return pair(Projectile, Static) || pair(Projectile, Enemy);
+        return pair(Projectile, Static) || pair(Projectile, Enemy) || pair(Projectile, Dynamic);
     }
     // Everything else: Static/Dynamic/Player/Enemy all collide with each other.
     return true;
@@ -190,16 +191,17 @@ private:
 class ObjectVsBroadPhaseFilterImpl final : public JPH::ObjectVsBroadPhaseLayerFilter {
 public:
     bool ShouldCollide(JPH::ObjectLayer obj, JPH::BroadPhaseLayer bp) const override {
-        // Static/Trigger live in NonMoving. Their object layers should still be
-        // tested against the right broadphase layers based on the matrix.
+        // A query's DEFAULT object filter is the collision matrix (Static-vs-Static
+        // = false), so a Static-masked query only ever accepts movers — it must
+        // search the MOVING tree, never NonMoving. Matches objectLayersCollide().
         using namespace ObjLayers;
         switch (obj) {
-            case Static:     return bp == BPLayers::Moving;     // static only cares about movers
-            case Trigger:    return bp == BPLayers::Moving;     // trigger only senses movers
+            case Static:     return bp == BPLayers::Moving;     // static query only accepts movers
+            case Trigger:    return bp == BPLayers::Moving;     // trigger query only accepts movers
             case Dynamic:    return true;
             case Player:     return true;
             case Enemy:      return true;
-            case Projectile: return true;                       // Static(NonMoving)+Enemy(Moving)
+            case Projectile: return true;
             default:         return true;
         }
     }

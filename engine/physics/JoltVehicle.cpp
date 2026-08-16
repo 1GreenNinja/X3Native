@@ -89,14 +89,12 @@ constexpr float kGravity = 9.81f;
 // 0.975 the next gear lands at 0.975/1.49 = 0.65 — still on the fat part of the
 // curve, just the far side of the peak. Worth the trade for the noise.
 constexpr float kShiftUpFrac   = 0.975f;
-// 0.50 -> 0.58. At 0.50 the box would not drop a gear until 3750 rpm, so
-// flooring it while cruising in a tall gear just LUGGED — Tim, 2026-08-15: "The
-// engine seems bogged and lugging, overall". Jolt has no throttle kickdown, only
-// this rpm threshold, so it has to sit high enough to catch a real overtake.
-// Ceiling: an upshift at 0.975 lands the next gear at 0.975/1.47 = 0.66 of
-// redline, so anything at or above 0.66 would immediately re-upshift and hunt.
-// 0.58 (4350 rpm) is eager without touching that.
-constexpr float kShiftDownFrac = 0.58f;
+// Downshift point. 0.50 (3750) still hunted on grades: an upshift lands the next
+// gear at ~0.68 redline, and on a climb the car decelerates into the 3750
+// threshold, downshifts, revs, upshifts, repeats — "7x or more on 4th". 0.33
+// (~2500 rpm, like a real auto's kickdown) leaves a wide band so the box holds
+// the gear it just picked unless the car genuinely bogs.
+constexpr float kShiftDownFrac = 0.33f;
 // Fallback redline for vehicles authored without one, matching VehicleEngine's
 // own default so behavior is unchanged for them.
 constexpr float kDefaultRedlineRPM = 6000.0f;
@@ -163,6 +161,15 @@ public:
                 for (auto& p : ws->mLongitudinalFriction.mPoints) p.mY *= w.gripScale;
                 for (auto& p : ws->mLateralFriction.mPoints)      p.mY *= w.gripScale;
             }
+            // Wheel inertia: Jolt's default 0.9 (a bare 20 kg rim) spins to ~137%
+            // slip the instant the engine hits it, and the friction can only pull
+            // that back at the wheel's effective-mass rate — so the car crawls and
+            // the RPM "cycles". A real wheel+tire+driveline is heavier; raise it.
+            ws->mInertia = 2.5f;
+            if (i == 0)
+                x3::logInfo("[vehicle] grip " + std::to_string(w.gripScale) +
+                            " -> peak " + std::to_string(ws->mLongitudinalFriction.GetValue(0.06f)) +
+                            " (expect 12 for grip 10)");
             vs.mWheels.push_back(ws);
             m_wheelRadius[i] = w.radius;
             m_wheelWidth[i]  = w.width;
@@ -183,6 +190,7 @@ public:
         // ---- Controller (engine + transmission + 1 differential) ----
         JPH::WheeledVehicleControllerSettings* cs = new JPH::WheeledVehicleControllerSettings();
         m_baseMaxTorque = d.maxEngineTorque;            // tuning/boost baseline
+        m_finalDrive = d.finalDrive;
         cs->mEngine.mMaxTorque = d.maxEngineTorque;
         cs->mEngine.mMaxRPM    = d.maxEngineRPM;
         // Flywheel inertia — see WheeledVehicleDesc::engineInertia. Lower spins
@@ -213,6 +221,11 @@ public:
                 if (d.gearRatios[gi] > 0.0f)
                     cs->mTransmission.mGearRatios.push_back(d.gearRatios[gi]);
         }
+        // Reverse is ONE fixed ratio — a car never shifts in reverse. Jolt's
+        // default is already single {-2.90}; make it explicit and match 1st
+        // gear's magnitude so reverse speed feels right.
+        cs->mTransmission.mReverseGearRatios.clear();
+        cs->mTransmission.mReverseGearRatios.push_back(-3.15f);
         cs->mTransmission.mClutchStrength = d.clutchStrength;
         // SHIFT POINTS SCALE WITH THE REDLINE. Jolt's transmission defaults are
         // ABSOLUTE (mShiftUpRPM 4000 / mShiftDownRPM 2000) and know nothing about
@@ -226,21 +239,23 @@ public:
         // block it -- so the shop sold a power upgrade that made the car slower.
         applyShiftPoints(cs->mTransmission, d.maxEngineRPM);
 
-        // Powered wheels feed the differential. Pick the first two powered wheels
-        // as the differential's left/right (a standard single-axle drive). If only
-        // one wheel is powered, drive it alone.
-        int leftPowered = -1, rightPowered = -1;
-        for (uint32_t i = 0; i < d.wheelCount; ++i) {
-            if (!d.wheels[i].powered) continue;
-            if (leftPowered < 0) leftPowered = (int)i;
-            else if (rightPowered < 0) { rightPowered = (int)i; break; }
+        // Powered wheels feed the differential(s). Pair consecutive powered
+        // wheels as (left, right): two powered = one axle (RWD/FWD); four = two
+        // axles (AWD) so the torque splits across all four wheels — which is also
+        // what lets a high-torque car hook up instead of spinning one axle.
+        {
+            std::vector<int> pw;
+            for (uint32_t i = 0; i < d.wheelCount; ++i)
+                if (d.wheels[i].powered) pw.push_back((int)i);
+            if (pw.empty()) pw.push_back(0);                 // fall back: drive wheel 0
+            for (size_t i = 0; i < pw.size(); i += 2) {
+                JPH::VehicleDifferentialSettings diff;
+                diff.mLeftWheel  = pw[i];
+                diff.mRightWheel = (i + 1 < pw.size()) ? pw[i + 1] : -1;
+                if (d.finalDrive > 0.0f) diff.mDifferentialRatio = d.finalDrive;
+                cs->mDifferentials.push_back(diff);
+            }
         }
-        if (leftPowered < 0) leftPowered = 0;               // fall back: drive wheel 0
-        JPH::VehicleDifferentialSettings diff;
-        diff.mLeftWheel  = leftPowered;
-        diff.mRightWheel = (rightPowered >= 0) ? rightPowered : -1;
-        if (d.finalDrive > 0.0f) diff.mDifferentialRatio = d.finalDrive;
-        cs->mDifferentials.push_back(diff);
         // Report the ACTUAL gearbox Jolt ends up with. Guessing at this from the
         // outside cost real time — "it still shifts when in 6th, it KEEPS going"
         // is unanswerable without knowing how many ratios the constraint holds
@@ -253,7 +268,7 @@ public:
             }
             x3::logInfo("[vehicle] gearbox: " +
                         std::to_string(cs->mTransmission.mGearRatios.size()) + " gears [" + gl +
-                        "]  final " + std::to_string(diff.mDifferentialRatio) +
+                        "]  final " + std::to_string(d.finalDrive) +
                         "  shift up " + std::to_string(cs->mTransmission.mShiftUpRPM) +
                         " / down " + std::to_string(cs->mTransmission.mShiftDownRPM) +
                         "  switchTime " + std::to_string(cs->mTransmission.mSwitchTime) +
@@ -296,15 +311,48 @@ public:
 
     void preStep(float) override {
         if (!m_ctrl) return;
+        // ANTI-SPIN (BEFORE the step). Clamp each wheel to ~10% slip so the
+        // engine's semi-implicit solve sees the clamped wheel, not the free-rev.
+        // Running it in postStep left the engine RPM one step stale — the wheel
+        // still spun 28% at speed, the power went to smoke, and the car never
+        // reached 6th. Here it bites before the solve.
+        {
+            const float av = std::fabs(forwardSpeed());
+            if (av > 0.5f && m_constraint) {
+                for (uint32_t i = 0; i < m_wheelCount; ++i) {
+                    JPH::Wheel* w = m_constraint->GetWheel(i);
+                    if (!w) continue;
+                    const float maxOmega = av * 1.10f / m_wheelRadius[i];
+                    const float ww = w->GetAngularVelocity();
+                    if (std::fabs(ww) > maxOmega)
+                        w->SetAngularVelocity(ww > 0.0f ? maxOmega : -maxOmega);
+                }
+            }
+        }
         // Wake the body so the constraint solves (a parked car sleeps).
         if (m_system && (std::fabs(m_in.throttle) > 0.01f || m_in.brake > 0.01f ||
                          std::fabs(m_in.steer) > 0.01f || m_in.handBrake > 0.01f)) {
             m_system->GetBodyInterface().ActivateBody(m_chassis->GetID());
         }
         m_ctrl->SetDriverInput(m_in.throttle, m_in.steer, m_in.brake, m_in.handBrake);
+
+        // AERO DRAG. The wheeled car had NONE, so top speed was rev-limiter
+        // limited: in 6th the engine pinned 7500 and bounced — the "constant
+        // shifting past 6th" Tim hears. Quadratic drag makes top speed drag-
+        // limited below redline, like a real car (a real engine never hits the
+        // limiter while accelerating). F = -c |v| v; c ~1.4 => ~160 mph in 6th.
+        {
+            const float kAeroDrag = 1.4f;
+            JPH::Vec3 vel = m_chassis->GetLinearVelocity();
+            const float spd = vel.Length();
+            if (spd > 0.5f)
+                m_chassis->AddForce(-vel * (kAeroDrag * spd));
+        }
     }
 
-    void postStep(float) override { /* render state read on demand */ }
+    void postStep(float) override {
+        // Reserved for post-step tuning hooks (traction trim feedback, etc.).
+    }
     void update(float dt) override { preStep(dt); postStep(dt); }
 
     BodyId body() const override { return m_bodyId; }
@@ -349,6 +397,13 @@ public:
     float engineRPM() const override {
         return m_ctrl ? m_ctrl->GetEngine().GetCurrentRPM() : 0.0f;
     }
+    float lockedRPM() const override {
+        if (!m_ctrl || !m_chassis) return 0.0f;
+        const float ratio = m_ctrl->GetTransmission().GetCurrentRatio();
+        if (ratio == 0.0f) return 0.0f;
+        const float r = m_wheelRadius.empty() ? 0.33f : m_wheelRadius[0];
+        return std::fabs(forwardSpeed()) / r * std::fabs(ratio) * m_finalDrive * 9.5493f;
+    }
     int gear() const override {
         return m_ctrl ? m_ctrl->GetTransmission().GetCurrentGear() : 0;
     }
@@ -359,7 +414,11 @@ public:
         if (!w || !w->HasContact()) return 0.0f;
         const float surface = w->GetAngularVelocity() * m_wheelRadius[i];
         const float v = forwardSpeed();
-        return (surface - v) / std::max(std::fabs(v), 1.0f);
+        // Proper slip RATIO. The old max(|v|, 1.0) returned m/s (not a ratio)
+        // below 1 m/s, so a wheel just starting to rotate read as huge slip and
+        // tripped TC on every launch. Slip is meaningless at rest — report 0.
+        if (std::fabs(v) < 0.1f) return 0.0f;
+        return (surface - v) / std::fabs(v);
     }
 
     // ---- LIVE TUNING (performance shop). Mutates the running Jolt settings in
@@ -446,6 +505,7 @@ private:
     std::vector<float> m_baseSuspMin, m_baseSuspMax;    // authored suspension lengths
     JPH::LinearCurve m_baseLongFriction, m_baseLatFriction; // default tire curves
     float m_baseMaxTorque = 600.0f;                     // tuned baseline (boost multiplies)
+    float m_finalDrive = 1.0f;                          // final-drive ratio (for the locked-RPM clamp)
     float m_boost = 1.0f;                               // nitrous multiplier (1 = none)
 };
 
