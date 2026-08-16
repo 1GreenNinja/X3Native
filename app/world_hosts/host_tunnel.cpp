@@ -431,6 +431,12 @@ int hostTunnel(HostContext& hc) {
         device->setPostFX(px);
         applyHostRenderCVars(hc, *device, "tunnel");
     }
+    // CASCADED SHADOWS — W-TREES' find: this host NEVER called applyOutdoorCsm,
+    // so an outdoor world with a 4 km far plane was running the legacy 45 m
+    // camera-locked shadow box; everything beyond it (the mountain, the tour
+    // roads, any tree that ever gets planted) cast nothing. Same "compiled in,
+    // unreachable" defect the helper's own comment documents for cliffs.
+    applyOutdoorCsm(hc, *device, 400.0f, "tunnel");
 
     // ==== STEP 2 — the streamed terrain ring =================================
     float startPos[3];
