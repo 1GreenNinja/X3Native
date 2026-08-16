@@ -53,8 +53,14 @@ constexpr int kLatSamples = 9;
 // zero there. If the relaxation cannot hold a pin (the country falls away
 // faster than maxGrade can climb), the caller sees it in pinErr — never fixed
 // silently, because the fix is an authoring change, not a numeric one.
+// `closed`: the polyline is a RING (last node == first). Only then may the
+// grade constraint travel across the first/last seam — on an OPEN road (the
+// valley road, the spawn connector, the summit spur) the two ends are
+// unrelated places, and coupling them clamps a climbing road's summit to its
+// base elevation. Found when the summit spur graded FLAT: the wrap clamp ran
+// unconditionally and held the top node within one segment-grade of node 0.
 void gradeRoad(const std::vector<float>& natural, const std::vector<float>& segLen,
-               float maxGrade, std::vector<float>& roadY,
+               float maxGrade, std::vector<float>& roadY, bool closed,
                const std::vector<float>* pin = nullptr, float* pinErr = nullptr) {
     const size_t n = natural.size();
     roadY.assign(natural.begin(), natural.end());
@@ -104,7 +110,7 @@ void gradeRoad(const std::vector<float>& natural, const std::vector<float>& segL
         }
         // A ring wraps: the last node and the first are the same place, so the
         // constraint has to travel across the seam too or the join stays steep.
-        {
+        if (closed) {
             const float lim = maxGrade * std::max(1.0f, segLen[n - 2]);
             const float a = std::min(roadY[0], roadY[n - 1]);
             if (roadY[0] > a + lim)     { roadY[0] = a + lim; moved += 1.0f; }
@@ -194,9 +200,10 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
     }
 
     // ---- pins from the gaps (lerped y0 -> y1 across each gap) --------------
+    // ... plus the spec's own per-node pins (junction datums — see RoadSpec).
     const float kNaN = std::numeric_limits<float>::quiet_NaN();
     std::vector<float> pins;
-    if (!spec.gaps.empty()) {
+    if (!spec.gaps.empty() || !spec.pinY.empty()) {
         pins.assign(n, kNaN);
         for (const RoadSpec::Gap& g : spec.gaps) {
             for (uint32_t i = g.i0; i <= g.i1; ++i) {
@@ -204,6 +211,8 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
                 pins[i] = g.y0 + (g.y1 - g.y0) * t;
             }
         }
+        for (size_t i = 0; i < n && i < spec.pinY.size(); ++i)
+            if (std::isfinite(spec.pinY[i])) pins[i] = spec.pinY[i];
     }
 
     // ---- THE PORTAL RAMP ----------------------------------------------------
@@ -221,7 +230,7 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
     // datum); the CARVE still measures against the true natural surface, so a
     // floating reach simply cuts nothing. The float is reported, not hidden.
     std::vector<float> ceiling(natural);
-    if (!spec.gaps.empty()) {
+    if (!pins.empty()) {
         // Walk the WHOLE route, not "until the ground first meets the ramp":
         // the first cut of this loop broke at the first high node, and where a
         // single crest interrupted an otherwise-low descent the nodes beyond it
@@ -244,10 +253,25 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
             ramp(g.i0, -1, g.y0);
             ramp(g.i1, +1, g.y1);
         }
+        // Spec-level pins (junctions) ramp BOTH ways: the road must be able to
+        // climb to the pinned datum from either side.
+        for (size_t i = 0; i < n && i < spec.pinY.size(); ++i) {
+            if (!std::isfinite(spec.pinY[i])) continue;
+            bool gapNode = false;
+            for (const RoadSpec::Gap& g : spec.gaps)
+                if (i >= g.i0 && i <= g.i1) { gapNode = true; break; }
+            if (gapNode) continue;   // the gap edges already ramped above
+            ceiling[i] = std::max(ceiling[i], spec.pinY[i]);
+            ramp((uint32_t)i, -1, spec.pinY[i]);
+            ramp((uint32_t)i, +1, spec.pinY[i]);
+        }
     }
 
     std::vector<float> roadY;
-    gradeRoad(ceiling, segLen, spec.maxGrade, roadY,
+    const bool closedRing =
+        std::fabs(spec.x[0] - spec.x[n - 1]) < 0.01f &&
+        std::fabs(spec.z[0] - spec.z[n - 1]) < 0.01f;
+    gradeRoad(ceiling, segLen, spec.maxGrade, roadY, closedRing,
               pins.empty() ? nullptr : &pins, &r.pinErrM);
     // Float is only meaningful where the ROAD owns the reach: inside a gap the
     // datum is a bookkeeping lerp between the pins (the tunnel or the deck has
@@ -667,6 +691,378 @@ OuterRingResult registerOuterRing() {
 }
 
 // ---------------------------------------------------------------------------
+// THE SPAWN CONNECTOR — see road_network.h. Registered AFTER the ring so the
+// junction pin can read the ring's graded datum and the natural-surface sweep
+// at the landing reads the ring's already-carved cutting.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Distance from point (px,pz) to segment (ax,az)-(bx,bz), XZ plane.
+float segPointDist(float px, float pz, float ax, float az, float bx, float bz) {
+    const float dx = bx - ax, dz = bz - az;
+    const float L2 = dx * dx + dz * dz;
+    float t = 0.0f;
+    if (L2 > 1e-9f) t = std::max(0.0f, std::min(1.0f, ((px - ax) * dx + (pz - az) * dz) / L2));
+    const float qx = ax + dx * t, qz = az + dz * t;
+    return std::sqrt((px - qx) * (px - qx) + (pz - qz) * (pz - qz));
+}
+
+// How far back from the main road's centreline a branch's LAST NODE sits. The
+// junction mouth patch owns this reach: enough run for the twist from the
+// branch's flat edge onto the main road's sloped surface to finish BY the main
+// pavement's edge (kPavedHalfM), not 2 m short of it.
+constexpr float kJctSetbackM = kPavedHalfM + 20.0f;   // 33.4 m
+
+// THE JUNCTION BOX — one extra 2-node corridor across the junction throat.
+// Between the branch corridor's end cap and the main corridor's band there is
+// a lens covered only by both FALLOFF shoulders (each carries ~94% of the
+// needed depth there), so on a deep cut a ridge of dirt up to ~0.3 m can stand
+// above the mouth patch. registerRoad's close-the-loop pass cannot see it (it
+// walks segments; the mouth is PAST the last node). This box cuts the throat
+// to the junction datum explicitly. Depth is measured against the RAW
+// (pre-corridor) surface, max across the band, exactly like registerRoad does.
+void registerJunctionBox(float endX, float endZ, float jx, float jz, float datumY) {
+    float dx = jx - endX, dz = jz - endZ;
+    const float len = std::sqrt(dx * dx + dz * dz);
+    if (len < 1.0f) return;
+    dx /= len; dz /= len;
+    TerrainCorridor c{};
+    c.nodeCount = 2;
+    c.halfWidth = kPavedHalfM + 8.0f;   // covers the mouth's flare wings
+    c.falloff   = 16.0f;
+    c.x[0] = endX; c.z[0] = endZ;
+    c.x[1] = jx;   c.z[1] = jz;
+    const float px = -dz, pz = dx;
+    for (int i = 0; i < 2; ++i) {
+        float hi = -1e9f;
+        for (float s = 0.0f; s <= len * 0.5f + 0.1f; s += 4.0f)     // half-span sweep each
+            for (int k = -6; k <= 6; ++k) {
+                const float off = (float)k * c.halfWidth / 6.0f;
+                const float qx = c.x[i] + dx * (i ? -s : s) + px * off;
+                const float qz = c.z[i] + dz * (i ? -s : s) + pz * off;
+                const float raw = terrainHeightAtWorld(qx, qz)
+                                - terrainCorridorDelta(qx, qz);     // pre-carve
+                hi = std::max(hi, raw);
+            }
+        c.depth[i] = std::max(0.0f, hi - (datumY - kRoadFloorClear));
+    }
+    if (!registerTerrainCorridor(c))
+        x3::logError("junction box: corridor registry FULL — junction throat left uncut");
+}
+
+} // namespace
+
+SpawnConnectorResult registerSpawnConnector(const TunnelRoute& spawnRoute,
+                                            const RoadSpec& ringSpec,
+                                            const std::vector<float>& ringRoadY) {
+    SpawnConnectorResult out;
+    const size_t rn = ringSpec.x.size();
+    if (spawnRoute.st.empty() || rn < 3 || ringRoadY.size() != rn ||
+        ringSpec.z.size() != rn) {
+        x3::logError("spawn connector: bad inputs (no spawn route / ring datum missing)");
+        return out;
+    }
+
+    // The spawn corridor's FAR END — past the exit portal — and its heading.
+    float e[3];
+    spawnRoute.posAt(spawnRoute.totalLen, e);
+    float tx = 0.0f, tz = 0.0f;
+    spawnRoute.tangentAt(spawnRoute.totalLen, tx, tz);
+    const float yE = spawnRoute.roadYAt(spawnRoute.totalLen);
+
+    // MEASURE the gap being closed (the audit number, kept in the boot log).
+    {
+        float gap = 1e18f;
+        for (size_t i = 0; i + 1 < rn; ++i)
+            for (const auto& st : spawnRoute.st)
+                gap = std::min(gap, segPointDist(st.x, st.z,
+                                                 ringSpec.x[i], ringSpec.z[i],
+                                                 ringSpec.x[i + 1], ringSpec.z[i + 1]));
+        out.gapBeforeM = gap;
+    }
+
+    // THE LANDING: the ring node nearest the forward ray out of the exit — the
+    // road continues straight out of the tunnel and lands square on the ring.
+    size_t J = 0; float best = 1e18f;
+    for (size_t i = 0; i + 1 < rn; ++i) {          // [rn-1] duplicates [0]
+        const float dx = ringSpec.x[i] - e[0], dz = ringSpec.z[i] - e[2];
+        const float fwd = dx * tx + dz * tz;
+        if (fwd <= 60.0f) continue;                 // behind / on top of the exit
+        const float lat = std::fabs(dx * (-tz) + dz * tx);
+        const float score = lat + 0.05f * fwd;      // straight ahead first, near second
+        if (score < best) { best = score; J = i; }
+    }
+    if (best >= 1e18f) { x3::logError("spawn connector: no ring node ahead of the exit"); return out; }
+    const float jx = ringSpec.x[J], jz = ringSpec.z[J], jy = ringRoadY[J];
+
+    // Ring frame + longitudinal grade at the landing (for the mouth patch).
+    const size_t jp = (J + 1 < rn - 1) ? J + 1 : 0;        // wrap past the closing dup
+    const size_t jm = (J > 0) ? J - 1 : rn - 2;
+    float mtx = ringSpec.x[jp] - ringSpec.x[jm], mtz = ringSpec.z[jp] - ringSpec.z[jm];
+    const float mtl = std::sqrt(mtx * mtx + mtz * mtz);
+    float mainGrade = 0.0f;
+    if (mtl > 1e-4f) { mtx /= mtl; mtz /= mtl; mainGrade = (ringRoadY[jp] - ringRoadY[jm]) / mtl; }
+
+    // CENTRELINE: exit -> a point set back square of the ring, as a gentle
+    // S-curve (Tim: "they do not curve"). Ends forced straight so the first
+    // segment continues the tunnel's heading and the last arrives radially.
+    const float setback = kJctSetbackM;
+    float adx = jx - e[0], adz = jz - e[2];
+    const float L0 = std::sqrt(adx * adx + adz * adz);
+    adx /= L0; adz /= L0;
+    const float bex = jx - adx * setback, bez = jz - adz * setback;
+    const float run = L0 - setback;
+    const int nseg = std::max(6, (int)std::ceil(run / 61.0f));
+    const float amp = std::min(170.0f, run * 0.055f);
+    const float pxd = -adz, pzd = adx;                     // base-line perpendicular
+
+    RoadSpec s;
+    s.name      = "spawn connector";
+    s.halfWidth = kPavedHalfM + 1.0f;
+    s.falloff   = 18.0f;
+    s.maxGrade  = 0.07f;
+    for (int k = 0; k <= nseg; ++k) {
+        const float t = (float)k / (float)nseg;
+        float lat = amp * std::sin(6.2831853f * t) * std::sin(3.1415926f * t);
+        if (k <= 1 || k >= nseg - 1) lat = 0.0f;           // straight ends, square joints
+        s.x.push_back(e[0] + (bex - e[0]) * t + pxd * lat);
+        s.z.push_back(e[2] + (bez - e[2]) * t + pzd * lat);
+    }
+    const float kNaN = std::numeric_limits<float>::quiet_NaN();
+    s.pinY.assign(s.x.size(), kNaN);
+    s.pinY.front() = yE;    // arrive at the tunnel exit's datum...
+    s.pinY.back()  = jy;    // ...and land at the ring's datum. Both exact.
+
+    out.spec = s;
+    out.road = registerRoad(out.spec, &out.roadY);
+    out.ringNode = (uint32_t)J;
+    if (out.road.ok) registerJunctionBox(bex, bez, jx, jz, jy);
+    if (out.road.ok && !out.roadY.empty()) {
+        out.ringJct.valid   = true;
+        out.ringJct.jx = jx; out.ringJct.jz = jz; out.ringJct.jy = jy;
+        out.ringJct.mainTX = mtx; out.ringJct.mainTZ = mtz;
+        out.ringJct.mainGrade = mainGrade;
+        out.ringJct.endX = out.spec.x.back();
+        out.ringJct.endZ = out.spec.z.back();
+        out.ringJct.endY = out.roadY.back();
+    }
+    char b[360];
+    std::snprintf(b, sizeof(b),
+        "spawn connector: closes a %.0f m (%.0f ft) gap — exit (%.0f, %.0f, y %.1f) -> "
+        "ring node %u (%.0f, %.0f, y %.1f) | %.2f miles, pin deficit %.2f ft, "
+        "end datums %.2f/%.2f ft off their pins",
+        out.gapBeforeM, out.gapBeforeM * kMToFt, e[0], e[2], yE,
+        out.ringNode, jx, jz, jy, out.road.lengthM / 1609.34f,
+        out.road.pinErrM * kMToFt,
+        out.roadY.empty() ? -1.0f : (out.roadY.front() - yE) * kMToFt,
+        out.roadY.empty() ? -1.0f : (out.roadY.back() - jy) * kMToFt);
+    x3::logInfo(b);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// THE SUMMIT SPUR — see road_network.h.
+// ---------------------------------------------------------------------------
+SummitSpurResult registerSummitSpur(const RoadSpec& fromSpec,
+                                    const std::vector<float>& fromRoadY,
+                                    const TunnelRoute* keepClearOf,
+                                    const std::vector<const RoadSpec*>* avoid) {
+    SummitSpurResult out;
+    const size_t n = fromSpec.x.size();
+    if (n < 10 || fromRoadY.size() != n) { out.whyNot = "host road too short"; return out; }
+
+    // The NATURAL (pre-carve) hillside — a summit is a property of the
+    // mountain, not of whatever cuttings happen to cross its flanks.
+    auto naturalAt = [](float x, float z) {
+        return terrainHeightAtWorld(x, z) - terrainCorridorDelta(x, z);
+    };
+    // Keep-clear: the spawn tunnel's spine (its carve + backfill lid corridor).
+    // A spur cutting inside the lid band would drop the ground under the lid
+    // mesh's seam and float its edge.
+    float sx0 = 0, sz0 = 0, sx1 = 0, sz1 = 0; bool haveSpine = false;
+    if (keepClearOf && !keepClearOf->st.empty()) {
+        sx0 = keepClearOf->st.front().x; sz0 = keepClearOf->st.front().z;
+        sx1 = keepClearOf->st.back().x;  sz1 = keepClearOf->st.back().z;
+        haveSpine = true;
+    }
+    auto spineDist = [&](float x, float z) {
+        return haveSpine ? segPointDist(x, z, sx0, sz0, sx1, sz1) : 1e9f;
+    };
+    // Distance to the nearest OTHER route's centreline — the spur must not
+    // carve a trench across the valley road or the tours on its way up.
+    auto avoidDist = [&](float x, float z) {
+        float best = 1e9f;
+        if (avoid)
+            for (const RoadSpec* a : *avoid) {
+                if (!a) continue;
+                for (size_t i = 0; i + 1 < a->x.size(); ++i)
+                    best = std::min(best, segPointDist(x, z, a->x[i], a->z[i],
+                                                       a->x[i + 1], a->z[i + 1]));
+            }
+        return best;
+    };
+
+    // ---- FIND THE MOUNTAIN: hill-climb from seeds beside the road ----------
+    struct Peak { float x, z, h; };
+    std::vector<Peak> peaks;
+    const bool dbg = [] { const char* e = std::getenv("X3_SPUR_DEBUG"); return e && e[0]; }();
+    for (size_t i = 4; i + 4 < n; i += 4) {
+        float tx = fromSpec.x[i + 1] - fromSpec.x[i - 1];
+        float tz = fromSpec.z[i + 1] - fromSpec.z[i - 1];
+        const float tl = std::sqrt(tx * tx + tz * tz);
+        if (tl < 1e-4f) continue;
+        tx /= tl; tz /= tl;
+        for (int side = -1; side <= 1; side += 2) {
+            for (float d : { 420.0f, 750.0f, 1150.0f, 1700.0f, 2300.0f }) {
+                float cx = fromSpec.x[i] + (-tz) * d * (float)side;
+                float cz = fromSpec.z[i] + ( tx) * d * (float)side;
+                float ch = naturalAt(cx, cz);
+                for (int it = 0; it < 240; ++it) {          // 8-way gradient ascent
+                    float bx = cx, bz = cz, bh = ch;
+                    for (int k = 0; k < 8; ++k) {
+                        const float a = (float)k * 0.7853982f;
+                        const float qx = cx + std::cos(a) * 16.0f;
+                        const float qz = cz + std::sin(a) * 16.0f;
+                        const float qh = naturalAt(qx, qz);
+                        if (qh > bh) { bh = qh; bx = qx; bz = qz; }
+                    }
+                    if (bh <= ch + 1e-4f) break;
+                    cx = bx; cz = bz; ch = bh;
+                }
+                bool dup = false;
+                for (Peak& p : peaks)
+                    if ((p.x - cx) * (p.x - cx) + (p.z - cz) * (p.z - cz) < 90.0f * 90.0f) {
+                        if (ch > p.h) { p.x = cx; p.z = cz; p.h = ch; }
+                        dup = true; break;
+                    }
+                if (!dup) peaks.push_back({ cx, cz, ch });
+            }
+        }
+    }
+
+    // ---- SCORE: prominence over the nearest road node, reachable, clear ----
+    size_t baseNode = 0; Peak pick{}; float bestScore = -1e18f; bool found = false;
+    for (const Peak& p : peaks) {
+        size_t j = 0; float D = 1e18f;
+        for (size_t i = 4; i + 4 < n; ++i) {
+            const float dd = std::sqrt((p.x - fromSpec.x[i]) * (p.x - fromSpec.x[i]) +
+                                       (p.z - fromSpec.z[i]) * (p.z - fromSpec.z[i]));
+            if (dd < D) { D = dd; j = i; }
+        }
+        const float climb = p.h - fromRoadY[j];
+        if (dbg) std::printf("SPUR candidate peak (%.0f, %.0f) h %.1f  D %.0f  climb %.1f  spine %.0f\n",
+                             p.x, p.z, p.h, D, climb, spineDist(p.x, p.z));
+        if (D < 150.0f || D > 2500.0f) continue;
+        if (climb < 35.0f) continue;                       // not a mountain, a mound
+        if (spineDist(p.x, p.z) < 150.0f) continue;        // the lid's hill is off-limits
+        {   // stay off the other routes: peak + climb-line midpoint both clear
+            const float mx = (p.x + fromSpec.x[j]) * 0.5f;
+            const float mz = (p.z + fromSpec.z[j]) * 0.5f;
+            if (avoidDist(p.x, p.z) < 150.0f || avoidDist(mx, mz) < 150.0f) continue;
+        }
+        // approach mostly square off the road, or the sawtooth swings back over it
+        float ttx = fromSpec.x[j + 1] - fromSpec.x[j - 1];
+        float ttz = fromSpec.z[j + 1] - fromSpec.z[j - 1];
+        const float ttl = std::sqrt(ttx * ttx + ttz * ttz);
+        if (ttl > 1e-4f) {
+            const float ux = (p.x - fromSpec.x[j]) / D, uz = (p.z - fromSpec.z[j]) / D;
+            if (std::fabs(ux * ttx / ttl + uz * ttz / ttl) > 0.82f) continue;
+        }
+        const float score = climb - 0.012f * D;
+        if (score > bestScore) { bestScore = score; pick = p; baseNode = j; found = true; }
+    }
+    if (!found) {
+        out.whyNot = "no local peak with >= 115 ft prominence within reach of the connector";
+        x3::logWarn(std::string("summit spur: SKIPPED — ") + out.whyNot);
+        return out;
+    }
+
+    // ---- AUTHOR THE CLIMB: square launch, sawtooth legs, summit finish -----
+    const float baseX = fromSpec.x[baseNode], baseZ = fromSpec.z[baseNode];
+    const float baseY = fromRoadY[baseNode];
+    float ctx = fromSpec.x[baseNode + 1] - fromSpec.x[baseNode - 1];
+    float ctz = fromSpec.z[baseNode + 1] - fromSpec.z[baseNode - 1];
+    const float ctl = std::sqrt(ctx * ctx + ctz * ctz);
+    ctx /= ctl; ctz /= ctl;
+    const float connGrade = (fromRoadY[baseNode + 1] - fromRoadY[baseNode - 1]) / ctl;
+    // launch square off the connector, on the peak's side
+    float px = -ctz, pz = ctx;
+    if (px * (pick.x - baseX) + pz * (pick.z - baseZ) < 0.0f) { px = -px; pz = -pz; }
+    const float setback = kJctSetbackM;
+    const float startX = baseX + px * setback, startZ = baseZ + pz * setback;
+
+    float ux = pick.x - startX, uz = pick.z - startZ;
+    const float D = std::sqrt(ux * ux + uz * uz);
+    ux /= D; uz /= D;
+    const float vx = -uz, vz = ux;                          // sawtooth lateral axis
+    const float climb = pick.h - baseY;
+    const float Lneed = std::max(D, climb / 0.115f);        // aim under the 14% cap
+    const float cosPhi = std::max(0.574f, D / Lneed);       // clamp switchback angle
+    if (climb / (D / cosPhi) > 0.135f) {
+        out.whyNot = "mountain face steeper than the switchback budget (needs > 13.5% average)";
+        x3::logWarn(std::string("summit spur: SKIPPED — ") + out.whyNot);
+        return out;
+    }
+    const float sinPhi = std::sqrt(std::max(0.0f, 1.0f - cosPhi * cosPhi));
+    const float step = std::max(45.0f, (D / cosPhi) / 55.0f);
+    const float W = 120.0f;                                 // sawtooth half-amplitude
+
+    RoadSpec s;
+    s.name      = "summit spur";
+    s.halfWidth = kPavedHalfM + 1.0f;
+    s.falloff   = 16.0f;
+    s.maxGrade  = 0.14f;
+    s.x.push_back(startX);            s.z.push_back(startZ);
+    s.x.push_back(startX + px * step * 0.8f); s.z.push_back(startZ + pz * step * 0.8f);
+    float cx = s.x.back(), cz = s.z.back();
+    int sgn = (vx * px + vz * pz >= 0.0f) ? 1 : -1;         // start swinging outward
+    while (s.x.size() < 60) {
+        const float along = (cx - startX) * ux + (cz - startZ) * uz;
+        if (along >= D - step * 1.5f) break;
+        const float hx = ux * cosPhi + vx * sinPhi * (float)sgn;
+        const float hz = uz * cosPhi + vz * sinPhi * (float)sgn;
+        cx += hx * step; cz += hz * step;
+        s.x.push_back(cx); s.z.push_back(cz);
+        const float lat = (cx - startX) * vx + (cz - startZ) * vz;
+        if (sgn > 0 && lat > W) sgn = -1;
+        else if (sgn < 0 && lat < -W) sgn = 1;
+    }
+    s.x.push_back(pick.x); s.z.push_back(pick.z);           // the summit itself
+    const float kNaN = std::numeric_limits<float>::quiet_NaN();
+    s.pinY.assign(s.x.size(), kNaN);
+    s.pinY.front() = baseY;                                 // leave the connector at grade
+
+    out.spec = s;
+    out.road = registerRoad(out.spec, &out.roadY);
+    if (!out.road.ok || out.roadY.empty()) {
+        out.whyNot = "registration failed";
+        return out;
+    }
+    registerJunctionBox(startX, startZ, baseX, baseZ, baseY);
+    out.built = true;
+    out.peakX = pick.x; out.peakZ = pick.z; out.peakNaturalY = pick.h;
+    out.climbM = out.roadY.back() - out.roadY.front();
+    out.summitCutM = pick.h - out.roadY.back();
+    out.jct.valid = true;
+    out.jct.jx = baseX; out.jct.jz = baseZ; out.jct.jy = baseY;
+    out.jct.mainTX = ctx; out.jct.mainTZ = ctz;
+    out.jct.mainGrade = connGrade;
+    out.jct.endX = startX; out.jct.endZ = startZ;
+    out.jct.endY = out.roadY.front();
+
+    char b[360];
+    std::snprintf(b, sizeof(b),
+        "summit spur: %.2f miles UP — climbs %.0f ft to a %.0f ft peak at (%.0f, %.0f), "
+        "tops out %.1f ft under the true summit | max grade %.1f%% (cap 14%%) | "
+        "switchback angle %.0f deg, %u nodes, %u corridors",
+        out.road.lengthM / 1609.34f, out.climbM * kMToFt, pick.h * kMToFt,
+        pick.x, pick.z, out.summitCutM * kMToFt, out.road.maxGradePct,
+        std::acos(cosPhi) * 57.29578f, out.road.nodeCount, out.road.corridorCount);
+    x3::logInfo(b);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // THE RIBBON — the surface you actually drive on.
 // ---------------------------------------------------------------------------
 namespace {
@@ -813,13 +1209,20 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
         }
     };
 
-    const float white [4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    const float pale  [4] = { 0.86f, 0.85f, 0.82f, 1.0f };
+    // FALLBACK TINTS THAT STILL READ AS A ROAD. rd_asphalt_01 does not exist in
+    // the tree yet, so every ribbon road was hitting the untextured path with a
+    // WHITE tint — 46 miles of glowing white pavement (and the junction laps
+    // read sky-blue against it). Until the asphalt set lands, the untextured
+    // fallback is tinted like the material it stands in for.
+    float roadTint [4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    if (!asphalt.ok) { roadTint[0] = 0.055f; roadTint[1] = 0.056f; roadTint[2] = 0.060f; }
+    float apronTint[4] = { 0.86f, 0.85f, 0.82f, 1.0f };
+    if (!cement.ok)  { apronTint[0] = 0.42f; apronTint[1] = 0.41f; apronTint[2] = 0.38f; }
     const float paintC[4] = { 1.8f, 1.8f, 1.7f, 1.0f };
-    upload(road,   &asphalt, white,  true);
-    upload(apronL, &cement,  pale,   true);
-    upload(apronR, &cement,  pale,   true);
-    upload(paint,  nullptr,  paintC, false);
+    upload(road,   &asphalt, roadTint,  true);
+    upload(apronL, &cement,  apronTint, true);
+    upload(apronR, &cement,  apronTint, true);
+    upload(paint,  nullptr,  paintC,    false);
 
     out.ok = out.meshCount > 0;
     char b[256];
@@ -828,6 +1231,119 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
         out.lengthM / 1609.34f, out.meshCount, out.quadCount,
         kLaneFt, kApronFt, kPavedHalfM * 2.0f / kFtToM);
     x3::logInfo(b);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// THE JUNCTION MOUTH — see road_network.h. A ruled asphalt transition from the
+// branch ribbon's flat terminal edge onto the main road's (longitudinally
+// sloped) surface, lapped a couple of metres over the main pavement with a few
+// millimetres of lift, plus cement flare wings. Collision on all of it.
+// ---------------------------------------------------------------------------
+RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
+                                    x3::rhi::IRenderDevice& device,
+                                    x3::phys::IPhysicsWorld& phys) {
+    RoadRibbonResult out;
+    if (!j.valid) return out;
+
+    SurfaceLibrary& surf = roadSurfaces();
+    surf.mount(assetRoot() + "/surface_library");
+    const SurfaceSet& asphalt = surf.get(device, "rd_asphalt_01");
+    const SurfaceSet& cement  = surf.get(device, "mw_concrete_panels_a");
+
+    // Frame: from the branch's end node toward (and 2.5 m past) the junction.
+    float dx = j.jx - j.endX, dz = j.jz - j.endZ;
+    const float setb = std::sqrt(dx * dx + dz * dz);
+    if (setb < 1.0f) return out;
+    dx /= setb; dz /= setb;
+    const float pxd = -dz, pzd = dx;                 // branch lateral axis
+    const float V = setb + 2.5f;                     // overlap past the main centreline
+    const int   nv = 10, nu = 8;
+    const float runW = kRunningHalfM, pavW = kPavedHalfM;
+
+    // The TWIST — from the branch's laterally-flat edge onto the main road's
+    // longitudinally-sloped surface — must be COMPLETE by the main pavement's
+    // edge, or the patch meets the main pavement half-twisted (measured on
+    // paper: up to ±0.9 m at the wing tips on a 7% main grade). That is what
+    // the kJctSetbackM run exists for.
+    const float twistRun = std::max(2.0f, setb - kPavedHalfM);
+    auto heightAt = [&](float u, float v) {
+        // world point of (u,v)
+        const float wx = j.endX + dx * v + pxd * u;
+        const float wz = j.endZ + dz * v + pzd * u;
+        // main road surface under that point: its datum slides along its tangent
+        const float alongMain = (wx - j.jx) * j.mainTX + (wz - j.jz) * j.mainTZ;
+        const float mainY = j.jy + alongMain * j.mainGrade;
+        const float t  = std::max(0.0f, std::min(1.0f, v / twistRun));
+        const float sm = t * t * (3.0f - 2.0f * t);
+        // lift: 0 while the patch IS the pavement (the transition run), ramping
+        // to 8 mm as it laps onto the main road's own pavement — lapped, never
+        // coplanar, so there is nothing to z-fight
+        const float lift = 0.008f * std::max(0.0f, std::min(1.0f, (v - (twistRun - 2.0f)) / 3.0f));
+        return (1.0f - sm) * j.endY + sm * mainY + kPaveProud + lift;
+    };
+    auto pointAt = [&](float u, float v, float o[3]) {
+        o[0] = j.endX + dx * v + pxd * u;
+        o[2] = j.endZ + dz * v + pzd * u;
+        o[1] = heightAt(u, v);
+    };
+
+    RibbonMesh road, wings;
+    for (int iv = 0; iv < nv; ++iv) {
+        const float v0 = V * (float)iv / (float)nv, v1 = V * (float)(iv + 1) / (float)nv;
+        // asphalt: the branch's running width, carried through the mouth
+        for (int iu = 0; iu < nu; ++iu) {
+            const float u0 = -runW + 2.0f * runW * (float)iu / (float)nu;
+            const float u1 = -runW + 2.0f * runW * (float)(iu + 1) / (float)nu;
+            float a[3], b[3], c[3], d[3];
+            pointAt(u0, v0, a); pointAt(u1, v0, b);
+            pointAt(u1, v1, c); pointAt(u0, v1, d);
+            road.quad(a, b, c, d, (float)iu / nu, (float)(iu + 1) / nu,
+                      v0 * 0.06f, v1 * 0.06f);
+        }
+        // cement flare wings, widening toward the junction
+        auto flare = [&](float v) {
+            const float t = std::max(0.0f, std::min(1.0f, v / setb));
+            return 8.0f * t * t * (3.0f - 2.0f * t);
+        };
+        for (int side = -1; side <= 1; side += 2) {
+            float a[3], b[3], c[3], d[3];
+            const float o0 = pavW + flare(v0), o1 = pavW + flare(v1);
+            pointAt((float)side * runW, v0, a); pointAt((float)side * o0, v0, b);
+            pointAt((float)side * o1, v1, c); pointAt((float)side * runW, v1, d);
+            // keep the winding CCW-from-above on BOTH sides (mirroring the
+            // lateral offsets flips it; a flipped wing is backface-culled)
+            if (side > 0) wings.quad(a, b, c, d, 0.0f, 1.0f, v0 * 0.06f, v1 * 0.06f);
+            else          wings.quad(b, a, d, c, 0.0f, 1.0f, v0 * 0.06f, v1 * 0.06f);
+        }
+    }
+
+    auto upload = [&](RibbonMesh& m, const SurfaceSet* set, const float tint[4]) {
+        if (m.empty()) return;
+        Entity e;
+        e.mesh = device.createMesh(m.v.data(), (uint32_t)m.v.size(),
+                                   m.i.data(), (uint32_t)m.i.size());
+        if (!e.mesh.valid()) return;
+        if (set && set->ok) { e.tex = set->albedo; e.mrTex = set->mr; e.normalTex = set->normal; }
+        for (int c = 0; c < 4; ++c) e.baseColor[c] = tint[c];
+        scene.add(e);
+        ++out.meshCount;
+        out.quadCount += (uint32_t)(m.i.size() / 6);
+        std::vector<float> cv; cv.reserve(m.v.size() * 3);
+        for (const auto& vv : m.v) { cv.push_back(vv.pos[0]); cv.push_back(vv.pos[1]); cv.push_back(vv.pos[2]); }
+        phys.addStaticMesh(cv.data(), (uint32_t)(cv.size() / 3),
+                           m.i.data(), (uint32_t)m.i.size());
+    };
+    // Same fallback tinting as buildRoadRibbon — the mouth must match the
+    // pavements it blends, textured or not.
+    float roadTint [4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    if (!asphalt.ok) { roadTint[0] = 0.055f; roadTint[1] = 0.056f; roadTint[2] = 0.060f; }
+    float apronTint[4] = { 0.86f, 0.85f, 0.82f, 1.0f };
+    if (!cement.ok)  { apronTint[0] = 0.42f; apronTint[1] = 0.41f; apronTint[2] = 0.38f; }
+    upload(road,  &asphalt, roadTint);
+    upload(wings, &cement,  apronTint);
+    out.lengthM = V;
+    out.ok = out.meshCount > 0;
     return out;
 }
 
@@ -856,7 +1372,7 @@ bool runRoadNetworkSelfTest() {
                 nat[i] = hi;
             }
             std::vector<float> ry;
-            gradeRoad(nat, seg, 0.07f, ry);
+            gradeRoad(nat, seg, 0.07f, ry, /*closed=*/true);
             for (uint32_t i = 0; i < N; ++i)
                 std::printf("S %7.0f %6.2f nat %7.2f road %7.2f cut %7.2f\n",
                             R, 360.0f * (float)i / (float)N, nat[i], ry[i], nat[i] - ry[i]);
@@ -1152,6 +1668,70 @@ bool runRoadNetworkSelfTest() {
         std::snprintf(d, sizeof(d), "%u corridors of %u", used, kMaxTerrainCorridors);
         check(used <= kMaxTerrainCorridors - 40,
               "O9 both tours + bores leave room for the rest of the network", d);
+    }
+
+    // ======================= THE CONNECT GATES ==============================
+    // Tim: "They need to CONNECT to the roads you spawn on... Roads that go UP
+    // on top of the mountain." Same world recipe as --world tunnel: demo bore,
+    // then the ring, then the connector off the bore's far end, then the spur.
+    {
+        clearTerrainCorridors();
+        const TunnelRoute* spawn = registerTunnelCorridorFor(demoTunnelSpec());
+        check(spawn != nullptr, "K0 the spawn corridor registers for the connect gates");
+        if (spawn) {
+            RoadSpec ringSpec = makeRingRoad("inner tour", -592.0f, -352.0f, 3842.0f, 396);
+            ringSpec.halfWidth = kPavedHalfM + 1.0f;
+            ringSpec.falloff   = 18.0f;
+            ringSpec.maxGrade  = 0.07f;
+            std::vector<float> ringY;
+            const RoadBuildResult ringR = registerRoad(ringSpec, &ringY);
+            check(ringR.ok, "K0b the ring registers under the connect gates");
+
+            const SpawnConnectorResult cx = registerSpawnConnector(*spawn, ringSpec, ringY);
+            std::snprintf(d, sizeof(d),
+                "closed a %.0f m gap with %.2f miles over %u corridors",
+                cx.gapBeforeM, cx.road.lengthM / 1609.34f, cx.road.corridorCount);
+            check(cx.road.ok && cx.gapBeforeM > 3000.0f,
+                  "K1 the spawn connector registers and the gap it closes was real", d);
+
+            std::snprintf(d, sizeof(d), "steepest %.1f%% (limit 7%%)", cx.road.maxGradePct);
+            check(cx.road.maxGradePct <= 7.5f, "K2 connector grade is drivable", d);
+
+            std::snprintf(d, sizeof(d), "pin deficit %.2f ft", cx.road.pinErrM * kMToFt);
+            check(cx.road.pinErrM <= 0.06f, "K3 both junction datums reached at grade", d);
+
+            const float dEnd = cx.roadY.empty() ? 1e9f
+                : std::fabs(cx.roadY.back() - ringY[cx.ringNode]);
+            const float dStart = cx.roadY.empty() ? 1e9f
+                : std::fabs(cx.roadY.front() - spawn->roadYAt(spawn->totalLen));
+            std::snprintf(d, sizeof(d), "ring end off by %.2f ft, tunnel end by %.2f ft",
+                          dEnd * kMToFt, dStart * kMToFt);
+            check(dEnd < 0.02f && dStart < 0.02f,
+                  "K4 the connector datum MEETS both roads exactly", d);
+
+            // The connector runs through rolling lowland (measured: no peak with
+            // 115 ft of prominence within its reach), so the spur falls back to
+            // the RING, which skirts the ranges — same order as the host.
+            std::vector<const RoadSpec*> avoid{ &cx.spec };
+            SummitSpurResult sp = registerSummitSpur(cx.spec, cx.roadY, spawn);
+            if (!sp.built) sp = registerSummitSpur(ringSpec, ringY, spawn, &avoid);
+            std::snprintf(d, sizeof(d), "%s: climb %.0f ft, grade %.1f%%, summit cut %.1f ft",
+                          sp.built ? "built" : sp.whyNot,
+                          sp.climbM * kMToFt, sp.road.maxGradePct, sp.summitCutM * kMToFt);
+            check(sp.built && sp.road.maxGradePct <= 14.5f && sp.climbM > 30.0f,
+                  "K5 the summit spur climbs a real mountain at a legal grade", d);
+            if (sp.built) {
+                std::snprintf(d, sizeof(d), "tops out %.1f ft (%.1f m) under the true peak",
+                              sp.summitCutM * kMToFt, sp.summitCutM);
+                check(sp.summitCutM < 8.0f, "K6 the road actually reaches the summit", d);
+            }
+
+            const uint32_t used = terrainCorridorCount();
+            std::snprintf(d, sizeof(d), "%u corridors of %u (bore + ring + connector + spur)",
+                          used, kMaxTerrainCorridors);
+            check(used <= kMaxTerrainCorridors - 40,
+                  "K7 the connected spawn network leaves headroom", d);
+        }
     }
 
     clearTerrainCorridors();
