@@ -238,6 +238,24 @@ int hostTunnel(HostContext& hc) {
                                                               &route, &avoid);
             }
         }
+    }
+    // THE OUTER CONNECTOR — the road that stops the 31-mile tour being an
+    // island. Registered after BOTH tours so its end pins can read their graded
+    // datums, and last of all the roads for the same reason the spawn connector
+    // is: its natural sweep then reads every carve already in.
+    x3::game::OuterConnectorResult outerConn;
+    bool outerConnOn = false;
+    {
+        const char* e = std::getenv("X3_OUTER_CONNECTOR");
+        outerConnOn = ringOn && outerOn && !(e && e[0] == '0');
+        if (outerConnOn) {
+            outerConn = x3::game::registerOuterConnector(ringSpec, ringRoadY,
+                                                         outerRing.spec, outerRing.roadY);
+            if (!outerConn.road.ok) {
+                x3::logError("--world tunnel: outer connector registration FAILED");
+                outerConnOn = false;
+            }
+        }
         char cb[128];
         std::snprintf(cb, sizeof(cb), "--world tunnel: corridor registry %u of %u used",
                       x3::game::terrainCorridorCount(), x3::game::kMaxTerrainCorridors);
@@ -569,6 +587,14 @@ int hostTunnel(HostContext& hc) {
             if (w->build(scene, *device, *phys, *r, streamer.groundTexture()))
                 tourBores.push_back(std::move(w));
         }
+    }
+    // The outer connector's pavement and a junction mouth at EACH end — it is
+    // the only road here that lands on two different tours.
+    if (outerConnOn) {
+        x3::game::buildRoadRibbon(outerConn.spec, scene, *device, *phys,
+                                  &outerConn.roadY);
+        x3::game::buildJunctionMouth(outerConn.ringJct, scene, *device, *phys);
+        x3::game::buildJunctionMouth(outerConn.outerJct, scene, *device, *phys);
     }
     if (riverOn) {
         x3::game::buildRoadRibbon(riverRoad.spec, scene, *device, *phys,

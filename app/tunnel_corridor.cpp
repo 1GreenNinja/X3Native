@@ -969,6 +969,38 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                 x3::rhi::TextureHandle groundTex) {
     if (route.st.size() < 2) return false;
 
+    // ---- THE FRAME EVERY PIECE OF DRESSING RIDES ON. -----------------------
+    // Defined HERE, at the top, for one reason: the tripwire below has to
+    // interrogate THIS function. A guard that re-derives the position from the
+    // route (rather than asking the thing the geometry actually uses) can only
+    // ever prove that the route agrees with itself, which is vacuous.
+    //
+    // THE FRAME FOLLOWS **THIS** ROUTE. This lambda used to read the file-scope
+    // demo constants — `kRouteCX + kRouteDirX * (-kRouteHalfLen + s)` — which is
+    // the tail end of the one-tunnel era the P1 note above describes. posAt(),
+    // worldAt() and tangentAt() were all moved onto the route's own polyline;
+    // this lambda was missed, and it is the one every piece of DRESSING goes
+    // through (ribbon, shell, portals, lights, fitout).
+    //
+    // The result, measured with the AABB log below and X3_OUTER_RING=1: the
+    // CUTTING geometry (which calls route.worldAt) landed correctly on each
+    // outer-tour chord 7 km out, while the ribbon/shell/portals landed on the
+    // DEMO axis over the spawn country — and the quads that joined the two were
+    // stretched across the gap. All five tour bores measured 3.1-7.1 km of X
+    // extent anchored at the demo spine's start corner (~-289, -476); that
+    // stretched sheet, seen from the spawn probe, is the "kilometre floating
+    // tunnel-shell tower + dark deck".
+    //
+    // posAt() is EXACTLY equivalent to the old expression for the demo route
+    // (its stations are laid `ox + dir*s` with ox = cx - dir*halfLen), so the
+    // demo bore is unchanged to the metre — and every other route now dresses
+    // itself where it actually is.
+    auto frameAt = [&](float s) {
+        Frame f{}; f.s = s;
+        route.posAt(s, f.p);
+        return f;
+    };
+
     // ---- THE TRIPWIRE, before a single texture or vertex exists. -----------
     // A missing tunnel is a defect you can drive past. A kilometre-scale shell
     // standing over the spawn country is not. Both limits are CALIBRATED ON
@@ -1000,8 +1032,10 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         float stray = 0.0f, datumMin = 1e30f, groundMax = -1e30f;
         const float step = std::max(4.0f, route.totalLen / 512.0f);
         for (float s = 0.0f; s <= route.totalLen + 0.01f; s += step) {
-            float p[3];
-            route.posAt(s, p);
+            // frameAt, NOT posAt — see the note above. This is the only version
+            // of the question that can fail.
+            const Frame fr = frameAt(s);
+            const float* p = fr.p;
             stray = std::max(stray, std::max(sxMin - p[0], p[0] - sxMax));
             stray = std::max(stray, std::max(szMin - p[2], p[2] - szMax));
             datumMin = std::min(datumMin, p[1]);
@@ -1153,31 +1187,6 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     };
 
     // ---- Frames along the whole route (2 m), and the bore sub-range. --------
-    // THE FRAME FOLLOWS **THIS** ROUTE. This lambda used to read the file-scope
-    // demo constants — `kRouteCX + kRouteDirX * (-kRouteHalfLen + s)` — which is
-    // the tail end of the one-tunnel era the P1 note above describes. posAt(),
-    // worldAt() and tangentAt() were all moved onto the route's own polyline;
-    // this lambda was missed, and it is the one every piece of DRESSING goes
-    // through (ribbon, shell, portals, lights, fitout).
-    //
-    // The result, measured with the AABB log below and X3_OUTER_RING=1: the
-    // CUTTING geometry (which calls route.worldAt) landed correctly on each
-    // outer-tour chord 7 km out, while the ribbon/shell/portals landed on the
-    // DEMO axis over the spawn country — and the quads that joined the two were
-    // stretched across the gap. All five tour bores measured 3.1-7.1 km of X
-    // extent anchored at the demo spine's start corner (~-289, -476); that
-    // stretched sheet, seen from the spawn probe, is the "kilometre floating
-    // tunnel-shell tower + dark deck".
-    //
-    // posAt() is EXACTLY equivalent to the old expression for the demo route
-    // (its stations are laid `ox + dir*s` with ox = cx - dir*halfLen), so the
-    // demo bore is unchanged to the bit — and every other route now dresses
-    // itself where it actually is.
-    auto frameAt = [&](float s) {
-        Frame f{}; f.s = s;
-        route.posAt(s, f.p);
-        return f;
-    };
     std::vector<Frame> roadFrames;
     for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 4.0f) roadFrames.push_back(frameAt(s));
 
