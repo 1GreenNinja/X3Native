@@ -1409,7 +1409,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 // working bay as a party is exactly the slop the anti-slop
                 // line exists to stop.
                 // ==========================================================
-                MeshBuf room, fixture, fglow;
+                MeshBuf room, fixture, fglow, baypaint;
                 MeshBuf lnsWall, lnsFloor;                    // the shop shell
                 MeshBuf lnsSteel, lnsDuct, lnsCond;           // ceiling bones
                 MeshBuf lnsEquip, lnsLamp;                    // Rotary red / worklights
@@ -1651,7 +1651,15 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                     PA(frameAtS(bs),        lat + 0.05f, aisle, q1);
                                     PA(frameAtS(bs + 4.8f), lat + 0.05f, aisle, q2);
                                     PA(frameAtS(bs + 4.8f), lat - 0.05f, aisle, q3);
-                                    fglow.quad(q0, q1, q2, q3, nU, 0, 1, 0, 1);
+                                    // PAINT, not light. These went into the
+                                    // emissive buffer and came out as glowing
+                                    // strips down the bay -- a floor marking that
+                                    // makes its own light reads as a runway, and
+                                    // it fought the neon for the eye in the one
+                                    // shot the room exists for. Bay lines are
+                                    // paint on concrete; the checker floor's
+                                    // gloss is what lifts them.
+                                    baypaint.quad(q0, q1, q2, q3, nU, 0, 1, 0, 1);
                                 }
                             }
                         }
@@ -2050,6 +2058,10 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 Material fg; fg.alb = paintTex; fg.mr = roughMR;
                 fg.emissive[0] = 0.35f; fg.emissive[1] = 1.0f; fg.emissive[2] = 0.65f; fg.emissive[3] = 1.6f;
                 upload(fglow, fg, /*collide*/false);
+
+                Material bp; bp.alb = paintTex; bp.mr = roughMR;
+                bp.tint[0] = 0.82f; bp.tint[1] = 0.80f; bp.tint[2] = 0.74f;   // worn shop-floor yellow-white
+                upload(baypaint, bp, /*collide*/false);
 
                 // ---- THE LNS MATERIALS (only built when the bay exists —
                 // Tier B/C programs leave every lns* buffer empty and upload()
