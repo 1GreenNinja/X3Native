@@ -1674,7 +1674,16 @@ int hostTunnel(HostContext& hc) {
             // Off-throttle is OVERRUN: the engine is being driven by the wheels,
             // so it stays audible and keeps its pitch but drops right back in
             // level. That contrast is most of what makes a car sound driven.
-            const float vol  = 0.16f + 0.62f * load + 0.10f * frac;
+            // OVERRUN IS A DIFFERENT SOUND, NOT THE SAME ONE QUIETER. Measured
+            // (SND-FABLE): off-throttle the wheel-locked rpm glides down for
+            // seconds while the old 0.16 + 0.10*frac floor kept the loop
+            // clearly audible at unchanged timbre — the maximally loop-
+            // revealing state ("When I LET OFF... I still hear the Gosh AWful
+            // Loop"). Drop the floor hard off-load; the pitch tail is still
+            // there, just far behind the tire/wind bed instead of in front.
+            const float onLoad = std::min(1.0f, load * 6.0f);   // 0 off-throttle
+            const float vol  = 0.05f + 0.11f * onLoad + 0.62f * load
+                             + 0.10f * frac * (0.35f + 0.65f * onLoad);
             // LOW-PASS the note. The physics engine can jitter its RPM (the
             // clutch/gearbox hunt this lane has been chasing), but a real engine
             // note does NOT wobble frame to frame — it glides. One-pole smooth
@@ -1691,7 +1700,7 @@ int hostTunnel(HostContext& hc) {
             // the spool; lifting off above ~55% spool = a blowoff psshh.
             if (!whineLoop.valid()) whineLoop = audio->startLoop(engineSnd, 0.0f, 2.4f);
             if (whineLoop.valid())
-                audio->setLoopParams(whineLoop, thr * 0.20f, 2.4f + 1.3f * frac);
+                audio->setLoopParams(whineLoop, thr * 0.09f, 2.4f + 1.3f * frac);   // halved: same-wav layer (SND-FABLE #3)
 
             const float spoolLag = 0.45f;   // == TurboParams::spoolTau
             if (thr > 0.6f) turboSpool = std::min(1.0f, turboSpool + fdt / spoolLag);
@@ -1703,7 +1712,7 @@ int hostTunnel(HostContext& hc) {
             prevSpool = turboSpool;
             if (!turboLoop.valid()) turboLoop = audio->startLoop(engineSnd, 0.0f, 3.0f);
             if (turboLoop.valid())
-                audio->setLoopParams(turboLoop, turboSpool * 0.18f, 3.0f + 1.2f * turboSpool);
+                audio->setLoopParams(turboLoop, turboSpool * 0.09f, 3.0f + 1.2f * turboSpool);   // halved: same-wav layer
 
             // (tire squeal removed — the synthesized tone read as a DJ effect;
             //  a real squeal needs a noise-based sample, not a sine sweep)
