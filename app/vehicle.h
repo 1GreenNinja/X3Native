@@ -174,6 +174,20 @@ public:
     }
     void clearPaintTint() { m_tintOn = false; }
 
+    // ---- TIRE SQUASH (render-only, hard-landing visual) ---------------------
+    // Owner: "when Landing hard on pavement, the RUBBER TIRES should deflect
+    // visually, a tiny bit." Detected in postStep() from each wheel's live
+    // WheelState.suspensionLength (a fast compression toward the suspension's
+    // min length while the wheel has contact = a hard hit), consumed in
+    // render() to nudge that wheel's drawn transform — see squashFactors() in
+    // vehicle.cpp for the exact math. NEVER touches physics (WheeledTuning /
+    // the Jolt suspension settings are untouched) — this is cosmetic only, so
+    // it cannot fight the DS-Vehicle session's tuning work.
+    // `tire_squash` console cvar, 0 = off, 1 = full (default). Independent of
+    // WheeledTuning on purpose (a shop part should never gate a visual).
+    void  setTireSquash(float amount01) { m_tireSquash = std::clamp(amount01, 0.0f, 1.0f); }
+    float tireSquash() const { return m_tireSquash; }
+
 private:
     x3::rhi::IRenderDevice*  m_device  = nullptr;
     x3::phys::IPhysicsWorld* m_physics = nullptr;
@@ -210,6 +224,25 @@ private:
     x3::rhi::TextureHandle m_chassisTex;
     x3::rhi::TextureHandle m_wheelTex;
     std::vector<x3::phys::WheelDesc> m_wheels;
+
+    // ---- Tire squash runtime state (see setTireSquash / squashFactors in
+    // vehicle.cpp). One slot per physics wheel (4-wheel car; unused slots for
+    // anything with fewer wheels are simply never touched). Updated once per
+    // FIXED physics step in postStep() (deterministic dt, not render-rate),
+    // consumed in render(). Pure cosmetic state — nothing here reaches Jolt.
+    struct WheelSquash {
+        float prevSuspLen = 0.0f;  // last step's WheelState.suspensionLength (m)
+        bool  havePrev    = false; // false until the first postStep after build
+        float squash      = 0.0f;  // current squash amount [0,1], 1 = strongest
+        float squashVel   = 0.0f;  // critically-damped spring "velocity" term
+    };
+    WheelSquash m_squash[4];
+    float m_tireSquash = 1.0f;   // `tire_squash` cvar multiplier, 0..1 (default 1)
+    void  updateTireSquash(float dt);  // called from postStep
+    // Per-wheel squash factors this frame: outSquashY = radial shrink [0,1)
+    // (~4-8% at full squash), outBulge = width growth (~2-3% at full squash).
+    // Both 0 when the wheel is not squashing (fast, byte-identical path).
+    void  squashFactors(int slot, float& outSquashY, float& outBulge) const;
 
     // ---- Hero-car GLB skin (optional; graybox fallback when absent) ----
     bool m_skinned = false;

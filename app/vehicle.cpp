@@ -509,7 +509,95 @@ void DriveDemo::updateEngineModel(float dt) {
     m_engineRpm += (target - m_engineRpm) * (1.0f - std::exp(-dt / tau));
     if (m_engineRpm < kIdle) m_engineRpm = kIdle;
 }
-void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
+void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); updateTireSquash(dt); }
+
+// ---------------------------------------------------------------------------
+// TIRE SQUASH (render-only). Owner: "when Landing hard on pavement, the
+// RUBBER TIRES should deflect visually, a tiny bit." This is deliberately
+// NOT a physics change — Jolt's wheel is a rigid cylinder and stays one;
+// WheeledTuning / the suspension the DS-Vehicle session owns is never
+// touched. All this does is watch WheelState.suspensionLength (already
+// exposed by IVehicleController::wheelState) for a fast compression toward
+// the suspension's min length — a hard hit — and hand render() a small,
+// short-lived per-wheel scale to draw with.
+//
+// DETECTION: compressRate = how fast suspensionLength is SHRINKING (m/s),
+// i.e. the wheel travelling toward mSuspensionMinLength (see JoltVehicle.cpp
+// WheelState::suspensionLength — Jolt's live, per-step raycast-derived
+// value). Normalized against THIS wheel's own authored suspension travel
+// (m_wheels[slot].suspensionMax - suspensionMin) so the same "how many
+// travel-lengths per second" threshold works whether the car is stock or
+// has been lowered/raised (car_ride) or given stiffer/softer springs —
+// travel is read once at build time, so a live car_ride retune does not
+// reach in here (kept deliberately independent of WheeledTuning, per spec).
+//
+// RESPONSE: a peak-hold "kick" (never stomps a bigger hit already recovering)
+// relaxed to 0 by a CRITICALLY DAMPED spring (no overshoot / no bounce-back
+// wobble — a real tire does not oscillate after a hit) over roughly a quarter
+// second. squashFactors() turns the current amount into the actual render
+// scale (~4-8% radial shrink, ~2-3% width bulge), gated by the tire_squash
+// cvar (see DriveDemo::setTireSquash / host_tunnel.cpp's `tire_squash`).
+// ---------------------------------------------------------------------------
+void DriveDemo::updateTireSquash(float dt) {
+    if (!m_ctl || dt <= 0.0f) return;
+    const uint32_t n = std::min<uint32_t>(m_ctl->wheelCount(), 4u);
+    for (uint32_t s = 0; s < n; ++s) {
+        x3::phys::WheelState ws;
+        WheelSquash& sq = m_squash[s];
+        if (m_ctl->wheelState(s, ws)) {
+            if (sq.havePrev && ws.hasContact) {
+                // + = suspension SHORTENING (compressing toward min == a hit).
+                const float compressRate = (sq.prevSuspLen - ws.suspensionLength) / dt;
+                const float travel = (s < m_wheels.size())
+                    ? std::max(0.05f, m_wheels[s].suspensionMax - m_wheels[s].suspensionMin)
+                    : 0.25f;
+                // A hard landing eats most of the travel in well under 1/6 s;
+                // ordinary road bumps/compression from throttle squat do not.
+                // 6 travel-lengths/sec is the "hard" line; kSpikeSoftKnee gives
+                // a little runway above it before the effect reaches full
+                // strength, instead of a hard on/off snap at the threshold.
+                constexpr float kSpikeTravelPerSec = 6.0f;
+                constexpr float kSpikeSoftKnee      = 4.0f;  // travel-lengths/sec of runway to full strength
+                const float spikeRate = travel * kSpikeTravelPerSec;
+                if (compressRate > spikeRate) {
+                    const float over = (compressRate - spikeRate) / (travel * kSpikeSoftKnee);
+                    const float kick = std::clamp(over, 0.0f, 1.0f);
+                    sq.squash = std::max(sq.squash, kick);   // peak-hold
+                }
+            }
+            sq.prevSuspLen = ws.suspensionLength;
+            sq.havePrev = true;
+        }
+
+        // Critically-damped relax toward 0 (exact closed form for a "kick from
+        // rest" critically damped spring — monotonic, no overshoot). omega=20
+        // settles a full-strength kick under ~2% within ~0.3 s, i.e. the "~0.25 s"
+        // the spec asks for.
+        if (sq.squash > 0.0f || sq.squashVel != 0.0f) {
+            constexpr float omega = 20.0f;
+            const float x = sq.squash, v = sq.squashVel;
+            const float e = std::exp(-omega * dt);
+            sq.squash    = (x + (v + omega * x) * dt) * e;
+            sq.squashVel = (v - omega * (v + omega * x) * dt) * e;
+            if (sq.squash < 0.001f) { sq.squash = 0.0f; sq.squashVel = 0.0f; }
+        }
+    }
+}
+
+// Per-wheel render scale for THIS frame: outSquashY [0,1) radial shrink (the
+// tire flattening — see WheeledController::wheelState in JoltVehicle.cpp:
+// worldTransform columns 0/2 carry the wheel's RADIUS, column 1 the WIDTH),
+// outBulge width growth. Both 0 when not squashing — render() then draws the
+// untouched WheelState transform, byte-identical to before this feature.
+void DriveDemo::squashFactors(int slot, float& outSquashY, float& outBulge) const {
+    outSquashY = 0.0f; outBulge = 0.0f;
+    if (slot < 0 || slot >= 4) return;
+    const float amt = std::clamp(m_squash[slot].squash * m_tireSquash, 0.0f, 1.0f);
+    if (amt <= 0.0f) return;
+    // 4-8% radial shrink, 2-3% width bulge, ramped by the squash amount.
+    outSquashY = 0.04f + 0.04f * amt;
+    outBulge   = 0.02f + 0.01f * amt;
+}
 
 void DriveDemo::chassisPos(float out[3]) const {
     x3::phys::Vec3 p = m_physics ? m_physics->getBodyPosition(m_chassis) : x3::phys::Vec3{};
@@ -544,6 +632,19 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
                 const float len = std::sqrt(col[0]*col[0] + col[1]*col[1] + col[2]*col[2]);
                 if (len > 1e-5f) { col[0] /= len; col[1] /= len; col[2] /= len; }
             }
+            // TIRE SQUASH (render-only; see updateTireSquash/squashFactors).
+            // Columns 0/2 are the wheel's radius directions (the vertical
+            // rolling-plane), column 1 is the width/axle direction — shrink
+            // the former, bulge the latter, same as the graybox path below.
+            // Ground-anchored: drop the pose along WORLD +Y by radius*squashY
+            // so the tire's BOTTOM stays put and the hub visibly sinks toward
+            // it, rather than the tire lifting off the road.
+            float squashY, bulge; squashFactors(s, squashY, bulge);
+            if (squashY > 0.0f) {
+                for (int c : {0, 2}) { float* col = &P[c*4]; col[0]*=(1.0f-squashY); col[1]*=(1.0f-squashY); col[2]*=(1.0f-squashY); }
+                { float* col = &P[4]; col[0]*=(1.0f+bulge); col[1]*=(1.0f+bulge); col[2]*=(1.0f+bulge); }
+                P[13] -= ws.radius * squashY;
+            }
             for (const auto& d : m_wheelDraw[s]) {
                 x3::asset::mulMat4(P, d.nodeTransform, fin);   // nodeTransform = axisFix * authored scale
                 drawDrawable(frame, d, fin);
@@ -563,7 +664,24 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     for (uint32_t i = 0; i < n; ++i) {
         x3::phys::WheelState ws;
         if (!m_ctl->wheelState(i, ws)) continue;
-        m_device->drawMesh(frame, m_wheelMesh, m_wheelTex, wheelCol, ws.worldTransform);
+        // TIRE SQUASH (render-only; see updateTireSquash/squashFactors). The
+        // wheel mesh is a unit Y-cylinder baked into world space by wheelState
+        // (col0=right*r, col1=up*halfWidth [the axle], col2=forward*r — see
+        // WheeledController::wheelState in JoltVehicle.cpp), so shrinking
+        // columns 0/2 flattens the tire's rolling-plane radius and growing
+        // column 1 bulges its width — then drop the pose along WORLD +Y by
+        // radius*squashY so the tire's ground contact stays put (the hub
+        // sinks toward the road, the tire never lifts off it).
+        float squashY, bulge; squashFactors((int)i, squashY, bulge);
+        if (squashY <= 0.0f) {
+            m_device->drawMesh(frame, m_wheelMesh, m_wheelTex, wheelCol, ws.worldTransform);
+        } else {
+            float T[16]; std::memcpy(T, ws.worldTransform, sizeof(T));
+            for (int c : {0, 2}) { float* col = &T[c*4]; col[0]*=(1.0f-squashY); col[1]*=(1.0f-squashY); col[2]*=(1.0f-squashY); }
+            { float* col = &T[4]; col[0]*=(1.0f+bulge); col[1]*=(1.0f+bulge); col[2]*=(1.0f+bulge); }
+            T[13] -= ws.radius * squashY;
+            m_device->drawMesh(frame, m_wheelMesh, m_wheelTex, wheelCol, T);
+        }
     }
 }
 
@@ -659,6 +777,54 @@ bool runDriveEnterExitSelfTest() {
     const float dExit = std::sqrt((player[0]-c1[0])*(player[0]-c1[0]) +
                                   (player[2]-c1[2])*(player[2]-c1[2]));
     check(!inCar && dExit > 2.0f && dExit < 3.0f, "exit: player control restored beside the car");
+
+    // =======================================================================
+    // RIDE HEIGHT measurement (ITEM 1 diagnostic — owner: "vehicle height
+    // console commands do NOT make the car change height"). This is the EXACT
+    // path host_tunnel.cpp's `car_ride` console command drives: build a
+    // WheeledTuning with rideHeightDelta set and call DriveDemo::applyTuning
+    // -> IVehicleController::applyWheeledTuning (JoltVehicle.cpp), headless,
+    // with a real before/after chassis-height measurement logged so the
+    // effect (or its absence) is provable, not asserted.
+    // =======================================================================
+    {
+        // Bleed off the drive above back to a dead stop first so the
+        // measurement isn't polluted by residual pitch/roll/velocity.
+        for (int i = 0; i < 90; ++i) {
+            x3::phys::VehicleInput in{};
+            car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+        }
+        float before[3]; car.chassisPos(before);
+        x3::logInfo("[drive-test] RIDE HEIGHT before car_ride: chassis.y=" +
+                    std::to_string(before[1]) + " m");
+
+        // `car_ride -0.10` (host_tunnel.cpp): rideHeightDelta -0.10 m, all else
+        // left at "leave" sentinels (a partial tuning, exactly like the console
+        // command builds — see WheeledTuning::kRideHeightLeave).
+        x3::phys::WheeledTuning rideT;
+        rideT.rideHeightDelta = -0.10f;
+        const bool tuned = car.applyTuning(rideT);
+        check(tuned, "car_ride: applyWheeledTuning(rideHeightDelta=-0.10) accepted");
+
+        // Let the suspension settle onto the new (shorter) travel window.
+        for (int i = 0; i < 120; ++i) {
+            x3::phys::VehicleInput in{};
+            car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+        }
+        float after[3]; car.chassisPos(after);
+        const float drop = before[1] - after[1];
+        x3::logInfo("[drive-test] RIDE HEIGHT after  car_ride -0.10: chassis.y=" +
+                    std::to_string(after[1]) + " m  (drop=" + std::to_string(drop) +
+                    " m, expect ~0.10 m)");
+        // A real -0.10 m ride-height delta shifts BOTH the min and max
+        // suspension bounds down by 0.10 m (see JoltVehicle.cpp
+        // applyWheeledTuning), so the chassis should settle ~0.10 m lower.
+        // Wide tolerance (0.04-0.16 m) — it only has to be CLEARLY non-zero
+        // and in the right direction; exact settle depends on spring/damper.
+        check(drop > 0.04f && drop < 0.16f,
+              "car_ride: console command has a VISIBLE effect on chassis rest height");
+        check(car.allWheelsInContact(), "car_ride: still all 4 wheels grounded after the drop");
+    }
 
     car.shutdown();
     phys->shutdown();

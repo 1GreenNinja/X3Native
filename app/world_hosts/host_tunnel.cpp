@@ -1138,6 +1138,14 @@ int hostTunnel(HostContext& hc) {
             [&](float v) { x3::phys::WheeledTuning t; t.suspensionFreq = v; car.applyTuning(t); });
         shell.addFloatCommand("car_springdamp", "suspension damping ratio",
             [&](float v) { x3::phys::WheeledTuning t; t.suspensionDamp = v; car.applyTuning(t); });
+        // TIRE SQUASH (render-only; owner: "when Landing hard on pavement, the
+        // RUBBER TIRES should deflect visually, a tiny bit" — see
+        // DriveDemo::updateTireSquash/squashFactors in vehicle.cpp). Deliberately
+        // NOT a WheeledTuning field: this never touches Jolt/the DS-Vehicle
+        // session's suspension, it only scales a cosmetic per-wheel render
+        // nudge. 0 = off, 1 = full (default); clamped in setTireSquash.
+        shell.addFloatCommand("tire_squash", "hard-landing tire squash intensity, 0-1 (visual only, default 1)",
+            [&](float v) { car.setTireSquash(v); });
         shell.addFloatCommand("car_torquemult", "flat torque multiplier on top of the turbo (nitrous)",
             [&](float v) { car.setTorqueBoost(v); });
         // ---- turbo ----
