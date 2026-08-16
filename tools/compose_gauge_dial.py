@@ -144,9 +144,13 @@ def compose():
 # Smaller than the tach on screen, so the scale is coarser on purpose: fewer
 # numerals, heavier ticks, no minor ticks below zero.
 # ---------------------------------------------------------------------------
+# THE 35-PSI BUILD (Tim: "Boost should hit 35 PSI!!! This is a TURBO not a
+# Supercharger"). The rule that survives every retune: this scale and
+# TurboParams::maxPsi change TOGETHER — the original sin was 35 psi of model
+# under 20 psi of dial, needle pinned off the end while the digits kept counting.
 BOOST_MIN_PSI = -10.0
-BOOST_MAX_PSI =  20.0
-BOOST_HOT_PSI =  16.0          # matches TurboParams::maxPsi — over this is overboost
+BOOST_MAX_PSI =  40.0
+BOOST_HOT_PSI =  30.0          # red band: approaching the 35-psi peak
 
 C_VAC = (150, 162, 178, 255)   # vacuum side reads cool grey, not "active" cyan
 
@@ -195,7 +199,10 @@ def compose_boost():
     while psi <= BOOST_MAX_PSI + 0.01:
         f = boost_frac(psi)
         a = ang_for(f)
-        major = (abs(psi) % 5.0) < 0.01
+        # 50-psi span now: numerals every 10, half-ticks every 5 — the old
+        # 5-psi numerals were right for a 30-psi span and unreadable on this one.
+        major = (abs(psi) % 10.0) < 0.01
+        half  = (abs(psi) % 5.0) < 0.01
         hot = psi >= BOOST_HOT_PSI
         if major:
             zero = abs(psi) < 0.01
@@ -206,7 +213,7 @@ def compose_boost():
             tx, ty = polar(c, c, r_num, a)
             ctext(d, tx, ty, "%d" % int(round(psi)), fnum,
                   C_RED if hot else (C_NUM if psi >= 0 else C_VAC))
-        elif psi > 0:      # no minor ticks on the vacuum side — it is coarser
+        elif half and psi > 0:   # half-ticks on the boost side only
             d.line([polar(c, c, r_min, a), polar(c, c, r_out, a)],
                    fill=(C_RED if hot else C_TICK_D), width=int(2.4 * SS))
         psi += 1.0

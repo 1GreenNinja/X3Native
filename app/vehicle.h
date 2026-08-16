@@ -140,12 +140,13 @@ public:
     // that a curve cannot express — the lag before it arrives and the shove
     // when it does. Peak power is unchanged, only its timing.
     struct TurboParams {
-        // 16, not 35. 35 psi is drag-build boost; a hot street 993 runs ~1.1
-        // bar = 16 psi, and — the part that actually matters — THE GAUGE ART
-        // IS DRAWN -10..+20 WITH RED FROM 16. At 35 the needle pinned off the
-        // end of the scale while the digits read +34.5 (Tim's screenshot).
-        // The dial and the model must agree; whichever changes, both change.
-        float maxPsi        = 16.0f;   // peak manifold pressure over atmosphere
+        // 35 psi — Tim's call, overruling my 16: "Boost should hit 35 PSI!!!
+        // This is a TURBO not a Supercharger." Big boost arriving late IS the
+        // character of the build. The rule that survives the reversal: the
+        // GAUGE ART and this number change TOGETHER (the art is now drawn
+        // -10..+40 with red from 30) — the earlier defect was never the 35,
+        // it was 35 psi of model under 20 psi of dial.
+        float maxPsi        = 35.0f;   // peak manifold pressure over atmosphere
         float spoolStartRpm = 1800.0f; // nothing below this
         float spoolFullRpm  = 4200.0f; // full compressor above this
         float spoolTau      = 0.45f;   // seconds to build (compressor inertia)

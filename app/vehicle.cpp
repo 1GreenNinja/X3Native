@@ -479,8 +479,19 @@ void DriveDemo::updateTurbo(float dt) {
     const float tau = (target > m_boostPsi) ? tp.spoolTau : tp.dumpTau;
     m_boostPsi += (target - m_boostPsi) * (1.0f - std::exp(-dt / std::max(0.01f, tau)));
 
-    const float frac = std::clamp(m_boostPsi / std::max(0.01f, tp.maxPsi), 0.0f, 1.0f);
-    m_turboMult = tp.floorTorque + (1.0f - tp.floorTorque) * frac;
+    // PRESSURE-RATIO TORQUE (Tim: "47.6 HP up PER PSI" — the 992 Turbo S's own
+    // ratio, 701 hp / 14.7 psi). An engine is an air pump: torque tracks
+    // ABSOLUTE manifold pressure, so the multiplier is (atmosphere + boost)
+    // over the calibration pressure the authored curve represents (stock 992
+    // boost, ~14.5 psi over atmosphere). Everything falls out of one formula:
+    //   35 psi  -> x1.70  (~1,670 hp — the drag build he asked for)
+    //   14.5    -> x1.00  (the authored curve, stock)
+    //    0      -> x0.50  (off boost = naturally aspirated half-power;
+    //                      replaces the old ad-hoc floorTorque 0.60)
+    //   -8.5    -> x0.21  (deep vacuum — engine braking territory)
+    constexpr float kAtmPsi = 14.7f;
+    constexpr float kRefBoostPsi = 14.5f;   // boost the torque curve is calibrated at
+    m_turboMult = std::max(0.05f, (kAtmPsi + m_boostPsi) / (kAtmPsi + kRefBoostPsi));
     m_ctl->setTorqueBoost(m_userTorqueMult * m_turboMult);
 }
 

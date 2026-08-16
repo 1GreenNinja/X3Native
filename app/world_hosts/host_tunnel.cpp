@@ -141,7 +141,7 @@ int hostTunnel(HostContext& hc) {
     bool ringOn = false;
     {
         const char* e = std::getenv("X3_RING");
-        ringOn = (e && e[0] == '1');
+        ringOn = !(e && e[0] == '0');   // DEFAULT ON — X3_RING=0 to disable
         if (ringOn) {
             ringSpec = x3::game::makeRingRoad("inner tour", -592.0f, -352.0f, 3842.0f, 396);
             ringSpec.halfWidth = x3::game::kPavedHalfM + 1.0f;
@@ -159,7 +159,7 @@ int hostTunnel(HostContext& hc) {
     bool outerOn = false;
     {
         const char* e = std::getenv("X3_OUTER_RING");
-        outerOn = (e && e[0] == '1');
+        outerOn = !(e && e[0] == '0');   // DEFAULT ON — X3_OUTER_RING=0 to disable
         if (outerOn) {
             outerRing = x3::game::registerOuterRing();
             if (!outerRing.road.ok) {
@@ -172,7 +172,7 @@ int hostTunnel(HostContext& hc) {
     bool riverOn = false;
     {
         const char* e = std::getenv("X3_RIVER_ROAD");
-        riverOn = (e && e[0] == '1');
+        riverOn = !(e && e[0] == '0');   // DEFAULT ON — X3_RIVER_ROAD=0 to disable
         if (riverOn) {
             riverRoad = x3::game::registerRiverRoad();
             if (!riverRoad.road.ok) {
@@ -927,6 +927,11 @@ int hostTunnel(HostContext& hc) {
             "lying snow depth to prime, INCHES (applied when wx changes)");
         con->registerCVar("wx_hour", "14",
             "time of day, 0-24, drives the diurnal temperature swing");
+        // Live trims for Jake's placement, so a wrong-facing or sunk rig is a
+        // console line to diagnose instead of a rebuild: degrees added to his
+        // travel yaw, metres added to his measured ground compensation.
+        con->registerCVar("jake_yaw", "0", "Jake facing trim, degrees (rig-forward correction)");
+        con->registerCVar("jake_y",   "0", "Jake height trim, metres (on top of the measured armature offset)");
         // Seed from the env vars so the documented X3_WEATHER path still works
         // and the console simply shows what you already asked for.
         {
@@ -1300,10 +1305,18 @@ int hostTunnel(HostContext& hc) {
         }
 
         x3::phys::VehicleInput in;
-        // A PARKED CAR STAYS PARKED. Leaving the throttle live while you walk
-        // away means the handbrake is the only thing between you and a driverless
-        // car rolling down the grade you just stopped on.
-        if (!driving) { in = x3::phys::VehicleInput{}; in.handBrake = 1.0f; }
+        // A PARKED CAR STAYS PARKED — and a car you STEP OUT OF stops. The
+        // handbrake alone locks only the rears, so getting out at speed sent
+        // the car coasting into the distance on locked rear wheels (Tim: "the
+        // car shoots on into the distance when he gets out"). Service brakes
+        // on all four until it is actually stationary; then the handbrake
+        // holds it and the engine sits at idle (throttle zero IS idle — the
+        // audio follows effectiveThrottle, which is unconditionally zeroed).
+        if (!driving) {
+            in = x3::phys::VehicleInput{};
+            in.handBrake = 1.0f;
+            if (std::fabs(car.forwardSpeed()) > 0.4f) in.brake = 1.0f;
+        }
         else if (carBuilt) {
             in.throttle = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
             in.steer    = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
@@ -1769,14 +1782,25 @@ int hostTunnel(HostContext& hc) {
             // camera instead of his path moonwalks every time you strafe.
             if (!driving && footSpawned && !jakeDraw.empty()) {
                 const x3::phys::Vec3 ft = onFoot.feet();
-                const float a = jakeAnimated ? jakeYaw : camYaw + 1.5707963f;
+                const float a = (jakeAnimated ? jakeYaw : camYaw + 1.5707963f)
+                              + console->getFloat("jake_yaw") * 0.0174533f;
+                // THE HARD RULE (Tim: "HARD RULES for where FEET and TIRES can
+                // and can NOT BE"): the rig's rest origin goes AT the capsule's
+                // feet, compensated by the skeleton's own MEASURED armature
+                // offset — Jake_44_actions carries the documented -0.9488 m
+                // root Y (anim.h setRootYLock), which is exactly "Jake is
+                // literally half in the ground". Using the measured value
+                // instead of a constant makes the rule rig-agnostic: a clean
+                // skeleton measures ~0 and is untouched. jake_y trims live.
+                const float yFix = (jakeAnimated ? -jakeSkin.rootYLockRestY() : 0.0f)
+                                 + console->getFloat("jake_y");
                 const float ca = std::cos(a), sa = std::sin(a);
                 // Column-major 4x4: rotation about +Y, translation at the feet.
                 const float world[16] = {
                      ca, 0.0f, -sa, 0.0f,
                    0.0f, 1.0f, 0.0f, 0.0f,
                      sa, 0.0f,  ca, 0.0f,
-                   ft.x, ft.y, ft.z, 1.0f
+                   ft.x, ft.y + yFix, ft.z, 1.0f
                 };
                 for (const x3::asset::ModelDrawable& d : jakeDraw) {
                     const float bc[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
@@ -1814,7 +1838,7 @@ int hostTunnel(HostContext& hc) {
                 const float bcx = gcx - R - R2 - R * 0.10f;
                 const float bcy = gcy + R - R2;              // bottoms line up
 
-                constexpr float kPsiMin = -10.0f, kPsiMax = 20.0f;   // == the art
+                constexpr float kPsiMin = -10.0f, kPsiMax = 40.0f;   // == the art (35-psi build)
                 const float psi = car.boostPsi();
                 const float bf  = std::min(1.0f, std::max(0.0f,
                                     (psi - kPsiMin) / (kPsiMax - kPsiMin)));
@@ -1838,7 +1862,7 @@ int hostTunnel(HostContext& hc) {
                 std::snprintf(bbuf, sizeof(bbuf), "%+.1f", (double)psi);
                 const float bp = R2 * 0.26f;
                 const float bw = (float)std::strlen(bbuf) * bp;
-                const bool  over = psi >= 16.0f;
+                const bool  over = psi >= 30.0f;   // the art's red band
                 const float bc[4] = { over ? 1.0f : 0.97f, over ? 0.32f : 0.98f,
                                       over ? 0.24f : 1.0f, 1.0f };
                 device->drawHudText(frame, bbuf, bcx - bw * 0.5f,
