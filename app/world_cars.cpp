@@ -397,9 +397,29 @@ x3::phys::Vec3 WorldCars::carPosition() const {
     return { cp[0], cp[1], cp[2] };
 }
 
-void WorldCars::updateAudio(x3::audio::IAudioSystem* audio, float throttle) {
+void WorldCars::updateAudio(x3::audio::IAudioSystem* audio, float throttle, float dt) {
     if (!audio) return;
     if (m_driving) {
+        // Multi-RPM bank first (lazy one-time init — the canon car is entered
+        // long after boot). Falls back to the legacy loop if the bank refuses.
+        if (m_useBank && !m_bankTried) {
+            m_bankTried = true;
+            namespace fs = std::filesystem;
+            m_bankReady = m_engineNote.init(audio,
+                (fs::path(assetRoot()) / "audio/vehicles/engine_bank").string(),
+                /*redlineRpm=*/6500.0f);
+        }
+        const float rpmFrac = std::fmin(std::fmax(engineRPM() / 6500.0f, 0.0f), 1.0f);
+        const float th = std::fmin(std::fmax(throttle, 0.0f), 1.0f);
+        if (m_useBank && m_bankReady) {
+            if (m_engineLoop.valid()) { audio->stopLoop(m_engineLoop); m_engineLoop = {}; }
+            m_engineNote.setMuted(false);
+            const x3::phys::Vec3 cp = carPosition();
+            m_engineNote.update(engineRPM(),
+                                th * EngineNote::torqueCurve(rpmFrac),
+                                dt, cp.x, cp.y, cp.z);
+            return;
+        }
         if (!m_engineLoop.valid()) {
             if (!m_sndEngine.valid())
                 m_sndEngine = audio->load(resolveAudio("vehicles/engine_loop.wav"));
@@ -407,16 +427,18 @@ void WorldCars::updateAudio(x3::audio::IAudioSystem* audio, float throttle) {
                 m_engineLoop = audio->startLoop(m_sndEngine, 0.35f, 0.8f);
         }
         if (m_engineLoop.valid()) {
-            // The drive host's RPM-pitch treatment, minimal.
-            const float rpmFrac = std::fmin(std::fmax(engineRPM() / 6500.0f, 0.0f), 1.0f);
-            const float th = std::fmin(std::fmax(throttle, 0.0f), 1.0f);
+            // LEGACY single loop (bank off/absent). The 0.30 floor is the
+            // diagnosed defect; kept verbatim as the A/B reference.
             audio->setLoopParams(m_engineLoop,
                                  0.30f + 0.28f * th + 0.18f * rpmFrac,
                                  0.65f + 1.15f * rpmFrac + 0.15f * th);
         }
-    } else if (m_engineLoop.valid()) {
-        audio->stopLoop(m_engineLoop);
-        m_engineLoop = {};
+    } else {
+        if (m_engineLoop.valid()) {
+            audio->stopLoop(m_engineLoop);
+            m_engineLoop = {};
+        }
+        m_engineNote.setMuted(true);
     }
 }
 
@@ -489,6 +511,8 @@ void WorldCars::draw(const x3::rhi::FrameContext& frame) const {
 // ===========================================================================
 void WorldCars::shutdown(x3::phys::IPhysicsWorld& physics) {
     if (!m_built) return;
+    m_engineNote.shutdown();          // bank voices (safe if never started)
+    m_bankTried = m_bankReady = false;
     for (Car& c : m_cars) unparkCar(c, physics);
     m_cars.clear();
     if (m_driveBuilt) { m_drive.shutdown(); m_driveBuilt = false; }

@@ -27,6 +27,7 @@
 #include "../mesh_prims.h"
 #include "../asset_root.h"
 #include "engine/audio/IAudioSystem.h"   // ENGINE NOTE: RPM-driven loop
+#include "../engine_note.h"              // ENGINE NOTE v2: the multi-RPM bank
 #include "../weather.h"
 #include "../wetness.h"
 #include "../storm.h"
@@ -848,11 +849,33 @@ int hostTunnel(HostContext& hc) {
     float turboSpool = 0.0f, prevSpool = 0.0f;
     x3::audio::SoundHandle squealSnd{};
     x3::audio::LoopHandle  squealLoop{};   // tire squeal (slip-gated)
+    // ---- ENGINE NOTE v2: the multi-RPM bank (snd_bank 1, the default). ----
+    // Four voices bracket the live RPM between adjacent synthesized flat-six
+    // points (900/1500/2500/4000/5500/7000) and equal-power-crossfade them;
+    // a smoothed load weight crossfades on-load vs OVERRUN timbre. The old
+    // single-loop path below stays wired behind `snd_bank 0` so the owner can
+    // A/B the two by ear from the console.
+    x3::game::EngineNote engineNote;
+    bool bankReady = false;
+    x3::audio::SoundHandle whineSnd{}, turboSnd{};   // dedicated whistle assets (bank mode)
+    x3::audio::LoopHandle  whineBankLoop{}, turboBankLoop{};
     if (audioOn) {
         const std::string wav =
             (std::filesystem::path(x3::game::assetRoot()) / "audio/vehicles/engine_loop.wav").string();
         engineSnd = audio->load(wav);
         squealSnd = audio->load((std::filesystem::path(x3::game::assetRoot()) / "audio/vehicles/tire_squeal_loop.wav").string());
+        const std::string bankDir =
+            (std::filesystem::path(x3::game::assetRoot()) / "audio/vehicles/engine_bank").string();
+        bankReady = engineNote.init(audio.get(), bankDir, /*redlineRpm=*/7500.0f);
+        // Build the reverb insert BEFORE any loop voice starts: loop voices
+        // pick their output route at start time, so the chain must exist first
+        // (the per-frame skyVis drive below only retunes it).
+        audio->setReverbParams(0.3f, 0.05f);
+        // The whine/turbo layers used to be pitched-up copies of the SAME
+        // engine wav (SND-FABLE finding #3). In bank mode they get their own
+        // synthesized whistles; missing files just silence the layers.
+        whineSnd = audio->load((std::filesystem::path(bankDir) / "whine_loop.wav").string());
+        turboSnd = audio->load((std::filesystem::path(bankDir) / "turbo_whistle_loop.wav").string());
         if (engineSnd.valid() && carBuilt) {
             float ep[3]; car.chassisPos(ep);
             (void)ep;
@@ -1043,6 +1066,7 @@ int hostTunnel(HostContext& hc) {
         x3::game::shutdownTunnelSurfaces(*device);
         streamer.shutdown(scene, *device, *phys);
         if (audioOn) {
+        engineNote.shutdown();
         if (engineLoop.valid()) audio->stopLoop(engineLoop);
         audio->shutdown();
     }
@@ -1115,6 +1139,10 @@ int hostTunnel(HostContext& hc) {
         // travel yaw, metres added to his measured ground compensation.
         con->registerCVar("jake_yaw", "0", "Jake facing trim, degrees (rig-forward correction)");
         con->registerCVar("jake_y",   "0", "Jake height trim, metres (on top of the measured armature offset)");
+        // ENGINE NOTE A/B: 1 = the multi-RPM bank (default), 0 = the legacy
+        // single re-pitched loop. Flip it live; the owner's ear is the gate.
+        con->registerCVar("snd_bank", "1",
+            "engine note: 1 = multi-RPM bank (new), 0 = legacy single loop");
         // Seed from the env vars so the documented X3_WEATHER path still works
         // and the console simply shows what you already asked for.
         {
@@ -1622,7 +1650,7 @@ int hostTunnel(HostContext& hc) {
         // parked car is not droning at full volume. Both are cheap per-frame
         // parameter updates on ONE voice — no retriggering, so the loop stays
         // seamless through gearchanges.
-        if (audioOn && engineLoop.valid() && carBuilt) {
+        if (audioOn && carBuilt) {
             const float rpm    = car.audioRPM();
             const float redline = 7500.0f;                       // matches vd.maxEngineRPM
             const float frac   = std::min(1.0f, std::max(0.0f, rpm / redline));
@@ -1653,55 +1681,18 @@ int hostTunnel(HostContext& hc) {
             // runs — [0,0.78] [0.3,0.97] [0.55,1.0] [0.8,0.95] [1,0.82] — so the
             // note thickens through the midrange and thins at the top exactly
             // where the engine does, instead of just getting louder with rpm.
-            auto torqueFrac = [](float f) {
-                const float xs[5] = {0.00f, 0.30f, 0.55f, 0.80f, 1.00f};
-                const float ys[5] = {0.78f, 0.97f, 1.00f, 0.95f, 0.82f};
-                if (f <= xs[0]) return ys[0];
-                for (int k = 1; k < 5; ++k)
-                    if (f <= xs[k]) {
-                        const float t = (f - xs[k-1]) / (xs[k] - xs[k-1]);
-                        return ys[k-1] + (ys[k] - ys[k-1]) * t;
-                    }
-                return ys[4];
-            };
             const float thr  = std::min(1.0f, std::max(0.0f, car.effectiveThrottle()));
             // ...times what the TURBO is currently delivering. The multiplier
             // runs 0.60 off boost to 1.00 on it, so the note swells over the
             // half-second the compressor takes to come up and drops the instant
             // you lift. That swell is the single most recognisable thing about
             // a turbo car, and it costs one multiply.
-            const float load = thr * torqueFrac(frac) * car.turboMult();
-            // Off-throttle is OVERRUN: the engine is being driven by the wheels,
-            // so it stays audible and keeps its pitch but drops right back in
-            // level. That contrast is most of what makes a car sound driven.
-            // OVERRUN IS A DIFFERENT SOUND, NOT THE SAME ONE QUIETER. Measured
-            // (SND-FABLE): off-throttle the wheel-locked rpm glides down for
-            // seconds while the old 0.16 + 0.10*frac floor kept the loop
-            // clearly audible at unchanged timbre — the maximally loop-
-            // revealing state ("When I LET OFF... I still hear the Gosh AWful
-            // Loop"). Drop the floor hard off-load; the pitch tail is still
-            // there, just far behind the tire/wind bed instead of in front.
-            const float onLoad = std::min(1.0f, load * 6.0f);   // 0 off-throttle
-            const float vol  = 0.05f + 0.11f * onLoad + 0.62f * load
-                             + 0.10f * frac * (0.35f + 0.65f * onLoad);
-            // LOW-PASS the note. The physics engine can jitter its RPM (the
-            // clutch/gearbox hunt this lane has been chasing), but a real engine
-            // note does NOT wobble frame to frame — it glides. One-pole smooth
-            // (~0.1 s) so it reads as one continuous engine, not a stutter.
-            static float sPitch = 0.75f, sVol = 0.16f;
-            const float k = 1.0f - std::exp(-9.0f * fdt);
-            sPitch += (pitch - sPitch) * k;
-            sVol   += (vol   - sVol)   * k;
-            audio->setLoopParams(engineLoop, sVol, sPitch);
+            // (Torque curve is EngineNote::torqueCurve — the same table this
+            // block used to carry inline, now shared by every wiring site.)
+            const float load = thr * x3::game::EngineNote::torqueCurve(frac) * car.turboMult();
 
-            // Supercharger whine + turbo whistle — the old --world drive host's
-            // extra layers, pitched variants of the SAME engine loop (Tim: "use
-            // the old host drive sounds"). Whine is throttle-gated; whistle rides
-            // the spool; lifting off above ~55% spool = a blowoff psshh.
-            if (!whineLoop.valid()) whineLoop = audio->startLoop(engineSnd, 0.0f, 2.4f);
-            if (whineLoop.valid())
-                audio->setLoopParams(whineLoop, thr * 0.09f, 2.4f + 1.3f * frac);   // halved: same-wav layer (SND-FABLE #3)
-
+            // TURBO SPOOL + BLOWOFF are mode-independent (the psshh one-shot
+            // stays regardless of which engine path is sounding).
             const float spoolLag = 0.45f;   // == TurboParams::spoolTau
             if (thr > 0.6f) turboSpool = std::min(1.0f, turboSpool + fdt / spoolLag);
             else            turboSpool = std::max(0.0f, turboSpool - fdt * 2.5f);
@@ -1710,9 +1701,72 @@ int hostTunnel(HostContext& hc) {
                 turboSpool = 0.0f;
             }
             prevSpool = turboSpool;
-            if (!turboLoop.valid()) turboLoop = audio->startLoop(engineSnd, 0.0f, 3.0f);
-            if (turboLoop.valid())
-                audio->setLoopParams(turboLoop, turboSpool * 0.09f, 3.0f + 1.2f * turboSpool);   // halved: same-wav layer
+
+            const bool bankOn = bankReady && console && console->getFloat("snd_bank") != 0.0f;
+            if (bankOn) {
+                // ---- ENGINE NOTE v2: the multi-RPM bank -------------------
+                // Bracketed pair crossfade + on-load/overrun family fade, all
+                // inside EngineNote (which also owns the collapsed off-load
+                // floor). Idle-hold feeds the bank's bottom point so the
+                // physics' rev hunt never wobbles a parked car's note.
+                engineNote.setMuted(false);
+                engineNote.update(idling ? 900.0f : rpm, load, fdt, vp[0], vp[1], vp[2]);
+                if (engineLoop.valid()) audio->setLoopParams(engineLoop, 0.0f, pitch);
+                if (whineLoop.valid()) audio->setLoopParams(whineLoop, 0.0f, 2.4f);
+                if (turboLoop.valid()) audio->setLoopParams(turboLoop, 0.0f, 3.0f);
+
+                // Whine + turbo whistle on their OWN synthesized assets
+                // (engine_bank/whine_loop.wav, turbo_whistle_loop.wav) instead
+                // of pitched-up copies of the engine wav.
+                if (whineSnd.valid()) {
+                    if (!whineBankLoop.valid()) whineBankLoop = audio->startLoop(whineSnd, 0.0f, 1.0f);
+                    if (whineBankLoop.valid())
+                        audio->setLoopParams(whineBankLoop, thr * 0.07f, 0.8f + 0.6f * frac);
+                }
+                if (turboSnd.valid()) {
+                    if (!turboBankLoop.valid()) turboBankLoop = audio->startLoop(turboSnd, 0.0f, 1.0f);
+                    if (turboBankLoop.valid())
+                        audio->setLoopParams(turboBankLoop, turboSpool * 0.08f, 0.7f + 0.6f * turboSpool);
+                }
+            } else if (engineLoop.valid()) {
+                // ---- LEGACY single loop (snd_bank 0 — the A/B reference) ---
+                engineNote.setMuted(true);
+                if (whineBankLoop.valid()) audio->setLoopParams(whineBankLoop, 0.0f, 1.0f);
+                if (turboBankLoop.valid()) audio->setLoopParams(turboBankLoop, 0.0f, 1.0f);
+                // Off-throttle is OVERRUN: the engine is being driven by the wheels,
+                // so it stays audible and keeps its pitch but drops right back in
+                // level. That contrast is most of what makes a car sound driven.
+                // OVERRUN IS A DIFFERENT SOUND, NOT THE SAME ONE QUIETER. Measured
+                // (SND-FABLE): off-throttle the wheel-locked rpm glides down for
+                // seconds while the old 0.16 + 0.10*frac floor kept the loop
+                // clearly audible at unchanged timbre — the maximally loop-
+                // revealing state ("When I LET OFF... I still hear the Gosh AWful
+                // Loop"). Drop the floor hard off-load; the pitch tail is still
+                // there, just far behind the tire/wind bed instead of in front.
+                const float onLoad = std::min(1.0f, load * 6.0f);   // 0 off-throttle
+                const float vol  = 0.05f + 0.11f * onLoad + 0.62f * load
+                                 + 0.10f * frac * (0.35f + 0.65f * onLoad);
+                // LOW-PASS the note. The physics engine can jitter its RPM (the
+                // clutch/gearbox hunt this lane has been chasing), but a real engine
+                // note does NOT wobble frame to frame — it glides. One-pole smooth
+                // (~0.1 s) so it reads as one continuous engine, not a stutter.
+                static float sPitch = 0.75f, sVol = 0.16f;
+                const float k = 1.0f - std::exp(-9.0f * fdt);
+                sPitch += (pitch - sPitch) * k;
+                sVol   += (vol   - sVol)   * k;
+                audio->setLoopParams(engineLoop, sVol, sPitch);
+
+                // Supercharger whine + turbo whistle — the old --world drive host's
+                // extra layers, pitched variants of the SAME engine loop (Tim: "use
+                // the old host drive sounds"). Whine is throttle-gated; whistle rides
+                // the spool; lifting off above ~55% spool = a blowoff psshh.
+                if (!whineLoop.valid()) whineLoop = audio->startLoop(engineSnd, 0.0f, 2.4f);
+                if (whineLoop.valid())
+                    audio->setLoopParams(whineLoop, thr * 0.09f, 2.4f + 1.3f * frac);   // halved: same-wav layer (SND-FABLE #3)
+                if (!turboLoop.valid()) turboLoop = audio->startLoop(engineSnd, 0.0f, 3.0f);
+                if (turboLoop.valid())
+                    audio->setLoopParams(turboLoop, turboSpool * 0.09f, 3.0f + 1.2f * turboSpool);   // halved: same-wav layer
+            }
 
             // (tire squeal removed — the synthesized tone read as a DJ effect;
             //  a real squeal needs a noise-based sample, not a sine sweep)
@@ -1837,9 +1891,20 @@ int hostTunnel(HostContext& hc) {
             } else {
                 device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
             }
+            // Sky visibility does double duty: precipitation gating AND the
+            // room-reverb estimate (SND-OPUS item: the tunnel bore should
+            // ECHO). One probe, two consumers — zero new raycast kinds.
+            const float skyVis = skyVisibleAt(*phys, cx, cy, cz, route.dirX, route.dirZ);
             if (weatherOn)
-                precip.update(fdt, precipKind, precipAmt, cx, cy, cz, 0.0f, 0.0f,
-                              skyVisibleAt(*phys, cx, cy, cz, route.dirX, route.dirZ));
+                precip.update(fdt, precipKind, precipAmt, cx, cy, cz, 0.0f, 0.0f, skyVis);
+            // Under open sky: short, nearly-dry (t60 0.3 s, wet 0.05). Deep in
+            // the bore: a long concrete tail (t60 2.5 s, wet 0.45). Both are
+            // smoothed on the audio thread, so driving through the portal is a
+            // swell, not a step. Loop voices (the engine bank) and 3D one-shots
+            // all ride the same insert.
+            if (audioOn)
+                audio->setReverbParams(0.3f + 2.2f * (1.0f - skyVis),
+                                       0.05f + 0.40f * (1.0f - skyVis));
         }
         auto frame = device->beginFrame();
         if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
@@ -2245,6 +2310,7 @@ int hostTunnel(HostContext& hc) {
         device->endFrame(frame);
     }
 
+    if (audioOn) engineNote.shutdown();          // bank voices before the mixer dies
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     tunnel.shutdown(*device, *phys);
     for (auto& w : tourBores) w->shutdown(*device, *phys);

@@ -10212,7 +10212,7 @@ int runDefaultHost(HostContext& hc) {
                     }
                 }
                 worldCars.updateAudio(audio.get(),
-                                      worldCars.driving() ? carThrottleHud : 0.0f);
+                                      worldCars.driving() ? carThrottleHud : 0.0f, dt);
             }
             // LIVING WORLD: the FACILITY ALERT LEVEL — feed observations, apply
             // effects (reinforcements, lockdown doors). Lights/HUD read it below.

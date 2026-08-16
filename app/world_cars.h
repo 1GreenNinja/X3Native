@@ -48,6 +48,7 @@
 
 #include "vehicle.h"
 #include "player.h"
+#include "engine_note.h"
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -165,9 +166,11 @@ public:
     // The water-kill / scripted exit — same path as the E exit.
     void forceExit(Player* player, x3::phys::IPhysicsWorld& physics);
 
-    // Engine audio while driving (RPM-pitched loop; the drive host treatment,
-    // minimal). Safe with a null audio system.
-    void updateAudio(x3::audio::IAudioSystem* audio, float throttle);
+    // Engine audio while driving. Default: the multi-RPM bank (EngineNote,
+    // 5 voices bracketing the live RPM). setEngineBank(false) restores the
+    // legacy single re-pitched loop (A/B). Safe with a null audio system.
+    void updateAudio(x3::audio::IAudioSystem* audio, float throttle, float dt);
+    void setEngineBank(bool on) { m_useBank = on; }
 
     // Draw the parked visuals + the live car. Call inside beginFrame/endFrame,
     // gated by the host on the outdoor PVS (kStreamedExteriorRoom visibility).
@@ -249,6 +252,12 @@ private:
     x3::audio::SoundHandle m_sndBuzz{}, m_sndChime{}, m_sndEngine{};
     x3::audio::LoopHandle  m_engineLoop{};
     bool m_sndLoaded = false;
+
+    // Multi-RPM engine-note bank (lazy init on first driven frame). When the
+    // bank is present it replaces the legacy single loop above; m_useBank
+    // false (setEngineBank) restores the legacy path for A/B.
+    EngineNote m_engineNote;
+    bool m_bankTried = false, m_bankReady = false, m_useBank = true;
 };
 
 // Headless self-test (--test-canonvehicle). Flat-slab physics world + a real
