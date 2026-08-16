@@ -1660,122 +1660,73 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                         for (uint32_t L = 0; L < kTrGarageTwoPost; ++L) {
                             const float ls = sc.s0 + gLen * (0.14f + 0.16f * (float)L);
                             const float ll = sc.latIn + gDep * 0.34f;
-                            // Forward of the column line by the asymmetric offset.
-                            const float spotAhead = 1.15f;      // 3.8 ft
-                            // RAISED STEEL, AND YOU FEEL IT. My first pass drew
-                            // these 6 mm flat, which made them decals -- and a
-                            // decal is exactly what a spotting plate is not. It
-                            // is a plate you drive UP ONTO: the bump through the
-                            // driver's front wheel is how you know you are on
-                            // the mark, because you cannot see the floor over
-                            // your own bonnet at that distance. Half an inch
-                            // proud, and it COLLIDES, so the car actually feels
-                            // it instead of the player being told it is there.
+                            // ---- ROTARY WHEEL SPOTTING PLATE -----------------
+                            // MEASURED FROM TIM'S OWN LIFTS, after three wrong
+                            // guesses of mine. It is a FLAT SQUARE PLATE whose
+                            // REAR and FRONT EDGES are raised triangles -- the
+                            // ramps ARE the edges, bevelled down to the floor, not
+                            // bars standing on a deck. You roll up the rear bevel,
+                            // the tyre sits on the flat, and the front bevel tells
+                            // you that is far enough. Half an inch, smooth, so it
+                            // arrives as a swell through the rim and not a knock.
                             //
-                            // DRIVER'S SIDE ONLY. It is a reference for one
-                            // wheel, not a symmetric pair -- you line the near
-                            // front tyre up and the rest follows from the
-                            // asymmetric arms. A matched pair either side would
-                            // read as a parking stall again.
-                            // THE SHAPE IS A CRADLE, NOT A SLAB. My second pass
-                            // made it a solid raised block, which gives ONE bump
-                            // and then leaves the wheel perched on top of it.
-                            // The real plate is flat with a RAISED EDGE AT EACH
-                            // END: you roll over the first bar, the tyre drops
-                            // into the flat between them, and the second bar
-                            // says stop. Two bumps and a detent -- that is the
-                            // signal, and it is why you can spot the car without
-                            // seeing the floor. A single lump cannot tell you
-                            // whether you are short, on, or past the mark.
-                            // SMOOTH TRIANGLE, half an inch. Not a square bar --
-                            // a square bar is a kerb, and a kerb is something you
-                            // hit. This is a shallow RAMP you ride up and over,
-                            // which is why the signal arrives as a swell through
-                            // the wheel rather than a knock: at 1/2 in over a
-                            // 2.4 in run it is about a 12 degree face, gentle
-                            // enough to roll on at idle and unmistakable through
-                            // the rim.
+                            //   14 in  AHEAD of the column line
+                            //   18 in  RIGHT of the LEFT column
                             //
-                            // Symmetric, so it reads the same rolling on as
-                            // backing off. Two of them, fore and aft, with the
-                            // tyre resting in the flat between.
-                            const float kBarPitchM  = 0.42f;    // 16.5 in between apexes
-                            const float kBarTallM   = 0.0127f;  // 1/2 in proud
-                            const float kBarHalfRun = 0.06f;    // 2.4 in each face
-                            const float kPlateHalfW = 0.20f;    // 15.7 in across
-                            const float lat3 = sgn * (ll - 0.95f);
+                            // My guess had been 45 in ahead -- more than three
+                            // times out, which would have spotted the car clean
+                            // past the arms. Worth recording: every correction on
+                            // this prop removed something I invented, and the
+                            // numbers only arrived when Tim measured his own.
+                            const float kSpotAheadM  = 0.3556f;   // 14 in
+                            const float kSpotRightM  = 0.4572f;   // 18 in off the left column
+                            const float kPlateSideM  = 0.4572f;   // 18 in square
+                            const float kPlateTallM  = 0.0127f;   // 1/2 in
+                            const float kBevelRunM   = 0.060f;    // 2.4 in of ramp -> ~12 deg
 
-                            // The deck the tyre settles onto, near flush.
-                            float deckP[3];
-                            PA(frameAtS(ls + spotAhead), lat3, fy + 0.003f, deckP);
-                            obox(baypaint, deckP, right, ax,
-                                 kPlateHalfW, 0.003f, kBarPitchM * 0.5f + kBarHalfRun, 1.0f);
+                            const float leftCol = ll - 1.45f;                 // the near column
+                            const float lat3    = sgn * (leftCol + kSpotRightM);
+                            const float sMid    = ls + kSpotAheadM;
+                            const float halfW   = kPlateSideM * 0.5f;
+                            const float halfL   = kPlateSideM * 0.5f;
 
-                            // A triangular prism across the wheel's path: two
-                            // sloped faces meeting at an apex line, capped at the
-                            // ends. obox() cannot do this -- it is boxes only --
-                            // so the faces go in by hand.
-                            auto wedgeBar = [&](float sAt) {
-                                float b0[3], b1[3], b2[3], b3[3], a0[3], a1[3];
-                                PA(frameAtS(sAt - kBarHalfRun), lat3 - kPlateHalfW, fy, b0);
-                                PA(frameAtS(sAt - kBarHalfRun), lat3 + kPlateHalfW, fy, b1);
-                                PA(frameAtS(sAt + kBarHalfRun), lat3 + kPlateHalfW, fy, b2);
-                                PA(frameAtS(sAt + kBarHalfRun), lat3 - kPlateHalfW, fy, b3);
-                                PA(frameAtS(sAt), lat3 - kPlateHalfW, fy + kBarTallM, a0);
-                                PA(frameAtS(sAt), lat3 + kPlateHalfW, fy + kBarTallM, a1);
-                                // Face normals lean back off the apex by the ramp
-                                // angle -- a flat-up normal would light both faces
-                                // identically and kill the ridge line that makes
-                                // the shape readable under the worklights.
-                                const float ny = 0.978f, nz = 0.208f;
-                                const float nUp[3] = { ax[0] * -nz, ny, ax[2] * -nz };
-                                const float nDn[3] = { ax[0] *  nz, ny, ax[2] *  nz };
-                                baypaint.quad(b0, b1, a1, a0, nUp, 0, 1, 0, 1);   // rising face
-                                baypaint.quad(a0, a1, b2, b3, nDn, 0, 1, 0, 1);   // falling face
-                                const float nL[3] = { -right[0], 0.0f, -right[2] };
-                                const float nR[3] = {  right[0], 0.0f,  right[2] };
-                                baypaint.quad(b0, a0, b3, b3, nL, 0, 1, 0, 1);    // end caps
-                                baypaint.quad(b1, b2, a1, a1, nR, 0, 1, 0, 1);
-                            };
-                            wedgeBar(ls + spotAhead - kBarPitchM * 0.5f);
-                            wedgeBar(ls + spotAhead + kBarPitchM * 0.5f);
-                        }
-
-                        // ---- TWO-POST LIFTS (Rotary-style, 10,000 lb). Two
-                        // columns either side of the car with swing arms that
-                        // reach UNDER it to the frame. The wheels hang free --
-                        // that is what a two-post is FOR, and it is why the bay
-                        // has to be 15 ft clear: 11 ft of post plus a car on top
-                        // of it does not fit under the control room's 8.5.
-                        for (uint32_t L = 0; L < kTrGarageTwoPost; ++L) {
-                            // Three bays down the long wall on ~14 ft centres --
-                            // a two-post needs its neighbour far enough away that
-                            // two doors can be open at once.
-                            const float ls = sc.s0 + gLen * (0.14f + 0.16f * (float)L);
-                            const float ll = sc.latIn + gDep * 0.34f;
-                            for (int side2 = -1; side2 <= 1; side2 += 2) {
-                                float post[3];
-                                PA(frameAtS(ls), sgn * (ll + (float)side2 * 1.45f),
-                                   fy + kTrLiftPostHM * 0.5f, post);
-                                // Columns + beam wear ROTARY RED (club1127's
-                                // kLiftRed shop-equipment red, via the lnsEquip
-                                // material below) — same geometry, same count;
-                                // this is paint, not inventory.
-                                obox(lnsEquip, post, right, ax, 0.15f, kTrLiftPostHM * 0.5f, 0.15f, 1.0f);
-                                // The overhead beam that ties the columns is the
-                                // silhouette people actually recognise a lift by.
-                                if (side2 < 0) {
-                                    float beam[3];
-                                    PA(frameAtS(ls), sgn * ll, fy + kTrLiftPostHM, beam);
-                                    obox(lnsEquip, beam, right, ax, 1.60f, 0.10f, 0.13f, 1.0f);
-                                }
-                                // Swing arms, parked low and reaching inward.
-                                for (int arm2 = -1; arm2 <= 1; arm2 += 2) {
-                                    float arm[3];
-                                    PA(frameAtS(ls + (float)arm2 * 0.85f),
-                                       sgn * (ll + (float)side2 * 0.80f), fy + kTrLiftArmHM, arm);
-                                    obox(fixture, arm, right, ax, 0.55f, 0.06f, 0.09f, 1.0f);
-                                }
+                            // The flat top the tyre rests on -- the plate proper.
+                            {
+                                float p0[3], p1[3], p2[3], p3[3];
+                                PA(frameAtS(sMid - halfL + kBevelRunM), lat3 - halfW, fy + kPlateTallM, p0);
+                                PA(frameAtS(sMid - halfL + kBevelRunM), lat3 + halfW, fy + kPlateTallM, p1);
+                                PA(frameAtS(sMid + halfL - kBevelRunM), lat3 + halfW, fy + kPlateTallM, p2);
+                                PA(frameAtS(sMid + halfL - kBevelRunM), lat3 - halfW, fy + kPlateTallM, p3);
+                                baypaint.quad(p0, p1, p2, p3, nU, 0, 1, 0, 1);
+                            }
+                            // The two bevelled edges, rear and front. Normals lean
+                            // off the top face by the ramp angle so the bevel
+                            // catches the worklights and reads as an edge rather
+                            // than as a seam in the floor.
+                            for (int e3 = -1; e3 <= 1; e3 += 2) {
+                                const float sOuter = sMid + (float)e3 * halfL;
+                                const float sInner = sMid + (float)e3 * (halfL - kBevelRunM);
+                                float g0[3], g1[3], t0[3], t1[3];
+                                PA(frameAtS(sOuter), lat3 - halfW, fy, g0);
+                                PA(frameAtS(sOuter), lat3 + halfW, fy, g1);
+                                PA(frameAtS(sInner), lat3 + halfW, fy + kPlateTallM, t1);
+                                PA(frameAtS(sInner), lat3 - halfW, fy + kPlateTallM, t0);
+                                const float ny = 0.978f, nz = 0.208f * (float)e3;
+                                const float nB[3] = { ax[0] * nz, ny, ax[2] * nz };
+                                if (e3 < 0) baypaint.quad(g0, g1, t1, t0, nB, 0, 1, 0, 1);
+                                else        baypaint.quad(t0, t1, g1, g0, nB, 0, 1, 0, 1);
+                            }
+                            // The left and right sides are a square-cut 1/2 in lip.
+                            for (int e4 = -1; e4 <= 1; e4 += 2) {
+                                const float latE = lat3 + (float)e4 * halfW;
+                                float q0[3], q1[3], q2[3], q3[3];
+                                PA(frameAtS(sMid - halfL + kBevelRunM), latE, fy, q0);
+                                PA(frameAtS(sMid + halfL - kBevelRunM), latE, fy, q1);
+                                PA(frameAtS(sMid + halfL - kBevelRunM), latE, fy + kPlateTallM, q2);
+                                PA(frameAtS(sMid - halfL + kBevelRunM), latE, fy + kPlateTallM, q3);
+                                const float nS[3] = { (float)e4 * sgn * right[0], 0.0f,
+                                                      (float)e4 * sgn * right[2] };
+                                baypaint.quad(q0, q1, q2, q3, nS, 0, 1, 0, 1);
                             }
                         }
 
