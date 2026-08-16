@@ -3943,7 +3943,7 @@ int hostEchotropolis(HostContext& hc) {
             worldCars.preStep(dt);
             { X3_HOST_ZONE(Z_HostPhysics); phys->step(dt); }
             worldCars.postStep(dt);
-            if (audioOn) worldCars.updateAudio(eaudio.get(), vin.throttle);
+            if (audioOn) worldCars.updateAudio(eaudio.get(), vin.throttle, dt);
             // Drive XP: every leg of real road banked earns progression.
             driveXpOdo += spd2 * dt;
             if (driveXpOdo >= kDriveLegMeters) {

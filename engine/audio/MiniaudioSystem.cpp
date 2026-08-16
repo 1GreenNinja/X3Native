@@ -228,9 +228,18 @@ struct Voice {
 
 // A live LOOPING voice (a clone of a Proto set to loop). Lives until stopLoop().
 // Keyed by a LoopHandle id so the caller can stop exactly the voice it started.
+// SND-OPUS finding: loop voices used to attach straight to the endpoint, so a
+// looping engine drove through a concrete bore bone-dry while one-shots got the
+// occlusion lowpass + reverb insert. A SPATIAL loop now owns the same per-voice
+// chain (voice -> lpf -> reverb -> endpoint) whenever the acoustics path is up.
 struct LoopVoice {
     std::unique_ptr<ma_sound> sound;
+    std::unique_ptr<ma_lpf_node> lpf;   // 3D loops on the acoustics path own one
     uint32_t id = 0;       // the LoopHandle id handed back to the caller
+    bool  spatial = false;
+    float x = 0, y = 0, z = 0;          // live emitter position (setLoopPosition)
+    float baseVol = 1.0f;               // pre-master, pre-duck volume
+    float lastOcc = 0.0f;               // last applied occlusion (skip no-ops)
 };
 
 class MiniaudioSystem final : public IAudioSystem {
@@ -241,6 +250,10 @@ public:
         if (m_inited) return true;
 
         ma_engine_config cfg = ma_engine_config_init();
+        // ~5 ms of per-voice volume smoothing (240 frames @48k). Without it a
+        // volume step lands as a per-mix-block jump — the "zipper" SND-OPUS
+        // measured under every fast gain ramp (engine load swings, crossfades).
+        cfg.defaultVolumeSmoothTimeInPCMFrames = 240;
         ma_result r = ma_engine_init(&cfg, &m_engine);
         if (r != MA_SUCCESS) {
             // No device / no speakers / headless. Run silent — NOT an error for
@@ -260,7 +273,12 @@ public:
 
         m_silent = false;
         m_inited = true;
-        x3::logInfo("[audio] miniaudio engine up");
+        // Log the ACTUAL endpoint format. Every pitch law in the game assumes
+        // the mixer runs at the assets' rate — a 44.1 kHz endpoint would make
+        // every note 8.8% sharp invisibly, so make the truth greppable.
+        x3::logInfo(std::string("[audio] miniaudio up: ") +
+                    std::to_string(ma_engine_get_sample_rate(&m_engine)) + " Hz, " +
+                    std::to_string(ma_engine_get_channels(&m_engine)) + " ch");
         return true;
     }
 
@@ -278,6 +296,7 @@ public:
             m_voices.clear();
             for (auto& lv : m_loops) {
                 if (lv.sound) { ma_sound_uninit(lv.sound.get()); }
+                if (lv.lpf)   { ma_lpf_node_uninit(lv.lpf.get(), nullptr); }
             }
             m_loops.clear();
             if (m_reverb) {
@@ -446,8 +465,37 @@ public:
                         std::to_string((int)r) + ")");
             return LoopHandle{ 0 };
         }
+        // ---- RT ACOUSTICS (SND-OPUS fix): 3D LOOPS join the acoustics path.
+        // One-shots already routed voice -> lowpass -> reverb -> endpoint; loops
+        // attached straight to the endpoint, so a looping engine/machine was
+        // immune to occlusion AND to the room reverb (a car in a concrete bore
+        // sounded bone-dry). Build the same chain here whenever the acoustics
+        // path is up (a provider hooked, or the reverb insert already built by
+        // setReverbParams). With neither, the attach below is byte-identical
+        // to the old path.
+        float occ = 0.0f;
+        std::unique_ptr<ma_lpf_node> lpf;
+        if (m_occFn || m_reverb) {
+            if (m_occFn) occ = clamp01(m_occFn(m_occUser, x, y, z));
+            ma_node* target = m_reverb ? &m_reverb->base
+                                       : ma_node_graph_get_endpoint(ma_engine_get_node_graph(&m_engine));
+            lpf = std::make_unique<ma_lpf_node>();
+            ma_lpf_node_config lc = ma_lpf_node_config_init(
+                ma_engine_get_channels(&m_engine),
+                ma_engine_get_sample_rate(&m_engine),
+                (double)occlusionCutoffHz(occ), kOccLpfOrder);
+            if (ma_lpf_node_init(ma_engine_get_node_graph(&m_engine), &lc, nullptr,
+                                 lpf.get()) == MA_SUCCESS) {
+                ma_node_attach_output_bus(lpf.get(), 0, target, 0);
+                ma_node_attach_output_bus(voice.get(), 0, lpf.get(), 0);
+            } else {
+                lpf.reset();   // filter failed: volume-only duck still applies
+                ma_node_attach_output_bus(voice.get(), 0, target, 0);
+            }
+        }
+
         // Same one-place master-SFX multiply as one-shots/2D loops.
-        ma_sound_set_volume(voice.get(), clamp01(vol) * m_sfxMaster);
+        ma_sound_set_volume(voice.get(), clamp01(vol) * m_sfxMaster * (1.0f - kOcclusionDuck * occ));
         ma_sound_set_pitch(voice.get(), clampPitch(pitch));
         ma_sound_set_spatialization_enabled(voice.get(), MA_TRUE);
         ma_sound_set_position(voice.get(), x, y, z);
@@ -457,7 +505,12 @@ public:
         const uint32_t id = m_nextLoopId++;
         LoopVoice lv;
         lv.sound = std::move(voice);
+        lv.lpf = std::move(lpf);
         lv.id = id;
+        lv.spatial = true;
+        lv.x = x; lv.y = y; lv.z = z;
+        lv.baseVol = clamp01(vol);
+        lv.lastOcc = occ;
         m_loops.push_back(std::move(lv));
         return LoopHandle{ id };
     }
@@ -467,6 +520,7 @@ public:
         for (size_t i = 0; i < m_loops.size(); ++i) {
             if (m_loops[i].id == loop.id) {
                 if (m_loops[i].sound) ma_sound_uninit(m_loops[i].sound.get());
+                if (m_loops[i].lpf)   ma_lpf_node_uninit(m_loops[i].lpf.get(), nullptr);
                 m_loops[i] = std::move(m_loops.back());
                 m_loops.pop_back();
                 return;
@@ -479,8 +533,34 @@ public:
         if (!loop.valid()) return;
         for (auto& lv : m_loops) {
             if (lv.id == loop.id && lv.sound) {
-                ma_sound_set_volume(lv.sound.get(), clamp01(vol) * m_sfxMaster);
+                // Track the caller's volume so the occlusion retune in update()
+                // has the un-ducked base to work from; apply the current duck
+                // here so a heavily-occluded loop doesn't pop clear for a frame.
+                lv.baseVol = clamp01(vol);
+                ma_sound_set_volume(lv.sound.get(),
+                    lv.baseVol * m_sfxMaster * (1.0f - kOcclusionDuck * lv.lastOcc));
                 ma_sound_set_pitch(lv.sound.get(), clampPitch(pitch));
+                return;
+            }
+        }
+    }
+
+    void setLoopPosition(LoopHandle loop, float x, float y, float z) override {
+        if (!loop.valid()) return;
+        for (auto& lv : m_loops) {
+            if (lv.id == loop.id && lv.sound && lv.spatial) {
+                lv.x = x; lv.y = y; lv.z = z;
+                ma_sound_set_position(lv.sound.get(), x, y, z);
+                return;
+            }
+        }
+    }
+
+    void setLoopDistance(LoopHandle loop, float minDist) override {
+        if (!loop.valid() || minDist <= 0.0f) return;
+        for (auto& lv : m_loops) {
+            if (lv.id == loop.id && lv.sound && lv.spatial) {
+                ma_sound_set_min_distance(lv.sound.get(), minDist);
                 return;
             }
         }
@@ -538,6 +618,26 @@ public:
                         ma_engine_get_sample_rate(&m_engine),
                         (double)occlusionCutoffHz(occ), kOccLpfOrder);
                     ma_lpf_node_reinit(&lc, v.lpf.get());
+                }
+            }
+            // ...and the LIVE 3D LOOPS (SND-OPUS fix): a machine hum behind a
+            // closing door and a car loop driving behind geometry retune the
+            // same way one-shot tails do. setLoopPosition keeps lv.x/y/z live
+            // for moving emitters, so the query is always at the true position.
+            for (LoopVoice& lv : m_loops) {
+                if (!lv.spatial || !lv.sound) continue;
+                const float occ = clamp01(m_occFn(m_occUser, lv.x, lv.y, lv.z));
+                if (std::fabs(occ - lv.lastOcc) < 0.005f) continue;
+                lv.lastOcc = occ;
+                ma_sound_set_volume(lv.sound.get(),
+                    lv.baseVol * m_sfxMaster * (1.0f - kOcclusionDuck * occ));
+                if (lv.lpf) {
+                    ma_lpf_config lc = ma_lpf_config_init(
+                        ma_format_f32,
+                        ma_engine_get_channels(&m_engine),
+                        ma_engine_get_sample_rate(&m_engine),
+                        (double)occlusionCutoffHz(occ), kOccLpfOrder);
+                    ma_lpf_node_reinit(&lc, lv.lpf.get());
                 }
             }
         }
@@ -900,6 +1000,10 @@ bool runAudioSelfTest() {
         check(amb.valid() || !amb.valid(),
               "T5e loop still holds a valid handle across ticks (or gracefully invalid throughout)");
         audio->setLoopParams(amb, 0.5f, 1.05f);   // live gain/pitch update, no-op if invalid
+        audio->setLoopPosition(amb, 2.5f, 0.0f, 0.5f);   // MOVING emitter (engine-note path)
+        audio->setLoopDistance(amb, 10.0f);              // chase-cam-radius min distance
+        audio->setLoopPosition(amb2, 1.0f, 0.0f, 0.0f);  // 2D loop -> safe no-op
+        audio->setLoopPosition(LoopHandle{ 0 }, 0, 0, 0); // invalid -> safe no-op
         audio->update(1.0f / 60.0f);
         audio->stopLoop(amb);
         audio->stopLoop(amb2);
