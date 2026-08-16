@@ -1639,30 +1639,37 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                         // a garage rather than as a big empty room.
                         const float gLen = sc.s1 - sc.s0, gDep = sc.latOut - sc.latIn;
                         const float aisle = fy + 0.005f;
-                        // Bay outlines: three per row, painted on the floor.
-                        for (int row = 0; row < 2; ++row) {
-                            for (int bay = 0; bay < 3; ++bay) {
-                                const float bs = sc.s0 + (0.6f + (float)bay * 3.0f) * (gLen / 10.5f);
-                                const float bl = sc.latIn + (row == 0 ? 0.8f : gDep - 6.8f);
-                                for (int e2 = 0; e2 < 2; ++e2) {   // the two long stripes
-                                    const float lat = sgn * (bl + (e2 ? 2.6f : 0.05f));
-                                    float q0[3], q1[3], q2[3], q3[3];
-                                    PA(frameAtS(bs),        lat - 0.05f, aisle, q0);
-                                    PA(frameAtS(bs),        lat + 0.05f, aisle, q1);
-                                    PA(frameAtS(bs + 4.8f), lat + 0.05f, aisle, q2);
-                                    PA(frameAtS(bs + 4.8f), lat - 0.05f, aisle, q3);
-                                    // PAINT, not light. These went into the
-                                    // emissive buffer and came out as glowing
-                                    // strips down the bay -- a floor marking that
-                                    // makes its own light reads as a runway, and
-                                    // it fought the neon for the eye in the one
-                                    // shot the room exists for. Bay lines are
-                                    // paint on concrete; the checker floor's
-                                    // gloss is what lifts them.
-                                    baypaint.quad(q0, q1, q2, q3, nU, 0, 1, 0, 1);
-                                }
+                        // ---- WHEEL SPOTTING PLATES (Rotary SPOA10, ASYMMETRIC).
+                        // The bay outlines that used to be here are gone: Tim
+                        // does not paint bays, he spots wheels. A working shop
+                        // marks where the CAR goes relative to the LIFT, not
+                        // where a parking stall is -- the floor of a real bay is
+                        // bare between the plates.
+                        //
+                        // ASYMMETRIC is the whole reason the plates sit where
+                        // they do. An SPOA10's columns are rotated ~30 deg and
+                        // its arms are unequal -- SHORT arms forward, LONG arms
+                        // aft -- so the car is spotted BACK, roughly a third of
+                        // its length behind the column line. That is what puts
+                        // the centre of gravity between the arms and lets the
+                        // doors open past the columns, which is the entire point
+                        // of buying asymmetric. Spot it centred like a symmetric
+                        // lift and you have paid for a feature you then cancelled.
+                        //
+                        // One yellow plate per side per lift, at the FRONT wheels.
+                        for (uint32_t L = 0; L < kTrGarageTwoPost; ++L) {
+                            const float ls = sc.s0 + gLen * (0.14f + 0.16f * (float)L);
+                            const float ll = sc.latIn + gDep * 0.34f;
+                            // Forward of the column line by the asymmetric offset.
+                            const float spotAhead = 1.15f;      // 3.8 ft
+                            for (int side3 = -1; side3 <= 1; side3 += 2) {
+                                float pl[3];
+                                PA(frameAtS(ls + spotAhead), sgn * (ll + (float)side3 * 0.95f),
+                                   fy + 0.006f, pl);
+                                obox(baypaint, pl, right, ax, 0.24f, 0.003f, 0.30f, 1.0f);
                             }
                         }
+
                         // ---- TWO-POST LIFTS (Rotary-style, 10,000 lb). Two
                         // columns either side of the car with swing arms that
                         // reach UNDER it to the frame. The wheels hang free --
@@ -2060,7 +2067,10 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 upload(fglow, fg, /*collide*/false);
 
                 Material bp; bp.alb = paintTex; bp.mr = roughMR;
-                bp.tint[0] = 0.82f; bp.tint[1] = 0.80f; bp.tint[2] = 0.74f;   // worn shop-floor yellow-white
+                // SAFETY YELLOW. Spotting plates are the one thing on a shop
+                // floor that is allowed to shout -- you are meant to find them
+                // through a windscreen while creeping forward.
+                bp.tint[0] = 1.00f; bp.tint[1] = 0.76f; bp.tint[2] = 0.06f;
                 upload(baypaint, bp, /*collide*/false);
 
                 // ---- THE LNS MATERIALS (only built when the bay exists —
