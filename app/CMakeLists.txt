@@ -44,6 +44,8 @@ add_executable(X3Engine WIN32
     world_hosts/host_gallery.cpp
     world_hosts/host_tunnel.cpp
     tunnel_corridor.cpp
+    # W-TREES — tall broadleaf groves along the tunnel road (--world tunnel)
+    road_trees.cpp
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp

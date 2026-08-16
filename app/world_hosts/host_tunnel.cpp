@@ -13,6 +13,7 @@
 #include "../scene.h"
 #include "../terrain.h"
 #include "../tunnel_corridor.h"
+#include "../road_trees.h"
 #include "../vehicle.h"
 #include "../asset_root.h"
 
@@ -68,6 +69,11 @@ int hostTunnel(HostContext& hc) {
         sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f;
         device->setSkyParams(sp);
     }
+    // Outdoor cascaded shadows — same call the other outdoor hosts (cliffs/
+    // drive/valley/streamed) make. Without it this host runs the legacy 45 m
+    // camera-locked shadow box and the roadside tree crowns stop casting long
+    // before the showcase cameras' view depth.
+    applyOutdoorCsm(hc, *device, 400.0f, "tunnel");
     device->setCameraFar(4000.0f);
 
     // ==== STEP 2 — the streamed terrain ring =================================
@@ -102,6 +108,22 @@ int hostTunnel(HostContext& hc) {
     // object draped over the hill. Without it the build warns and falls back.
     tunnel.build(scene, *device, *phys, route, streamer.groundTexture());
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
+
+    // Tall broadleaf groves shading the open-country stretches of the road
+    // (Tim 2026-08: "somE Tall Trees!! Shading the road... In some areas").
+    // Purely visual; failure = treeless road, never fatal. The showcase camera
+    // poses become trunk keep-outs so no crown ever swallows a proof shot (the
+    // exit-portal three-quarter pose stands ON the bank inside the planting
+    // band). See app/road_trees.h.
+    x3::game::RoadTrees trees;
+    {
+        std::vector<x3::game::RoadTrees::KeepOut> camKeepOut;
+        for (int i = 0; i < x3::game::TunnelCorridorWorld::kShowcaseShots; ++i) {
+            float cam[5]; tunnel.showcaseCamera(route, i, cam);
+            camKeepOut.push_back({ cam[0], cam[2], 12.0f });
+        }
+        trees.build(*device, route, camKeepOut);
+    }
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
     x3::game::DriveDemo car;
@@ -138,7 +160,11 @@ int hostTunnel(HostContext& hc) {
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 68.0f);
                 if (i == kFrames - 1) device->armCapture(out.c_str());
                 auto frame = device->beginFrame();
-                if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
+                if (frame.valid) {
+                    scene.render(*device, frame);
+                    trees.draw(*device, frame);
+                    if (carBuilt) car.render(frame);
+                }
                 device->endFrame(frame);
             }
             const bool wrote = device->captureFrame(out.c_str());
@@ -178,6 +204,7 @@ int hostTunnel(HostContext& hc) {
         }
 
         if (carBuilt) car.shutdown();
+        trees.shutdown(*device);
         tunnel.shutdown(*device, *phys);
         streamer.shutdown(scene, *device, *phys);
         jobs->shutdown(); phys->shutdown(); device->shutdown();
@@ -236,10 +263,15 @@ int hostTunnel(HostContext& hc) {
         if (cw != lastW || ch != lastH) { lastW = cw; lastH = ch; if (cw > 0 && ch > 0) device->onResize((uint32_t)cw, (uint32_t)ch); }
         device->setCamera(cx, cy, cz, camYaw, camPitch, 72.0f);
         auto frame = device->beginFrame();
-        if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
+        if (frame.valid) {
+            scene.render(*device, frame);
+            trees.draw(*device, frame);
+            if (carBuilt) car.render(frame);
+        }
         device->endFrame(frame);
     }
 
+    trees.shutdown(*device);
     tunnel.shutdown(*device, *phys);
     streamer.shutdown(scene, *device, *phys);
     jobs->shutdown(); phys->shutdown(); device->shutdown();
