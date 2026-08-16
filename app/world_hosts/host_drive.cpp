@@ -5,6 +5,7 @@
 #include "engine/core/IJobSystem.h"
 #include "engine/physics/IVehicle.h"
 #include "engine/audio/IAudioSystem.h"
+#include "../engine_note.h"             // multi-RPM engine-note bank (snd_bank)
 #include "../scene.h"
 #include "../mesh_prims.h"
 #include "../terrain.h"
@@ -385,12 +386,23 @@ int hostDrive(HostContext& hc) {
         x3::audio::LoopHandle  whineLoop{};   // supercharger (throttle-gated)
         x3::audio::LoopHandle  turboLoop{};   // turbo whistle (spool-gated)
         float turboSpool = 0.0f, prevSpool = 0.0f;
+        // ---- ENGINE NOTE v2 (same system as the tunnel host): the multi-RPM
+        // bank behind snd_bank (1 = bank, 0 = the legacy single loop above).
+        x3::game::EngineNote engineNote;
+        bool bankReady = false, sndBank = true;
+        x3::audio::SoundHandle whineSnd{}, turboSnd{};
+        x3::audio::LoopHandle  whineBankLoop{}, turboBankLoop{};
         if (isDrive) {
             engineSnd = vaudio->load(x3::game::resolveAudio("vehicles/engine_loop.wav"));
             if (engineSnd.valid()) engineLoop = vaudio->startLoop(engineSnd, 0.35f, 0.8f);
             bangSnd = vaudio->load(x3::game::resolveAudio("weapons/single/Single_Gunshot_Sci-Fi_Gun-30.wav"));
             x3::logInfo(std::string("--world drive: engine audio loop ") +
                         (engineSnd.valid() ? "ON" : "absent (silent)"));
+            const std::string bankDir =
+                (std::filesystem::path(x3::game::assetRoot()) / "audio/vehicles/engine_bank").string();
+            bankReady = engineNote.init(vaudio.get(), bankDir);
+            whineSnd = vaudio->load((std::filesystem::path(bankDir) / "whine_loop.wav").string());
+            turboSnd = vaudio->load((std::filesystem::path(bankDir) / "turbo_whistle_loop.wav").string());
         }
         // Shop-mode key EDGE states (UI nav + dyno sliders + pull/repair/refill).
         bool prevUiKey[12] = {};   // up,down,enter,bksp,tab,1,2,3,4,5,6,space(+R,N handled below)
@@ -415,6 +427,11 @@ int hostDrive(HostContext& hc) {
         // were the one place in the engine with no developer tools at all.
         HostShell shell;
         shell.attach(hc);
+        if (isDrive)
+            shell.addToggleCommand("snd_bank",
+                "engine note: on = multi-RPM bank (new), off = legacy single loop",
+                [&]{ return sndBank; },
+                [&](bool on) { sndBank = on; });
 
         while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
             glfwPollEvents();
@@ -591,22 +608,13 @@ int hostDrive(HostContext& hc) {
             // Engine audio: pitch tracks the REAL engine RPM (the TC pass made the
             // rev climb + shifts physical), shaped by the EXHAUST tier's note
             // (pitch/timbre offsets) — plus the SC whine / turbo whistle layers.
-            if (isDrive && engineLoop.valid()) {
+            if (isDrive) {
                 const auto& cb = shop.composed();
                 const float rpmFrac = std::clamp(car.engineRPM() / std::max(1000.0f, cb.maxRpm), 0.0f, 1.0f);
                 const float th = std::clamp(in.throttle, 0.0f, 1.0f);
-                const float vol   = (0.30f + 0.28f*th + 0.18f*rpmFrac) * (1.0f + 0.25f*cb.exhaustTimbre);
-                const float pitch = 0.65f + 1.15f*rpmFrac + 0.15f*th + cb.exhaustPitchOffset;
-                vaudio->setLoopParams(engineLoop, vol, pitch);
-                // Supercharger whine: throttle-gated pitched layer.
-                if (cb.scWhine && engineSnd.valid()) {
-                    if (!whineLoop.valid()) whineLoop = vaudio->startLoop(engineSnd, 0.0f, 2.4f);
-                    if (whineLoop.valid())
-                        vaudio->setLoopParams(whineLoop, th * 0.20f, 2.4f + 1.3f * rpmFrac);
-                } else if (whineLoop.valid()) { vaudio->stopLoop(whineLoop); whineLoop = {}; }
-                // Turbo: spool rises at wide throttle (lag from the part data),
-                // whistle rides the spool; lifting off above 55% spool = BLOWOFF.
-                if (cb.turboWhistle && engineSnd.valid()) {
+                // TURBO SPOOL + BLOWOFF: mode-independent (the psshh survives A/B).
+                const bool turboFit = cb.turboWhistle;
+                if (turboFit) {
                     const float lag = std::max(0.25f, cb.turboSpoolS);
                     if (th > 0.6f) turboSpool = std::min(1.0f, turboSpool + fdt / lag);
                     else           turboSpool = std::max(0.0f, turboSpool - fdt * 2.5f);
@@ -615,10 +623,62 @@ int hostDrive(HostContext& hc) {
                         turboSpool = 0.0f;
                     }
                     prevSpool = turboSpool;
-                    if (!turboLoop.valid()) turboLoop = vaudio->startLoop(engineSnd, 0.0f, 3.0f);
-                    if (turboLoop.valid())
-                        vaudio->setLoopParams(turboLoop, turboSpool * 0.18f, 3.0f + 1.2f * turboSpool);
-                } else if (turboLoop.valid()) { vaudio->stopLoop(turboLoop); turboLoop = {}; }
+                }
+                const bool bankOn = bankReady && sndBank && inCar;
+                if (bankOn) {
+                    // ---- multi-RPM bank (see app/engine_note.h). Load = the
+                    // driver's ask times the shared torque curve; the exhaust
+                    // tier's timbre offset survives as a small volume trim on
+                    // the whistle layers (the bank's own timbre comes from the
+                    // bracket, not a pitch offset).
+                    engineNote.setMuted(false);
+                    engineNote.setRedline(std::max(1000.0f, cb.maxRpm));
+                    float cp[3]; car.chassisPos(cp);
+                    engineNote.update(car.engineRPM(),
+                                      th * x3::game::EngineNote::torqueCurve(rpmFrac),
+                                      fdt, cp[0], cp[1], cp[2]);
+                    if (engineLoop.valid()) vaudio->setLoopParams(engineLoop, 0.0f, 1.0f);
+                    if (whineLoop.valid()) { vaudio->stopLoop(whineLoop); whineLoop = {}; }
+                    if (turboLoop.valid()) { vaudio->stopLoop(turboLoop); turboLoop = {}; }
+                    // SC whine / turbo whistle on their OWN synthesized assets.
+                    if (cb.scWhine && whineSnd.valid()) {
+                        if (!whineBankLoop.valid()) whineBankLoop = vaudio->startLoop(whineSnd, 0.0f, 1.0f);
+                        if (whineBankLoop.valid())
+                            vaudio->setLoopParams(whineBankLoop,
+                                th * 0.14f * (1.0f + 0.25f * cb.exhaustTimbre),
+                                0.8f + 0.6f * rpmFrac);
+                    } else if (whineBankLoop.valid()) { vaudio->stopLoop(whineBankLoop); whineBankLoop = {}; }
+                    if (turboFit && turboSnd.valid()) {
+                        if (!turboBankLoop.valid()) turboBankLoop = vaudio->startLoop(turboSnd, 0.0f, 1.0f);
+                        if (turboBankLoop.valid())
+                            vaudio->setLoopParams(turboBankLoop, turboSpool * 0.14f, 0.7f + 0.6f * turboSpool);
+                    } else if (turboBankLoop.valid()) { vaudio->stopLoop(turboBankLoop); turboBankLoop = {}; }
+                } else {
+                    engineNote.setMuted(true);
+                    if (whineBankLoop.valid()) { vaudio->stopLoop(whineBankLoop); whineBankLoop = {}; }
+                    if (turboBankLoop.valid()) { vaudio->stopLoop(turboBankLoop); turboBankLoop = {}; }
+                    if (engineLoop.valid()) {
+                        // ---- LEGACY single loop (snd_bank off — A/B reference).
+                        // NOTE the 0.30 volume floor: this is the diagnosed
+                        // defect (engine drones at a third volume parked); it is
+                        // kept verbatim so the A/B is faithful.
+                        const float vol   = (0.30f + 0.28f*th + 0.18f*rpmFrac) * (1.0f + 0.25f*cb.exhaustTimbre);
+                        const float pitch = 0.65f + 1.15f*rpmFrac + 0.15f*th + cb.exhaustPitchOffset;
+                        vaudio->setLoopParams(engineLoop, vol, pitch);
+                        // Supercharger whine: throttle-gated pitched layer.
+                        if (cb.scWhine && engineSnd.valid()) {
+                            if (!whineLoop.valid()) whineLoop = vaudio->startLoop(engineSnd, 0.0f, 2.4f);
+                            if (whineLoop.valid())
+                                vaudio->setLoopParams(whineLoop, th * 0.20f, 2.4f + 1.3f * rpmFrac);
+                        } else if (whineLoop.valid()) { vaudio->stopLoop(whineLoop); whineLoop = {}; }
+                        // Turbo whistle rides the (shared) spool.
+                        if (turboFit && engineSnd.valid()) {
+                            if (!turboLoop.valid()) turboLoop = vaudio->startLoop(engineSnd, 0.0f, 3.0f);
+                            if (turboLoop.valid())
+                                vaudio->setLoopParams(turboLoop, turboSpool * 0.18f, 3.0f + 1.2f * turboSpool);
+                        } else if (turboLoop.valid()) { vaudio->stopLoop(turboLoop); turboLoop = {}; }
+                    }
+                }
             }
             vaudio->setListener(cx, cy, cz, viewYaw, viewPitch);
             int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
@@ -730,6 +790,7 @@ int hostDrive(HostContext& hc) {
             shell.draw(frame);
             device->endFrame(frame);
         }
+        engineNote.shutdown();
         if (engineLoop.valid()) vaudio->stopLoop(engineLoop);
         if (whineLoop.valid())  vaudio->stopLoop(whineLoop);
         if (turboLoop.valid())  vaudio->stopLoop(turboLoop);

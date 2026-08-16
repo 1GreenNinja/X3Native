@@ -138,6 +138,23 @@ public:
     // startLoop). Default no-op so backends may opt out; invalid handle -> no-op.
     virtual void setLoopParams(LoopHandle /*loop*/, float /*vol*/, float /*pitch*/) {}
 
+    // Move a live 3D loop voice (started with startLoop3D) to a new world
+    // position. THIS is what makes a loop parented to a MOVING emitter (the
+    // player's car) possible — before it existed hosts were forced to start
+    // engine loops 2D because "a 3D loop would stay pinned where the car
+    // spawned". Spatialization then re-derives attenuation/panning against the
+    // live listener every mix callback, exactly like a fixed startLoop3D
+    // emitter. No-op on 2D loops / invalid handles / silent mode. Default
+    // no-op so backends may opt out.
+    virtual void setLoopPosition(LoopHandle /*loop*/, float /*x*/, float /*y*/, float /*z*/) {}
+
+    // Set a live 3D loop voice's attenuation min distance (metres): inside it
+    // the voice plays at full gain, beyond it distance rolloff applies. A loop
+    // riding the player's OWN vehicle wants ~the chase-camera radius here so
+    // the note doesn't arrive pre-attenuated by the boom length while still
+    // panning and fading for bystanders. Default no-op.
+    virtual void setLoopDistance(LoopHandle /*loop*/, float /*minDist*/) {}
+
     // ---- RT ACOUSTICS hooks (occlusion + room reverb) ----------------------
     // Occlusion provider: a callback the mixer invokes ONCE per 3D one-shot at
     // play time with the emitter's world position, returning the smoothed
