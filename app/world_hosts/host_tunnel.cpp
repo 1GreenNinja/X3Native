@@ -353,6 +353,21 @@ int hostTunnel(HostContext& hc) {
     }
     device->setCameraFar(4000.0f);
 
+    // PER-OBJECT MOTION VECTORS, ON. The "GHOST SHADOW behind him, same as the
+    // red car" (Tim) is TAA ghosting: with camera-only reprojection every MOVING
+    // object smears its own history trail — 2010 games had no such ghost because
+    // they had no TAA. The engine has the fix built (r_velocity feeds per-object
+    // motion vectors into the TAA reprojection) and it defaults OFF for
+    // byte-identical capture baselines; a world whose whole subject is a fast
+    // car is exactly where it must be on. --set r_velocity 0 restores the old
+    // path; applyHostRenderCVars afterwards lets every --set override stick.
+    {
+        x3::rhi::IRenderDevice::PostFXParams px{};   // engine defaults...
+        px.velocity = true;                          // ...plus the one that matters
+        device->setPostFX(px);
+        applyHostRenderCVars(hc, *device, "tunnel");
+    }
+
     // ==== STEP 2 — the streamed terrain ring =================================
     float startPos[3];
     // On the road, out on open ground, far enough back that the whole approach
@@ -981,6 +996,15 @@ int hostTunnel(HostContext& hc) {
         shell.addToggleCommand("climb", "crawl traction for steep terrain (also bound to C)",
             [&]{ return car.climbMode(); },
             [&](bool on) { car.setClimbMode(on); });
+        // J&S VAMPIRE (shop-part preview). Per-cylinder knock control lets the
+        // engine safely carry more ignition timing; timing is torque everywhere
+        // on the curve, so it lands as a flat multiplier that STACKS with the
+        // pressure-ratio turbo model. +7% is a real-world street-tune figure.
+        // Owned by perfshop.cpp once the parts catalog carries it; the console
+        // command is how Tim test-drives the part before the shop sells it.
+        shell.addToggleCommand("vampire", "J&S Vampire knock control: +7% torque from timing",
+            [&]{ return car.torqueBoost() > 1.001f; },
+            [&](bool on) { car.setTorqueBoost(on ? 1.07f : 1.0f); });
         con->registerCommand("car_reset", [&](const std::vector<std::string>&) {
             car.setTorqueBoost(1.0f);
             x3::phys::WheeledTuning t;
