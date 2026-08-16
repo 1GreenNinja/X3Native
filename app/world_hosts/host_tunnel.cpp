@@ -556,38 +556,17 @@ int hostTunnel(HostContext& hc) {
     // accumulating snowpack is watching it CHANGE. A cvar you can retype mid-
     // drive is the difference between a feature you inspect and one you play
     // with. Backtick opens it.
-    std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
-    x3::game::Hud hud;
-    bool conQuit = false;
-    hud.init(*console, &conQuit);
-    // HEADLESS HAS NO WINDOW. --screenshot-tunnel runs with hc.window == nullptr,
-    // and handing that to glfwSetCharCallback is an access violation -- which is
-    // exactly what happened: every capture died at 0xC0000005 the moment after
-    // "console ready", while the interactive path stayed perfectly happy. So the
-    // console looked innocent and the CAR looked guilty; I bisected onto the car
-    // model and it was never the car. Interactive-only testing hid a crash in
-    // the path that produces every screenshot in the repo.
+    // THE WEATHER CVARS LIVE ON THE SHELL'S CONSOLE, registered further down at
+    // the shell.attach() -- not on a second console of this host's own.
     //
-    // The console is a typing surface and is meaningless with no window anyway.
-    // The cvars it registers still work headless -- those live on the console
-    // object, not on the window.
-    if (window) {
-        g_tunnelHud = &hud;
-        glfwSetCharCallback(window, tunnelCharCB);
-    }
-    console->registerCVar("wx", "off",
-        "weather: off | clear | cloudy | rain | storm | fog | snow");
-    console->registerCVar("wx_snow_in", "0",
-        "lying snow depth to prime, INCHES (applied when wx changes)");
-    console->registerCVar("wx_hour", "14",
-        "time of day, 0-24, drives the diurnal temperature swing");
-    // Seed them from the env var so the documented X3_WEATHER path still works
-    // and the console simply shows what you already asked for.
-    {
-        const char* e = std::getenv("X3_WEATHER");
-        if (e && e[0] && std::strcmp(e, "0") != 0) console->set("wx", e);
-        if (const char* si = std::getenv("X3_SNOW_IN")) console->set("wx_snow_in", si);
-    }
+    // They briefly did exactly that, and it is worth recording because nothing
+    // caught it: the DS merge brought HostShell, which owns the console every
+    // host now shows, while this file still built its own IConsole + Hud, put
+    // `wx` on THAT, and read `wx` back from it. Both objects were alive; only
+    // one was on screen. Typing `wx snow` into the visible console did nothing,
+    // and the code read the invisible one, which always answered its default --
+    // so weather could not be switched on at all. Every suite stayed green,
+    // because no test opens a console.
     std::string wxApplied = "off";
 
     // ---- JAKE. The on-foot camera was a first-person eye, which is exactly
@@ -905,6 +884,22 @@ int hostTunnel(HostContext& hc) {
     HostShell shell;
     shell.attach(hc);
     if (auto* con = shell.console()) {
+        // WEATHER, on the same console as the car tuning -- one console, one
+        // place to look.
+        if (auto* con = shell.console()) {
+            con->registerCVar("wx", "off",
+                "weather: off | clear | cloudy | rain | storm | fog | snow");
+            con->registerCVar("wx_snow_in", "0",
+                "lying snow depth to prime, INCHES (applied when wx changes)");
+            con->registerCVar("wx_hour", "14",
+                "time of day, 0-24, drives the diurnal temperature swing");
+            // The documented env-var path still seeds them, so X3_WEATHER=snow
+            // behaves as before and the console simply shows what was asked for.
+            if (const char* e = std::getenv("X3_WEATHER"))
+                if (e[0] && std::strcmp(e, "0") != 0) con->set("wx", e);
+            if (const char* si = std::getenv("X3_SNOW_IN")) con->set("wx_snow_in", si);
+        }
+
         shell.addFloatCommand("car_torque", "peak engine torque, ft-lb (stock 590)",
             [&](float v) { x3::phys::WheeledTuning t; t.maxEngineTorque = v * 1.35582f; car.applyTuning(t); });
         shell.addFloatCommand("car_redline", "engine redline, rpm (stock 7500)",
@@ -1024,7 +1019,7 @@ int hostTunnel(HostContext& hc) {
             // pre-dawn trough to see ice form instead of waiting out the cycle.
             static float todHours = 14.0f;
             static float lastHourCvar = -1.0f;
-            const float hourCvar = console->getFloat("wx_hour");
+            const float hourCvar = shell.console()->getFloat("wx_hour");
             if (hourCvar != lastHourCvar) { todHours = hourCvar; lastHourCvar = hourCvar; }
             todHours += fdt * (24.0f / 600.0f);        // 10 real minutes per in-world day
             if (todHours >= 24.0f) todHours -= 24.0f;
@@ -1083,7 +1078,7 @@ int hostTunnel(HostContext& hc) {
         // string CHANGES, because forcing the state every frame would restart
         // the transition continuously and the sky would never actually arrive.
         {
-            const std::string wxWant = console->getString("wx");
+            const std::string wxWant = shell.console()->getString("wx");
             if (wxWant != wxApplied) {
                 wxApplied = wxWant;
                 weatherOn = (wxWant != "off" && !wxWant.empty());
@@ -1110,7 +1105,7 @@ int hostTunnel(HostContext& hc) {
                     // the same defect as the fitout seed. Snowfall with no depth
                     // asked for gets the settled default; anything else honours
                     // the cvar exactly.
-                    float wantIn = console->getFloat("wx_snow_in");
+                    float wantIn = shell.console()->getFloat("wx_snow_in");
                     if (wantIn <= 0.0f && weather.sample().snowfall) wantIn = 2.6f;
                     wetness.reset();
                     if (wantIn > 0.0f) {
@@ -1121,7 +1116,7 @@ int hostTunnel(HostContext& hc) {
                     char wb[128];
                     std::snprintf(wb, sizeof(wb), "weather: %s, %.1f in lying",
                                   wxWant.c_str(), wetness.snowDepthIn());
-                    console->print(wb);
+                    shell.console()->print(wb);
                 } else {
                     x3::rhi::IRenderDevice::SkyParams sp{};
                     sp.enabled = true;
@@ -1131,7 +1126,7 @@ int hostTunnel(HostContext& hc) {
                     device->setSkyParams(sp);
                     device->setSnowCover(0.0f);
                     device->setWetness(x3::rhi::IRenderDevice::WetnessParams{});
-                    console->print("weather: off (the demo's fixed bright sky)");
+                    shell.console()->print("weather: off (the demo's fixed bright sky)");
                 }
             }
         }
