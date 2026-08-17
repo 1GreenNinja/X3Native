@@ -228,6 +228,37 @@ void main() {
     vec3 hazeTint = clamp(kHorizon * 1.12, 0.0, 1.0);   // glow band follows the per-scene horizon color (cool + bright, not grey)
     col = mix(col, hazeTint, horizonBand * (0.35 + 0.45 * haze));
 
+    // ---- LOW-SUN SKY (W-NIGHT). A sunset is not a uniformly pink dome. ------
+    // This dome carries ONE horizon colour in every direction, so with the ToD
+    // cycle driving it the 19:24 capture came out a flat milky pink from east
+    // to west with white cauliflower on top — the sun 9 degrees up and no
+    // sunset anywhere (eyes-on, shots_wnight/04, first pass). Real twilight is
+    // AZIMUTHAL: the sky burns where the sun is and stays deep blue opposite
+    // it, and the light everywhere else DIES.
+    //
+    // lowSun is 0 whenever the sun is more than ~21 degrees up (sunDir.y is the
+    // sine of the altitude), so every daytime scene — and every calibrated
+    // daylight capture in the tree — is bit-identical. `lowSunK` is exported to
+    // the cloud block below, which needs the same number (rule 4: it is one
+    // value, computed once).
+    float lowSunK = 1.0 - smoothstep(0.03, 0.36, sunDir.y);
+    if (lowSunK > 0.001) {
+        // Where this ray points relative to the sun's AZIMUTH (elevation
+        // dropped — the burn is a compass direction, not a halo), and how close
+        // it is to the horizon. The burn lives where those two meet.
+        vec2 sazi  = normalize(sky.sunDir.xz + vec2(1e-5, 0.0));
+        vec2 razi  = normalize(dir.xz + vec2(1e-5, 0.0));
+        float align = max(dot(sazi, razi), 0.0);
+        float lowBand = pow(1.0 - t, 2.2);
+        vec3  burn = sky.sunColor.rgb * vec3(1.30, 0.62, 0.28);
+        col = mix(col, burn, lowSunK * lowBand * pow(align, 1.6) * 0.85);
+        // The rest of the dome loses its daylight value as the light goes: the
+        // burn keeps its brightness (lowBand is ~1 there), the upper sky and
+        // the anti-solar horizon fall away toward the night palette the ToD
+        // table is already steering to.
+        col *= mix(1.0, 0.55, lowSunK * (1.0 - 0.55 * lowBand * align));
+    }
+
     // ---- Stars: additive, gated hard to DARK skies. Above the horizon always;
     // BELOW it only when there is no aerosol haze (haze == 0 reads as DEEP SPACE —
     // a space scene looking "down" sees stars, not a ground plane). Hazy ground
@@ -295,11 +326,19 @@ void main() {
                 float dayK = clamp((dot(sky.zenith.rgb,  vec3(0.299, 0.587, 0.114)) +
                                     dot(sky.horizon.rgb, vec3(0.299, 0.587, 0.114))) * (0.5 / 0.30),
                                    0.035, 1.0);
+                // LOW SUN (W-NIGHT, same lowSunK as the dome above — rule 4):
+                // the beam that reaches a cloud within ~20 deg of the horizon
+                // has crossed several airmasses. It arrives reddened and weak,
+                // so the deck goes warm and DIM instead of staying the
+                // daylight-white cauliflower the 19:24 capture showed.
+                vec3  lowTint = mix(vec3(1.0), vec3(1.30, 0.74, 0.44), lowSunK);
+                float lowDim  = mix(1.0, 0.42, lowSunK);
                 vec3 lit   = mix(vec3(0.88, 0.90, 0.95), sunRGB, 0.30)
-                           * mix(1.0, 0.42, gloom) * (0.55 + 0.45 * sunI) * dayK;
+                           * mix(1.0, 0.42, gloom) * (0.55 + 0.45 * sunI) * dayK
+                           * lowTint * lowDim;
                 vec3 shade = mix(vec3(0.44, 0.48, 0.56),   // fair cumulus base
                                  vec3(0.105, 0.11, 0.135), // storm base: near-black
-                                 gloom) * dayK;
+                                 gloom) * dayK * mix(1.0, 0.34, lowSunK);
                 vec3 cloudCol = mix(lit, shade, baseDark);
                 // Silver rim + forward scatter around the luminary — daylight
                 // sun or night moon alike (a storm deck has no silver to give).

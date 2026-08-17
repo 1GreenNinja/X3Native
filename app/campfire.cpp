@@ -205,8 +205,14 @@ uint32_t Campfires::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // Half-extents: the stick is kStickLen long along +Z at unit scale and
         // drawCharacters scales that basis to the hand-to-fire reach (rule 4:
         // kStickLen and that scale are one value).
-        x3::prims::PrimMesh pm = x3::prims::makeBox(0.011f, 0.011f, kStickLen * 0.5f,
-                                                    0, 0, 0, 1.0f);
+        // ORIGIN AT THE HAND END, not at the middle: the box spans z in
+        // [0, kStickLen] (centre offset +kStickLen/2). A centred box drawn at
+        // hand + Z*zl/2 put HALF the switch out behind the holder's back — a
+        // 2 m pole through his chest in the daylight verification shot. With
+        // the origin at the grip, "translate to the hand, scale Z to the reach"
+        // cannot produce anything but a stick that starts in the hand.
+        x3::prims::PrimMesh pm = x3::prims::makeBox(0.009f, 0.009f, kStickLen * 0.5f,
+                                                    0.0f, 0.0f, kStickLen * 0.5f, 1.0f);
         m_stickMesh = device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
                                         pm.index.data(), (uint32_t)pm.index.size());
         x3::prims::PrimMesh hd = x3::prims::makeBox(0.026f, 0.026f, 0.075f, 0, 0, 0, 1.0f);
@@ -502,8 +508,15 @@ void Campfires::spawnPeople(Fire& f, uint32_t idx, x3::rhi::IRenderDevice& devic
             pz = bench.z - f.towardRoadZ * 0.32f;
         } else {
             const float a = standAngles[standSlot % 3]; ++standSlot;
-            px = f.x + std::cos(a) * kPeopleR;
-            pz = f.z + std::sin(a) * kPeopleR;
+            // THE STICK HOLDER STANDS IN. At the ring radius his hand is 2.2 m
+            // from the flames and the switch drawn to reach them is a LANCE —
+            // verified in daylight (shots_wnight/06), where a 2.2 m pale pole
+            // out of a standing man's hip is the first thing the eye finds. At
+            // 1.55 m he is a step from the stones, which is where somebody
+            // roasting something actually stands, and the stick is a stick.
+            const float r = cast[i].stick ? 1.55f : kPeopleR;
+            px = f.x + std::cos(a) * r;
+            pz = f.z + std::sin(a) * r;
         }
         const float py = terrainHeightAtWorld(px, pz);
         p.body = std::make_unique<Player>();
@@ -603,8 +616,8 @@ void Campfires::drawCharacters(const x3::rhi::FrameContext& frame,
             float m[16];
             const float sk = zl / kStickLen;              // fit the switch to the reach
             const float Zs[3] = { Z[0] * sk, Z[1] * sk, Z[2] * sk };
-            const float mid[3] = { hx + Z[0]*zl*0.5f, hy + Z[1]*zl*0.5f, hz + Z[2]*zl*0.5f };
-            basisM(X, Y, Zs, mid, m);
+            const float grip[3] = { hx, hy, hz };         // the mesh starts at z=0
+            basisM(X, Y, Zs, grip, m);
             // A PEELED green switch, not bark: 0.30/0.20/0.11 is dark brown and
             // at night, against dark grass, it was invisible in the capture.
             const float stickCol[4]  = { 0.62f, 0.53f, 0.33f, 1.0f };

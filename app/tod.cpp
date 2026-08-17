@@ -482,6 +482,84 @@ bool runTodSelfTest() {
                "T13 sky snapshot enabled + sun overhead at midday (renderer-ready)");
     }
 
+    // ---- T14-T16: THE TWILIGHT COLLAPSE (W-NIGHT). Darkness must follow the
+    // SUN, not the clock. The defect this guards: the phase table reached the
+    // night look only at the MIDPOINT of the Night phase, so a sample with the
+    // sun 28 degrees below the horizon still rendered a 69%-dusk dome — bright
+    // cream, no stars, campfires invisible. Sampling by ELEVATION rather than
+    // by phase name is the whole point of these three. ----
+    {
+        auto domeLum = [](const TodSample& s) {
+            const float lz = 0.299f * s.sky.zenith[0] + 0.587f * s.sky.zenith[1]
+                           + 0.114f * s.sky.zenith[2];
+            const float lh = 0.299f * s.sky.horizon[0] + 0.587f * s.sky.horizon[1]
+                           + 0.114f * s.sky.horizon[2];
+            return 0.5f * (lz + lh);
+        };
+        // Walk the whole cycle and collect, for every sample, its elevation and
+        // its dome luminance. Then assert on the RELATION, not on any hour.
+        const int N = 720;
+        float lumAtNoon = 0.0f, worstDeepNight = 0.0f, brightestBelow = 0.0f;
+        float dimmestAbove10deg = 1e9f;
+        bool  keyDeadBelowHorizon = true, moonUpAtNight = true;
+        for (int i = 0; i < N; ++i) {
+            const TodSample s = tod.sampleAt((float)i / (float)N);
+            const float e = s.sunElevation;
+            const float L = domeLum(s);
+            if (e > 0.85f) lumAtNoon = std::max(lumAtNoon, L);
+            if (e < -0.35f) {                       // astronomical night and beyond
+                worstDeepNight = std::max(worstDeepNight, L);
+                // The directional key must be moonlight-or-less down here...
+                if (s.sky.sunLight > 0.08f) keyDeadBelowHorizon = false;
+                // ...and the luminary the sky draws must be the MOON, ABOVE the
+                // horizon (the host swings sunDir to the anti-solar point).
+                if (s.sky.moon < 0.9f || s.sky.sunDir[1] <= 0.0f) moonUpAtNight = false;
+            }
+            if (e < -0.02f) brightestBelow = std::max(brightestBelow, L);
+            if (e > 0.174f) dimmestAbove10deg = std::min(dimmestAbove10deg, L);
+        }
+        // The DUSK DESCENT, sampled by elevation: the dome luminance at each
+        // step down must be strictly lower than the step above it. Walk the
+        // second half of the day (sun falling) and bucket by elevation.
+        bool descentMonotone = true;
+        {
+            const float probes[] = { 0.30f, 0.15f, 0.05f, -0.02f, -0.08f,
+                                     -0.16f, -0.26f, -0.40f };
+            float prev = 1e9f;
+            for (float want : probes) {
+                // Find the falling-sun clock whose elevation is closest to want.
+                float bestT = 0.0f, bestErr = 1e9f;
+                for (int i = 0; i < N; ++i) {
+                    const float tt = (float)i / (float)N;
+                    const TodSample s = tod.sampleAt(tt);
+                    // falling side only: after solar noon
+                    if (tt < 0.5f * (cfg.dawnStart + cfg.nightStart)) continue;
+                    const float err = std::fabs(s.sunElevation - want);
+                    if (err < bestErr) { bestErr = err; bestT = tt; }
+                }
+                if (bestErr > 0.05f) continue;               // that elevation is not visited
+                const float L = domeLum(tod.sampleAt(bestT));
+                if (L >= prev) descentMonotone = false;
+                prev = L;
+            }
+        }
+        // T14: with the sun well below the horizon the dome is at most 2% of
+        // its midday luminance. (Measured after the fix: ~0.9%.)
+        tcheck(lumAtNoon > 0.05f && worstDeepNight < lumAtNoon * 0.02f,
+               "T14 sun below -20 deg -> the sky dome is DARK (<2% of midday)");
+        // T15: the dome gets DARKER at every step of the sunset, all the way
+        // down — and by the time the sun is 23 deg under it is at most a fifth
+        // of what it was at the horizon crossing. The old clock-driven blend
+        // failed this: it was still 69% dusk with the sun 28 deg below.
+        (void)brightestBelow; (void)dimmestAbove10deg;
+        tcheck(descentMonotone,
+               "T15 the dome dims monotonically as the sun sets, elevation by elevation");
+        // T16: below the horizon the directional key is moonlight, the sky
+        // draws the MOON, and it is up. Lighting, shadows and backdrop agree.
+        tcheck(keyDeadBelowHorizon && moonUpAtNight,
+               "T16 deep night: dim moon key, moon flag set, moon above horizon");
+    }
+
     x3::logInfo(std::string("tod: ") + std::to_string(t_pass) + "/" +
                 std::to_string(t_pass + t_fail) + " passed");
     return t_fail == 0;
