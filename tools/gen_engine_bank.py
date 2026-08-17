@@ -141,7 +141,7 @@ def organic_layer(rpm, f0, n_gen, rng):
 def synth_layer(rpm, f0, t, rng, *, overrun):
     """Rev-1 flat-six harmonic stack + exhaust formants — the pitch anchor,
     mixed UNDER the organic layer."""
-    rolloff = 1.35 if overrun else 1.15
+    rolloff = 1.20 if overrun else 0.95   # tone pass: was 1.35/1.15 — gentler, more top end
     sig = np.zeros(len(t))
     for h in range(1, NHARM + 1):
         sig += (1.0 / h ** rolloff) * np.sin(2 * np.pi * f0 * h * t + 0.15 * h)
@@ -184,10 +184,23 @@ def build_point(rpm, *, overrun, rng):
     # organic layer's own breath sits partly ON the harmonic comb, so the
     # free-standing noise layer has to supply the broadband floor itself.)
     high = rpm >= 4000
-    w_org, w_syn, w_nz = (0.45, 0.20, 0.35) if high else (0.55, 0.15, 0.30)
+    # Tone pass: organic keeps the low-mid body but hands the top end to the
+    # synth harmonics + turbulence (the recording HAS no top end to give —
+    # 90% of its energy sits below 100 Hz; that was the muffle).
+    w_org, w_syn, w_nz = (0.34, 0.30, 0.36) if high else (0.44, 0.26, 0.30)
     sig = (org / rms(org) * np.sqrt(w_org)
            + syn / rms(syn) * np.sqrt(w_syn)
            + nz / rms(nz) * np.sqrt(w_nz))
+    # PRESENCE TILT (tone pass): +4.5 dB high shelf above ~700 Hz, one-pole.
+    # Clears the 'blown through something' veil without touching the body.
+    a = float(np.exp(-2.0 * np.pi * 700.0 / SR))
+    lp = np.empty_like(sig); acc = 0.0
+    for i in range(len(sig)):
+        acc = a * acc + (1.0 - a) * sig[i]
+        lp[i] = acc
+    hf = sig - lp                      # the content above the shelf corner
+    sig = sig + 0.68 * hf              # +4.5 dB shelf
+    sig = sig / rms(sig) * 0.22        # re-normalize family level
 
     # SLOW PSEUDO-RANDOM PULSE-LEVEL VARIATION on the WHOLE mix (~1-2 dB):
     # loop-periodic sinusoids (k cycles/loop, small coprime k, random phase).
