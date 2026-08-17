@@ -135,6 +135,9 @@ private:
     void   despawnCar(size_t idx, x3::phys::IPhysicsWorld* phys);
     uint32_t rnd();                       // xorshift32 (deterministic)
     float  rndf(float a, float b);
+    // X3_TRAFFIC_CAMS=<n>: print n road-DERIVED --shot-cam stations (see the
+    // definition in traffic.cpp). No-op unless the env var is set.
+    void   logCameraStations() const;
 
     bool m_built = false;
     TrafficConfig m_cfg;

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 
@@ -164,6 +165,24 @@ bool FreewayTraffic::build(const RoadSpec& spec, const std::vector<float>& roadY
                            x3::rhi::IRenderDevice* device, x3::phys::IPhysicsWorld* phys,
                            std::string_view glbDir, const TrafficConfig& cfg) {
     m_cfg = cfg;
+    // ---- CAPTURE / TUNING LEVERS (gotcha 4.1b's pattern: a still that must
+    // show moving content needs a knob, and the knob defaults to the gameplay
+    // value so no existing reference capture moves).
+    //   X3_TRAFFIC_NEAR  — spawn-ring inner radius, m. The gameplay default
+    //     (300 m) deliberately keeps cars from popping into view around the
+    //     player, which also leaves a STATIC capture camera with an empty
+    //     foreground: the ring is centred on the focus, and 200 settle frames
+    //     (3.3 s) cannot close 300 m. Proof shots set this to ~10.
+    //   X3_TRAFFIC_FAR / X3_TRAFFIC_COUNT — outer radius / population.
+    // All three are read here, once, so the boot line reports what is ACTUALLY
+    // in force (a lever whose value never reaches the log is a lever nobody
+    // can trust).
+    if (const char* e = std::getenv("X3_TRAFFIC_NEAR"))
+        m_cfg.ringNearM = std::max(0.0f, (float)std::atof(e));
+    if (const char* e = std::getenv("X3_TRAFFIC_FAR"))
+        m_cfg.ringFarM  = std::max(m_cfg.ringNearM + 1.0f, (float)std::atof(e));
+    if (const char* e = std::getenv("X3_TRAFFIC_COUNT"))
+        m_cfg.targetCount = (uint32_t)std::max(0, std::atoi(e));
     m_rng = cfg.seed ? cfg.seed : 1u;
     m_device = device;
     m_phys = phys;
@@ -302,7 +321,54 @@ bool FreewayTraffic::build(const RoadSpec& spec, const std::vector<float>& roadY
         m_closed ? "(closed)" : "(open)", m_cfg.targetCount,
         m_cfg.ringNearM, m_cfg.ringFarM, m_cfg.cullM);
     x3::logInfo(b);
+    logCameraStations();
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// X3_TRAFFIC_CAMS=<n> — print n evenly-spaced freeway camera stations, each
+// DERIVED FROM THE ROAD DATA (gotcha 4.1: "derive cameras from room data,
+// never eyeball coordinates" — the freeway is 16 miles of curve, and a
+// hand-guessed camera lands in a cut wall or off the ribbon entirely).
+// Emits --shot-cam strings ready to paste, with the LEADING SPACE that
+// gotcha 4.1 requires so a negative X is not parsed as a flag.
+//   drive — eye height in a running lane of the RIGHT carriageway, looking
+//           the way that carriageway travels (behind the traffic).
+//   high  — the same station from 60 m up looking along the road: both
+//           carriageways in one frame, so directions are checkable.
+//   side  — 90 m off to the side, 18 m up, looking AT the road: the
+//           head-on/keep-right read.
+// Off by default; costs nothing when unset.
+// ---------------------------------------------------------------------------
+static float laneLat(int cw, int lane, float medianHalf);   // defined below
+
+void FreewayTraffic::logCameraStations() const {
+    const char* e = std::getenv("X3_TRAFFIC_CAMS");
+    if (!e) return;
+    int n = std::atoi(e);
+    if (n <= 0) n = 8;
+    for (int i = 0; i < n; ++i) {
+        const float u = m_totalLen * ((float)i / (float)n);
+        float pos[3], dir[2], mh, dy;
+        sampleAt(u, pos, dir, &mh, &dy);
+        const float yaw = std::atan2(dir[1], dir[0]);          // cam dir = (cos,0,sin)
+        // lat convention: lat>0 is right of +u travel = (-tz,+tx).
+        const float nx = -dir[1], nz = dir[0];
+        const float latDrive = laneLat(1, 5, mh);              // right cw, lane 5
+        char b[420];
+        std::snprintf(b, sizeof(b),
+            "[traffic-cam] %02d u=%8.1f m  centre=(%.1f, %.1f, %.1f) yaw=%+.3f medianHalf=%.1f\n"
+            "              drive --shot-cam \" %.1f,%.1f,%.1f,%.3f,%.2f\"\n"
+            "              high  --shot-cam \" %.1f,%.1f,%.1f,%.3f,%.2f\"\n"
+            "              side  --shot-cam \" %.1f,%.1f,%.1f,%.3f,%.2f\"",
+            i, u, pos[0], pos[1], pos[2], yaw, mh,
+            pos[0] + nx * latDrive, pos[1] + 1.45f, pos[2] + nz * latDrive, yaw, -0.02f,
+            pos[0], pos[1] + 60.0f, pos[2], yaw, -0.62f,
+            pos[0] - nx * 90.0f, pos[1] + 18.0f, pos[2] - nz * 90.0f,
+            std::atan2(nz, nx), -0.11f);
+        x3::logInfo(b);
+        (void)dy;
+    }
 }
 
 // ---------------------------------------------------------------------------
