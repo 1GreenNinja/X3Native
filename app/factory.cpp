@@ -86,6 +86,41 @@ struct MeshBuf {
         quad(c[3],c[0],c[4],c[7]);   // a0 face
     }
 
+    // ONE face with 0..1 UVs — for a panel whose texture is a PICTURE, not a
+    // tile. The world-space UVs above are right for concrete and wrong for a
+    // wordmark: the first sign shipped reading "GLIMVA GLIMVA GLIMVA GLIMVA"
+    // because a 26 m board at 0.25 uv/m wrapped its baked panel four times.
+    // Facing the -a direction (the freeway side of the hall).
+    void signFace(const SiteFrame& s, float a, float b0, float b1,
+                  float y0, float y1) {
+        float c[4][3];
+        auto pt = [&](float bb, float yy, float o[3]) {
+            s.world(a, bb, o[0], o[2]); o[1] = yy; };
+        // WINDING: the face normal must point -a (out toward the freeway). The
+        // first cut ran b1 -> b0 and the cross product came out +a, i.e. into
+        // the building — the sign was there, textured, correctly UV'd, and
+        // BACKFACE-CULLED. It cost a capture to notice, which is the whole
+        // argument for rule 2 (eyes on, full res) over "it compiled".
+        pt(b0, y0, c[0]); pt(b1, y0, c[1]); pt(b1, y1, c[2]); pt(b0, y1, c[3]);
+        const float e1[3] = { c[1][0]-c[0][0], c[1][1]-c[0][1], c[1][2]-c[0][2] };
+        const float e2[3] = { c[3][0]-c[0][0], c[3][1]-c[0][1], c[3][2]-c[0][2] };
+        float nn[3] = { e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2],
+                        e1[0]*e2[1]-e1[1]*e2[0] };
+        const float nl = std::sqrt(nn[0]*nn[0]+nn[1]*nn[1]+nn[2]*nn[2]);
+        if (nl > 1e-6f) { nn[0]/=nl; nn[1]/=nl; nn[2]/=nl; }
+        const uint32_t base = (uint32_t)v.size();
+        const float us[4] = { 0, 1, 1, 0 }, vs[4] = { 1, 1, 0, 0 };
+        for (int k = 0; k < 4; ++k) {
+            x3::rhi::MeshVertex mv{};
+            mv.pos[0]=c[k][0]; mv.pos[1]=c[k][1]; mv.pos[2]=c[k][2];
+            mv.normal[0]=nn[0]; mv.normal[1]=nn[1]; mv.normal[2]=nn[2];
+            mv.uv[0]=us[k]; mv.uv[1]=vs[k];
+            v.push_back(mv);
+        }
+        i.push_back(base+0); i.push_back(base+1); i.push_back(base+2);
+        i.push_back(base+0); i.push_back(base+2); i.push_back(base+3);
+    }
+
     // A vertical prism (silo / stack): `seg`-sided, radius r, centred (a,b).
     void cylinder(const SiteFrame& s, float a, float b, float r,
                   float y0, float y1, int seg) {
@@ -499,7 +534,13 @@ bool FactoryWorks::build(Scene& scene, x3::rhi::IRenderDevice& device,
             const float b = (c & 2) ? kFacGlassB1 - 0.55f : kFacGlassB0;
             frame.box(sf, a, a + 0.55f, b, b + 0.55f, padY, padY + kFacGlassH + 0.9f);
         }
-        upload(frame, &enamel, cream, false);
+        // MULLIONS ARE DARK. The first cut wore the cream enamel and the whole
+        // tower read as a pale slab with cream stripes — the mullion grid was
+        // the brightest thing in it. Glazing bars in front of glass are almost
+        // always the DARKEST line in the elevation; that contrast is most of
+        // what makes a curtain wall read as glass at all.
+        const float bar[4] = { 0.30f, 0.31f, 0.33f, 1.0f };
+        upload(frame, &steel, bar, false);
 
         // THE PANES. One entity per face, drawn in the glass pass. Opacity is
         // low (this is a hothouse, not spandrel) with a warm tint; the backing
@@ -516,11 +557,24 @@ bool FactoryWorks::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                        pane.i.data(), (uint32_t)pane.i.size());
             if (!e.mesh.valid()) continue;
             e.transparent = true;
-            e.glass.opacity    = 0.34f;      // a glasshouse, not a black curtain wall
+            // MEASURED BEFORE, PAID FOR AGAIN. facility_exterior.cpp's facade
+            // audit found glass.frag's split-sum environment reflection driving
+            // an architectural pane to sRGB 161 — "flat beige stripes" — and the
+            // fix was a dark tint with the specular pulled right down. The first
+            // cut here ignored that (tint 0.86, specular 0.45) and the Hothouse
+            // rendered as a WHITE SLAB: the single brightest object in the
+            // frame, and the exact opposite of "glassy".
+            //
+            // So: a green-bottle tint at low specular, a little more opacity
+            // than a canopy needs, and the warm interior bands behind it doing
+            // the work. Lighter than that facade's near-opaque black spandrel
+            // (0.90 / 0.15) on purpose — this is a glasshouse you are meant to
+            // see into, not a curtain wall you are meant to see yourself in.
+            e.glass.opacity    = 0.46f;
             e.glass.refraction = 0.02f;
-            e.glass.roughness  = 0.10f;
-            e.glass.specular   = 0.45f;
-            e.glass.tint[0] = 0.86f; e.glass.tint[1] = 0.93f; e.glass.tint[2] = 0.90f;
+            e.glass.roughness  = 0.14f;
+            e.glass.specular   = 0.16f;
+            e.glass.tint[0] = 0.34f; e.glass.tint[1] = 0.46f; e.glass.tint[2] = 0.40f;
             scene.add(e);
             ++m_meshCount; m_triCount += (uint32_t)(pane.i.size() / 3);
         }
@@ -538,9 +592,9 @@ bool FactoryWorks::build(Scene& scene, x3::rhi::IRenderDevice& device,
             e.mesh = device.createMesh(glow.v.data(), (uint32_t)glow.v.size(),
                                        glow.i.data(), (uint32_t)glow.i.size());
             if (e.mesh.valid()) {
-                e.baseColor[0]=0.30f; e.baseColor[1]=0.22f; e.baseColor[2]=0.10f;
-                e.emissive[0]=1.00f; e.emissive[1]=0.72f; e.emissive[2]=0.34f;
-                e.emissive[3]=0.42f;
+                e.baseColor[0]=0.26f; e.baseColor[1]=0.16f; e.baseColor[2]=0.06f;
+                e.emissive[0]=1.00f; e.emissive[1]=0.58f; e.emissive[2]=0.22f;
+                e.emissive[3]=0.48f;   // still under the ~0.5 ACES clip (rule 5)
                 scene.add(e);
                 ++m_meshCount; m_triCount += (uint32_t)(glow.i.size() / 3);
             }
@@ -639,10 +693,16 @@ bool FactoryWorks::build(Scene& scene, x3::rhi::IRenderDevice& device,
         auto mr = lns::makeMr1x1(200, 0);
         x3::rhi::TextureHandle tex = device.createTexture(px.data(), 512, 96, true);
         x3::rhi::TextureHandle mrt = device.createTexture(mr.data(), 1, 1, false);
-        MeshBuf sign;
-        // Flat on the hall's freeway-facing gable, 26 m of letters at 13 m up.
-        sign.box(sf, kFacHallA0 - 0.55f, kFacHallA0 - 0.15f, -34.0f, -8.0f,
-                 padY + 12.6f, padY + 17.0f);
+        MeshBuf back, sign;
+        // A shallow board to stand it off the wall (world UVs, concrete), then
+        // the wordmark itself as ONE 0..1-UV face on its front.
+        back.uvPerM = 0.3f;
+        back.box(sf, kFacHallA0 - 0.55f, kFacHallA0 - 0.12f, -44.6f, -17.4f,
+                 padY + 12.2f, padY + 17.4f);
+        upload(back, &steel, slate, false);
+        // 26 m of letters at 13 m up, on the hall's freeway-facing gable.
+        sign.signFace(sf, kFacHallA0 - 0.58f, -44.0f, -18.0f,
+                      padY + 12.6f, padY + 17.0f);
         Entity e;
         e.mesh = device.createMesh(sign.v.data(), (uint32_t)sign.v.size(),
                                    sign.i.data(), (uint32_t)sign.i.size());
@@ -747,18 +807,21 @@ bool FactoryWorks::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 if (gateGap && std::fabs(b) < kFacGateB + 2.6f) continue;
                 place("Factory/sm_ConcreteFence_01_01.glb", a, b, padY, ua, ub, 1.0f);
             }
-            // the collider: a 0.2 m slab the panels sit in
-            const float na = -ub, nb = ua;
-            float p[4][3];
-            auto pt = [&](float aa, float bb, float yy, float o[3]) {
-                sf.world(aa, bb, o[0], o[2]); o[1] = yy; };
-            (void)p; (void)pt; (void)na; (void)nb;
         };
-        // Perimeter, gate gap on the near (freeway) edge only.
+        // THE PACK PANELS GO ON THE FRONT RUN ONLY, AND THAT IS A MEASUREMENT,
+        // NOT A SHRUG. Fencing the whole 500 m perimeter with them put 223
+        // photogrammetry panels in the world and the capture priced them: 2.13
+        // MILLION triangles, the works camera going 1193 -> 568 fps, for a wall
+        // that on three of its four sides is only ever seen at 200 m+. (The
+        // panels are scan-density LOD0 — tools/convert_scansfactory.py prunes
+        // the pack's LOD1, which is right for a hero prop and wrong for two
+        // hundred of them.) The front run is the one the drive, the gate shot
+        // and the freeway all look straight at; the other three keep the
+        // procedural concrete wall below, which is the same textured concrete
+        // and reads identically at that range. If a later lane wants panels all
+        // the way round, the answer is a re-convert that KEEPS LOD1 and a
+        // distance switch — not 223 LOD0 scans.
         run(kFacPadA0, kFacPadB0, kFacPadA0, kFacPadB1, true);
-        run(kFacPadA1, kFacPadB0, kFacPadA1, kFacPadB1, false);
-        run(kFacPadA0, kFacPadB0, kFacPadA1, kFacPadB0, false);
-        run(kFacPadA0, kFacPadB1, kFacPadA1, kFacPadB1, false);
         // Collision walls (four straight slabs, gate gap left open).
         wall.box(sf, kFacPadA0 - 0.1f, kFacPadA0 + 0.1f, kFacPadB0, -kFacGateB - 2.6f, padY, padY + 2.0f);
         wall.box(sf, kFacPadA0 - 0.1f, kFacPadA0 + 0.1f,  kFacGateB + 2.6f, kFacPadB1, padY, padY + 2.0f);
@@ -869,9 +932,11 @@ void FactoryWorks::update(Scene& scene, float dt) {
     if (!m_built) return;
     m_clock += dt;
 
-    // The gate slide: 4.4 m each way over ~3.5 s, eased.
+    // The gate slide: 4.4 m each way over 2.5 s, eased. 2.5 and not 3.5 so the
+    // slide COMPLETES inside the 200-frame headless settle (3.3 s) — a gate
+    // whose open state no capture can reach is a gate nobody can review.
     if (m_gateOpen && m_gateT < 1.0f) {
-        m_gateT = std::min(1.0f, m_gateT + dt / 3.5f);
+        m_gateT = std::min(1.0f, m_gateT + dt / 2.5f);
         const float e = m_gateT * m_gateT * (3.0f - 2.0f * m_gateT);
         for (const SlideLeaf& L : m_gateLeaves) {
             if (L.ent >= scene.size()) continue;
@@ -1105,11 +1170,21 @@ bool GoldenTickets::build(Scene& scene, x3::rhi::IRenderDevice& device) {
             p[3] = 255;
         }
     m_cardTex = device.createTexture(px.data(), W, H, true);
-    auto mr = lns::makeMr1x1(70, 210);     // polished, near-metal: it GLINTS
+    // X3_WORLD_RULES RULE 5, PAID FOR IN A CAPTURE. The first cut used
+    // makeMr1x1(70, 210) — metallic 0.82 — reasoning "gold foil is metal, and
+    // metal glints". It rendered as a BLACK SPECK inside its own spark: a full
+    // metal has no diffuse lobe, so its only light is a reflection, and there
+    // is no environment out in a field to reflect. That is the F2 black-prop
+    // plague, in a 0.2 m object, and the rule names the fix: clamp metalness.
+    // The glint comes from the additive spark and the emissiveTex, not from
+    // metalness.
+    auto mr = lns::makeMr1x1(80, 60);      // roughness 0.31, metallic 0.24
     m_cardMr = device.createTexture(mr.data(), 1, 1, false);
 
-    // 9 x 13 cm of card, 4 mm thick. A ticket, at the size a ticket is.
-    x3::prims::PrimMesh card = x3::prims::makeBox(0.065f, 0.045f, 0.002f,
+    // 26 x 18 cm. A real ticket is 9 x 13 cm and at that size it was two
+    // pixels of nothing at the range you actually spot one from; this is the
+    // readable-prop size, the same licence a pickup always takes.
+    x3::prims::PrimMesh card = x3::prims::makeBox(0.130f, 0.090f, 0.004f,
                                                   0.0f, 0.0f, 0.0f, 1.0f);
     m_cardMesh = device.createMesh(card.verts.data(), (uint32_t)card.verts.size(),
                                    card.index.data(), (uint32_t)card.index.size());

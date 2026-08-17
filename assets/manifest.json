@@ -30,6 +30,114 @@
       "source_note": "F3: hospital cot for the canon detention cell (textures injected)"
     },
     {
+      "repo_path": "assets/converted_glb/Factory/sm_Barrel_01_01.glb",
+      "sha256": "58d6d8d2f70b91c3146ff9c949a42ac6c3b7f7de1f61799bccc9c71fcfcb72ff",
+      "size": 6549212,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Chimney_01_01.glb",
+      "sha256": "a68fc3adff89fd0d9fb16e8d61232cdf06c4323b880ebbd7c2d60b8c31a30f56",
+      "size": 11822516,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Chimney_01_02.glb",
+      "sha256": "0590bea052195d7475c4fcf2c2367034901b0b1e0a59d081c64577a2fbfcccd7",
+      "size": 11043836,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_ConcreteFence_01_01.glb",
+      "sha256": "3344b2b2541ab12a78fb05762af3e32c4739f70785b6afb74b8733945fe5a8f6",
+      "size": 11165376,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_ConcreteFence_01_02.glb",
+      "sha256": "67b663185147396aba63d75e9aab549b860ac4cea91881f785dae95effb2f8a7",
+      "size": 10795172,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Container_Body_01_01.glb",
+      "sha256": "ea9bbb3292ad2e32b1960aaaaaaffc923ad0f378e4a213acbfdba2e969d74ed3",
+      "size": 5796636,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_CraneMain_OneMesh_01_01.glb",
+      "sha256": "fe1f61c5a00c4d297f8bcb1f1fccd3874e041cf6358321424fb735672784fcc8",
+      "size": 31900812,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_FactoryWall_01_01.glb",
+      "sha256": "63414135db5f32253a1d0ff89fee58db0b8745c9c1ed15b24c9733762de34996",
+      "size": 22938496,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_FactoryWall_02_01.glb",
+      "sha256": "0b34c995bce9f5298e23cb6de3904ac7e6db32f33a0746fb8fb2cb7bbb7ae06d",
+      "size": 17907504,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Hall_01_01.glb",
+      "sha256": "b32c230fc4bc86b3b31c33fc3cebf895bf5ac44ad0db45346dad8b1732079c66",
+      "size": 4728560,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Hall_02_01.glb",
+      "sha256": "c130b57c902255ab0c484e932f39e46c57ad32ad966e4f3621e431dc16aafd74",
+      "size": 8282712,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Hall_03_01.glb",
+      "sha256": "86aea55fa6ed50eacee49a43b7231e54352046141918e9ab3705b62ea5ac11aa",
+      "size": 4454316,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_MainGate_01_01.glb",
+      "sha256": "886f0a7fa3e074ef3ce6205f937f0015faefd5ab853d65ead0682d027269343f",
+      "size": 12288632,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_MetalConstructionRoof_01_01.glb",
+      "sha256": "f130531753a1752dba58a5f2bd3d28388284bc1789f29b845ab7dee35964ec94",
+      "size": 4661192,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Pipe_Elbow_03_02.glb",
+      "sha256": "cf4052a9e4973212c4dcbe765310252bb7c33e206da89b0e33ba62b90ee8b3a2",
+      "size": 4166808,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Pipe_Straight_8m_03_14.glb",
+      "sha256": "6c1eeab9c9776182db0d2cdc70b4136669ca3e30465876fe639dd4ea1b20b661",
+      "size": 3269984,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Smokestack_01_01.glb",
+      "sha256": "a77d829c967edbafb618dd633048b5dc861452c64a7365284d052d0122d648e0",
+      "size": 3968012,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_WaterTank_01_01.glb",
+      "sha256": "21b6501cc202d327f024d5181adc86cda3ab6ba9c678efe718e713b35974a62e",
+      "size": 5443616,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Ceiling_A.glb",
       "sha256": "a4f5d80cb143aff31d1aa11be6b8c9218b305ad64289d518c11398b7796e10bd",
       "size": 7188348,

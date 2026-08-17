@@ -26,6 +26,7 @@
 #include "../road_network.h"
 #include "../river_bridge.h"
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
+#include "../factory.h"          // W-FACTORY — the Glimvale Works + the golden tickets
 #include "../vehicle.h"
 #include "../mesh_prims.h"
 #include "../asset_root.h"
@@ -288,6 +289,32 @@ int hostTunnel(HostContext& hc) {
                 outerConnOn = false;
             }
         }
+    }
+    // THE GLIMVALE WORKS (X3_FACTORY=0 to disable — the flag is for turning it
+    // OFF, NO_SLOP rule 6). Planned and its drive registered HERE, in the boot
+    // slot, for the reason every producer above is here: app/terrain.h's
+    // registry closes at the first height query, and the streamer inits below.
+    // LAST of the roads, so the site scoring reads a field with every other
+    // carve already in it and can refuse a pad that lands on somebody's road.
+    x3::game::FactoryPlan        facPlan;
+    x3::game::FactoryDriveResult facDrive;
+    bool facOn = false;
+    {
+        const char* e = std::getenv("X3_FACTORY");
+        facOn = ringOn && !(e && e[0] == '0');       // needs a freeway to be seen from
+        if (facOn) {
+            facPlan = x3::game::planFactoryWorks(ringSpec, ringRoadY);
+            if (facPlan.ok) {
+                facDrive = x3::game::registerFactoryDrive(facPlan, ringSpec, ringRoadY);
+                facOn = facDrive.ok;
+            } else {
+                facOn = false;
+            }
+            if (!facOn) x3::logWarn("--world tunnel: the works was not sited — "
+                                    "no landmark, no tickets");
+        }
+    }
+    {
         char cb[128];
         std::snprintf(cb, sizeof(cb), "--world tunnel: corridor registry %u of %u used",
                       x3::game::terrainCorridorCount(), x3::game::kMaxTerrainCorridors);
@@ -363,6 +390,7 @@ int hostTunnel(HostContext& hc) {
             addSpec(rangeCircuit.spec, "RANGE CIRCUIT");
             addSpec(rangeCircuit.accessSpec, "RANGE CIRCUIT");
         }
+        if (facOn) addSpec(facDrive.spec, "WORKS DRIVE");
         char mb[128];
         std::snprintf(mb, sizeof(mb), "[tunnel] map: %u road overlay polyline(s) staged",
                       (uint32_t)mapRoutes.size());
@@ -772,6 +800,42 @@ int hostTunnel(HostContext& hc) {
         if (riverRoad.ringJctB.valid)
             x3::game::buildJunctionMouth(riverRoad.ringJctB, scene, *device, *phys);
     }
+    // ---- THE GLIMVALE WORKS ------------------------------------------------
+    // Pavement first (so the mouth laps onto a road that exists), then the
+    // works itself, which reads the CARVED field for its platform skirt and so
+    // has to come after the streamer. See app/factory.h.
+    x3::game::FactoryWorks factory;
+    x3::game::GoldenTickets tickets;
+    if (facOn) {
+        x3::game::buildRoadRibbon(facDrive.spec, scene, *device, *phys, &facDrive.roadY);
+        if (facDrive.jct.valid)
+            x3::game::buildJunctionMouth(facDrive.jct, scene, *device, *phys);
+        factory.build(scene, *device, *phys, facPlan);
+    }
+    // THE GOLDEN TICKETS. Five cards, five landmarks — the list comes from
+    // factoryTicketSpots(), the SAME call --test-factory gates, so the world
+    // and its test can never hide them in different places (NO_SLOP rule 4).
+    {
+        x3::game::TicketSpotDef sp[x3::game::kTicketCount];
+        const uint32_t ns = x3::game::factoryTicketSpots(facPlan, sp);
+        for (uint32_t k = 0; k < ns; ++k)
+            tickets.addSpot(sp[k].name, sp[k].x, sp[k].y, sp[k].z);
+        tickets.build(scene, *device);
+        // X3_TICKETS=n seeds the count. This is the SAVE HOOK standing in for a
+        // save file (the hunt has no persistence yet and says so), and it is
+        // also the only way a STILL can prove the HUD counter and the open
+        // gate — a headless capture cannot walk up and press E. `tickets <n>`
+        // in the console does the same thing live.
+        if (const char* te = std::getenv("X3_TICKETS")) {
+            tickets.setCollected(scene, std::atoi(te));
+            if (tickets.allFound() && facOn) factory.openGate();
+            char tb2[96];
+            std::snprintf(tb2, sizeof(tb2), "tickets: seeded at %d/%d from X3_TICKETS",
+                          tickets.collected(), (int)tickets.spotCount());
+            x3::logInfo(tb2);
+        }
+    }
+
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
 
     // Tall broadleaf groves shading the open-country stretches of the road
@@ -1401,6 +1465,15 @@ int hostTunnel(HostContext& hc) {
                                   skyVisibleAt(*phys, cam[0], cam[1], cam[2], route.dirX, route.dirZ));
                 }
 
+                // THE WORKS HAS TO LIVE IN THE CAPTURE LOOP TOO. This is the
+                // same trap the weather block above documents, and gotcha 4.1b
+                // (echotropolis' streamed content, never ticked in the settle
+                // loop, so every still showed an empty bay): a plume ticked
+                // only in the interactive loop is a plume no screenshot can
+                // ever prove. The settle is 200 frames at 1/60 s = 3.3 s of
+                // stack time, which is a real column by capture.
+                if (facOn) factory.update(scene, dt);
+
                 if (i == kFrames - 1) device->armCapture(out.c_str());
                 auto frame = device->beginFrame();
                 if (frame.valid) {
@@ -1409,9 +1482,18 @@ int hostTunnel(HostContext& hc) {
                     // forests: camera fwd = (cos yaw, 0, sin yaw) — gotcha 4.1
                     forests.draw(*device, frame, cam,
                                  std::cos(cam[3]), std::sin(cam[3]));
+                    if (facOn) factory.drawSmoke(*device, cam);
+                    tickets.drawGlints(*device);
                     if (carBuilt) car.render(frame);
                     riverLife.render(*device, frame, scene);
                     if (shotDraw) shotDraw(frame);   // the staged swimmer
+                    // The ticket HUD in a STILL, but ONLY once a card has been
+                    // taken (X3_TICKETS=n, or the console). At the default 0/5
+                    // this draws nothing, so every existing reference capture in
+                    // this host is byte-identical — the whole point of gating it
+                    // on state rather than on a second env knob.
+                    if (tickets.collected() > 0)
+                        tickets.drawHud(*device, frame, cam[0], cam[1], cam[2]);
                     if (weatherOn) precip.submit(*device, frame);
                 }
 
@@ -1905,6 +1987,8 @@ int hostTunnel(HostContext& hc) {
         }
 
         if (carBuilt) car.shutdown();
+        factory.shutdown(*device);
+        tickets.shutdown(*device);
         trees.shutdown(*device);
         forests.shutdown(*device);
         riverLife.shutdown(audioOn ? audio.get() : nullptr);
@@ -1999,6 +2083,29 @@ int hostTunnel(HostContext& hc) {
                 markers.push_back({ "LNSS GARAGE", "garage", wx, wz });
                 break;
             }
+        }
+        // THE WORKS + THE FIVE CARDS on the map. MapMarker is the mechanism
+        // this host already has and already draws (the LNSS garage above), so
+        // the landmark is findable TODAY rather than after another lane lands.
+        //
+        // TODO (Lane 7, W-MAP): when the agreed `MapPoi { name, x, z, icon }`
+        // registration header exists, register these through it instead — the
+        // works at (facPlan.cx, facPlan.cz) with icon "factory", and one
+        // "ticket" pin per uncollected spot. Nothing else about them moves.
+        if (facOn) {
+            markers.push_back({ "THE GLIMVALE WORKS", "factory",
+                                facPlan.cx, facPlan.cz });
+            char fb2[200];
+            std::snprintf(fb2, sizeof(fb2),
+                "[tunnel] map POI (Lane 7 TODO — staged as a MapMarker for now): "
+                "THE GLIMVALE WORKS at (%.0f, %.0f), gate (%.0f, %.0f)",
+                facPlan.cx, facPlan.cz, facPlan.gateX, facPlan.gateZ);
+            x3::logInfo(fb2);
+        }
+        for (uint32_t k = 0; k < tickets.spotCount(); ++k) {
+            float tp[3]; tickets.spotPos(k, tp);
+            markers.push_back({ std::string("TICKET: ") + tickets.spotName(k),
+                                "ticket", tp[0], tp[2] });
         }
         char mkb[96];
         std::snprintf(mkb, sizeof(mkb), "[tunnel] map: %u marker(s) staged", (uint32_t)markers.size());
@@ -2192,6 +2299,46 @@ int hostTunnel(HostContext& hc) {
         shell.addToggleCommand("vampire", "J&S Vampire knock control: +7% torque from timing",
             [&]{ return vampireOn; },
             [&](bool on) { vampireOn = on; });
+        // ---- THE GOLDEN TICKETS ------------------------------------------
+        // `tickets` reads, `tickets <n>` sets. THE ARG CONVENTION
+        // (engine/core/IConsole.h, documented in blood and gate-locked by
+        // --test-console): args[0] is the FIRST ARGUMENT, not the command
+        // name. Every host command written against args[1] was silently dead
+        // for two days.
+        con->registerCommand("tickets", [&](const std::vector<std::string>& args) {
+            if (!args.empty()) {
+                tickets.setCollected(scene, std::atoi(args[0].c_str()));
+                if (tickets.allFound()) factory.openGate();
+            }
+            char b[256];
+            std::snprintf(b, sizeof(b), "TICKETS %d/%d  —  the works gate is %s",
+                          tickets.collected(), (int)tickets.spotCount(),
+                          factory.gateOpen() ? "OPEN" : "SHUT");
+            con->print(b);
+            for (uint32_t k = 0; k < tickets.spotCount(); ++k) {
+                float tp[3]; tickets.spotPos(k, tp);
+                char lb[192];
+                std::snprintf(lb, sizeof(lb), "  %-18s (%.0f, %.0f)  %s",
+                              tickets.spotName(k), tp[0], tp[2],
+                              tickets.spotTaken(k) ? "FOUND" : "still hidden");
+                con->print(lb);
+            }
+        }, "golden tickets: 'tickets' reads the count, 'tickets <n>' sets it "
+           "(all five opens the works gate)");
+        con->registerCommand("factory", [&](const std::vector<std::string>&) {
+            if (!facOn || !factory.built()) { con->print("the works was not built this boot"); return; }
+            float gp[3]; factory.gatePoint(gp);
+            char b[300];
+            std::snprintf(b, sizeof(b),
+                "THE GLIMVALE WORKS — site (%.0f, %.0f) platform %.1f m, gate "
+                "(%.0f, %.0f) %s (slide %.0f%%), %u meshes / %u tris / %u pack "
+                "instances, drive %.0f m off the freeway",
+                factory.plan().cx, factory.plan().cz, factory.plan().padY,
+                gp[0], gp[2], factory.gateOpen() ? "OPEN" : "SHUT",
+                factory.gateSlide() * 100.0f, factory.meshCount(),
+                factory.triCount(), factory.propCount(), facDrive.road.lengthM);
+            con->print(b);
+        }, "report the Glimvale Works: site, gate state, build cost");
         con->registerCommand("car_reset", [&](const std::vector<std::string>&) {
             car.setTorqueBoost(1.0f);
             // These ARE the buildPhysics numbers in vehicle.cpp (NO_SLOP rule
@@ -2502,7 +2649,31 @@ int hostTunnel(HostContext& hc) {
         {
             static bool eWasDown = false;
             const bool eDown = kd(GLFW_KEY_E);   // shell-gated: E while typing is just a letter
-            if (eDown && !eWasDown && carBuilt) {
+            // A GOLDEN TICKET IN REACH OWNS THE PRESS. E already means
+            // get-out/get-in, so the two have to be arbitrated somewhere and
+            // "the thing you are standing on top of wins" is the only reading
+            // that is never surprising: the card is 3.5 m away, the car you
+            // would be entering is not. Consuming the edge here is what stops
+            // one press both taking the card AND folding you into the driver's
+            // seat. The prompt (drawn by GoldenTickets::drawHud) is what makes
+            // the rule visible — a control nobody can see is a control nobody
+            // has.
+            bool eConsumed = false;
+            {
+                float ppos[3] = { 0, 0, 0 };
+                if (!driving && footSpawned) {
+                    const x3::phys::Vec3 ft = onFoot.feet();
+                    ppos[0] = ft.x; ppos[1] = ft.y; ppos[2] = ft.z;
+                } else if (carBuilt) {
+                    car.chassisPos(ppos);
+                }
+                const bool edge = eDown && !eWasDown;
+                if (tickets.update(scene, fdt, ppos[0], ppos[1], ppos[2], edge) >= 0) {
+                    eConsumed = true;
+                    if (tickets.allFound()) factory.openGate();
+                }
+            }
+            if (eDown && !eWasDown && carBuilt && !eConsumed) {
                 if (driving) {
                     float vp[3]; car.chassisPos(vp);
                     parkedAt[0] = vp[0]; parkedAt[1] = vp[1]; parkedAt[2] = vp[2];
@@ -3089,10 +3260,20 @@ int hostTunnel(HostContext& hc) {
                 audio->setReverbParams(0.3f + 2.2f * (1.0f - skyVis),
                                        0.05f + 0.40f * (1.0f - skyVis));
         }
+        // THE WORKS, ALIVE: the tube cores breathe, the plant blocks shake, the
+        // gate slides, the stacks make smoke. Cheap — a few entity transforms
+        // and one particle integrator.
+        if (facOn) factory.update(scene, fdt);
+
         auto frame = device->beginFrame();
         if (frame.valid) {
             scene.render(*device, frame);
             trees.draw(*device, frame);
+            // Particle batches are CLEARED by beginFrame, so these submits live
+            // INSIDE the frame and are never hoisted (the warning host_echotropolis
+            // carries at its own submitParticles site).
+            if (facOn) { const float fcam2[3] = { cx, cy, cz }; factory.drawSmoke(*device, fcam2); }
+            tickets.drawGlints(*device);
             {   // forests: prune by the live camera (fwd = cos/sin yaw, 4.1)
                 const float fcam[3] = { cx, cy, cz };
                 forests.draw(*device, frame, fcam,
@@ -3529,6 +3710,15 @@ int hostTunnel(HostContext& hc) {
             }
             drawWaypointChevron(frame, wpv.x, pPos[1], wpv.z, pPos[0], pPos[1], pPos[2], camYaw);
         }
+        // ---- TICKETS n/5, the [E] prompt and the pickup toast --------------
+        if (frame.valid && !mapOpen) {
+            float pPos2[3] = { vp[0], vp[1], vp[2] };
+            if (!driving && footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                pPos2[0] = ft.x; pPos2[1] = ft.y; pPos2[2] = ft.z;
+            }
+            tickets.drawHud(*device, frame, pPos2[0], pPos2[1], pPos2[2]);
+        }
         // ---- THE MAP SCREEN (M). Drawn over the world and the cluster, under
         // the shell (the console stays reachable over the map). Input assembly
         // is host_streamed's: raw WASD/arrows pan (the car's WASD is gated off
@@ -3595,6 +3785,8 @@ int hostTunnel(HostContext& hc) {
     }
 
     if (audioOn) engineNote.shutdown();          // bank voices before the mixer dies
+    factory.shutdown(*device);                   // pack loaders + the smoke pool
+    tickets.shutdown(*device);                   // the card mesh/textures it owns
     riverLife.shutdown(audioOn ? audio.get() : nullptr);   // outboard loops + hulls
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     trees.shutdown(*device);
