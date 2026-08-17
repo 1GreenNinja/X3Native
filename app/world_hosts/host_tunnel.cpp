@@ -2124,8 +2124,20 @@ int hostTunnel(HostContext& hc) {
             [&](float v) { x3::phys::WheeledTuning t; t.antiRollFront = v; car.applyTuning(t); });
         shell.addFloatCommand("car_arb_r", "rear anti-roll bar N/m (stock 6000; KEEP UNDER 12000 or the solver flips the car)",
             [&](float v) { x3::phys::WheeledTuning t; t.antiRollRear = v; car.applyTuning(t); });
-        shell.addFloatCommand("car_final", "final-drive ratio (stock 4.6; 4.2 trades punch for ~168 mph top)",
+        shell.addFloatCommand("car_final", "final-drive ratio (stock 5.2, paired with the 0.50 6th; shorter = punch, taller = top end)",
             [&](float v) { x3::phys::WheeledTuning t; t.finalDrive = v; car.applyTuning(t); });
+        // AERO DOWNFORCE — the spoiler (owner: "spoilers for downforce"). Scale
+        // over the stock wing: 0.35x weight at 70 mph, capped 1.10x from ~124
+        // mph, applied rear-biased (see the DOWNFORCE block in JoltVehicle.cpp
+        // preStep — PAIRED numbers, NO_SLOP rule 4).
+        shell.addFloatCommand("car_downforce", "spoiler downforce scale (1 = stock: 0.35x weight at 70 mph, cap 1.1x; 0 = off)",
+            [&](float v) { x3::phys::WheeledTuning t; t.downforce = std::max(0.0f, v); car.applyTuning(t); });
+        // ROLL-RATE DAMPING (flip resistance): bleeds roll RATE while >= 3
+        // wheels are grounded. THE safe tool at 60 Hz — do NOT chase flips
+        // with stiffer ARBs instead (>= 15000 N/m the solver pumps the roll
+        // mode and flips the car; see car_arb_f's ceiling).
+        shell.addFloatCommand("car_rolldamp", "roll-rate damping N*m*s/rad (stock 2000; 0 = off)",
+            [&](float v) { x3::phys::WheeledTuning t; t.rollDamp = std::max(0.0f, v); car.applyTuning(t); });
         // ---- speed-sensitive steering (see DriveDemo::SteerParams) ----
         shell.addFloatCommand("car_steer_lo", "mph at/below which you get 100% steering lock (stock 25)",
             [&](float v) { car.steerParams().fullLockMph = v; });
@@ -2201,12 +2213,13 @@ int hostTunnel(HostContext& hc) {
             x3::phys::WheeledTuning t;
             t.maxEngineTorque = 800.0f; t.maxEngineRPM = 7500.0f;
             t.gripScale = 1.0f; t.latGripScale = 1.0f; t.latTail = 1.0f;
-            t.massKg = 1083.2f; t.finalDrive = 4.6f;
+            t.massKg = 1083.2f; t.finalDrive = 5.2f;
             t.antiRollFront = 8000.0f; t.antiRollRear = 6000.0f;
+            t.downforce = 1.0f; t.rollDamp = 2000.0f;
             car.applyTuning(t);
             car.steerParams() = x3::game::DriveDemo::SteerParams{};
             car.turbo() = x3::game::DriveDemo::TurboParams{};
-            con->print("car back to the shipped 992 Turbo S numbers (800 Nm, stock grip, 4.6 final)");
+            con->print("car back to the shipped 992 Turbo S numbers (800 Nm, stock grip, 5.2 final, stock spoiler)");
         }, "restore the stock vehicle tune");
         con->registerCommand("car", [&](const std::vector<std::string>&) {
             char b[256];

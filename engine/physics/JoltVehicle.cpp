@@ -104,6 +104,27 @@ constexpr float kShiftUpFrac   = 0.94f;
 // (~2500 rpm, like a real auto's kickdown) leaves a wide band so the box holds
 // the gear it just picked unless the car genuinely bogs.
 constexpr float kShiftDownFrac = 0.33f;
+// ---- THROTTLE-ADAPTIVE SHIFT BAND (2026-08-16, "it shouldnt peg redline the
+// whole time you drive... most cars dont do that"). Jolt's auto box shifts on
+// RPM thresholds ALONE — it knows nothing about throttle — so with the WOT
+// points above (0.94/0.33) a car CRUISING at 70 mph sat in 5th at ~4800 rpm
+// forever: the 0.50 overdrive 6th was unreachable below ~7050 rpm = ~106 mph.
+// A real automatic shifts EARLY at light throttle and holds to redline at WOT.
+// So the fractions above become the WOT end of a band, and preStep slides the
+// live thresholds between these light-throttle values and the WOT ones by the
+// (smoothed) throttle. Numbers, derived not vibed:
+//   up 0.55 (4125): light cruise upshifts land the next gear on the fat part
+//     of the curve; at 70 mph in 5th (4822 rpm with the 0.50x5.2 gearset,
+//     vehicle.cpp — PAIRED) this is what actually engages 6th at cruise.
+//   down 0.22 (1650): after the 5th->6th step (ratio 2.05, the widest), a
+//     light upshift at 4125 lands at 4125/2.05 = 2013 rpm; the downshift
+//     threshold must sit BELOW that or the box hunts 5-6-5-6 near 63 mph.
+//     0.22*7500 = 1650 < 2013 with margin (plus the 0.55 s switch latency).
+// Throttle smoothing is asymmetric (rise ~0.12 s, fall ~0.7 s): a WOT stab
+// raises the band almost immediately (kickdown feels instant), a momentary
+// lift mid-corner does NOT slam an upshift.
+constexpr float kShiftUpLightFrac   = 0.55f;
+constexpr float kShiftDownLightFrac = 0.22f;
 // Fallback redline for vehicles authored without one, matching VehicleEngine's
 // own default so behavior is unchanged for them.
 constexpr float kDefaultRedlineRPM = 6000.0f;
@@ -246,6 +267,7 @@ public:
         JPH::WheeledVehicleControllerSettings* cs = new JPH::WheeledVehicleControllerSettings();
         m_baseMaxTorque = d.maxEngineTorque;            // tuning/boost baseline
         m_finalDrive = d.finalDrive;
+        m_redlineRPM = d.maxEngineRPM > 0.0f ? d.maxEngineRPM : kDefaultRedlineRPM;
         cs->mEngine.mMaxTorque = d.maxEngineTorque;
         cs->mEngine.mMaxRPM    = d.maxEngineRPM;
         // Flywheel inertia — see WheeledVehicleDesc::engineInertia. Lower spins
@@ -388,8 +410,30 @@ public:
 
     void setInput(const VehicleInput& in) override { m_in = in; }
 
-    void preStep(float) override {
+    void preStep(float dt) override {
         if (!m_ctrl) return;
+        // THROTTLE-ADAPTIVE SHIFT BAND (see kShiftUpLightFrac above for the
+        // full story + the derived numbers). The live transmission settings are
+        // read by Jolt every step, so sliding the thresholds here is exactly
+        // how a load-aware automatic behaves: early relaxed shifts at cruise,
+        // pull-to-redline at WOT, instant kickdown on a stab of throttle.
+        if (dt > 0.0f) {
+            const float thr = std::clamp(std::fabs(m_in.throttle), 0.0f, 1.0f);
+            const float tau = (thr > m_thrSm) ? 0.12f : 0.70f;   // rise fast, fall slow
+            m_thrSm += (thr - m_thrSm) * (1.0f - std::exp(-dt / tau));
+            // SQUARED load shaping: holding 70 mph in the 0.50 overdrive takes
+            // ~0.4 pedal (drag + a low-boost turbo), and a LINEAR band read
+            // that as "half sporty" and held 5th at 5000 rpm forever
+            // (measured, H1). load = thr^2 keeps everything below ~0.6 pedal
+            // in the relaxed end of the band while a genuine WOT still slides
+            // the thresholds all the way up.
+            const float load = m_thrSm * m_thrSm;
+            JPH::VehicleTransmission& tr = m_ctrl->GetTransmission();
+            tr.mShiftUpRPM   = m_redlineRPM *
+                (kShiftUpLightFrac   + (kShiftUpFrac   - kShiftUpLightFrac)   * load);
+            tr.mShiftDownRPM = m_redlineRPM *
+                (kShiftDownLightFrac + (kShiftDownFrac - kShiftDownLightFrac) * load);
+        }
         // ANTI-SPIN (BEFORE the step). Clamp each wheel to ~10% slip so the
         // engine's semi-implicit solve sees the clamped wheel, not the free-rev.
         // Running it in postStep left the engine RPM one step stale — the wheel
@@ -426,6 +470,67 @@ public:
             const float spd = vel.Length();
             if (spd > 0.5f)
                 m_chassis->AddForce(-vel * (kAeroDrag * spd));
+        }
+
+        // AERO DOWNFORCE — the spoiler (owner, 2026-08-16: "Can we
+        // substantially increase the 'stick on the road' idea?... and spoilers
+        // for downforce"). F = k*v^2 pressing the body onto the road along the
+        // chassis's own -up (so a banked road is pressed INTO, not just world-
+        // down), applied at a point kDownforceRearOffset BEHIND the center of
+        // mass — that is what a rear wing does: it loads the rear axle. NOTE
+        // no new IPhysicsWorld API was needed (grep receipt, NO_SLOP rule 1):
+        // JPH::Body::AddForce(force, position) is Jolt's own apply-at-point,
+        // and this controller already holds the raw chassis body.
+        //
+        // Sizing (MASS-RELATIVE so car_mass keeps the character; MEASURED in
+        // the --test-vehicle handling section):
+        //   F = scale * m*g * min(kDownforceFrac70 * (v/31.3)^2, kDownforceCap)
+        //   -> 0.35x weight at 70 mph, 0.71x at 100, capped 1.10x from 124 mph.
+        // The cap doubles the wheel load at speed WITHOUT doubling the lateral
+        // force needed to tip: rollover threshold rises by the same (1 + F/mg)
+        // factor as the grip does, so the margin engineered at the CoM comment
+        // in vehicle.cpp is preserved, not consumed. `car_downforce` scales it
+        // live (0 = spoiler off); WheeledTuning::downforce is the plumbing.
+        {
+            const float v = forwardSpeed();      // the wing sees axial airflow
+            if (std::fabs(v) > 3.0f && m_downforceScale > 0.0f) {
+                constexpr float kDownforceFrac70    = 0.35f;   // x weight at 70 mph
+                constexpr float kDownforceCap       = 1.10f;   // x weight, max
+                constexpr float kV70                = 31.29f;  // 70 mph in m/s
+                constexpr float kDownforceRearOffset = 0.35f;  // m behind CoM
+                const float invM = m_chassis->GetMotionProperties()->GetInverseMass();
+                const float mass = invM > 1e-9f ? 1.0f / invM : 0.0f;
+                const float frac = std::min(kDownforceFrac70 * (v / kV70) * (v / kV70),
+                                            kDownforceCap);
+                const float mag  = m_downforceScale * mass * kGravity * frac;
+                const JPH::Quat rot = m_chassis->GetRotation();
+                const JPH::Vec3 down = -(rot * m_localUp);
+                const JPH::RVec3 at  = m_chassis->GetCenterOfMassPosition() +
+                                       rot * (-m_localForward * kDownforceRearOffset);
+                m_chassis->AddForce(down * mag, at);
+            }
+        }
+
+        // ROLL-RATE DAMPING (flip resistance, part 2). A violent slalom or a
+        // curb strike at speed pumps roll faster than springs+ARBs can absorb;
+        // this bleeds ROLL RATE (torque = -c * w_roll about the chassis forward
+        // axis) so the transient never accumulates into a rollover. Gated on
+        // >= 3 wheels touching: an airborne or two-wheeling car is left to real
+        // physics (and the recovery), so jumps still fly and a genuine tip
+        // still tips. This is THE safe tool at 60 Hz — stiffer anti-roll bars
+        // are NOT (>= 15 kN/m the solver pumps the roll mode and flips the car;
+        // measured, see WheeledVehicleDesc::antiRollFront). `car_rolldamp`.
+        if (m_rollDamp > 0.0f && m_constraint) {
+            int grounded = 0;
+            for (uint32_t i = 0; i < m_wheelCount; ++i) {
+                const JPH::Wheel* w = m_constraint->GetWheel(i);
+                if (w && w->HasContact()) ++grounded;
+            }
+            if (grounded >= 3) {
+                const JPH::Vec3 fwdW = m_chassis->GetRotation() * m_localForward;
+                const float rollRate = m_chassis->GetAngularVelocity().Dot(fwdW);
+                m_chassis->AddTorque(fwdW * (-m_rollDamp * rollRate));
+            }
         }
     }
 
@@ -547,6 +652,7 @@ public:
         }
         if (t.maxEngineRPM > 0.0f) {
             eng.mMaxRPM = t.maxEngineRPM;
+            m_redlineRPM = t.maxEngineRPM;   // the adaptive shift band re-derives from this
             // Keep the shift points tied to the NEW redline — a race cam that
             // raises the limiter has to move the shift band with it, or the box
             // upshifts mid-powerband and gives the cam away.
@@ -574,6 +680,10 @@ public:
                 diff.mDifferentialRatio = t.finalDrive;
             m_finalDrive = t.finalDrive;
         }
+        // AERO DOWNFORCE scale + ROLL-RATE DAMPING (see WheeledTuning and the
+        // preStep blocks that consume them). Sentinel < 0 leaves; 0 disables.
+        if (t.downforce >= 0.0f) m_downforceScale = t.downforce;
+        if (t.rollDamp  >= 0.0f) m_rollDamp       = t.rollDamp;
         // LATERAL BREAKAWAY SHAPE + LATERAL-ONLY GRIP (see WheeledTuning):
         // remembered so a later grip change re-applies the same shape/cap.
         // Everything tire is re-derived from the authored baselines below
@@ -670,6 +780,14 @@ private:
     float m_baseMaxTorque = 600.0f;                     // tuned baseline (boost multiplies)
     float m_finalDrive = 1.0f;                          // final-drive ratio (for the locked-RPM clamp)
     float m_boost = 1.0f;                               // nitrous multiplier (1 = none)
+    float m_redlineRPM = kDefaultRedlineRPM;            // adaptive shift band re-derives from this
+    float m_thrSm = 0.0f;                               // smoothed throttle (shift-band slider)
+    float m_downforceScale = 1.0f;                      // spoiler scale (see preStep DOWNFORCE)
+    // Roll-rate damping default (N*m*s/rad). 2000 on the ~1083 kg hero car
+    // bleeds a slalom's roll transient in ~0.25 s without deadening body
+    // motion; the --test-vehicle handling section A/Bs 0 vs this and gates on
+    // the shipped value. `car_rolldamp` tunes it live.
+    float m_rollDamp = 2000.0f;
     uint32_t m_dbgTick = 0;                             // X3_VEHDBG log cadence
 };
 
