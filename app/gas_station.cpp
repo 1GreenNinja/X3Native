@@ -56,8 +56,22 @@ constexpr float kPadLaneStepX  = 11.0f;
 constexpr float kPadLaneHalfW  = 6.0f;
 constexpr float kPadFalloff    = 13.0f;
 constexpr int   kPadNodes      = 30;      // <= TerrainCorridor::kMaxNodes
-// Corridors this module needs per station: kPadLanes + 1 driveway.
-constexpr uint32_t kCorridorsPerStation = (uint32_t)kPadLanes + 1u;
+// THE PARKING WINGS (owner, 2026-08-17: "pave the wing triangles yes.. make a
+// parking lot"). The model's flare wings out-span the driveway throat, and the
+// mouth between them used to be grass. Two asphalt aprons now flank the
+// driveway — inner edge SEAM-MATCHED to the driveway's own narrowing edge
+// (shared t-steps, shared y, no gap and no coplanar overlap), outer edge at
+// the lot's Z extent, far edge lapping the road apron exactly like the
+// driveway does — with painted stalls along the outer runs.
+constexpr float kParkInnerZ  = kDriveHalfZ;      // meets the driveway edge
+constexpr float kParkOuterZ  = kStationHalfZ;    // wingtip line, both sides
+constexpr float kStallDepthM = 5.0f;             // painted stall, outer edge in
+constexpr float kStallPitchM = 2.7f;
+constexpr float kStallLineW  = 0.12f;
+
+// Corridors this module needs per station: kPadLanes + 1 driveway + 2 parking
+// wings.
+constexpr uint32_t kCorridorsPerStation = (uint32_t)kPadLanes + 3u;
 // Leave the registry headroom rather than starving a later producer.
 constexpr uint32_t kCorridorReserve = 6;
 
@@ -442,6 +456,31 @@ uint32_t GasStationWorld::registerPads() {
             if (registerTerrainCorridor(c)) ++made;
         }
 
+        // --- the parking wings: one corridor per side of the driveway --------
+        for (int side = -1; side <= 1; side += 2) {
+            TerrainCorridor c;
+            c.nodeCount = 10;
+            c.halfWidth = (kParkOuterZ - kParkInnerZ) * 0.5f + 1.5f;
+            c.falloff   = 11.0f;
+            const float lzC = (float)side * (kParkInnerZ + kParkOuterZ) * 0.5f;
+            for (int n = 0; n < c.nodeCount; ++n) {
+                const float t  = (float)n / (float)(c.nodeCount - 1);
+                const float lx = kStationHalfX - 2.0f + (s.driveLenM + 4.0f) * t;
+                const float wx = s.x + dx * lx + px * lzC;
+                const float wz = s.z + dz * lx + pz * lzC;
+                c.x[n] = wx; c.z[n] = wz;
+                float deepest = 0.0f;
+                for (int b = -2; b <= 2; ++b) {
+                    const float lz = lzC + (float)b * (c.halfWidth * 0.45f);
+                    deepest = std::max(deepest,
+                        naturalAt(s.x + dx * lx + px * lz,
+                                  s.z + dz * lx + pz * lz) - apronY);
+                }
+                c.depth[n] = std::max(0.0f, deepest);
+            }
+            if (registerTerrainCorridor(c)) ++made;
+        }
+
         // THE MOUTH NOTE. planRoadBarriers() (inside buildRoadRibbon) refuses to
         // place a rail or a jersey wall within kJunctionBarrierClearM of a noted
         // junction, and the ribbon feathers its prism skirt to a drivable batter
@@ -518,7 +557,7 @@ GasStationBuildResult GasStationWorld::build(Scene& scene,
             o[2] = s.z + dz * lx + pz * lz;
         };
 
-        MeshBuf slab, skirt, drive;
+        MeshBuf slab, skirt, drive, lines;
 
         // --- the forecourt slab, 6 x 10 panels (UV density ~7 m per tile) ---
         constexpr int kNx = 6, kNz = 10;
@@ -600,11 +639,68 @@ GasStationBuildResult GasStationWorld::build(Scene& scene,
                     else          drive.quad(q[3], q[2], q[1], q[0], 2.0f);
                 }
             }
+
+            // --- THE PARKING WINGS (owner: "pave the wing triangles yes..
+            // make a parking lot"). One apron per side, from the driveway's
+            // narrowing edge out to the wingtip line. SEAM RULE: the inner
+            // edge reuses the driveway's OWN t-steps, w(t) and y(t), so the
+            // two surfaces share their boundary vertices — no strip of grass,
+            // no coplanar sliver to z-fight. The driveway's old side skirts
+            // end up buried underneath, which is exactly where a poured
+            // haunch would be.
+            for (int side = -1; side <= 1; side += 2) {
+                for (int k = 0; k < kSeg; ++k) {
+                    const float t0 = (float)k / kSeg, t1 = (float)(k+1) / kSeg;
+                    const float x0 = kStationHalfX + (endX - kStationHalfX) * t0;
+                    const float x1 = kStationHalfX + (endX - kStationHalfX) * t1;
+                    const float w0 = kDriveHalfZ * (1.0f - 0.25f * t0);
+                    const float w1 = kDriveHalfZ * (1.0f - 0.25f * t1);
+                    const float y0 = topY + (t0 > 0.75f ? 0.006f : 0.0f);
+                    const float y1 = topY + (t1 > 0.75f ? 0.006f : 0.0f);
+                    const float zi0 = w0 * side, zi1 = w1 * side;
+                    const float zo  = kParkOuterZ * side;
+                    float a[3],b[3],c[3],d[3];
+                    W(x0,zi0,y0,a); W(x1,zi1,y1,b); W(x1,zo,y1,c); W(x0,zo,y0,d);
+                    if (side > 0) drive.quad(a,b,c,d, 2.0f);
+                    else          drive.quad(d,c,b,a, 2.0f);
+                    // outer skirt, same batter as the driveway's
+                    float g0[3], g1[3];
+                    W(x0, zo + 0.9f*side, 0.0f, g0);
+                    W(x1, zo + 0.9f*side, 0.0f, g1);
+                    const float b0 = std::min(topY - 0.5f, terrainHeightAtWorld(g0[0], g0[2]) - 0.4f);
+                    const float b1 = std::min(topY - 0.5f, terrainHeightAtWorld(g1[0], g1[2]) - 0.4f);
+                    float q[4][3];
+                    W(x0, zo, y0, q[0]); W(x1, zo, y1, q[1]);
+                    W(x1, zo + 0.9f*side, b1, q[2]); W(x0, zo + 0.9f*side, b0, q[3]);
+                    if (side < 0) drive.quad(q[0], q[1], q[2], q[3], 2.0f);
+                    else          drive.quad(q[3], q[2], q[1], q[0], 2.0f);
+                }
+                // Painted stalls along the outer run — thin quads 4 mm proud
+                // (never coplanar), kept short of the road lap so they stay on
+                // the level stretch (y = topY there by construction).
+                for (float sx = kStationHalfX + 1.4f;
+                     sx + kStallLineW < kStationHalfX + (endX - kStationHalfX) * 0.72f;
+                     sx += kStallPitchM) {
+                    const float z0 = (kParkOuterZ - 0.3f) * side;
+                    const float z1 = (kParkOuterZ - 0.3f - kStallDepthM) * side;
+                    float a[3],b[3],c[3],d[3];
+                    W(sx, z0, topY + 0.004f, a);
+                    W(sx + kStallLineW, z0, topY + 0.004f, b);
+                    W(sx + kStallLineW, z1, topY + 0.004f, c);
+                    W(sx, z1, topY + 0.004f, d);
+                    if (side > 0) lines.quad(a,b,c,d, 1.0f);
+                    else          lines.quad(d,c,b,a, 1.0f);
+                }
+            }
         }
 
         upload(slab,  &concrete, pale, true);
         upload(skirt, &concrete, pale, true);
         upload(drive, &asphalt,  dark, true);
+        // Painted stall lines: flat white, no texture (a painted line IS flat
+        // paint), 4 mm proud, and no collider — paint is not a wall.
+        const float paint[4] = { 0.85f, 0.86f, 0.88f, 1.0f };
+        upload(lines, nullptr, paint, false);
         ++out.stations;
     }
 
@@ -736,7 +832,10 @@ void GasStationWorld::keepOutDiscs(std::vector<float>& outXZR) const {
         const float mx = s.x + s.dirX * (kStationHalfX + s.driveLenM * 0.5f);
         const float mz = s.z + s.dirZ * (kStationHalfX + s.driveLenM * 0.5f);
         outXZR.push_back(mx); outXZR.push_back(mz);
-        outXZR.push_back(kDriveHalfZ + 6.0f);
+        // The mouth disc covers the whole paved yard — driveway AND the
+        // parking wings out to their far corners — plus margin. A tree in a
+        // parking stall is the same defect as one in the throat.
+        outXZR.push_back(std::hypot(s.driveLenM * 0.5f + 3.0f, kParkOuterZ) + 4.0f);
     }
 }
 
@@ -990,9 +1089,20 @@ bool runGasStationSelfTest() {
                 const float wz = s.z + s.dirZ*lx + s.dirX*lz;
                 worst = std::max(worst, terrainHeightAtWorld(wx, wz) - topY);
             }
+        // ... and over the paved MOUTH — driveway plus both parking wings out
+        // to the wingtip line (the owner's parking lot must not have a hill
+        // in a stall any more than the forecourt may).
+        for (int i = 0; i <= 6; ++i)
+            for (int j = -4; j <= 4; ++j) {
+                const float lx = kStationHalfX + s.driveLenM * (float)i / 6.0f;
+                const float lz = kStationHalfZ * (float)j / 4.0f;
+                const float wx = s.x + s.dirX*lx - s.dirZ*lz;
+                const float wz = s.z + s.dirZ*lx + s.dirX*lz;
+                worst = std::max(worst, terrainHeightAtWorld(wx, wz) - topY);
+            }
         char b[128];
-        std::snprintf(b, sizeof(b), "carved ground stays below the apron (worst %+.2f m)",
-                      (double)worst);
+        std::snprintf(b, sizeof(b), "carved ground stays below the apron AND the "
+                      "parking mouth (worst %+.2f m)", (double)worst);
         check(worst <= 0.35f, b);
     }
 
