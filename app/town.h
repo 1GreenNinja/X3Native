@@ -21,21 +21,41 @@
 // the car cannot drive through a shop. A full triangle-mesh collider per
 // 100k-tri prefab would be twenty broadphase monsters for no gameplay gain.
 //
-// THE ART: armory prefabs from the HouseForge kit (D:/Assets/_glb/
-// prefab_buildings/HouseForge — whole, curated, PBR-textured BUILDINGS, not
-// modular wall panels), re-baked into assets/converted_glb/Town/ by
-// tools/town_assets.py: KHR_draco_mesh_compression decoded (the loader reads
-// draco, but a decoded file is one less thing to be wrong about) and, the
-// load-bearing part, EXT_texture_webp transcoded to PNG/JPEG. THE RECEIPT:
-// engine/asset/ModelLoader.cpp links draco but there is NO WebP decoder
-// anywhere in the tree, so every one of these prefabs would have rendered
-// grey and untextured — NO_SLOP rule 3, caught by inspecting the GLB rather
-// than by shipping it.
+// THE ART — SWAPPED 2026-08-17, and why. Round one dressed this town in the
+// armory's HouseForge prefabs. Eyes-on at full res they read as DERELICT: dark,
+// spiky, broken silhouettes, because that kit is authored as COLLAPSED RUINS
+// (docs/design/TOWN_ASSET_SCOUT.md reached the same verdict independently, and
+// the armory's own thumbnail bakes show it too). Nothing was wrong with the
+// placement machinery, so nothing about it changed — only the tables did.
 //
-// ORIENTATION IS MEASURED, NOT GUESSED (X3_WORLD_RULES rule 0/3): each
-// prefab's FRONT is the horizontal direction from its bounding-box centre to
-// its named door node (SM_*_Door*). Those angles are baked into kLots below,
-// one per asset, and listed in docs/design/TOWN_MANIFEST.md.
+// The kit is now the licensed `Complete Racing Game URP All in One` pack:
+// Red_House House_1..4 as the shells, its own 7.2 m highway lamp, its roadside
+// billboards and its picket fence. ONE pack means one register, and that pack
+// was authored for a DRIVING game, so the town belongs to this world's road
+// network instead of being a medieval village a freeway happens to pass.
+// Eight facades come from four shells in two real photographic paints.
+//
+// THE PIPELINE TRAP, and the receipt (tools/town_assets.py):
+//   * the pack ships NO Unity `.mat`/`.meta` files at all, so FBX2glTF emits
+//     1x1 WHITE PLACEHOLDER textures and convert_unity_pack.py's GUID
+//     resolution has nothing to resolve — every building would have been flat
+//     grey (NO_SLOP rule 3). The tool injects the pack's real albedos BY
+//     MATERIAL NAME instead;
+//   * three of the four wall/roof albedos are TIFF, and
+//     engine/asset/ModelLoader.cpp decodes embedded images with stb_image,
+//     which cannot read TIFF. They are transcoded to JPEG.
+// `town_assets.py verify` asserts both — plus that no bound image is a
+// placeholder and no material is untextured near-metal — and is GREEN. It is
+// the same gate that caught round one's WebP (the tree has no WebP decoder
+// either), generalised so the next kit cannot slip through.
+//
+// ORIENTATION IS MEASURED, NOT GUESSED (X3_WORLD_RULES rule 0/3): each shell's
+// FRONT is the horizontal direction from its bounding-box centre to the
+// centroid of its DOOR material. Where that is ambiguous the render is the
+// arbiter — House_2 has no door material at all, and its entrance was found by
+// rendering it at 0/90/180/270 and looking. Those angles, and the MEASURED
+// positions of each shell's front-elevation window glass, are baked into
+// kAssets in town.cpp and listed in docs/design/TOWN_MANIFEST.md.
 //
 // KEEP-OUTS ARE LAW: nothing is ever placed inside |lat| < kStreetKeepOutM of
 // the street centreline — that band is pavement, shoulder, apron and skirt,

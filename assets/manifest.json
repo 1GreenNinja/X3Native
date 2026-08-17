@@ -306,6 +306,72 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/converted_glb/Town/Billboard_1.glb",
+      "sha256": "8116b207269ccc6255f4822875efad1caa43e898af45328c67ed114ca2e8c0eb",
+      "size": 508480,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/Billboard_2.glb",
+      "sha256": "64359d4f0ab58955a049f072587791846085e37ada94b9f7df8ebd3ae6480240",
+      "size": 523572,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/House_1_Red.glb",
+      "sha256": "bd0b90ebf5c5e5905c9f8edba64085dd963f30fc614e116f2ee50a96e90ad63e",
+      "size": 595960,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/House_1_White.glb",
+      "sha256": "7910c88392ac94def87162057e1debc7a6303aae0b533c172ffecc5434f67ebe",
+      "size": 616564,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/House_2_Red.glb",
+      "sha256": "0236261950b0a23a636f2617b075aa42ee9124ba3a4df6ee7aaf2f5b50cc16e7",
+      "size": 476252,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/House_2_White.glb",
+      "sha256": "05a4445308d6e4c905019ae3b3d85d37d9cb9b4c98bc5cadeb5fa98690bbac67",
+      "size": 496856,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/House_3_Red.glb",
+      "sha256": "1ac45aefd40872a712715ce06addcd8928fa1eadafbfe475b4f4d9e29271c55c",
+      "size": 621212,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/House_3_White.glb",
+      "sha256": "377361b980a755539f588466c3f0c574ffb19a99cd49728d345a4a2c0864d210",
+      "size": 641816,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/House_4_Red.glb",
+      "sha256": "7885caad905d944be7148e6d1198678a869c795878fbbcc6c550e740e8ca3573",
+      "size": 950348,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/House_4_White.glb",
+      "sha256": "2f492491c287f447a61c97ffd59a6aa082bcc248a123cfa45606196bbf6a1050",
+      "size": 970952,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/Light_2.glb",
+      "sha256": "ce9c3096c1689fbb979b1dda4916d2d421ec181b7e8f81d2ff0decdc25b7adb4",
+      "size": 267376,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+    },
+    {
       "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse01.glb",
       "sha256": "b0e37c841b954ebfb03aeb2a6d03ff0d06aea805e5d42e8ae21a805f6a104d9a",
       "size": 13278756,
@@ -430,6 +496,12 @@
       "sha256": "ba784a16bdc46232c5773493477b057ce837cfdfea31b00debd0d8b2a281807b",
       "size": 11400584,
       "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/Wood_Fence.glb",
+      "sha256": "d006d6d33cb2c2632f7bc59a1608e60881290f4751941e077b2f5663381f30ba",
+      "size": 131228,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/CTR.glb",
