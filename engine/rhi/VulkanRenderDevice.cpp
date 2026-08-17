@@ -783,9 +783,39 @@ void VulkanRenderDevice::setSkyParams(const SkyParams& sp) {
         // Cache a snapshot; prepareFrameData() writes it into the per-frame sky UBO
         // and ensureMainPass() draws the full-screen sky when enabled. Disabled by
         // default, so indoor levels + every existing flag are unchanged.
-        // IBL: if any sky term that feeds the environment radiance changed, flag the
-        // IBL chain dirty so it rebakes the irradiance/prefilter cubes next frame.
-        if (std::memcmp(&m_sky, &sp, sizeof(SkyParams)) != 0) m_iblDirty = true;
+        //
+        // IBL: rebake only on a SIGNIFICANT change (W-NIGHT). regenIblFromSky is a
+        // BLOCKING oneTimeSubmit; a live time-of-day sun nudges sunDir/colors a
+        // fraction of a degree EVERY frame, and the old bytewise memcmp would have
+        // stalled every frame on a full probe rebake. The sky UBO itself still
+        // follows m_sky exactly (the visible disk never steps) — only the FILL
+        // rebake is quantized, to ~1 degree of sun travel / ~0.01 of any color or
+        // scalar lane. Weather transitions (0.3+ deltas) and storm flashes (+1.35
+        // exposure) clear these thresholds by an order of magnitude, so their
+        // per-frame rebake behaviour is exactly what it was.
+        {
+            const SkyParams& a = m_skyIblMark;
+            auto d3 = [](const float x[3], const float y[3]) {
+                return std::fabs(x[0]-y[0]) + std::fabs(x[1]-y[1]) + std::fabs(x[2]-y[2]);
+            };
+            // sunDir compared by angle: |a x b| against ~1 deg (vectors are
+            // normalized downstream; compare normalized copies here).
+            glm::vec3 na = glm::normalize(glm::vec3(a.sunDir[0], a.sunDir[1], a.sunDir[2]));
+            glm::vec3 nb = glm::normalize(glm::vec3(sp.sunDir[0], sp.sunDir[1], sp.sunDir[2]));
+            const bool significant =
+                a.enabled != sp.enabled ||
+                glm::dot(na, nb) < 0.99985f              ||   // ~1 degree of sun travel
+                d3(a.sunColor, sp.sunColor)      > 0.010f ||
+                std::fabs(a.sunIntensity - sp.sunIntensity) > 0.010f ||
+                std::fabs(a.haze     - sp.haze)     > 0.010f ||
+                std::fabs(a.exposure - sp.exposure) > 0.010f ||
+                std::fabs(a.cloud    - sp.cloud)    > 0.010f ||
+                d3(a.zenith,  sp.zenith)  > 0.008f ||
+                d3(a.horizon, sp.horizon) > 0.008f ||
+                std::fabs(a.sunLight - sp.sunLight) > 0.010f ||
+                std::fabs(a.moon     - sp.moon)     > 0.050f;
+            if (significant) { m_iblDirty = true; m_skyIblMark = sp; }
+        }
         m_sky = sp;
     }
 

@@ -65,6 +65,12 @@ struct TodConfig {
 
     bool  enableCityLights = true;  // expose cityLightsOn() true during night
     bool  enableAurora     = true;  // additive aurora tint swelling near midnight
+
+    // W-NIGHT: wall-clock anchoring for hosts that keep a 0..24 h clock (the
+    // tunnel world's todHours / wx_hour). sampleAtHours(h) maps hour ->
+    // dayFraction as wrap01((h - sunriseHour) / 24): the fraction clock's t=0
+    // (first light) lands at this hour. Defaults to 6 AM.
+    float sunriseHour = 6.0f;
 };
 
 // A sampled snapshot of the sky/lighting at a given clock value. POD; the host
@@ -77,6 +83,14 @@ struct TodSample {
     float    auroraTint[3] = { 0, 0, 0 };      // additive aurora color (0 by day)
     TodPhase phase = TodPhase::Day;            // active phase at this clock
     float    dayFraction = 0.0f;               // the normalized clock t in [0,1)
+    // W-NIGHT additions. `night` is the smooth 0..1 lamp dial (0 in daylight,
+    // ramping through civil twilight to 1 once the sun is well down) — feed it
+    // to Town::setNight, headlight auto-on, window glows. When the sun drops
+    // below the horizon the sample swings sky.sunDir onto the MOON (opposite
+    // arc, above the horizon at night), sets sky.moon so the sky draws a moon
+    // disc there, and hands lighting a dim cool moon key via sky.sunLight —
+    // enough to see the road faintly, never enough to read as daylight.
+    float    night = 0.0f;
 };
 
 // The Time-of-Day cycle. Deterministic: identical accumulated time -> identical
@@ -109,6 +123,11 @@ public:
     // sample near midday reproduces, so turning ToD on at noon matches the
     // pre-ToD look.
     TodSample sampleAt(float t) const;
+
+    // Wall-clock sampler (W-NIGHT): hours in [0,24) (wraps), anchored so first
+    // light falls at cfg.sunriseHour. The tunnel world's todHours/wx_hour clock
+    // feeds this directly.
+    TodSample sampleAtHours(float hours) const;
 
     // Which phase a given clock fraction falls in.
     TodPhase phaseAt(float t) const;

@@ -93,12 +93,25 @@ public:
     uint32_t benchCount() const { return m_benches; }
     uint32_t trunkColliderCount() const { return m_trunkBodies; }
 
+    // W-NIGHT (campfires): every seated bench, recorded AT PLACEMENT so a
+    // consumer (app/campfire.h roasts hot dogs at a handful of these) works
+    // from the same numbers the bench transform was built from — never from a
+    // re-derivation that can drift (NO_SLOP rule 4). All in engine metres.
+    struct BenchSite {
+        float x = 0, y = 0, z = 0;   // bench origin (base on the ground, pre-sink)
+        float yaw = 0;               // bench model yaw (long axis on the road tangent)
+        float towardRoadX = 0;       // unit XZ direction from the bench toward the
+        float towardRoadZ = 0;       //   road centreline (the side the seat faces)
+    };
+    const std::vector<BenchSite>& benchSites() const { return m_benchSites; }
+
 private:
     EnvArtSystem m_art;
     uint32_t m_trees   = 0;
     uint32_t m_groves  = 0;
     uint32_t m_benches = 0;   // armory bench models seated under the groves
     uint32_t m_trunkBodies = 0;  // static trunk boxes (owner ask, 2026-08-17)
+    std::vector<BenchSite> m_benchSites;   // parallel record of every bench placed
     bool     m_built   = false;
 };
 

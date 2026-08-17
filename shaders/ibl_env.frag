@@ -80,19 +80,29 @@ vec3 skyRadiance(vec3 dir) {
     float cosAngle = clamp(dot(dir, sunDir), -1.0, 1.0);
     vec3 sunRGB = sky.sunColor.rgb;
     float sunI  = max(sky.sunColor.a, 0.0);
+    // moon lane (zenith.w, W-NIGHT): at night the luminary is the MOON — no warm
+    // Mie flare in the fill (the disc itself is angularly tiny; its energy is
+    // nothing at irradiance scale, so it is simply dropped here).
+    float moonW = clamp(sky.zenith.w, 0.0, 1.0);
     float glow = pow(max(cosAngle, 0.0), 8.0)  * 0.20
                + pow(max(cosAngle, 0.0), 256.0) * 0.55;
-    col += sunRGB * glow * sunI;
+    col += sunRGB * glow * sunI * (1.0 - moonW);
     // Sun disk: SOFTENED + energy-capped for IBL. The razor-thin disk in sky.frag
     // (4*sunI over ~0.95deg) would, prefiltered, dump a hot speckle; widen + scale
     // down so the prefilter integrates a clean broad highlight instead.
     float diskInner = 0.9990;
     float diskOuter = 0.9965;
     float disk = smoothstep(diskOuter, diskInner, cosAngle);
-    col += sunRGB * disk * (2.0 * sunI);
+    col += sunRGB * disk * (2.0 * sunI) * (1.0 - moonW);
 
     if (up < 0.0) {
-        vec3 ground = vec3(0.16, 0.15, 0.13);
+        // W-NIGHT: earth by skylight — scale the ground tint with the sky's own
+        // horizon luminance (clamps to exactly 1.0 for the day palette, so every
+        // existing bake is unchanged). Without this the night FILL kept a 0.15-grey
+        // lower hemisphere — a phantom daylit ground lighting everything from below
+        // while the sky above it was near-black.
+        float hLum = dot(sky.horizon.rgb, vec3(0.299, 0.587, 0.114));
+        vec3 ground = vec3(0.16, 0.15, 0.13) * clamp(hLum / 0.30, 0.05, 1.0);
         float belowT = clamp(-up * 4.0, 0.0, 1.0);
         col = mix(col, ground, belowT);
     }

@@ -874,6 +874,17 @@ public:
         // a STAR is the only light out there, and the ship hulls are near-black
         // paint, so an honest star has to be hot to shade them without crutches.
         float sunLight      = 1.0f;
+        // THE LUMINARY IS THE MOON (W-NIGHT, task: night sky). 0 (default) =
+        // `sunDir` is the SUN and the sky draws the familiar hot disk + warm Mie
+        // glow — every existing world is byte-identical. > 0 = the host has swung
+        // `sunDir` onto the MOON for the night half of its day cycle: the sky
+        // draws a pale noise-mottled moon disc with a cool halo there instead of
+        // a sun, and the value doubles as the night gate the cloud layer keys its
+        // moonlit-edges-over-dark-bodies shading on. Rides the sky UBO's free
+        // zenith.w lane, so no new binding. Set it together with a dim cool
+        // sunColor + a small sunLight (~0.05): lighting, shadows and the sky
+        // then all agree that moonlight is the light.
+        float moon          = 0.0f;
     };
     // Set the active sky parameters for subsequent frames (cached + re-applied
     // each frame, like setPointLights). Calling with enabled=false disables it.

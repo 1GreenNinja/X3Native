@@ -44,6 +44,8 @@
 #include "engine/audio/IAudioSystem.h"   // ENGINE NOTE: RPM-driven loop
 #include "../engine_note.h"              // ENGINE NOTE v2: the multi-RPM bank
 #include "../weather.h"
+#include "../tod.h"              // W-NIGHT — the shared TimeOfDay sampler (dusk/night/dawn)
+#include "../campfire.h"         // W-NIGHT — roadside campfires at the grove benches
 #include "../wetness.h"
 #include "../storm.h"
 #include "../precip_fx.h"
@@ -196,22 +198,41 @@ static x3::rhi::IRenderDevice::SkyParams tunnelDemoSky() {
 }
 
 // Weather sample -> sky. `flash` is StormSystem::flash() (0 outside a strike).
+//
+// W-NIGHT: the mapping now COMPOSES with the TimeOfDay base sky (`tod` — the
+// host's TodSample.sky for the current hour). weather.h's own contract says
+// it: "the host with a ToD sun should MULTIPLY tint/intensity onto the ToD
+// sun". The ToD base carries WHERE the luminary is + the dome palette +
+// exposure + the mesh key (sunLight/moon); the weather folds ON TOP as
+// multipliers and cover. At the legacy fixed 14:00 clear sample this composes
+// to (within lerp noise) the same bright afternoon the mapping used to
+// hardcode — and at 23:00 a storm is a storm at NIGHT, not a grey noon.
 static x3::rhi::IRenderDevice::SkyParams skyFromWeather(
-        const x3::game::WeatherSample& ws, float flash) {
-    x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
+        const x3::game::WeatherSample& ws, float flash,
+        const x3::rhi::IRenderDevice::SkyParams& tod) {
+    x3::rhi::IRenderDevice::SkyParams sp = tod;
     sp.enabled = true;
-    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
+    // Weather TINT multiplies the ToD sun color. ws.sky.sunColor is the look
+    // table's tint pre-multiplied onto the neutral (1.0, 0.97, 0.92) base —
+    // divide that base back out so Clear (tint 1) is exactly the ToD color.
+    sp.sunColor[0] = tod.sunColor[0] * (ws.sky.sunColor[0] / 1.00f);
+    sp.sunColor[1] = tod.sunColor[1] * (ws.sky.sunColor[1] / 0.97f);
+    sp.sunColor[2] = tod.sunColor[2] * (ws.sky.sunColor[2] / 0.92f);
+    // Weather haze rides on top of the ToD base (Clear's own 0.30 is the
+    // baseline the look table was authored against).
+    sp.haze = std::min(1.0f, std::max(tod.haze, ws.sky.haze));
     // Cloud cover tracks the haze the state already asked for, so an overcast
     // sky is actually overcast instead of clear-with-fog.
     sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
     // The storm FLASH rides on exposure rather than on the sun: a strike lights
     // the whole cloud deck from inside, so raising the sun would throw hard
     // directional shadows from a light source that is not there.
-    sp.exposure = ws.sky.exposure + flash;
+    sp.exposure = tod.exposure * ws.sky.exposure + flash;
     // sunIntensity is the SKY DISK + glow only (IRenderDevice.h) — cutting it
-    // keeps a hot disk from punching through an overcast, and costs the ground
-    // nothing (that is cloudShadowFactor's job).
-    sp.sunIntensity = sp.sunIntensity * (1.0f - 0.65f * std::min(1.0f, sp.cloud));
+    // keeps a hot disk (or a hot moon) from punching through an overcast, and
+    // costs the ground nothing (that is cloudShadowFactor's job).
+    sp.sunIntensity = tod.sunIntensity * ws.sky.sunIntensity
+                    * (1.0f - 0.65f * std::min(1.0f, sp.cloud));
     if (ws.state == x3::game::WeatherState::Storm) {
         // A storm is not 'cloudy with effects' — the deck goes heavy and the
         // light DIES, which is also what makes every lightning flash read
@@ -219,7 +240,7 @@ static x3::rhi::IRenderDevice::SkyParams skyFromWeather(
         // sky.frag's gloom curve (smoothstep 0.55..0.95) was CALIBRATED to:
         // below it the deck renders mid-grey no matter what the state says.
         sp.cloud    = std::max(sp.cloud, 0.94f);
-        sp.exposure = ws.sky.exposure * 0.52f + flash * 1.35f;
+        sp.exposure = tod.exposure * ws.sky.exposure * 0.52f + flash * 1.35f;
     }
     return sp;
 }
@@ -257,6 +278,94 @@ static void applyHourSun(x3::rhi::IRenderDevice::SkyParams& sp, float hour) {
     }
     const float night = std::min(1.0f, std::max(0.0f, -elev * 2.0f));
     sp.exposure *= 1.0f - 0.72f * night;
+}
+
+// HEADLIGHTS (W-NIGHT). "without them night driving is unplayable" — and the
+// sun sets ten minutes into any drive now that the clock actually moves.
+//
+// THE CONSTRAINT, measured before writing anything: IRenderDevice has POINT
+// lights only. There is no spot/cone lane in the whole RHI (grep `struct
+// PointLight` — position, range, colour; nothing angular). So a "headlight"
+// cannot be a cone, and the first version — two point lights at the bumper —
+// photographed as a HALO AROUND A PARKED CAR with the carriageway ahead still
+// black (eyes-on, shots_wnight/02, first pass). A point light at the bumper
+// lights the HOOD.
+//
+// A low beam's throw is therefore built as a LADDER of point lights down the
+// car's own forward axis: a bright pair at the bumper for the near spill, then
+// three progressively wider, dimmer pools at 13 / 26 / 44 m, each low over the
+// tarmac. From the driver's seat and from a chase camera alike that reads as
+// the pool a pair of beams lays on the road.
+//
+// ONE producer for BOTH the settle loop and the live loop (NO_SLOP rule 4 —
+// this used to be two copies, and the capture path's copy is the one every
+// proof shot is taken through). `hk` is the dusk ease-in (0..1).
+// SPACING IS THE WHOLE TRICK. Three lamps at 13/26/44 m rendered as three
+// separate BLOBS on the tarmac (eyes-on, shots_wnight/02, second pass) — a
+// point light's falloff is steep, so a pool is only ~4-5 m wide before it dies.
+// The ladder is therefore spaced ~4-9 m (tighter near, wider far, matching how
+// the pools grow with distance) with each range generous enough to overlap its
+// neighbours, and the gain RISES down the ladder to hold brightness as the pool
+// spreads. That merges into one continuous throw instead of a dotted line.
+static constexpr uint32_t kHeadlightCount = 9;
+static uint32_t carHeadlights(const float cp0[3], const float cfw[3],
+                              const float rgt[3], float hk,
+                              x3::rhi::PointLight* out) {
+    struct Lamp { float ahead, side, up, range, gain; };
+    static const Lamp kLamps[kHeadlightCount] = {
+        {  3.0f, -0.78f, 0.15f, 13.0f, 2.2f },   // bumper pair: the near spill
+        {  3.0f,  0.78f, 0.15f, 13.0f, 2.2f },
+        {  7.0f,  0.00f, 0.05f, 18.0f, 2.6f },   // the throw, down the lane
+        { 12.0f,  0.00f, 0.05f, 24.0f, 3.2f },
+        { 18.0f,  0.00f, 0.05f, 30.0f, 3.8f },
+        { 25.0f,  0.00f, 0.10f, 36.0f, 4.4f },
+        { 33.0f,  0.00f, 0.10f, 42.0f, 5.0f },
+        { 42.0f,  0.00f, 0.15f, 50.0f, 5.4f },
+        { 52.0f,  0.00f, 0.20f, 58.0f, 5.6f },
+    };
+    uint32_t n = 0;
+    for (const Lamp& L : kLamps) {
+        x3::rhi::PointLight& l = out[n++];
+        l.pos[0] = cp0[0] + cfw[0] * L.ahead + rgt[0] * L.side;
+        l.pos[1] = cp0[1] + cfw[1] * L.ahead + L.up;
+        l.pos[2] = cp0[2] + cfw[2] * L.ahead + rgt[2] * L.side;
+        l.range  = L.range;
+        // Halogen white, a touch warm. hk eases the whole rig in with dusk.
+        l.color[0] = L.gain * 1.00f * hk;
+        l.color[1] = L.gain * 0.96f * hk;
+        l.color[2] = L.gain * 0.86f * hk;
+    }
+    return n;
+}
+
+// X3_TOD=0 pin: the base that makes skyFromWeather() reproduce its pre-ToD
+// output exactly — fixed 14:00 sun, neutral color (the tint division cancels),
+// haze 0 (the max() then yields the weather's own haze), unit exposure/
+// intensity, default dome palette, full key, no moon.
+static x3::rhi::IRenderDevice::SkyParams legacyFixedTodBase() {
+    x3::rhi::IRenderDevice::SkyParams sp{};
+    sp.enabled = true;
+    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
+    sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+    sp.sunIntensity = 1.0f; sp.haze = 0.0f; sp.exposure = 1.0f;
+    return sp;
+}
+
+// The ToD base for the tunnel world's 24 h clock (todHours / wx_hour). The
+// EFLZ defaults are a 4-phase 6-minute cycle; this anchors the same sampler to
+// wall-clock hours: first light 05:45, sunset ~20:15 (nightStart 0.604 of the
+// day), a long flat midday, dawn/dusk each ~1.75 h.
+static x3::game::TodConfig tunnelTodConfig() {
+    x3::game::TodConfig c;
+    c.sunriseHour      = 5.75f;
+    c.dawnStart        = 0.000f;
+    c.dayStart         = 0.073f;   // ~07:30 full daylight
+    c.duskStart        = 0.531f;   // ~18:30 the light starts to fall
+    c.nightStart       = 0.604f;   // ~20:15 sun below the horizon
+    c.middayElevation  = 0.88f;    // ~62 deg peak — high plains summer, not zenith
+    c.sunAzimuthEast   = -1.9f;
+    c.sunAzimuthWest   =  1.9f;
+    return c;
 }
 
 // ---------------------------------------------------------------------------
@@ -980,6 +1089,30 @@ int hostTunnel(HostContext& hc) {
         }
     }
 
+    // ==== TIME OF DAY (W-NIGHT) =============================================
+    // The 24 h clock always existed here (todHours, 10 real minutes per day,
+    // wx_hour re-seeds) — but it only ever drove the TEMPERATURE. The sun sat
+    // bolted at 14:00 no matter what the clock said: a feature wired to one
+    // consumer out of three (NO_SLOP rule 6's cousin). The shared TimeOfDay
+    // sampler (app/tod.h) now drives the SKY too — sun arc, dusk palette,
+    // near-black night dome (which is what lets sky.frag's stars gate on), the
+    // MOON as the night luminary, and the dim moonlight key. DEFAULT ON;
+    // X3_TOD=0 pins the old fixed 14:00 sun.
+    x3::game::TimeOfDay todCycle(tunnelTodConfig());
+    bool todOn = true;
+    { const char* e = std::getenv("X3_TOD"); todOn = !(e && e[0] == '0'); }
+    float todHoursNow = 14.0f;                       // live clock (wx_hour re-seeds)
+    x3::game::TodSample todNow = todCycle.sampleAtHours(todHoursNow);
+    // The luminary direction consumers outside the sky need (water specular).
+    float todSunDir[3] = { 0.35f, 0.92f, 0.18f };
+    float nightK = 0.0f;                             // 0 day .. 1 night (lamps dial)
+    // The no-weather demo sky's cloud cover (X3_CLOUD overrides — the cloud
+    // lane's A/B knob; hoisted so the per-frame ToD sky uses the same number
+    // the boot sky does).
+    float demoCloud = 0.42f;
+    if (const char* cv = std::getenv("X3_CLOUD"))
+        demoCloud = std::min(1.0f, std::max(0.0f, (float)std::atof(cv)));
+
     {   // Bright, high sun: the point of the shot is READING THE GROUND, and a
         // low sun would fill the cutting with shadow and hide the very seams
         // this demo exists to expose. X3_CLOUD: dev override for the NO-WEATHER
@@ -987,6 +1120,17 @@ int hostTunnel(HostContext& hc) {
         // measured with; with X3_WEATHER on, the weather tick owns cover and
         // it is ignored. (Constants live in tunnelDemoSky — ONE builder.)
         applySky(*device, tunnelDemoSky());   // sky + the fill its cover implies
+        // this demo exists to expose.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f;
+        // Scattered fair-weather cumulus. 0 would be the old clear sky exactly.
+        // demoCloud already folded in X3_CLOUD (the cloud lane's A/B knob) —
+        // one owner for the number, boot sky + per-frame ToD sky alike.
+        sp.cloud = demoCloud;
+        applySky(*device, sp);   // sky + the fill its cover implies
     }
     device->setCameraFar(4000.0f);
 
@@ -2052,6 +2196,45 @@ int hostTunnel(HostContext& hc) {
         riverLife.build(scene, *device, *phys,
                         audioOn ? audio.get() : nullptr, riverRoad.plan);
 
+    // ==== ROADSIDE CAMPFIRES (W-NIGHT) ======================================
+    // "fires on the side of the road with the benches.. where people roast
+    // hot dogs." Built at a handful of the grove bench sites RoadTrees just
+    // recorded — stone ring, particle fire, flickering light, crackle loop,
+    // and 2-3 AnimatedCharacters warming themselves (one on the bench with a
+    // roasting stick where the rig owns the pose). DEFAULT ON (rule 6);
+    // X3_CAMPFIRES=0 is the off switch. See app/campfire.h.
+    //
+    // WHERE: RoadTrees' grove benches when there are any — but on this world's
+    // 640 m demo-ridge route there never are (458 m of it is roofed and the
+    // 80 m portal margins eat both open spans, so the grove pass plants zero
+    // trees and zero benches, every boot, while blaming the assets in the log).
+    // The receipt is in campfire.h. So the fires fall back to siting themselves
+    // on the VALLEY ROAD — ~3.9 miles of two-lane country road through the
+    // river valley, which is where a roadside fire and a bench belong anyway —
+    // and place their own bench there. When the tree lane fixes the grove pass,
+    // its benches win automatically; nothing here changes.
+    x3::game::Campfires campfires;
+    {
+        const char* e = std::getenv("X3_CAMPFIRES");
+        if (!(e && e[0] == '0')) {
+            const auto& groveBenches = trees.benchSites();
+            if (!groveBenches.empty()) {
+                campfires.build(scene, *device, *phys, groveBenches,
+                                audioOn ? audio.get() : nullptr, false);
+            } else if (riverOn && riverRoad.road.ok) {
+                const auto sites = x3::game::benchSitesAlongRoad(
+                    riverRoad.spec, riverRoad.roadY, 900.0f, 6u, 0xCA11F13Eu);
+                x3::logInfo("campfire: no grove benches — siting on the valley "
+                            "road (" + std::to_string(sites.size()) + " sites)");
+                campfires.build(scene, *device, *phys, sites,
+                                audioOn ? audio.get() : nullptr, true);
+            } else {
+                x3::logWarn("campfire: no grove benches and no valley road — "
+                            "no fires");
+            }
+        }
+    }
+
     // ==== FREEWAY TRAFFIC (W-TRAFFIC) =======================================
     // "now that we have a 16 lane freeway.. we will need to fill it with
     // traffic ;->" — kinematic lane-followers on the inner tour's own lane
@@ -2142,7 +2325,9 @@ int hostTunnel(HostContext& hc) {
         // swimmer's body read THROUGH face-on water; depth + grazing angles
         // close it back to a surface. 0 would be the legacy opaque plane.
         wpr.clarity   = 0.60f;
-        wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
+        // W-NIGHT: the river glints to the LIVE luminary (sun by day, moon at
+        // night), not to a phantom 14:00 sun that set hours ago.
+        wpr.sunDir[0] = todSunDir[0]; wpr.sunDir[1] = todSunDir[1]; wpr.sunDir[2] = todSunDir[2];
         device->setWaterParams(wpr);
         x3::rhi::IRenderDevice::CausticsParams cp{};
         cp.enabled = true; cp.waterY = wpr.seaLevel;   // local level, not the flat plane
@@ -2194,6 +2379,29 @@ int hostTunnel(HostContext& hc) {
         const char* shotPumpEnv = std::getenv("X3_SHOT_PUMP");
         const bool shotPump      = shotPumpEnv && shotPumpEnv[0] != '0';
         const bool shotPumpHoldE = shotPumpEnv && shotPumpEnv[0] == '2';
+
+        // ---- X3_SHOT_TOD=<hour> (W-NIGHT): the night/dusk/dawn eye gate. ---
+        // Opt-in and default OFF for the same reason as X3_SHOT_PUMP — no
+        // existing reference capture moves. When set, the settle loop pins the
+        // clock to the given hour, applies the SAME ToD-composed sky mapping
+        // the interactive loop plays (one mapping, NO_SLOP rule 4), stages the
+        // parked car's headlights, and uploads the campfire lights through the
+        // per-frame merged light path — never a faked still (gotcha 4.1b).
+        // X3_SHOT_FIRE=<i> additionally overrides the camera with campfire i's
+        // own showcase pose (cameras derive from placement data, gotcha 4.1).
+        const char* shotTodEnv = std::getenv("X3_SHOT_TOD");
+        const bool  shotTod = shotTodEnv && shotTodEnv[0];
+        x3::game::TodSample shotTodSample{};
+        if (shotTod) {
+            const float h = (float)std::atof(shotTodEnv);
+            shotTodSample = todCycle.sampleAtHours(h);
+            char tb[96];
+            std::snprintf(tb, sizeof(tb),
+                          "--world tunnel: X3_SHOT_TOD=%.2f h (night %.2f, sun elev %.3f)",
+                          h, shotTodSample.night, shotTodSample.sunElevation);
+            x3::logInfo(tb);
+            if (townOn) town.setNight(shotTodSample.night);
+        }
         if (shotPump) {
             // STAGE THE TANK, or the proof photographs the wrong state: a
             // factory-fresh tank is FULL, so the honest prompt under the canopy
@@ -2264,7 +2472,11 @@ int hostTunnel(HostContext& hc) {
                     // top of file). This site used to carry its own cut-down
                     // copy WITHOUT the storm branch, which is why the storm
                     // proof shots were brighter than the storm you play.
-                    applySky(*device, skyFromWeather(ws, storm.flash()));
+                    // X3_SHOT_TOD folds the staged hour in through the SAME
+                    // mapping the live loop uses; unset = the legacy fixed
+                    // base, so every existing weather capture is unchanged.
+                    applySky(*device, skyFromWeather(ws, storm.flash(),
+                        shotTod ? shotTodSample.sky : legacyFixedTodBase()));
                     x3::rhi::IRenderDevice::WetnessParams wp{};
                     wp.amount = wetness.wetness() * (1.0f - wetness.snowCover());
                     device->setWetness(wp);
@@ -2296,6 +2508,46 @@ int hostTunnel(HostContext& hc) {
                 // from the same place, every frame, in the same loop.
                 if (townOn) town.setNightFromSun(townDusk ? 0.055f : 0.92f);
 
+                // ---- X3_SHOT_TOD: the staged hour's sky, every frame (the
+                // settle loop re-pushes SkyParams when weather is on — same
+                // re-arm rule the townDusk flag documents above).
+                if (shotTod && !weatherOn && !townDusk) {
+                    x3::rhi::IRenderDevice::SkyParams sp = shotTodSample.sky;
+                    sp.cloud = demoCloud;
+                    applySky(*device, sp);
+                }
+
+                // ---- CAMPFIRES LIVE IN CAPTURES TOO (the town.update lesson,
+                // one comment down): un-ticked AnimatedCharacters are bind-pose
+                // statues, so the fire people always tick; the flame clock and
+                // the merged light upload ride along. Lights only under
+                // X3_SHOT_TOD — the default captures keep the boot light set so
+                // no existing reference moves.
+                campfires.update(dt, cam[0], cam[2], *phys, *device);
+                if (shotTod) {
+                    x3::rhi::PointLight shotEx[20];   // 8 fires + 5 headlamps + slack
+                    uint32_t shotEn = campfires.lights(shotEx, 8, cam);
+                    // The parked car's headlights, on at night (the staged
+                    // "road under headlights" proof) — from the LIVE chassis
+                    // pose, never typed-in numbers.
+                    if (carBuilt && shotTodSample.night > 0.25f &&
+                        shotEn + kHeadlightCount <= 20) {
+                        float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                        float cfw[3], cup[3];
+                        x3::game::vehcam::hullAxes(cq, cfw, cup);
+                        float cp0[3]; car.chassisPos(cp0);
+                        const float rgt[3] = { cfw[1]*cup[2] - cfw[2]*cup[1],
+                                               cfw[2]*cup[0] - cfw[0]*cup[2],
+                                               cfw[0]*cup[1] - cfw[1]*cup[0] };
+                        const float hk = std::min(1.0f,
+                                                  (shotTodSample.night - 0.25f) / 0.35f);
+                        shotEn += carHeadlights(cp0, cfw, rgt, hk, shotEx + shotEn);
+                    }
+                    const float lcp[3] = { cam[0], cam[1], cam[2] };
+                    x3::game::uploadTunnelLights(*device, lcp,
+                                                 shotEn ? shotEx : nullptr, shotEn);
+                }
+
                 // THE TOWN WALKS IN CAPTURES TOO. ENGINE_GOTCHAS 4.4 is right
                 // that a still cannot PROVE motion — but a still of six
                 // unticked characters is worse than no still: an AnimatedCharacter
@@ -2320,6 +2572,11 @@ int hostTunnel(HostContext& hc) {
                     scene.render(*device, frame);
                     trees.draw(*device, frame);
                     if (townOn) town.draw(*device, frame);
+                    // Fire people + roasting sticks + flame/smoke particles —
+                    // in the capture fan for the same reason the town walks.
+                    campfires.drawProps(*device, frame);
+                    campfires.drawCharacters(frame, *device);
+                    campfires.submitFx(*device, cam[0], cam[2]);
                     gasStations.draw(*device, frame);
                     // forests: camera fwd = (cos yaw, 0, sin yaw) — gotcha 4.1
                     forests.draw(*device, frame, cam,
@@ -2476,6 +2733,34 @@ int hostTunnel(HostContext& hc) {
         } else if (!hc.jakeShot) {
             float cam[5]; tunnel.showcaseCamera(route, 0, cam);
             if (hc.shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = hc.shotCam[k];
+            // X3_SHOT_FIRE=<i>: frame campfire i with ITS OWN placement-derived
+            // camera (gotcha 4.1: cameras from data, never eyeballed) — the
+            // "people around the fire at night" money shot, staged with
+            // X3_SHOT_TOD=22 or so.
+            if (const char* fe = std::getenv("X3_SHOT_FIRE")) {
+                const uint32_t fi = (uint32_t)std::atoi(fe);
+                if (!campfires.showcaseCamera(fi, cam))
+                    x3::logError("--world tunnel: X3_SHOT_FIRE index out of range");
+            }
+            // X3_SHOT_CAR=1: the HEADLIGHT proof — a chase pose behind the
+            // parked car looking down its own nose, derived from the LIVE
+            // chassis transform (gotcha 4.1), so the frame is the road the
+            // beams actually light. Pair with X3_SHOT_TOD=22.
+            if (const char* ce = std::getenv("X3_SHOT_CAR")) {
+                if (ce[0] != '0' && carBuilt) {
+                    float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                    float cfw[3], cup[3];
+                    x3::game::vehcam::hullAxes(cq, cfw, cup);
+                    float cp0[3]; car.chassisPos(cp0);
+                    cam[0] = cp0[0] - cfw[0] * 7.5f;
+                    cam[1] = cp0[1] + 2.35f;
+                    cam[2] = cp0[2] - cfw[2] * 7.5f;
+                    cam[3] = std::atan2(cfw[2], cfw[0]);   // device yaw
+                    cam[4] = -0.085f;
+                } else if (ce[0] != '0') {
+                    x3::logError("--world tunnel: X3_SHOT_CAR but no car built");
+                }
+            }
             {   // Log the resolved camera (parity with the multi-shot branch): a
                 // custom --shot-cam is DERIVED from this print, not eyeballed
                 // (ENGINE_GOTCHAS 4.1 — derive cameras from data).
@@ -3658,6 +3943,7 @@ int hostTunnel(HostContext& hc) {
         factory.shutdown(*device);
         tickets.shutdown(*device);
         trees.shutdown(*device);
+        campfires.shutdown(*device);
         if (townOn) town.shutdown(*device);
         forests.shutdown(*device);
         phys->setContactCallback(nullptr, nullptr);   // trafficCtx dies with this scope
@@ -4340,20 +4626,42 @@ int hostTunnel(HostContext& hc) {
         // kCloudDrift * t in inc/sky_clouds.glsl). This world never set it, so
         // the deck hung frozen. Same clock the river uses, one line.
         device->setSkyTime(riverWaterClock);
-        {   // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
-            // pre-dawn trough to see ice form instead of waiting out the cycle.
-            // (Hoisted out of the weather branch: see the todHours declaration.)
+        // ---- THE 24 H CLOCK ALWAYS RUNS (W-NIGHT). It used to live inside
+        // the weather branch, so with weather off time itself stopped — the
+        // sun was a property of the rain. The clock RUNS, and wx_hour re-seeds
+        // it — jump to 23 for the stars or 5 for the pre-dawn ice.
+        {
+            static float lastHourCvar = -1.0f;
             const float hourCvar = console->getFloat("wx_hour");
-            if (hourCvar != lastHourCvar) {
-                todHours = hourCvar; lastHourCvar = hourCvar;
-                todSunActive = true;         // the sun follows the clock from now on
+            if (hourCvar != lastHourCvar) { todHoursNow = hourCvar; lastHourCvar = hourCvar; }
+            todHoursNow += fdt * (24.0f / 600.0f);     // 10 real minutes per in-world day
+            if (todHoursNow >= 24.0f) todHoursNow -= 24.0f;
+            if (todOn) {
+                todNow = todCycle.sampleAtHours(todHoursNow);
+                todSunDir[0] = todNow.sky.sunDir[0];
+                todSunDir[1] = todNow.sky.sunDir[1];
+                todSunDir[2] = todNow.sky.sunDir[2];
+                nightK = todNow.night;
+                // The town's windows + torch heads come up with the dark
+                // (Town::setNight existed, fully plumbed, and NOTHING called
+                // it — the exact defect class of NO_SLOP rule 6).
+                static float townNightApplied = -1.0f;
+                if (townOn && std::fabs(nightK - townNightApplied) > 0.02f) {
+                    town.setNight(nightK);
+                    townNightApplied = nightK;
+                }
             }
-            todHours += fdt * (24.0f / 600.0f);        // 10 real minutes per in-world day
-            if (todHours >= 24.0f) todHours -= 24.0f;
+        }
+        // With weather OFF the ToD sky still has to land every frame (it used
+        // to be a one-shot demo sky; now the sun is moving).
+        if (!weatherOn && todOn) {
+            x3::rhi::IRenderDevice::SkyParams sp = todNow.sky;
+            sp.cloud = demoCloud;
+            applySky(*device, sp);
         }
         if (weatherOn) {
             weather.tick(fdt);
-            weather.setTimeOfDay(todHours);
+            weather.setTimeOfDay(todHoursNow);
 
             const x3::game::WeatherSample& ws = weather.sample();
             wetness.tick(fdt, ws.precipitation, ws.tempC, ws.snowfall);
@@ -4379,12 +4687,21 @@ int hostTunnel(HostContext& hc) {
             // WINS over the state's own deck — the slider is authority, even
             // through a storm — and a touched clock moves the sun.
             {
-                x3::rhi::IRenderDevice::SkyParams wsp = skyFromWeather(ws, storm.flash());
+                // W-NIGHT made skyFromWeather COMPOSE with the ToD base rather
+                // than hardcode a 14:00 sun, so the weather now multiplies onto
+                // wherever the luminary actually is; W-MENU's wx_cloud slider
+                // still wins over the state's own deck on top of that. The old
+                // applyHourSun() post-pass is gone with the fixed sun it
+                // corrected — todOn/todNow own the arc now.
+                x3::rhi::IRenderDevice::SkyParams wsp =
+                    skyFromWeather(ws, storm.flash(),
+                                   todOn ? todNow.sky : legacyFixedTodBase());
                 const float cov = console->getFloat("wx_cloud");
                 if (cov >= 0.0f) wsp.cloud = std::min(1.0f, cov);
-                if (todSunActive) applyHourSun(wsp, todHours);
                 applySky(*device, wsp);
             }
+            applySky(*device, skyFromWeather(ws, storm.flash(),
+                                             todOn ? todNow.sky : legacyFixedTodBase()));
 
             // Wet ground for the renderer. Lying SNOW suppresses the wet look
             // rather than adding to it -- snow is bright and near-matte where
@@ -4486,6 +4803,9 @@ int hostTunnel(HostContext& hc) {
                     device->setSnowCover(0.0f);
                     device->setWetness(x3::rhi::IRenderDevice::WetnessParams{});
                     console->print("weather: off (the demo sky — CLOUD/TIME sliders still live)");
+                    console->print(todOn
+                        ? "weather: off (clear skies; the day/night cycle keeps running -- wx_hour sets the clock)"
+                        : "weather: off (the demo's fixed bright sky)");
                 }
             }
         }
@@ -5241,10 +5561,48 @@ int hostTunnel(HostContext& hc) {
         // other half of the "lit in headless capture, black when driven" bug.
         { const float cp[3] = { cx, cy, cz };
           // Muzzle-flash / grenade-boom pulses ride the same single upload
-          // (a second setPointLights call would overwrite the pool).
-          x3::rhi::PointLight wl[2];
-          const uint32_t wn = weaponLights(fdt, wl);
-          x3::game::uploadTunnelLights(*device, cp, wn ? wl : nullptr, wn); }
+          // (a second setPointLights call would overwrite the pool). W-NIGHT
+          // adds three more extra lanes onto the same merge: the CAMPFIRES,
+          // the car's HEADLIGHTS (auto-on with the dark — the sun sets ten
+          // minutes into any drive, and a night road without them is
+          // unplayable), and the nearest TOWN practicals (Town::setNight was
+          // built with per-frame re-upload in mind; the boot-time single
+          // setPointLights this world used to rely on is overwritten right
+          // here every frame — the town's lamps were dead in the live loop).
+          x3::rhi::PointLight ex[40];
+          uint32_t en = weaponLights(fdt, ex);
+          en += campfires.lights(ex + en, 8, cp);
+          if (carBuilt && nightK > 0.25f && en + kHeadlightCount <= 40) {
+              float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+              float cfw[3], cup[3];
+              x3::game::vehcam::hullAxes(cq, cfw, cup);
+              float cp0[3]; car.chassisPos(cp0);
+              const float rgt[3] = { cfw[1]*cup[2] - cfw[2]*cup[1],
+                                     cfw[2]*cup[0] - cfw[0]*cup[2],
+                                     cfw[0]*cup[1] - cfw[1]*cup[0] };
+              const float hk = std::min(1.0f, (nightK - 0.25f) / 0.35f); // ease in with dusk
+              // ONE producer with the capture path (top of file).
+              en += carHeadlights(cp0, cfw, rgt, hk, ex + en);
+          }
+          if (townOn && nightK > 0.05f) {
+              // Nearest town practicals (lamps + lit windows), budgeted.
+              const auto& tl = town.lights();
+              struct Scored { float d2; uint32_t i; };
+              static std::vector<Scored> ts; ts.clear();
+              for (uint32_t i = 0; i < (uint32_t)tl.size(); ++i) {
+                  const float dx = tl[i].pos[0] - cx, dz = tl[i].pos[2] - cz;
+                  const float d2 = dx * dx + dz * dz;
+                  if (d2 < 500.0f * 500.0f) ts.push_back({ d2, i });
+              }
+              const uint32_t want = std::min<uint32_t>((uint32_t)ts.size(), 40u - en);
+              const uint32_t kTown = std::min<uint32_t>(want, 14u);
+              if (kTown > 0) {
+                  std::partial_sort(ts.begin(), ts.begin() + kTown, ts.end(),
+                                    [](const Scored& a, const Scored& b) { return a.d2 < b.d2; });
+                  for (uint32_t i = 0; i < kTown; ++i) ex[en++] = tl[ts[i].i];
+              }
+          }
+          x3::game::uploadTunnelLights(*device, cp, en ? ex : nullptr, en); }
         // SPEED FOV. Physical speed alone does not read as fast on a screen —
         // the frame has to widen and the periphery has to rush. 72 deg parked ->
         // 88 flat out, eased so it swells under acceleration instead of snapping.
@@ -5390,6 +5748,9 @@ int hostTunnel(HostContext& hc) {
         // distance INSIDE Town::update (kPedActiveM) — outside it the terrain
         // tiles under their feet are not resident and the walk is a free-fall.
         if (townOn) town.update(fdt, *phys, *device, cx, cz);
+        // The campfire people warm their hands (camera-gated inside, the same
+        // residency discipline as the town walk above).
+        campfires.update(fdt, cx, cz, *phys, *device);
         // THE WORKS, ALIVE: the tube cores breathe, the plant blocks shake, the
         // gate slides, the stacks make smoke. Cheap — a few entity transforms
         // and one particle integrator.
@@ -5406,6 +5767,9 @@ int hostTunnel(HostContext& hc) {
             scene.render(*device, frame);
             trees.draw(*device, frame);
             if (townOn) town.draw(*device, frame);
+            campfires.drawProps(*device, frame);   // the bench, when we placed it
+            campfires.drawCharacters(frame, *device);
+            campfires.submitFx(*device, cx, cz);   // additive flames feed bloom
             gasStations.draw(*device, frame);
             // Particle batches are CLEARED by beginFrame, so these submits live
             // INSIDE the frame and are never hoisted (the warning host_echotropolis
@@ -6052,6 +6416,7 @@ int hostTunnel(HostContext& hc) {
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     gasStations.shutdown(*device);
     trees.shutdown(*device);
+    campfires.shutdown(*device);
     if (townOn) town.shutdown(*device);
     forests.shutdown(*device);
     tunnel.shutdown(*device, *phys);

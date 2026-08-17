@@ -2383,7 +2383,9 @@ void VulkanRenderDevice::prepareFrameData() {
             sky.sunDir   = glm::vec4(sd, 0.0f);
             sky.sunColor = glm::vec4(m_sky.sunColor[0], m_sky.sunColor[1], m_sky.sunColor[2], m_sky.sunIntensity);
             sky.params   = glm::vec4(m_sky.haze, m_sky.exposure, m_skyTime, m_sky.cloud);
-            sky.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], 0.0f);
+            // zenith.w = SkyParams::moon (W-NIGHT): the free lane carries the
+            // "luminary is the moon" flag to sky.frag — moon disc + night clouds.
+            sky.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], m_sky.moon);
             sky.horizon  = glm::vec4(m_sky.horizon[0], m_sky.horizon[1], m_sky.horizon[2], 0.0f);
             std::memcpy(fr.skyMapped, &sky, sizeof(SkyUBO));
         }
@@ -3109,7 +3111,10 @@ bool VulkanRenderDevice::regenIblFromSky() {
         u.sunDir   = glm::vec4(sd, 0.0f);
         u.sunColor = glm::vec4(m_sky.sunColor[0], m_sky.sunColor[1], m_sky.sunColor[2], m_sky.sunIntensity);
         u.params   = glm::vec4(m_sky.haze, m_sky.exposure, m_skyTime, m_sky.enabled ? 1.0f : 0.0f);
-        u.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], 0.0f);
+        // zenith.w = moon flag (kept in step with the main sky UBO fill; the env
+        // bake uses it only to damp the sun-glow term at night — the disc itself
+        // is angularly tiny and contributes nothing to the fill).
+        u.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], m_sky.moon);
         u.horizon  = glm::vec4(m_sky.horizon[0], m_sky.horizon[1], m_sky.horizon[2], 0.0f);
         std::memcpy(m_iblSkyUboMapped, &u, sizeof(u));
 
