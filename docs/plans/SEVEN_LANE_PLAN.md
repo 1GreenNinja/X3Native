@@ -87,9 +87,22 @@ The sketch's ladder-switchback town, made real.
 ### LANE 6 — W-FACTORY: the chocolate factory (from #35)
 "A chocolate factory to win tickets to." The hero landmark.
 **HISTORY, owner's words: a chocolate factory was already built once and "it was
-pure pure pure SLOP." Do NOT import or reference the old one — this build starts
-from the packs under NO_SLOP law (eyes-on, textured, real massing) and must be
-the anti-slop proof piece.**
+pure pure pure SLOP." It lives on `origin/feat/factory-annex` — "The Confection
+Annex," a five-floor Dahl-STYLE interior wonder-works beside the rifthub Spire
+shaft (Anywhere Elevator, confection river, roof-burst finale;
+`specs/FACTORY.spec.md`). LANE 6's FIRST TASK: check that branch out, BUILD IT,
+LOOK AT IT (full-res captures), and write the autopsy — what made it slop, what
+salvages (the fa_* PBR surface sets — worn brass / aged copper / cream enamel /
+marble / checker tile — and possibly the elevator code look real). Owner's
+direction after review: "we got Glimvale art for it, so we should probably
+ENHANCE it" — so the Annex is enhanced in place (Glimvale dressing kit is
+already on the branch), not discarded. The lane then ALSO builds the DRIVING
+WORLD'S factory (an EXTERIOR landmark + ticket quest — a different thing from
+the Annex interior), and both honor the owner's standing brief
+(docs/design/GAME_BACKLOG.md): "based on the BOOK VISUALS, not the insanely
+craptastic movie... glassy, and the tubes and pipes be so shiny and cool and
+alive and breathing and pulsing.. and the machinery shaking as it does its
+thing."**
 - Distinct silhouette on the skyline (sketch-consistent placement — NE forest edge
   or riverside): big massing, smokestacks with particle smoke, emissive signage at
   dusk, gated drive, fence line. Pack-mined industrial kit (1900s Industrial /
