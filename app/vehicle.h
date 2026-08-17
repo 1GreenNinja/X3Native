@@ -72,6 +72,16 @@ public:
     // All four wheels touching ground? (drive self-test assert)
     bool allWheelsInContact() const;
 
+    // THE CONTACT LAW ("no tires can EVER be underground") — see postStep.
+    // OPT-IN, because it measures burial against the PROCEDURAL height field,
+    // which answers everywhere: in a world whose ground is a flat collider
+    // rather than the terrain (the headless drive/skidpad harnesses, a shop
+    // floor, the showroom slab) the field reads the car as metres buried while
+    // it sits perfectly still, and the law lifts it every frame. Hosts that
+    // genuinely drive on streamed terrain switch it on.
+    void setTerrainContactLaw(bool on) { m_terrainContactLaw = on; }
+    bool terrainContactLaw() const { return m_terrainContactLaw; }
+
     // Feed driver input + advance one step. Call setInput()+preStep() BEFORE the
     // host's physics->step(), then postStep() AFTER. drive() is a convenience that
     // does setInput()+preStep() (host steps next).
@@ -127,18 +137,48 @@ public:
     void  setTractionControl(bool on) { m_tcEnabled = on; }
     bool  tractionControl() const { return m_tcEnabled; }
 
+    // ---- CLIMB MODE: crawl traction for steep terrain -----------------------
+    // The car is already AWD; what stops it on a mountainside is wheelspin —
+    // all four spun deep into the friction plateau where grip FALLS. Climb
+    // mode runs the traction controller with crawl numbers (slip held at the
+    // friction peak, trim floor nearly zero) and kills the turbo so torque is
+    // the full curve INSTANTLY at crawl rpm instead of arriving half a second
+    // after you asked, spinning the wheels you just hooked. It overrides a
+    // TC-off setting while active; leaving it restores your TC choice.
+    void setClimbMode(bool on) {
+        m_climbMode = on;
+        setTurboEnabled(!on);
+    }
+    bool climbMode() const { return m_climbMode; }
+
     // ---- TURBO: a manifold-pressure model (see updateTurbo in vehicle.cpp) --
     // The torque CURVE is the full-boost delivery; this supplies the transient
     // that a curve cannot express — the lag before it arrives and the shove
     // when it does. Peak power is unchanged, only its timing.
     struct TurboParams {
-        float maxPsi        = 35.0f;   // peak manifold pressure over atmosphere (a hot 911 turbo)
-        float spoolStartRpm = 1800.0f; // nothing below this
+        // 35 psi — Tim's call, overruling my 16: "Boost should hit 35 PSI!!!
+        // This is a TURBO not a Supercharger." Big boost arriving late IS the
+        // character of the build. The rule that survives the reversal: the
+        // GAUGE ART and this number change TOGETHER (the art is now drawn
+        // -10..+40 with red from 30) — the earlier defect was never the 35,
+        // it was 35 psi of model under 20 psi of dial.
+        float maxPsi        = 35.0f;   // peak manifold pressure over atmosphere
+        // SHORTER SPOOL (2026-08-16, "MORE acceleration"): 1800/0.45 was nearly
+        // half a second of nothing at WOT — the single cheapest place the car
+        // was throwing away launch. 1500/0.30 keeps the turbo CHARACTER (you
+        // still feel it arrive) but the shove lands while the launch is still
+        // happening instead of after it. Peak power unchanged — this is timing
+        // only. Live: `turbo_start` / `turbo_spool` (help text carries these
+        // numbers — NO_SLOP rule 4, change together).
+        float spoolStartRpm = 1500.0f; // nothing below this
         float spoolFullRpm  = 4200.0f; // full compressor above this
-        float spoolTau      = 0.45f;   // seconds to build (compressor inertia)
+        float spoolTau      = 0.30f;   // seconds to build (compressor inertia)
         float dumpTau       = 0.11f;   // seconds to bleed off (wastegate/BOV)
         float vacuumPsi     = 8.5f;    // depth of vacuum at a closed throttle
-        float floorTorque   = 0.85f;   // off-boost torque fraction — high so the launch still pulls
+        // floorTorque REMOVED 2026-08-16: the pressure-ratio model (updateTurbo)
+        // derives off-boost torque from absolute manifold pressure — the old
+        // ad-hoc floor had been dead for a while and its `turbo_floor` cvar was
+        // a knob wired to nothing (NO_SLOP rule 6: a dead flag is a lie).
     };
     TurboParams&       turbo()       { return m_turbo; }
     const TurboParams& turbo() const { return m_turbo; }
@@ -150,6 +190,34 @@ public:
     // Multiplier the turbo is currently applying to engine torque.
     float turboMult() const { return m_turboMult; }
 
+    // ---- NFS STEERING: speed-sensitive map + fast slew (2026-08-16) ---------
+    // The raw input is digital (A/D = instant -1/0/+1) and used to hit the
+    // wheels UNFILTERED at the full 30-deg lock: fine at parking speed, a
+    // spin/twitch machine at 100 mph — one reason the car "doesn't like to
+    // turn" (you couldn't hold a big steer input at speed, so you stopped
+    // asking). The shaping runs in preStep (dt-scaled — the HARD rule):
+    //   1) SPEED MAP: available lock is 100% at/below fullLockMph, tapering
+    //      linearly to hiFrac at/above hiSpeedMph. Full angle for hairpins,
+    //      tight precise angles at speed — instant turn-in without twitch.
+    //   2) SLEW: the shaped target is rate-limited at slewPerSec full-lock
+    //      units/s. 7/s = lock-to-lock in ~0.3 s: FAST (arcade), but the two
+    //      or three frames of ramp keep a tap from being a step function, and
+    //      countersteer still lands near-instantly.
+    // All four knobs live: car_steer_lo / car_steer_hi / car_steer_min /
+    // car_steer_rate (host_tunnel.cpp — help text carries these defaults,
+    // NO_SLOP rule 4: change together).
+    struct SteerParams {
+        float fullLockMph = 25.0f;  // at/below this speed: 100% of max lock
+        float hiSpeedMph  = 95.0f;  // at/above this speed: hiFrac of max lock
+        float hiFrac      = 0.34f;  // lock fraction remaining at high speed
+        float slewPerSec  = 7.0f;   // steer slew, full-lock units per second
+    };
+    SteerParams&       steerParams()       { return m_steerP; }
+    const SteerParams& steerParams() const { return m_steerP; }
+    // The shaped steering actually being sent to the wheels this step [-1,1]
+    // (post speed-map, post slew). HUD / self-test telemetry.
+    float steerNow() const { return m_steerNow; }
+
     // ---- Per-instance paint tint (WORLD CARS variants) ----------------------
     // Replaces the CLEARCOAT drawables' baseColor RGB (the car-paint panels;
     // glass/tires/trim keep their authored look) so the one live rig matches
@@ -159,6 +227,20 @@ public:
         m_tint[0] = rgb[0]; m_tint[1] = rgb[1]; m_tint[2] = rgb[2]; m_tintOn = true;
     }
     void clearPaintTint() { m_tintOn = false; }
+
+    // ---- TIRE SQUASH (render-only, hard-landing visual) ---------------------
+    // Owner: "when Landing hard on pavement, the RUBBER TIRES should deflect
+    // visually, a tiny bit." Detected in postStep() from each wheel's live
+    // WheelState.suspensionLength (a fast compression toward the suspension's
+    // min length while the wheel has contact = a hard hit), consumed in
+    // render() to nudge that wheel's drawn transform — see squashFactors() in
+    // vehicle.cpp for the exact math. NEVER touches physics (WheeledTuning /
+    // the Jolt suspension settings are untouched) — this is cosmetic only, so
+    // it cannot fight the DS-Vehicle session's tuning work.
+    // `tire_squash` console cvar, 0 = off, 1 = full (default). Independent of
+    // WheeledTuning on purpose (a shop part should never gate a visual).
+    void  setTireSquash(float amount01) { m_tireSquash = std::clamp(amount01, 0.0f, 1.0f); }
+    float tireSquash() const { return m_tireSquash; }
 
 private:
     x3::rhi::IRenderDevice*  m_device  = nullptr;
@@ -173,13 +255,18 @@ private:
     float m_hx = 1.07f, m_hy = 0.5f, m_hz = 1.95f;
 
     x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD)
+    x3::phys::VehicleInput m_effIn;      // post-TC input (preStep shapes steer on this)
     float m_effThrottle = 0.0f;          // post-TC throttle (engine audio load)
+    SteerParams m_steerP;                // speed-sensitive steering map (see steerParams)
+    float m_steerNow = 0.0f;             // slewed steering actually at the wheels
     bool m_tcEnabled = false;            // TC off — grip 10 hooks up and the box shifts; T toggles
     bool m_tcCutting = false;            // TC hysteresis latch — stays cut until slip falls (see setInput)
     float m_tcTrim = 1.0f;               // smoothed TC trim (one-pole, see setInput)
+    bool m_climbMode = false;            // crawl traction (see setClimbMode)
 
     void  updateTurbo(float dt);         // called from preStep
     void  updateEngineModel(float dt);   // called from preStep
+    void  shapeSteering(float dt);       // called from preStep (speed map + slew)
     TurboParams m_turbo;
     bool  m_turboOn         = true;
     float m_boostPsi        = 0.0f;      // manifold pressure (negative = vacuum)
@@ -196,8 +283,28 @@ private:
     x3::rhi::TextureHandle m_wheelTex;
     std::vector<x3::phys::WheelDesc> m_wheels;
 
+    // ---- Tire squash runtime state (see setTireSquash / squashFactors in
+    // vehicle.cpp). One slot per physics wheel (4-wheel car; unused slots for
+    // anything with fewer wheels are simply never touched). Updated once per
+    // FIXED physics step in postStep() (deterministic dt, not render-rate),
+    // consumed in render(). Pure cosmetic state — nothing here reaches Jolt.
+    struct WheelSquash {
+        float prevSuspLen = 0.0f;  // last step's WheelState.suspensionLength (m)
+        bool  havePrev    = false; // false until the first postStep after build
+        float squash      = 0.0f;  // current squash amount [0,1], 1 = strongest
+        float squashVel   = 0.0f;  // critically-damped spring "velocity" term
+    };
+    WheelSquash m_squash[4];
+    float m_tireSquash = 1.0f;   // `tire_squash` cvar multiplier, 0..1 (default 1)
+    void  updateTireSquash(float dt);  // called from postStep
+    // Per-wheel squash factors this frame: outSquashY = radial shrink [0,1)
+    // (~4-8% at full squash), outBulge = width growth (~2-3% at full squash).
+    // Both 0 when the wheel is not squashing (fast, byte-identical path).
+    void  squashFactors(int slot, float& outSquashY, float& outBulge) const;
+
     // ---- Hero-car GLB skin (optional; graybox fallback when absent) ----
     bool m_skinned = false;
+    bool m_terrainContactLaw = false;   // opt-in; see setTerrainContactLaw
     std::unique_ptr<x3::asset::IAssetSource> m_skinSrc;
     std::unique_ptr<x3::asset::IModelLoader> m_skinLoader;
     x3::asset::Model m_skinModel;

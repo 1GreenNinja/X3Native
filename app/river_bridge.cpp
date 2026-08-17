@@ -186,7 +186,8 @@ RoadSpec makeValleyRoad(const RiverBridgePlan& p, uint32_t* outGapA, uint32_t* o
     return s;
 }
 
-RiverRoadResult registerRiverRoad() {
+RiverRoadResult registerRiverRoad(const RoadSpec* ringSpec,
+                                  const std::vector<float>* ringRoadY) {
     RiverRoadResult out;
     out.plan = planRiverBridge();
     if (!out.plan.ok) {
@@ -200,7 +201,49 @@ RiverRoadResult registerRiverRoad() {
     g.y0 = g.y1 = out.plan.deckY;   // the deck is LEVEL — no superelevation,
                                     // no grade, exactly as bridges are built
     out.spec.gaps.push_back(g);
+    // HORIZONTAL FLOW, freeway class — same law as every route. The gap goes
+    // on FIRST so the smoother locks the bridge reach (a deck is straight)
+    // and remaps the gap's node indices through the subdivision.
+    out.spec.minTurnRadiusM   = 250.0f;
+    out.spec.maxDeflectionDeg = 3.0f;
+    smoothHorizontalCurves(out.spec);
+    // THE RING LANDINGS — attach both ends to the tour at grade (see .h).
+    if (ringSpec && ringRoadY) {
+        out.ringJctA = attachRoadEndToRoute(out.spec, /*atFront=*/true,
+                                            *ringSpec, *ringRoadY, &out.ringNodeA);
+        out.ringJctB = attachRoadEndToRoute(out.spec, /*atFront=*/false,
+                                            *ringSpec, *ringRoadY, &out.ringNodeB);
+        if (!out.ringJctA.valid || !out.ringJctB.valid)
+            x3::logWarn("valley road: a leg end is not on the tour — landing skipped");
+    }
     out.road = registerRoad(out.spec, &out.roadY);
+    if (out.road.ok && !out.roadY.empty()) {
+        if (out.ringJctA.valid) {
+            out.ringJctA.endY = out.roadY.front();
+            registerRoadJunctionThroat(out.ringJctA.endX, out.ringJctA.endZ,
+                                       out.ringJctA.jx, out.ringJctA.jz,
+                                       out.ringJctA.jy);
+        }
+        if (out.ringJctB.valid) {
+            out.ringJctB.endY = out.roadY.back();
+            registerRoadJunctionThroat(out.ringJctB.endX, out.ringJctB.endZ,
+                                       out.ringJctB.jx, out.ringJctB.jz,
+                                       out.ringJctB.jy);
+        }
+        if (out.ringJctA.valid || out.ringJctB.valid) {
+            char jb[300];
+            std::snprintf(jb, sizeof(jb),
+                "valley road: ring landings at grade — west (%.0f, %.0f) datum "
+                "%.1f (end off %.2f ft), east (%.0f, %.0f) datum %.1f (end off "
+                "%.2f ft), pin deficit %.2f ft",
+                out.ringJctA.jx, out.ringJctA.jz, out.ringJctA.jy,
+                (out.roadY.front() - out.ringJctA.jy) * 3.28084f,
+                out.ringJctB.jx, out.ringJctB.jz, out.ringJctB.jy,
+                (out.roadY.back() - out.ringJctB.jy) * 3.28084f,
+                out.road.pinErrM * 3.28084f);
+            x3::logInfo(jb);
+        }
+    }
 
     char b[300];
     std::snprintf(b, sizeof(b),
@@ -309,10 +352,17 @@ RiverBridgeBuildResult buildRiverBridge(const RiverBridgePlan& p, Scene& scene,
         for (float s = -p.abutS + 3.0f; s <= p.abutS + 0.01f; s += 3.0f) {
             const float s1 = std::min(s, p.abutS);
             float a[3], b[3], c[3], d[3];
-            // running surface (asphalt)
+            // running surface (asphalt).
+            // WINDING: d,c,b,a — the normal must point UP. As a,b,c,d this
+            // quad faced DOWN, which produced Tim's exact double bug: "The
+            // Bridge renders from below but not above! and.. ou fall
+            // through!!!" — backface culling hid the deck from above, and the
+            // wheel raycasts (which cull back faces in Jolt) sailed through
+            // the same inverted triangles, because the collider shares this
+            // very index buffer. One winding, both symptoms.
             pt(prevS, -w, p.deckY, a); pt(s1, -w, p.deckY, b);
             pt(s1,  w, p.deckY, c);    pt(prevS, w, p.deckY, d);
-            deckTop.quad(a, b, c, d);
+            deckTop.quad(d, c, b, a);
             // fascia edges (0.35 m of slab side)
             for (int side = -1; side <= 1; side += 2) {
                 pt(prevS, w*side, p.deckY, a); pt(s1, w*side, p.deckY, b);
@@ -475,11 +525,14 @@ bool runRiverBridgeSelfTest() {
         check(desc, "RB1 the river flows downhill its whole run", d);
     }
 
-    // RB0 — NEGATIVE CONTROL: the same road WITHOUT the span gap. The carve
-    // dives through the channel: the graded datum drowns (roadY below the
-    // water surface) and the corridor gouges the riverbed — the two failures
-    // that prove an at-grade crossing is impossible and the deck is not
-    // decoration. Registered first, cleared before the real thing.
+    // RB0 — NEGATIVE CONTROL: the same road WITHOUT the span gap. An at-grade
+    // crossing fails one of two ways, and both prove the deck is not
+    // decoration: the graded datum DROWNS (roadY below the water surface — the
+    // original symptom), or, since vertical-curve smoothing landed in the
+    // grader (W-ROADS2), the sag curve lifts the V's bottom and the datum
+    // STRANDS in mid-air over the gouged channel instead — corridors cannot
+    // fill, so there is still nothing to drive on. Either way the carve also
+    // gouges the riverbed. Registered first, cleared before the real thing.
     {
         clearTerrainCorridors();
         const RiverBridgePlan p = planRiverBridge();
@@ -498,11 +551,18 @@ bool runRiverBridgeSelfTest() {
         for (float s = -30.0f; s <= 30.0f; s += 2.0f)
             channelDelta = std::min(channelDelta,
                 terrainCorridorDelta(p.cx + p.dirX * s, p.cz + p.dirZ * s));
+        // Post-carve ground at the channel centre: what the datum would have
+        // to stand on. Above it by 3 m+ with no deck = stranded in the air.
+        const float chanGround = terrainHeightAtWorld(p.cx, p.cz);
+        const bool drowned  = minRoadY < p.waterY - 1.0f;
+        const bool stranded = minRoadY > chanGround + 3.0f;
         std::snprintf(d, sizeof(d),
-            "road sinks to %.1f ft BELOW the water surface and carves %.1f ft off the river",
-            (p.waterY - minRoadY) * kMToFt, -channelDelta * kMToFt);
-        check(nv.ok && minRoadY < p.waterY - 1.0f && channelDelta < -0.5f,
-              "RB0 NEGATIVE CONTROL: at-grade crossing drowns the road", d);
+            "road datum %.1f ft vs water, %.1f ft above the gouged bed (carved %.1f ft off the river) — %s",
+            (minRoadY - p.waterY) * kMToFt, (minRoadY - chanGround) * kMToFt,
+            -channelDelta * kMToFt,
+            drowned ? "drowned" : (stranded ? "stranded mid-air" : "NEITHER, which is the failure"));
+        check(nv.ok && channelDelta < -0.5f && (drowned || stranded),
+              "RB0 NEGATIVE CONTROL: at-grade crossing cannot work", d);
         clearTerrainCorridors();
     }
 

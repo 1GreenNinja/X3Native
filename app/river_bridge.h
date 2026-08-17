@@ -96,12 +96,28 @@ struct RiverRoadResult {
     RoadBuildResult    road;
     RoadSpec           spec;      // includes the span gap
     std::vector<float> roadY;     // graded datum (ribbon + bridge ride this)
+    // THE RING LANDINGS. The leg tables end ON the inner tour, and before
+    // these existed the two roads just stacked there — independently graded
+    // pavements, a sheer skirt face between the decks, both roads' lane
+    // paint crisscrossing one surface (the owner's screenshot: "This is so
+    // bad.. at least swoop curves down to it"). Now both ends attach with
+    // the shared junction machinery: terminal retreated to the setback,
+    // datum PINNED to the ring's, throat box + barrier exclusion zone, and
+    // the host lays a junction mouth (ruled twist + swooping merge fillets)
+    // over each. Valid only when registerRiverRoad was given the ring.
+    RoadJunction       ringJctA;      // west landing (tour ~ -80 deg)
+    RoadJunction       ringJctB;      // east landing (tour ~ -10.5 deg)
+    uint32_t           ringNodeA = 0, ringNodeB = 0;
 };
 
 // BOOT ENTRY POINT: plan the bridge, author the valley road around it,
 // register the carve with the span gap. Registry contract as ever: call
-// before the first terrain height query.
-RiverRoadResult registerRiverRoad();
+// before the first terrain height query. Pass the inner tour's spec + graded
+// datum to land the road's ends on it at grade (see RiverRoadResult); without
+// them the legacy free-ended registration is unchanged (the negative-control
+// tests use that).
+RiverRoadResult registerRiverRoad(const RoadSpec* ringSpec = nullptr,
+                                  const std::vector<float>* ringRoadY = nullptr);
 
 // Build the bridge meshes + collision into the scene. Deck, approach slabs,
 // piers with waterline collars, abutment seats, parapets (with collision),

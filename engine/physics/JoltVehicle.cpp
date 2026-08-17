@@ -88,7 +88,16 @@ constexpr float kGravity = 9.81f;
 // original 0.92 was tuned to land the next gear on the 0.55 torque peak, and at
 // 0.975 the next gear lands at 0.975/1.49 = 0.65 — still on the fat part of the
 // curve, just the far side of the peak. Worth the trade for the noise.
-constexpr float kShiftUpFrac   = 0.975f;
+//
+// 0.975 -> 0.94 (2026-08-16). 0.975 requires the engine to PULL to 97.5% of
+// redline before the box will hand over the next gear — fine in 1st-4th where
+// torque is abundant, but in 5th at speed the resistive load flattens the pull
+// and the crank plateaus a few hundred rpm short of 7312. The box then simply
+// never offers 6th: Tim, "i cannot get to 140mph or 6th gear". 0.94 (7050) is
+// still a scream — the tach needle is visibly inside the red band before the
+// shift — but it is a bar the engine can actually clear under load in the
+// tall gears.
+constexpr float kShiftUpFrac   = 0.94f;
 // Downshift point. 0.50 (3750) still hunted on grades: an upshift lands the next
 // gear at ~0.68 redline, and on a climb the car decelerates into the 3750
 // threshold, downshifts, revs, upshifts, repeats — "7x or more on 4th". 0.33
@@ -156,10 +165,16 @@ public:
             ws->mMaxBrakeTorque      = w.maxBrakeTorque;
             ws->mMaxHandBrakeTorque  = w.handBraked ? w.maxBrakeTorque * 2.5f : 0.0f;
             // BASELINE tire compound: scale Jolt's default friction curves by the
-            // authored gripScale (see WheelDesc::gripScale).
-            if (w.gripScale > 0.0f && w.gripScale != 1.0f) {
+            // authored gripScale (see WheelDesc::gripScale). Lateral takes its
+            // OWN scale when authored (WheelDesc::lateralGripScale) — huge
+            // longitudinal for the launch, rollover-bounded lateral for flat
+            // cornering. 0 = lateral follows gripScale (old behavior).
+            if (w.gripScale > 0.0f && w.gripScale != 1.0f)
                 for (auto& p : ws->mLongitudinalFriction.mPoints) p.mY *= w.gripScale;
-                for (auto& p : ws->mLateralFriction.mPoints)      p.mY *= w.gripScale;
+            {
+                const float lat = w.lateralGripScale > 0.0f ? w.lateralGripScale : w.gripScale;
+                if (lat > 0.0f && lat != 1.0f)
+                    for (auto& p : ws->mLateralFriction.mPoints) p.mY *= lat;
             }
             // Wheel inertia: Jolt's default 0.9 (a bare 20 kg rim) spins to ~137%
             // slip the instant the engine hits it, and the friction can only pull
@@ -168,8 +183,9 @@ public:
             ws->mInertia = 2.5f;
             if (i == 0)
                 x3::logInfo("[vehicle] grip " + std::to_string(w.gripScale) +
-                            " -> peak " + std::to_string(ws->mLongitudinalFriction.GetValue(0.06f)) +
-                            " (expect 12 for grip 10)");
+                            " -> long peak " + std::to_string(ws->mLongitudinalFriction.GetValue(0.06f)) +
+                            ", lat peak " + std::to_string(ws->mLateralFriction.GetValue(3.0f)) +
+                            " / plateau " + std::to_string(ws->mLateralFriction.GetValue(20.0f)));
             vs.mWheels.push_back(ws);
             m_wheelRadius[i] = w.radius;
             m_wheelWidth[i]  = w.width;
@@ -181,10 +197,49 @@ public:
             m_wheelSettings.push_back(ws);
             m_baseSuspMin.push_back(w.suspensionMin);
             m_baseSuspMax.push_back(w.suspensionMax);
-            if (i == 0) {
-                m_baseLongFriction = ws->mLongitudinalFriction;
-                m_baseLatFriction  = ws->mLateralFriction;
-            }
+            // PER-WHEEL friction baselines (post-authored-gripScale), so a live
+            // tuning multiplies from THIS WHEEL's stock compound. The old code
+            // kept only wheel 0's baseline and rebuilt every wheel from it —
+            // harmless while all four wheels shipped identical grip, but it
+            // silently FLATTENED any authored front/rear split the moment a
+            // global car_grip was applied (NFS turn-in balance, 2026-08-16).
+            // Also which axle this is (steered = front, for per-axle tuning)
+            // and the wheel's current relative grip multiplier (stock = 1), so
+            // grip and latTail re-derive idempotently without losing each other.
+            m_baseLongFriction.push_back(ws->mLongitudinalFriction);
+            m_baseLatFriction.push_back(ws->mLateralFriction);
+            m_wheelSteered.push_back(w.steered);
+            m_gripNow.push_back(1.0f);
+        }
+
+        // ---- ANTI-ROLL BARS (see WheeledVehicleDesc::antiRollFront). One bar
+        // per axle: pair the first two steered wheels (front) and the first two
+        // non-steered (rear). Jolt applies force = stiffness * travel-difference
+        // between the paired wheels, so the body stays FLAT in a corner while
+        // straight-line suspension is untouched. Owner receipt 2026-08-16: "The
+        // car wants to tip up on two wheels even trying to make ANY curve at
+        // speed" — bars + the lateral grip cap are that fix. ----
+        {
+            auto addBar = [&](bool steered, float stiffness) {
+                if (stiffness <= 0.0f) return;
+                int lw = -1, rw = -1;
+                for (uint32_t i = 0; i < d.wheelCount; ++i) {
+                    if (d.wheels[i].steered != steered) continue;
+                    if (lw < 0) lw = (int)i;
+                    else if (rw < 0) { rw = (int)i; break; }
+                }
+                if (lw < 0 || rw < 0) return;   // axle needs a left AND a right
+                // Label order (which index is "left") is immaterial: the bar's
+                // corrective impulse is antisymmetric in the pair, so swapping
+                // the labels produces byte-identical simulation (verified —
+                // both orders ran the skidpad to identical telemetry).
+                JPH::VehicleAntiRollBar bar;
+                bar.mLeftWheel = lw; bar.mRightWheel = rw;
+                bar.mStiffness = stiffness;
+                vs.mAntiRollBars.push_back(bar);
+            };
+            addBar(true,  d.antiRollFront);
+            addBar(false, d.antiRollRear);
         }
 
         // ---- Controller (engine + transmission + 1 differential) ----
@@ -285,6 +340,30 @@ public:
         // Release after RemoveConstraint — that would double-free. Letting the Ref
         // members drop in our destructor is the correct, leak-free teardown.
         m_constraint = new JPH::VehicleConstraint(*m_chassis, vs);  // refcount -> our Ref
+        // ---------------------------------------------------------------------
+        // SURFACE FRICTION COMBINE — the 2026-08-16 "doesn't like to turn" root
+        // cause, found by MEASURING (X3_VEHDBG): the per-wheel lateral impulse
+        // capped at exactly 0.583 x normal load on a tire authored 1.7.
+        // Jolt's default combine is sqrt(tireFriction * bodyFriction), and NO
+        // engine body ever calls SetFriction, so every static mesh (the ground,
+        // every road) carries Jolt's default 0.2 — sqrt(1.7 * 0.2) = 0.583.
+        // EXACT match. Every gripScale in this repo's history (1.7 -> 3.4 -> 10)
+        // was unknowingly compensating for that hidden sqrt-crush: authored 10
+        // was effectively sqrt(12 * 0.2) = 1.55 mu at the road.
+        // The fix: normalize the surface term so the engine's universal 0.2
+        // reads as "plain road" (x1.0) and the AUTHORED TIRE CURVES BECOME THE
+        // SPEC (NO_SLOP rule 8 — the numbers in WheelDesc are now true at the
+        // contact patch). A future icy/wet surface can still call SetFriction
+        // (< 0.2 = slick, e.g. 0.05 -> quarter grip) and it scales linearly.
+        // ---------------------------------------------------------------------
+        m_constraint->SetCombineFriction(
+            [](JPH::uint, float& ioLongitudinalFriction, float& ioLateralFriction,
+               const JPH::Body& inBody2, const JPH::SubShapeID&) {
+                constexpr float kDefaultBodyFriction = 0.2f;   // Jolt's untouched default
+                const float surface = inBody2.GetFriction() / kDefaultBodyFriction;
+                ioLongitudinalFriction *= surface;
+                ioLateralFriction      *= surface;
+            });
         // Raycast wheels against the ground object layer (the static terrain).
         m_tester = new JPH::VehicleCollisionTesterRay(objLayerOf(d.groundLayer), m_localUp);
         m_constraint->SetVehicleCollisionTester(m_tester);          // constraint holds a RefConst
@@ -351,7 +430,28 @@ public:
     }
 
     void postStep(float) override {
-        // Reserved for post-step tuning hooks (traction trim feedback, etc.).
+        // TIRE-FORCE TELEMETRY (X3_VEHDBG=1) — the measuring instrument that
+        // found the 2026-08-16 "doesn't like to turn" root cause. Per wheel:
+        // the ACTUAL steer angle Jolt applied and the solver's suspension /
+        // lateral impulses (lambda, N*s per step; force = lambda * 60). Reads
+        // post-solve state, logs at 2 Hz, costs nothing when the env is unset.
+        static const bool dbg = [] { const char* e = std::getenv("X3_VEHDBG");
+                                     return e && e[0] == '1'; }();
+        if (dbg && m_constraint) {
+            if (++m_dbgTick % 30 == 0) {
+                std::string s = "[vehdbg]";
+                for (uint32_t i = 0; i < m_wheelCount; ++i) {
+                    const JPH::Wheel* w = m_constraint->GetWheel(i);
+                    if (!w) continue;
+                    s += " w" + std::to_string(i) +
+                         "(steer " + std::to_string(w->GetSteerAngle()) +
+                         " susp " + std::to_string(w->GetSuspensionLambda()) +
+                         " lat "  + std::to_string(w->GetLateralLambda()) +
+                         (w->HasContact() ? ")" : " AIR)");
+                }
+                x3::logInfo(s);
+            }
+        }
     }
     void update(float dt) override { preStep(dt); postStep(dt); }
 
@@ -408,6 +508,18 @@ public:
         return m_ctrl ? m_ctrl->GetTransmission().GetCurrentGear() : 0;
     }
 
+    float driveForce() const override {
+        if (!m_constraint) return 0.0f;
+        // Solver longitudinal impulses (N*s) over the fixed 60 Hz step -> N.
+        // Positive = pushing the car along its forward axis.
+        float lambda = 0.0f;
+        for (uint32_t i = 0; i < m_wheelCount; ++i) {
+            const JPH::Wheel* w = m_constraint->GetWheel(i);
+            if (w && w->HasContact()) lambda += w->GetLongitudinalLambda();
+        }
+        return lambda * 60.0f;
+    }
+
     float longitudinalSlip(uint32_t i) const override {
         if (!m_constraint || i >= m_wheelCount) return 0.0f;
         const JPH::Wheel* w = m_constraint->GetWheel(i);
@@ -453,16 +565,63 @@ public:
         // Chassis mass (inertia rescaled with it).
         if (t.massKg > 0.0f && m_chassis->GetMotionProperties())
             m_chassis->GetMotionProperties()->ScaleToMass(t.massKg);
+        // FINAL DRIVE, live. Jolt reads the differential settings every step, so
+        // mutating the ratio in place re-gears the running car — shorter (bigger)
+        // = more wheel torque in every gear, lower top speed. m_finalDrive must
+        // follow or lockedRPM() (the audio engine model) lies about wheel rpm.
+        if (t.finalDrive > 0.0f) {
+            for (JPH::VehicleDifferentialSettings& diff : m_ctrl->GetDifferentials())
+                diff.mDifferentialRatio = t.finalDrive;
+            m_finalDrive = t.finalDrive;
+        }
+        // LATERAL BREAKAWAY SHAPE + LATERAL-ONLY GRIP (see WheeledTuning):
+        // remembered so a later grip change re-applies the same shape/cap.
+        // Everything tire is re-derived from the authored baselines below
+        // (idempotent — re-applying a tuning never compounds).
+        if (t.latTail > 0.0f)      m_latTail = t.latTail;
+        if (t.latGripScale > 0.0f) m_latNow  = t.latGripScale;
+        // ANTI-ROLL BARS, live. The constraint reads the bar array every step;
+        // match each bar to its axle by its left wheel's steered flag.
+        if ((t.antiRollFront > 0.0f || t.antiRollRear > 0.0f) && m_constraint) {
+            for (JPH::VehicleAntiRollBar& bar : m_constraint->GetAntiRollBars()) {
+                const bool front = bar.mLeftWheel >= 0 &&
+                                   bar.mLeftWheel < (int)m_wheelSteered.size() &&
+                                   m_wheelSteered[bar.mLeftWheel];
+                if (front  && t.antiRollFront > 0.0f) bar.mStiffness = t.antiRollFront;
+                if (!front && t.antiRollRear  > 0.0f) bar.mStiffness = t.antiRollRear;
+            }
+        }
         // Per-wheel: tires / suspension / ride height / brakes. All scale or offset
-        // from the AUTHORED baseline captured in build(), so re-application after a
-        // parts change is idempotent.
+        // from the AUTHORED baseline captured in build() (grip multipliers are
+        // RELATIVE to each wheel's stock compound — see WheeledTuning::gripScale),
+        // so re-application after a parts change is idempotent.
+        const bool reshapeTires = t.gripScale > 0.0f || t.gripScaleFront > 0.0f ||
+                                  t.gripScaleRear > 0.0f || t.latTail > 0.0f ||
+                                  t.latGripScale > 0.0f;
         for (size_t i = 0; i < m_wheelSettings.size(); ++i) {
             JPH::WheelSettingsWV* ws = m_wheelSettings[i];
-            if (t.gripScale > 0.0f) {
-                ws->mLongitudinalFriction = m_baseLongFriction;
-                for (auto& p : ws->mLongitudinalFriction.mPoints) p.mY *= t.gripScale;
-                ws->mLateralFriction = m_baseLatFriction;
-                for (auto& p : ws->mLateralFriction.mPoints) p.mY *= t.gripScale;
+            if (reshapeTires && i < m_baseLongFriction.size()) {
+                // Resolve this wheel's new relative grip: all-wheel gripScale
+                // first, then the per-axle override (steered = front axle).
+                float g = m_gripNow[i];
+                if (t.gripScale > 0.0f) g = t.gripScale;
+                const bool front = i < m_wheelSteered.size() && m_wheelSteered[i];
+                if (front  && t.gripScaleFront > 0.0f) g = t.gripScaleFront;
+                if (!front && t.gripScaleRear  > 0.0f) g = t.gripScaleRear;
+                m_gripNow[i] = g;
+                ws->mLongitudinalFriction = m_baseLongFriction[i];
+                for (auto& p : ws->mLongitudinalFriction.mPoints) p.mY *= g;
+                // Lateral = authored lateral baseline x grip x the lateral-only
+                // dial (the baseline already carries the rollover-bounded cap
+                // and the front/rear turn-in split — see vehicle.cpp).
+                ws->mLateralFriction = m_baseLatFriction[i];
+                for (auto& p : ws->mLateralFriction.mPoints) p.mY *= g * m_latNow;
+                // Reshape the lateral tail: the LAST point is Jolt's high-slip
+                // plateau (20 deg, 0.83x peak in the stock shape). >1 = flatter
+                // falloff past the peak (a slide keeps its grip — easy to catch
+                // with countersteer); <1 = sharper breakaway (drift-happy).
+                if (m_latTail != 1.0f && !ws->mLateralFriction.mPoints.empty())
+                    ws->mLateralFriction.mPoints.back().mY *= m_latTail;
             }
             if (t.suspensionFreq > 0.0f) ws->mSuspensionSpring.mFrequency = t.suspensionFreq;
             if (t.suspensionDamp > 0.0f) ws->mSuspensionSpring.mDamping   = t.suspensionDamp;
@@ -503,10 +662,15 @@ private:
     // ---- Live-tuning bookkeeping (applyWheeledTuning / setTorqueBoost) ----
     std::vector<JPH::WheelSettingsWV*> m_wheelSettings; // owned by the constraint's Refs
     std::vector<float> m_baseSuspMin, m_baseSuspMax;    // authored suspension lengths
-    JPH::LinearCurve m_baseLongFriction, m_baseLatFriction; // default tire curves
+    std::vector<JPH::LinearCurve> m_baseLongFriction, m_baseLatFriction; // per-wheel AUTHORED curves
+    std::vector<bool>  m_wheelSteered;                  // steered = front axle (per-axle grip/ARB)
+    std::vector<float> m_gripNow;                       // current grip multiplier per wheel (stock 1)
+    float m_latNow  = 1.0f;                             // lateral-only grip multiplier (stock 1)
+    float m_latTail = 1.0f;                             // lateral high-slip plateau multiplier
     float m_baseMaxTorque = 600.0f;                     // tuned baseline (boost multiplies)
     float m_finalDrive = 1.0f;                          // final-drive ratio (for the locked-RPM clamp)
     float m_boost = 1.0f;                               // nitrous multiplier (1 = none)
+    uint32_t m_dbgTick = 0;                             // X3_VEHDBG log cadence
 };
 
 // =====================================================================

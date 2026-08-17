@@ -35,7 +35,7 @@
       "halfExtents": [0.9068, 0.50, 1.95],
       "dimsFeet": "5.5 W x 3.3 H x 12.8 L (halfExtents[0] is the GLB's TRUE half-width; buildPhysics multiplies it by the kBodyWiden 1.18 stance factor to reach the shipped 1.07 collision half-width)",
       "trackM": 1.354,
-      "comHeight": 0.46,
+      "comHeight": 0.31,
       "idleRpm": 800,
       "pitchAtRedline": 7.0,
       "idlePitch": 0.75,

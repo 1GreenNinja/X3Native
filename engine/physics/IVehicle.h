@@ -92,8 +92,20 @@ struct WheelDesc {
     // slip plateau is so low that a powerful RWD car lives in a permanent torque-
     // independent burnout (upshifts slip-blocked, engine pinned at redline) — set
     // > 1 for a sports-car compound so engine torque actually reaches the road.
-    // A live WheeledTuning gripScale composes ON TOP of this baseline.
+    // A live WheeledTuning gripScale/gripScaleFront/gripScaleRear composes ON
+    // TOP of this authored baseline (1 = stock for this wheel), per wheel.
     float gripScale     = 1.0f;
+    // LATERAL grip, separately (0 = lateral uses gripScale too, the old
+    // behavior). The split exists because the two axes have OPPOSITE
+    // constraints: longitudinal grip must be huge (~10) so 800 Nm launches
+    // instead of smoking, but lateral grip is bounded ABOVE by the ROLLOVER
+    // THRESHOLD — a_lat > g * halfTrack / comHeight lifts the inside wheels no
+    // matter what anti-roll bars do (they flatten body roll; they cannot repeal
+    // the moment balance). Owner, 2026-08-16: "The car wants to tip up on two
+    // wheels even trying to make ANY curve at speed" — that was lateral grip
+    // ~12 mu against a ~2.2 g tip threshold. Cap lateral so peak cornering
+    // sits UNDER the threshold and the car corners flat, NFS style.
+    float lateralGripScale = 0.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -141,6 +153,18 @@ struct WheeledVehicleDesc {
     // wheel rays MUST filter on Dynamic (the chassis's own layer) to stand on the
     // Static ground. Filtering on Static makes the rays pass straight through.
     Layer groundLayer = Layer::Dynamic;
+    // ANTI-ROLL BARS (N/m; 0 = none). Couples the left/right suspension of an
+    // axle: force = stiffness * (left travel - right travel), resisting BODY
+    // ROLL only (pure vertical travel — bumps, landings — is untouched). The
+    // front bar pairs the first two STEERED wheels, the rear bar the first two
+    // non-steered. NFS cars corner FLAT; this is the tool that does it.
+    // STABILITY CEILING (measured 2026-08-16, 60 Hz fixed step, hero car):
+    // <= 10000 N/m is stable and already dead flat (0.05 deg at 1.4 g);
+    // >= 15000 the discrete solver PUMPS the roll mode until the vehicle
+    // flips onto Jolt's max-pitch-roll limiter, at any tire grip. Small
+    // numbers do the whole job here — stay well under 12000.
+    float antiRollFront = 0.0f;
+    float antiRollRear  = 0.0f;
     // Forward / up of the chassis in its LOCAL frame (CONVENTIONS.md: -Z fwd, +Y up).
     float forward[3] = { 0.0f, 0.0f, -1.0f };
     float up[3]      = { 0.0f, 1.0f,  0.0f };
@@ -232,8 +256,44 @@ struct WheeledTuning {
     // Chassis mass (kg). <= 0 leaves mass. Inertia is rescaled proportionally.
     float massKg          = 0.0f;
     // Tire grip multiplier applied to BOTH the longitudinal and lateral friction
-    // curves (1 = the Jolt default tire). <= 0 leaves grip.
+    // curves of ALL wheels, RELATIVE to each wheel's AUTHORED compound
+    // (WheelDesc::gripScale): 1 = the stock tire ON THAT WHEEL, so a front/rear
+    // grip split authored at build survives a global grip change — the old code
+    // rebuilt every wheel from wheel 0's baseline, which silently flattened any
+    // per-axle balance. The shop's tire parts (vehparts) stack here: a 1.32
+    // sport compound is 1.32x stock, whatever stock is. <= 0 leaves grip.
     float gripScale       = 0.0f;
+    // PER-AXLE grip (NFS turn-in balance): same relative-to-authored semantics,
+    // applied only to the STEERED wheels (front) / non-steered wheels (rear).
+    // Applied after gripScale if both are set in one tuning.
+    // Front > rear = crisp turn-in with the rear breaking away first
+    // (progressive, catchable); rear > front = stability/understeer.
+    // <= 0 leaves that axle. Console: `car_gripf` / `car_gripr`.
+    float gripScaleFront  = 0.0f;
+    float gripScaleRear   = 0.0f;
+    // LATERAL-ONLY grip multiplier, all wheels, relative to each wheel's
+    // authored LATERAL baseline (WheelDesc::lateralGripScale). The cornering
+    // master dial: raise for more mid-corner grip, lower if the car tips —
+    // the rollover threshold (see WheelDesc::lateralGripScale) is the ceiling.
+    // <= 0 leaves. Console: `car_latgrip`.
+    float latGripScale    = 0.0f;
+    // ANTI-ROLL BAR stiffness, live (N/m; see WheeledVehicleDesc::antiRollFront).
+    // <= 0 leaves that bar. Console: `car_arb_f` / `car_arb_r`.
+    float antiRollFront   = 0.0f;
+    float antiRollRear    = 0.0f;
+    // LATERAL BREAKAWAY SHAPE. Jolt's lateral friction curve is (0deg,0) ->
+    // (3deg, 1.2 peak) -> (20deg, 1.0 plateau): past-the-peak grip falls to
+    // 0.83x — already progressive, not a cliff. latTail multiplies the final
+    // (high-slip-angle) point's friction relative to that stock shape:
+    //   1.0 = Jolt's shape;  >1 toward 1.2 = flatter falloff (a slide keeps
+    //   almost all its grip — very forgiving, easy countersteer);  <1 = sharper
+    //   breakaway (more drift-happy, harder to catch).
+    // <= 0 leaves the current shape. Console: `car_lattail`.
+    float latTail         = 0.0f;
+    // Final-drive ratio (the differential ratio, all differentials). Shorter
+    // (bigger number) = more wheel torque everywhere, lower top speed.
+    // <= 0 leaves it. Console: `car_final`.
+    float finalDrive      = 0.0f;
     // Suspension spring (all wheels). <= 0 leaves the respective value.
     float suspensionFreq  = 0.0f;     // spring frequency (Hz)
     float suspensionDamp  = 0.0f;     // damping ratio
@@ -307,6 +367,13 @@ public:
     // max(|vehicleSpeed|, 1). ~0 = rolling in sync, >> 0 = wheelspin (burnout),
     // < 0 = locked under braking. Used by the game-layer traction control.
     virtual float longitudinalSlip(uint32_t i) const { (void)i; return 0.0f; }
+
+    // TOTAL longitudinal tire force actually applied last step (N, sum over
+    // wheels, from the solver's impulses — the ground truth for "how hard is
+    // the car really being pushed"). Diagnosis instrument for invisible force
+    // caps at speed (owner receipt 2026-08-16: nitrous moved 121 -> 123 mph
+    // and plateaued — only a measured force answers WHY). 0 for non-wheeled.
+    virtual float driveForce() const { return 0.0f; }
 
     // Apply a live performance tuning (see WheeledTuning). Mutates the running
     // Jolt engine/wheel settings + the chassis mass IN PLACE — no constraint

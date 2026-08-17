@@ -17,6 +17,7 @@
 #include "../tunnel_fitout.h"
 #include "../tunnel_rooms.h"
 #include "../player.h"
+#include "../anim.h"                     // Skinner — Jake's idle/walk/run rig
 
 #include <array>
 #include <memory>
@@ -28,11 +29,14 @@
 #include "../mesh_prims.h"
 #include "../asset_root.h"
 #include "engine/audio/IAudioSystem.h"   // ENGINE NOTE: RPM-driven loop
+#include "../engine_note.h"              // ENGINE NOTE v2: the multi-RPM bank
 #include "../weather.h"
 #include "../wetness.h"
 #include "../storm.h"
 #include "../precip_fx.h"
 #include "../hud.h"
+#include "../world_map.h"        // the M map: camera/waypoint/screen (host_streamed's system)
+#include "../input_globals.h"    // g_weaponScroll + scrollCallback -> map wheel zoom
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
 // stb_image: file-local static copy (the cinematic.cpp / descent_slide.cpp
@@ -80,13 +84,8 @@ namespace x3 { namespace apphost {
 //
 // Cost is at most kSteps*2 extra static raycasts on frames where you are under
 // cover, and none at all under open sky (the common case exits on the first ray).
-// The console eats typed characters, so GLFW's char callback needs to reach the
-// Hud. File-scope for the same reason every other host does it: glfwSetCharCallback
-// takes a plain function pointer with no user data.
-static x3::game::Hud* g_tunnelHud = nullptr;
-static void tunnelCharCB(GLFWwindow*, unsigned int c) {
-    if (g_tunnelHud && g_tunnelHud->consoleOpen()) g_tunnelHud->onChar(c);
-}
+// (The old file-static g_tunnelHud char-callback trampoline is gone: HostShell
+// owns the GLFW callbacks now, and chains to whatever a host installed first.)
 
 static float skyVisibleAt(x3::phys::IPhysicsWorld& phys, float x, float y, float z,
                           float dirX, float dirZ) {
@@ -144,28 +143,51 @@ int hostTunnel(HostContext& hc) {
     // beside the corridor above, because app/terrain.h's contract is "register
     // before the first height query" and this is the last moment that is true.
     x3::game::RoadSpec ringSpec;
+    std::vector<float> ringRoadY;   // graded datum per ring node — the connector
+                                    // pins its landing to it, and the ring ribbon
+                                    // rides it (load-bearing where the connector's
+                                    // own carve crosses under the ring pavement)
     bool ringOn = false;
     {
         const char* e = std::getenv("X3_RING");
-        ringOn = (e && e[0] == '1');
+        ringOn = !(e && e[0] == '0');   // DEFAULT ON — X3_RING=0 to disable
         if (ringOn) {
-            ringSpec = x3::game::makeRingRoad("inner tour", -592.0f, -352.0f, 3842.0f, 396);
-            ringSpec.halfWidth = x3::game::kPavedHalfM + 1.0f;
-            ringSpec.falloff   = 18.0f;
-            ringSpec.maxGrade  = 0.07f;
-            const x3::game::RoadBuildResult rr = x3::game::registerRoad(ringSpec);
+            // The COURSE, not a circle — Tim, from the world map: "its a
+            // perfect circle. NO roads do that." makeInnerCourse() is the
+            // authored leg list (straights, arcs, S-weaves, the foothill
+            // bulge), with its junction straight through the old landing.
+            ringSpec = x3::game::makeInnerCourse();
+            const x3::game::RoadBuildResult rr = x3::game::registerRoad(ringSpec, &ringRoadY);
             if (!rr.ok) { x3::logError("--world tunnel: ring registration FAILED"); ringOn = false; }
         }
     }
-    // THE 31-MILE OUTER TOUR (X3_OUTER_RING=1) — the four-range loop with its
-    // five bores — and THE RIVER CROSSING (X3_RIVER_ROAD=1) — the valley road
-    // over Bridge No.1. Registered in the same boot slot, for the same reason:
-    // the corridor registry closes at the first height query below.
+    // THE 31-MILE OUTER TOUR — the four-range loop with its five bores — and
+    // THE RIVER CROSSING (X3_RIVER_ROAD=1) — the valley road over Bridge No.1.
+    // Registered in the same boot slot, for the same reason: the corridor
+    // registry closes at the first height query below.
     x3::game::OuterRingResult outerRing;
     bool outerOn = false;
     {
         const char* e = std::getenv("X3_OUTER_RING");
-        outerOn = (e && e[0] == '1');
+        // DEFAULT ON again, 2026-08-16. It was switched OFF because one of the
+        // five bores was said to build a kilometre-scale floating shell tower
+        // over the spawn country. The AABB instrumentation added to
+        // TunnelCorridorWorld::build says it was not one bore, it was ALL FIVE,
+        // and the cause was not the dressing's arithmetic: build()'s frameAt
+        // lambda was still reading the file-scope DEMO tunnel constants
+        // (kRouteCX/kRouteDirX/kRouteHalfLen) left over from the one-tunnel era.
+        // Every tour bore therefore laid its ribbon, shell and portals on the
+        // demo axis over spawn while its CUTTING (which goes through
+        // route.worldAt) landed correctly 7 km out on its own chord — and the
+        // quads bridging the two stretched across the gap. Measured X extents
+        // 3.1-7.1 km; after the fix each bore's AABB sits on its own chord.
+        // build() now also REFUSES any bore whose frame strays >150 m from its
+        // own spine, so this cannot come back silently.
+        //
+        // Still true, and still open: the tour is an ISLAND — 2,958 m from the
+        // nearest inner-ring point, with no connector yet. X3_OUTER_RING=0 to
+        // switch it off.
+        outerOn = !(e && e[0] == '0');
         if (outerOn) {
             outerRing = x3::game::registerOuterRing();
             if (!outerRing.road.ok) {
@@ -178,15 +200,259 @@ int hostTunnel(HostContext& hc) {
     bool riverOn = false;
     {
         const char* e = std::getenv("X3_RIVER_ROAD");
-        riverOn = (e && e[0] == '1');
+        riverOn = !(e && e[0] == '0');   // DEFAULT ON — X3_RIVER_ROAD=0 to disable
         if (riverOn) {
-            riverRoad = x3::game::registerRiverRoad();
+            // The ring goes along so both leg ends LAND on it at grade —
+            // junction machinery, not stacked pavements (owner: "This is so
+            // bad.. at least swoop curves down to it").
+            riverRoad = x3::game::registerRiverRoad(
+                ringOn ? &ringSpec : nullptr,
+                ringOn ? &ringRoadY : nullptr);
             if (!riverRoad.road.ok) {
                 x3::logError("--world tunnel: river road registration FAILED");
                 riverOn = false;
             }
         }
     }
+    // THE SPAWN CONNECTOR (X3_CONNECTOR=0 to disable) — the road the spawn
+    // corridor was missing: measured 3,522 m of nothing between the exit portal
+    // and the inner tour. Registered LAST among the roads so its junction pins
+    // read the ring's graded datum and its natural sweep reads every carve
+    // already in. THE SUMMIT SPUR rides on it ("roads that go UP on top of the
+    // mountain") — skipped honestly if no peak within reach earns a road.
+    x3::game::SpawnConnectorResult connector;
+    x3::game::SummitSpurResult summitSpur;
+    x3::game::RangeCircuitResult rangeCircuit;
+    bool connOn = false, circuitOn = false;
+    {
+        const char* e = std::getenv("X3_CONNECTOR");
+        connOn = ringOn && !(e && e[0] == '0');   // needs a ring to land on
+        if (connOn) {
+            connector = x3::game::registerSpawnConnector(route, ringSpec, ringRoadY);
+            if (!connector.road.ok) {
+                x3::logError("--world tunnel: spawn connector registration FAILED");
+                connOn = false;
+            } else {
+                // THE RANGE CIRCUIT (X3_CIRCUIT=0 to disable) — Tim: "31 miles
+                // may be way too long. we need a 3-5 mile track around the
+                // range in addition." Registered BEFORE the spur so the spur's
+                // peak search has to stay off it.
+                const char* ce = std::getenv("X3_CIRCUIT");
+                circuitOn = !(ce && ce[0] == '0');   // DEFAULT ON
+                if (circuitOn) {
+                    std::vector<const x3::game::RoadSpec*> avoidC{ &ringSpec };
+                    if (outerOn) avoidC.push_back(&outerRing.spec);
+                    if (riverOn) avoidC.push_back(&riverRoad.spec);
+                    rangeCircuit = x3::game::registerRangeCircuit(connector.spec,
+                                                                  connector.roadY,
+                                                                  &route, &avoidC);
+                    circuitOn = rangeCircuit.built;
+                    if (!rangeCircuit.built)
+                        x3::logWarn("--world tunnel: range circuit not built");
+                }
+                // Spur off the connector if its country has a mountain; the
+                // measured answer is it does not (rolling lowland), so it falls
+                // back to the RING, which skirts the ranges. Either way it must
+                // stay off every other registered route's centreline.
+                std::vector<const x3::game::RoadSpec*> avoid;
+                avoid.push_back(&connector.spec);
+                if (outerOn) avoid.push_back(&outerRing.spec);
+                if (riverOn) avoid.push_back(&riverRoad.spec);
+                if (circuitOn) {
+                    avoid.push_back(&rangeCircuit.spec);
+                    avoid.push_back(&rangeCircuit.accessSpec);
+                }
+                summitSpur = x3::game::registerSummitSpur(connector.spec,
+                                                          connector.roadY, &route, &avoid);
+                if (!summitSpur.built)
+                    summitSpur = x3::game::registerSummitSpur(ringSpec, ringRoadY,
+                                                              &route, &avoid);
+            }
+        }
+    }
+    // THE OUTER CONNECTOR — the road that stops the 31-mile tour being an
+    // island. Registered after BOTH tours so its end pins can read their graded
+    // datums, and last of all the roads for the same reason the spawn connector
+    // is: its natural sweep then reads every carve already in.
+    x3::game::OuterConnectorResult outerConn;
+    bool outerConnOn = false;
+    {
+        const char* e = std::getenv("X3_OUTER_CONNECTOR");
+        outerConnOn = ringOn && outerOn && !(e && e[0] == '0');
+        if (outerConnOn) {
+            outerConn = x3::game::registerOuterConnector(ringSpec, ringRoadY,
+                                                         outerRing.spec, outerRing.roadY);
+            if (!outerConn.road.ok) {
+                x3::logError("--world tunnel: outer connector registration FAILED");
+                outerConnOn = false;
+            }
+        }
+        char cb[128];
+        std::snprintf(cb, sizeof(cb), "--world tunnel: corridor registry %u of %u used",
+                      x3::game::terrainCorridorCount(), x3::game::kMaxTerrainCorridors);
+        x3::logInfo(cb);
+    }
+
+    // ==== THE MAP'S ROAD LAYER ==============================================
+    // 46 miles of road exist above; this is what lets the player FIND them.
+    // The routes just registered are handed to WorldMapSystem (host_streamed's
+    // M map) as centreline overlays — no new map system, just the geometry the
+    // registries already hold. Solid = open road, dashed = a reach something
+    // else owns (a tunnel bore, the bridge deck), which is exactly what
+    // RoadSpec::gaps and TunnelRoute::boreS0/S1 already record.
+    std::vector<x3::game::MapRouteOverlay> mapRoutes;
+    {
+        // A TunnelRoute spine, sampled at 25 m: solid approach, dashed bore,
+        // solid exit. Used for the spawn corridor AND the outer tour's bores.
+        auto addTunnelRoute = [&](const x3::game::TunnelRoute& r, const char* nm) {
+            auto span = [&](float s0, float s1, bool dashed) {
+                if (s1 - s0 < 5.0f) return;
+                x3::game::MapRouteOverlay o; o.name = nm; o.dashed = dashed;
+                const float step = 25.0f;
+                for (float s = s0; ; s += step) {
+                    const float sc = std::min(s, s1);
+                    float p[3]; r.posAt(sc, p);
+                    o.x.push_back(p[0]); o.z.push_back(p[2]);
+                    if (sc >= s1) break;
+                }
+                if (o.x.size() >= 2) mapRoutes.push_back(std::move(o));
+            };
+            if (r.boreValid) {
+                span(0.0f, r.boreS0, false);
+                span(r.boreS0, r.boreS1, true);
+                span(r.boreS1, r.totalLen, false);
+            } else {
+                span(0.0f, r.totalLen, false);
+            }
+        };
+        // A RoadSpec centreline: nodes verbatim, split at its gaps so bored /
+        // decked reaches draw dashed. Gaps are authored in ascending node order.
+        auto addSpec = [&](const x3::game::RoadSpec& sp, const char* nm) {
+            const size_t n = std::min(sp.x.size(), sp.z.size());
+            if (n < 2) return;
+            auto emit = [&](size_t a, size_t b, bool dashed) {
+                if (b >= n) b = n - 1;
+                if (b <= a) return;
+                x3::game::MapRouteOverlay o; o.name = nm; o.dashed = dashed;
+                for (size_t k = a; k <= b; ++k) { o.x.push_back(sp.x[k]); o.z.push_back(sp.z[k]); }
+                mapRoutes.push_back(std::move(o));
+            };
+            size_t at = 0;
+            for (const x3::game::RoadSpec::Gap& g : sp.gaps) {
+                emit(at, g.i0, false);
+                emit(g.i0, g.i1, true);
+                at = g.i1;
+            }
+            emit(at, n - 1, false);
+        };
+        // MERGE UNION (map2 x roads2): the CAPS names are the map's labels —
+        // WorldMapSystem::drawRouteLabels draws them verbatim in condensed
+        // white caps along the polyline. "SPAWN ROAD" covers BOTH the demo
+        // bore's spine AND the paved connector out to the ring (the connector
+        // was drivable but never handed to the map until map2 caught it).
+        // roads2's circuit + access + outer connector are labeled here too —
+        // routes born after map2's snapshot, named in its convention.
+        addTunnelRoute(route, "SPAWN ROAD");
+        if (connOn) addSpec(connector.spec, "SPAWN ROAD");
+        if (connOn && summitSpur.built) addSpec(summitSpur.spec, "SUMMIT SPUR");
+        if (ringOn)  addSpec(ringSpec, "INNER TOUR");
+        if (outerOn) addSpec(outerRing.spec, "OUTER TOUR");
+        if (riverOn) addSpec(riverRoad.spec, "RIVER ROAD");
+        if (circuitOn) {
+            addSpec(rangeCircuit.spec, "RANGE CIRCUIT");
+            addSpec(rangeCircuit.accessSpec, "RANGE CIRCUIT");
+        }
+        char mb[128];
+        std::snprintf(mb, sizeof(mb), "[tunnel] map: %u road overlay polyline(s) staged",
+                      (uint32_t)mapRoutes.size());
+        x3::logInfo(mb);
+    }
+
+    // ---- DRIVING-HUD WAYPOINT CHEVRON (map/HUD wiring) ---------------------
+    // The map's one waypoint (app/world_map.h) used to be visible only ON the
+    // map screen — set it, close the map, and it vanished until you reopened
+    // it. worldToScreen the waypoint into the CURRENT frame; when it lands
+    // outside a safe screen rect (off-screen, or the projection gives up
+    // because it is behind the camera) clamp a small magenta chevron to the
+    // screen edge along the bearing to it, with a distance readout. Clears
+    // itself inside 30 m — the point where "point me there" becomes "you're
+    // here". Defined here (BEFORE both call sites: the interactive per-frame
+    // HUD, and the headless map/HUD proof set below) so they render through
+    // the exact same code — a screenshot proof of the interactive path, not a
+    // parallel copy that can silently drift from it.
+    auto drawWaypointChevron = [device](const x3::rhi::FrameContext& fr,
+                                        float wpX, float wpY, float wpZ,
+                                        float playerX, float playerY, float playerZ,
+                                        float camYawNow) {
+        (void)wpY; (void)playerY;
+        uint32_t hw3 = 0, hh3 = 0; device->hudSize(hw3, hh3);
+        if (!hw3 || !hh3) return;
+        const float wpDx = wpX - playerX, wpDz = wpZ - playerZ;
+        const float distM = std::sqrt(wpDx * wpDx + wpDz * wpDz);
+        if (distM <= 30.0f) return;
+        const float fw3 = (float)hw3, fh3 = (float)hh3;
+        const float cxp = fw3 * 0.5f, cyp = fh3 * 0.46f;
+        const float cmargin = 46.0f;
+        float sx = 0.0f, sy = 0.0f, ex, ey, ang;
+        const bool proj = device->worldToScreen(wpX, playerY, wpZ, sx, sy);
+        if (proj) {
+            // worldToScreen allows a 1.3x-NDC overscan window before it gives
+            // up, so a point just past the edge still lands here — clamp
+            // into the safe rect and point outward from it.
+            ex = std::min(std::max(sx, cmargin), fw3 - cmargin);
+            ey = std::min(std::max(sy, cmargin), fh3 - cmargin);
+            ang = std::atan2(ey - cyp, ex - cxp);
+        } else {
+            // BEHIND the camera: the projection is undefined there, so fall
+            // back to the horizontal bearing off the chase-cam yaw (the same
+            // forward angle the map's own player arrow reads) mapped onto a
+            // compass ring around center.
+            const float toWp = std::atan2(wpDz, wpDx);
+            float rel = toWp - camYawNow;
+            while (rel >  3.14159265f) rel -= 6.28318531f;
+            while (rel < -3.14159265f) rel += 6.28318531f;
+            const float ringR = std::min(fw3, fh3) * 0.5f - cmargin;
+            ex = cxp + std::sin(rel) * ringR;
+            ey = cyp - std::cos(rel) * ringR;
+            ang = std::atan2(ey - cyp, ex - cxp);
+        }
+        // The chevron: two short stamped legs forming a ">" pointing outward
+        // (the map's own route-line technique — the HUD layer only has
+        // axis-aligned quads). Dark halo pass first, then the magenta core —
+        // same blip color as the map's waypoint marker. Sized to read at a
+        // glance against a busy driving scene (GTA-legibility pass: the first
+        // cut's 15 px legs read as a stray mark, not an arrow).
+        const float halo[4] = { 0.02f, 0.03f, 0.06f, 0.60f };
+        const float mag[4]  = { 1.00f, 0.30f, 0.95f, 1.0f };
+        const float legLen = 30.0f;
+        for (int passi = 0; passi < 2; ++passi) {
+            const float* col = passi == 0 ? halo : mag;
+            const float sz  = passi == 0 ? 7.0f : 4.6f;
+            for (int leg = -1; leg <= 1; leg += 2) {
+                const float la = ang + 2.55f * (float)leg;
+                for (int s = 0; s < 11; ++s) {
+                    const float t = (float)s / 10.0f;
+                    const float qx = ex + std::cos(la) * legLen * t;
+                    const float qy = ey + std::sin(la) * legLen * t;
+                    device->drawHudQuad(fr, qx - sz * 0.5f, qy - sz * 0.5f, sz, sz, col);
+                }
+            }
+            // A filled dot AT the point — the vertex reads as a single mark
+            // even before the eye resolves the two legs (the map's own
+            // waypoint blip does the same: a core plus a wider surround).
+            const float dotSz = passi == 0 ? 10.0f : 6.0f;
+            device->drawHudQuad(fr, ex - dotSz * 0.5f, ey - dotSz * 0.5f, dotSz, dotSz, col);
+        }
+        char db[24];
+        if (distM >= 1000.0f) std::snprintf(db, sizeof(db), "%.1f km", distM / 1000.0f);
+        else                  std::snprintf(db, sizeof(db), "%.0f m", distM);
+        const float dpx = 17.0f;
+        const float dtw = (float)std::strlen(db) * dpx;
+        const float sh4[4] = { 0.0f, 0.0f, 0.0f, 0.8f };
+        const float wc4[4] = { 1.0f, 0.55f, 0.95f, 1.0f };
+        device->drawHudText(fr, db, ex - dtw * 0.5f + 1.5f, ey + 22.0f + 1.5f, dpx, sh4);
+        device->drawHudText(fr, db, ex - dtw * 0.5f,        ey + 22.0f,        dpx, wc4);
+    };
 
     // ==== STEP 1.5 — THE ROOMS' AIR RIGHTS ==================================
     // Found by the FIRST interior capture (09_garage_lnss): the corridor CARVE
@@ -359,6 +625,27 @@ int hostTunnel(HostContext& hc) {
     }
     device->setCameraFar(4000.0f);
 
+    // PER-OBJECT MOTION VECTORS, ON. The "GHOST SHADOW behind him, same as the
+    // red car" (Tim) is TAA ghosting: with camera-only reprojection every MOVING
+    // object smears its own history trail — 2010 games had no such ghost because
+    // they had no TAA. The engine has the fix built (r_velocity feeds per-object
+    // motion vectors into the TAA reprojection) and it defaults OFF for
+    // byte-identical capture baselines; a world whose whole subject is a fast
+    // car is exactly where it must be on. --set r_velocity 0 restores the old
+    // path; applyHostRenderCVars afterwards lets every --set override stick.
+    {
+        x3::rhi::IRenderDevice::PostFXParams px{};   // engine defaults...
+        px.velocity = true;                          // ...plus the one that matters
+        device->setPostFX(px);
+        applyHostRenderCVars(hc, *device, "tunnel");
+    }
+    // CASCADED SHADOWS — W-TREES' find: this host NEVER called applyOutdoorCsm,
+    // so an outdoor world with a 4 km far plane was running the legacy 45 m
+    // camera-locked shadow box; everything beyond it (the mountain, the tour
+    // roads, any tree that ever gets planted) cast nothing. Same "compiled in,
+    // unreachable" defect the helper's own comment documents for cliffs.
+    applyOutdoorCsm(hc, *device, 400.0f, "tunnel");
+
     // ==== STEP 2 — the streamed terrain ring =================================
     float startPos[3];
     // On the road, out on open ground, far enough back that the whole approach
@@ -397,8 +684,34 @@ int hostTunnel(HostContext& hc) {
     // object draped over the hill. Without it the build warns and falls back.
     tunnel.build(scene, *device, *phys, route, streamer.groundTexture());
     // The ribbon: 4 lanes of asphalt plus a 20 ft cement apron each side, laid
-    // into the cutting the corridor already graded.
-    if (ringOn) x3::game::buildRoadRibbon(ringSpec, scene, *device, *phys);
+    // into the cutting the corridor already graded. The ring's ribbon rides its
+    // graded DATUM now — the spawn connector's carve crosses under the ring at
+    // the junction, and a field-derived ribbon would dip into that cut.
+    if (ringOn) x3::game::buildRoadRibbon(ringSpec, scene, *device, *phys,
+                                          ringRoadY.empty() ? nullptr : &ringRoadY);
+    // The spawn connector + the summit spur, and the junction mouths that BLEND
+    // them into the roads they meet (ruled patch lapped over the main pavement
+    // + cement flare wings — not a butt joint).
+    if (connOn) {
+        x3::game::buildRoadRibbon(connector.spec, scene, *device, *phys,
+                                  &connector.roadY);
+        x3::game::buildJunctionMouth(connector.ringJct, scene, *device, *phys);
+        if (circuitOn) {
+            // The 3-5 mile lap and its access road, mouthed onto BOTH the
+            // connector and the circuit — two junctions, same machinery.
+            x3::game::buildRoadRibbon(rangeCircuit.spec, scene, *device, *phys,
+                                      &rangeCircuit.roadY);
+            x3::game::buildRoadRibbon(rangeCircuit.accessSpec, scene, *device, *phys,
+                                      &rangeCircuit.accessRoadY);
+            x3::game::buildJunctionMouth(rangeCircuit.connJct, scene, *device, *phys);
+            x3::game::buildJunctionMouth(rangeCircuit.circJct, scene, *device, *phys);
+        }
+        if (summitSpur.built) {
+            x3::game::buildRoadRibbon(summitSpur.spec, scene, *device, *phys,
+                                      &summitSpur.roadY);
+            x3::game::buildJunctionMouth(summitSpur.jct, scene, *device, *phys);
+        }
+    }
     // The outer tour's pavement + its five dressed bores. The ribbon rides the
     // graded DATUM (not the carved field) so it stays level across the
     // portal-ramp approaches; gap reaches are skipped — each tunnel lays its
@@ -415,10 +728,25 @@ int hostTunnel(HostContext& hc) {
                 tourBores.push_back(std::move(w));
         }
     }
+    // The outer connector's pavement and a junction mouth at EACH end — it is
+    // the only road here that lands on two different tours.
+    if (outerConnOn) {
+        x3::game::buildRoadRibbon(outerConn.spec, scene, *device, *phys,
+                                  &outerConn.roadY);
+        x3::game::buildJunctionMouth(outerConn.ringJct, scene, *device, *phys);
+        x3::game::buildJunctionMouth(outerConn.outerJct, scene, *device, *phys);
+    }
     if (riverOn) {
         x3::game::buildRoadRibbon(riverRoad.spec, scene, *device, *phys,
                                   &riverRoad.roadY);
         x3::game::buildRiverBridge(riverRoad.plan, scene, *device, *phys);
+        // The two ring landings get the same mouth every other junction has:
+        // ruled twist onto the tour's surface + swooping merge fillets both
+        // ways. Before this, the valley road's ends just stacked on the ring.
+        if (riverRoad.ringJctA.valid)
+            x3::game::buildJunctionMouth(riverRoad.ringJctA, scene, *device, *phys);
+        if (riverRoad.ringJctB.valid)
+            x3::game::buildJunctionMouth(riverRoad.ringJctB, scene, *device, *phys);
     }
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
 
@@ -455,7 +783,12 @@ int hostTunnel(HostContext& hc) {
         { "Vehicles/F1.glb",      "F1"          },
     };
     constexpr int kFleetCount = (int)(sizeof(kFleet) / sizeof(kFleet[0]));
-    int  fleetSel   = 0;        // what is being DRIVEN
+    // 1 == CTR, not 0 == E46. The E46 is the INTERIOR car and the one this lane
+    // originally drove, but the vehicle-feel lane found its materials render
+    // black (full-metal with no MR texture). Until it has had the
+    // convert_car_glb material pass the hero is the car that is actually
+    // finished — their call, and still the right one. One line to move it back.
+    int  fleetSel   = 1;        // what is being DRIVEN
     int  garageCursor = 0;      // what the chooser is highlighting
     bool garageOpen = false;
 
@@ -558,17 +891,24 @@ int hostTunnel(HostContext& hc) {
     // accumulating snowpack is watching it CHANGE. A cvar you can retype mid-
     // drive is the difference between a feature you inspect and one you play
     // with. Backtick opens it.
-    // THE WEATHER CVARS LIVE ON THE SHELL'S CONSOLE, registered further down at
-    // the shell.attach() -- not on a second console of this host's own.
-    //
-    // They briefly did exactly that, and it is worth recording because nothing
-    // caught it: the DS merge brought HostShell, which owns the console every
-    // host now shows, while this file still built its own IConsole + Hud, put
-    // `wx` on THAT, and read `wx` back from it. Both objects were alive; only
-    // one was on screen. Typing `wx snow` into the visible console did nothing,
-    // and the code read the invisible one, which always answered its default --
-    // so weather could not be switched on at all. Every suite stayed green,
-    // because no test opens a console.
+    // THE WEATHER CVARS LIVE ON THE SHELL'S CONSOLE, not on a second console of
+    // this host's own. Both lanes found this independently and it is worth
+    // keeping the receipt: for a while this file DID build its own IConsole +
+    // Hud, registered `wx` on THAT, and read `wx` back from it. Both objects
+    // were alive; only one was on screen. Typing `wx snow` into the visible
+    // console did nothing, and the code read the invisible one, which always
+    // answered its default -- so weather could not be switched on at all, with
+    // every suite green, because no test opens a console.
+
+    // ONE console: the HostShell's. This host used to create its own IConsole +
+    // Hud here (and learned the hard way that installing a char callback on a
+    // null headless window is an access violation — 9b8ad0e8). The shell already
+    // solves both: it only installs callbacks when a window exists, and the
+    // wx cvars are registered on it right after attach, down in the interactive
+    // section. `console` stays a pointer with the same name so the weather code
+    // below reads unchanged; it is null on the headless path, which never
+    // touches it (verified: the proof-set block drives `weather` directly).
+    x3::con::IConsole* console = nullptr;
     std::string wxApplied = "off";
 
     // ---- JAKE. The on-foot camera was a first-person eye, which is exactly
@@ -580,6 +920,18 @@ int hostTunnel(HostContext& hc) {
     x3::asset::Model jakeModel;
     std::vector<x3::asset::ModelDrawable> jakeDraw;
     bool jakeTried = false;
+    // ANIMATION (the Sarah recipe, sarah.cpp): a Skinner drives idle/walk/run
+    // by planar speed. Tim: "Jake isn't rigged... He needs his textures.. his
+    // animations" — he was right on both counts, and both had one cause: the
+    // host loaded JakeClone_player.glb, which has 20 COMBAT clips and ZERO
+    // textures (that is why he rendered white), while Jake_44_actions.glb —
+    // sitting in the same directory — has the baseColor texture AND the
+    // Idle / walking / run clips. The 26 MB earns its keep the moment
+    // something plays those clips, and now something does.
+    x3::anim::Skinner jakeSkin;
+    bool  jakeAnimated = false;
+    float jakeYaw = 0.0f;                    // faces his MOVEMENT, not the camera
+    float jakePrevFeet[3] = { 0, 0, 0 };
 
     x3::game::Player onFoot;
     bool  driving      = true;
@@ -594,16 +946,47 @@ int hostTunnel(HostContext& hc) {
     // not just what it looks like. Tim: "Every car gets the method, with its
     // own variables."
     x3::game::DriveDemo car;
+    // SPAWN ON TOP OF THE ROAD (Tim, after landing on the dirt BESIDE it):
+    // terrain height is right except where the vertical-curve pass floats the
+    // ribbon above the graded field (sags float up to ~5 m). The rule, done
+    // properly: a raycast straight down takes the TOPMOST collider — the road
+    // surface when the road is there, the terrain when it is not — i.e. spawn
+    // where a wheel would actually land. Terrain height stays as the fallback
+    // if the physics tiles under the spawn have not streamed in yet.
+    float spawnGroundY = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]);
+    {   char sb[128];
+        std::snprintf(sb, sizeof(sb), "[tunnel] SPAWN at (%.1f, %.1f, %.1f)",
+                      startPos[0], spawnGroundY, startPos[2]);
+        x3::logInfo(sb);
+    }
+    {
+        const x3::phys::RayHit hit = phys->rayCast(
+            x3::phys::Vec3{ startPos[0], spawnGroundY + 60.0f, startPos[2] },
+            x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 120.0f, x3::phys::Layer::Static);
+        if (hit.hit && hit.point.y > spawnGroundY - 0.5f)
+            spawnGroundY = hit.point.y;
+    }
+    // THE CAR IS BUILT FROM ITS SPEC (app/carspec.h). The fleet entry selects
+    // the GLB, and the SAME entry now selects mass, centre of mass, torque,
+    // redline, flywheel, gearing, curve, grip, brakes and springs — so
+    // switching cars changes how it DRIVES, not just what it looks like.
+    // Tim: "Every car gets the method, with its own variables."
     const x3::game::CarCatalog& carCat = x3::game::CarCatalog::game();
     const x3::game::CarSpec* carSpec = carCat.forGlb(kFleet[fleetSel].file);
     if (!carSpec) {
         // A GLB with no spec would silently inherit the hero car's figures --
-        // today's bug, just moved. Say so rather than driving a lie.
+        // the old bug, just moved. Say so rather than driving a lie.
         x3::logWarn(std::string("[tunnel] no CarSpec for ") + kFleet[fleetSel].file +
                     " — falling back to the shipped hero-car figures");
     }
-    const bool carBuilt = car.build(*device, *phys, startPos[0], startPos[1] + 1.4f,
+    const bool carBuilt = car.build(*device, *phys, startPos[0], spawnGroundY + 1.4f,
                                     startPos[2], carSpec);
+    // THE CONTACT LAW belongs to THIS world: its ground genuinely IS the
+    // streamed/carved height field, which is what makes measuring burial
+    // against that field meaningful. It is off by default precisely so the
+    // headless drive/skidpad harnesses — which stand a car on a flat slab
+    // wherever the analytic field happens to be — are not lifted every frame.
+    car.setTerrainContactLaw(true);
 
     // F7 — THE TUNING PANEL. Tim: "We need sliders in car settings for each
     // car to change its attributes!" It edits the DRIVEN car's own CarSpec, so
@@ -629,9 +1012,22 @@ int hostTunnel(HostContext& hc) {
         //
         // Checking the pack BEFORE modelling anything is the whole lesson of
         // today: the interior did not need building, it needed finding.
-        // Driven off fleetSel rather than a literal, so the skin and the spec
-        // can never disagree about which car this is. fleetSel starts at 0 ==
-        // E46_New, so this is the same car it has always been.
+        // BACK TO CTR (2026-08-16). The E46 swap was made for the interior, but
+        // the model is not ready to be the hero: its materials trip the
+        // "full-metal with no MR texture renders BLACK" rule (the seven [gltf]
+        // L5 clamp warnings at boot are exactly this car), and DriveDemo's
+        // chassis box + wheel stations were still sized to the CTR, so the E46
+        // body sat mis-scaled over CTR-position wheels — Tim's screenshot of
+        // the "broken red sedan" is both defects at once.
+        //
+        // MERGE 2026-08-16 (carspec lane): the SECOND of those two defects is
+        // now fixed — the chassis box, track and wheelbase come from the car's
+        // own spec, so the E46 no longer sits on CTR geometry. The MATERIAL
+        // defect stands, so the hero car stays the CTR: that judgement was
+        // theirs and it is still right. What changes is only the mechanism —
+        // the skin follows fleetSel rather than a literal, so the skin and the
+        // spec can never disagree about which car this is, and moving the hero
+        // is now a one-line default rather than an edit in two places.
         car.skin(*device, x3::game::convertedGlbRoot(), kFleet[fleetSel].file);
         // E46_New is the INTERIOR car: Seats, Dashboard, SteeringWheel,
         // Interior, GearHandle and a pair of emissive Needle_KM / Needle_RPM
@@ -647,7 +1043,40 @@ int hostTunnel(HostContext& hc) {
         // Tim, 2026-08-14: "The car is PLACED facing the wrong way. I have to TURN
         // it to drive it forward. Controls make the car behave as it should." —
         // the second sentence proves the rig and skin are fine; only spawn was wrong.
-        const float yaw = -std::atan2(-route.dirX, -route.dirZ);
+        // AIM ALONG THE ROAD THAT IS ACTUALLY PAINTED THERE. Two wrong
+        // attempts taught the lesson: the global chord skewed the car, and the
+        // tunnel spine's local tangent STILL skewed it — because the pavement
+        // at spawn is the roads-machinery ribbon (smoothed spec polylines),
+        // not the spine. So: find the nearest segment across every registered
+        // spec polyline within 60 m and face down IT; the spine tangent is
+        // only the last-resort fallback.
+        float tdx = route.dirX, tdz = route.dirZ;
+        {
+            float bestD2 = 60.0f * 60.0f;
+            auto scanSpec = [&](const x3::game::RoadSpec& sp) {
+                const size_t n = std::min(sp.x.size(), sp.z.size());
+                for (size_t i = 0; i + 1 < n; ++i) {
+                    const float mx2 = 0.5f * (sp.x[i] + sp.x[i + 1]);
+                    const float mz2 = 0.5f * (sp.z[i] + sp.z[i + 1]);
+                    const float ddx2 = mx2 - startPos[0], ddz2 = mz2 - startPos[2];
+                    const float d2 = ddx2 * ddx2 + ddz2 * ddz2;
+                    if (d2 < bestD2) {
+                        float sx2 = sp.x[i + 1] - sp.x[i], sz2 = sp.z[i + 1] - sp.z[i];
+                        const float sl = std::sqrt(sx2 * sx2 + sz2 * sz2);
+                        if (sl > 1e-3f) {
+                            bestD2 = d2; tdx = sx2 / sl; tdz = sz2 / sl;
+                        }
+                    }
+                }
+            };
+            if (connOn) scanSpec(connector.spec);
+            if (ringOn) scanSpec(ringSpec);
+            if (circuitOn) scanSpec(rangeCircuit.accessSpec);
+            // Face INTO the corridor, not out of it: if the nearest segment
+            // runs against the route direction, flip it.
+            if (tdx * route.dirX + tdz * route.dirZ < 0.0f) { tdx = -tdx; tdz = -tdz; }
+        }
+        const float yaw = -std::atan2(-tdx, -tdz);
         const float q[4] = { 0.0f, std::sin(-yaw * 0.5f), 0.0f, std::cos(-yaw * 0.5f) };
         phys->setBodyRotation(car.chassis(), q);
     } else {
@@ -655,20 +1084,38 @@ int hostTunnel(HostContext& hc) {
     }
 
     // ---- WHEEL-SPIN FX (skid marks + smoke) --------------------------------
-    x3::rhi::MeshHandle fxQuadMesh;
-    x3::rhi::TextureHandle fxSkidTex, fxSmokeTex;
+    // Tim, on the first cut: "smoke is square boxes.. and tire marks float".
+    // Both were real: the smoke was a CUBE with a flat gray texture, and both
+    // effects spawned at worldTransform[13] — the wheel HUB, a wheel-radius
+    // above the road. "NFS in 2010 had NO SUCH GHOST" is a fair bar.
+    //
+    //   * smoke is now a SPHERE with a vertically-noised gray texture, drawn
+    //     at low alpha, growing as it rises — a puff, not a crate;
+    //   * marks are thin slabs ON the contact patch (hub minus wheel radius),
+    //     ORIENTED to the car's heading at the moment they were laid — a mark
+    //     laid mid-drift stays skewed on the road the way the tire actually
+    //     drew it, instead of snapping to the world axes.
+    // Marks are geometry (rubber lies ON the road); SMOKE is not — it goes
+    // through IRenderDevice::submitParticles, the engine's own billboard pass:
+    // camera-facing quads, alpha blend, depth-test-no-write, soft-particle
+    // depth fade. Exactly the pipeline the Vulkan references Tim sent describe,
+    // already built and already carrying the rain and snow — the first cut of
+    // this feature drew CUBES because I reached for drawMesh instead of
+    // checking what the device offered.
+    x3::rhi::MeshHandle fxMarkMesh;
+    x3::rhi::TextureHandle fxSkidTex;
     {
         std::vector<x3::rhi::MeshVertex> qv; std::vector<uint32_t> qi;
         x3::prims::makeCube(0.5f, qv, qi);
-        fxQuadMesh = device->createMesh(qv.data(), (uint32_t)qv.size(), qi.data(), (uint32_t)qi.size());
-        auto sk = x3::prims::makeSolidRGBA(8, 18, 18, 22);
-        auto sm = x3::prims::makeSolidRGBA(8, 150, 150, 155);
-        fxSkidTex  = device->createTexture(sk.data(), 8, 8, true);
-        fxSmokeTex = device->createTexture(sm.data(), 8, 8, true);
+        fxMarkMesh = device->createMesh(qv.data(), (uint32_t)qv.size(), qi.data(), (uint32_t)qi.size());
+        auto sk = x3::prims::makeSolidRGBA(8, 16, 16, 19);
+        fxSkidTex = device->createTexture(sk.data(), 8, 8, true);
     }
-    struct SpinFx { float x, y, z, age; uint8_t kind; };  // 0=skid, 1=smoke
+    struct SpinFx { float x, y, z, age, yaw; uint8_t kind; };  // 0=skid, 1=smoke
     SpinFx fx[512]; uint32_t fxN = 0;
     float fxSpawnAcc = 0.0f;
+    std::vector<x3::rhi::IRenderDevice::ParticleInstance> fxPuffs;
+    fxPuffs.reserve(512 * 3);
 
     // ==== ENGINE NOTE =======================================================
     // Everything for this already existed and nothing played it: the sample is
@@ -695,11 +1142,33 @@ int hostTunnel(HostContext& hc) {
     float turboSpool = 0.0f, prevSpool = 0.0f;
     x3::audio::SoundHandle squealSnd{};
     x3::audio::LoopHandle  squealLoop{};   // tire squeal (slip-gated)
+    // ---- ENGINE NOTE v2: the multi-RPM bank (snd_bank 1, the default). ----
+    // Four voices bracket the live RPM between adjacent synthesized flat-six
+    // points (900/1500/2500/4000/5500/7000) and equal-power-crossfade them;
+    // a smoothed load weight crossfades on-load vs OVERRUN timbre. The old
+    // single-loop path below stays wired behind `snd_bank 0` so the owner can
+    // A/B the two by ear from the console.
+    x3::game::EngineNote engineNote;
+    bool bankReady = false;
+    x3::audio::SoundHandle whineSnd{}, turboSnd{};   // dedicated whistle assets (bank mode)
+    x3::audio::LoopHandle  whineBankLoop{}, turboBankLoop{};
     if (audioOn) {
         const std::string wav =
             (std::filesystem::path(x3::game::assetRoot()) / "audio/vehicles/engine_loop.wav").string();
         engineSnd = audio->load(wav);
         squealSnd = audio->load((std::filesystem::path(x3::game::assetRoot()) / "audio/vehicles/tire_squeal_loop.wav").string());
+        const std::string bankDir =
+            (std::filesystem::path(x3::game::assetRoot()) / "audio/vehicles/engine_bank").string();
+        bankReady = engineNote.init(audio.get(), bankDir, /*redlineRpm=*/7500.0f);
+        // Build the reverb insert BEFORE any loop voice starts: loop voices
+        // pick their output route at start time, so the chain must exist first
+        // (the per-frame skyVis drive below only retunes it).
+        audio->setReverbParams(0.3f, 0.05f);
+        // The whine/turbo layers used to be pitched-up copies of the SAME
+        // engine wav (SND-FABLE finding #3). In bank mode they get their own
+        // synthesized whistles; missing files just silence the layers.
+        whineSnd = audio->load((std::filesystem::path(bankDir) / "whine_loop.wav").string());
+        turboSnd = audio->load((std::filesystem::path(bankDir) / "turbo_whistle_loop.wav").string());
         if (engineSnd.valid() && carBuilt) {
             float ep[3]; car.chassisPos(ep);
             (void)ep;
@@ -765,7 +1234,7 @@ int hostTunnel(HostContext& hc) {
     // that constraint is "put real art in the rectangle". Owner's verdict on the
     // quad version: "slop in Carbon esque shape".
     // Generated by tools/make_gauge_textures.py — rerun it to change the art.
-    x3::rhi::TextureHandle texDial{}, texNeedle{}, texGate{}, texBoost{};
+    x3::rhi::TextureHandle texDial{}, texNeedle{}, texGate{}, texBoost{}, texNos{};
     {
         auto loadPng = [&](const char* rel) -> x3::rhi::TextureHandle {
             const std::string p =
@@ -781,6 +1250,7 @@ int hostTunnel(HostContext& hc) {
         texNeedle = loadPng("gauge_needle.png");
         texGate   = loadPng("gauge_gate.png");
         texBoost  = loadPng("gauge_boost.png");
+        texNos    = loadPng("gauge_nos.png");   // 32-state curved fill atlas (8x4)
     }
 
     phys->optimizeBroadphase();
@@ -896,6 +1366,158 @@ int hostTunnel(HostContext& hc) {
             ok = settleAndGrab(cam, out);
         }
 
+        // ==== MAP/HUD PROOF SET (map/HUD wiring) — overview / drive-zoom /
+        // waypoint / driving-HUD chevron. Uses the engine's OWN
+        // armCapture/captureFrame GPU-swapchain readback — the SAME mechanism
+        // every --screenshot-* proof in this codebase uses — NOT an OS-level
+        // desktop screenshot, so it cannot pick up anything else on the
+        // desktop and needs no window-focus/input automation at all. A LOCAL
+        // WorldMapSystem (the interactive section's `wmap` doesn't exist on
+        // this early-return path) is built from the SAME `mapRoutes` staged
+        // at boot, and drives the exact drawScreen()/drawWaypointChevron()
+        // the interactive session calls — a proof of the real path, not a
+        // parallel render.
+        {
+            const std::string mapDir = "shots_wmap";
+            std::error_code mapEc; fs::create_directories(mapDir, mapEc);
+
+            x3::game::WorldMapSystem mapShotWm;
+            mapShotWm.init("", "");
+            mapShotWm.setRouteOverlays(mapRoutes);   // copy: mapRoutes isn't read again below
+
+            // Portal + garage markers — same lookup the interactive wiring uses.
+            {
+                std::vector<x3::game::MapMarker> mk;
+                if (route.boreValid) {
+                    float pIn[3], pOut[3];
+                    route.posAt(route.boreS0, pIn); route.posAt(route.boreS1, pOut);
+                    mk.push_back({ "TUNNEL ENTRANCE", "portal", pIn[0], pIn[2] });
+                    mk.push_back({ "TUNNEL EXIT",      "portal", pOut[0], pOut[2] });
+                }
+                {
+                    x3::game::FitoutConfig fcfg;
+                    x3::game::TunnelFitout fitout;
+                    fitout.build(route.boreS0, route.boreS1, fcfg, x3::game::kTunnelFitoutSeed);
+                    x3::game::TunnelRoomProgram rooms;
+                    rooms.build(route, fitout, x3::game::TunnelTier::A);
+                    for (const x3::game::TunnelSpace& sp : rooms.spaces()) {
+                        if (sp.kind != x3::game::SpaceKind::Garage) continue;
+                        const float sMid = (sp.s0 + sp.s1) * 0.5f;
+                        const float latMid = (float)sp.side * (sp.latIn + sp.latOut) * 0.5f;
+                        float wx = 0.0f, wz = 0.0f;
+                        route.worldAt(sMid, latMid, wx, wz);
+                        mk.push_back({ "LNSS GARAGE", "garage", wx, wz });
+                        break;
+                    }
+                }
+                mapShotWm.setMapMarkers(std::move(mk));
+            }
+
+            x3::game::StoryFlags mapShotFlags;
+            x3::ui::UiContext mapShotUi;
+            const int fbw2 = (int)W, fbh2 = (int)H;
+            const float anchorX = startPos[0], anchorY = startPos[1], anchorZ = startPos[2];
+
+            auto mapShot2 = [&](const char* png, float mcx, float mcz, float mscale,
+                                bool setWp, float wpx, float wpz) -> bool {
+                mapShotWm.open(anchorX, anchorY, anchorZ, (float)fbw2, (float)fbh2);
+                mapShotWm.camera().jumpTo(mcx, mcz, mscale);
+                if (setWp) mapShotWm.setWaypoint(wpx, wpz, 0); else mapShotWm.clearWaypoint();
+                const std::string path = mapDir + "/" + png;
+                for (int i = 0; i < 3; ++i) {   // a couple frames so tile uploads land
+                    glfwPollEvents();
+                    device->setCamera(anchorX, anchorY + 60.0f, anchorZ, 0.0f, -0.5f, 60.0f);
+                    if (i == 2) device->armCapture(path.c_str());
+                    auto f = device->beginFrame();
+                    if (f.valid) {
+                        scene.render(*device, f);
+                        // Opaque underlay: the map's own backdrop is 0.97 alpha
+                        // (invisible over an interior, but lets ~3% of THIS
+                        // world's HDR sky through — the same wash the
+                        // interactive wiring's underlay slab fixes).
+                        const float mapBg[4] = { 0.014f, 0.025f, 0.045f, 1.0f };
+                        device->drawHudQuad(f, 0.0f, 0.0f, (float)fbw2, (float)fbh2, mapBg);
+                        x3::ui::UiInput ui0{};
+                        ui0.mouseX = fbw2 * 0.5f; ui0.mouseY = fbh2 * 0.5f;
+                        mapShotUi.begin(*device, f, ui0);
+                        x3::game::WorldMapSystem::ScreenInput msi{};
+                        msi.mouseX = ui0.mouseX; msi.mouseY = ui0.mouseY;
+                        msi.playerX = anchorX; msi.playerY = anchorY; msi.playerZ = anchorZ;
+                        msi.playerYaw = std::atan2(route.dirZ, route.dirX);
+                        msi.locationName = "TUNNEL RIDGE - ROAD NETWORK";
+                        mapShotWm.drawScreen(mapShotUi, *device, f, msi, mapShotFlags, 0.0f);
+                        mapShotUi.end();
+                    }
+                    device->endFrame(f);
+                }
+                const bool wrote = device->captureFrame(path.c_str());
+                if (wrote) x3::logInfo("[tunnel] map/HUD proof: wrote " + path);
+                else       x3::logError("[tunnel] map/HUD proof: capture FAILED " + path);
+                return wrote;
+            };
+
+            bool mapOk = true;
+            // 01: world overview — zoomed all the way out; both tours + the
+            // dashed bores should read against the terrain underlay.
+            mapOk = mapShot2("01_overview.png", anchorX, anchorZ, 0.06f, false, 0, 0) && mapOk;
+            // 02: drive zoom — the same scale the M key opens at in play.
+            mapOk = mapShot2("02_drive.png", anchorX, anchorZ, 0.32f, false, 0, 0) && mapOk;
+            // 03: waypoint set, at drive zoom — a magenta blip a couple hundred
+            // metres off the anchor, same scale as 02.
+            mapOk = mapShot2("03_waypoint.png", anchorX, anchorZ, 0.32f,
+                             true, anchorX + 30.0f, anchorZ + 220.0f) && mapOk;
+
+            // 04: the driving HUD chevron, rendered through the exact
+            // drawWaypointChevron() the interactive loop calls. Map CLOSED.
+            // Two variants, both proof of the SAME code, different branches:
+            //   04_chevron.png        — waypoint ahead-right, off-screen: the
+            //                           common case (worldToScreen succeeds,
+            //                           clamps into the safe rect).
+            //   04b_chevron_behind.png — waypoint behind the shot camera: the
+            //                           harder case (worldToScreen gives up;
+            //                           the compass-bearing fallback).
+            auto chevronShot = [&](const char* png, float wpX, float wpZ, float camYawShot) -> bool {
+                mapShotWm.close();
+                const std::string path = mapDir + "/" + png;
+                for (int i = 0; i < 3; ++i) {
+                    glfwPollEvents();
+                    device->setCamera(anchorX, anchorY + 1.6f, anchorZ, camYawShot, -0.05f, 68.0f);
+                    if (i == 2) device->armCapture(path.c_str());
+                    auto f = device->beginFrame();
+                    if (f.valid) {
+                        scene.render(*device, f);
+                        if (carBuilt) car.render(f);
+                        drawWaypointChevron(f, wpX, anchorY, wpZ, anchorX, anchorY, anchorZ, camYawShot);
+                    }
+                    device->endFrame(f);
+                }
+                const bool wrote = device->captureFrame(path.c_str());
+                if (wrote) x3::logInfo("[tunnel] map/HUD proof: wrote " + path);
+                else       x3::logError("[tunnel] map/HUD proof: capture FAILED " + path);
+                return wrote;
+            };
+            {
+                const float baseYaw = std::atan2(route.dirZ, route.dirX);
+                // Ahead-right: rotate the waypoint bearing ~50 deg off the shot
+                // camera's forward so it is off-screen to the right, in front.
+                const float aheadX = anchorX + 900.0f * std::cos(baseYaw + 0.9f);
+                const float aheadZ = anchorZ + 900.0f * std::sin(baseYaw + 0.9f);
+                mapOk = chevronShot("04_chevron.png", aheadX, aheadZ, baseYaw) && mapOk;
+                const float behindX = anchorX - 1400.0f, behindZ = anchorZ + 900.0f;
+                mapOk = chevronShot("04b_chevron_behind.png", behindX, behindZ, baseYaw + 2.2f) && mapOk;
+            }
+            // 05 (diagnostic, not one of the 4 required views): centered on
+            // the spawn corridor's bore midpoint at a zoom that reads the
+            // dashed casing clearly — GTA marks underpasses as a broken line
+            // straight through the terrain; this confirms the new bold/dark
+            // casing pair still dashes correctly over a bored reach.
+            if (route.boreValid) {
+                float bp[3]; route.posAt((route.boreS0 + route.boreS1) * 0.5f, bp);
+                mapOk = mapShot2("05_dashed_bore.png", bp[0], bp[2], 0.55f, false, 0, 0) && mapOk;
+            }
+            ok = ok && mapOk;
+        }
+
         if (carBuilt) car.shutdown();
         tunnel.shutdown(*device, *phys);
         for (auto& w : tourBores) w->shutdown(*device, *phys);
@@ -905,6 +1527,7 @@ int hostTunnel(HostContext& hc) {
         x3::game::shutdownTunnelSurfaces(*device);
         streamer.shutdown(scene, *device, *phys);
         if (audioOn) {
+        engineNote.shutdown();
         if (engineLoop.valid()) audio->stopLoop(engineLoop);
         audio->shutdown();
     }
@@ -922,38 +1545,179 @@ int hostTunnel(HostContext& hc) {
     float camYaw = std::atan2(route.dirZ, route.dirX), camPitch = -0.10f;
     int lastW = (int)W, lastH = (int)H;
     x3::logInfo("--world tunnel: WASD drives, Space handbrake, mouse orbits the chase cam, "
-                "~ console, ESC menu, SHIFT+ESC quits");
+                "M map, ~ console, ESC menu, SHIFT+ESC quits");
 
     // ---- DEV SHELL: console, pause menu, FPS -------------------------------
     // The reason the whole vehicle-feel pass was slow: every torque figure, grip
     // scale and centre-of-mass nudge cost an edit-rebuild-relaunch-drive-back
     // cycle, and those are values you have to judge by feel, one at a time. They
     // are all live now.
+    // Wheel -> map zoom. Installed BEFORE shell.attach so the shell's own scroll
+    // callback (console scrollback) chains to it, same order host_streamed uses.
+    glfwSetScrollCallback(window, scrollCallback);
+    g_weaponScroll = 0.0;
+
+    // ---- POWER MULTIPLIERS (host-owned; composed each frame) --------------
+    // setTorqueBoost is ONE multiplier — vampire and nitrous both feed it, so
+    // the host owns the product (NO_SLOP rule 4: paired values are one value).
+    bool  vampireOn = false;
+    float nosTank   = 1.0f;    // 0..1; ~4 s of continuous spray, slow recharge
+    bool  nosActive = false;
+
     HostShell shell;
     shell.attach(hc);
+    shell.setFreezesSim(true);          // this host really does stop the sim on ESC
+    console = shell.console();
+
+    // ---- WORLD MAP (M) ------------------------------------------------------
+    // host_streamed's WorldMapSystem, reused whole: the open/close lifecycle,
+    // the cursor-anchored zoom camera, and the click/ENTER waypoint. What this
+    // world feeds it is different CONTENT: no POI table, no Spire floors — the
+    // road-network overlays staged at boot are the map.
+    x3::game::WorldMapSystem wmap;
+    wmap.init("", "");                       // empty POI/floor set, logged, not fatal
+    wmap.setRouteOverlays(std::move(mapRoutes));
+    // ---- MAP MARKERS: the tunnel mouths + the LNSS garage ------------------
+    // Not a POI-table entry (no discovery gating — a road world has no
+    // StoryFlags fog to lift), just a point label the map always draws. The
+    // garage's world position is a pure-data lookup: FitoutConfig/
+    // TunnelFitout/TunnelRoomProgram are the same cheap, deterministic build
+    // this host already runs twice (the STEP 1.5 terrain-hole pass and the
+    // STEP 3b fleet spawn) — a third read-only build here is the SAME pattern,
+    // not new machinery, and keeps this block additive-only (no touching the
+    // fleet/room code that already exists further down).
+    {
+        std::vector<x3::game::MapMarker> markers;
+        if (route.boreValid) {
+            float pIn[3], pOut[3];
+            route.posAt(route.boreS0, pIn);
+            route.posAt(route.boreS1, pOut);
+            markers.push_back({ "TUNNEL ENTRANCE", "portal", pIn[0], pIn[2] });
+            markers.push_back({ "TUNNEL EXIT",      "portal", pOut[0], pOut[2] });
+        }
+        {
+            x3::game::FitoutConfig fcfg;
+            x3::game::TunnelFitout fitout;
+            fitout.build(route.boreS0, route.boreS1, fcfg, x3::game::kTunnelFitoutSeed);
+            x3::game::TunnelRoomProgram rooms;
+            rooms.build(route, fitout, x3::game::TunnelTier::A);
+            for (const x3::game::TunnelSpace& sp : rooms.spaces()) {
+                if (sp.kind != x3::game::SpaceKind::Garage) continue;
+                const float sMid = (sp.s0 + sp.s1) * 0.5f;
+                const float latMid = (float)sp.side * (sp.latIn + sp.latOut) * 0.5f;
+                float wx = 0.0f, wz = 0.0f;
+                route.worldAt(sMid, latMid, wx, wz);
+                markers.push_back({ "LNSS GARAGE", "garage", wx, wz });
+                break;
+            }
+        }
+        char mkb[96];
+        std::snprintf(mkb, sizeof(mkb), "[tunnel] map: %u marker(s) staged", (uint32_t)markers.size());
+        x3::logInfo(mkb);
+        wmap.setMapMarkers(std::move(markers));
+    }
+    x3::game::StoryFlags mapFlags;           // no POIs yet: nothing to discover/persist
+    x3::ui::UiContext wmapUi;
+    bool mapOpen = false;
+    bool prevMapM = false, prevMapEnter = false, prevMapLmb = false;
+    bool mapEsc = false;                     // ESC edge, delivered by the shell handler
+    // ESC FIRST-REFUSAL: close the map's confirm prompt, then the map itself,
+    // and only then let the shell open its pause menu (host_streamed's layering).
+    shell.setEscapeHandler([&]() -> bool {
+        if (mapOpen && wmap.confirmOpen()) { mapEsc = true; return true; }
+        if (mapOpen) {
+            mapOpen = false; wmap.close();
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            glfwGetCursorPos(window, &lastMX, &lastMY);
+            return true;
+        }
+        return false;                        // nothing open: shell menu
+    });
     if (auto* con = shell.console()) {
-        // WEATHER, on the same console as the car tuning -- one console, one
-        // place to look.
-        if (auto* con = shell.console()) {
-            con->registerCVar("wx", "off",
-                "weather: off | clear | cloudy | rain | storm | fog | snow");
-            con->registerCVar("wx_snow_in", "0",
-                "lying snow depth to prime, INCHES (applied when wx changes)");
-            con->registerCVar("wx_hour", "14",
-                "time of day, 0-24, drives the diurnal temperature swing");
-            // The documented env-var path still seeds them, so X3_WEATHER=snow
-            // behaves as before and the console simply shows what was asked for.
-            if (const char* e = std::getenv("X3_WEATHER"))
-                if (e[0] && std::strcmp(e, "0") != 0) con->set("wx", e);
+        // ---- weather (moved from the old host-local console) ----
+        con->registerCVar("wx", "off",
+            "weather: off | clear | cloudy | rain | storm | fog | snow");
+        con->registerCVar("wx_snow_in", "0",
+            "lying snow depth to prime, INCHES (applied when wx changes)");
+        con->registerCVar("wx_hour", "14",
+            "time of day, 0-24, drives the diurnal temperature swing");
+        // Live trims for Jake's placement, so a wrong-facing or sunk rig is a
+        // console line to diagnose instead of a rebuild: degrees added to his
+        // travel yaw, metres added to his measured ground compensation.
+        con->registerCommand("rain", [con](const std::vector<std::string>& args) {
+            if (args.size() < 2) { con->print("rain 0-10: 0 off | 1-3 sprinkle | 4-6 downpour | 7-8 heavy | 9-10 MONSOON"); return; }
+            const float v = std::min(10.0f, std::max(0.0f, (float)std::atof(args[1].c_str())));
+            if (v < 0.5f)      { con->set("wx", "off"); con->print("rain: off"); return; }
+            con->set("wx", v >= 8.5f ? "storm" : "rain");
+            char mb[32]; std::snprintf(mb, sizeof(mb), "%.2f", 0.4f + v * 0.42f);
+            con->set("wx_precip_mult", mb);
+            con->print(std::string("rain ") + args[1] + (v >= 8.5f ? "  (MONSOON - storm cell, lightning live)"
+                        : v >= 6.5f ? "  (heavy)" : v >= 3.5f ? "  (downpour)" : "  (sprinkle)"));
+        }, "rain 0-10 — Sprinkle to Downpour to MONSOON, with every in-between");
+        con->registerCVar("wx_precip_mult", "2.4",
+            "precipitation density multiplier (raises how much of the particle pool a given rain/snow state uses)");
+        con->registerCVar("jake_yaw", "0", "Jake facing trim, degrees (rig-forward correction)");
+        con->registerCVar("jake_y",   "0", "Jake height trim, metres (on top of the measured armature offset)");
+        // ENGINE NOTE A/B: 1 = the multi-RPM bank (default), 0 = the legacy
+        // single re-pitched loop. Flip it live; the owner's ear is the gate.
+        con->registerCVar("snd_bank", "1",
+            "engine note: 1 = multi-RPM bank (new), 0 = legacy single loop");
+        // Seed from the env vars so the documented X3_WEATHER path still works
+        // and the console simply shows what you already asked for.
+        {
+            const char* e = std::getenv("X3_WEATHER");
+            if (e && e[0] && std::strcmp(e, "0") != 0) con->set("wx", e);
             if (const char* si = std::getenv("X3_SNOW_IN")) con->set("wx_snow_in", si);
         }
-
         shell.addFloatCommand("car_torque", "peak engine torque, ft-lb (stock 590)",
             [&](float v) { x3::phys::WheeledTuning t; t.maxEngineTorque = v * 1.35582f; car.applyTuning(t); });
         shell.addFloatCommand("car_redline", "engine redline, rpm (stock 7500)",
             [&](float v) { x3::phys::WheeledTuning t; t.maxEngineRPM = v; car.applyTuning(t); });
-        shell.addFloatCommand("car_grip", "tyre grip multiplier (stock 5.2; 1 = Jolt's economy tyre)",
+        // GRIP knobs are MULTIPLIERS over the authored stock compound (1 =
+        // stock; vehicle.cpp buildPhysics owns the stock numbers: longitudinal
+        // 10 all wheels, lateral 1.70 front / 1.60 rear). Semantics + help
+        // fixed 2026-08-16: the old help said "1 = Jolt's economy tyre" while
+        // the code composed on top of the compound — `car_grip 5.2` silently
+        // meant 52x the economy tyre.
+        shell.addFloatCommand("car_grip", "tyre grip multiplier, all wheels (1 = stock compound)",
             [&](float v) { x3::phys::WheeledTuning t; t.gripScale = v; car.applyTuning(t); });
+        // NFS TURN-IN BALANCE (see buildPhysics in vehicle.cpp): front > rear =
+        // nose bites on turn-in, rear breaks away first (progressive slide);
+        // rear > front = stability/understeer. Dial the split live.
+        shell.addFloatCommand("car_gripf", "FRONT axle grip multiplier (1 = stock; raise for sharper turn-in)",
+            [&](float v) { x3::phys::WheeledTuning t; t.gripScaleFront = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_gripr", "REAR axle grip multiplier (1 = stock; lower for looser tail)",
+            [&](float v) { x3::phys::WheeledTuning t; t.gripScaleRear = v; car.applyTuning(t); });
+        // CORNERING MASTER DIAL: lateral-only grip. CEILING: the ~2.7 g
+        // rollover threshold (see the CoM comment in vehicle.cpp buildPhysics)
+        // — stock lateral peaks ~1.9 g; ~1.4 here puts cornering AT the tip
+        // threshold and beyond it the inside wheels lift.
+        shell.addFloatCommand("car_latgrip", "cornering grip multiplier, lateral only (1 = stock ~1.9 g; >1.4 risks tip-up)",
+            [&](float v) { x3::phys::WheeledTuning t; t.latGripScale = v; car.applyTuning(t); });
+        // Lateral breakaway shape: multiplies the high-slip end of the lateral
+        // friction curve. Stock Jolt shape keeps 83% of peak grip in a slide.
+        shell.addFloatCommand("car_lattail", "slide grip vs peak: 1 = stock shape, >1 more catchable, <1 more drifty",
+            [&](float v) { x3::phys::WheeledTuning t; t.latTail = v; car.applyTuning(t); });
+        // ANTI-ROLL BARS (N/m): the corners-FLAT hardware. Stock 8000 front /
+        // 6000 rear (vehicle.cpp buildPhysics — paired numbers). Stiffer
+        // front = more push/stability, stiffer rear = livelier rotation.
+        // HARD CEILING ~12000: above it the 60 Hz solver pumps the roll mode
+        // and the car flips (measured; see WheeledVehicleDesc::antiRollFront).
+        shell.addFloatCommand("car_arb_f", "front anti-roll bar N/m (stock 8000; KEEP UNDER 12000 or the solver flips the car)",
+            [&](float v) { x3::phys::WheeledTuning t; t.antiRollFront = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_arb_r", "rear anti-roll bar N/m (stock 6000; KEEP UNDER 12000 or the solver flips the car)",
+            [&](float v) { x3::phys::WheeledTuning t; t.antiRollRear = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_final", "final-drive ratio (stock 4.6; 4.2 trades punch for ~168 mph top)",
+            [&](float v) { x3::phys::WheeledTuning t; t.finalDrive = v; car.applyTuning(t); });
+        // ---- speed-sensitive steering (see DriveDemo::SteerParams) ----
+        shell.addFloatCommand("car_steer_lo", "mph at/below which you get 100% steering lock (stock 25)",
+            [&](float v) { car.steerParams().fullLockMph = v; });
+        shell.addFloatCommand("car_steer_hi", "mph at/above which lock is fully tightened (stock 95)",
+            [&](float v) { car.steerParams().hiSpeedMph = v; });
+        shell.addFloatCommand("car_steer_min", "fraction of full lock left at high speed, 0-1 (stock 0.34)",
+            [&](float v) { car.steerParams().hiFrac = v; });
+        shell.addFloatCommand("car_steer_rate", "steering slew, full-locks per second (stock 7; big = twitchier)",
+            [&](float v) { car.steerParams().slewPerSec = v; });
         shell.addFloatCommand("car_mass", "chassis mass, kg (stock 1300)",
             [&](float v) { x3::phys::WheeledTuning t; t.massKg = v; car.applyTuning(t); });
         shell.addFloatCommand("car_brake", "brake torque, Nm, all wheels",
@@ -964,36 +1728,68 @@ int hostTunnel(HostContext& hc) {
             [&](float v) { x3::phys::WheeledTuning t; t.suspensionFreq = v; car.applyTuning(t); });
         shell.addFloatCommand("car_springdamp", "suspension damping ratio",
             [&](float v) { x3::phys::WheeledTuning t; t.suspensionDamp = v; car.applyTuning(t); });
+        // TIRE SQUASH (render-only; owner: "when Landing hard on pavement, the
+        // RUBBER TIRES should deflect visually, a tiny bit" — see
+        // DriveDemo::updateTireSquash/squashFactors in vehicle.cpp). Deliberately
+        // NOT a WheeledTuning field: this never touches Jolt/the DS-Vehicle
+        // session's suspension, it only scales a cosmetic per-wheel render
+        // nudge. 0 = off, 1 = full (default); clamped in setTireSquash.
+        shell.addFloatCommand("tire_squash", "hard-landing tire squash intensity, 0-1 (visual only, default 1)",
+            [&](float v) { car.setTireSquash(v); });
         shell.addFloatCommand("car_torquemult", "flat torque multiplier on top of the turbo (nitrous)",
             [&](float v) { car.setTorqueBoost(v); });
         // ---- turbo ----
         shell.addToggleCommand("turbo", "turbo on/off (off = the curve with no lag, naturally aspirated)",
             [&]{ return car.turboEnabled(); },
             [&](bool on) { car.setTurboEnabled(on); });
-        shell.addFloatCommand("turbo_max", "peak boost, psi (stock 16)",
+        // Help-text numbers below are PAIRED with TurboParams' defaults in
+        // vehicle.h (NO_SLOP rule 4) — the old block said "stock 16 psi" under
+        // a 35 psi model and "stock 0.45/1800" after the spool retune.
+        shell.addFloatCommand("turbo_max", "peak boost, psi (stock 35)",
             [&](float v) { car.turbo().maxPsi = v; });
-        shell.addFloatCommand("turbo_spool", "seconds for the compressor to come up (stock 0.45)",
+        shell.addFloatCommand("turbo_spool", "seconds for the compressor to come up (stock 0.30)",
             [&](float v) { car.turbo().spoolTau = v; });
         shell.addFloatCommand("turbo_dump", "seconds to bleed off on a lift (stock 0.11)",
             [&](float v) { car.turbo().dumpTau = v; });
-        shell.addFloatCommand("turbo_start", "rpm where the compressor starts to make pressure (stock 1800)",
+        shell.addFloatCommand("turbo_start", "rpm where the compressor starts to make pressure (stock 1500)",
             [&](float v) { car.turbo().spoolStartRpm = v; });
         shell.addFloatCommand("turbo_full", "rpm for full boost (stock 4200)",
             [&](float v) { car.turbo().spoolFullRpm = v; });
-        shell.addFloatCommand("turbo_floor", "torque fraction with no boost at all (stock 0.60)",
-            [&](float v) { car.turbo().floorTorque = v; });
+        // turbo_floor REMOVED 2026-08-16: the pressure-ratio model derives the
+        // off-boost floor from absolute manifold pressure; the cvar was wired
+        // to a field nothing read (NO_SLOP rule 6 — a dead knob is a lie).
         shell.addFloatCommand("turbo_vacuum", "vacuum depth at a closed throttle, psi (stock 8.5)",
             [&](float v) { car.turbo().vacuumPsi = v; });
         shell.addToggleCommand("car_tc", "traction control (also bound to T)",
             [&]{ return car.tractionControl(); },
             [&](bool on) { car.setTractionControl(on); });
+        shell.addToggleCommand("climb", "crawl traction for steep terrain (also bound to C)",
+            [&]{ return car.climbMode(); },
+            [&](bool on) { car.setClimbMode(on); });
+        // J&S VAMPIRE (shop-part preview). Per-cylinder knock control lets the
+        // engine safely carry more ignition timing; timing is torque everywhere
+        // on the curve, so it lands as a flat multiplier that STACKS with the
+        // pressure-ratio turbo model. +7% is a real-world street-tune figure.
+        // Owned by perfshop.cpp once the parts catalog carries it; the console
+        // command is how Tim test-drives the part before the shop sells it.
+        shell.addToggleCommand("vampire", "J&S Vampire knock control: +7% torque from timing",
+            [&]{ return vampireOn; },
+            [&](bool on) { vampireOn = on; });
         con->registerCommand("car_reset", [&](const std::vector<std::string>&) {
             car.setTorqueBoost(1.0f);
+            // These ARE the buildPhysics numbers in vehicle.cpp (NO_SLOP rule
+            // 4: paired — change both). The old reset was a time capsule from
+            // two retunes ago: 2400 Nm (the shipped car is 800 + turbo) and
+            // gripScale 5.2 under the broken compose-on-top semantics.
             x3::phys::WheeledTuning t;
-            t.maxEngineTorque = 2400.0f; t.maxEngineRPM = 7500.0f;
-            t.gripScale = 5.2f; t.massKg = 1300.0f;
+            t.maxEngineTorque = 800.0f; t.maxEngineRPM = 7500.0f;
+            t.gripScale = 1.0f; t.latGripScale = 1.0f; t.latTail = 1.0f;
+            t.massKg = 1083.2f; t.finalDrive = 4.6f;
+            t.antiRollFront = 8000.0f; t.antiRollRear = 6000.0f;
             car.applyTuning(t);
-            con->print("car back to the shipped 993 Turbo numbers");
+            car.steerParams() = x3::game::DriveDemo::SteerParams{};
+            car.turbo() = x3::game::DriveDemo::TurboParams{};
+            con->print("car back to the shipped 992 Turbo S numbers (800 Nm, stock grip, 4.6 final)");
         }, "restore the stock vehicle tune");
         // ---- THE PER-CAR TABLE, on the console ---------------------------
         // `cars` lists the roster in Tim's units; `car_load <id>` retunes the
@@ -1047,6 +1843,7 @@ int hostTunnel(HostContext& hc) {
         // PITCH BLACK the moment you drive it, both from inside and looking in through
         // the portal from outside. The interactive loop streams tiles and draws other
         // content, and the light array does not survive that. Cheap: 6 cached lights.
+        mapEsc = false;   // BEFORE the poll: the escape handler runs inside it
         glfwPollEvents();
         shell.beginFrame();
 
@@ -1060,6 +1857,9 @@ int hostTunnel(HostContext& hc) {
         float fdt = (float)(now - prevTime); prevTime = now;
         if (fdt > 0.1f) fdt = 0.1f;
 
+        // MERGE NOTE (integration/complete): everything below keeps the roads
+        // lane's weather/Jake/on-foot systems, driven through the vehicle lane's
+        // HostShell — one console, edge-detected keys, and a real pause.
         if (shell.paused()) {
             // Present so the window stays live, but do not advance the sim.
             auto pf = device->beginFrame();
@@ -1072,27 +1872,39 @@ int hostTunnel(HostContext& hc) {
             continue;
         }
 
-        double mx, my; glfwGetCursorPos(window, &mx, &my);
-        const float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
-        lastMX = mx; lastMY = my;
-        // Do not steer the camera with the mouse while the console has it — the
-        // cursor is released to click, and the view would spin as you reach for
-        // the scrollback.
-        if (!shell.consoleOpen()) {
-            camYaw += ddx * 0.0025f; camPitch -= ddy * 0.0025f;
-            if (camPitch >  1.2f) camPitch =  1.2f;
-            if (camPitch < -1.2f) camPitch = -1.2f;
-        }
-        // shell.key(), not glfwGetKey(): returns false while the console or the
-        // menu owns the keyboard, so typing `car_grip 6` no longer also steers
-        // right, brakes and applies the handbrake.
-        auto kd = [&](int k){ return shell.key(k); };
-
+        // NOTE: the mouse-delta read and the `kd` key helper are NOT here any
+        // more — the vehicle lane moved them below, and its `kd` additionally
+        // gates on `mapOpen` so the world map swallows movement keys. Keeping
+        // this lane's copy would have read the cursor delta TWICE per frame
+        // (camera spinning at double rate) and shadowed the map-aware helper,
+        // both of which compile perfectly.
         // ==== WEATHER TICK ===================================================
         // Chained in dependency order. Note the CLOCK: an in-world day is
         // compressed to ten real minutes, because the diurnal temperature swing
         // is the most interesting thing the model does and nobody is going to
         // sit through twenty-four hours to watch the desert cool off.
+        // ---- THE RIVER HAS WATER (Tim: "Can we pour the water in now").
+        if (riverOn && riverRoad.plan.ok) {
+            static float waterClock = 0.0f;
+            waterClock += fdt;
+            x3::rhi::IRenderDevice::WaterParams wpr{};
+            wpr.enabled   = true;
+            wpr.seaLevel  = riverRoad.plan.waterY;
+            wpr.time      = waterClock;
+            wpr.amplitude = 0.28f;          // a river swell, not an ocean
+            wpr.steepness = 0.35f;
+            wpr.waveLength= 9.0f;
+            wpr.speed     = 0.8f;
+            // DEEP DARK BLUE (Tim: "MORE DEEPER DARKER BLUE WATER") — linear
+            // river tones: near-black navy deep, restrained slate shallow,
+            // glint dialed down so the surface reads water, not white sheet.
+            wpr.deepColor[0] = 0.004f; wpr.deepColor[1] = 0.016f; wpr.deepColor[2] = 0.045f;
+            wpr.shallowColor[0] = 0.03f; wpr.shallowColor[1] = 0.09f; wpr.shallowColor[2] = 0.13f;
+            wpr.specular = 6.0f;
+            wpr.fresnel  = 0.015f;
+            wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
+            device->setWaterParams(wpr);
+        }
         if (weatherOn) {
             weather.tick(fdt);
             // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
@@ -1127,6 +1939,13 @@ int hostTunnel(HostContext& hc) {
             // overcast sky is actually overcast instead of clear-with-fog.
             sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
             sp.exposure = ws.sky.exposure + storm.flash();
+            if (ws.state == x3::game::WeatherState::Storm) {
+                // A storm is not 'cloudy with effects' — the deck goes heavy
+                // and the light DIES, which is also what makes every lightning
+                // flash read (contrast is the flash's whole currency).
+                sp.cloud    = std::max(sp.cloud, 0.94f);
+                sp.exposure = ws.sky.exposure * 0.52f + storm.flash() * 1.35f;
+            }
             device->setSkyParams(sp);
 
             // Wet ground for the renderer. Lying SNOW suppresses the wet look
@@ -1151,9 +1970,26 @@ int hostTunnel(HostContext& hc) {
             precipKind = ws.snowfall ? x3::game::PrecipKind::Snow
                                      : (ws.precipitation > 0.0f ? x3::game::PrecipKind::Rain
                                                                 : x3::game::PrecipKind::None);
-            precipAmt  = ws.precipitation;
+            precipAmt  = std::min(1.0f, ws.precipitation * console->getFloat("wx_precip_mult"));
 
         }
+        double mx, my; glfwGetCursorPos(window, &mx, &my);
+        // Gate the LOOK, not just the camera apply: the deltas also feed the
+        // on-foot Player below, and the cursor is released while typing — an
+        // ungated delta would spin Jake's view across the screen on the way to
+        // the scrollback. Same rule while the MAP owns the cursor.
+        const float look = (shell.inputEnabled() && !mapOpen) ? 1.0f : 0.0f;
+        const float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
+        lastMX = mx; lastMY = my;
+        camYaw += ddx * 0.0025f; camPitch -= ddy * 0.0025f;
+        if (camPitch >  1.2f) camPitch =  1.2f;
+        if (camPitch < -1.2f) camPitch = -1.2f;
+        // (The hand-rolled CONSOLE KEYS block is gone: the shell handles the
+        // toggle, editing, history, completion and scrollback in the GLFW key
+        // callback, where a press cannot be dropped by a long frame.)
+        const bool typing = shell.consoleOpen();
+        (void)typing;
+
         // ---- WEATHER FROM THE CONSOLE. Re-read every frame; act only when the
         // string CHANGES, because forcing the state every frame would restart
         // the transition continuously and the sky would never actually arrive.
@@ -1211,22 +2047,58 @@ int hostTunnel(HostContext& hc) {
             }
         }
 
+        // shell.key(), not glfwGetKey(): false while the console or the menu
+        // owns the keyboard, so typing `car_grip 6` no longer also steers
+        // right, brakes and applies the handbrake. The MAP gates it too: while
+        // it is open the same WASD pans the map (its own raw reads below), and
+        // the CAR must not receive it — auto-hold then brings you to a stop.
+        auto kd = [&](int k){ return !mapOpen && shell.key(k); };
 
-        // ---- E: GET OUT / GET IN ----------------------------------------
-        // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
-        // to the car. Without that gate E teleports you into a car you left half
-        // a mile behind, which is not a vehicle so much as a summoning.
-        // F7 toggles the tuning panel. Edge-triggered like E, and gated on the
-        // console being shut so typing does not open panels behind the caret.
-        if (!shell.consoleOpen()) {
+        // ---- M: THE MAP. shell.key so typing `m` in the console does not
+        // toggle it; edge-triggered like E/T/C above. Opens centered on the
+        // car (or Jake, on foot) at a drive-scale zoom — wheel zooms out to the
+        // whole 46-mile network from there.
+        {
+            const bool mNow = shell.key(GLFW_KEY_M);
+            if (mNow && !prevMapM) {
+                if (mapOpen) { mapOpen = false; wmap.close(); }
+                else {
+                    float pp[3] = { startPos[0], startPos[1], startPos[2] };
+                    if (carBuilt) car.chassisPos(pp);
+                    if (!driving && footSpawned) {
+                        const x3::phys::Vec3 ft = onFoot.feet();
+                        pp[0] = ft.x; pp[1] = ft.y; pp[2] = ft.z;
+                    }
+                    int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
+                    wmap.open(pp[0], pp[1], pp[2], (float)fbw, (float)fbh);
+                    // open() lands at interior zoom (6 px/m); a road world reads
+                    // at ~2.5 miles across, so re-anchor the camera there.
+                    wmap.camera().jumpTo(pp[0], pp[2], 0.32f);
+                    mapOpen = true;
+                }
+                glfwSetInputMode(window, GLFW_CURSOR,
+                                 mapOpen ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+                glfwGetCursorPos(window, &lastMX, &lastMY);
+            }
+            prevMapM = mNow;
+        }
+
+        // F7 — the per-car tuning panel. Edge-triggered, and gated on the
+        // console AND the map so it cannot open behind either of them.
+        if (!shell.consoleOpen() && !mapOpen) {
             const bool f7 = glfwGetKey(window, GLFW_KEY_F7) == GLFW_PRESS;
             if (f7 && !f7Was) tunePanel.toggle();
             f7Was = f7;
         }
 
+        // ---- E: GET OUT / GET IN ----------------------------------------
+        // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
+        // to the car. Without that gate E teleports you into a car you left half
+        // a mile behind, which is not a vehicle so much as a summoning.
+
         {
             static bool eWasDown = false;
-            const bool eDown = glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
+            const bool eDown = kd(GLFW_KEY_E);   // shell-gated: E while typing is just a letter
             if (eDown && !eWasDown && carBuilt) {
                 if (driving) {
                     float vp[3]; car.chassisPos(vp);
@@ -1238,12 +2110,37 @@ int hostTunnel(HostContext& hc) {
                     // right = (-dirZ, 0, dirX), so left is its negation -- taken
                     // from the route rather than the car's own heading so you
                     // always step toward the walkway, even if you stopped skewed.
-                    const float ox =  route.dirZ * 2.4f, oz = -route.dirX * 2.4f;
+                    // FEET ABOVE GROUND — THE LAW (Tim, third strike: "make
+                    // his Feet stay ABOVE GROUND"). The old spawn was chassis
+                    // arithmetic (+2.4 m left, +1.2 up): midair on an
+                    // embankment, INSIDE the hill in a cut — and a capsule
+                    // under the heightfield never comes back. Candidates are
+                    // tried left / right / behind; each one's Y is a downward
+                    // RAYCAST (topmost surface — pavement or dirt), floored by
+                    // the terrain height. Feet land ON something, always.
+                    const float cand[3][2] = {
+                        {  route.dirZ * 2.4f, -route.dirX * 2.4f },   // left
+                        { -route.dirZ * 2.4f,  route.dirX * 2.4f },   // right
+                        { -route.dirX * 3.2f, -route.dirZ * 3.2f },   // behind
+                    };
+                    float sx = vp[0], sy = vp[1] + 1.2f, sz = vp[2];
+                    for (int ci = 0; ci < 3; ++ci) {
+                        const float cx2 = vp[0] + cand[ci][0], cz2 = vp[2] + cand[ci][1];
+                        float gy = x3::game::terrainHeightAtWorld(cx2, cz2);
+                        const x3::phys::RayHit rh = phys->rayCast(
+                            x3::phys::Vec3{ cx2, vp[1] + 30.0f, cz2 },
+                            x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 90.0f,
+                            x3::phys::Layer::Static);
+                        if (rh.hit) gy = std::max(gy, rh.point.y);
+                        // A candidate more than 4 m below the car is a drop-off
+                        // (bridge edge) — try the next side.
+                        if (gy > vp[1] - 4.0f) { sx = cx2; sz = cz2; sy = gy + 1.1f; break; }
+                    }
                     if (!footSpawned) {
-                        onFoot.spawn(*phys, vp[0] + ox, vp[1] + 1.2f, vp[2] + oz);
+                        onFoot.spawn(*phys, sx, sy, sz);
                         footSpawned = true;
                     } else {
-                        onFoot.setFeetPosition(*phys, x3::phys::Vec3{ vp[0] + ox, vp[1] + 1.2f, vp[2] + oz });
+                        onFoot.setFeetPosition(*phys, x3::phys::Vec3{ sx, sy, sz });
                     }
                     driving = false;
                     // Load him ONCE, on the first exit rather than at boot: most
@@ -1255,19 +2152,39 @@ int hostTunnel(HostContext& hc) {
                         const std::string glbDir = x3::game::assetRoot() + "/rigged_glb";
                         if (jakeSrc && jakeSrc->mountDir(glbDir, 0)) {
                             jakeLoader.reset(x3::asset::createModelLoader(device, jakeSrc.get()));
-                            // JakeClone_player, not Jake_44_actions: same man, and
-                            // 1.4 MB against 26 MB. The 44-clip rig earns its size
-                            // when something plays those clips; nothing here does
-                            // yet, so paying for it would be paying for nothing.
-                            jakeModel = jakeLoader->load("JakeClone_player.glb");
+                            // Jake_44_actions, NOT JakeClone_player. The clone is
+                            // 1.4 MB but has ZERO textures (the white statue) and
+                            // only combat clips; the 44-action rig carries the
+                            // baseColor texture and Idle / walking / run.
+                            jakeModel = jakeLoader->load("Jake_44_actions.glb");
                             if (jakeModel.ok) {
                                 jakeDraw = x3::asset::makeDrawables(jakeModel);
+                                if (jakeSkin.bind(jakeModel)) {
+                                    // ROOT-Y LOCK: the Jake clips are the family
+                                    // with the -0.9488 armature-offset root Y
+                                    // (anim.h setRootYLock documents exactly this
+                                    // rig); his world Y is owned by the capsule.
+                                    jakeSkin.setRootYLock(true);
+                                    jakeSkin.enableGpuSkinning(*device, jakeModel);
+                                    int idle = jakeSkin.findClip({ "idle", "stand", "breath" });
+                                    int walk = jakeSkin.findClip({ "walking", "walk" });
+                                    int run  = jakeSkin.findClip({ "run", "sprint", "jog" });
+                                    if (idle < 0) idle = 0;
+                                    jakeSkin.setLocomotionClips(idle, walk, run, 0.2f, 2.0f);
+                                    jakeSkin.setLocomotionSpeed(0.0f);
+                                    jakeSkin.applyLocomotion(jakeModel, *device, 0.0f);
+                                    jakeAnimated = true;
+                                    x3::logInfo("[tunnel] Jake animated: idle=" + std::to_string(idle)
+                                                + " walk=" + std::to_string(walk)
+                                                + " run=" + std::to_string(run));
+                                }
                                 char jb[128];
-                                std::snprintf(jb, sizeof(jb), "[tunnel] Jake: %u drawable(s)",
-                                              (uint32_t)jakeDraw.size());
+                                std::snprintf(jb, sizeof(jb), "[tunnel] Jake: %u drawable(s)%s",
+                                              (uint32_t)jakeDraw.size(),
+                                              jakeAnimated ? " (rigged)" : " (STATIC - no skin)");
                                 x3::logInfo(jb);
                             } else {
-                                x3::logWarn("[tunnel] JakeClone_player.glb failed to load - no body on foot");
+                                x3::logWarn("[tunnel] Jake_44_actions.glb failed to load - no body on foot");
                             }
                         }
                     }
@@ -1290,29 +2207,111 @@ int hostTunnel(HostContext& hc) {
         // are handed to the Player so look feels identical in both modes.
         if (!driving && footSpawned) {
             x3::game::PlayerInput pin;
-            pin.moveFwd    = (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ? 1.0f : 0.0f)
-                           - (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS ? 1.0f : 0.0f);
-            pin.moveStrafe = (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ? 1.0f : 0.0f)
-                           - (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ? 1.0f : 0.0f);
-            pin.sprint     = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+            pin.moveFwd    = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
+            pin.moveStrafe = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
+            pin.sprint     = kd(GLFW_KEY_LEFT_SHIFT);
             static bool spaceWas = false;
-            const bool spaceNow = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+            const bool spaceNow = kd(GLFW_KEY_SPACE);
             pin.jumpPressed = spaceNow && !spaceWas;
             pin.jumpHeld    = spaceNow;
             spaceWas = spaceNow;
             pin.lookDX = ddx; pin.lookDY = ddy;
             onFoot.update(pin, fdt, *phys);
+            {   // FEET-ABOVE-GROUND INVARIANT — not a fix, a LAW enforced per
+                // frame: whatever goes wrong anywhere else, if Jake's feet are
+                // ever below the terrain surface they are put back on it NOW.
+                // One height query per on-foot frame.
+                const x3::phys::Vec3 jf = onFoot.feet();
+                const float gy = x3::game::terrainHeightAtWorld(jf.x, jf.z);
+                if (jf.y < gy - 0.25f)
+                    onFoot.setFeetPosition(*phys, x3::phys::Vec3{ jf.x, gy + 0.15f, jf.z });
+            }
+
+            // Drive the rig from what the capsule actually DID: planar speed
+            // picks idle/walk/run (the locomotion blend), and he faces his
+            // direction of travel — not the camera — turning smoothly.
+            if (jakeAnimated) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                const float vx = (ft.x - jakePrevFeet[0]) / std::max(fdt, 1e-4f);
+                const float vz = (ft.z - jakePrevFeet[2]) / std::max(fdt, 1e-4f);
+                jakePrevFeet[0] = ft.x; jakePrevFeet[1] = ft.y; jakePrevFeet[2] = ft.z;
+                const float planar = std::sqrt(vx * vx + vz * vz);
+                if (planar > 0.4f) {
+                    const float want = std::atan2(vz, vx) + 1.5707963f;
+                    float d = want - jakeYaw;
+                    while (d >  3.14159265f) d -= 6.2831853f;
+                    while (d < -3.14159265f) d += 6.2831853f;
+                    jakeYaw += d * std::min(1.0f, fdt * 10.0f);
+                }
+                jakeSkin.setLocomotionSpeed(planar);
+                jakeSkin.applyLocomotion(jakeModel, *device, fdt);
+            }
         }
 
+        // ---- JAKE PUSHES THE CAR (Tim: "when jake gets out, he should be
+        // able to push the car out of such a situation"). Hold F beside the
+        // car: the handbrake releases and a steady ~4 kN shove is applied at
+        // ground height toward wherever Jake faces the car from — enough to
+        // roll a 1,083 kg car out of a wedge (rolling resistance is ~150 N),
+        // nowhere near enough to launch it. Physically honest: one determined
+        // human genuinely can push a 993.
+        bool pushing = false;
+        float pushDir[3] = { 0, 0, 0 };
+        if (!driving && footSpawned && carBuilt && kd(GLFW_KEY_F)) {
+            float vp[3]; car.chassisPos(vp);
+            const x3::phys::Vec3 ft = onFoot.feet();
+            const float pdx = vp[0] - ft.x, pdz = vp[2] - ft.z;
+            const float d2 = pdx * pdx + pdz * pdz;
+            if (d2 < 3.5f * 3.5f && d2 > 0.01f) {
+                const float inv = 1.0f / std::sqrt(d2);
+                pushing = true;
+                pushDir[0] = pdx * inv; pushDir[2] = pdz * inv;
+            }
+        }
+        if (pushing)
+            phys->applyImpulse(car.chassis(),
+                x3::phys::Vec3{ pushDir[0] * 4000.0f * fdt, 0.0f,
+                                pushDir[2] * 4000.0f * fdt });
+
         x3::phys::VehicleInput in;
-        // A PARKED CAR STAYS PARKED. Leaving the throttle live while you walk
-        // away means the handbrake is the only thing between you and a driverless
-        // car rolling down the grade you just stopped on.
-        if (!driving) { in = x3::phys::VehicleInput{}; in.handBrake = 1.0f; }
+        // A PARKED CAR STAYS PARKED — and a car you STEP OUT OF stops. The
+        // handbrake alone locks only the rears, so getting out at speed sent
+        // the car coasting into the distance on locked rear wheels (Tim: "the
+        // car shoots on into the distance when he gets out"). Service brakes
+        // on all four until it is actually stationary; then the handbrake
+        // holds it and the engine sits at idle (throttle zero IS idle — the
+        // audio follows effectiveThrottle, which is unconditionally zeroed).
+        // EXCEPT while Jake pushes: a push against the parking brake is a
+        // push against a wall, so the brake lifts for exactly as long as F
+        // is held in range.
+        if (!driving) {
+            in = x3::phys::VehicleInput{};
+            in.handBrake = pushing ? 0.0f : 1.0f;
+            if (!pushing && std::fabs(car.forwardSpeed()) > 0.4f) in.brake = 1.0f;
+        }
         else if (carBuilt) {
             in.throttle = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
             in.steer    = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
             if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
+            // ---- NITROUS (Tim: "we need NITROUS for the car.. SHIFT will
+            // engage it.. That will rocket it to 220mph"). Hold SHIFT: +50%
+            // torque on top of vampire and the 35-psi turbo, from a tank —
+            // ~4 s of continuous spray, recharging at a quarter rate off the
+            // button. A punch you spend, not a cheat you hold.
+            {
+                const bool wantNos = kd(GLFW_KEY_LEFT_SHIFT) && in.throttle > 0.1f;
+                nosActive = wantNos && nosTank > 0.02f;
+                if (nosActive) {
+                    float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                    float fwd[3], up[3];
+                    x3::game::vehcam::hullAxes(cq, fwd, up);
+                    phys->applyImpulse(car.chassis(),
+                        x3::phys::Vec3{ fwd[0] * 5200.0f * fdt, 0.0f,
+                                        fwd[2] * 5200.0f * fdt });
+                }
+                nosTank += nosActive ? -fdt / 15.0f : fdt / 20.0f;   // 15 s bottle (Tim), ~20 s recharge
+                nosTank = std::min(1.0f, std::max(0.0f, nosTank));
+            }
             // T toggles TRACTION CONTROL (Tim asked for an off switch). Edge
             // triggered. TC trims throttle toward a 0.10 slip target and can cut
             // to 15%, which is great for a clean launch and wrong when you want
@@ -1326,6 +2325,18 @@ int hostTunnel(HostContext& hc) {
                                                       : "[tunnel] traction control OFF");
                 }
                 tcWasDown = tcDown;
+            }
+            {   // C: CLIMB MODE — crawl traction for the mountainsides. See
+                // DriveDemo::setClimbMode: slip held at the friction peak, trim
+                // floor near zero, turbo bypassed so crawl torque is instant.
+                static bool climbWasDown = false;
+                const bool climbDown = kd(GLFW_KEY_C);
+                if (climbDown && !climbWasDown) {
+                    car.setClimbMode(!car.climbMode());
+                    x3::logInfo(car.climbMode() ? "[tunnel] CLIMB mode ON"
+                                                : "[tunnel] climb mode off");
+                }
+                climbWasDown = climbDown;
             }
             if (in.throttle < 0.0f && car.forwardSpeed() > 0.5f) { in.brake = 1.0f; in.throttle = 0.0f; }
 
@@ -1350,6 +2361,17 @@ int hostTunnel(HostContext& hc) {
                     in.brake = 0.08f;         // light drag, reads as engine braking
                 }
             }
+        }
+        // OUTSIDE the driving/parked split — W-HANDLING's find: setInput lived
+        // inside the DRIVING branch only, so every parked-car input this loop
+        // so carefully assembled (auto-hold, exit braking, the push's brake
+        // release) was dead code; the controller just held its last driving
+        // input. The send now covers both branches, every frame.
+        if (carBuilt) {
+            // Composed power product: vampire (timing) x nitrous (SHIFT). The
+            // turbo's own multiplier stacks inside DriveDemo::updateTurbo.
+            // NOS = A 200 SHOT: against this tune's peak, +200 hp = x1.19.
+            car.setTorqueBoost((vampireOn ? 1.07f : 1.0f) * (nosActive ? 1.19f : 1.0f));
             car.setInput(in);
             car.preStep(fdt);
         }
@@ -1378,7 +2400,7 @@ int hostTunnel(HostContext& hc) {
         // parked car is not droning at full volume. Both are cheap per-frame
         // parameter updates on ONE voice — no retriggering, so the loop stays
         // seamless through gearchanges.
-        if (audioOn && engineLoop.valid() && carBuilt) {
+        if (audioOn && carBuilt) {
             const float rpm    = car.audioRPM();
             // PER-CAR VOICE. These three constants used to be literals tuned to
             // the flat-six (redline 7500, rpm/1071, idle 0.75), which is the
@@ -1416,46 +2438,18 @@ int hostTunnel(HostContext& hc) {
             // runs — [0,0.78] [0.3,0.97] [0.55,1.0] [0.8,0.95] [1,0.82] — so the
             // note thickens through the midrange and thins at the top exactly
             // where the engine does, instead of just getting louder with rpm.
-            auto torqueFrac = [](float f) {
-                const float xs[5] = {0.00f, 0.30f, 0.55f, 0.80f, 1.00f};
-                const float ys[5] = {0.78f, 0.97f, 1.00f, 0.95f, 0.82f};
-                if (f <= xs[0]) return ys[0];
-                for (int k = 1; k < 5; ++k)
-                    if (f <= xs[k]) {
-                        const float t = (f - xs[k-1]) / (xs[k] - xs[k-1]);
-                        return ys[k-1] + (ys[k] - ys[k-1]) * t;
-                    }
-                return ys[4];
-            };
             const float thr  = std::min(1.0f, std::max(0.0f, car.effectiveThrottle()));
             // ...times what the TURBO is currently delivering. The multiplier
             // runs 0.60 off boost to 1.00 on it, so the note swells over the
             // half-second the compressor takes to come up and drops the instant
             // you lift. That swell is the single most recognisable thing about
             // a turbo car, and it costs one multiply.
-            const float load = thr * torqueFrac(frac) * car.turboMult();
-            // Off-throttle is OVERRUN: the engine is being driven by the wheels,
-            // so it stays audible and keeps its pitch but drops right back in
-            // level. That contrast is most of what makes a car sound driven.
-            const float vol  = 0.16f + 0.62f * load + 0.10f * frac;
-            // LOW-PASS the note. The physics engine can jitter its RPM (the
-            // clutch/gearbox hunt this lane has been chasing), but a real engine
-            // note does NOT wobble frame to frame — it glides. One-pole smooth
-            // (~0.1 s) so it reads as one continuous engine, not a stutter.
-            static float sPitch = 0.75f, sVol = 0.16f;
-            const float k = 1.0f - std::exp(-9.0f * fdt);
-            sPitch += (pitch - sPitch) * k;
-            sVol   += (vol   - sVol)   * k;
-            audio->setLoopParams(engineLoop, sVol, sPitch);
+            // (Torque curve is EngineNote::torqueCurve — the same table this
+            // block used to carry inline, now shared by every wiring site.)
+            const float load = thr * x3::game::EngineNote::torqueCurve(frac) * car.turboMult();
 
-            // Supercharger whine + turbo whistle — the old --world drive host's
-            // extra layers, pitched variants of the SAME engine loop (Tim: "use
-            // the old host drive sounds"). Whine is throttle-gated; whistle rides
-            // the spool; lifting off above ~55% spool = a blowoff psshh.
-            if (!whineLoop.valid()) whineLoop = audio->startLoop(engineSnd, 0.0f, 2.4f);
-            if (whineLoop.valid())
-                audio->setLoopParams(whineLoop, thr * 0.20f, 2.4f + 1.3f * frac);
-
+            // TURBO SPOOL + BLOWOFF are mode-independent (the psshh one-shot
+            // stays regardless of which engine path is sounding).
             const float spoolLag = 0.45f;   // == TurboParams::spoolTau
             if (thr > 0.6f) turboSpool = std::min(1.0f, turboSpool + fdt / spoolLag);
             else            turboSpool = std::max(0.0f, turboSpool - fdt * 2.5f);
@@ -1464,9 +2458,72 @@ int hostTunnel(HostContext& hc) {
                 turboSpool = 0.0f;
             }
             prevSpool = turboSpool;
-            if (!turboLoop.valid()) turboLoop = audio->startLoop(engineSnd, 0.0f, 3.0f);
-            if (turboLoop.valid())
-                audio->setLoopParams(turboLoop, turboSpool * 0.18f, 3.0f + 1.2f * turboSpool);
+
+            const bool bankOn = bankReady && console && console->getFloat("snd_bank") != 0.0f;
+            if (bankOn) {
+                // ---- ENGINE NOTE v2: the multi-RPM bank -------------------
+                // Bracketed pair crossfade + on-load/overrun family fade, all
+                // inside EngineNote (which also owns the collapsed off-load
+                // floor). Idle-hold feeds the bank's bottom point so the
+                // physics' rev hunt never wobbles a parked car's note.
+                engineNote.setMuted(false);
+                engineNote.update(idling ? 900.0f : rpm, load, fdt, vp[0], vp[1], vp[2]);
+                if (engineLoop.valid()) audio->setLoopParams(engineLoop, 0.0f, pitch);
+                if (whineLoop.valid()) audio->setLoopParams(whineLoop, 0.0f, 2.4f);
+                if (turboLoop.valid()) audio->setLoopParams(turboLoop, 0.0f, 3.0f);
+
+                // Whine + turbo whistle on their OWN synthesized assets
+                // (engine_bank/whine_loop.wav, turbo_whistle_loop.wav) instead
+                // of pitched-up copies of the engine wav.
+                if (whineSnd.valid()) {
+                    if (!whineBankLoop.valid()) whineBankLoop = audio->startLoop(whineSnd, 0.0f, 1.0f);
+                    if (whineBankLoop.valid())
+                        audio->setLoopParams(whineBankLoop, thr * 0.07f, 0.8f + 0.6f * frac);
+                }
+                if (turboSnd.valid()) {
+                    if (!turboBankLoop.valid()) turboBankLoop = audio->startLoop(turboSnd, 0.0f, 1.0f);
+                    if (turboBankLoop.valid())
+                        audio->setLoopParams(turboBankLoop, turboSpool * 0.08f, 0.7f + 0.6f * turboSpool);
+                }
+            } else if (engineLoop.valid()) {
+                // ---- LEGACY single loop (snd_bank 0 — the A/B reference) ---
+                engineNote.setMuted(true);
+                if (whineBankLoop.valid()) audio->setLoopParams(whineBankLoop, 0.0f, 1.0f);
+                if (turboBankLoop.valid()) audio->setLoopParams(turboBankLoop, 0.0f, 1.0f);
+                // Off-throttle is OVERRUN: the engine is being driven by the wheels,
+                // so it stays audible and keeps its pitch but drops right back in
+                // level. That contrast is most of what makes a car sound driven.
+                // OVERRUN IS A DIFFERENT SOUND, NOT THE SAME ONE QUIETER. Measured
+                // (SND-FABLE): off-throttle the wheel-locked rpm glides down for
+                // seconds while the old 0.16 + 0.10*frac floor kept the loop
+                // clearly audible at unchanged timbre — the maximally loop-
+                // revealing state ("When I LET OFF... I still hear the Gosh AWful
+                // Loop"). Drop the floor hard off-load; the pitch tail is still
+                // there, just far behind the tire/wind bed instead of in front.
+                const float onLoad = std::min(1.0f, load * 6.0f);   // 0 off-throttle
+                const float vol  = 0.05f + 0.11f * onLoad + 0.62f * load
+                                 + 0.10f * frac * (0.35f + 0.65f * onLoad);
+                // LOW-PASS the note. The physics engine can jitter its RPM (the
+                // clutch/gearbox hunt this lane has been chasing), but a real engine
+                // note does NOT wobble frame to frame — it glides. One-pole smooth
+                // (~0.1 s) so it reads as one continuous engine, not a stutter.
+                static float sPitch = 0.75f, sVol = 0.16f;
+                const float k = 1.0f - std::exp(-9.0f * fdt);
+                sPitch += (pitch - sPitch) * k;
+                sVol   += (vol   - sVol)   * k;
+                audio->setLoopParams(engineLoop, sVol, sPitch);
+
+                // Supercharger whine + turbo whistle — the old --world drive host's
+                // extra layers, pitched variants of the SAME engine loop (Tim: "use
+                // the old host drive sounds"). Whine is throttle-gated; whistle rides
+                // the spool; lifting off above ~55% spool = a blowoff psshh.
+                if (!whineLoop.valid()) whineLoop = audio->startLoop(engineSnd, 0.0f, 2.4f);
+                if (whineLoop.valid())
+                    audio->setLoopParams(whineLoop, thr * 0.09f, 2.4f + 1.3f * frac);   // halved: same-wav layer (SND-FABLE #3)
+                if (!turboLoop.valid()) turboLoop = audio->startLoop(engineSnd, 0.0f, 3.0f);
+                if (turboLoop.valid())
+                    audio->setLoopParams(turboLoop, turboSpool * 0.09f, 3.0f + 1.2f * turboSpool);   // halved: same-wav layer
+            }
 
             // (tire squeal removed — the synthesized tone read as a DJ effect;
             //  a real squeal needs a noise-based sample, not a sine sweep)
@@ -1591,9 +2648,20 @@ int hostTunnel(HostContext& hc) {
             } else {
                 device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
             }
+            // Sky visibility does double duty: precipitation gating AND the
+            // room-reverb estimate (SND-OPUS item: the tunnel bore should
+            // ECHO). One probe, two consumers — zero new raycast kinds.
+            const float skyVis = skyVisibleAt(*phys, cx, cy, cz, route.dirX, route.dirZ);
             if (weatherOn)
-                precip.update(fdt, precipKind, precipAmt, cx, cy, cz, 0.0f, 0.0f,
-                              skyVisibleAt(*phys, cx, cy, cz, route.dirX, route.dirZ));
+                precip.update(fdt, precipKind, precipAmt, cx, cy, cz, 0.0f, 0.0f, skyVis);
+            // Under open sky: short, nearly-dry (t60 0.3 s, wet 0.05). Deep in
+            // the bore: a long concrete tail (t60 2.5 s, wet 0.45). Both are
+            // smoothed on the audio thread, so driving through the portal is a
+            // swell, not a step. Loop voices (the engine bank) and 3D one-shots
+            // all ride the same insert.
+            if (audioOn)
+                audio->setReverbParams(0.3f + 2.2f * (1.0f - skyVis),
+                                       0.05f + 0.40f * (1.0f - skyVis));
         }
         auto frame = device->beginFrame();
         if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
@@ -1604,14 +2672,26 @@ int hostTunnel(HostContext& hc) {
             fxSpawnAcc += fdt;
             if (slip > 0.06f && fxSpawnAcc > 0.03f) {
                 fxSpawnAcc = 0.0f;
+                // The car's heading NOW — baked into the mark at spawn, so a
+                // drift leaves skewed rubber the way the tire actually drew it.
+                float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                const float carYawNow = std::atan2(2.0f * (cq[3] * cq[1] + cq[0] * cq[2]),
+                                                   1.0f - 2.0f * (cq[1] * cq[1] + cq[0] * cq[0]));
                 x3::phys::WheelState ws;
                 for (uint32_t i = 0; i < car.controller()->wheelCount(); ++i) {
                     if (!car.controller()->wheelState(i, ws)) continue;
                     if (i < 2) continue;                       // rear wheels only
+                    if (!ws.hasContact) continue;              // airborne wheels mark nothing
                     if (fxN < 512) {
                         SpinFx& f = fx[fxN++];
-                        f.x = ws.worldTransform[12]; f.y = ws.worldTransform[13]; f.z = ws.worldTransform[14];
+                        f.x = ws.worldTransform[12];
+                        // CONTACT PATCH, not hub: worldTransform[13] is the wheel
+                        // CENTER, a full radius off the ground — the "tire marks
+                        // float" bug in one index.
+                        f.y = ws.worldTransform[13] - ws.radius;
+                        f.z = ws.worldTransform[14];
                         f.age = 0.0f;
+                        f.yaw = carYawNow;
                         f.kind = (slip > 0.18f) ? 1 : 0;       // hard spin -> smoke
                     }
                 }
@@ -1621,29 +2701,53 @@ int hostTunnel(HostContext& hc) {
                 SpinFx& f = fx[i];
                 f.age += fdt;
                 if (f.kind == 0) { if (f.age > 12.0f) continue; }
-                else { f.y += fdt * 1.6f; if (f.age > 1.8f) continue; }
+                else { f.y += fdt * 1.1f; if (f.age > 1.6f) continue; }
                 fx[w++] = f;
             }
             fxN = w;
             for (uint32_t i = 0; i < fxN; ++i) {
                 SpinFx& f = fx[i];
-                float m[16] = {0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1};
+                const float cy = std::cos(f.yaw), sy = std::sin(f.yaw);
                 float col[4] = {1,1,1,0};
                 if (f.kind == 0) {
-                    const float a = std::max(0.0f, 1.0f - f.age / 12.0f) * 0.75f;
+                    // A thin slab lying ON the road, long axis down the heading.
+                    const float a = std::max(0.0f, 1.0f - f.age / 12.0f) * 0.70f;
                     col[3] = a;
-                    m[0] = 0.22f; m[5] = 0.02f; m[10] = 1.1f;
-                    m[12] = f.x; m[13] = f.y + 0.04f; m[14] = f.z;
-                    device->drawMesh(frame, fxQuadMesh, fxSkidTex, col, m);
+                    const float sx = 0.22f, sz = 1.1f;
+                    const float m[16] = {
+                         cy * sx, 0.0f, -sy * sx, 0.0f,
+                         0.0f,    0.015f, 0.0f,   0.0f,
+                         sy * sz, 0.0f,  cy * sz, 0.0f,
+                         f.x, f.y + 0.015f, f.z, 1.0f };
+                    device->drawMesh(frame, fxMarkMesh, fxSkidTex, col, m);
                 } else {
-                    const float t = f.age / 1.8f;
-                    const float a = std::max(0.0f, 1.0f - t) * 0.45f;
-                    col[3] = a;
-                    const float s = 0.25f + 0.9f * t;
-                    m[0] = m[5] = m[10] = s;
-                    m[12] = f.x; m[13] = f.y + 0.4f; m[14] = f.z;
-                    device->drawMesh(frame, fxQuadMesh, fxSmokeTex, col, m);
+                    // TRANSLUCENT, WISPY: three overlapping soft billboards per
+                    // puff, deterministically jittered by particle index (no
+                    // rand — the LCG discipline precip_fx documents), each low
+                    // alpha so wisps come from OVERLAP, not from any one quad.
+                    // They grow, rise, drift apart, and thin to nothing.
+                    const float t = f.age / 1.6f;
+                    const float fade = std::max(0.0f, 1.0f - t);
+                    for (int k = 0; k < 3; ++k) {
+                        const uint32_t h = (i * 2654435761u) ^ (uint32_t)(k * 40503u);
+                        const float jx = (((h >> 3) & 255) / 255.0f - 0.5f) * (0.25f + 0.9f * t);
+                        const float jz = (((h >> 11) & 255) / 255.0f - 0.5f) * (0.25f + 0.9f * t);
+                        const float jy = (((h >> 19) & 255) / 255.0f) * 0.30f * t;
+                        x3::rhi::IRenderDevice::ParticleInstance pi;
+                        pi.pos[0] = f.x + jx;
+                        pi.pos[1] = f.y + 0.20f + 0.55f * t + jy;
+                        pi.pos[2] = f.z + jz;
+                        pi.size   = 0.22f + 0.85f * t;
+                        pi.color[0] = 0.62f; pi.color[1] = 0.62f; pi.color[2] = 0.65f;
+                        pi.color[3] = fade * fade * 0.16f;   // quadratic out — vapor thins fast
+                        fxPuffs.push_back(pi);
+                    }
                 }
+            }
+            if (!fxPuffs.empty()) {
+                device->submitParticles(fxPuffs.data(), (uint32_t)fxPuffs.size(),
+                                        x3::rhi::IRenderDevice::ParticleBlend::Alpha);
+                fxPuffs.clear();
             }
         }
         // ---- INSTRUMENT CLUSTER (textured) ---------------------------------
@@ -1713,8 +2817,9 @@ int hostTunnel(HostContext& hc) {
                 if (driving) prompt = "E  GET OUT";
                 else if (footSpawned) {
                     const float dxc = cx - parkedAt[0], dzc = cz - parkedAt[2];
-                    prompt = (dxc*dxc + dzc*dzc <= 16.0f) ? "E  GET IN"
-                                                          : "WALK BACK TO THE CAR TO DRIVE";
+                    prompt = (dxc*dxc + dzc*dzc <= 16.0f)
+                                 ? (pushing ? "PUSHING..." : "E  GET IN    F  PUSH")
+                                 : "WALK BACK TO THE CAR TO DRIVE";
                 }
                 if (prompt && hw2 && hh2) {
                     const float px = std::floor((float)hh2 * 0.026f);
@@ -1728,18 +2833,30 @@ int hostTunnel(HostContext& hc) {
             }
 
             // ---- DRAW JAKE, at the capsule's feet, facing where he walks.
-            // The rig is authored +Z forward and the camera convention is
-            // yaw about +Y from +X, so the model yaw is (camYaw + 90 deg).
+            // The rig is authored +Z forward; jakeYaw tracks his direction of
+            // TRAVEL (smoothed in the movement block) — a man who faces his
+            // camera instead of his path moonwalks every time you strafe.
             if (!driving && footSpawned && !jakeDraw.empty()) {
                 const x3::phys::Vec3 ft = onFoot.feet();
-                const float a = camYaw + 1.5707963f;
+                const float a = (jakeAnimated ? jakeYaw : camYaw + 1.5707963f)
+                              + console->getFloat("jake_yaw") * 0.0174533f;
+                // THE HARD RULE (Tim: "HARD RULES for where FEET and TIRES can
+                // and can NOT BE"): the rig's rest origin goes AT the capsule's
+                // feet, compensated by the skeleton's own MEASURED armature
+                // offset — Jake_44_actions carries the documented -0.9488 m
+                // root Y (anim.h setRootYLock), which is exactly "Jake is
+                // literally half in the ground". Using the measured value
+                // instead of a constant makes the rule rig-agnostic: a clean
+                // skeleton measures ~0 and is untouched. jake_y trims live.
+                const float yFix = (jakeAnimated ? -jakeSkin.rootYLockRestY() : 0.0f)
+                                 + console->getFloat("jake_y");
                 const float ca = std::cos(a), sa = std::sin(a);
                 // Column-major 4x4: rotation about +Y, translation at the feet.
                 const float world[16] = {
                      ca, 0.0f, -sa, 0.0f,
                    0.0f, 1.0f, 0.0f, 0.0f,
                      sa, 0.0f,  ca, 0.0f,
-                   ft.x, ft.y, ft.z, 1.0f
+                   ft.x, ft.y + yFix, ft.z, 1.0f
                 };
                 for (const x3::asset::ModelDrawable& d : jakeDraw) {
                     const float bc[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
@@ -1758,6 +2875,9 @@ int hostTunnel(HostContext& hc) {
                 }
             }
 
+            // (The old hud.drawConsole call is gone — shell.draw at the end of
+            // the frame owns the console panel now.)
+
             // THE TUNING PANEL (F7). Drawn before the gauges so the sliders sit
             // under nothing, and serviced here rather than inside the panel
             // because the SAVE has to write the WHOLE roster, which the host
@@ -1767,9 +2887,84 @@ int hostTunnel(HostContext& hc) {
                 if (tunePanel.takeSaveRequest()) tunePanel.save(carCat);
             }
 
-            // THE THERMOMETER, beside the speedo. Only when weather is running:
-            // a gauge pinned at a constant is worse than no gauge, because it
-            // teaches the player to stop looking at it.
+            // ---- BOOST GAUGE ----------------------------------------------
+            // The ROUND dial, left of the tach at 0.70 of its radius — the
+            // secondary instrument, not a second primary. Sunday's build
+            // replaced this with a gray segmented bar; the dial art (same
+            // Blender bezel and needle atlas as the tach, same sweep, so
+            // frame i points at the same angle on both faces) was already in
+            // assets/ui and reads as an instrument where the bar read as UI.
+            //
+            // It reads NEGATIVE off-throttle. A boost gauge pinned at zero
+            // whenever you lift is the tell that no manifold model is behind
+            // it, and vacuum is where a real one lives most of the time.
+            if (texBoost.valid()) {
+                const float R2  = R * 0.70f;
+                const float bcx = gcx - R - R2 - R * 0.10f;
+                const float bcy = gcy + R - R2;              // bottoms line up
+
+                constexpr float kPsiMin = -10.0f, kPsiMax = 40.0f;   // == the art (35-psi build)
+                const float psi = car.boostPsi();
+                const float bf  = std::min(1.0f, std::max(0.0f,
+                                    (psi - kPsiMin) / (kPsiMax - kPsiMin)));
+
+                static float shownBoost = 0.0f;
+                shownBoost += (bf - shownBoost) * (1.0f - std::exp(-12.0f * fdt));
+
+                device->drawHudImage(frame, texBoost, bcx - R2, bcy - R2,
+                                     2.0f * R2, 2.0f * R2, white);
+                if (texNeedle.valid()) {
+                    const int NF = 64, AT = 8;
+                    int bi = (int)(shownBoost * (NF - 1) + 0.5f);
+                    bi = bi < 0 ? 0 : (bi > NF - 1 ? NF - 1 : bi);
+                    const float u0 = (float)(bi % AT) / (float)AT;
+                    const float v0 = (float)(bi / AT) / (float)AT;
+                    device->drawHudImage(frame, texNeedle, bcx - R2, bcy - R2,
+                                         2.0f * R2, 2.0f * R2, white,
+                                         u0, v0, u0 + 1.0f / AT, v0 + 1.0f / AT);
+                }
+                char bbuf[32];
+                std::snprintf(bbuf, sizeof(bbuf), "%+.1f", (double)psi);
+                const float bp = R2 * 0.26f;
+                const float bw = (float)std::strlen(bbuf) * bp;
+                const bool  over = psi >= 30.0f;   // the art's red band
+                const float bc[4] = { over ? 1.0f : 0.97f, over ? 0.32f : 0.98f,
+                                      over ? 0.24f : 1.0f, 1.0f };
+                device->drawHudText(frame, bbuf, bcx - bw * 0.5f,
+                                    bcy + R2 * 0.26f, bp, bc);
+            }
+
+            if (texNos.valid()) {
+                // ---- NOS TANK — SOLID LUMINESCENT CURVED BAR (Tim: "Curving
+                // bar like NFS had 20 years ago... not beads. solid
+                // luminescent bars"). A 32-state baked-arc atlas (hot core +
+                // glow, husk for the spent span); the frame is picked by tank
+                // level — the needle-atlas pattern applied to a fill. Drains
+                // in ~4 s of spray, RECHARGES off the button in ~16 s.
+                const float R2  = R * 0.70f;
+                const float bcx = gcx - R - R2 - R * 0.10f;
+                const float bcy = gcy + R - R2;
+                const int NF2 = 32, AC = 8;
+                int fi = (int)(nosTank * (NF2 - 1) + 0.5f);
+                fi = fi < 0 ? 0 : (fi > NF2 - 1 ? NF2 - 1 : fi);
+                const float u0 = (float)(fi % AC) / (float)AC;
+                const float v0 = (float)(fi / AC) / 4.0f;
+                // Cell arc radius is 0.86 * half-cell; on screen the arc sits
+                // at 1.22 * R2, so the drawn cell spans 2 * 1.22 / 0.86 * R2.
+                const float side = 2.837f * R2;
+                float tint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                if (nosActive) { tint[0] = 1.25f; tint[1] = 1.15f; }   // spray flare
+                device->drawHudImage(frame, texNos, bcx - side * 0.5f, bcy - side * 0.5f,
+                                     side, side, tint, u0, v0, u0 + 1.0f / AC, v0 + 0.25f);
+                const float lp2 = R * 0.085f;
+                const float lc2[4] = { 0.55f, 0.85f, 1.0f, 1.0f };
+                device->drawHudText(frame, "NOS", bcx - R2 * 1.22f - lp2 * 1.2f,
+                                    bcy + R2 * 0.95f, lp2, lc2);
+            }
+
+            // THE THERMOMETER. Only when weather is running: a gauge pinned at
+            // a constant is worse than no gauge, because it teaches the player
+            // to stop looking at it.
             if (weatherOn) {
                 x3::game::drawThermometer(
                     *device, frame, weather.sample().tempF(),
@@ -1777,60 +2972,10 @@ int hostTunnel(HostContext& hc) {
                     wetness.snowDepthIn(),
                     wetness.condition() == x3::game::SurfaceCondition::Ice);
             }
-
-            // ---- BOOST GAUGE — vertical segmented bar (NFS style) ----------
-            // A slim vertical bar along the LEFT of the tach, outside it, ~60% of
-            // the dial height. Discrete segments fill bottom-up: green -> bright
-            // orange -> blue at max. "BOOST" label + digital psi. Off-throttle it
-            // reads vacuum, which just empties the bar (a real gauge's tell).
-            {
-                const float barW = R * 0.30f;              // slim
-                const float barH = R * 1.20f;              // ~60% of the 2R dial
-                const float gap  = R * 0.44f;              // clear of the tach
-                const float bx   = gcx - R - gap - barW;   // outside, left
-                const float by   = gcy + R - barH;         // bottom-aligned with the dial
-
-                const float psi = car.boostPsi();
-                const float bf  = std::min(1.0f, std::max(0.0f, psi / 35.0f)); // 35 psi = full
-                static float shownBoost = 0.0f;
-                shownBoost += (bf - shownBoost) * (1.0f - std::exp(-12.0f * fdt));
-
-                // Background + thin border (reads as a rounded, finished bezel).
-                const float bgc[4] = { 0.05f, 0.07f, 0.09f, 0.90f };
-                device->drawHudQuad(frame, bx - 1.5f, by - 1.5f, barW + 3.0f, barH + 3.0f, bgc);
-                const float bdc[4] = { 0.42f, 0.47f, 0.52f, 1.0f };
-                device->drawHudQuad(frame, bx - 1.5f, by - 1.5f, barW + 3.0f, 1.0f, bdc);
-                device->drawHudQuad(frame, bx - 1.5f, by + barH + 0.5f, barW + 3.0f, 1.0f, bdc);
-                device->drawHudQuad(frame, bx - 1.5f, by - 1.5f, 1.0f, barH + 3.0f, bdc);
-                device->drawHudQuad(frame, bx + barW + 0.5f, by - 1.5f, 1.0f, barH + 3.0f, bdc);
-
-                // Lit segments fill bottom-up: green -> bright orange -> blue.
-                constexpr int kSegs = 10;
-                const float segH = barH / kSegs;
-                const int lit = (int)(shownBoost * kSegs + 0.5f);
-                for (int i = 0; i < lit; ++i) {
-                    const float p = (float)i / (kSegs - 1);
-                    float sc[4];
-                    if (p < 0.33f)      { sc[0]=0.20f; sc[1]=0.95f; sc[2]=0.35f; } // green
-                    else if (p < 0.66f) { sc[0]=1.00f; sc[1]=0.55f; sc[2]=0.08f; } // bright orange
-                    else                { sc[0]=0.28f; sc[1]=0.62f; sc[2]=1.00f; } // blue
-                    sc[3] = 1.0f;
-                    const float sy = by + barH - (i + 1) * segH;
-                    device->drawHudQuad(frame, bx, sy + 0.5f, barW, segH - 1.0f, sc);
-                }
-
-                // Digital psi above, "BOOST" label below.
-                char bbuf[32];
-                std::snprintf(bbuf, sizeof(bbuf), "%+.0f", (double)psi);
-                const float bp = R * 0.20f;
-                const float bw = (float)std::strlen(bbuf) * bp;
-                const float tc[4] = { 0.90f, 0.95f, 1.0f, 1.0f };
-                device->drawHudText(frame, bbuf, bx + barW * 0.5f - bw * 0.5f,
-                                    by - R * 0.36f, bp, tc);
-                const float lp = R * 0.12f;
-                device->drawHudText(frame, "BOOST", bx + barW * 0.5f - 2.5f * lp,
-                                    by + barH + R * 0.10f, lp, tc);
-            }
+            // NOTE: this lane's vertical segmented boost BAR is deliberately
+            // gone. The vehicle-feel lane replaced it with a ROUND boost dial
+            // (drawn above, left of the tach at 0.70 R) -- keeping both would
+            // have put two boost gauges on one screen reading the same psi.
 
             char gbuf[64];
             const int   gnum = car.gear();
@@ -1882,8 +3027,12 @@ int hostTunnel(HostContext& hc) {
                 const float hcol[4] = { 0.52f, 0.57f, 0.66f, 1.0f };
                 device->drawHudText(frame, "~  CONSOLE",      gcx - R * 0.95f,
                                     gcy - R * 1.64f, hp, hcol);
+                device->drawHudText(frame, "SHIFT  NITROUS",  gcx - R * 0.95f,
+                                    gcy - R * 1.88f, hp, hcol);
                 device->drawHudText(frame, "T  TRACTION",     gcx - R * 0.95f,
                                     gcy - R * 1.52f, hp, hcol);
+                device->drawHudText(frame, "C  CLIMB",        gcx - R * 0.95f,
+                                    gcy - R * 1.76f, hp, hcol);
                 device->drawHudText(frame, "SPACE  HANDBRAKE", gcx - R * 0.95f,
                                     gcy - R * 1.40f, hp, hcol);
             }
@@ -1892,15 +3041,91 @@ int hostTunnel(HostContext& hc) {
                 const float px = R * 0.105f;
                 const float c4[4] = { tcOn ? 0.35f : 1.0f, tcOn ? 0.78f : 0.58f,
                                       tcOn ? 0.95f : 0.20f, 1.0f };
-                const char* t = tcOn ? "TC" : "TC OFF";
+                const char* t = car.climbMode() ? "CLIMB" : (tcOn ? "TC" : "TC OFF");
                 device->drawHudText(frame, t, gcx - (float)std::strlen(t) * px * 0.5f,
                                     gcy - R * 1.30f, px, c4);
             }
         }
+        // ---- DRIVING-HUD WAYPOINT CHEVRON (map/HUD wiring; M CLOSED) -------
+        // drawWaypointChevron (defined near the map's road layer, above) is
+        // the SAME function the headless map/HUD proof set calls -- one
+        // implementation, not a parallel copy that can drift.
+        if (frame.valid && !mapOpen && wmap.waypoint().active) {
+            const x3::game::Waypoint& wpv = wmap.waypoint();
+            float pPos[3] = { vp[0], vp[1], vp[2] };
+            if (!driving && footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                pPos[0] = ft.x; pPos[1] = ft.y; pPos[2] = ft.z;
+            }
+            drawWaypointChevron(frame, wpv.x, pPos[1], wpv.z, pPos[0], pPos[1], pPos[2], camYaw);
+        }
+        // ---- THE MAP SCREEN (M). Drawn over the world and the cluster, under
+        // the shell (the console stays reachable over the map). Input assembly
+        // is host_streamed's: raw WASD/arrows pan (the car's WASD is gated off
+        // above), wheel zooms at the cursor, click/ENTER sets the waypoint,
+        // and the ESC edge arrives through the shell's escape handler.
+        if (frame.valid && mapOpen) {
+            // OPAQUE UNDERLAY. The map's own backdrop is 0.97 alpha, which is
+            // invisible over an interior but lets 3% of this world's HDR sky
+            // through — enough to wash the whole screen. The map system is
+            // shared, so the host lays its own alpha-1 slab under it instead
+            // of changing everyone's backdrop.
+            {
+                int ufw = 0, ufh = 0; glfwGetFramebufferSize(window, &ufw, &ufh);
+                const float mapBg[4] = { 0.014f, 0.025f, 0.045f, 1.0f };
+                device->drawHudQuad(frame, 0.0f, 0.0f, (float)ufw, (float)ufh, mapBg);
+            }
+            double cmx = 0.0, cmy = 0.0; glfwGetCursorPos(window, &cmx, &cmy);
+            const bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            x3::ui::UiInput ui0{};
+            ui0.mouseX = (float)cmx; ui0.mouseY = (float)cmy;
+            ui0.mouseDown = lmb; ui0.mousePressed = lmb && !prevMapLmb;
+            wmapUi.begin(*device, frame, ui0);
+            x3::game::WorldMapSystem::ScreenInput msi{};
+            msi.mouseX = ui0.mouseX; msi.mouseY = ui0.mouseY;
+            msi.mouseDown = ui0.mouseDown; msi.mousePressed = ui0.mousePressed;
+            msi.wheel = (float)g_weaponScroll;
+            msi.keyW = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP)    == GLFW_PRESS;
+            msi.keyS = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN)  == GLFW_PRESS;
+            msi.keyA = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT)  == GLFW_PRESS;
+            msi.keyD = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+            const bool entNow = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS ||
+                                glfwGetKey(window, GLFW_KEY_KP_ENTER) == GLFW_PRESS;
+            msi.enterEdge = entNow && !prevMapEnter;
+            prevMapEnter = entNow;
+            msi.escEdge = mapEsc;
+            // The blip is the CAR (or Jake, on foot), with its real heading.
+            float ppx = vp[0], ppy = vp[1], ppz = vp[2];
+            float mapYaw = camYaw;
+            if (driving && carBuilt) {
+                float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                // forward = q * (0,0,-1) (rest forward is -Z, CONVENTIONS §3);
+                // the map's arrow wants that forward as a world-XZ angle.
+                const float fwdX = -2.0f * (cq[0] * cq[2] + cq[3] * cq[1]);
+                const float fwdZ = -(1.0f - 2.0f * (cq[0] * cq[0] + cq[1] * cq[1]));
+                mapYaw = std::atan2(fwdZ, fwdX);
+            } else if (footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                ppx = ft.x; ppy = ft.y; ppz = ft.z;
+            }
+            msi.playerX = ppx; msi.playerY = ppy; msi.playerZ = ppz;
+            msi.playerYaw = mapYaw;
+            msi.locationName = "TUNNEL RIDGE - ROAD NETWORK";
+            wmap.drawScreen(wmapUi, *device, frame, msi, mapFlags, fdt);
+            wmapUi.end();
+            prevMapLmb = lmb;
+        } else {
+            prevMapLmb   = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            prevMapEnter = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
+        }
+        g_weaponScroll = 0.0;        // consumed (or discarded) every frame
+
         shell.draw(frame, fdt);      // console + FPS/stats, over everything
         device->endFrame(frame);
     }
 
+    if (audioOn) engineNote.shutdown();          // bank voices before the mixer dies
+    wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     tunnel.shutdown(*device, *phys);
     for (auto& w : tourBores) w->shutdown(*device, *phys);
     x3::game::shutdownTunnelSurfaces(*device);   // shared sets, released once

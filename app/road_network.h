@@ -34,20 +34,28 @@
 namespace x3::game {
 
 // THE CROSS-SECTION, in the units Tim gave it (feet), converted once here.
+// ONE profile, applied to every route — no route can opt out of a strip:
 //
-//      |<--------------------- 88 ft paved --------------------->|
-//      | 20 ft apron |  12 | 12 | 12 | 12  (4 lanes) | 20 ft apron |
-//                    |<------- 48 ft running -------->|
+//   |<------------------------- 96 ft paved ------------------------->|
+//   | 20 ft apron | 4 ft shldr | 12 | 12 | 12 | 12 | 4 ft shldr | 20 ft apron |
+//                              |<---- 48 ft running ---->|
+//   [prism skirt]                [edge line at the running edge]      [prism skirt]
+//   (guardrail wherever the drop test fires, just inside the apron edge)
 //
 // The APRONS are load-bearing, not trim: Tim asked for "HUGE cement aprons on
 // the side.. that you can pull a dead car on to". A car is ~15 ft long, so 20 ft
-// of shoulder is the width where that is actually true rather than nearly true.
+// of apron is the width where that is actually true rather than nearly true.
+// The SHOULDERS are Tim's "Still need shoulders, and aprons": a 4 ft paved
+// asphalt strip between the edge line and the cement, weathered a shade
+// differently so leaving the running surface READS.
 constexpr float kLaneFt      = 12.0f;   // US freeway standard
 constexpr int   kLaneCount   = 4;
+constexpr float kShoulderFt  = 4.0f;    // paved asphalt shoulder, each side
 constexpr float kApronFt     = 20.0f;   // each side; a dead car is ~15 ft
 constexpr float kFtToM       = 0.3048f;
-constexpr float kRunningHalfM = (kLaneFt * (float)kLaneCount * 0.5f) * kFtToM;  // 24 ft
-constexpr float kPavedHalfM   = kRunningHalfM + kApronFt * kFtToM;              // 44 ft
+constexpr float kRunningHalfM  = (kLaneFt * (float)kLaneCount * 0.5f) * kFtToM;  // 24 ft
+constexpr float kShoulderHalfM = kRunningHalfM + kShoulderFt * kFtToM;           // 28 ft
+constexpr float kPavedHalfM    = kShoulderHalfM + kApronFt * kFtToM;             // 48 ft
 
 // One authored route: a centreline in world XZ. Y is derived from the terrain.
 struct RoadSpec {
@@ -57,6 +65,29 @@ struct RoadSpec {
     float halfWidth   = kPavedHalfM + 1.0f;
     float falloff     = 14.0f;   // smoothstep run outward from halfWidth (m)
     float maxGrade    = 0.07f;   // 7% — a real mountain highway's ceiling
+    // VERTICAL-CURVE LIMIT: max |d(grade)/ds| per metre. Grade alone is not
+    // drivability — a crest where +7% flips to -7% across one node is a KINK,
+    // and a car at speed goes light or airborne over it ("the road changes
+    // angles sharply with respect to elevation, making the car lose traction").
+    // Real highways bound the RATE of grade change with parabolic vertical
+    // curves (the K-value: metres of curve per 1% of grade change; this field
+    // is 0.01/K). Default 5e-4/m == K 20 m/%: at 100 mph (44.7 m/s) the
+    // vertical acceleration over such a curve is v^2 * rate = 1.0 m/s^2, a
+    // tenth of g — the car stays loaded. The summit spur runs looser (its
+    // design speed is a mountain switchback's, not a freeway's).
+    float maxGradeRate = 5.0e-4f;
+    // HORIZONTAL FLOW (the "sharp points" fix). Wave-2 bounded the VERTICAL
+    // rate of change; nothing bounded the HORIZONTAL one, so a route sampled
+    // at ~61 m facets — an 11.7 deg corner at every node of a 300 m arc reads
+    // as a chain of kinks at speed. smoothHorizontalCurves() (called by every
+    // route producer, before grading) Catmull-Rom-subdivides the polyline
+    // until no node deflects more than maxDeflectionDeg, then eases any bend
+    // tighter than minTurnRadiusM — the class floor: a freeway never asks for
+    // a corner a freeway cannot take, while the range circuit's ~68 m hairpin
+    // sits ABOVE its 60 m floor and is deliberately kept. X3_NO_HCURVE=1
+    // skips the pass (the A/B instrument, mirroring X3_NO_VCURVE).
+    float minTurnRadiusM   = 200.0f;   // class floor: bends tighter get eased
+    float maxDeflectionDeg = 3.0f;     // max heading change per node after smoothing
     std::vector<float> x, z;     // centreline nodes, world (same length, >= 2)
 
     // THE SPAN GAP (bores + bridges). A gap is a run of nodes [i0..i1] whose
@@ -69,6 +100,16 @@ struct RoadSpec {
     // carves meet without a step; for a bridge y0 == y1 == the deck elevation.
     struct Gap { uint32_t i0 = 0, i1 = 0; float y0 = 0.0f, y1 = 0.0f; };
     std::vector<Gap> gaps;
+
+    // OPTIONAL PER-NODE DATUM PINS (NaN = free; empty = none). Same machinery
+    // the gaps use internally, exposed for the case a JUNCTION needs: a road
+    // that BRANCHES from another road must arrive at the other road's graded
+    // datum exactly, or the two pavements meet with a step. A pinned node is
+    // held through the grade relaxation and gets the same bounded ceiling-raise
+    // ramp as a portal pin, so the approach can climb to it at maxGrade. If a
+    // pin cannot be honoured the deficit lands in RoadBuildResult::pinErrM,
+    // loudly — never silently.
+    std::vector<float> pinY;
 };
 
 // What actually got built, for logging and for the gates.
@@ -88,7 +129,72 @@ struct RoadBuildResult {
     // Highest the datum floats ABOVE the natural surface (the portal-ramp
     // approaches — see registerRoad). 0 on a road with no gaps.
     float    maxFloatM     = 0.0f;
+    // VERTICAL FLOW, measured: max |d(grade)/ds| (per metre) after the grade
+    // relaxation but BEFORE vertical-curve smoothing, and after it. The
+    // before/after pair is the proof the smoothing did something real, and
+    // the after value is what the self-test gates against spec.maxGradeRate.
+    float    maxGradeRatePre  = 0.0f;
+    float    maxGradeRatePost = 0.0f;
 };
+
+// ---------------------------------------------------------------------------
+// HORIZONTAL CURVE SMOOTHING — the "sharp points" fix (see RoadSpec fields).
+//
+// Catmull-Rom SUBDIVISION, not relocation: every existing node keeps its
+// exact position (so pinned junction nodes, portal chord ends and route ends
+// are preserved by construction), and new nodes are inserted on the C1 spline
+// through them until no node deflects more than spec.maxDeflectionDeg.
+// Adaptive: straights get nothing, curves get refined — the node budget goes
+// where the curvature is. Then a MINIMUM-RADIUS pass eases any bend tighter
+// than spec.minTurnRadiusM (locked nodes never move; the ring seam stays
+// welded). Deterministic. X3_NO_HCURVE=1 skips both passes — the A/B
+// instrument, mirroring X3_NO_VCURVE — and nothing else should ever set it.
+//
+// `lockMask` (optional, sized to s.x): nonzero nodes are LAW — never moved by
+// the easing pass, and segments between two consecutive locked nodes are kept
+// STRAIGHT (subdivided linearly, not splined). makeOuterTour uses it for its
+// bore chords: a tunnel's spine is straight, so the road polyline through the
+// gap must stay on the chord.
+// ---------------------------------------------------------------------------
+struct HorizontalSmoothResult {
+    uint32_t nodesBefore = 0, nodesAfter = 0;
+    float    maxDeflBeforeDeg = 0.0f;   // worst per-node heading change, raw
+    float    maxDeflAfterDeg  = 0.0f;   // ... after subdivision + easing
+    float    minRadiusAfterM  = 0.0f;   // tightest surviving bend (curved nodes)
+    uint32_t easedNodes       = 0;      // nodes the radius-floor pass moved
+    bool     skipped          = false;  // X3_NO_HCURVE=1
+    // old node index -> new node index (subdivision only inserts, so every
+    // original node survives). Gap/pin bookkeeping remaps through this.
+    std::vector<uint32_t> newIndexOfOld;
+};
+HorizontalSmoothResult smoothHorizontalCurves(RoadSpec& s,
+                                              const std::vector<uint8_t>* lockMask = nullptr);
+
+// Measure the horizontal flow of a spec, for the gates: worst per-node
+// deflection (degrees) skipping gap reaches, their edge nodes and the open
+// ends; optionally the tightest discrete curve radius over genuinely curved
+// nodes (deflection > 0.25 deg).
+float measureMaxDeflectionDeg(const RoadSpec& s, float* minRadiusM = nullptr);
+
+// ---------------------------------------------------------------------------
+// JUNCTION EXCLUSION ZONES — Tim, pinned against a skirt wall at a junction:
+// "INTERSECTIONS NEED TO NOT HAVE RAILINGS.. AND THEY NEED SWOOPING CURVES
+// FROM BOTH WAYS." Every junction (mouth centre AND branch end) is noted in a
+// module registry when its junction box registers; barrier planning of BOTH
+// types refuses to place anything within kJunctionBarrierClearM of a noted
+// point, and the ribbon's prism skirt feathers down to a drivable batter
+// through the same zone. Cleared alongside the corridor registry in tests.
+// ---------------------------------------------------------------------------
+constexpr float kJunctionBarrierClearM = 45.0f;
+void     noteRoadJunction(float x, float z);
+void     clearRoadJunctions();
+uint32_t roadJunctionCount();
+float    distToNearestRoadJunction(float x, float z);   // 1e9 if none noted
+
+// How far back from a main road's centreline a branch's terminal node sits;
+// the junction mouth (ruled twist + the swooping merge fillets) owns this
+// reach. Widened +20 -> +40 for the merges' ~40 m tangent legs.
+constexpr float kJunctionSetbackM = kPavedHalfM + 40.0f;
 
 // Grade the route against the natural height field and register it as chained
 // corridors. Returns what was built; ok == false if the registry is full or the
@@ -100,11 +206,39 @@ RoadBuildResult registerRoad(const RoadSpec& spec,
 
 // A closed ring of `nodeCount` nodes, radius `radiusM`, centred on (cx, cz).
 // The ring closes exactly (last node == first) so the chain has no seam.
+// KEPT for the survey instrument and the O0 negative control — no shipping
+// route is a circle any more (Tim: "its a perfect circle. NO roads do that").
 RoadSpec makeRingRoad(const char* name, float cx, float cz,
                       float radiusM, uint32_t nodeCount);
 
-// THE INNER TOUR — Tim's 15-mile ring, laid around the tunnel ridge. One call so
-// a host or a self-test can put it on the ground identically.
+// ---------------------------------------------------------------------------
+// COURSE AUTHORING — nodes in, road out.
+//
+// A route is authored as a WAYPOINT POLYLINE with a fillet radius per corner:
+// the generator emits straight reaches between waypoints and a constant-radius
+// arc at each corner (tangent length r*tan(theta/2), clamped to fit the legs),
+// resampled at `spacingM`. Straights are genuine straights, corners are
+// genuine constant-radius arcs of whatever radius each corner asks for —
+// which is exactly what a real road is and a noise-perturbed circle is not.
+// This is also the door a hand-drawn network walks in through: digitise the
+// sketch to a waypoint list, call this, get a road.
+// ---------------------------------------------------------------------------
+struct CourseWaypoint {
+    float x = 0.0f, z = 0.0f;   // world XZ
+    float fillet = 200.0f;      // corner arc radius (m); ignored at open ends
+};
+RoadSpec makeRoadFromWaypoints(const char* name,
+                               const std::vector<CourseWaypoint>& pts,
+                               float spacingM, bool closed);
+
+// THE INNER TOUR — Tim's ~15-mile course around the tunnel ridge, third shape.
+// v1 was a perfect circle and Tim rejected it from the world map ("NO roads do
+// that"). Now a closed course from an authored leg list: straights, arcs of
+// different radii, S-complexes, and a bulge toward the north foothills — one
+// leg is a straight through the OLD ring node 173 position (-4135.7, 1132.2),
+// square to the spawn corridor's exit ray, so the spawn connector still lands
+// at the same junction. One call so a host or a self-test builds it identically.
+RoadSpec makeInnerCourse();
 RoadBuildResult registerInnerRing();
 
 // ---------------------------------------------------------------------------
@@ -159,6 +293,12 @@ OuterRingResult registerOuterRing();
 //     different surface — you can tell you have left the running lane
 //   * LANE MARKINGS: solid white at both edges of the running surface, dashed
 //     white on the three interior lane lines
+//   * THE ROAD PRISM: a concrete base skirt extruded DOWN from each apron's
+//     outer edge — a vertical face (>= 0.6 m visible) then a battered face
+//     whose bottom laps UNDER the carved terrain. Tim: "THICK CONCRETE in the
+//     base and aprons.. not floating on top!!!" — a bare surface ribbon reads
+//     as paper wherever the ground falls away from the apron edge; the skirt
+//     is what makes the road read as a poured structure. Cement set, collision.
 //   * collision, so the car drives ON it rather than through it
 //
 // Must be called AFTER the terrain streamer exists (it reads the carved field)
@@ -172,7 +312,33 @@ struct RoadRibbonResult {
     uint32_t meshCount = 0;
     uint32_t quadCount = 0;
     float    lengthM   = 0.0f;
+    // BARRIERS (Tim: "We really need BARRIERS." / "thick concrete barriers to
+    // not go off in the ditch"): placed automatically from the drop test 6 m
+    // beyond the apron. Drop > 2 m earns the W-beam guardrail (taller
+    // protection); a ditch-depth drop (0.6–2 m) earns a continuous CONCRETE
+    // JERSEY BARRIER — classic F-shape, ~0.81 m tall on a 0.6 m base, cement
+    // set, full collision. Counts + drop extremes, for the gates.
+    uint32_t railSegments = 0;
+    float    railMinDropM = 0.0f;
+    uint32_t jerseySegments = 0;
+    float    jerseyMinDropM = 0.0f;
 };
+
+// PURE barrier planning — which segments of a route earn a barrier, per side,
+// from the drop-off test alone. Exposed separately so the self-test can gate
+// placement without a render device. Per SEGMENT (spec node i -> i+1):
+// bit0 = left W-beam, bit1 = right W-beam, bit2 = left jersey, bit3 = right
+// jersey. Drop > 2 m rails; 0.6–2 m (the ditch band) gets the jersey wall;
+// segments within kJunctionBarrierClearM of a noted junction get NOTHING —
+// an intersection needs its mouths open, not railed shut.
+struct BarrierPlan {
+    std::vector<uint8_t> mask;
+    uint32_t railSegments = 0;    // total W-beam (side,segment) pairs
+    float    minDropM = 0.0f;     // smallest drop among railed segments
+    uint32_t jerseySegments = 0;  // total jersey (side,segment) pairs
+    float    jerseyMinDropM = 0.0f, jerseyMaxDropM = 0.0f;
+};
+BarrierPlan planRoadBarriers(const RoadSpec& spec, const std::vector<float>* roadY);
 
 // `roadY` (optional): the graded datum per node, from registerRoad(). With it,
 // the pavement rides the DATUM — which matters wherever another, deeper carve
@@ -185,6 +351,191 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
                                  x3::rhi::IRenderDevice& device,
                                  x3::phys::IPhysicsWorld& phys,
                                  const std::vector<float>* roadY = nullptr);
+
+// ---------------------------------------------------------------------------
+// JUNCTIONS — where one road MEETS another.
+//
+// Measured before this existed (scripts/audit_connectivity.py, 2026-08-16):
+// the spawn corridor's far end dead-ends 3,522 m (11,555 ft) short of the
+// inner tour, 6,480 m short of the outer tour, 778 m short of the river road.
+// Tim: "They need to CONNECT to the roads you spawn on." So: a CONNECTOR from
+// the spawn corridor's far end to the inner ring, and a SUMMIT SPUR climbing
+// off the connector ("roads that go UP on top of the mountain").
+//
+// A junction is where two independently-graded ribbons meet, and a butt joint
+// there shows a seam (and, where the main road has grade, a wedge-shaped gap:
+// the branch's end edge is laterally FLAT while the main road's surface slopes
+// along its own axis under it). buildJunctionMouth() closes that with a ruled
+// transition patch: it starts at the branch ribbon's flat terminal edge and
+// twists onto the main road's sloped surface, overlapping the main pavement a
+// couple of metres with a few millimetres of lift (lapped, not coplanar — no
+// z-fight), plus cement flare wings so the mouth reads as a widened apron
+// rather than a T of butted rectangles. An honest v1: a real intersection
+// system (kerb radii, stop lines, signage, traffic priority) is future work.
+// ---------------------------------------------------------------------------
+struct RoadJunction {
+    bool  valid = false;
+    float jx = 0.0f, jz = 0.0f, jy = 0.0f;  // junction point ON the main road's centreline + datum
+    float mainTX = 1.0f, mainTZ = 0.0f;     // main road unit tangent there
+    float mainGrade = 0.0f;                 // main datum slope along (mainTX, mainTZ), m/m
+    float endX = 0.0f, endZ = 0.0f, endY = 0.0f;  // branch ribbon's terminal node + datum
+};
+
+// The mouth patch (asphalt transition + cement flare wings + the swooping
+// merge fillets both ways), with collision.
+RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
+                                    x3::rhi::IRenderDevice& device,
+                                    x3::phys::IPhysicsWorld& phys);
+
+// ---------------------------------------------------------------------------
+// ATTACH A ROUTE END TO ANOTHER ROAD, AT GRADE — the machinery every branch
+// shares, exported for routes authored outside this module (the valley road's
+// leg tables END on the inner tour, and until this existed they just... did:
+// two independently graded pavements stacked at the meeting point, sheer
+// skirt face between the decks, both roads' lane paint crisscrossing one
+// surface — the owner's screenshot, verbatim: "This is so bad.. at least
+// swoop curves down to it").
+//
+// Where routes MEET at different grades the answer is an AT-GRADE junction:
+// this finds the nearest main-road node to the given end, RETREATS the
+// terminal node to the junction setback along the route's own last leg, and
+// pins its datum to the main road's graded datum — the grade relaxation and
+// the portal-ramp ceiling then bring the approach down (or up) the swooping
+// way, at <= maxGrade with the vertical-curve K held. Call AFTER any
+// horizontal smoothing and BEFORE registerRoad (it edits the spec); after a
+// successful registerRoad, set .endY from the graded datum, call
+// registerRoadJunctionThroat() for the box + exclusion notes, and hand the
+// returned frame to buildJunctionMouth(). Returns valid=false when the end
+// is nowhere near the main road (> 120 m).
+//
+// (A STRUCTURAL grade split — one route bridging over another — is different
+// machinery: a span gap over the lower road plus RAMP branches built from
+// exactly this attachment. No route in the network crosses another mid-line
+// today — gate R2 proves it stays that way unless authored deliberately.)
+// ---------------------------------------------------------------------------
+RoadJunction attachRoadEndToRoute(RoadSpec& s, bool atFront,
+                                  const RoadSpec& mainSpec,
+                                  const std::vector<float>& mainRoadY,
+                                  uint32_t* outMainNode = nullptr);
+
+// The junction-throat cut (2-node corridor across the mouth) + the exclusion
+// notes that keep barriers away and the skirt feathered. Same call the
+// in-module junctions make.
+void registerRoadJunctionThroat(float endX, float endZ,
+                                float jx, float jz, float datumY);
+
+// ---------------------------------------------------------------------------
+// THE SPAWN CONNECTOR — the road from the spawn corridor's far end (past the
+// tunnel exit portal) to the inner tour. Registered AFTER the ring (its
+// junction pin needs the ring's graded datum, and its natural-surface sweep
+// then reads the ring's already-carved cutting at the landing). The centreline
+// is a gentle S-curve — Tim: "they do not curve" — with both ends pinned:
+// node 0 to the spawn route's exit datum, the last node to the ring's datum at
+// the landing node. The last leg arrives radially (square to the ring).
+// ---------------------------------------------------------------------------
+struct SpawnConnectorResult {
+    RoadBuildResult    road;
+    RoadSpec           spec;
+    std::vector<float> roadY;      // graded datum per node (the ribbon rides this)
+    RoadJunction       ringJct;    // where it lands on the inner ring
+    uint32_t           ringNode = 0;   // ring spec node index of the landing
+    float gapBeforeM = 0.0f;       // measured spawn-route -> ring gap this closes
+};
+SpawnConnectorResult registerSpawnConnector(const TunnelRoute& spawnRoute,
+                                            const RoadSpec& ringSpec,
+                                            const std::vector<float>& ringRoadY);
+
+// ---------------------------------------------------------------------------
+// THE OUTER CONNECTOR — the road off the inner tour out to the 31-mile outer
+// tour. Until it existed the outer tour was an ISLAND: audited at 2,958 m
+// (9,705 ft) from the nearest inner-ring point, five real bores and thirty
+// miles of pavement that nothing could drive to.
+//
+// Both tours are concentric about the same centre, so the shortest crossing is
+// RADIAL and arrives square at both ends with no contrivance. Which radius it
+// takes is chosen by MEASUREMENT, not by picking the minimum distance and
+// hoping: every candidate landing is scored by the worst cut-or-fill its line
+// would need against the natural hillside, and the cheapest wins. Landings
+// inside (or within a portal's reach of) one of the tour's BORE GAPS are
+// excluded outright — a slip road into the middle of a tunnel is not a road.
+//
+// Registered AFTER both tours, like the spawn connector and for the same
+// reason: its end pins read their graded datums.
+// ---------------------------------------------------------------------------
+struct OuterConnectorResult {
+    RoadBuildResult    road;
+    RoadSpec           spec;
+    std::vector<float> roadY;       // graded datum per node (the ribbon rides this)
+    RoadJunction       ringJct;     // where it leaves the inner tour
+    RoadJunction       outerJct;    // where it lands on the outer tour
+    uint32_t           ringNode = 0, outerNode = 0;
+    float gapBeforeM = 0.0f;        // measured inner->outer gap this closes
+    float worstFitM  = 0.0f;        // worst cut-or-fill of the chosen line
+};
+OuterConnectorResult registerOuterConnector(const RoadSpec& ringSpec,
+                                            const std::vector<float>& ringRoadY,
+                                            const RoadSpec& outerSpec,
+                                            const std::vector<float>& outerRoadY);
+
+// ---------------------------------------------------------------------------
+// THE SUMMIT SPUR — one climbing road from the connector up to a real local
+// peak, found by hill-climbing the natural (pre-carve) height field from seeds
+// beside the connector. Steeper than the tours (maxGrade up to 14%) and built
+// with sawtooth switchback legs when the direct line is steeper than that.
+// The peak is required to stay clear of the spawn tunnel's spine so the spur's
+// carve can never undermine the backfill lid. If no peak within reach earns a
+// road (prominence < ~35 m), it reports why and builds nothing — honestly.
+// ---------------------------------------------------------------------------
+struct SummitSpurResult {
+    bool               built = false;
+    const char*        whyNot = "";
+    RoadBuildResult    road;
+    RoadSpec           spec;
+    std::vector<float> roadY;
+    RoadJunction       jct;        // where it leaves the connector
+    float peakX = 0.0f, peakZ = 0.0f, peakNaturalY = 0.0f;
+    float climbM = 0.0f;           // datum climb, junction -> summit
+    float summitCutM = 0.0f;       // how far below the true peak the road tops out
+};
+// `avoid` (optional): other routes' centrelines the spur must stay off — its
+// carve would trench across their pavement otherwise.
+SummitSpurResult registerSummitSpur(const RoadSpec& fromSpec,
+                                    const std::vector<float>& fromRoadY,
+                                    const TunnelRoute* keepClearOf,
+                                    const std::vector<const RoadSpec*>* avoid = nullptr);
+
+// ---------------------------------------------------------------------------
+// THE RANGE CIRCUIT — Tim: "31 miles may be way too long. we need a 3-5 mile
+// track around the range in addition." A lap-able closed course in the open
+// country beside the spawn connector, and NOT a circle: a ~950 m start/finish
+// straight, a second back straight, an S-curve complex, a hairpin, and
+// whatever climb the country under it gives (measured and reported, never
+// asserted blind). Connected to the network by a short ACCESS ROAD off the
+// connector, with a junction mouth + junction box at BOTH ends — the same
+// machinery the connector itself lands on the tour with. The circuit registers
+// first (free grading), then the access pins its two ends to the connector's
+// and the circuit's graded datums exactly.
+// ---------------------------------------------------------------------------
+struct RangeCircuitResult {
+    bool               built = false;
+    const char*        whyNot = "";
+    RoadBuildResult    road;         // the circuit itself
+    RoadSpec           spec;
+    std::vector<float> roadY;
+    RoadBuildResult    accessRoad;   // the connector -> circuit link
+    RoadSpec           accessSpec;
+    std::vector<float> accessRoadY;
+    RoadJunction       connJct;      // access mouth onto the connector
+    RoadJunction       circJct;      // access mouth onto the circuit
+    uint32_t           hostNode = 0; // connector node the access launches from
+    float              climbM = 0.0f;        // circuit datum max - min
+    float              longestStraightM = 0.0f;
+    float              hairpinTurnDeg = 0.0f; // sharpest 250 m heading change
+};
+RangeCircuitResult registerRangeCircuit(const RoadSpec& connSpec,
+                                        const std::vector<float>& connRoadY,
+                                        const TunnelRoute* keepClearOf,
+                                        const std::vector<const RoadSpec*>* avoid = nullptr);
 
 // --test-roadnetwork
 bool runRoadNetworkSelfTest();

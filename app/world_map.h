@@ -129,6 +129,37 @@ struct Waypoint {
 };
 
 // ---------------------------------------------------------------------------
+// Route overlays (road-network worlds).
+//
+// A road world (--world tunnel) has no region ledgers to bake tiles from; its
+// map content IS the road network — polylines the host already owns (RoadSpec
+// centrelines, TunnelRoute spines). Each overlay is a world-XZ centreline the
+// map screen draws as a dark asphalt line with a lighter outline; `dashed`
+// marks reaches that run under something else (tunnel bores, bridge decks).
+// Purely additive: worlds that never call setRouteOverlays draw exactly as
+// before.
+// ---------------------------------------------------------------------------
+struct MapRouteOverlay {
+    std::string name;
+    std::vector<float> x, z;   // centreline nodes, world XZ (same length, >= 2)
+    bool  dashed = false;      // bored / decked reach
+    float widthM = 26.8f;      // drawn width, metres (the 88 ft paved section)
+};
+
+// ---------------------------------------------------------------------------
+// Point markers (road-network worlds) — tunnel portals, the LNSS garage, and
+// similar fixed landmarks that aren't POI-table entries (a road world has no
+// StoryFlags fog of war, so these are always visible once registered; no
+// discovery gating). Purely additive, like the route overlays: worlds that
+// never call setMapMarkers draw exactly as before.
+// ---------------------------------------------------------------------------
+struct MapMarker {
+    std::string label;      // display name (hover / zoomed-in)
+    std::string type;       // icon class: "portal" | "garage"
+    float x = 0.0f, z = 0.0f;
+};
+
+// ---------------------------------------------------------------------------
 // Tile bake — CPU top-down rasterization into RGBA8 (uploaded via createTexture).
 // ---------------------------------------------------------------------------
 struct MapTile {
@@ -144,6 +175,20 @@ struct MapTile {
 // transparent. `outRgba` is resized to res*res*4.
 void bakeFloorTilePixels(const CanonFloor& floor, std::vector<uint8_t>& outRgba,
                          uint32_t res, float wx0, float wz0, float wx1, float wz1);
+
+// Low-contrast, DESATURATED hypsometric terrain bake for the road-network
+// map underlay: app/terrain.h's terrainHeightAtWorld() drives a charcoal-
+// green -> olive -> pale-stone elevation gradient, darkened by slope (read
+// back from the ALREADY-SAMPLED height buffer's neighbors — one
+// terrainHeightAtWorld() call per pixel, not a second terrainNormalAtWorld()
+// call — see the .cpp for why that halves the bake's query count); pixels
+// below the river/ocean datum (worldWaterLevelAt() != kWorldWaterDry) paint
+// flat pale blue-gray water instead. Deliberately muted: the road polylines
+// drawn OVER this are the map's brightest layer by design (GTA figure-
+// ground) and must never have to compete with the ground. `outRgba` is
+// resized to res*res*4.
+void bakeTerrainTilePixels(std::vector<uint8_t>& outRgba, uint32_t res,
+                           float wx0, float wz0, float wx1, float wz1);
 
 // Rasterize live scene entities (a region's ownership ledger) by their world
 // AABBs (meshBounds x transform): height-banded tint (low = dark floor teal,
@@ -180,6 +225,22 @@ public:
     const Waypoint& waypoint() const { return m_waypoint; }
     void setWaypoint(float x, float z, int floor);
     void clearWaypoint() { m_waypoint = Waypoint{}; }
+
+    // ---- Route overlays (road worlds; see MapRouteOverlay) -----------------
+    void setRouteOverlays(std::vector<MapRouteOverlay> routes) { m_routes = std::move(routes); }
+    const std::vector<MapRouteOverlay>& routeOverlays() const { return m_routes; }
+
+    // ---- Point markers (road worlds; see MapMarker) ------------------------
+    void setMapMarkers(std::vector<MapMarker> markers) { m_markers = std::move(markers); }
+    const std::vector<MapMarker>& mapMarkers() const { return m_markers; }
+
+    // ---- Terrain underlay (road-network worlds; see bakeTerrainTilePixels) -
+    // Bake-or-fetch the low-contrast hypsometric tile covering the registered
+    // route overlays' bounds (padded). Cached — bakes ONCE, on first call
+    // (measured cost logged at `[worldmap] terrain underlay baked...`).
+    // Returns null until setRouteOverlays has real geometry.
+    const MapTile* ensureTerrainTile(x3::rhi::IRenderDevice& device);
+    void invalidateTerrainTile(x3::rhi::IRenderDevice& device);
 
     // ---- Fast travel (host polls after drawScreen) -------------------------
     bool travelRequested() const { return m_travelRequested; }
@@ -254,6 +315,14 @@ private:
     int spireFloorIndex(int floorNum) const;
     void drawPoiIcon(x3::ui::UiContext& ui, const MapPoi& poi, float px, float py,
                      bool hovered, float t) const;
+    void drawRouteOverlays(x3::ui::UiContext& ui, float W, float H) const;
+    // Route names, sparse + zoom-gated (fade in above a threshold): one label
+    // per unique MapRouteOverlay::name, at the on-screen node closest to the
+    // viewport center — so the name "travels" with the view like a GTA road
+    // label instead of clumping every reach's label onto one spot.
+    void drawRouteLabels(x3::ui::UiContext& ui, float W, float H) const;
+    void drawMapMarker(x3::ui::UiContext& ui, const MapMarker& mk, float px, float py,
+                       bool hovered) const;
 
     MapPoiTable m_pois;
     std::string m_spireDocPath;
@@ -262,6 +331,10 @@ private:
 
     struct RegionTileEntry { std::string id; MapTile tile; };
     std::vector<RegionTileEntry> m_regionTiles;
+
+    std::vector<MapRouteOverlay> m_routes;   // road-network worlds (else empty)
+    std::vector<MapMarker>       m_markers;  // portals / garage / landmarks (else empty)
+    MapTile m_terrainTile;                   // road-network underlay (see ensureTerrainTile)
 
     Waypoint m_waypoint;
     bool m_open = false;

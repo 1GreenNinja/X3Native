@@ -102,7 +102,13 @@ std::vector<CarSpec> makeBuiltin() {
         // apart (after torque and redline). Taking the driven figure keeps the
         // C12 no-op gate honest — the alternative was a car that silently
         // gained 217 kg, 20% of itself, the first time this table was wired up.
-        c.massKg = 1083.2f; c.comHeight = 0.46f; c.trackM = 1.354f;
+        // comHeight 0.46 -> 0.31 on the 2026-08-16 merge with the vehicle-feel
+        // lane. Not a preference: 0.31 m is their MEASURED anti-tip figure
+        // (box centre 0.76 minus the -0.45 CoM offset), paired with the lateral
+        // grip cap, against Tim's receipt "the car wants to tip up on two
+        // wheels even trying to make ANY curve at speed". The C12 gate failed
+        // on exactly this when the branches met, which is what it is for.
+        c.massKg = 1083.2f; c.comHeight = 0.31f; c.trackM = 1.354f;
         // 0.9068 is the GLB's TRUE body half-width; buildPhysics multiplies it
         // by kBodyWiden (1.18) to reach the shipped collision half-width of
         // 1.07. cars.json's 0.84 was the fourth figure on this car that had
@@ -112,7 +118,10 @@ std::vector<CarSpec> makeBuiltin() {
         // The 993 turbo step this whole lane was tuned around.
         setCurve(c, { {0.00f,0.42f}, {0.22f,0.55f}, {0.32f,0.82f}, {0.45f,1.00f},
                       {0.70f,1.00f}, {0.85f,0.94f}, {1.00f,0.78f} });
-        setGears(c, { 3.154f, 2.150f, 1.560f, 1.242f, 1.024f, 0.821f }, 4.2f);
+        // finalDrive 4.2 -> 4.6 on the same merge: their "MORE acceleration"
+        // pass traded a paper top end (aero caps the car near 160 mph anyway)
+        // for ~10% more wheel torque in every gear.
+        setGears(c, { 3.154f, 2.150f, 1.560f, 1.242f, 1.024f, 0.821f }, 4.6f);
         c.gripScale = 1.70f; c.brakeTorque = 2200.0f;
         c.suspFreq = 2.20f; c.suspDamp = 0.70f;
         c.turbo = true; c.turboMaxPsi = 16.0f; c.turboSpoolS = 0.45f;
@@ -772,11 +781,11 @@ bool runCarSpecSelfTest() {
         const float comOffY    = c->comHeight - boxCentreH;
         const bool ok = c &&
             std::fabs(c->massKg   - 1083.2f) < 0.5f &&    // addBox mass
-            std::fabs(comOffY     - (-0.30f)) < 0.005f && // addBox comOffset
+            std::fabs(comOffY     - (-0.45f)) < 0.005f && // addBox comOffset
             std::fabs(c->torqueNm - 800.0f) < 0.5f &&     // vd.maxEngineTorque
             std::fabs(c->maxRpm   - 7500.0f) < 0.5f &&    // vd.maxEngineRPM
             std::fabs(c->engineInertia - 0.35f) < 0.001f &&
-            std::fabs(c->finalDrive - 4.2f) < 0.001f &&
+            std::fabs(c->finalDrive - 4.6f) < 0.001f &&
             c->gearCount == 6 && c->curvePoints == 7 &&
             std::fabs(c->trackM - 1.354f) < 0.001f &&     // track scale -> 1.0
             // ALL THREE half-extents, not just the length. The first cut of

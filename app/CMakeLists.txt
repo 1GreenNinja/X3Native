@@ -190,6 +190,7 @@ add_library(x3app SHARED
     cliffs.cpp
     terrain.cpp
     vehicle.cpp
+    engine_note.cpp     # multi-RPM engine-note bank player (4-voice bracket crossfade)
     world_cars.cpp
     street_lights.cpp
     wetness.cpp         # rain soak/dry + ice + tire grip (wetness lane)

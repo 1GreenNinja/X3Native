@@ -497,6 +497,12 @@ constexpr float kTcPlugMaxCut = 24.0f;
 void deriveRoute(const RouteSeed& seed, TunnelRoute& route, TerrainCorridor& c) {
     route = TunnelRoute{};
     route.dirX = seed.dirX; route.dirZ = seed.dirZ;
+    // The route's own IDENTITY, carried per route — declared in the header for
+    // exactly this ("carrying them per route is what lets several coexist") and
+    // then never actually written, so every route reported centre (0,0)
+    // halfLen 0. Diagnostics that read them were silently reading defaults.
+    route.cx = seed.cx; route.cz = seed.cz;
+    route.halfLen = seed.halfLen;
     route.ox = seed.cx - seed.dirX * seed.halfLen;
     route.oz = seed.cz - seed.dirZ * seed.halfLen;
     route.totalLen = 2.0f * seed.halfLen;
@@ -868,10 +874,14 @@ const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
 
     routeStore().emplace_back();
     TunnelRoute& route = routeStore().back();
-    route.name = spec.name ? spec.name : "tunnel";
 
     TerrainCorridor c{};
     deriveRoute(seed, route, c);
+    // AFTER deriveRoute, not before: its first statement is `route = TunnelRoute{}`,
+    // so a name assigned above this line was wiped every time and every tunnel
+    // in the boot log was called ''. Which is why five misplaced tour bores
+    // could not name themselves.
+    route.name = spec.name ? spec.name : "tunnel";
 
     if (!registerTerrainCorridor(c)) {
         // Registry full (kMaxTerrainCorridors) — drop the half-built route rather
@@ -958,6 +968,98 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                 x3::phys::IPhysicsWorld& physics, const TunnelRoute& route,
                                 x3::rhi::TextureHandle groundTex) {
     if (route.st.size() < 2) return false;
+
+    // ---- THE FRAME EVERY PIECE OF DRESSING RIDES ON. -----------------------
+    // Defined HERE, at the top, for one reason: the tripwire below has to
+    // interrogate THIS function. A guard that re-derives the position from the
+    // route (rather than asking the thing the geometry actually uses) can only
+    // ever prove that the route agrees with itself, which is vacuous.
+    //
+    // THE FRAME FOLLOWS **THIS** ROUTE. This lambda used to read the file-scope
+    // demo constants — `kRouteCX + kRouteDirX * (-kRouteHalfLen + s)` — which is
+    // the tail end of the one-tunnel era the P1 note above describes. posAt(),
+    // worldAt() and tangentAt() were all moved onto the route's own polyline;
+    // this lambda was missed, and it is the one every piece of DRESSING goes
+    // through (ribbon, shell, portals, lights, fitout).
+    //
+    // The result, measured with the AABB log below and X3_OUTER_RING=1: the
+    // CUTTING geometry (which calls route.worldAt) landed correctly on each
+    // outer-tour chord 7 km out, while the ribbon/shell/portals landed on the
+    // DEMO axis over the spawn country — and the quads that joined the two were
+    // stretched across the gap. All five tour bores measured 3.1-7.1 km of X
+    // extent anchored at the demo spine's start corner (~-289, -476); that
+    // stretched sheet, seen from the spawn probe, is the "kilometre floating
+    // tunnel-shell tower + dark deck".
+    //
+    // posAt() is EXACTLY equivalent to the old expression for the demo route
+    // (its stations are laid `ox + dir*s` with ox = cx - dir*halfLen), so the
+    // demo bore is unchanged to the metre — and every other route now dresses
+    // itself where it actually is.
+    auto frameAt = [&](float s) {
+        Frame f{}; f.s = s;
+        route.posAt(s, f.p);
+        return f;
+    };
+
+    // ---- THE TRIPWIRE, before a single texture or vertex exists. -----------
+    // A missing tunnel is a defect you can drive past. A kilometre-scale shell
+    // standing over the spawn country is not. Both limits are CALIBRATED ON
+    // MEASUREMENT (X3_OUTER_RING=1 boot, the AABB log at the foot of this
+    // function, before the frameAt fix):
+    //
+    //   healthy demo bore   : dressing overhangs its own spine by ~8 m in XZ;
+    //                         built AABB 598 x 208 x 261 m
+    //   the five tour bores : dressing anchored on the DEMO axis instead of
+    //                         their own chords — 3.1 to 7.1 km of X extent
+    //
+    // 150 m of stray is ~19x the healthy overhang and a twentieth of the
+    // smallest failure, so nothing legitimate is near it. The vertical cap is
+    // the catch-all for a future defect that does not happen to displace the
+    // route laterally. NOTE the brief proposed 120 m there: the healthy demo
+    // bore MEASURES 208 m tall, because its backfill lid carries a real
+    // hillside over it, so 120 m would have skipped the one bore that works.
+    // 400 m is ~2x the measured healthy span.
+    {
+        constexpr float kBoreStrayMaxM  = 150.0f;
+        constexpr float kBoreHeightMaxM = 400.0f;
+        const char* nm = (route.name && route.name[0]) ? route.name : "(unnamed bore)";
+
+        float sxMin = 1e30f, sxMax = -1e30f, szMin = 1e30f, szMax = -1e30f;
+        for (const auto& st : route.st) {
+            sxMin = std::min(sxMin, st.x); sxMax = std::max(sxMax, st.x);
+            szMin = std::min(szMin, st.z); szMax = std::max(szMax, st.z);
+        }
+        float stray = 0.0f, datumMin = 1e30f, groundMax = -1e30f;
+        const float step = std::max(4.0f, route.totalLen / 512.0f);
+        for (float s = 0.0f; s <= route.totalLen + 0.01f; s += step) {
+            // frameAt, NOT posAt — see the note above. This is the only version
+            // of the question that can fail.
+            const Frame fr = frameAt(s);
+            const float* p = fr.p;
+            stray = std::max(stray, std::max(sxMin - p[0], p[0] - sxMax));
+            stray = std::max(stray, std::max(szMin - p[2], p[2] - szMax));
+            datumMin = std::min(datumMin, p[1]);
+            for (int k = -3; k <= 3; ++k) {
+                float qx = 0.0f, qz = 0.0f;
+                route.worldAt(s, (float)k * kTcCorridorHalfW / 3.0f, qx, qz);
+                groundMax = std::max(groundMax, tunnelNaturalHeightAt(qx, qz));
+            }
+        }
+        const float vSpan = groundMax - datumMin;
+        if (stray > kBoreStrayMaxM || vSpan > kBoreHeightMaxM) {
+            char tb[460];
+            std::snprintf(tb, sizeof(tb),
+                "tunnel corridor: REFUSING to dress bore '%s' — frame strays %.0f m from "
+                "its own spine (limit %.0f) / vertical span %.0f m (limit %.0f). Chord "
+                "centre (%.0f, %.0f) halfLen %.0f. Skipped: a missing tunnel you can "
+                "drive past, a floating shell over the country you cannot.",
+                nm, stray, kBoreStrayMaxM, vSpan, kBoreHeightMaxM,
+                route.cx, route.cz, route.halfLen);
+            x3::logError(tb);
+            return false;
+        }
+    }
+
     const float axis[3]  = { route.dirX, 0.0f, route.dirZ };
     const float right[3] = { -route.dirZ, 0.0f, route.dirX };
 
@@ -1045,8 +1147,21 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         x3::logWarn("tunnel corridor: surface_library set(s) unavailable — "
                     "falling back to the procedural checker concrete/asphalt");
 
+    // ---- THE BUILT-GEOMETRY AABB. Measured, not assumed: every mesh this
+    // build uploads is folded into one box, and the box is logged with the
+    // route's name at the end. It is the cheapest possible answer to "where did
+    // this bore actually put itself", and it is what convicted the frameAt
+    // defect below (an outer-tour bore whose meshes landed on the DEMO axis,
+    // kilometres from its own chord, with a Y extent to match).
+    float gMin[3] = {  1e30f,  1e30f,  1e30f };
+    float gMax[3] = { -1e30f, -1e30f, -1e30f };
     auto upload = [&](MeshBuf& mb, const Material& mat, bool collide) {
         if (mb.empty()) return;
+        for (const auto& v : mb.v)
+            for (int k = 0; k < 3; ++k) {
+                if (v.pos[k] < gMin[k]) gMin[k] = v.pos[k];
+                if (v.pos[k] > gMax[k]) gMax[k] = v.pos[k];
+            }
         fixWinding(mb);
         Entity e;
         e.mesh = device.createMesh(mb.v.data(), (uint32_t)mb.v.size(),
@@ -1072,14 +1187,6 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
     };
 
     // ---- Frames along the whole route (2 m), and the bore sub-range. --------
-    auto frameAt = [&](float s) {
-        Frame f{}; f.s = s;
-        const float sc = -kRouteHalfLen + s;
-        f.p[0] = kRouteCX + kRouteDirX * sc;
-        f.p[2] = kRouteCZ + kRouteDirZ * sc;
-        f.p[1] = route.roadYAt(s);
-        return f;
-    };
     std::vector<Frame> roadFrames;
     for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 4.0f) roadFrames.push_back(frameAt(s));
 
@@ -1100,7 +1207,13 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // which is far more than depth precision needs at this range. Dropping
         // it to a hair leaves the markings proud of the slab and takes the step
         // down to ~0.74 ft — a kerb, which is what a road edge should look like.
-        constexpr float kSlabProud = 0.02f;
+        // 0.02 -> 0.07 (Tim's seam screenshot): adjacent terrain tiles can
+        // disagree about the carve by a few cm at their border, and at 0.02
+        // proud the loser knifes grass up through the pavement in a diagonal
+        // line. 7 cm is invisible at driving height and above any measured
+        // border disagreement. The REAL fix is border-consistent carving in
+        // the streamer (tile-seam class, docs/ENGINE_GOTCHAS.md).
+        constexpr float kSlabProud = 0.07f;
         MeshBuf mb;
         const float up[3] = { 0.0f, 1.0f, 0.0f };
         auto P = [&](const Frame& f, float r, float u, float out[3]) {
@@ -2876,6 +2989,19 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 worstLid, worstLidS, buried, worstRoad, worstRoadS);
             if (worstLid < 0.0f || buried > 0.0f) x3::logError(cb); else x3::logInfo(cb);
         }
+    }
+
+    // ---- WHERE DID THIS BORE ACTUALLY LAND? One line, every bore, always. ----
+    if (gMax[1] >= gMin[1]) {
+        char ab[420];
+        std::snprintf(ab, sizeof(ab),
+            "tunnel corridor AABB '%s': x[%.1f..%.1f] y[%.1f..%.1f] z[%.1f..%.1f] "
+            "| extent %.1f x %.1f x %.1f m | chord centre (%.1f, %.1f) halfLen %.1f",
+            route.name ? route.name : "(unnamed)",
+            gMin[0], gMax[0], gMin[1], gMax[1], gMin[2], gMax[2],
+            gMax[0] - gMin[0], gMax[1] - gMin[1], gMax[2] - gMin[2],
+            route.cx, route.cz, route.halfLen);
+        x3::logInfo(ab);
     }
 
     physics.optimizeBroadphase();

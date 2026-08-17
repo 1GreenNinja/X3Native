@@ -5,6 +5,7 @@
 
 #include "vehicle.h"
 #include "carspec.h"        // CarSpec — the per-car variables this build applies
+#include "terrain.h"        // THE CONTACT LAW: wheels never under the height field
 
 #include "engine/core/x3_log.h"
 
@@ -110,8 +111,11 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // which is what keeps two days of tuning-by-ear safe from this feature.
     float hx = m_hx, hy = m_hy, hz = m_hz;
     float massKg   = 1083.2f;
-    float comOffY  = -0.30f;
-    float gripPow  = 10.0f, gripFree = 8.0f;
+    float comOffY  = -0.45f;   // their measured anti-tip figure; see the receipt below
+    // Tyre-compound multiplier over the contact-patch spec set on each wheel
+    // below. 1.0 == the hero car's compound, so no spec leaves their measured
+    // 1.6 / 1.60 / 1.50 untouched.
+    float gripCompound = 1.0f;
     float brakeNm  = 2200.0f;
     float suspFreq = 2.2f, suspDamp = 0.7f;
     if (spec) {
@@ -132,21 +136,36 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
         // cars.json's comHeight for a lorry or a single-seater.
         const float boxCentreH = 0.76f + (hy - 0.50f);
         comOffY = spec->comHeight - boxCentreH;
-        // The wheel gripScale baseline is a MULTIPLE of the spec's tyre figure,
-        // not the figure itself: the shipped car runs 10.0/8.0 against a
-        // cars.json gripScale of 1.7, and that ratio is the sports-compound
-        // baseline the whole lane was tuned against.
-        const float g = spec->gripScale / 1.7f;
-        gripPow = 10.0f * g; gripFree = 8.0f * g;
+        // Tyre compound RELATIVE to the hero car's 1.7, so the CTR resolves to
+        // 1.0 and leaves the measured contact-patch numbers exactly as tuned.
+        gripCompound = spec->gripScale / 1.7f;
         brakeNm = spec->brakeTorque;
         suspFreq = spec->suspFreq; suspDamp = spec->suspDamp;
     }
 
     // --- Chassis dynamic body (a box). Layer Dynamic. ---
-    // CENTER OF MASS dropped 0.30 m below the box center (new addBox param).
-    // CoM height above ground goes 0.76 -> 0.46 m against a 0.677 m half-track,
-    // lifting the rollover threshold from ~42 deg to ~56 — a real sports-car
-    // number. This is what stops "the car still rolls" without touching grip.
+    // CENTER OF MASS dropped 0.45 m below the box center (was 0.30). CoM height
+    // above ground: 0.76 - 0.45 = 0.31 m against a 0.83 m mean half-track
+    // (0.677/0.723 stations x kBodyWiden), so the static tip threshold is
+    // 0.83/0.31 = ~2.7 g of lateral acceleration. THE PAIRED NUMBER: the
+    // lateral tire grip below peaks ~1.9 g, a ~40% margin — MEASURED
+    // necessary: at -0.40 (threshold 2.3, margin 20%) the skidpad's full-lock
+    // turn-in transient still dynamically rolled the car onto the 60-deg
+    // limiter; the static balance holds only if the entry transient (roll
+    // overshoot + suspension compliance) fits inside the margin.
+    // Owner receipt 2026-08-16: "The car wants to tip up on two wheels even
+    // trying to make ANY curve at speed" — mass fell 1300 -> 1083 kg (992
+    // spec) while effective lateral grip (1.55 g, see the friction-combine
+    // receipt below) sat nearly AT the old 1.76 g threshold, so every hard
+    // corner danced on the tip line. Fix = this + the lateral grip cap below.
+    // 0.31 m is slot-car low, and invisible: the render skin never reads CoM.
+    //
+    // MERGE 2026-08-16 (carspec lane): the -0.45 above is a MEASURED result
+    // against a real owner receipt, so it stays as the default and the CTR row
+    // of the per-car table was re-baselined to it (comHeight 0.31, not the
+    // 0.46 this lane shipped). The spec path only REPLACES it for a car that
+    // has its own figure — a lorry's centre of mass does not belong at 0.31 m,
+    // and the whole point of the table is that it no longer has to.
     m_chassis = physics.addBox(x3::phys::Vec3{hx, hy, hz},
                                x3::phys::Vec3{x, y, z}, massKg, x3::phys::Layer::Dynamic,
                                x3::phys::Vec3{0.0f, comOffY, 0.0f});
@@ -195,15 +214,63 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
         // Tim: "The car does NOT feel fast". Grip has to scale with the power or
         // the power is thrown away. Rears get more than fronts (they are the
         // driven axle and carry a rear-engined car's weight).
-        // Grip high enough that 800 Nm AWD hooks up at full throttle, so the
-        // launch control has nothing to trim and the car accelerates HARD.
-        // Rears carry more of a rear-engined car's weight. Live-tune: `car_grip`.
-        w.gripScale = p[i].powered ? gripPow : gripFree;
+        // HONEST NUMBERS (2026-08-16). The old value here was 10, and the whole
+        // 1.7 -> 3.4 -> 10 escalation above was unknowingly compensating for a
+        // hidden sqrt: Jolt combines tire friction with the GROUND BODY's
+        // friction (default 0.2, never set anywhere in the engine) as
+        // sqrt(tire * 0.2) — authored 10 was 1.55 mu at the contact patch,
+        // measured via X3_VEHDBG (see the combine-friction fix in
+        // JoltVehicle.cpp build()). With the combine normalized, these curves
+        // ARE the contact-patch spec:
+        //  * LONGITUDINAL 1.6 (peak 1.92 mu): the launch. Slightly ABOVE the
+        //    old effective 1.55, so 800 Nm x1.7-turbo AWD hooks up exactly as
+        //    tuned and the drag numbers hold (0-60 ~3.1 s, measured).
+        //  * LATERAL 1.60 front / 1.50 rear (peak 1.92/1.80 mu): bounded ABOVE
+        //    by rollover. Tip threshold is ~2.3 g (the CoM comment at addBox —
+        //    PAIRED, retune together); peak cornering ~1.9 g stays under it,
+        //    so the car corners FLAT at its limit instead of lifting the
+        //    inside wheels (owner: "wants to tip up on two wheels" — the old
+        //    effective 1.55 g lateral against a 1.76 g threshold at the old
+        //    CoM was exactly that marginal). 1.9 g is still far beyond a real
+        //    992's ~1.1 — NFS-grade mid-corner grip.
+        //  * FRONT > REAR (turn-in balance): the nose bites the instant you
+        //    steer, and at the limit the REAR lets go first — progressively
+        //    (Jolt's lateral curve tapers 1.2 -> 1.0 past the peak, not a
+        //    cliff), so power-over is a catchable slide, not a snap.
+        // Live-tune: `car_grip`/`car_gripf`/`car_gripr` (multipliers over
+        // these), `car_latgrip` (lateral-only master), `car_lattail`
+        // (breakaway shape) — help text carries these stock numbers, NO_SLOP
+        // rule 4: change together.
+        //
+        // MERGE 2026-08-16 (carspec lane): these are the CONTACT-PATCH spec now,
+        // on a scale the friction-combine fix normalized. The per-car table's
+        // gripScale is a TYRE-COMPOUND multiplier (the CTR's 1.7 is its unit),
+        // so it multiplies these rather than replacing them — the hero car
+        // lands on exactly 1.6 / 1.60 / 1.50 and a lorry on 1.0/1.7 of it.
+        // Rebasing it this way matters: this lane's old 10.0/8.0 figures were
+        // the pre-normalization scale, and carrying them across would have
+        // undone the whole sqrt(tire * 0.2) discovery.
+        w.gripScale        = 1.6f * gripCompound;
+        w.lateralGripScale = (p[i].steer ? 1.60f : 1.50f) * gripCompound;
         m_wheels.push_back(w);
     }
     x3::phys::WheeledVehicleDesc vd;
     vd.chassis = m_chassis;
     vd.wheels = m_wheels.data(); vd.wheelCount = (uint32_t)m_wheels.size();
+    // ANTI-ROLL BARS (2026-08-16, the "tips up on two wheels" fix, part 3).
+    // Couples each axle's left/right suspension so the body stays FLAT in a
+    // corner — NFS cars do not lean. MEASURED STABILITY CEILING (skidpad,
+    // 60 Hz fixed step): 5k and 10k N/m are stable (max roll 0.10 / 0.05 deg
+    // at 1.43 g); 15k and up the discrete solver pumps the roll mode until
+    // the car flips onto Jolt's 60-deg limiter — at ANY grip. Stay well under
+    // 12000. 8k/6k is dead flat with margin. FRONT STIFFER than rear: the
+    // stiff end saturates its outside tire first, so front-stiff = a stable,
+    // plant-the-nose balance that resists snap oversteer without killing the
+    // throttle-on slide (the lateral grip split above still lets the rear go
+    // first under power). Live: `car_arb_f` / `car_arb_r` (help text carries
+    // these numbers AND the ceiling — NO_SLOP rule 4).
+    vd.antiRollFront = 8000.0f;
+    vd.antiRollRear  = 6000.0f;
     // TRIPLED (Tim, 2026-08-14: "the car feels HEAVY... it should accelerate
     // nicely" -> "triple the Hp/tq"). 700 -> 2100 Nm. The powerband/shift-point
     // fix is already live on this lane, so the extra torque lands ON the curve
@@ -276,13 +343,20 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     vd.curveRpm[5]=0.85f; vd.curveTq[5]=0.94f;
     vd.curveRpm[6]=1.00f; vd.curveTq[6]=0.78f;   // sign-off
     vd.curveCount = 7;
-    vd.finalDrive = 4.2f;
+    // 4.2 -> 4.6 (2026-08-16, "MORE acceleration"). The 4.2/993-ratio stack
+    // topped out ~168 mph — but the aero drag (kAeroDrag 1.4, JoltVehicle.cpp)
+    // caps the car near 160 anyway, so the last 8 mph of gearing were pure
+    // paper. 4.6 trades them for ~10% more wheel torque in EVERY gear — the
+    // whole car punches harder everywhere you actually drive it. 1st now
+    // redlines ~40 mph, 6th ~153. Live-tune: `car_final` (dial back toward
+    // 4.2 if the top end matters more than the punch).
+    vd.finalDrive = 4.6f;
     // ---- THE PER-CAR ENGINE, applied LAST so it wins. -------------------
     // Deliberately additive rather than a rewrite of the block above: the
     // hero car's tuning history (and every comment recording WHY each number
-    // is what it is) stays exactly where it was, and this lane does not
-    // collide with the vehicle-feel work landing on the same lines from the
-    // 14900k. No spec -> not one byte of the above changes.
+    // is what it is) stays exactly where it was. No spec -> not one byte of
+    // the above changes, which is what let this lane and the vehicle-feel
+    // lane land on the same function without either losing its receipts.
     if (spec) spec->applyTo(vd);
     // Wheel rays filter on Dynamic (the chassis layer): Jolt's vehicle object filter
     // is the COLLISION MATRIX, and Dynamic-vs-Static collides, so a Dynamic-masked
@@ -445,20 +519,30 @@ void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
     // box holds the gear, and the engine sits at redline — the "high<->low rpm
     // swing". Hold slip just under 10% so the wheels hook up and the box can
     // shift: a light trim, NOT the old 0.15-floor cut that caused "lead weights".
-    if (m_tcEnabled && eff.throttle > 0.0f) {
+    if ((m_tcEnabled || m_climbMode) && eff.throttle > 0.0f) {
         float slip = 0.0f;
         for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i)
             slip = std::max(slip, m_ctl->longitudinalSlip(i));
-        constexpr float kSlipTarget = 0.07f;   // just under Jolt's 0.10 upshift gate
-        constexpr float kSlipGain   = 1.5f;
-        if (slip > 0.10f)      m_tcCutting = true;
-        else if (slip < 0.04f) m_tcCutting = false;
+        // CLIMB MODE runs the same controller with crawl numbers. On a steep
+        // grade the failure is not "not enough torque", it is all four wheels
+        // spun deep into the friction plateau where grip FALLS — Tim's
+        // screenshot of the smoke ladder up the rock face is exactly that. A
+        // crawl holds slip AT the friction peak and is allowed to trim the
+        // throttle almost to nothing, because at 5 mph up a wall, almost
+        // nothing is precisely how much throttle the tires can use.
+        const float slipTarget = m_climbMode ? 0.05f : 0.07f;
+        const float slipGain   = m_climbMode ? 6.0f  : 1.5f;
+        const float trimFloor  = m_climbMode ? 0.06f : 0.35f;
+        const float cutOn      = m_climbMode ? 0.06f : 0.10f;
+        const float cutOff     = m_climbMode ? 0.03f : 0.04f;
+        if (slip > cutOn)       m_tcCutting = true;
+        else if (slip < cutOff) m_tcCutting = false;
         // Smooth the trim so the throttle GLIDES instead of snapping. The snap is
         // what the audio layers track as a "shift" (whine/turbo ride throttle),
         // and the cut/restore oscillation is the residual "Wahh". Cut fast,
         // restore slow — the asymmetry is the anti-oscillation.
         const float target = m_tcCutting
-            ? std::clamp(1.0f - kSlipGain * (slip - kSlipTarget), 0.35f, 1.0f)
+            ? std::clamp(1.0f - slipGain * (slip - slipTarget), trimFloor, 1.0f)
             : 1.0f;
         const float rate = (target < m_tcTrim) ? 0.25f : 0.08f;
         m_tcTrim += (target - m_tcTrim) * rate;
@@ -469,7 +553,39 @@ void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
     // it kept whatever value it last had. The engine audio reads it as "load",
     // so the note stayed pinned at the last trimmed value while coasting.
     m_effThrottle = eff.throttle;
+    // Stored for preStep, which SHAPES the steering (speed map + slew — needs
+    // dt, which setInput doesn't have) and pushes the final input to Jolt.
+    // The raw push below is kept so any setInput-without-preStep caller (none
+    // in-tree today) still drives with yesterday's behavior instead of nothing.
+    m_effIn = eff;
     m_ctl->setInput(eff);
+}
+
+// ---------------------------------------------------------------------------
+// NFS STEERING SHAPING — see SteerParams in vehicle.h for the full story.
+// Runs in preStep because slew needs dt (dt-scaled or nothing — the HARD rule).
+// Order matters: this pushes the FINAL input to Jolt, overriding the unshaped
+// push in setInput, and must run before m_ctl->preStep hands input to the
+// constraint for this physics step.
+// ---------------------------------------------------------------------------
+void DriveDemo::shapeSteering(float dt) {
+    if (!m_ctl || dt <= 0.0f) return;
+    const SteerParams& sp = m_steerP;
+    const float mph = std::fabs(m_ctl->forwardSpeed()) * 2.23694f;
+    // 1) SPEED MAP: fraction of full lock available at this speed.
+    float frac = 1.0f;
+    if (sp.hiSpeedMph > sp.fullLockMph + 1.0f) {
+        const float t = std::clamp((mph - sp.fullLockMph) /
+                                   (sp.hiSpeedMph - sp.fullLockMph), 0.0f, 1.0f);
+        frac = 1.0f + (sp.hiFrac - 1.0f) * t;
+    }
+    const float target = std::clamp(m_effIn.steer, -1.0f, 1.0f) * frac;
+    // 2) SLEW toward the target at slewPerSec full-lock units per second.
+    const float maxStep = std::max(0.0f, sp.slewPerSec) * dt;
+    m_steerNow += std::clamp(target - m_steerNow, -maxStep, maxStep);
+    x3::phys::VehicleInput shaped = m_effIn;
+    shaped.steer = m_steerNow;
+    m_ctl->setInput(shaped);
 }
 
 // ---------------------------------------------------------------------------
@@ -483,9 +599,10 @@ void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
 // has not yet given it, and the shove when it arrives.
 //
 // So the curve stays as the full-boost delivery and this supplies the lag. The
-// torque multiplier runs from floorTorque (off boost) to 1.0 (on boost) as
-// manifold pressure builds, which means peak power and the tuned curve shape
-// are both unchanged — the difference is entirely in WHEN you get them.
+// torque multiplier tracks ABSOLUTE manifold pressure (the pressure-ratio
+// formula below — off boost is naturally-aspirated half power, full boost
+// x1.70), which means peak power and the tuned curve shape are both
+// unchanged — the difference is entirely in WHEN you get them.
 //
 // Asymmetric time constants, because a turbo is asymmetric: the compressor has
 // inertia and takes ~0.45 s to come up, but lift and the wastegate and the
@@ -524,12 +641,23 @@ void DriveDemo::updateTurbo(float dt) {
     const float tau = (target > m_boostPsi) ? tp.spoolTau : tp.dumpTau;
     m_boostPsi += (target - m_boostPsi) * (1.0f - std::exp(-dt / std::max(0.01f, tau)));
 
-    const float frac = std::clamp(m_boostPsi / std::max(0.01f, tp.maxPsi), 0.0f, 1.0f);
-    m_turboMult = tp.floorTorque + (1.0f - tp.floorTorque) * frac;
+    // PRESSURE-RATIO TORQUE (Tim: "47.6 HP up PER PSI" — the 992 Turbo S's own
+    // ratio, 701 hp / 14.7 psi). An engine is an air pump: torque tracks
+    // ABSOLUTE manifold pressure, so the multiplier is (atmosphere + boost)
+    // over the calibration pressure the authored curve represents (stock 992
+    // boost, ~14.5 psi over atmosphere). Everything falls out of one formula:
+    //   35 psi  -> x1.70  (~1,670 hp — the drag build he asked for)
+    //   14.5    -> x1.00  (the authored curve, stock)
+    //    0      -> x0.50  (off boost = naturally aspirated half-power;
+    //                      replaces the old ad-hoc floorTorque 0.60)
+    //   -8.5    -> x0.21  (deep vacuum — engine braking territory)
+    constexpr float kAtmPsi = 14.7f;
+    constexpr float kRefBoostPsi = 14.5f;   // boost the torque curve is calibrated at
+    m_turboMult = std::max(0.05f, (kAtmPsi + m_boostPsi) / (kAtmPsi + kRefBoostPsi));
     m_ctl->setTorqueBoost(m_userTorqueMult * m_turboMult);
 }
 
-void DriveDemo::preStep(float dt)  { updateTurbo(dt); updateEngineModel(dt); if (m_ctl) m_ctl->preStep(dt); }
+void DriveDemo::preStep(float dt)  { shapeSteering(dt); updateTurbo(dt); updateEngineModel(dt); if (m_ctl) m_ctl->preStep(dt); }
 
 // REAL ENGINE MODEL. The engine RPM is its own state, not Jolt's road-speed-
 // locked value. Idles ~800, is pulled toward the locked (wheel-speed) RPM when
@@ -543,7 +671,153 @@ void DriveDemo::updateEngineModel(float dt) {
     m_engineRpm += (target - m_engineRpm) * (1.0f - std::exp(-dt / tau));
     if (m_engineRpm < kIdle) m_engineRpm = kIdle;
 }
-void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
+void DriveDemo::postStep(float dt) {
+    if (m_ctl) m_ctl->postStep(dt);
+    updateTireSquash(dt);
+    // ---- THE CONTACT LAW (NO_SLOP.md rule 11): "no tires, and no Boots and
+    // no feet can EVER be underground." Enforced HERE, once, for every world
+    // that drives this car. If any wheel's contact point sits beyond-
+    // suspension-deep below the carved terrain field, the car is lifted back
+    // onto it and its downward velocity cleared. Corridors carve the field
+    // itself, so bores/underpasses are safe — the law only ever pushes UP.
+    // ...AND ONLY IN A WORLD WHOSE GROUND ACTUALLY IS THE TERRAIN.
+    //
+    // terrainHeightAtWorld() is PROCEDURAL: it answers for any (x,z) whether or
+    // not terrain is what you are standing on. The law was applied to every
+    // world that drives this car, but the drive/skidpad harnesses, the shop
+    // floor and the showroom slab are all flat colliders sitting wherever the
+    // analytic field happens to be metres away — so the law read them as buried
+    // and teleported the car upward every frame. Gating on wheel contact alone
+    // was not enough either: a drop test and a hard corner both leave wheels
+    // legitimately airborne, and the law fired the instant they did (measured:
+    // 12/6 ungated, 13/5 with a contact gate, 18/0 with this).
+    // Terrain hosts opt IN; a bare DriveDemo does not get it.
+    if (m_terrainContactLaw && m_ctl && m_physics && m_chassis.valid()) {
+        float worst = 0.0f;
+        for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i) {
+            x3::phys::WheelState ws;
+            if (!m_ctl->wheelState(i, ws)) continue;
+            // A WHEEL THAT IS TOUCHING SOMETHING IS NOT BURIED.
+            //
+            // The law originally compared every wheel against the ANALYTIC
+            // height field regardless of what it was standing on, and the
+            // field is evaluated procedurally — it answers everywhere, whether
+            // or not terrain is the ground there. So on any world whose floor
+            // is not the terrain (the headless slab the drive/skidpad tests
+            // build, a shop floor, a deck) the field reported the car metres
+            // "buried" while it sat perfectly on a collider, and the law
+            // teleported it upward EVERY FRAME. Measured: --test-vehicle drive
+            // 12/6 with the check ungated, 18/0 with it gated — six failures,
+            // all of them this, including plain "wheels kept ground contact".
+            //
+            // Physics contact is authoritative. The case the law exists for —
+            // a wheel that has fallen THROUGH geometry, or sits under a field
+            // that has not streamed a collider yet — is exactly the case where
+            // the wheel is touching nothing, so gating on that keeps every bit
+            // of the protection and stops it fighting legitimate ground.
+            if (ws.hasContact) continue;
+            const float wx = ws.worldTransform[12], wy = ws.worldTransform[13],
+                        wz = ws.worldTransform[14];
+            const float burial = x3::game::terrainHeightAtWorld(wx, wz) - (wy - ws.radius);
+            if (burial > worst) worst = burial;
+        }
+        if (worst > 0.55f) {
+            x3::phys::Vec3 cp = m_physics->getBodyPosition(m_chassis);
+            cp.y += worst + 0.10f;
+            m_physics->setBodyPosition(m_chassis, cp);
+            float lv[3]; m_physics->getBodyLinearVelocity(m_chassis, lv);
+            if (lv[1] < 0.0f) { lv[1] = 0.0f; m_physics->setBodyLinearVelocity(m_chassis, lv); }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TIRE SQUASH (render-only). Owner: "when Landing hard on pavement, the
+// RUBBER TIRES should deflect visually, a tiny bit." This is deliberately
+// NOT a physics change — Jolt's wheel is a rigid cylinder and stays one;
+// WheeledTuning / the suspension the DS-Vehicle session owns is never
+// touched. All this does is watch WheelState.suspensionLength (already
+// exposed by IVehicleController::wheelState) for a fast compression toward
+// the suspension's min length — a hard hit — and hand render() a small,
+// short-lived per-wheel scale to draw with.
+//
+// DETECTION: compressRate = how fast suspensionLength is SHRINKING (m/s),
+// i.e. the wheel travelling toward mSuspensionMinLength (see JoltVehicle.cpp
+// WheelState::suspensionLength — Jolt's live, per-step raycast-derived
+// value). Normalized against THIS wheel's own authored suspension travel
+// (m_wheels[slot].suspensionMax - suspensionMin) so the same "how many
+// travel-lengths per second" threshold works whether the car is stock or
+// has been lowered/raised (car_ride) or given stiffer/softer springs —
+// travel is read once at build time, so a live car_ride retune does not
+// reach in here (kept deliberately independent of WheeledTuning, per spec).
+//
+// RESPONSE: a peak-hold "kick" (never stomps a bigger hit already recovering)
+// relaxed to 0 by a CRITICALLY DAMPED spring (no overshoot / no bounce-back
+// wobble — a real tire does not oscillate after a hit) over roughly a quarter
+// second. squashFactors() turns the current amount into the actual render
+// scale (~4-8% radial shrink, ~2-3% width bulge), gated by the tire_squash
+// cvar (see DriveDemo::setTireSquash / host_tunnel.cpp's `tire_squash`).
+// ---------------------------------------------------------------------------
+void DriveDemo::updateTireSquash(float dt) {
+    if (!m_ctl || dt <= 0.0f) return;
+    const uint32_t n = std::min<uint32_t>(m_ctl->wheelCount(), 4u);
+    for (uint32_t s = 0; s < n; ++s) {
+        x3::phys::WheelState ws;
+        WheelSquash& sq = m_squash[s];
+        if (m_ctl->wheelState(s, ws)) {
+            if (sq.havePrev && ws.hasContact) {
+                // + = suspension SHORTENING (compressing toward min == a hit).
+                const float compressRate = (sq.prevSuspLen - ws.suspensionLength) / dt;
+                const float travel = (s < m_wheels.size())
+                    ? std::max(0.05f, m_wheels[s].suspensionMax - m_wheels[s].suspensionMin)
+                    : 0.25f;
+                // A hard landing eats most of the travel in well under 1/6 s;
+                // ordinary road bumps/compression from throttle squat do not.
+                // 6 travel-lengths/sec is the "hard" line; kSpikeSoftKnee gives
+                // a little runway above it before the effect reaches full
+                // strength, instead of a hard on/off snap at the threshold.
+                constexpr float kSpikeTravelPerSec = 6.0f;
+                constexpr float kSpikeSoftKnee      = 4.0f;  // travel-lengths/sec of runway to full strength
+                const float spikeRate = travel * kSpikeTravelPerSec;
+                if (compressRate > spikeRate) {
+                    const float over = (compressRate - spikeRate) / (travel * kSpikeSoftKnee);
+                    const float kick = std::clamp(over, 0.0f, 1.0f);
+                    sq.squash = std::max(sq.squash, kick);   // peak-hold
+                }
+            }
+            sq.prevSuspLen = ws.suspensionLength;
+            sq.havePrev = true;
+        }
+
+        // Critically-damped relax toward 0 (exact closed form for a "kick from
+        // rest" critically damped spring — monotonic, no overshoot). omega=20
+        // settles a full-strength kick under ~2% within ~0.3 s, i.e. the "~0.25 s"
+        // the spec asks for.
+        if (sq.squash > 0.0f || sq.squashVel != 0.0f) {
+            constexpr float omega = 20.0f;
+            const float x = sq.squash, v = sq.squashVel;
+            const float e = std::exp(-omega * dt);
+            sq.squash    = (x + (v + omega * x) * dt) * e;
+            sq.squashVel = (v - omega * (v + omega * x) * dt) * e;
+            if (sq.squash < 0.001f) { sq.squash = 0.0f; sq.squashVel = 0.0f; }
+        }
+    }
+}
+
+// Per-wheel render scale for THIS frame: outSquashY [0,1) radial shrink (the
+// tire flattening — see WheeledController::wheelState in JoltVehicle.cpp:
+// worldTransform columns 0/2 carry the wheel's RADIUS, column 1 the WIDTH),
+// outBulge width growth. Both 0 when not squashing — render() then draws the
+// untouched WheelState transform, byte-identical to before this feature.
+void DriveDemo::squashFactors(int slot, float& outSquashY, float& outBulge) const {
+    outSquashY = 0.0f; outBulge = 0.0f;
+    if (slot < 0 || slot >= 4) return;
+    const float amt = std::clamp(m_squash[slot].squash * m_tireSquash, 0.0f, 1.0f);
+    if (amt <= 0.0f) return;
+    // 4-8% radial shrink, 2-3% width bulge, ramped by the squash amount.
+    outSquashY = 0.04f + 0.04f * amt;
+    outBulge   = 0.02f + 0.01f * amt;
+}
 
 void DriveDemo::chassisPos(float out[3]) const {
     x3::phys::Vec3 p = m_physics ? m_physics->getBodyPosition(m_chassis) : x3::phys::Vec3{};
@@ -578,6 +852,19 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
                 const float len = std::sqrt(col[0]*col[0] + col[1]*col[1] + col[2]*col[2]);
                 if (len > 1e-5f) { col[0] /= len; col[1] /= len; col[2] /= len; }
             }
+            // TIRE SQUASH (render-only; see updateTireSquash/squashFactors).
+            // Columns 0/2 are the wheel's radius directions (the vertical
+            // rolling-plane), column 1 is the width/axle direction — shrink
+            // the former, bulge the latter, same as the graybox path below.
+            // Ground-anchored: drop the pose along WORLD +Y by radius*squashY
+            // so the tire's BOTTOM stays put and the hub visibly sinks toward
+            // it, rather than the tire lifting off the road.
+            float squashY, bulge; squashFactors(s, squashY, bulge);
+            if (squashY > 0.0f) {
+                for (int c : {0, 2}) { float* col = &P[c*4]; col[0]*=(1.0f-squashY); col[1]*=(1.0f-squashY); col[2]*=(1.0f-squashY); }
+                { float* col = &P[4]; col[0]*=(1.0f+bulge); col[1]*=(1.0f+bulge); col[2]*=(1.0f+bulge); }
+                P[13] -= ws.radius * squashY;
+            }
             for (const auto& d : m_wheelDraw[s]) {
                 x3::asset::mulMat4(P, d.nodeTransform, fin);   // nodeTransform = axisFix * authored scale
                 drawDrawable(frame, d, fin);
@@ -597,7 +884,24 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     for (uint32_t i = 0; i < n; ++i) {
         x3::phys::WheelState ws;
         if (!m_ctl->wheelState(i, ws)) continue;
-        m_device->drawMesh(frame, m_wheelMesh, m_wheelTex, wheelCol, ws.worldTransform);
+        // TIRE SQUASH (render-only; see updateTireSquash/squashFactors). The
+        // wheel mesh is a unit Y-cylinder baked into world space by wheelState
+        // (col0=right*r, col1=up*halfWidth [the axle], col2=forward*r — see
+        // WheeledController::wheelState in JoltVehicle.cpp), so shrinking
+        // columns 0/2 flattens the tire's rolling-plane radius and growing
+        // column 1 bulges its width — then drop the pose along WORLD +Y by
+        // radius*squashY so the tire's ground contact stays put (the hub
+        // sinks toward the road, the tire never lifts off it).
+        float squashY, bulge; squashFactors((int)i, squashY, bulge);
+        if (squashY <= 0.0f) {
+            m_device->drawMesh(frame, m_wheelMesh, m_wheelTex, wheelCol, ws.worldTransform);
+        } else {
+            float T[16]; std::memcpy(T, ws.worldTransform, sizeof(T));
+            for (int c : {0, 2}) { float* col = &T[c*4]; col[0]*=(1.0f-squashY); col[1]*=(1.0f-squashY); col[2]*=(1.0f-squashY); }
+            { float* col = &T[4]; col[0]*=(1.0f+bulge); col[1]*=(1.0f+bulge); col[2]*=(1.0f+bulge); }
+            T[13] -= ws.radius * squashY;
+            m_device->drawMesh(frame, m_wheelMesh, m_wheelTex, wheelCol, T);
+        }
     }
 }
 
@@ -667,16 +971,50 @@ bool runDriveEnterExitSelfTest() {
 
     // Full throttle for 600 fixed ticks (10 s) — long enough for the turbo to
     // spool up and the car to run through the gears to its top end.
+    // ACCELERATION TELEMETRY (2026-08-16, "MORE acceleration"): 0-60 and 0-100
+    // TIMES, measured, not vibed (NO_SLOP rule 9) — the numbers the owner's
+    // seat-of-pants impression is calibrated against. Also the peak launch
+    // slip over the first 2 s: the launch is right when the driven wheels sit
+    // NEAR Jolt's friction peak (slip ~0.06), not deep in the plateau (smoke).
+    float t060 = -1.0f, t0100 = -1.0f, launchPeakSlip = 0.0f;
+    constexpr float kMps60  = 26.822f;   // 60 mph
+    constexpr float kMps100 = 44.704f;   // 100 mph
     for (int i = 0; i < 600; ++i) {
         x3::phys::VehicleInput in{};
         in.throttle = 1.0f;
         car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+        const float t = (i + 1) * dt;
+        const float v = car.forwardSpeed();
+        // Slip ratio is meaningless while v ~ 0 (the denominator), so the
+        // launch metric only samples once the car is genuinely rolling.
+        if (t <= 2.0f && v > 3.0f) launchPeakSlip = std::max(launchPeakSlip, car.maxSlip());
+        if (t060  < 0.0f && v >= kMps60)  t060  = t;
+        if (t0100 < 0.0f && v >= kMps100) t0100 = t;
         if ((i % 60) == 59)
+            // rpmLocked (wheel-side) vs rpm (crank) = live CLUTCH SLIP, and
+            // driveF = the solver's actual longitudinal force — the two
+            // instruments for "something invisible caps drive force at
+            // speed" (owner: nitrous moved 121 -> 123 mph and plateaued).
+            // If driveF collapses while rpm and throttle stay high, the cap
+            // is between crank and contact patch and these numbers name it.
             x3::logInfo("[drive-test] t=" + std::to_string((i + 1) * dt) + "s v=" +
                         std::to_string(car.forwardSpeed()) + " rpm=" + std::to_string(car.engineRPM()) +
+                        " rpmLocked=" + std::to_string(car.controller()->lockedRPM()) +
                         " gear=" + std::to_string(car.gear()) + " thr=" +
-                        std::to_string(car.effectiveThrottle()));
+                        std::to_string(car.effectiveThrottle()) +
+                        " driveF=" + std::to_string(car.controller()->driveForce()) + " N");
     }
+    x3::logInfo("[drive-test] ACCEL: 0-60 mph " +
+                (t060  >= 0.0f ? std::to_string(t060)  + " s" : std::string("NOT REACHED")) +
+                ", 0-100 mph " +
+                (t0100 >= 0.0f ? std::to_string(t0100) + " s" : std::string("NOT REACHED")) +
+                ", launch peak slip " + std::to_string(launchPeakSlip) +
+                " (friction peak ~0.06)");
+    // Gates are LOOSE on purpose: the point is the printed number (the owner's
+    // target is low-3s to 60), the gate only catches a regression back to the
+    // "does NOT feel fast" era. 60 mph in under 5 s and 100 in the 10 s window.
+    check(t060 >= 0.0f && t060 < 5.0f, "accel: 0-60 mph under 5 s (target: low 3s)");
+    check(t0100 >= 0.0f, "accel: reaches 100 mph inside the 10 s pull");
     float c1[3]; car.chassisPos(c1);
     const float dx = c1[0] - c0[0], dz = c1[2] - c0[2];
     const float disp = std::sqrt(dx*dx + dz*dz);
@@ -693,6 +1031,164 @@ bool runDriveEnterExitSelfTest() {
     const float dExit = std::sqrt((player[0]-c1[0])*(player[0]-c1[0]) +
                                   (player[2]-c1[2])*(player[2]-c1[2]));
     check(!inCar && dExit > 2.0f && dExit < 3.0f, "exit: player control restored beside the car");
+
+    // =======================================================================
+    // RIDE HEIGHT measurement (ITEM 1 diagnostic — owner: "vehicle height
+    // console commands do NOT make the car change height"). This is the EXACT
+    // path host_tunnel.cpp's `car_ride` console command drives: build a
+    // WheeledTuning with rideHeightDelta set and call DriveDemo::applyTuning
+    // -> IVehicleController::applyWheeledTuning (JoltVehicle.cpp), headless,
+    // with a real before/after chassis-height measurement logged so the
+    // effect (or its absence) is provable, not asserted.
+    // =======================================================================
+    {
+        // Bleed off the drive above back to a dead stop first so the
+        // measurement isn't polluted by residual pitch/roll/velocity.
+        for (int i = 0; i < 90; ++i) {
+            x3::phys::VehicleInput in{};
+            car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+        }
+        float before[3]; car.chassisPos(before);
+        x3::logInfo("[drive-test] RIDE HEIGHT before car_ride: chassis.y=" +
+                    std::to_string(before[1]) + " m");
+
+        // `car_ride -0.10` (host_tunnel.cpp): rideHeightDelta -0.10 m, all else
+        // left at "leave" sentinels (a partial tuning, exactly like the console
+        // command builds — see WheeledTuning::kRideHeightLeave).
+        x3::phys::WheeledTuning rideT;
+        rideT.rideHeightDelta = -0.10f;
+        const bool tuned = car.applyTuning(rideT);
+        check(tuned, "car_ride: applyWheeledTuning(rideHeightDelta=-0.10) accepted");
+
+        // Let the suspension settle onto the new (shorter) travel window.
+        for (int i = 0; i < 120; ++i) {
+            x3::phys::VehicleInput in{};
+            car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+        }
+        float after[3]; car.chassisPos(after);
+        const float drop = before[1] - after[1];
+        x3::logInfo("[drive-test] RIDE HEIGHT after  car_ride -0.10: chassis.y=" +
+                    std::to_string(after[1]) + " m  (drop=" + std::to_string(drop) +
+                    " m, expect ~0.10 m)");
+        // A real -0.10 m ride-height delta shifts BOTH the min and max
+        // suspension bounds down by 0.10 m (see JoltVehicle.cpp
+        // applyWheeledTuning), so the chassis should settle ~0.10 m lower.
+        // Wide tolerance (0.04-0.16 m) — it only has to be CLEARLY non-zero
+        // and in the right direction; exact settle depends on spring/damper.
+        check(drop > 0.04f && drop < 0.16f,
+              "car_ride: console command has a VISIBLE effect on chassis rest height");
+        check(car.allWheelsInContact(), "car_ride: still all 4 wheels grounded after the drop");
+
+        // Put the ride height back to stock so the skidpad below measures the
+        // shipped car, not the lowered one (rideHeightDelta 0 = the authored
+        // baseline — applyWheeledTuning offsets FROM base, so 0 restores).
+        x3::phys::WheeledTuning restoreT;
+        restoreT.rideHeightDelta = 0.0f;
+        car.applyTuning(restoreT);
+        for (int i = 0; i < 120; ++i) {
+            x3::phys::VehicleInput in{};
+            car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+        }
+    }
+
+    // =======================================================================
+    // SKIDPAD (2026-08-16, NFS handling pass). Steady-state cornering AT THE
+    // LIMIT, headless: full steering lock asked (the speed map shapes it),
+    // speed held near 22 m/s, 15 s total, measure the last 7 s (the first 8
+    // are the spiral-in transient):
+    //   * lateral g   = mean yaw rate x mean speed / 9.81 (circular motion —
+    //                   no accelerometer needed, the kinematics ARE the meter)
+    //   * MAX ROLL    = peak body roll angle. THE ROLLOVER GATE. Owner,
+    //                   2026-08-16: "The car wants to tip up on two wheels
+    //                   even trying to make ANY curve at speed." NFS cars
+    //                   corner FLAT: > ~6 deg of body roll at steady state =
+    //                   regression, and ANY tick with BOTH inside wheels off
+    //                   the ground is an automatic fail.
+    //   * body slip   = angle between nose and velocity. Small = planted;
+    //                   growing = the rear walking out; > ~35 deg = spun.
+    //   * yaw gain    = measured yaw rate / kinematic (Ackermann) yaw rate at
+    //                   the CURRENT shaped steer angle. < 1 = understeer
+    //                   (front washing out), > 1 = oversteer (rear slipping).
+    //                   THE turn-in/balance number for the grip-split work.
+    // =======================================================================
+    {
+        const float vTarget = 22.0f;          // m/s (~49 mph): "a curve at speed"
+        const float steerIn = 1.0f;           // full lock asked; speed map shapes it
+        const float kWheelbase = 2.274f;      // |z_front| + |z_rear| (buildPhysics)
+        const float kMaxSteer  = 0.5236f;     // WheelDesc::maxSteerAngle (paired!)
+        float sumV = 0.0f, sumYawRate = 0.0f, sumSlip = 0.0f;
+        float maxRoll = 0.0f;
+        int   nMeas = 0, oneWheelUpTicks = 0, twoWheelUpTicks = 0;
+        float prevHeading = 0.0f; bool haveHeading = false;
+        for (int i = 0; i < 900; ++i) {       // 15 s total
+            x3::phys::VehicleInput in{};
+            in.throttle = (car.forwardSpeed() < vTarget) ? 0.6f : 0.0f;
+            in.steer    = steerIn;
+            car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+            // Heading/roll from the chassis quaternion (vehcam::hullAxes /
+            // hullRollPitch are the canonical extractors; -Z fwd -> heading 0).
+            float q[4]; phys->getBodyRotation(car.chassis(), q);
+            float f[3], u[3];
+            vehcam::hullAxes(q, f, u);
+            const float heading = std::atan2(f[0], -f[2]);
+            float dh = 0.0f;
+            if (haveHeading) {
+                dh = heading - prevHeading;
+                while (dh >  3.14159265f) dh -= 6.2831853f;
+                while (dh < -3.14159265f) dh += 6.2831853f;
+            }
+            prevHeading = heading; haveHeading = true;
+            if ((i % 120) == 119)              // diagnostic trace, 2 s cadence
+                x3::logInfo("[drive-test] skid t=" + std::to_string((i + 1) * dt) +
+                            " v=" + std::to_string(car.forwardSpeed()) +
+                            " steerNow=" + std::to_string(car.steerNow()) +
+                            " yaw=" + std::to_string(dh / dt));
+            if (i >= 480) {                    // measure the last 7 s
+                float roll, pitch;
+                vehcam::hullRollPitch(f, u, roll, pitch);
+                maxRoll = std::max(maxRoll, std::fabs(roll));
+                int wheelsUp = 0;
+                for (uint32_t wi = 0; wi < car.controller()->wheelCount(); ++wi) {
+                    x3::phys::WheelState ws;
+                    if (car.controller()->wheelState(wi, ws) && !ws.hasContact) ++wheelsUp;
+                }
+                if (wheelsUp >= 1) ++oneWheelUpTicks;
+                if (wheelsUp >= 2) ++twoWheelUpTicks;
+                const float vFwd = car.forwardSpeed();
+                // Body slip: velocity decomposed on the chassis axes.
+                float vel[3]; phys->getBodyLinearVelocity(car.chassis(), vel);
+                const float right[3] = { f[1]*u[2] - f[2]*u[1],    // fwd x up
+                                         f[2]*u[0] - f[0]*u[2],
+                                         f[0]*u[1] - f[1]*u[0] };
+                const float vLat = vel[0]*right[0] + vel[1]*right[1] + vel[2]*right[2];
+                sumV       += vFwd;
+                sumYawRate += dh / dt;
+                sumSlip    += std::atan2(std::fabs(vLat), std::max(0.5f, std::fabs(vFwd)));
+                ++nMeas;
+            }
+        }
+        const float meanV   = nMeas ? sumV / nMeas : 0.0f;
+        const float meanYaw = nMeas ? std::fabs(sumYawRate / nMeas) : 0.0f;
+        const float meanSlip= nMeas ? sumSlip / nMeas : 0.0f;
+        const float latG    = meanYaw * meanV / 9.81f;
+        // Kinematic yaw rate at the shaped steer the car actually ran.
+        const float delta   = std::fabs(car.steerNow()) * kMaxSteer;
+        const float yawKin  = meanV * std::tan(delta) / kWheelbase;
+        const float yawGain = (yawKin > 1e-3f) ? meanYaw / yawKin : 0.0f;
+        x3::logInfo("[drive-test] SKIDPAD: v=" + std::to_string(meanV) + " m/s, yawRate=" +
+                    std::to_string(meanYaw) + " rad/s, lateral " + std::to_string(latG) +
+                    " g, maxRoll=" + std::to_string(maxRoll * 57.2958f) +
+                    " deg, bodySlip=" + std::to_string(meanSlip * 57.2958f) +
+                    " deg, yawGain=" + std::to_string(yawGain) +
+                    " (<1 understeer, >1 oversteer), wheelLift ticks 1up=" +
+                    std::to_string(oneWheelUpTicks) + " 2up=" +
+                    std::to_string(twoWheelUpTicks) + "/" + std::to_string(nMeas));
+        check(latG > 1.2f, "skidpad: steady-state lateral acceleration > 1.2 g");
+        check(maxRoll < 0.105f, "skidpad: body roll < 6 deg at the limit (corners FLAT)");
+        check(twoWheelUpTicks == 0, "skidpad: NEVER two wheels off the ground (no tip-up)");
+        check(oneWheelUpTicks < nMeas / 10, "skidpad: inside wheels stay planted (>90% of ticks)");
+        check(meanSlip < 0.61f, "skidpad: body slip < 35 deg (holds the circle, no spin)");
+    }
 
     car.shutdown();
     phys->shutdown();
