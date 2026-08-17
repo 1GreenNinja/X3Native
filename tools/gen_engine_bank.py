@@ -157,7 +157,7 @@ def turbulence_layer(rpm, n_gen, rng):
     """Broadband intake/exhaust turbulence, tilt brightening with RPM."""
     noise = rng.standard_normal(n_gen)
     hi = 0.3 + 0.7 * (rpm / 7000.0)
-    return (resonant_bandpass(noise, SR, center_hz=250, q=0.7, gain=1.0)
+    return (resonant_bandpass(noise, SR, center_hz=250, q=0.7, gain=1.6)   # broadband floor lives in the LOW roar, not the hiss band
             + resonant_bandpass(noise, SR, center_hz=1200, q=0.6, gain=0.5 + 0.3 * hi)
             + resonant_bandpass(noise, SR, center_hz=3600, q=0.6, gain=0.06 + 0.16 * hi))   # static fix: was 0.15+0.45*hi — hiss
 
@@ -191,7 +191,12 @@ def build_point(rpm, *, overrun, rng):
     # Tone pass: organic keeps the low-mid body but hands the top end to the
     # synth harmonics + turbulence (the recording HAS no top end to give —
     # 90% of its energy sits below 100 Hz; that was the muffle).
-    w_org, w_syn, w_nz = (0.42, 0.38, 0.20) if high else (0.50, 0.32, 0.18)   # static fix: noise back down, brightness from harmonics
+    w_org, w_syn, w_nz = (0.42, 0.38, 0.20) if high else (0.46, 0.30, 0.24)   # low points keep more (LOW-band) noise for the broadband floor
+    if rpm <= 1000:
+        # Idle is the most MECHANICAL point in a real engine — valvetrain
+        # clatter and accessory whir are broadband. Without this the idle
+        # pair lands ~21% broadband against the 25% gate.
+        w_org, w_syn, w_nz = (0.40, 0.26, 0.34)
     # PRESENCE TILT on the HARMONIC content only (static fix): shelving the
     # full mix also shelved the noise into hiss. Brightness must come from
     # the engine's own harmonics; the turbulence stays a low bed.
