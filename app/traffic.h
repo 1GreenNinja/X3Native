@@ -476,6 +476,10 @@ private:
     };
     Obstacle m_player;
     void projectPlayer(float dt);
+    // X3_TRAFFIC_PARK — a virtual stopped vehicle for captures (see build()).
+    bool  m_parked = false, m_parkLogged = false;
+    int   m_parkCw = 1;
+    float m_parkLane = 5.0f, m_parkS = 0.0f;
 
     // ---- Horn budget ------------------------------------------------------
     // A jam must not be a cacophony: at most one horn every kHornGlobalGapS

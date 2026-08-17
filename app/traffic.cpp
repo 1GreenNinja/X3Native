@@ -370,6 +370,19 @@ bool FreewayTraffic::build(const RoadSpec& spec, const std::vector<float>& roadY
         // Defaults to 0, so no existing reference capture moves.
         if (const char* e = std::getenv("X3_TRAFFIC_PRESIM"))
             m_presimS = std::max(0.0f, std::min(600.0f, (float)std::atof(e)));
+        // X3_TRAFFIC_PARK=<cw>,<laneF>,<s> — park a VIRTUAL stopped vehicle on
+        // that lane point and feed it to the sim as the player. Capture-only,
+        // and it exists because the capture path makes the CAMERA the player:
+        // to photograph traffic reacting to a stopped car you would otherwise
+        // have to stand at the stopped car, which is the one place you cannot
+        // see it from. This decouples the two — park here, shoot from there.
+        if (const char* e = std::getenv("X3_TRAFFIC_PARK")) {
+            float cwf = 1.0f, lane = 5.0f, ss = 0.0f;
+            if (std::sscanf(e, "%f,%f,%f", &cwf, &lane, &ss) == 3) {
+                m_parkCw = (int)cwf; m_parkLane = lane; m_parkS = ss;
+                m_parked = true;
+            }
+        }
     }
     m_rng = cfg.seed ? cfg.seed : 1u;
     m_device = device;
@@ -740,6 +753,35 @@ void FreewayTraffic::setPlayer(const float pos[3], float speedMps) {
 // ---------------------------------------------------------------------------
 void FreewayTraffic::projectPlayer(float dt) {
     m_player.valid = false;
+    // X3_TRAFFIC_PARK: a virtual stopped vehicle, straight into the obstacle
+    // slot. No projection needed — it is already in lane coordinates.
+    if (m_parked) {
+        m_player.valid = true;
+        m_player.cw = m_parkCw;
+        m_player.s = m_parkS;
+        m_player.laneF = m_parkLane;
+        m_player.v = 0.0f;
+        m_player.halfW = 0.95f;
+        m_player.lenM = 4.6f;
+        m_player.inLane = m_parkLane > -0.55f &&
+                          m_parkLane < (float)kFwyLaneCount - 0.45f;
+        float p[3];
+        if (laneWorldPos(m_parkCw, m_parkLane, m_parkS, p)) {
+            m_playerPos[0] = p[0]; m_playerPos[1] = p[1]; m_playerPos[2] = p[2];
+            m_havePlayer = true;
+        }
+        if (!m_parkLogged) {
+            m_parkLogged = true;
+            char b[200];
+            std::snprintf(b, sizeof(b),
+                "traffic: X3_TRAFFIC_PARK — a stopped vehicle sits in cw %d lane "
+                "%.1f at s %.0f = (%.1f, %.1f, %.1f). Traffic must deal with it.",
+                m_parkCw, m_parkLane, m_parkS,
+                m_playerPos[0], m_playerPos[1], m_playerPos[2]);
+            x3::logInfo(b);
+        }
+        return;
+    }
     if (!m_havePlayer || m_path.size() < 2) return;
 
     // Nearest fine station. Brute force over ~2.2k stations ONCE per frame is
@@ -1181,11 +1223,23 @@ void FreewayTraffic::update(float dt, const float focus[3], x3::phys::IPhysicsWo
             "(%.0f, %.0f)", want, steps, pf[0], pf[2]);
         x3::logInfo(b);
         for (int i = 0; i < steps; ++i) update(step, pf, nullptr);
+        // Reaction counters. A still can be ambiguous about whether traffic is
+        // actually dealing with the obstacle; these are not.
+        uint32_t braking = 0, blocked = 0, nearObstacle = 0;
+        for (const Car& c : m_cars) {
+            if (c.brakeLit) ++braking;
+            if (c.blockedByPlayer) ++blocked;
+            if (m_player.valid && c.cw == m_player.cw) {
+                const float ds = arcDelta(c.s, m_player.s);
+                if (ds > -30.0f && ds < 160.0f) ++nearObstacle;
+            }
+        }
         std::snprintf(b, sizeof(b),
             "traffic: presim done — %u live, %u lane changes, %u horns, %u cop(s), "
-            "%u breaking down, %u merging now",
+            "%u breaking down, %u merging now | %u braking (lights lit), "
+            "%u following the PLAYER, %u within 160 m of him",
             liveCount(), m_laneChanges, m_hornCount, copCount(), breakdownCount(),
-            mergingCount());
+            mergingCount(), braking, blocked, nearObstacle);
         x3::logInfo(b);
         reportShotCams();
     }
@@ -2405,9 +2459,18 @@ void FreewayTraffic::siteRadarSign() {
         if (score > bestScore) { bestScore = score; best = k; }
     }
     const RoadRenderStation& st = m_path[best];
-    // The sign stands OUTSIDE the paved edge of the right carriageway, on the
-    // verge — a sign inside the apron is a sign a wide load hits.
-    const float lat = st.medianHalf + kFwyPavedHalfM + kFwyPavedHalfM * 0.0f + 1.35f;
+    // THE SIGN STANDS ON THE VERGE, OUTSIDE THE PAVED EDGE.
+    // Getting this wrong put the sign IN THE MIDDLE OF THE ROAD, and the
+    // capture showed it plainly (shots_traffic2/dbg_radar.png, first cut): a
+    // post planted between the running lanes with traffic flowing past both
+    // sides. The arithmetic: the carriageway spans lat from `medianHalf` to
+    // `medianHalf + 2*kFwyPavedHalfM`, so its CENTRE is at
+    // `medianHalf + kFwyPavedHalfM` — which is exactly what the first cut used
+    // as if it were the outer edge. The outer paved edge is one more
+    // kFwyPavedHalfM out. (laneLat() encodes the same fact: it starts from
+    // medianHalf + kFwyPavedHalfM and then subtracts kFwyRunningHalfM to reach
+    // the innermost lane, i.e. it treats that sum as the centre line.)
+    const float lat = st.medianHalf + 2.0f * kFwyPavedHalfM + 1.35f;
     const float nx = -st.tz, nz = st.tx;
     m_radar.pos[0] = st.x + nx * lat;
     m_radar.pos[1] = st.y;
@@ -2555,6 +2618,21 @@ void FreewayTraffic::reportShotCams() const {
         const float t[3] = { m_radar.pos[0], m_radar.pos[1] + 2.2f, m_radar.pos[2] };
         emit("RADAR SIGN", t, -m_radar.dirX, -m_radar.dirZ, 26.0f, 7.0f, -0.6f);
     }
+    if (m_parked) {
+        // The parked obstacle, framed from UPSTREAM and above: that puts the
+        // approaching queue between the camera and the stopped car, showing
+        // their REAR faces — which is where the brake lights are. Standing at
+        // the obstacle (which is what the camera-as-player path forces) is the
+        // one viewpoint from which none of this is visible.
+        float p[3];
+        if (laneWorldPos(m_parkCw, m_parkLane, m_parkS, p)) {
+            float pos[3], dir[2];
+            sampleAt(uOfS(m_parkCw, m_parkS), pos, dir, nullptr, nullptr);
+            const float sgn = (m_parkCw == 1) ? 1.0f : -1.0f;
+            emit("PARKED OBSTACLE", p, sgn * dir[0], sgn * dir[1], 46.0f, -7.0f, 7.0f);
+            emit("PARKED (low/close)", p, sgn * dir[0], sgn * dir[1], 24.0f, -5.5f, 2.4f);
+        }
+    }
 }
 
 // A point 60 m IN FRONT of the sign's face — where a driver reading it is.
@@ -2661,7 +2739,28 @@ void drawTrafficDrawable(x3::rhi::IRenderDevice& dev, const x3::rhi::FrameContex
                       matEmis ? 1.0f : 0.0f };
     float bc[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
                     d.baseColorFactor[2], d.baseColorFactor[3] };
-    if (tint) { bc[0] = tint[0]; bc[1] = tint[1]; bc[2] = tint[2]; }
+    // THE REPAINTED-PANEL METALLIC CLAMP. X3_WORLD_RULES rule 5: an untextured
+    // full-metal material renders BLACK, because metallic=1 zeroes the diffuse
+    // lobe and there is no albedo left to see. Several RCC bodies bake their
+    // paint materials at metallic ~1 and rely on the clearcoat lobe for their
+    // look — which is fine until we substitute a per-instance colour and the
+    // colour has nowhere to go.
+    //
+    // RECEIPT: the parked-obstacle stand-in was tinted (0.62, 0.10, 0.02) — a
+    // strong orange-red — and rendered as a BLACK car in shots_traffic2/
+    // dbg_park.png with every other vehicle removed from the frame, so there
+    // was nothing else it could have been. The same defect is why E30s in the
+    // early full-road stills read as mottled dark lumps instead of painted
+    // cars. drawMeshPBR's `metallicScale` is the engine's documented fix for
+    // exactly this class ("per-object metallic CLAMP for dark-albedo kit props
+    // whose MR map bakes metallic=1"), so a repainted NON-clearcoat panel gets
+    // it. Clearcoat paint (Muscle, Skyline) already reads correctly and is left
+    // strictly alone — 1.0 is the no-op every other call site passes.
+    float metallicScale = 1.0f;
+    if (tint) {
+        bc[0] = tint[0]; bc[1] = tint[1]; bc[2] = tint[2];
+        if (d.clearcoat <= 0.01f) metallicScale = 0.15f;
+    }
     dev.drawMeshPBR(f, x3::rhi::MeshHandle{ d.meshId },
                     x3::rhi::TextureHandle{ d.baseColorTexId },
                     x3::rhi::TextureHandle{ d.normalTexId },
@@ -2669,7 +2768,7 @@ void drawTrafficDrawable(x3::rhi::IRenderDevice& dev, const x3::rhi::FrameContex
                     bc, emis, world, d.alphaMask, d.alphaBlend,
                     x3::rhi::TextureHandle{ d.emissiveTexId },
                     x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
-                    d.clearcoat, d.clearcoatRough);
+                    d.clearcoat, d.clearcoatRough, 0.0f, metallicScale);
 }
 
 // Compose a world matrix from an orthonormal basis, an origin and a scale.
@@ -2761,6 +2860,50 @@ void FreewayTraffic::render(const x3::rhi::FrameContext& frame, const float camP
 
         if (m_furniture && !c.loose)
             renderCarFurniture(frame, c, basisR, basisU, basisF, originY);
+    }
+    // X3_TRAFFIC_PARK's stand-in. The parked obstacle is normally the PLAYER's
+    // own car, which this system does not own or draw — so under the capture
+    // lever there is nothing on screen and a proof shot shows traffic reacting
+    // to thin air. Draw a car there, in a colour nothing else on the road
+    // wears, so the still actually proves what it claims.
+    if (m_parked && m_device) {
+        // Pick the MOST paintable body on the roster, or the "unmistakable
+        // colour" is a lie. Two cuts of this failed the same way: taking the
+        // first ok model grabbed a TEXTURED armory sedan whose shell ignores
+        // the tint, and the stand-in rendered as just another grey car nobody
+        // could pick out of the still. Most-paintable-wins gets the E30
+        // (30 of 38 drawables), which actually turns red.
+        int pick = -1;
+        uint32_t bestPaint = 0;
+        for (size_t k = 0; k < m_models.size(); ++k) {
+            if (!m_models[k].ok) continue;
+            uint32_t n = 0;
+            for (uint8_t p : m_models[k].bodyPaintable) n += p;
+            if (n > bestPaint) { bestPaint = n; pick = (int)k; }
+        }
+        for (int only = pick; only >= 0; only = -1) {
+            const Model& md = m_models[only];
+            float pos[3], dir[2], mh, dy;
+            sampleAt(uOfS(m_parkCw, m_parkS), pos, dir, &mh, &dy);
+            const float sgn = (m_parkCw == 1) ? 1.0f : -1.0f;
+            const float lat = laneLat(m_parkCw, m_parkLane, mh);
+            float r[3], upv[3], f[3];
+            travelBasis(sgn * dir[0], sgn * dy, sgn * dir[1], 0.0f, r, upv, f);
+            float M[16];
+            composeM(r, upv, f,
+                     pos[0] + (-dir[1]) * lat,
+                     pos[1] + kTrafficPaveProud + md.groundLift,
+                     pos[2] + ( dir[0]) * lat, md.scale, M);
+            const float hot[3] = { 0.62f, 0.10f, 0.02f };   // unmistakable
+            float fin[16];
+            for (size_t bi = 0; bi < md.body.size(); ++bi) {
+                mul4(M, md.body[bi].nodeTransform, fin);
+                drawTrafficDrawable(*m_device, frame, md.body[bi], fin,
+                                    (bi < md.bodyPaintable.size() && md.bodyPaintable[bi])
+                                        ? hot : nullptr);
+            }
+            break;
+        }
     }
     if (m_furniture) renderRadarSign(frame);
 }
@@ -2922,9 +3065,19 @@ void FreewayTraffic::renderCarFurniture(const x3::rhi::FrameContext& frame, cons
 void FreewayTraffic::renderRadarSign(const x3::rhi::FrameContext& frame) {
     if (!m_radar.sited || !m_steel.mesh.valid()) return;
     // Local frame: +Z is the way the sign faces.
+    // THE BASIS MUST BE RIGHT-HANDED (r x u = f) or the model matrix mirrors
+    // and every +Z-facing quad on it renders AWAY from the viewer. The first
+    // cut used r = (-fz, 0, fx), for which r x u = -f: the sign showed its
+    // blank grey back to a camera standing directly in front of it, panel and
+    // digits and all, and no amount of winding fiddling on the quads would
+    // have fixed it because the whole frame was inside out. This is the
+    // app/factory.cpp sign receipt (authored, textured, correctly UV'd and
+    // BACKFACE-CULLED) reappearing one level up, at the transform instead of
+    // the triangle. r = u x f is the correct handedness — the same
+    // construction travelBasis() uses for every car in this file.
     const float f[3] = { m_radar.dirX, 0.0f, m_radar.dirZ };
     const float u[3] = { 0.0f, 1.0f, 0.0f };
-    const float r[3] = { -f[2], 0.0f, f[0] };   // up x fwd
+    const float r[3] = { f[2], 0.0f, -f[0] };   // u x f
     float M[16];
     composeM(r, u, f, m_radar.pos[0], m_radar.pos[1], m_radar.pos[2], 1.0f, M);
 
