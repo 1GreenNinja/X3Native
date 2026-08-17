@@ -53,6 +53,31 @@ public:
     virtual BodyId addBox(Vec3 halfExtents, Vec3 pos, float mass, Layer,
                           Vec3 comOffset = Vec3{}) = 0;
     virtual BodyId addSphere(float radius, Vec3 pos, float mass, Layer) = 0;
+
+    // -----------------------------------------------------------------------
+    // KINEMATIC bodies (W-TRAFFIC). A kinematic body is game-driven — the sim
+    // never integrates forces into it — but unlike a teleported static body it
+    // carries REAL velocity through moveKinematic(), so a dynamic body it hits
+    // (the player's car) receives a physically correct shove instead of a
+    // zero-velocity wall. Created on the Dynamic broadphase layer so it
+    // collides with Dynamic/Player/Enemy. Traffic cars are the first consumer:
+    // each AI car is a kinematic box marched along its lane spline; on a hard
+    // impact makeBodyDynamic() hands the SAME body to the solver (Jolt
+    // SetMotionType, allowed at creation), and the car goes loose like the
+    // work-zone drums. Default implementations are no-ops so facade/test
+    // implementations of this interface (e.g. app/monster.cpp's
+    // CountingPhysicsWorld) keep compiling; the Jolt world overrides all three.
+    // -----------------------------------------------------------------------
+    virtual BodyId addKinematicBox(Vec3 /*halfExtents*/, Vec3 /*pos*/, Layer /*layer*/) { return {}; }
+    // Drive the kinematic body toward (targetPos, targetQuat) over dt seconds —
+    // the implementation derives the linear/angular velocity that reaches the
+    // target this step (Jolt MoveKinematic). No-op for non-kinematic/invalid.
+    virtual void   moveKinematic(BodyId, Vec3 /*targetPos*/, const float /*targetQuat*/[4], float /*dt*/) {}
+    // Convert a body created with addKinematicBox to a DYNAMIC body of `mass`
+    // kg (inertia from the shape, scaled to that mass), activated. Returns
+    // false for an invalid/never-kinematic body.
+    virtual bool   makeBodyDynamic(BodyId, float /*mass*/) { return false; }
+
     virtual void   removeBody(BodyId) = 0;
     virtual void   setBodyPosition(BodyId, Vec3) = 0;
     virtual Vec3   getBodyPosition(BodyId) const = 0;

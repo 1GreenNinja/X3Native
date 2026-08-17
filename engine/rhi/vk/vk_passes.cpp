@@ -2154,6 +2154,24 @@ void VulkanRenderDevice::prepareFrameData() {
             // LYING SNOW (setSnowCover): 0 leaves the terrain snow band exactly
             // as it was before this lane existed -- altitude-only, no weather.
             sc.precip   = glm::vec4(m_snowCover, 0.0f, 0.0f, 0.0f);
+            // CLOUD SHADOWS (task #27): project the sky.frag cloud deck onto
+            // the ground. Rides the CACHED sky params (same cover, same drift
+            // clock the sky UBO gets at its own fill site below), so the shade
+            // on the road always sweeps with the deck overhead — paired values
+            // are one value. Strength 0.85, not 1.0: the remaining 15% keeps a
+            // cumulus core from reading as a HOLE in the terrain rather than
+            // shade. (An earlier draft of this comment credited the host's
+            // SkyParams::sunIntensity cut with carrying part of the energy
+            // loss. It does NOT — sunIntensity scales the SKY DISK + glow only,
+            // as IRenderDevice.h states at the field, which is why a 94% storm
+            // deck still lit the grass like June. The ground's two dials are
+            // THIS factor for the DIRECT sun and the IBL probe — which rebakes
+            // from the sky, deck and all — for the skylight.)
+            // Gate shut (all zero) when no sky or no
+            // cover -> indoor worlds and clear days byte-identical.
+            const bool cloudsOn = m_sky.enabled && m_sky.cloud > 0.001f;
+            sc.cloudShadow = glm::vec4(cloudsOn ? 0.85f : 0.0f,
+                                       m_sky.cloud, m_skyTime, 0.0f);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
@@ -2377,6 +2395,17 @@ void VulkanRenderDevice::prepareFrameData() {
             // Clarity (see WaterParams::clarity): 0 keeps the historic opaque
             // surface byte-identical (alpha 1 through the enabled blend).
             w.p4 = glm::vec4(m_water.clarity, 0.0f, 0.0f, 0.0f);
+            // RIVER MODE (task #32 — one water truth): count 0 = legacy flat
+            // sea, byte-identical. See WaterParams::riverNodes.
+            const uint32_t rn = std::min(m_water.riverNodeCount,
+                                         WaterParams::kMaxRiverNodes);
+            w.riverInfo  = glm::vec4((float)rn, m_water.riverHalfWidth, 0.0f, 0.0f);
+            w.riverBasin = glm::vec4(m_water.basinCenter[0], m_water.basinCenter[1],
+                                     m_water.basinRadius, m_water.oceanLevel);
+            for (uint32_t i = 0; i < rn; ++i)
+                w.riverNodes[i] = glm::vec4(m_water.riverNodes[i][0],
+                                            m_water.riverNodes[i][1],
+                                            m_water.riverNodes[i][2], 0.0f);
             std::memcpy(m_waterUboMapped[m_frameIdx], &w, sizeof(WaterUBO));
         }
 

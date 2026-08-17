@@ -51,10 +51,21 @@ constexpr float kLatMax       = 24.0f;  // outermost trunk: still reads as roadS
 constexpr float kOakLatMin    = 14.5f;
 constexpr float kEndPad       = 25.0f;  // no trees hard against the route's ends
 // Portal keep-out past each bore end: headwall (1.7) + canopy (3) + wingwall
-// splay (6.5) + backfill taper (15) is ~26 m of built structure; 30 keeps a
-// clean verge without wasting half of the little open country this route has
-// (the roofed span is 327 m of the 640 — daylight is the scarce resource).
-constexpr float kPortalMargin = 30.0f;
+// splay (6.5) + backfill taper (15) is ~26 m of built structure.
+//
+// THE RECEIPT (owner, 2026-08-17, driving the bore): "tunnel looks great! It
+// is blocked" — a full oak crown sat dead centre in the far portal, seen from
+// inside. 30 m was sized against the TRUNK and the built structure, and the
+// trunk was indeed clear: the defect is the CROWN. An oak's crown radius is
+// ~18 m at scale 1 and these plant at 0.580-0.829, so a trunk on the innermost
+// row (kOakLatMin 14.5 m) throws canopy to lat -0.5 m — over the centreline,
+// which is exactly the shade Tim asked for in open country and exactly what
+// plugs a 12 m portal mouth when it happens 30 m from one. The margin has to
+// clear the CROWN, not the bole: 30 -> 80 m, i.e. the deepest crown reach
+// (~15 m) plus the throat plus enough approach that the mouth frames sky.
+// PAIRED with the oak scale rolls in build() — a bigger tree needs a bigger
+// margin, and both numbers live in this file for that reason.
+constexpr float kPortalMargin = 80.0f;
 constexpr float kSink         = 0.15f;  // trunk sunk so no root plate floats on a slope
 constexpr float kMaxLocalDrop = 2.2f;   // reject batter positions steeper than this per 2 m
 constexpr float kMinSpacing   = 4.5f;   // trunks never closer than this inside a grove
@@ -91,7 +102,8 @@ struct Lcg {
 } // anonymous namespace
 
 bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
-                      const std::vector<KeepOut>& keepOut, float minBenchY) {
+                      const std::vector<KeepOut>& keepOut, float minBenchY,
+                      x3::phys::IPhysicsWorld* phys) {
     if (m_built) return m_trees > 0;
     m_built = true;
 
@@ -234,6 +246,32 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
                     inGrove.push_back({ x, z });
                     ++planted;
                     if (oak) ++oaks; else ++poplars;
+                    // ---- TRUNK COLLISION (owner ask, 2026-08-17) ----------
+                    // MEASURED FROM THE ASSET, not guessed (NO_SLOP rule 9).
+                    // tools/tree_bole.py scans 2%-height slices of the BARK
+                    // primitive and takes the NARROWEST, because a fixed low
+                    // band reads 15.4 m across on the oak — its bark mesh
+                    // carries branches from 12% of the height up. At scale 1:
+                    //   oak    35.33 m tall | bole 2.857 m across | branches 4.2 m
+                    //   poplar 21.54 m tall | bole 0.997 m across | branches 3.0 m
+                    // The box is INSCRIBED in the round bole (0.80 of the half
+                    // width) so its corners do not stand out in thin air, and it
+                    // rides this tree's own `sc` roll — the same scale the mesh
+                    // got, which is what keeps the collider ON the wood instead
+                    // of near it. 5 m of height clears both species' boles with
+                    // margin, so a car on a batter cannot ride over one.
+                    // The CROWN is drive-through ON PURPOSE: brushing leaf cards
+                    // must not stop a car dead, and 200 crown hulls would be 200
+                    // broadphase boxes for no gameplay.
+                    if (phys) {
+                        const float trunkHalfW = (oak ? 1.143f : 0.399f) * sc;
+                        const float boleH      = 5.0f * sc;
+                        const x3::phys::BodyId tb = phys->addBox(
+                            x3::phys::Vec3{ trunkHalfW, boleH * 0.5f, trunkHalfW },
+                            x3::phys::Vec3{ x, y - kSink + boleH * 0.5f, z },
+                            0.0f, x3::phys::Layer::Static);
+                        if (tb.valid()) ++m_trunkBodies;
+                    }
                 }
             }
             if (planted > 0) {
@@ -282,13 +320,14 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
                             }
                             if (hMax - hMin > 0.22f) continue;
                             ty = (hMax + hMin) * 0.5f;
-                            if (ty < worldWaterLevelAt(bx, bz) + 0.5f) continue;
-                            // The DRAWN river plane is a separate truth from
-                            // worldWaterLevelAt (task #32): the first bench
-                            // shipped SUBMERGED despite passing the
-                            // water-table check. The host feeds the plane
-                            // level in as minBenchY.
-                            if (ty < minBenchY) continue;
+                            // Since task #32 the drawn river surface IS the
+                            // worldWaterLevelAt table (the minBenchY shim is
+                            // deleted). A bench also clears the rain-runoff
+                            // head-room so a storm-swollen river never laps a
+                            // seat (rain rise is bounded by
+                            // kWorldRiverRainRiseMax; see terrain.h).
+                            if (ty < worldWaterLevelAt(bx, bz) + 0.5f
+                                     + kWorldRiverRainRiseMax) continue;
                             if (ty < route.roadYAt(bs) - 3.0f) continue;
                             ok = true;
                             break;
@@ -328,6 +367,14 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
     m_art.setFoliage(1.0f);   // vegetation wrap + canopy back-translucency
     m_trees = oaks + poplars;
 
+    if (phys) {
+        x3::logInfo("road_trees: " + std::to_string(m_trunkBodies) +
+                    " trunk colliders (bole only; crowns stay drive-through)");
+    } else {
+        x3::logWarn("road_trees: no physics world passed — trees have NO trunk "
+                    "collision (the owner asked for it 2026-08-17; check the "
+                    "host's build() call)");
+    }
     x3::logInfo("road_trees: " + std::to_string(m_trees) + " trees (" +
                 std::to_string(oaks) + " oak, " + std::to_string(poplars) +
                 " poplar) in " + std::to_string(m_groves) + " groves, " +

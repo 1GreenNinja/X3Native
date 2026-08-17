@@ -111,6 +111,8 @@ struct HostContext {
     bool        tunnelShot = false;         std::string tunnelShotDir = "docs/screenshots/tunnel";
     // --screenshot-jake: the on-foot AnimatedCharacter proof set (see cli.h).
     bool        jakeShot = false;           std::string jakeShotDir = "docs/screenshots/jake";
+    // --screenshot-town: the W-TOWN mountain-town proof set (see cli.h).
+    bool        townShot = false;           std::string townShotDir = "docs/screenshots/town";
 
     // ---- A/B / GI force switches consulted by some hosts' settle logic ----
     bool        ddgiForce = false;          // --ddgi: longer probe-convergence settle

@@ -65,11 +65,18 @@ add_library(x3app SHARED
     tunnel_corridor.cpp
     # W-TREES — tall broadleaf groves along the tunnel road (--world tunnel)
     road_trees.cpp
+    # W-TOWN — the sketch's Small Mountain Town on the summit spur
+    town.cpp
     # W-FOREST — the sketch's brown regions: area forests, two-tier draw
     forest.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
+    traffic.cpp         # W-TRAFFIC — AI traffic on the 16-lane freeway
+    summit_lot.cpp      # the parking lot at the top of the summit spur
+    ridge_road.cpp      # the dirt road along the tops, lot -> the bore's massif
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
+    factory.cpp         # THE GLIMVALE WORKS + the golden-ticket hunt
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
+    gas_station.cpp     # W-STATIONS — forecourts off the network + the fuel stub
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp

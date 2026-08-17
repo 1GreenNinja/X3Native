@@ -35,9 +35,18 @@ struct CliOptions {
          // depression — the freeway-tunnel primitive. See app/terrain.h.
          testTerrainCorridor = false,
          // --test-tunneldrive: DRIVE-THROUGH acceptance for the tunnel demo —
-         // the real rig must exit the far portal; negative-controlled against
-         // X3_TUNNEL_PORTAL_CUT=0. See app/tunnel_corridor.h.
+         // the real rig must exit the far portal; negative-controlled at the
+         // FIELD level (the natural hillside must bury the roadway). See
+         // app/tunnel_corridor.h.
          testTunnelDrive = false,
+         // --test-summitlot: the SUMMIT PARKING LOT gate — the pad at the top
+         // of the summit spur is carved, level, on the peak, and drivable
+         // into. See app/summit_lot.h.
+         testSummitLot = false,
+         // --test-ridgeroad: the SUMMIT RIDGE ROAD gate — the dirt road
+         // runs the tops between the lot and the bore's massif, A/B'd
+         // against the straight line. See app/ridge_road.h.
+         testRidgeRoad = false,
          // --test-tunnelmouth: the TUNNEL-MOUTH gate. Asserts no ground ever
          // stands on the roadway (the defect fix/tunnel-mouth closed), that
          // the backfill lid clears the shell and meets the untouched terrain
@@ -290,6 +299,13 @@ struct CliOptions {
     // unmirrored, backpedal, jump mid-flight, and each F1 camera mode.
     bool        jakeShot = false;
     std::string jakeShotDir = "docs/screenshots/jake";
+    // --screenshot-town <dir>: the SMALL MOUNTAIN TOWN proof set (`--world
+    // tunnel`, headless). Five eyes-on gates for W-TOWN: main street from the
+    // road, a shop front close enough to judge the textures, the pedestrians
+    // mid-stride on the sidewalk, the lit windows at dusk, and the town read
+    // from across the valley. Implies --world tunnel + headless.
+    bool        townShot = false;
+    std::string townShotDir = "docs/screenshots/town";
 
     // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
     // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp
@@ -506,6 +522,9 @@ struct CliOptions {
     bool        testRouteFrame = false;
     bool        testRoadNetwork = false;   // --test-roadnetwork
     bool        testRiverBridge = false;   // --test-riverbridge (valley road + Bridge No.1)
+    bool        testTraffic = false;       // --test-traffic (freeway AI traffic)
+    bool        testGasStation = false;    // --test-gasstation (W-STATIONS forecourts + fuel stub)
+    bool        testFactory     = false;   // --test-factory (the works siting + the tickets)
     // Headless editor proof (--screenshot-editor [path.png]): init ImGui in a headless
     // device, render ONE frame with the dockspace + demo window, and capture a PNG that
     // shows the ImGui window — proves the Phase-0 integration actually rasterizes.

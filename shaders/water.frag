@@ -41,6 +41,13 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     // (alpha 1 -> src*1+dst*0, byte-identical through the enabled blend);
     // >0 = face-on shallow water goes translucent over the lit scene beneath.
     vec4  p4;
+    // RIVER MODE (task #32) — consumed by the vertex stage (level-follow +
+    // coverage mask); declared here so the block layouts match. In river mode
+    // p0.x (seaLevel) carries the LOCAL level at the camera (the host feeds
+    // worldWaterLevelAt(cam)), so the underside-view gate below stays honest.
+    vec4  riverInfo;
+    vec4  riverBasin;
+    vec4  riverNodes[20];
 } u;
 
 // Scene depth buffer (the SSAO depth pre-pass output). Sampled as data (R32F via
@@ -50,6 +57,9 @@ layout(set = 0, binding = 1) uniform sampler2D sceneDepth;
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vGrid;
+// River-mode coverage (1 everywhere in legacy flat-sea mode — alpha * 1.0 is
+// byte-identical). Fades to 0 across the channel waterline; <= 0 is dry land.
+layout(location = 3) in float vMask;
 
 layout(location = 0) out vec4 outColor;
 
@@ -89,6 +99,10 @@ float linearizeDepth(float d) {
 }
 
 void main() {
+    // River mode: past the channel's waterline there is no water — drop the
+    // fragment before any shading. Legacy flat sea has vMask == 1 everywhere.
+    if (vMask <= 0.004) discard;
+
     vec2 screenUV = gl_FragCoord.xy * vec2(u.p2.y, u.p2.z);
 
     vec3 N = normalize(vNormal);
@@ -157,7 +171,7 @@ void main() {
         // submerged swimmer sees light (and anything crossing the surface)
         // through it; the far, oblique surface stays a closed green lid.
         float aUnder = 1.0 - u.p4.x * 0.55 * window * (1.0 - depthFade);
-        outColor = vec4(color, aUnder);
+        outColor = vec4(color, aUnder * vMask);
         return;
     }
 
@@ -201,5 +215,5 @@ void main() {
     // byte-identical through the enabled blend (src*1 + dst*0).
     float seeThrough = u.p4.x * (1.0 - fres) * (1.0 - depthT);
     float alpha = clamp(1.0 - seeThrough + spec * u.p1.z * 0.25 + fog, 0.0, 1.0);
-    outColor = vec4(color, alpha);
+    outColor = vec4(color, alpha * vMask);
 }

@@ -15,6 +15,7 @@
 #include "../terrain.h"
 #include "../tunnel_corridor.h"
 #include "../road_trees.h"
+#include "../town.h"
 #include "../forest.h"                   // W-FOREST — the sketch's brown regions
 #include "../tunnel_fitout.h"
 #include "../tunnel_rooms.h"
@@ -27,8 +28,13 @@
 #include <array>
 #include <memory>
 #include "../road_network.h"
+#include "../summit_lot.h"       // the pad the summit spur climbs to
+#include "../ridge_road.h"       // the dirt road along the tops, lot -> the bore's massif
 #include "../river_bridge.h"
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
+#include "../traffic.h"          // W-TRAFFIC — AI traffic on the 16-lane freeway
+#include "../gas_station.h"      // W-STATIONS — forecourts + the fuel stub
+#include "../factory.h"          // W-FACTORY — the Glimvale Works + the golden tickets
 #include "../vehicle.h"
 #include "../carspec.h"                  // the PER-CAR table (mass/torque/curve/voice)
 #include "../car_tune_ui.h"              // F7: sliders on the driven car's own variables
@@ -95,6 +101,18 @@ namespace x3 { namespace apphost {
 // (The old file-static g_tunnelHud char-callback trampoline is gone: HostShell
 // owns the GLFW callbacks now, and chains to whatever a host installed first.)
 
+// THE GAUGE-CLUSTER ANCHOR, in ONE place. The interactive HUD and the headless
+// proof capture both put the fuel bar under the tach; two copies of this
+// arithmetic is the drift that makes a proof shot stop proving anything
+// (NO_SLOP rule 4). dial (2R tall) + gap + gate (0.9R) = 3.0R of vertical room.
+static void gaugeClusterAnchor(float fw, float fh, float& R, float& gcx, float& gcy) {
+    R = 0.150f * fh;
+    const float mar = 0.030f * fh;
+    const float gateH = R * 0.90f;
+    gcx = fw - mar - R;
+    gcy = fh - mar - gateH - R * 0.12f - R;
+}
+
 static float skyVisibleAt(x3::phys::IPhysicsWorld& phys, float x, float y, float z,
                           float dirX, float dirZ) {
     auto blocked = [&](float px, float pz) {
@@ -119,6 +137,72 @@ static float skyVisibleAt(x3::phys::IPhysicsWorld& phys, float x, float y, float
     // standing ON the threshold the roof is taking most of it.
     const float t = 1.0f - (nearest / kBlowInM);
     return 0.85f * (t * t * (3.0f - 2.0f * t));
+}
+
+// ===========================================================================
+// THE SKY IS ONE VALUE (NO_SLOP 4). Three sites in this host set SkyParams —
+// the boot sky, the HEADLESS capture loop and the interactive loop — and they
+// had drifted. The storm branch (cover floor 0.94, the exposure crush, the
+// sun-intensity cut) lived ONLY in the interactive loop, so every storm PROOF
+// SHOT rendered a cover-0.76 mid-grey deck under a full-brightness sky while
+// the played game showed the near-black one: the screenshots were telling a
+// different story than the build, which is the exact defect the capture loop's
+// own weather comment was written about. Both mappings live here now.
+// Receipt: shots_clouds/storm_01_sky.png + storm_02_ground.png (this commit)
+// against shots_clouds/before_storm_01_sky.png (the divergent pair).
+// ===========================================================================
+
+// Push the sky. The SKYLIGHT that comes with it needs no code here, and that
+// is worth writing down because the obvious "fix" is a trap:
+//
+// COVER DIMS THE FILL, NOT JUST THE SUN — mesh.frag's cloudShadowFactor
+// (task #27) takes the DIRECT sun away per-fragment, but the other half of an
+// overcast day is that the sky stops being a bright blue dome and stops
+// filling the shadows. The engine ALREADY does that half: setSkyParams marks
+// the IBL environment dirty (VulkanRenderDevice.cpp — `if (memcmp(&m_sky,...))
+// m_iblDirty = true`) and the probe rebakes FROM THE SKY, deck and all, so a
+// near-black storm deck bakes a near-black fill.
+//
+// The trap: setAmbient() looks like the dial and is DEAD in this world —
+// mesh.frag's iblAmbient() uses the baked environment whenever one is valid
+// and only falls back to the flat `ambient` constant when it is not. MEASURED
+// (a scale of 0.74 pushed through setAmbient at cover 0.75): tunnel-portal
+// interior 138.54 -> 138.50, shaded grass 155.61 -> 155.61, road 53.64 ->
+// 53.64. Nothing. The same probes DO move when the deck itself goes dark
+// (cover 1.0: portal 123.55, grass 109.33, road 35.25) — that is the IBL
+// rebake, already working. NO_SLOP 1: the wheel was in the engine.
+static void applySky(x3::rhi::IRenderDevice& dev,
+                     const x3::rhi::IRenderDevice::SkyParams& sp) {
+    dev.setSkyParams(sp);
+}
+
+// Weather sample -> sky. `flash` is StormSystem::flash() (0 outside a strike).
+static x3::rhi::IRenderDevice::SkyParams skyFromWeather(
+        const x3::game::WeatherSample& ws, float flash) {
+    x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
+    sp.enabled = true;
+    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
+    // Cloud cover tracks the haze the state already asked for, so an overcast
+    // sky is actually overcast instead of clear-with-fog.
+    sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
+    // The storm FLASH rides on exposure rather than on the sun: a strike lights
+    // the whole cloud deck from inside, so raising the sun would throw hard
+    // directional shadows from a light source that is not there.
+    sp.exposure = ws.sky.exposure + flash;
+    // sunIntensity is the SKY DISK + glow only (IRenderDevice.h) — cutting it
+    // keeps a hot disk from punching through an overcast, and costs the ground
+    // nothing (that is cloudShadowFactor's job).
+    sp.sunIntensity = sp.sunIntensity * (1.0f - 0.65f * std::min(1.0f, sp.cloud));
+    if (ws.state == x3::game::WeatherState::Storm) {
+        // A storm is not 'cloudy with effects' — the deck goes heavy and the
+        // light DIES, which is also what makes every lightning flash read
+        // (contrast is the flash's whole currency). 0.94 is the cover
+        // sky.frag's gloom curve (smoothstep 0.55..0.95) was CALIBRATED to:
+        // below it the deck renders mid-grey no matter what the state says.
+        sp.cloud    = std::max(sp.cloud, 0.94f);
+        sp.exposure = ws.sky.exposure * 0.52f + flash * 1.35f;
+    }
+    return sp;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +350,8 @@ int hostTunnel(HostContext& hc) {
     // mountain") — skipped honestly if no peak within reach earns a road.
     x3::game::SpawnConnectorResult connector;
     x3::game::SummitSpurResult summitSpur;
+    x3::game::SummitLotResult  summitLot;
+    x3::game::RidgeRoadResult  ridgeRoad;
     x3::game::RangeCircuitResult rangeCircuit;
     bool connOn = false, circuitOn = false;
     {
@@ -311,6 +397,47 @@ int hostTunnel(HostContext& hc) {
                 if (!summitSpur.built)
                     summitSpur = x3::game::registerSummitSpur(ringSpec, ringRoadY,
                                                               &route, &avoid);
+                // THE PLACE THE SPUR GOES TO. Without this the spur is 1.4
+                // miles of switchback that ends on a bare hillside — the sketch
+                // (ROAD_NETWORK_SKETCH_V2.png) labels that high ground "Parking
+                // Lot on Top of Mountain". Registered HERE, at boot, because
+                // the pad is a TerrainCorridor carve and the registry closes at
+                // the first TerrainStreamer::init() (terrain.h contract); and
+                // AFTER the spur because its datum is the spur's last node.
+                if (summitSpur.built) {
+                    summitLot = x3::game::registerSummitLot(summitSpur);
+                    // THE LONG LEG OF THE LOOP — Tim's dirt road over the tops,
+                    // lot -> the bore's portal shoulder. Registered here for the
+                    // same reason the lot is: the carve registry closes at the
+                    // first TerrainStreamer::init(), and this needs the lot (one
+                    // end) and the bore (the other) to already exist.
+                    // DEFAULT OFF, and that is a statement about the road, not
+                    // about the knob. NO_SLOP rule 6 says features ship on; this
+                    // one is NOT FINISHED and shipping it on would put a 773 ft
+                    // trench across the map. In the live world (more routes
+                    // registered than the gate's, so a different line) the
+                    // deepest cut lands at mile 4.72 at (-520, 7) — see
+                    // ridge_road.h's tuning log and the switchback fix it points
+                    // at. Turn it on with X3_RIDGE_ROAD=1 to work on it; turn it
+                    // on by default the day --test-ridgeroad is 7/7.
+                    const char* rre = std::getenv("X3_RIDGE_ROAD");
+                    if (summitLot.built && rre && rre[0] == '1') {
+                        std::vector<const x3::game::RoadSpec*> rrAvoid = avoid;
+                        rrAvoid.push_back(&ringSpec);
+                        rrAvoid.push_back(&summitSpur.spec);
+                        ridgeRoad = x3::game::registerRidgeRoad(summitLot, route, &rrAvoid);
+                        if (!ridgeRoad.built)
+                            x3::logWarn(std::string("--world tunnel: ridge road NOT built — ") +
+                                        ridgeRoad.whyNot);
+                    }
+                    if (!summitLot.built) {
+                        char lb[192];
+                        std::snprintf(lb, sizeof(lb),
+                                      "--world tunnel: summit lot NOT built — %s",
+                                      summitLot.whyNot);
+                        x3::logWarn(lb);
+                    }
+                }
             }
         }
     }
@@ -331,6 +458,53 @@ int hostTunnel(HostContext& hc) {
                 outerConnOn = false;
             }
         }
+    }
+
+    // ==== W-STATIONS — "places for cars to go, to fuel up" ==================
+    // Sited from the routes just registered (the freeway's turnaround
+    // crossovers, the town approach, the country crossroads), then CARVED here
+    // — this is the last stop before the height-query gate closes at
+    // TerrainStreamer::init(), and it must also precede buildRoadRibbon()
+    // because registerPads() notes each driveway mouth as a road junction and
+    // that is what stops planRoadBarriers() laying a jersey wall across it.
+    x3::game::GasStationWorld gasStations;
+    {
+        const char* e = std::getenv("X3_STATIONS");
+        if (!(e && e[0] == '0')) {
+            gasStations.plan(ringOn ? &ringSpec : nullptr, ringOn ? &ringRoadY : nullptr,
+                             riverOn ? &riverRoad.spec : nullptr,
+                             riverOn ? &riverRoad.roadY : nullptr,
+                             connOn ? &connector.spec : nullptr,
+                             connOn ? &connector.roadY : nullptr);
+            gasStations.registerPads();
+        }
+    }
+
+    // THE GLIMVALE WORKS (X3_FACTORY=0 to disable — the flag is for turning it
+    // OFF, NO_SLOP rule 6). Planned and its drive registered HERE, in the boot
+    // slot, for the reason every producer above is here: app/terrain.h's
+    // registry closes at the first height query, and the streamer inits below.
+    // LAST of the roads, so the site scoring reads a field with every other
+    // carve already in it and can refuse a pad that lands on somebody's road.
+    x3::game::FactoryPlan        facPlan;
+    x3::game::FactoryDriveResult facDrive;
+    bool facOn = false;
+    {
+        const char* e = std::getenv("X3_FACTORY");
+        facOn = ringOn && !(e && e[0] == '0');       // needs a freeway to be seen from
+        if (facOn) {
+            facPlan = x3::game::planFactoryWorks(ringSpec, ringRoadY);
+            if (facPlan.ok) {
+                facDrive = x3::game::registerFactoryDrive(facPlan, ringSpec, ringRoadY);
+                facOn = facDrive.ok;
+            } else {
+                facOn = false;
+            }
+            if (!facOn) x3::logWarn("--world tunnel: the works was not sited — "
+                                    "no landmark, no tickets");
+        }
+    }
+    {
         char cb[128];
         std::snprintf(cb, sizeof(cb), "--world tunnel: corridor registry %u of %u used",
                       x3::game::terrainCorridorCount(), x3::game::kMaxTerrainCorridors);
@@ -406,6 +580,7 @@ int hostTunnel(HostContext& hc) {
             addSpec(rangeCircuit.spec, "RANGE CIRCUIT");
             addSpec(rangeCircuit.accessSpec, "RANGE CIRCUIT");
         }
+        if (facOn) addSpec(facDrive.spec, "WORKS DRIVE");
         char mb[128];
         std::snprintf(mb, sizeof(mb), "[tunnel] map: %u road overlay polyline(s) staged",
                       (uint32_t)mapRoutes.size());
@@ -665,7 +840,14 @@ int hostTunnel(HostContext& hc) {
         sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f;
         // Scattered fair-weather cumulus. 0 would be the old clear sky exactly.
         sp.cloud = 0.42f;
-        device->setSkyParams(sp);
+        // X3_CLOUD: dev override for the NO-WEATHER sky's cover (0..1) — the
+        // A/B knob the cloud-pass perf receipts are measured with (0 = the
+        // clear-sky baseline, cloud pass + ground shade both gate out) and the
+        // way to shoot a specific deck without waiting on the scheduler. With
+        // X3_WEATHER on, the weather tick owns cover and this is ignored.
+        if (const char* cv = std::getenv("X3_CLOUD"))
+            sp.cloud = std::min(1.0f, std::max(0.0f, (float)std::atof(cv)));
+        applySky(*device, sp);   // sky + the fill its cover implies
     }
     device->setCameraFar(4000.0f);
 
@@ -724,22 +906,87 @@ int hostTunnel(HostContext& hc) {
         }
         startPos[1] = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]) + 1.0f;
     }
+    // X3_SPAWN=lot|spur|bore — START somewhere other than the ring. THE REVIEW
+    // KNOB. The summit lot is 7.5 km from the default spawn, so in practice
+    // nobody had ever seen it: not the owner (twenty minutes of driving), not
+    // an agent (the --screenshot harness is headless and does not go there).
+    // A destination nobody can get to is not finished, and "I did not look at
+    // it" is the honest reading of every review that skipped it.
+    // DEFAULT OFF and unset spawns exactly as before (NO_SLOP rule 6).
+    if (const char* sp = std::getenv("X3_SPAWN")) {
+        const std::string w(sp);
+        bool moved = false;
+        if (w == "lot" && summitLot.built) {
+            // On the pad's entry mouth, facing in along the aisle.
+            startPos[0] = summitLot.mouthX; startPos[2] = summitLot.mouthZ; moved = true;
+        } else if (w == "spur" && summitSpur.built) {
+            startPos[0] = summitSpur.spec.x.back();
+            startPos[2] = summitSpur.spec.z.back(); moved = true;
+        } else if (w == "bore") {
+            float p[3]; route.posAt(std::max(8.0f, route.boreS0 - 40.0f), p);
+            startPos[0] = p[0]; startPos[2] = p[2]; moved = true;
+        }
+        if (moved) {
+            startPos[1] = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]) + 1.0f;
+            char sb[160];
+            std::snprintf(sb, sizeof(sb), "--world tunnel: X3_SPAWN=%s — spawning at (%.0f, %.0f, %.0f)",
+                          w.c_str(), (double)startPos[0], (double)startPos[1], (double)startPos[2]);
+            x3::logInfo(sb);
+        } else {
+            x3::logWarn(std::string("--world tunnel: X3_SPAWN=") + w +
+                        " not available (want lot|spur|bore) — default spawn");
+        }
+    }
 
     x3::game::TerrainStreamer streamer;
     const x3::game::TerrainConfig& cfg = x3::game::worldTerrainConfig();
     streamer.setUploadBudget(96);
     streamer.setMaxInFlight(48);
+    // PAIRED with the horizon ring's rInner below (NO_SLOP rule 4) — the ring
+    // must start INSIDE what the streamer covers or there is a hole between
+    // them. Named once so the two can never drift apart again.
+    const int kStreamRadiusTiles = headless ? 14 : 9;
     streamer.init(scene, *device, *phys, jobs.get(), cfg,
-                  startPos[0], startPos[2], /*radius=*/headless ? 14 : 9);
+                  startPos[0], startPos[2], kStreamRadiusTiles);
 
     // Far country so the hill sits in a landscape and not on a void horizon.
+    //
+    // THE VOID ANNULUS (found by W-PERF, fixed 2026-08-17). rInner was 470 m
+    // flat, and the centre was the ROUTE MIDPOINT while the streamer centres on
+    // startPos and follows the player. Streamed coverage is
+    // kStreamRadiusTiles * cfg.tileSize — 288 m interactively (radius 9), 448 m
+    // headless (radius 14) — so the ground ran out at 288 m and the far country
+    // did not begin until 470 m: a 182 m ring of NOTHING all the way round the
+    // player, every interactive frame. Headless it was 22 m, which is why no
+    // capture ever showed it: --screenshot runs at radius 14 and the harness
+    // structurally cannot see the interactive case. Verified by eye in an
+    // interactive run, not a capture.
+    //
+    // Both values now derive from the one radius. The margin is one tile: a
+    // tile-aligned streamer guarantees coverage to radius*tileSize from the
+    // player only when the player sits at their tile's centre, so back the ring
+    // rim a full tile inside it and let the streamed tiles overlap the seam
+    // (yBias keeps the ring recessed under them). Same rule host_streamed.cpp
+    // keeps at 240 m against its radius-8 / 256 m disc.
     {
-        float mid[3]; route.posAt(route.totalLen * 0.5f, mid);
+        const float streamedR = (float)kStreamRadiusTiles * cfg.tileSize;
         x3::game::HorizonRingDesc hr{};
-        hr.centerX = mid[0]; hr.centerZ = mid[2];
-        hr.rInner = 470.0f; hr.rOuter = 9000.0f;
+        // Centre on the STREAMER's centre, not the route midpoint: the hole in
+        // the middle of the ring is exactly the disc the streamer fills, so the
+        // two must be concentric. (Known limit, shared with every other host:
+        // the ring is baked once and does not re-centre on long travel —
+        // host_streamed.cpp documents the same follow-up.)
+        hr.centerX = startPos[0]; hr.centerZ = startPos[2];
+        hr.rInner = streamedR - cfg.tileSize; hr.rOuter = 9000.0f;
         hr.rings = 96; hr.segments = 128; hr.yBias = -3.0f;
         x3::game::addTerrainHorizonRing(scene, *device, streamer.groundTexture(), hr);
+        char hb[192];
+        std::snprintf(hb, sizeof(hb),
+                      "--world tunnel: horizon ring rInner %.0f m inside a %.0f m "
+                      "streamed disc (radius %d tiles x %.0f m), concentric at (%.0f, %.0f)",
+                      hr.rInner, streamedR, kStreamRadiusTiles, cfg.tileSize,
+                      hr.centerX, hr.centerZ);
+        x3::logInfo(hb);
     }
 
     // ==== STEP 3 — the road, the shell, the portals ==========================
@@ -777,6 +1024,13 @@ int hostTunnel(HostContext& hc) {
             x3::game::buildRoadRibbon(summitSpur.spec, scene, *device, *phys,
                                       &summitSpur.roadY);
             x3::game::buildJunctionMouth(summitSpur.jct, scene, *device, *phys);
+            // ...and the lot it climbs to. Slab and kerb COLLIDE (NO_SLOP rule
+            // 11): you drive onto it, you get out, you walk on it.
+            if (summitLot.built)
+                x3::game::buildSummitLot(summitLot, scene, *device, *phys);
+            // ...and the dirt road that leaves it for the mountains.
+            if (ridgeRoad.built)
+                x3::game::buildRidgeRoad(ridgeRoad, scene, *device, *phys);
         }
     }
     // The outer tour's pavement + its five dressed bores. The ribbon rides the
@@ -815,7 +1069,50 @@ int hostTunnel(HostContext& hc) {
         if (riverRoad.ringJctB.valid)
             x3::game::buildJunctionMouth(riverRoad.ringJctB, scene, *device, *phys);
     }
+    // ---- THE GLIMVALE WORKS ------------------------------------------------
+    // Pavement first (so the mouth laps onto a road that exists), then the
+    // works itself, which reads the CARVED field for its platform skirt and so
+    // has to come after the streamer. See app/factory.h.
+    x3::game::FactoryWorks factory;
+    x3::game::GoldenTickets tickets;
+    if (facOn) {
+        x3::game::buildRoadRibbon(facDrive.spec, scene, *device, *phys, &facDrive.roadY);
+        if (facDrive.jct.valid)
+            x3::game::buildJunctionMouth(facDrive.jct, scene, *device, *phys);
+        factory.build(scene, *device, *phys, facPlan);
+    }
+    // THE GOLDEN TICKETS. Five cards, five landmarks — the list comes from
+    // factoryTicketSpots(), the SAME call --test-factory gates, so the world
+    // and its test can never hide them in different places (NO_SLOP rule 4).
+    {
+        x3::game::TicketSpotDef sp[x3::game::kTicketCount];
+        const uint32_t ns = x3::game::factoryTicketSpots(facPlan, sp);
+        for (uint32_t k = 0; k < ns; ++k)
+            tickets.addSpot(sp[k].name, sp[k].x, sp[k].y, sp[k].z);
+        tickets.build(scene, *device);
+        // X3_TICKETS=n seeds the count. This is the SAVE HOOK standing in for a
+        // save file (the hunt has no persistence yet and says so), and it is
+        // also the only way a STILL can prove the HUD counter and the open
+        // gate — a headless capture cannot walk up and press E. `tickets <n>`
+        // in the console does the same thing live.
+        if (const char* te = std::getenv("X3_TICKETS")) {
+            tickets.setCollected(scene, std::atoi(te));
+            if (tickets.allFound() && facOn) factory.openGate();
+            char tb2[96];
+            std::snprintf(tb2, sizeof(tb2), "tickets: seeded at %d/%d from X3_TICKETS",
+                          tickets.collected(), (int)tickets.spotCount());
+            x3::logInfo(tb2);
+        }
+    }
+
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
+
+    // W-STATIONS — forecourt aprons + driveways (collision: the car drives ON
+    // them) and the canopy/pump/kiosk structures. AFTER the ribbons, so the
+    // driveway laps pavement that already exists; BEFORE optimizeBroadphase().
+    const x3::game::GasStationBuildResult stationBuild =
+        gasStations.build(scene, *device, *phys);
+    (void)stationBuild;
 
     // Tall broadleaf groves shading the open-country stretches of the road
     // (Tim 2026-08: "somE Tall Trees!! Shading the road... In some areas").
@@ -830,11 +1127,64 @@ int hostTunnel(HostContext& hc) {
             float cam[5]; tunnel.showcaseCamera(route, i, cam);
             camKeepOut.push_back({ cam[0], cam[2], 12.0f });
         }
-        // Benches never seat below the DRAWN river plane (PAIRED with
-        // applyRiverWater's seaLevel; see RoadTrees::build minBenchY).
-        const float benchDryY = (riverOn && riverRoad.plan.ok)
-                              ? riverRoad.plan.waterY + 0.3f : -1.0e9f;
-        trees.build(*device, route, camKeepOut, benchDryY);
+        // A tree through a station canopy, or one standing in the driveway
+        // mouth, is exactly the defect the keep-out list exists for.
+        std::vector<float> stationDiscs;
+        gasStations.keepOutDiscs(stationDiscs);
+        for (size_t k = 0; k + 2 < stationDiscs.size(); k += 3)
+            camKeepOut.push_back({ stationDiscs[k], stationDiscs[k+1], stationDiscs[k+2] });
+        // The minBenchY shim (drawn-plane level) is GONE: the drawn river now
+        // follows the same worldWaterLevelAt table (task #32 — one truth), so
+        // RoadTrees' own water-table check IS the drawn waterline. `phys` stays
+        // — that is the trunk collision the owner asked for, unrelated to the
+        // shim that shared the call.
+        trees.build(*device, route, camKeepOut, -1.0e9f, phys.get());
+    }
+
+    // ==== THE SMALL MOUNTAIN TOWN (W-TOWN) ==================================
+    // ROAD_NETWORK_SKETCH_V2.png's brown "Small Mountain Town" hangs off a
+    // yellow ladder-switchback road, and ROAD_NETWORK_PLAN.md:701 already named
+    // the site: "Town 2 — the climb foot, where the inner tour meets the summit
+    // road." The SUMMIT SPUR is that ladder — the network's only switchback
+    // climb — so main street is laid along its lowest, gentlest reach.
+    // DEFAULT ON for the world it was built for (NO_SLOP rule 6); X3_TOWN=0
+    // is the door for turning it OFF, not the door it lives behind.
+    // Built AFTER the ribbons so terrainHeightAtWorld returns the carved field
+    // and the pavement it fronts already exists.
+    x3::game::Town town;
+    bool townOn = false;
+    // --screenshot-town's dusk gate. The settle loop re-pushes SkyParams every
+    // frame when weather is on, so a one-shot setSkyParams before the grab
+    // would be overwritten sixty times before the capture — the flag is read
+    // INSIDE the loop instead.
+    bool townDusk = false;
+    {
+        const char* e = std::getenv("X3_TOWN");
+        townOn = summitSpur.built && !(e && e[0] == '0');
+        if (townOn) {
+            x3::game::Town::Config tc;
+            tc.street  = &summitSpur.spec;
+            tc.streetY = &summitSpur.roadY;
+            tc.startU  = 70.0f;
+            tc.endU    = 760.0f;
+            // The junction mouth owns the bottom of the spur; nothing stands
+            // in it (kJunctionSetbackM + the merge fillets).
+            tc.keepOut.push_back({ summitSpur.jct.jx, summitSpur.jct.jz,
+                                   x3::game::kJunctionSetbackM });
+            townOn = town.build(scene, *device, *phys, tc);
+            if (townOn) {
+                town.spawnPedestrians(*device, *phys);
+                // The tunnel's own fixtures plus the town's lamps and lit
+                // windows — ONE setPointLights call owns the array, so the
+                // town's have to join the tunnel's rather than replace them.
+                std::vector<x3::rhi::PointLight> pl = tunnel.lights();
+                pl.insert(pl.end(), town.lights().begin(), town.lights().end());
+                device->setPointLights(pl.data(), (uint32_t)pl.size());
+            }
+        } else if (!summitSpur.built) {
+            x3::logWarn("--world tunnel: no summit spur -> no mountain town "
+                        "(the town rides the spur; see app/town.h)");
+        }
     }
 
     // THE FORESTS — the owner's brown map regions (ROAD_NETWORK_SKETCH_V2.png:
@@ -1094,31 +1444,21 @@ int hostTunnel(HostContext& hc) {
     // just never got a water feed in THIS host, so Jake hiked the riverbed
     // dry under the water table.
     //
-    // THE FEED IS THE SURFACE HE CAN SEE. This host draws ONE flat Gerstner
-    // plane at the bridge plan's waterY, while worldWaterLevelAt reports the
-    // spline's sloping level — 0.26 m below the plane a mere 32 m downstream.
-    // Fed the spline, he treads with his head under the drawn surface. So
-    // inside the bridge reach the PLANE owns the answer; beyond it (and in
-    // the ocean) the spline query stands. Same clamp the fish got.
-    {
-        const bool  rOn = riverOn && riverRoad.plan.ok;
-        const float rcx = rOn ? riverRoad.plan.cx : 0.0f;
-        const float rcz = rOn ? riverRoad.plan.cz : 0.0f;
-        const float rwy = rOn ? riverRoad.plan.waterY : 0.0f;
-        // The +0.35 m bias: the Player's buoyancy rests the EYE just above the
-        // fed surface, which leaves the drawn head bobbing right AT the
-        // waterline — reading as submerged whenever a crest rolls through. A
-        // treading human rides higher than his eye line; reporting the surface
-        // a hand-span HIGH makes the buoyancy lift him that much further, so
-        // head + shoulders clear the drawn plane.
-        onFoot.setWaterQuery([rOn, rcx, rcz, rwy](float x, float z) {
-            const float w = x3::game::worldWaterLevelAt(x, z);
-            if (!rOn || w <= x3::game::kWorldWaterDry + 1.0f) return w;
-            const float dx = x - rcx, dz = z - rcz;
-            if (dx * dx + dz * dz < 260.0f * 260.0f) return rwy + 0.35f;
-            return w;
-        });
-    }
+    // THE FEED IS THE SURFACE HE CAN SEE — and since task #32 the drawn
+    // surface IS worldWaterLevelAt (the water shader steps the plane down the
+    // channel from the same node table), so the old bridge-reach clamp to the
+    // flat plane is deleted. What stays is the +0.35 m presentation bias: the
+    // Player's buoyancy rests the EYE just above the fed surface, which
+    // leaves the drawn head bobbing right AT the waterline — reading as
+    // submerged whenever a crest rolls through. A treading human rides higher
+    // than his eye line; reporting the surface a hand-span HIGH makes the
+    // buoyancy lift him that much further, so head + shoulders clear the
+    // drawn crests.
+    onFoot.setWaterQuery([](float x, float z) {
+        const float w = x3::game::worldWaterLevelAt(x, z);
+        if (w <= x3::game::kWorldWaterDry + 1.0f) return w;
+        return w + 0.35f;
+    });
     bool  driving      = true;
     bool  footSpawned  = false;
     float parkedAt[3]  = { 0, 0, 0 };   // where the car was left, for the re-entry prompt
@@ -1682,6 +2022,37 @@ int hostTunnel(HostContext& hc) {
         riverLife.build(scene, *device, *phys,
                         audioOn ? audio.get() : nullptr, riverRoad.plan);
 
+    // ==== FREEWAY TRAFFIC (W-TRAFFIC) =======================================
+    // "now that we have a 16 lane freeway.. we will need to fill it with
+    // traffic ;->" — kinematic lane-followers on the inner tour's own lane
+    // splines (app/traffic.h). DEFAULT ON (NO_SLOP rule 6: the flag is for
+    // turning it OFF) — X3_TRAFFIC=0 disables.
+    x3::game::FreewayTraffic traffic;
+    struct TrafficContactCtx {
+        x3::game::FreewayTraffic* t = nullptr;
+        x3::phys::IPhysicsWorld*  p = nullptr;
+    } trafficCtx;
+    {
+        const char* e = std::getenv("X3_TRAFFIC");
+        const bool trafficOn = ringOn && !(e && e[0] == '0');
+        if (trafficOn &&
+            traffic.build(ringSpec, ringRoadY, device, phys.get(),
+                          x3::game::convertedGlbRoot(), x3::game::TrafficConfig{})) {
+            // The ONE global contact callback (nothing else in this host uses
+            // it; the canon world's monster facade has its own world). A hard
+            // hit converts the struck car to a dynamic body — the work-zone
+            // drum pattern, car-sized.
+            trafficCtx.t = &traffic;
+            trafficCtx.p = phys.get();
+            phys->setContactCallback(
+                [](x3::phys::BodyId a, x3::phys::BodyId b, const float*,
+                   const float*, float impulse, void* user) {
+                    auto* c = static_cast<TrafficContactCtx*>(user);
+                    c->t->onContact(a, b, impulse, c->p);
+                }, &trafficCtx);
+        }
+    }
+
     // THE RIVER HOLDS WATER — one lambda, BOTH render paths. The water pass
     // used to be armed only inside the interactive loop, so every headless
     // capture (the proof shots included) rendered a dry river: the gate was
@@ -1691,11 +2062,41 @@ int hostTunnel(HostContext& hc) {
     // darker+greener than the sea defaults, specular drops 12->5 and the
     // fresnel floor 0.02->0.012 (less sky mirror face-on). Caustics ride along
     // (the canon undersea pass) so the deepened bed reads THROUGH the surface.
-    auto applyRiverWater = [&](float t) {
+    // (fx, fz) = this frame's focus (camera/player/car XZ): river mode feeds
+    // the LOCAL water level there into seaLevel (the shader's underside-view
+    // gate) and the caustics plane — the flat bridge-level plane is gone.
+    auto applyRiverWater = [&](float t, float fx, float fz) {
         if (!(riverOn && riverRoad.plan.ok)) return;
         x3::rhi::IRenderDevice::WaterParams wpr{};
         wpr.enabled   = true;
-        wpr.seaLevel  = riverRoad.plan.waterY;
+        // ONE WATER TRUTH (task #32): the drawn surface follows the SAME node
+        // table worldWaterLevelAt interpolates — stepped down the channel per
+        // vertex in water.vert, estuary handed off to the real sea. The old
+        // single flat plane at plan.waterY stood ~1.2 m/chain-node above the
+        // carved table downstream and climbed the banks (receipt: the bench
+        // that shipped submerged at (-340,11,-468) while PASSING the
+        // worldWaterLevelAt+0.5 check).
+        {
+            using WP = x3::rhi::IRenderDevice::WaterParams;
+            x3::game::WorldRiverNode rn[WP::kMaxRiverNodes];
+            const uint32_t n = x3::game::worldRiverRisenNodes(rn, WP::kMaxRiverNodes);
+            wpr.riverNodeCount = n;
+            for (uint32_t i = 0; i < n; ++i) {
+                wpr.riverNodes[i][0] = rn[i].x;
+                wpr.riverNodes[i][1] = rn[i].z;
+                wpr.riverNodes[i][2] = rn[i].waterY;
+            }
+            wpr.riverHalfWidth = x3::game::kWorldRiverHalfWidth;
+            wpr.basinCenter[0] = x3::game::kWorldOceanBasinX;
+            wpr.basinCenter[1] = x3::game::kWorldOceanBasinZ;
+            wpr.basinRadius    = x3::game::kWorldOceanBasinR;
+            wpr.oceanLevel     = x3::game::kWorldSeaLevel;
+        }
+        // seaLevel carries the LOCAL level at the focus (underside-view gate +
+        // caustics plane); dry land falls back to the bridge's level.
+        const float lw = x3::game::worldWaterLevelAt(fx, fz);
+        wpr.seaLevel  = (lw > x3::game::kWorldWaterDry + 1.0f)
+                      ? lw : riverRoad.plan.waterY;
         wpr.time      = t;
         wpr.amplitude = 0.16f;          // a river swell, not an ocean — and low
                                         // enough that a treading head clears
@@ -1714,11 +2115,32 @@ int hostTunnel(HostContext& hc) {
         wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
         device->setWaterParams(wpr);
         x3::rhi::IRenderDevice::CausticsParams cp{};
-        cp.enabled = true; cp.waterY = riverRoad.plan.waterY;
+        cp.enabled = true; cp.waterY = wpr.seaLevel;   // local level, not the flat plane
         cp.time = t; cp.intensity = 0.85f;
         device->setCaustics(cp);
     };
     float riverWaterClock = 0.0f;
+
+    // ==== RAIN RUNOFF (W-WATER, task #23): heavy rain swells the river. ====
+    // Owner's scale is rain 0-10; WeatherSample::precipitation is 0-1, so
+    // "rain >= 6" = precipitation >= 0.6. At the threshold the reach rises a
+    // visible 0.3 m, scaling to kWorldRiverRainRiseMax (0.9 m) in a full
+    // storm — and terrain.cpp caps the rise per node at 60% of the levee
+    // freeboard, so the swollen river NEVER tops a levee. The level eases in
+    // and out (a river lags its rain); both the drawn surface and
+    // worldWaterLevelAt consume the same setWorldRiverRainRise state, so swim
+    // physics, fish and the visible water rise together (one truth, rule 4).
+    float riverRainRise = 0.0f;
+    auto tickRiverRise = [&](float d, float precip, bool snow) {
+        if (!(riverOn && riverRoad.plan.ok)) return;
+        const float target = (!snow && precip >= 0.6f)
+            ? 0.3f + (x3::game::kWorldRiverRainRiseMax - 0.3f)
+                     * std::min(1.0f, (precip - 0.6f) / 0.4f)
+            : 0.0f;
+        const float step = 0.06f * d;              // ~15 s swell, same ebb
+        riverRainRise += std::clamp(target - riverRainRise, -step, step);
+        x3::game::setWorldRiverRainRise(riverRainRise);
+    };
 
     phys->optimizeBroadphase();
 
@@ -1736,6 +2158,25 @@ int hostTunnel(HostContext& hc) {
         std::function<void(float)> shotTick;
         std::function<void(const x3::rhi::FrameContext&)> shotDraw;
 
+        // X3_SHOT_PUMP=1 draws the station HUD into the still (see the block
+        // inside the settle loop); X3_SHOT_PUMP=2 additionally holds E, so the
+        // "REFUELLING..." state and the filling bar can be photographed too.
+        const char* shotPumpEnv = std::getenv("X3_SHOT_PUMP");
+        const bool shotPump      = shotPumpEnv && shotPumpEnv[0] != '0';
+        const bool shotPumpHoldE = shotPumpEnv && shotPumpEnv[0] == '2';
+        if (shotPump) {
+            // STAGE THE TANK, or the proof photographs the wrong state: a
+            // factory-fresh tank is FULL, so the honest prompt under the canopy
+            // is "TANK FULL" and neither the E-REFUEL hint nor the flow can
+            // ever appear in the still (the first proof run showed exactly
+            // that). This is the SAME state the console command `fuel 24`
+            // leaves a player in — litres set, gauge armed — staged through the
+            // same public FuelTank, and then update()/drawPumpPrompt/
+            // drawFuelBar below run unmodified.
+            gasStations.fuel().litres = gasStations.fuel().capacityL * 0.35f;
+            gasStations.fuel().armed  = true;
+        }
+
         auto settleAndGrab = [&](const float cam[5], const std::string& out) -> bool {
             // The streamer only enqueues the full ring on a focus-tile crossing
             // (host_cliffs.cpp's trick): nudge the focus on frame 1, then hold.
@@ -1746,6 +2187,13 @@ int hostTunnel(HostContext& hc) {
             // mechanism as geolod_shot.cpp's measured window).
             double perfMsSum = 0.0; int perfN = 0;
             uint64_t perfTris = 0; uint32_t perfDraws = 0, perfObjs = 0;
+            // ONE PERF RECEIPT, NOT TWO (NO_SLOP 1/4). W-CLOUDS landed its own
+            // [cloud-perf] gpuFrameMs average here in parallel; this one already
+            // averages the SAME device timestamp over the SAME settled 60-frame
+            // window, so the duplicate is gone and the cloud-pass budget gate
+            // (cloud pass + shadows < 10% of frame time, measured X3_CLOUD=0 vs
+            // 0.42 at a fixed cam) is read off the [tunnel-perf] line below.
+            // Paired: shots_clouds/run_captures.sh greps for it.
             for (int i = 0; i < kFrames; ++i) {
                 glfwPollEvents();
                 const float fx = (i == 1) ? cam[0] + 40.0f : cam[0];
@@ -1756,8 +2204,13 @@ int hostTunnel(HostContext& hc) {
                 // what the runtime gate said. Same lambda, same tone, plus the
                 // boats/fish so the capture proves the LIVING river.
                 riverWaterClock += dt;
-                applyRiverWater(riverWaterClock);
+                applyRiverWater(riverWaterClock, cam[0], cam[2]);
+                device->setSkyTime(riverWaterClock);   // cloud drift (see the interactive loop)
                 riverLife.prePhysics(dt);
+                // TRAFFIC IN CAPTURES TOO (gotcha 4.1b's lesson: moving
+                // content that only ticks in the live loop is invisible in
+                // every proof shot). Focus = the capture camera.
+                traffic.update(dt, cam, phys.get());
                 if (shotTick) shotTick(dt);   // staged swimmer BEFORE the step
                 phys->step(dt);
                 riverLife.postPhysics(dt, scene, *device, *phys,
@@ -1774,14 +2227,14 @@ int hostTunnel(HostContext& hc) {
                     weather.tick(dt);
                     const x3::game::WeatherSample& ws = weather.sample();
                     wetness.tick(dt, ws.precipitation, ws.tempC, ws.snowfall);
+                    tickRiverRise(dt, ws.precipitation, ws.snowfall);
                     storm.tick(dt, ws.state == x3::game::WeatherState::Storm ? ws.hazardLevel : 0.0f,
                                nullptr, cam[0], cam[1], cam[2]);
-                    x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
-                    sp.enabled = true;
-                    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
-                    sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
-                    sp.exposure = ws.sky.exposure + storm.flash();
-                    device->setSkyParams(sp);
+                    // ONE mapping with the interactive loop (skyFromWeather,
+                    // top of file). This site used to carry its own cut-down
+                    // copy WITHOUT the storm branch, which is why the storm
+                    // proof shots were brighter than the storm you play.
+                    applySky(*device, skyFromWeather(ws, storm.flash()));
                     x3::rhi::IRenderDevice::WetnessParams wp{};
                     wp.amount = wetness.wetness() * (1.0f - wetness.snowCover());
                     device->setWetness(wp);
@@ -1794,17 +2247,59 @@ int hostTunnel(HostContext& hc) {
                                   skyVisibleAt(*phys, cam[0], cam[1], cam[2], route.dirX, route.dirZ));
                 }
 
+                if (townDusk) {
+                    // Sun on the horizon, warm and low, sky dimmed: the town's
+                    // windows and lamps become the light in the frame, which is
+                    // the whole point of the gate.
+                    x3::rhi::IRenderDevice::SkyParams dsp{};
+                    dsp.enabled  = true;
+                    dsp.sunDir[0] = -0.94f; dsp.sunDir[1] = 0.055f; dsp.sunDir[2] = -0.33f;
+                    dsp.cloud    = 0.35f;
+                    dsp.exposure = 0.55f;
+                    device->setSkyParams(dsp);
+                }
+
+                // THE TOWN WALKS IN CAPTURES TOO. ENGINE_GOTCHAS 4.4 is right
+                // that a still cannot PROVE motion — but a still of six
+                // unticked characters is worse than no still: an AnimatedCharacter
+                // that never had update() called is a bind-pose statue, which is
+                // exactly the T-pose defect NO_SLOP rule 1 catalogues. The settle
+                // loop is a separate loop from the interactive one (the weather
+                // and the river both learned this the expensive way, three
+                // comments up), so the walk has to be wired into it explicitly.
+                if (townOn) town.update(dt, *phys, *device, cam[0], cam[2]);
+                // THE WORKS HAS TO LIVE IN THE CAPTURE LOOP TOO. This is the
+                // same trap the weather block above documents, and gotcha 4.1b
+                // (echotropolis' streamed content, never ticked in the settle
+                // loop, so every still showed an empty bay): a plume ticked
+                // only in the interactive loop is a plume no screenshot can
+                // ever prove. The settle is 200 frames at 1/60 s = 3.3 s of
+                // stack time, which is a real column by capture.
+                if (facOn) factory.update(scene, dt);
+
                 if (i == kFrames - 1) device->armCapture(out.c_str());
                 auto frame = device->beginFrame();
                 if (frame.valid) {
                     scene.render(*device, frame);
                     trees.draw(*device, frame);
+                    if (townOn) town.draw(*device, frame);
+                    gasStations.draw(*device, frame);
                     // forests: camera fwd = (cos yaw, 0, sin yaw) — gotcha 4.1
                     forests.draw(*device, frame, cam,
                                  std::cos(cam[3]), std::sin(cam[3]));
+                    if (facOn) factory.drawSmoke(*device, cam);
+                    tickets.drawGlints(*device);
                     if (carBuilt) car.render(frame);
+                    traffic.render(frame, cam);
                     riverLife.render(*device, frame, scene);
                     if (shotDraw) shotDraw(frame);   // the staged swimmer
+                    // The ticket HUD in a STILL, but ONLY once a card has been
+                    // taken (X3_TICKETS=n, or the console). At the default 0/5
+                    // this draws nothing, so every existing reference capture in
+                    // this host is byte-identical — the whole point of gating it
+                    // on state rather than on a second env knob.
+                    if (tickets.collected() > 0)
+                        tickets.drawHud(*device, frame, cam[0], cam[1], cam[2]);
                     if (weatherOn) precip.submit(*device, frame);
                     // THE INSTRUMENTS, IN THE CAPTURE. This path drew scene +
                     // car + precip and no HUD at all, so every gauge in this
@@ -1840,6 +2335,32 @@ int hostTunnel(HostContext& hc) {
                     }
                     garage.tick(1.0f / 60.0f);
                     garage.drawCard(*device, frame);
+
+                    // ---- X3_SHOT_PUMP=1: the PUMP PROOF. Opt-in and default
+                    // off (no existing reference capture moves), for the same
+                    // reason ECHO_SHOT_STREAMED exists: the HUD lives only in
+                    // the interactive loop, so a still of the forecourt could
+                    // never show the hint the player is actually offered, and
+                    // "E  REFUEL works" would be an untested claim on a
+                    // screenshot. This runs the REAL proximity check against
+                    // the camera position and draws the REAL prompt + gauge
+                    // through gas_station.h's shared renderers.
+                    if (shotPump) {
+                        // =2: hold E only over the LAST 90 settle frames. Held
+                        // for all 200 the pump moves 200/60*22 = 73 L — more
+                        // than the whole tank — so the still lands on TANK
+                        // FULL every time; 90 frames moves ~33 L from the
+                        // staged 35% and the capture catches the flow mid-fill.
+                        const bool holdE = shotPumpHoldE && i >= kFrames - 90;
+                        gasStations.update(1.0f / 60.0f, cam[0], cam[2], 0.0f,
+                                           0.0f, holdE);
+                        x3::game::drawPumpPrompt(*device, frame, gasStations.prompt());
+                        uint32_t phw = 0, phh = 0; device->hudSize(phw, phh);
+                        float pR = 0.0f, pgx = 0.0f, pgy = 0.0f;
+                        gaugeClusterAnchor((float)phw, (float)phh, pR, pgx, pgy);
+                        x3::game::drawFuelBar(*device, frame, gasStations.fuel(),
+                                              gasStations.refuelling(), pR, pgx, pgy);
+                    }
                 }
 
                 device->endFrame(frame);
@@ -1863,12 +2384,19 @@ int hostTunnel(HostContext& hc) {
             }
             {
                 char pb[256];
+                // TRAFFIC COUNT ON THE PERF LINE. The first ON/OFF pair read
+                // bit-identical (tris/draws/objs to the digit) because zero
+                // cars were live at that camera — a perf "receipt" for a
+                // system that never drew. The live count now rides the same
+                // line, so an empty frame can never again be reported as a
+                // cheap one.
                 std::snprintf(pb, sizeof(pb),
                               "[tunnel-perf] %s: gpu %.3f ms avg (settled 60f) "
-                              "= %.0f fps | tris %llu draws %u objs %u",
+                              "= %.0f fps | tris %llu draws %u objs %u | traffic %u live (%u loose)",
                               out.c_str(), perfN ? perfMsSum / perfN : 0.0,
                               perfN && perfMsSum > 0.0 ? 1000.0 / (perfMsSum / perfN) : 0.0,
-                              (unsigned long long)perfTris, perfDraws, perfObjs);
+                              (unsigned long long)perfTris, perfDraws, perfObjs,
+                              traffic.liveCount(), traffic.looseCount());
                 x3::logInfo(pb);
             }
             const bool wrote = device->captureFrame(out.c_str());
@@ -1901,9 +2429,59 @@ int hostTunnel(HostContext& hc) {
                 x3::logInfo(cb);
                 ok = settleAndGrab(cam, path) && ok;
             }
+        } else if (hc.townShot) {
+            // ==== --screenshot-town: the W-TOWN eye gate ====================
+            // Five stills the lane is judged on. Every camera is DERIVED from
+            // the town's own placement data (Town::showcaseCamera) rather than
+            // typed in — ENGINE_GOTCHAS 4.1's rule, learned from cameras
+            // embedded in walls.
+            const std::string tdir = hc.townShotDir;
+            fs::create_directories(tdir, ec);
+            if (!townOn) {
+                x3::logError("--screenshot-town: no town was built (see the "
+                             "summit-spur log above) — nothing to capture");
+                ok = false;
+            }
+            static const char* const kTownShotName[x3::game::Town::kShots] = {
+                "01_main_street", "02_shop_front", "03_pedestrians",
+                "04_dusk_windows", "05_from_the_valley",
+            };
+            for (int sIdx = 0; townOn && sIdx < x3::game::Town::kShots; ++sIdx) {
+                float cam[5];
+                if (!town.showcaseCamera(sIdx, cam)) {
+                    x3::logError(std::string("--screenshot-town: no camera for shot ")
+                                 + kTownShotName[sIdx]);
+                    ok = false;
+                    continue;
+                }
+                // Shot 3 is the DUSK gate: drop the sun to the horizon and dim
+                // the sky so the shop windows are the light in the frame. The
+                // settle loop re-pushes its own SkyParams every frame when
+                // weather is on, so the dusk sky has to be re-armed per frame;
+                // that is what the townDusk flag below does.
+                townDusk = (sIdx == 3);
+                char path[512];
+                std::snprintf(path, sizeof(path), "%s/%s.png", tdir.c_str(),
+                              kTownShotName[sIdx]);
+                char cb[256];
+                std::snprintf(cb, sizeof(cb),
+                              "--screenshot-town: %s cam=(%.1f, %.1f, %.1f) yaw=%.3f pitch=%.3f",
+                              kTownShotName[sIdx], cam[0], cam[1], cam[2], cam[3], cam[4]);
+                x3::logInfo(cb);
+                ok = settleAndGrab(cam, path) && ok;
+            }
+            townDusk = false;
         } else if (!hc.jakeShot) {
             float cam[5]; tunnel.showcaseCamera(route, 0, cam);
             if (hc.shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = hc.shotCam[k];
+            {   // Log the resolved camera (parity with the multi-shot branch): a
+                // custom --shot-cam is DERIVED from this print, not eyeballed
+                // (ENGINE_GOTCHAS 4.1 — derive cameras from data).
+                char cb[192];
+                std::snprintf(cb, sizeof(cb), "--world tunnel: shot cam=(%.1f, %.1f, %.1f) yaw=%.3f pitch=%.3f",
+                              cam[0], cam[1], cam[2], cam[3], cam[4]);
+                x3::logInfo(cb);
+            }
             const std::string out = screenshot ? screenshotPath : std::string("w_tunnel.png");
             ok = settleAndGrab(cam, out);
         }
@@ -2048,6 +2626,7 @@ int hostTunnel(HostContext& hc) {
                     if (fr.valid) {
                         scene.render(*device, fr);
                         trees.draw(*device, fr);
+                        gasStations.draw(*device, fr);
                         if (carBuilt) car.render(fr);
                         jake.draw(fr, *device, onFoot, 0.0f, 0.0f,
                                   fixedCam != nullptr || camMode != 0);
@@ -2364,6 +2943,300 @@ int hostTunnel(HostContext& hc) {
             shotDraw = nullptr;
         }
 
+        // ==== SUB PROOF (X3_SHOT_SUB=1) — the patrol submarine, framed off its
+        // LIVE hull, twice: from the BRIDGE DECK (the owner's "visible from the
+        // bridge") and from IN THE WATER beside it (the swimmer's view). Every
+        // shot logs where the hull actually was and how far its top sat under
+        // the local surface, because "it's a submarine" is a claim about a
+        // NUMBER (submergence > 0) and not about vibes (NO_SLOP rule 9).
+        if (const char* be = std::getenv("X3_SHOT_SUB");
+            be && be[0] == '1' && riverOn && riverRoad.plan.ok && riverLife.subBuilt()) {
+            const auto& plan = riverRoad.plan;
+            const float rdx = plan.dirZ, rdz = -plan.dirX;   // downstream unit
+            auto subLog = [&](const char* tag) {
+                float sp[3]; riverLife.subPos(sp);
+                char sb[224];
+                std::snprintf(sb, sizeof(sb),
+                    "[sub-shot] %s hull=(%.1f, %.2f, %.1f) submergence=%.2f m "
+                    "surface=%.2f bed=%.2f",
+                    tag, sp[0], sp[1], sp[2], riverLife.subSubmergence(),
+                    x3::game::worldWaterLevelAt(sp[0], sp[2]),
+                    x3::game::terrainHeightAtWorld(sp[0], sp[2]));
+                x3::logInfo(sb);
+            };
+            subLog("pre-shot");
+
+            // PRE-ROLL to a FRAMEABLE moment. The lane straddles the crossing,
+            // so at an arbitrary frame the sub can be directly under the deck —
+            // the first cut caught it at 4.4 m range and pitch -83°, a
+            // top-down blob. Tick physics (no rendering needed) until the hull
+            // is well out on the reach, then frame that. Deterministic: the
+            // patrol is a fixed lane at a fixed speed.
+            auto advanceSub = [&](float wantDist, int maxSteps) {
+                for (int i = 0; i < maxSteps; ++i) {
+                    float sp[3]; riverLife.subPos(sp);
+                    const float ddx = sp[0] - plan.cx, ddz = sp[2] - plan.cz;
+                    if (std::sqrt(ddx * ddx + ddz * ddz) >= wantDist) return;
+                    riverLife.prePhysics(dt);
+                    phys->step(dt);
+                    riverLife.postPhysics(dt, scene, *device, *phys,
+                                          audioOn ? audio.get() : nullptr,
+                                          x3::phys::Vec3{ sp[0], sp[1], sp[2] });
+                }
+            };
+            // The sub's own travel direction, sampled over 30 steps, so the
+            // framing can LEAD it through settleAndGrab's 200-frame settle.
+            auto subDir = [&](float& dx, float& dz) {
+                float a[3]; riverLife.subPos(a);
+                for (int i = 0; i < 30; ++i) {
+                    riverLife.prePhysics(dt); phys->step(dt);
+                    riverLife.postPhysics(dt, scene, *device, *phys,
+                                          audioOn ? audio.get() : nullptr,
+                                          x3::phys::Vec3{ a[0], a[1], a[2] });
+                }
+                float b[3]; riverLife.subPos(b);
+                dx = b[0] - a[0]; dz = b[2] - a[2];
+                const float l = std::sqrt(dx * dx + dz * dz);
+                if (l > 1e-3f) { dx /= l; dz /= l; } else { dx = rdx; dz = rdz; }
+            };
+
+            // SHOT E — FROM THE BRIDGE. Standing on the deck at the crossing,
+            // looking down the reach at the hull. The camera is on the DECK's
+            // own Y (plan.deckY, eye height above it), not a staged crane, so
+            // this is the view a player who stops on the bridge actually gets.
+            {
+                advanceSub(24.0f, 6000);
+                float dirX = 0.0f, dirZ = 0.0f; subDir(dirX, dirZ);
+                float sp[3]; riverLife.subPos(sp);
+                // Lead the hull through the 200-frame settle (~3.3 s at ~1.2
+                // m/s). Without this the sub walks a hull-length out of frame.
+                sp[0] += dirX * 4.0f; sp[2] += dirZ * 4.0f;
+                // Stand at the DOWNSTREAM PARAPET, not mid-deck: the first cut
+                // put the eye on the centreline and the deck slab filled the
+                // bottom half of the frame (43 ft out-to-out, and the reach
+                // runs across the deck's narrow axis). deckHalfWidth + 0.8 m
+                // puts the eye at the rail, where a player who stops on the
+                // bridge to look at the river actually stands.
+                // ...on the sub's OWN side of the deck (the lane straddles the
+                // crossing, so the hull is upstream half the time).
+                const float sideSgn = ((sp[0] - plan.cx) * rdx +
+                                       (sp[2] - plan.cz) * rdz) >= 0.0f ? 1.0f : -1.0f;
+                const float edge = (plan.deckHalfWidth + 0.8f) * sideSgn;
+                const float ex = plan.cx + rdx * edge, ez = plan.cz + rdz * edge;
+                const float ey = plan.deckY + 1.7f;
+                const float ddx = sp[0] - ex, ddz = sp[2] - ez;
+                const float hdist = std::sqrt(ddx * ddx + ddz * ddz);
+                const float yawE = std::atan2(ddz, ddx);
+                const float pitchE = std::atan2(sp[1] - ey, std::max(1.0f, hdist));
+                const float camE[5] = { ex, ey, ez, yawE, pitchE };
+                char cb[192];
+                std::snprintf(cb, sizeof(cb),
+                    "[sub-shot] bridge cam=(%.1f, %.2f, %.1f) yaw=%.3f pitch=%.3f "
+                    "range=%.1f m", ex, ey, ez, yawE, pitchE, hdist);
+                x3::logInfo(cb);
+                ok = settleAndGrab(camE, dir + "/14_sub_from_bridge.png") && ok;
+                subLog("after bridge shot");
+            }
+
+            // SHOT F — FROM IN THE WATER. Camera under the surface, abeam of
+            // the hull, with the same green column fog the swim shots use (the
+            // interactive camera owns that edge; the staged path sets it).
+            {
+                x3::rhi::IRenderDevice::FogParams fp{};
+                fp.enabled  = true;
+                fp.color[0] = 0.010f; fp.color[1] = 0.045f; fp.color[2] = 0.055f;
+                fp.density  = 0.055f; fp.start = 0.15f; fp.maxOpacity = 0.96f;
+                device->setFog(fp);
+                // ABEAM OF THE HULL'S OWN HEADING, not of the reach axis: the
+                // lane reverses, so half the time "13 m off the reach normal"
+                // is dead ahead of the bow and the shot is a nose-on blob.
+                // Perpendicular of the travel direction is (-dz, dx).
+                float dirX = 0.0f, dirZ = 0.0f; subDir(dirX, dirZ);
+                float sp[3]; riverLife.subPos(sp);
+                // Lead the hull: the settle runs 200 more frames of physics and
+                // a patrolling sub does not wait for the shutter.
+                const float lead = 4.0f;
+                const float tx = sp[0] + dirX * lead, tz = sp[2] + dirZ * lead;
+                const float px = tx - dirZ * 13.0f, pz = tz + dirX * 13.0f;
+                const float surf = x3::game::worldWaterLevelAt(px, pz);
+                const float camFY = surf - 1.2f;
+                const float yawF = std::atan2(tz - pz, tx - px);
+                const float pitchF = std::atan2(sp[1] - camFY, 13.0f);
+                const float camF[5] = { px, camFY, pz, yawF, pitchF };
+                char cb[192];
+                std::snprintf(cb, sizeof(cb),
+                    "[sub-shot] underwater cam=(%.1f, %.2f, %.1f) yaw=%.3f pitch=%.3f "
+                    "surface=%.2f", px, camFY, pz, yawF, pitchF, surf);
+                x3::logInfo(cb);
+                ok = settleAndGrab(camF, dir + "/15_sub_underwater.png") && ok;
+                subLog("after underwater shot");
+                x3::rhi::IRenderDevice::FogParams off{};
+                device->setFog(off);
+            }
+        }
+
+        // ==== BANK PROOF (X3_SHOT_BANKS=1) — the ONE WATER TRUTH, with eyes.
+        // RB8's station sweep says in NUMBERS that the drawn river never tops a
+        // bank anywhere on the run; this is the same claim with a picture, at
+        // the WORST station the sweep can find — measured here the same way
+        // (crest = highest ground between the waterline and 2x the half-width
+        // out, on each side; freeboard = crest - the drawn water level).
+        // Shoot it twice: once dry, once with X3_WEATHER=storm, and the pair is
+        // the rain-runoff gate (#23) — the river visibly higher, still inside.
+        if (const char* ke = std::getenv("X3_SHOT_BANKS");
+            ke && ke[0] == '1' && riverOn) {
+            uint32_t rn = 0;
+            const x3::game::WorldRiverNode* nds = x3::game::worldRiverNodes(rn);
+            const uint32_t carved = x3::game::worldRiverCarveCount();
+            const char* wxEnv = std::getenv("X3_WEATHER");
+            const std::string tag = (wxEnv && wxEnv[0] && std::strcmp(wxEnv, "0") != 0)
+                                  ? std::string("_") + wxEnv : std::string("_dry");
+            const float HW = x3::game::kWorldRiverHalfWidth;
+            // LET THE RUNOFF FINISH ITS RAMP. The swell takes ~15 s to go from
+            // 0.3 to 0.9 m and settleAndGrab is 200 frames = 3.3 s, so the
+            // first cut of this proof caught the river only 0.20 m up and the
+            // "rain-swollen" image looked like the dry one. Tick the weather
+            // model alone (no rendering — this is the same integrator the
+            // capture loop runs, just fast) for 30 s first.
+            if (weatherOn) {
+                for (int i = 0; i < 1800; ++i) {
+                    weather.tick(dt);
+                    const x3::game::WeatherSample& ws = weather.sample();
+                    wetness.tick(dt, ws.precipitation, ws.tempC, ws.snowfall);
+                    tickRiverRise(dt, ws.precipitation, ws.snowfall);
+                }
+                char wb[160];
+                std::snprintf(wb, sizeof(wb),
+                    "[bank-shot] weather pre-rolled 30 s: precipitation %.2f, "
+                    "state %d", weather.sample().precipitation,
+                    (int)weather.sample().state);
+                x3::logInfo(wb);
+            }
+            // Freeboard at a node, and the side that is tighter.
+            auto freeboardAt = [&](uint32_t i, float& outNx, float& outNz,
+                                   float& outSide) -> float {
+                const uint32_t j = (i + 1 < rn) ? i + 1 : i;
+                const uint32_t k = (i > 0) ? i - 1 : i;
+                float dx = nds[j].x - nds[k].x, dz = nds[j].z - nds[k].z;
+                const float dl = std::sqrt(dx * dx + dz * dz);
+                if (dl > 1e-3f) { dx /= dl; dz /= dl; }
+                outNx = -dz; outNz = dx;                    // left-hand normal
+                float best = 1e9f; outSide = 1.0f;
+                for (int s = -1; s <= 1; s += 2) {
+                    // The LEVEE BAND, exactly RB8's: half-width+0.5 .. +26 m.
+                    // (The first cut swept HW..2*HW and graded the ocean floor
+                    // as a river bank — see the estuary skip below.)
+                    float crest = -1e9f;
+                    for (float o = HW + 0.5f; o <= HW + 26.0f; o += 2.5f) {
+                        const float px = nds[i].x + outNx * o * (float)s;
+                        const float pz = nds[i].z + outNz * o * (float)s;
+                        crest = std::max(crest, x3::game::terrainHeightAtWorld(px, pz));
+                    }
+                    const float fb = crest - x3::game::worldWaterLevelAt(nds[i].x, nds[i].z);
+                    if (fb < best) { best = fb; outSide = (float)s; }
+                }
+                return best;
+            };
+            // THE ESTUARY IS NOT A RIVER (RB8's own words): inside the ocean
+            // basin disc the shader hands the level to the sea and the basin
+            // floor is 190 ft down — there are no banks to hold there.
+            auto inBasin = [&](uint32_t i) {
+                const float bx = nds[i].x - x3::game::kWorldOceanBasinX;
+                const float bz = nds[i].z - x3::game::kWorldOceanBasinZ;
+                return bx * bx + bz * bz <
+                       x3::game::kWorldOceanBasinR * x3::game::kWorldOceanBasinR;
+            };
+            // The tightest carved station on the whole run — the one that
+            // actually decides the claim.
+            uint32_t worst = 1; float worstFb = 1e9f, lastRiver = 1.0f;
+            for (uint32_t i = 1; i + 1 < std::max(2u, carved); ++i) {
+                if (inBasin(i)) continue;
+                lastRiver = (float)i;
+                float nx, nz, sd;
+                const float fb = freeboardAt(i, nx, nz, sd);
+                if (fb < worstFb) { worstFb = fb; worst = i; }
+            }
+            const uint32_t lastIdx = (uint32_t)lastRiver;
+            x3::logInfo("[bank-shot] tightest carved station is node " +
+                        std::to_string(worst) + " at freeboard " +
+                        std::to_string(worstFb) + " m (last river node " +
+                        std::to_string(lastIdx) + ")");
+            // FIXED stations, not "whichever is tightest right now": the dry
+            // and the rain-swollen runs have to be the SAME camera or the pair
+            // proves nothing (the first cut picked node 4 dry and node 7 in the
+            // storm and the two images were of different places).
+            // Node 2 is where the RISE is visible: the runoff cap is MEASURED
+            // per node off the built ground and is 1.7 m there, so the swell
+            // can express its full 0.9 m against a real bank. Nodes 4/6/7 are
+            // the opposite end — the levee-critical band, cap 0.2 m, the
+            // tightest freeboard on the whole run — which is where "never over
+            // the levees" is actually at risk ([river-rain] prints the table).
+            uint32_t stations[4] = { std::min(2u, lastIdx), std::min(4u, lastIdx),
+                                     std::min(6u, lastIdx), std::min(7u, lastIdx) };
+            for (int s = 0; s < 4; ++s) {
+                const uint32_t i = stations[s];
+                float nx, nz, sd;
+                const float fb = freeboardAt(i, nx, nz, sd);
+                const float wl = x3::game::worldWaterLevelAt(nds[i].x, nds[i].z);
+                // Stand back on the DRY side, high enough that both banks and
+                // the waterline are in one frame.
+                const float back = HW * 2.4f;
+                const float px = nds[i].x - nx * sd * back;
+                const float pz = nds[i].z - nz * sd * back;
+                // Eye ABOVE THE BANK IT STANDS BEHIND. The first cut measured
+                // the eye off the water (wl + 9) and at node 2 — where the
+                // crest is 22 m up — the camera ended INSIDE the wooded hill
+                // and the "bank proof" was a picture of grass with no river in
+                // it. Clear the crest, then look down at the waterline.
+                const float py = std::max(wl + fb, wl) + 8.0f;
+                const float yaw = std::atan2(nds[i].z - pz, nds[i].x - px);
+                const float pitch = std::atan2(wl - py, back);
+                const float cam[5] = { px, py, pz, yaw, pitch };
+                char nm[256], lb[288];
+                std::snprintf(nm, sizeof(nm), "%s/16_banks%s_%d.png",
+                              dir.c_str(), tag.c_str(), s);
+                std::snprintf(lb, sizeof(lb),
+                    "[bank-shot] station node %u at (%.1f, %.1f): drawn water %.2f, "
+                    "tightest bank crest %.2f, FREEBOARD %.3f m (%s) -> %s",
+                    i, nds[i].x, nds[i].z, wl, wl + fb, fb,
+                    fb > 0.0f ? "INSIDE ITS BANKS" : "OVER THE BANK",
+                    nm);
+                x3::logInfo(lb);
+                if (fb <= 0.0f)
+                    x3::logError("[bank-shot] WATER IS OVER THE BANK CREST at node " +
+                                 std::to_string(i));
+                ok = settleAndGrab(cam, nm) && ok;
+
+                // THE WATERLINE FRAME (station 0 only) — the rain-runoff A/B.
+                // A bank shot from 80 m up cannot show 0.75 m of swell: it is
+                // ~9 px. So put the eye 1.4 m over the DRY surface, in the
+                // ribbon, looking downstream. `nds[i].waterY` is the BASE table
+                // (worldRiverRisenNodes builds the risen copy separately), so
+                // the camera is at the SAME world Y in both runs by
+                // construction — and the water climbing toward the lens is the
+                // proof, measured in the log line below.
+                if (s == 0) {
+                    const float wx = nds[i].x + nx * sd * (HW - 6.0f);
+                    const float wz = nds[i].z + nz * sd * (HW - 6.0f);
+                    const float wyEye = nds[i].waterY + 1.4f;
+                    const uint32_t j = (i + 1 < rn) ? i + 1 : i;
+                    const float wyaw = std::atan2(nds[j].z - wz, nds[j].x - wx);
+                    const float wcam[5] = { wx, wyEye, wz, wyaw, -0.045f };
+                    char wn[256], wl2[288];
+                    std::snprintf(wn, sizeof(wn), "%s/17_waterline%s.png",
+                                  dir.c_str(), tag.c_str());
+                    std::snprintf(wl2, sizeof(wl2),
+                        "[bank-shot] waterline frame: eye Y %.2f (dry surface %.2f "
+                        "+ 1.4), water NOW %.2f -> %.2f m under the lens "
+                        "(risen %.2f m) -> %s",
+                        wyEye, nds[i].waterY, wl, wyEye - wl,
+                        wl - nds[i].waterY, wn);
+                    x3::logInfo(wl2);
+                    ok = settleAndGrab(wcam, wn) && ok;
+                }
+            }
+        }
+
         // ==== MAP/HUD PROOF SET (map/HUD wiring) — overview / drive-zoom /
         // waypoint / driving-HUD chevron. Uses the engine's OWN
         // armCapture/captureFrame GPU-swapchain readback — the SAME mechanism
@@ -2517,8 +3390,14 @@ int hostTunnel(HostContext& hc) {
         }
 
         if (carBuilt) car.shutdown();
+        gasStations.shutdown(*device);
+        factory.shutdown(*device);
+        tickets.shutdown(*device);
         trees.shutdown(*device);
+        if (townOn) town.shutdown(*device);
         forests.shutdown(*device);
+        phys->setContactCallback(nullptr, nullptr);   // trafficCtx dies with this scope
+        traffic.shutdown(phys.get());
         riverLife.shutdown(audioOn ? audio.get() : nullptr);
         tunnel.shutdown(*device, *phys);
         for (auto& w : tourBores) w->shutdown(*device, *phys);
@@ -2611,6 +3490,29 @@ int hostTunnel(HostContext& hc) {
                 markers.push_back({ "LNSS GARAGE", "garage", wx, wz });
                 break;
             }
+        }
+        // THE WORKS + THE FIVE CARDS on the map. MapMarker is the mechanism
+        // this host already has and already draws (the LNSS garage above), so
+        // the landmark is findable TODAY rather than after another lane lands.
+        //
+        // TODO (Lane 7, W-MAP): when the agreed `MapPoi { name, x, z, icon }`
+        // registration header exists, register these through it instead — the
+        // works at (facPlan.cx, facPlan.cz) with icon "factory", and one
+        // "ticket" pin per uncollected spot. Nothing else about them moves.
+        if (facOn) {
+            markers.push_back({ "THE GLIMVALE WORKS", "factory",
+                                facPlan.cx, facPlan.cz });
+            char fb2[200];
+            std::snprintf(fb2, sizeof(fb2),
+                "[tunnel] map POI (Lane 7 TODO — staged as a MapMarker for now): "
+                "THE GLIMVALE WORKS at (%.0f, %.0f), gate (%.0f, %.0f)",
+                facPlan.cx, facPlan.cz, facPlan.gateX, facPlan.gateZ);
+            x3::logInfo(fb2);
+        }
+        for (uint32_t k = 0; k < tickets.spotCount(); ++k) {
+            float tp[3]; tickets.spotPos(k, tp);
+            markers.push_back({ std::string("TICKET: ") + tickets.spotName(k),
+                                "ticket", tp[0], tp[2] });
         }
         char mkb[96];
         std::snprintf(mkb, sizeof(mkb), "[tunnel] map: %u marker(s) staged", (uint32_t)markers.size());
@@ -2816,6 +3718,46 @@ int hostTunnel(HostContext& hc) {
         shell.addToggleCommand("vampire", "J&S Vampire knock control: +7% torque from timing",
             [&]{ return vampireOn; },
             [&](bool on) { vampireOn = on; });
+        // ---- THE GOLDEN TICKETS ------------------------------------------
+        // `tickets` reads, `tickets <n>` sets. THE ARG CONVENTION
+        // (engine/core/IConsole.h, documented in blood and gate-locked by
+        // --test-console): args[0] is the FIRST ARGUMENT, not the command
+        // name. Every host command written against args[1] was silently dead
+        // for two days.
+        con->registerCommand("tickets", [&](const std::vector<std::string>& args) {
+            if (!args.empty()) {
+                tickets.setCollected(scene, std::atoi(args[0].c_str()));
+                if (tickets.allFound()) factory.openGate();
+            }
+            char b[256];
+            std::snprintf(b, sizeof(b), "TICKETS %d/%d  —  the works gate is %s",
+                          tickets.collected(), (int)tickets.spotCount(),
+                          factory.gateOpen() ? "OPEN" : "SHUT");
+            con->print(b);
+            for (uint32_t k = 0; k < tickets.spotCount(); ++k) {
+                float tp[3]; tickets.spotPos(k, tp);
+                char lb[192];
+                std::snprintf(lb, sizeof(lb), "  %-18s (%.0f, %.0f)  %s",
+                              tickets.spotName(k), tp[0], tp[2],
+                              tickets.spotTaken(k) ? "FOUND" : "still hidden");
+                con->print(lb);
+            }
+        }, "golden tickets: 'tickets' reads the count, 'tickets <n>' sets it "
+           "(all five opens the works gate)");
+        con->registerCommand("factory", [&](const std::vector<std::string>&) {
+            if (!facOn || !factory.built()) { con->print("the works was not built this boot"); return; }
+            float gp[3]; factory.gatePoint(gp);
+            char b[300];
+            std::snprintf(b, sizeof(b),
+                "THE GLIMVALE WORKS — site (%.0f, %.0f) platform %.1f m, gate "
+                "(%.0f, %.0f) %s (slide %.0f%%), %u meshes / %u tris / %u pack "
+                "instances, drive %.0f m off the freeway",
+                factory.plan().cx, factory.plan().cz, factory.plan().padY,
+                gp[0], gp[2], factory.gateOpen() ? "OPEN" : "SHUT",
+                factory.gateSlide() * 100.0f, factory.meshCount(),
+                factory.triCount(), factory.propCount(), facDrive.road.lengthM);
+            con->print(b);
+        }, "report the Glimvale Works: site, gate state, build cost");
         con->registerCommand("car_reset", [&](const std::vector<std::string>&) {
             car.setTorqueBoost(1.0f);
             // These ARE the buildPhysics numbers in vehicle.cpp (NO_SLOP rule
@@ -2865,6 +3807,64 @@ int hostTunnel(HostContext& hc) {
                 (double)(s->massKg * 2.20462f), (double)s->gripScale);
             con->print(l);
         }, "retune the running car to another entry in the per-car table");
+
+        // tp — put the car somewhere. THE REVIEW TOOL: this world is 46 miles of
+        // road and the interesting places (the summit lot at 7.5 km, the far
+        // bore) are twenty minutes of driving from spawn, so nobody — human or
+        // agent — ever looked at them in an INTERACTIVE run. The --screenshot-*
+        // harness is not a substitute: it runs headless, and headless takes
+        // different code paths (this host streams at radius 14 headless vs 9
+        // interactive — the horizon-ring void annulus lived in exactly that
+        // gap and no capture could see it).
+        //
+        //   tp                -> print where you are
+        //   tp <x> <z>        -> world metres, dropped onto the surface
+        //   tp lot | bore | spur | ring   -> the named destinations
+        con->registerCommand("tp", [&, con](const std::vector<std::string>& args) {
+            float tx = 0.0f, tz = 0.0f;
+            const x3::phys::BodyId cb = car.controller() ? car.controller()->body()
+                                                         : x3::phys::BodyId{};
+            if (args.size() == 1) {
+                x3::phys::Vec3 p{ 0.0f, 0.0f, 0.0f };
+                if (car.controller()) p = phys->getBodyPosition(cb);
+                char b[160];
+                std::snprintf(b, sizeof(b), "at (%.0f, %.0f, %.0f) — ground %.0f m",
+                              (double)p.x, (double)p.y, (double)p.z,
+                              (double)x3::game::terrainHeightAtWorld(p.x, p.z));
+                con->print(b);
+                return;
+            }
+            if (args.size() == 2) {
+                const std::string& w = args[1];
+                if (w == "lot" && summitLot.built)        { tx = summitLot.cx;  tz = summitLot.cz; }
+                else if (w == "spur" && summitSpur.built) { tx = summitSpur.spec.x.back();
+                                                            tz = summitSpur.spec.z.back(); }
+                else if (w == "bore") { float p[3]; route.posAt(std::max(8.0f, route.boreS0 - 40.0f), p);
+                                        tx = p[0]; tz = p[2]; }
+                else if (w == "ring" && ringSpec.x.size() > 2) { tx = ringSpec.x[0]; tz = ringSpec.z[0]; }
+                else { con->print("tp <x> <z> | tp lot|spur|bore|ring"); return; }
+            } else if (args.size() >= 3) {
+                tx = (float)std::atof(args[1].c_str());
+                tz = (float)std::atof(args[2].c_str());
+            }
+            if (!car.controller()) { con->print("no car to move"); return; }
+            // Stream the destination in BEFORE dropping the car on it, or it
+            // lands on tiles that do not exist yet and falls through the world.
+            streamer.update(scene, *device, *phys, tx, tz);
+            const float gy = x3::game::terrainHeightAtWorld(tx, tz);
+            const x3::phys::Vec3 dst{ tx, gy + 2.0f, tz };
+            phys->setBodyPosition(cb, dst);
+            const float zero[3] = { 0.0f, 0.0f, 0.0f };
+            phys->setBodyLinearVelocity(cb, zero);
+            char b[160];
+            std::snprintf(b, sizeof(b), "teleported to (%.0f, %.0f, %.0f)",
+                          (double)tx, (double)(gy + 2.0f), (double)tz);
+            con->print(b);
+            // ALSO to the log, not just the console pane: a screenshot of the
+            // console does not survive being cropped, and a capture without
+            // coordinates cannot prove WHERE it was taken. Receipts.
+            x3::logInfo(std::string("tp: ") + b);
+        }, "tp [x z | lot|spur|bore|ring] — move the car (review tool)");
         con->registerCommand("car", [&](const std::vector<std::string>&) {
             char b[256];
             std::snprintf(b, sizeof(b),
@@ -2876,6 +3876,10 @@ int hostTunnel(HostContext& hc) {
                           car.turboEnabled() ? "on" : "off");
             con->print(b);
         }, "print the car's live state");
+        // W-STATIONS: the LIVE fuel commands (`fuel`, `fuel_stations`). The
+        // pure-data fuel_* cvars are already here — registerEngineConsoleCVars
+        // registers them for every host (app/engine_console.cpp).
+        gasStations.registerConsole(*con);
     }
 
     // X3_PERF_LOG=1: rolling avg-FPS to the log every 5 s (host_echotropolis
@@ -2926,7 +3930,11 @@ int hostTunnel(HostContext& hc) {
             auto pf = device->beginFrame();
             if (pf.valid) {
                 scene.render(*device, pf);
+                gasStations.draw(*device, pf);          // the forecourt does not vanish on pause
                 if (carBuilt) car.render(pf);
+                float pcam[3] = { startPos[0], startPos[1], startPos[2] };
+                if (carBuilt) car.chassisPos(pcam);
+                traffic.render(pf, pcam);               // traffic holds its pose paused
                 riverLife.render(*device, pf, scene);   // boats stay visible paused
                 shell.draw(pf, fdt);
             }
@@ -2948,7 +3956,21 @@ int hostTunnel(HostContext& hc) {
         // ---- THE RIVER HAS WATER (Tim: "Can we pour the water in now").
         // One lambda with the headless path — same tone, same clock shape.
         riverWaterClock += fdt;
-        applyRiverWater(riverWaterClock);
+        {
+            // Focus = whoever the camera is following this frame.
+            float wfx = startPos[0], wfz = startPos[2];
+            if (driving && carBuilt) {
+                float cp[3]; car.chassisPos(cp); wfx = cp[0]; wfz = cp[2];
+            } else if (footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet(); wfx = ft.x; wfz = ft.z;
+            }
+            applyRiverWater(riverWaterClock, wfx, wfz);
+        }
+        // THE WIND. The sky UBO's time lane (setSkyTime -> sky.params.z) is the
+        // drift clock for the cloud deck AND its ground shade (both sample
+        // kCloudDrift * t in inc/sky_clouds.glsl). This world never set it, so
+        // the deck hung frozen. Same clock the river uses, one line.
+        device->setSkyTime(riverWaterClock);
         if (weatherOn) {
             weather.tick(fdt);
             // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
@@ -2963,6 +3985,7 @@ int hostTunnel(HostContext& hc) {
 
             const x3::game::WeatherSample& ws = weather.sample();
             wetness.tick(fdt, ws.precipitation, ws.tempC, ws.snowfall);
+            tickRiverRise(fdt, ws.precipitation, ws.snowfall);
 
             // Lightning only under an actual storm; hazardLevel already carries
             // "how bad", so intensity comes free and correct.
@@ -2972,32 +3995,15 @@ int hostTunnel(HostContext& hc) {
             if (carBuilt) car.chassisPos(lp);
             storm.tick(fdt, stormI, audioOn ? audio.get() : nullptr, lp[0], lp[1], lp[2]);
 
-            // Push the sky. The storm FLASH rides on exposure rather than on the
-            // sun: a strike lights the whole cloud deck from inside, so raising
-            // the sun would throw hard directional shadows from a light source
-            // that is not there and give the whole thing away.
-            x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
-            sp.enabled = true;
-            sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
-            // Cloud cover tracks the haze the state already asked for, so an
-            // overcast sky is actually overcast instead of clear-with-fog.
-            sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
-            sp.exposure = ws.sky.exposure + storm.flash();
-            // CLOUDS COST LIGHT (Tim: "Do we have real clouds that obscure
-            // and dim the sun? The ground is way too sunny"). The deck was
-            // visual-only — full sun through 94% overcast. Sun intensity now
-            // falls with cover (an overcast day keeps ~35% direct light) and
-            // the light goes flat (ambient-heavy) the way an overcast sky
-            // actually lights the ground.
-            sp.sunIntensity = sp.sunIntensity * (1.0f - 0.65f * std::min(1.0f, sp.cloud));
-            if (ws.state == x3::game::WeatherState::Storm) {
-                // A storm is not 'cloudy with effects' — the deck goes heavy
-                // and the light DIES, which is also what makes every lightning
-                // flash read (contrast is the flash's whole currency).
-                sp.cloud    = std::max(sp.cloud, 0.94f);
-                sp.exposure = ws.sky.exposure * 0.52f + storm.flash() * 1.35f;
-            }
-            device->setSkyParams(sp);
+            // Push the sky + the fill its cover implies. THE MAPPING LIVES AT
+            // THE TOP OF THIS FILE (skyFromWeather/applySky) and is shared with
+            // the headless capture loop — the two used to diverge and the proof
+            // shots lied about the storm. CLOUDS COST LIGHT (Tim: "Do we have
+            // real clouds that obscure and dim the sun? The ground is way too
+            // sunny"): the deck cuts the sky disk here, cloudShadowFactor cuts
+            // the direct sun per-fragment (task #27), and applySky() drops the
+            // skylight fill — all three off the one cover number.
+            applySky(*device, skyFromWeather(ws, storm.flash()));
 
             // Wet ground for the renderer. Lying SNOW suppresses the wet look
             // rather than adding to it -- snow is bright and near-matte where
@@ -3096,7 +4102,10 @@ int hostTunnel(HostContext& hc) {
                     sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
                     sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
                     sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f; sp.cloud = 0.42f;
-                    device->setSkyParams(sp);
+                    // applySky, not setSkyParams: `wx off` after a storm has to
+                    // put the SKYLIGHT back too, or the demo sky returns over a
+                    // ground still lit for the overcast that just left.
+                    applySky(*device, sp);
                     device->setSnowCover(0.0f);
                     device->setWetness(x3::rhi::IRenderDevice::WetnessParams{});
                     shell.console()->print("weather: off (the demo's fixed bright sky)");
@@ -3226,6 +4235,29 @@ int hostTunnel(HostContext& hc) {
             f1Was = f1Now;
         }
 
+        // ---- W-STATIONS: THE PUMP ----------------------------------------
+        // Runs BEFORE the E block because it CLAIMS E: parked under a canopy,
+        // E means refuel, not get out. Without that claim, the first press of
+        // a held refuel would eject the driver onto the forecourt — the hint
+        // says REFUEL and the car says goodbye.
+        bool atPump = false;
+        {
+            if (auto* fcon = shell.console()) gasStations.syncCVars(*fcon);
+            float fp[3] = { 0.0f, 0.0f, 0.0f };
+            if (carBuilt) car.chassisPos(fp);
+            static float lastFx = 0.0f, lastFz = 0.0f; static bool lastFvalid = false;
+            const float moved = lastFvalid
+                ? std::hypot(fp[0] - lastFx, fp[2] - lastFz) : 0.0f;
+            lastFx = fp[0]; lastFz = fp[2]; lastFvalid = true;
+            // LOAD, from measured speed rather than the input flag: a car
+            // coasting at 30 mph is not drinking like one pinned at 140.
+            const float load = carBuilt
+                ? std::min(1.0f, std::fabs(car.forwardSpeed()) / 40.0f) : 0.0f;
+            gasStations.update(fdt, fp[0], fp[2], driving ? moved : 0.0f, load,
+                               driving && kd(GLFW_KEY_E));
+            atPump = driving && gasStations.atStation() >= 0;
+        }
+
         // ---- E: GET OUT / GET IN ----------------------------------------
         // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
         // to the car. Without that gate E teleports you into a car you left half
@@ -3234,7 +4266,33 @@ int hostTunnel(HostContext& hc) {
         {
             static bool eWasDown = false;
             const bool eDown = kd(GLFW_KEY_E);   // shell-gated: E while typing is just a letter
-            if (eDown && !eWasDown && carBuilt) {
+            // A GOLDEN TICKET IN REACH OWNS THE PRESS. E already means
+            // get-out/get-in, so the two have to be arbitrated somewhere and
+            // "the thing you are standing on top of wins" is the only reading
+            // that is never surprising: the card is 3.5 m away, the car you
+            // would be entering is not. Consuming the edge here is what stops
+            // one press both taking the card AND folding you into the driver's
+            // seat. The prompt (drawn by GoldenTickets::drawHud) is what makes
+            // the rule visible — a control nobody can see is a control nobody
+            // has.
+            bool eConsumed = false;
+            {
+                float ppos[3] = { 0, 0, 0 };
+                if (!driving && footSpawned) {
+                    const x3::phys::Vec3 ft = onFoot.feet();
+                    ppos[0] = ft.x; ppos[1] = ft.y; ppos[2] = ft.z;
+                } else if (carBuilt) {
+                    car.chassisPos(ppos);
+                }
+                const bool edge = eDown && !eWasDown;
+                if (tickets.update(scene, fdt, ppos[0], ppos[1], ppos[2], edge) >= 0) {
+                    eConsumed = true;
+                    if (tickets.allFound()) factory.openGate();
+                }
+            }
+            // !atPump: at a pump E means REFUEL (W-STATIONS); !eConsumed: a
+            // ticket in reach owns the press (W-FACTORY). Both yield to get-in.
+            if (eDown && !eWasDown && carBuilt && !atPump && !eConsumed) {
                 if (driving) {
                     float vp[3]; car.chassisPos(vp);
                     parkedAt[0] = vp[0]; parkedAt[1] = vp[1]; parkedAt[2] = vp[2];
@@ -3558,6 +4616,16 @@ int hostTunnel(HostContext& hc) {
         if (carBuilt) car.chassisPos(vp);
         streamer.update(scene, *device, *phys, vp[0], vp[2]);
         riverLife.prePhysics(fdt);            // boat autopilot BEFORE the step
+        {   // TRAFFIC: sim + kinematic march, before the step (the bodies'
+            // step-target velocities come from moveKinematic). Focus follows
+            // whoever the player currently is — car or Jake on foot.
+            float tfoc[3] = { vp[0], vp[1], vp[2] };
+            if (!driving && footSpawned) {
+                const x3::phys::Vec3 ff = onFoot.feet();
+                tfoc[0] = ff.x; tfoc[1] = ff.y; tfoc[2] = ff.z;
+            }
+            traffic.update(fdt, tfoc, phys.get());
+        }
         phys->step(fdt);
         if (carBuilt) car.postStep(fdt);
         // RE-SAMPLE THE CHASE TARGET AFTER THE STEP.
@@ -3946,16 +5014,35 @@ int hostTunnel(HostContext& hc) {
                 audio->setReverbParams(0.3f + 2.2f * (1.0f - skyVis),
                                        0.05f + 0.40f * (1.0f - skyVis));
         }
+        // The town's pedestrians walk their sidewalk loop. Gated on camera
+        // distance INSIDE Town::update (kPedActiveM) — outside it the terrain
+        // tiles under their feet are not resident and the walk is a free-fall.
+        if (townOn) town.update(fdt, *phys, *device, cx, cz);
+        // THE WORKS, ALIVE: the tube cores breathe, the plant blocks shake, the
+        // gate slides, the stacks make smoke. Cheap — a few entity transforms
+        // and one particle integrator.
+        if (facOn) factory.update(scene, fdt);
+
         auto frame = device->beginFrame();
         if (frame.valid) {
             scene.render(*device, frame);
             trees.draw(*device, frame);
+            if (townOn) town.draw(*device, frame);
+            gasStations.draw(*device, frame);
+            // Particle batches are CLEARED by beginFrame, so these submits live
+            // INSIDE the frame and are never hoisted (the warning host_echotropolis
+            // carries at its own submitParticles site).
+            if (facOn) { const float fcam2[3] = { cx, cy, cz }; factory.drawSmoke(*device, fcam2); }
+            tickets.drawGlints(*device);
             {   // forests: prune by the live camera (fwd = cos/sin yaw, 4.1)
                 const float fcam[3] = { cx, cy, cz };
                 forests.draw(*device, frame, fcam,
                              std::cos(camYaw), std::sin(camYaw));
             }
             if (carBuilt) car.render(frame);
+            {   const float fcam[3] = { cx, cy, cz };
+                traffic.render(frame, fcam);           // the freeway is populated
+            }
             riverLife.render(*device, frame, scene);   // boats + drivers + wakes
             // Combat FX: tracers + muzzle boxes (mesh draws), then the
             // particle pool + impact decals (billboards through
@@ -4088,11 +5175,10 @@ int hostTunnel(HostContext& hc) {
             // so it needs 3.0R of vertical room; the first pass anchored on the
             // dial alone and pushed the gate and the TC line off the bottom of
             // the screen.
-            const float R   = 0.150f * fh;
+            float R = 0.0f, gcx = 0.0f, gcy = 0.0f;
+            gaugeClusterAnchor(fw, fh, R, gcx, gcy);
             const float mar = 0.030f * fh;
             const float gateH = R * 0.90f;
-            const float gcx = fw - mar - R;
-            const float gcy = fh - mar - gateH - R * 0.12f - R;
 
             const float rpmNow = car.engineRPM();
             const float frac   = std::min(1.0f, std::max(0.0f, rpmNow / 8000.0f));
@@ -4131,22 +5217,22 @@ int hostTunnel(HostContext& hc) {
             {
                 uint32_t hw2 = 0, hh2 = 0; device->hudSize(hw2, hh2);
                 const char* prompt = nullptr;
-                if (driving) prompt = "E  GET OUT";
+                // Under a canopy the pump owns the line AND the key (see the
+                // atPump gate on the E block above) — "E  GET OUT" there would
+                // advertise the one thing E no longer does.
+                if (driving && gasStations.prompt()) prompt = gasStations.prompt();
+                else if (driving) prompt = "E  GET OUT";
                 else if (footSpawned) {
                     const float dxc = cx - parkedAt[0], dzc = cz - parkedAt[2];
                     prompt = (dxc*dxc + dzc*dzc <= 16.0f)
                                  ? (pushing ? "PUSHING..." : "E  GET IN    F  PUSH")
                                  : "WALK BACK TO THE CAR TO DRIVE";
                 }
-                if (prompt && hw2 && hh2) {
-                    const float px = std::floor((float)hh2 * 0.026f);
-                    const float tw = (float)std::strlen(prompt) * px;
-                    const float tx = ((float)hw2 - tw) * 0.5f, ty = (float)hh2 * 0.86f;
-                    const float sh[4]  = { 0.0f, 0.0f, 0.0f, 0.75f };
-                    const float fgc[4] = { 1.0f, 0.93f, 0.72f, 1.0f };
-                    device->drawHudText(frame, prompt, tx + 1.0f, ty + 1.0f, px, sh);
-                    device->drawHudText(frame, prompt, tx, ty, px, fgc);
-                }
+                // ONE prompt renderer, shared with the headless proof capture
+                // (app/gas_station.h drawPumpPrompt): a screenshot of a hint the
+                // player is not actually shown proves nothing.
+                (void)hw2; (void)hh2;
+                x3::game::drawPumpPrompt(*device, frame, prompt);
             }
 
             // ---- DRAW JAKE. Placement, facing and the yFix that used to live
@@ -4304,6 +5390,12 @@ int hostTunnel(HostContext& hc) {
                                     bcy + R2 * 0.95f, lp2, lc2);
             }
 
+            // ---- THE FUEL GAUGE (W-STATIONS). Drawn by the SAME function the
+            // headless proof capture calls (app/gas_station.h), anchored on this
+            // cluster's tach so it always rides under the dials.
+            x3::game::drawFuelBar(*device, frame, gasStations.fuel(),
+                                  gasStations.refuelling(), R, gcx, gcy);
+
             // THE THERMOMETER. Only when weather is running: a gauge pinned at
             // a constant is worse than no gauge, because it teaches the player
             // to stop looking at it.
@@ -4457,6 +5549,15 @@ int hostTunnel(HostContext& hc) {
             }
             drawWaypointChevron(frame, wpv.x, pPos[1], wpv.z, pPos[0], pPos[1], pPos[2], camYaw);
         }
+        // ---- TICKETS n/5, the [E] prompt and the pickup toast --------------
+        if (frame.valid && !mapOpen) {
+            float pPos2[3] = { vp[0], vp[1], vp[2] };
+            if (!driving && footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                pPos2[0] = ft.x; pPos2[1] = ft.y; pPos2[2] = ft.z;
+            }
+            tickets.drawHud(*device, frame, pPos2[0], pPos2[1], pPos2[2]);
+        }
         // ---- THE MAP SCREEN (M). Drawn over the world and the cluster, under
         // the shell (the console stays reachable over the map). Input assembly
         // is host_streamed's: raw WASD/arrows pan (the car's WASD is gated off
@@ -4523,9 +5624,15 @@ int hostTunnel(HostContext& hc) {
     }
 
     if (audioOn) engineNote.shutdown();          // bank voices before the mixer dies
+    phys->setContactCallback(nullptr, nullptr);            // trafficCtx dies with this scope
+    traffic.shutdown(phys.get());                          // kinematic boxes out before phys
+    factory.shutdown(*device);                   // pack loaders + the smoke pool
+    tickets.shutdown(*device);                   // the card mesh/textures it owns
     riverLife.shutdown(audioOn ? audio.get() : nullptr);   // outboard loops + hulls
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
+    gasStations.shutdown(*device);
     trees.shutdown(*device);
+    if (townOn) town.shutdown(*device);
     forests.shutdown(*device);
     tunnel.shutdown(*device, *phys);
     for (auto& w : tourBores) w->shutdown(*device, *phys);
