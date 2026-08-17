@@ -194,6 +194,7 @@ namespace x3::apphost {
 // are byte-identical.
 using x3::apphost::runFrustumCullSelfTest;
 using x3::apphost::runDebrisSelfTest;
+using x3::apphost::runGibsSelfTest;
 using x3::apphost::runGpuSkinSelfTest;
 using x3::apphost::runGpuCullSelfTest;
 using x3::apphost::runVisUnifySelfTest;
@@ -1102,6 +1103,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running K-T2 GPU-compute persistent debris world self-test "
                     "(spawn burst -> compute integrate -> fall/settle/sleep -> lifetime free)...");
         return runDebrisSelfTest() ? 0 : 1;
+    }
+    if (tf.testGibs) {
+        x3::logInfo("running gib shard-mesh self-test (kill-sized burst -> >1 distinct "
+                    "shard mesh -> settle with none below the floor -> bounded "
+                    "oldest-recycled pool)...");
+        return runGibsSelfTest() ? 0 : 1;
     }
     if (tf.testGpuSkin) {
         x3::logInfo("running GPU compute-skinning self-test (register skinned mesh -> "

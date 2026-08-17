@@ -29,6 +29,7 @@
 //   * Audio (pickup chime / gunshot) is DEFERRED — no audio system until M9.
 
 #include "scene.h"
+#include "surface_type.h"            // SurfaceType (napalm fire pools: no fire on Water/Lava)
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -805,6 +806,70 @@ private:
     float m_vmFovDeg      = kVmDefFovDeg;
     float m_vmWorldFovDeg = kVmWorldFovDeg;
     float m_vmScaleMul    = 1.0f;
+};
+
+// ===========================================================================
+// NAPALM FIRE POOLS (weapon-vfx lane, 2026-08) — the consumer of the
+// firePoolDuration/firePoolDps/firePoolRadius payload that the canon-12 roster
+// lane authored onto every napalm ProjectileSpawn and nothing ever read.
+//
+// Pure headless LOGIC (testable with no Vulkan/physics/Scene): the host owns
+// rendering (CombatFx::firePoolFx) and damage delivery (the per-host onFire
+// dispatch, driven by the Tick events update() returns). Design points:
+//   * HARD BOUND: kMaxFirePools simultaneous pools; spawning past the bound
+//     recycles the OLDEST pool (by spawn order), never grows.
+//   * SURFACE RULE (Tim's SurfaceType system, app/surface_type.h): a pool never
+//     ignites on Water — the shell EXTINGUISHES (host shows steam); Lava is
+//     already burning, so a pool there is pointless and is skipped. Every other
+//     surface burns (Unknown included — it is solid by design).
+//   * DAMAGE CADENCE: a tick every kFirePoolTickSec with the damage taken from a
+//     dt-scaled ACCUMULATOR (dps * dt summed between ticks), so the long-run
+//     damage rate is exactly `dps` at any frame rate (house dt rule; the port's
+//     own per-frame max(1, dps*dt) over-damaged at high Hz — not carried over).
+//   * EXPIRY: remaining counts down dt-scaled; at <= 0 the slot frees.
+// ===========================================================================
+constexpr int   kMaxFirePools    = 6;     // hard bound on simultaneous pools (oldest recycled)
+constexpr float kFirePoolTickSec = 0.5f;  // seconds between damage ticks
+
+// What became of a napalm impact (host FX keys off this).
+enum class FirePoolSpawn : uint8_t {
+    Ignited,             // pool created (or recycled the oldest slot)
+    ExtinguishedWater,   // landed in water: no fire, host shows steam
+    AlreadyBurningLava,  // landed in lava: no pool needed, lava IS the fire
+};
+
+class FirePoolSystem {
+public:
+    struct Pool {
+        x3::phys::Vec3 center{};
+        float    radius    = 0.0f;
+        int      dps       = 0;
+        float    remaining = 0.0f;   // seconds left; <= 0 == free slot
+        float    tickTimer = 0.0f;   // counts down to the next damage tick
+        float    dmgAccum  = 0.0f;   // dps*dt summed since the last tick
+        uint64_t seq       = 0;      // spawn order (oldest-first recycling)
+    };
+    // One due damage event: "deal `damage` to everything within `radius` of
+    // `center`". The host dispatches it (player distance check + the per-host
+    // onFire chain along short Enemy-layer probe rays).
+    struct Tick { x3::phys::Vec3 center{}; float radius = 0.0f; int damage = 0; };
+
+    // Try to ignite a pool at `center` on surface `surf`. Water/Lava refuse per
+    // the surface rule; otherwise claims a free slot or recycles the oldest.
+    FirePoolSpawn spawn(const x3::phys::Vec3& center, float radius, int dps,
+                        float duration, SurfaceType surf);
+
+    // Advance all pools by dt (dt-scaled; call once per frame). Due damage ticks
+    // are written to out[0..maxOut); the return value is the number written.
+    int update(float dt, Tick* out, int maxOut);
+
+    int liveCount() const;
+    static constexpr int capacity() { return kMaxFirePools; }
+    const Pool& pool(int i) const { return m_pools[i]; }
+
+private:
+    Pool     m_pools[kMaxFirePools];
+    uint64_t m_nextSeq = 1;
 };
 
 // Headless self-test (--test-weapons). Exercises the data-driven arsenal with NO

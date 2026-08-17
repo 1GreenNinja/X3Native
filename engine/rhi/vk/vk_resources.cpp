@@ -515,36 +515,100 @@ bool VulkanRenderDevice::createDebris() {
                 logError("[rhi] debris draw UBO create failed"); return false; }
         }
 
-        // --- Shared unit cube (24 verts, per-face normals) for the instanced draw. ---
+        // --- Shard mesh set (fix/gib-meshes): kGpuDebrisShardCount DISTINCT low-poly
+        //     irregular shard meshes for the instanced draw, authored procedurally
+        //     ONCE here (deterministic per-shard RNG). Each shard is a jagged
+        //     asymmetric chunk — two offset "poles" bridged by an unevenly-spaced,
+        //     radius/height-jittered ring, with one ring vertex chipped inward to
+        //     break convexity — NOT a scaled cube. Flat per-triangle normals; each
+        //     shard is padded to kDebrisShardVertsMax vertices with degenerate
+        //     repeats of its last vertex (zero-area triangles draw nothing). The set
+        //     is uploaded as an SSBO the vertex shader fetches from per instance
+        //     (two vec4 rows per vertex: position, normal), so the whole pool still
+        //     renders in ONE instanced draw. Local coordinates stay within the same
+        //     +/-0.5 unit box the old cube used, so the compute sim's half-extent
+        //     ground collision (floor rest, never sinking) is untouched.
         {
-            struct DV { glm::vec3 pos; glm::vec3 nrm; };
-            std::vector<DV> verts; std::vector<uint32_t> idx;
-            auto face = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n) {
-                uint32_t base = (uint32_t)verts.size();
-                verts.push_back({a,n}); verts.push_back({b,n}); verts.push_back({c,n}); verts.push_back({d,n});
-                idx.insert(idx.end(), { base, base+1, base+2, base, base+2, base+3 });
-            };
-            const float h = 0.5f;
-            face({-h,-h, h},{ h,-h, h},{ h, h, h},{-h, h, h},{ 0, 0, 1});
-            face({ h,-h,-h},{-h,-h,-h},{-h, h,-h},{ h, h,-h},{ 0, 0,-1});
-            face({ h,-h, h},{ h,-h,-h},{ h, h,-h},{ h, h, h},{ 1, 0, 0});
-            face({-h,-h,-h},{-h,-h, h},{-h, h, h},{-h, h,-h},{-1, 0, 0});
-            face({-h, h, h},{ h, h, h},{ h, h,-h},{-h, h,-h},{ 0, 1, 0});
-            face({-h,-h,-h},{ h,-h,-h},{ h,-h, h},{-h,-h, h},{ 0,-1, 0});
-            m_debrisCubeIndexCount = (uint32_t)idx.size();
-            if (!createDeviceLocalBuffer(verts.data(), verts.size() * sizeof(DV),
-                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m_debrisCubeVbo, m_debrisCubeAlloc)) {
-                logError("[rhi] debris cube vbo create failed"); return false; }
-            if (!createDeviceLocalBuffer(idx.data(), idx.size() * sizeof(uint32_t),
-                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT, m_debrisCubeIbo, m_debrisCubeIboAlloc)) {
-                logError("[rhi] debris cube ibo create failed"); return false; }
+            struct SV { glm::vec4 pos; glm::vec4 nrm; };
+            const uint32_t kShards = IRenderDevice::kGpuDebrisShardCount;
+            std::vector<SV> sv; sv.reserve(kShards * kDebrisShardVertsMax);
+            std::vector<uint64_t> shardSig(kShards, 0);   // per-shard geometry signature
+            for (uint32_t s = 0; s < kShards; ++s) {
+                // Deterministic xorshift PRNG, distinct stream per shard.
+                uint32_t rng = 0xA53F19C7u + s * 0x9E3779B9u;
+                auto next = [&]() -> float {
+                    rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+                    return (rng & 0xFFFFFFu) / (float)0xFFFFFF;   // [0,1)
+                };
+                const int ringN = 5 + (int)(s & 1u);              // 5 or 6 ring verts
+                // Poles: offset laterally so the shard is asymmetric, not a spindle.
+                glm::vec3 top((next() - 0.5f) * 0.36f, 0.30f + 0.20f * next(),
+                              (next() - 0.5f) * 0.36f);
+                glm::vec3 bot((next() - 0.5f) * 0.36f, -(0.28f + 0.22f * next()),
+                              (next() - 0.5f) * 0.36f);
+                // Ring: uneven angles, jittered radius + height; one vertex chipped
+                // hard inward (a bevel-like notch in the silhouette).
+                std::vector<glm::vec3> ring((size_t)ringN);
+                const int chip = (int)(next() * (float)ringN) % ringN;
+                for (int i = 0; i < ringN; ++i) {
+                    float ang = 6.2831853f * ((float)i + 0.45f * (next() - 0.5f)) / (float)ringN;
+                    float rad = 0.20f + 0.30f * next();
+                    if (i == chip) rad *= 0.45f;
+                    float y = (next() - 0.5f) * 0.30f;
+                    ring[(size_t)i] = glm::vec3(std::cos(ang) * rad, y, std::sin(ang) * rad);
+                }
+                const size_t base = sv.size();
+                auto tri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c) {
+                    glm::vec3 n = glm::cross(b - a, c - a);
+                    float len = glm::length(n);
+                    n = (len > 1.0e-8f) ? n / len : glm::vec3(0, 1, 0);
+                    // Star-convex about the origin: flip winding if the face normal
+                    // points inward so backface culling keeps the outside visible.
+                    if (glm::dot(n, (a + b + c) / 3.0f) < 0.0f) { std::swap(b, c); n = -n; }
+                    sv.push_back({ glm::vec4(a, 0), glm::vec4(n, 0) });
+                    sv.push_back({ glm::vec4(b, 0), glm::vec4(n, 0) });
+                    sv.push_back({ glm::vec4(c, 0), glm::vec4(n, 0) });
+                };
+                for (int i = 0; i < ringN; ++i) {
+                    const glm::vec3& r0 = ring[(size_t)i];
+                    const glm::vec3& r1 = ring[(size_t)((i + 1) % ringN)];
+                    tri(top, r0, r1);   // top fan
+                    tri(bot, r1, r0);   // bottom fan
+                }
+                // Pad to the fixed per-shard vertex count with degenerate repeats.
+                while (sv.size() < base + kDebrisShardVertsMax) sv.push_back(sv.back());
+                // FNV-1a signature over the shard's bytes (distinctness proof below).
+                uint64_t sig = 1469598103934665603ull;
+                const unsigned char* bytes = (const unsigned char*)&sv[base];
+                for (size_t b2 = 0; b2 < (size_t)kDebrisShardVertsMax * sizeof(SV); ++b2) {
+                    sig ^= bytes[b2]; sig *= 1099511628211ull; }
+                shardSig[s] = sig;
+            }
+            // The whole point of the shard set is mesh VARIETY: hard-fail device
+            // creation if the authored shards collapsed to fewer than 2 distinct
+            // geometries (smoketests catch a degenerate regression immediately).
+            uint32_t distinct = 0;
+            for (uint32_t s = 0; s < kShards; ++s) {
+                bool dup = false;
+                for (uint32_t t = 0; t < s; ++t) if (shardSig[t] == shardSig[s]) { dup = true; break; }
+                if (!dup) ++distinct;
+            }
+            if (distinct < 2) {
+                logError("[rhi] debris shard set degenerate (" + std::to_string(distinct)
+                         + " distinct meshes)"); return false; }
+            if (!createDeviceLocalBuffer(sv.data(), sv.size() * sizeof(SV),
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, m_debrisShardBuf, m_debrisShardAlloc)) {
+                logError("[rhi] debris shard ssbo create failed"); return false; }
+            logInfo("[rhi] debris shard set: " + std::to_string(distinct)
+                    + " distinct gib meshes (" + std::to_string(kDebrisShardVertsMax)
+                    + " verts/shard slot)");
         }
 
         // --- Descriptor pool: per-frame compute sets (2 SSBO + 1 UBO each) + per-frame
-        //     draw sets (1 SSBO + 1 UBO each). Per-frame so a set updated this frame is
+        //     draw sets (2 SSBO + 1 UBO each). Per-frame so a set updated this frame is
         //     never one a still-pending command buffer references (avoids VUID 03047).
         VkDescriptorPoolSize ps[2]{
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFramesInFlight * 3 },   // compute: pool+counters; draw: pool
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFramesInFlight * 4 },   // compute: pool+counters; draw: pool+shards
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight * 2 } }; // compute params + draw UBO
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pci.maxSets = kFramesInFlight * 2; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
@@ -565,15 +629,18 @@ bool VulkanRenderDevice::createDebris() {
             if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_debrisComputeSetLayout) != VK_SUCCESS) {
                 logError("[rhi] debris compute set layout failed"); return false; }
         }
-        // --- Draw set layout: b0 draw UBO (VS), b1 pool SSBO (VS readonly). ---
+        // --- Draw set layout: b0 draw UBO (VS), b1 pool SSBO (VS readonly),
+        //     b2 shard-mesh SSBO (VS readonly). ---
         {
-            VkDescriptorSetLayoutBinding b[2]{};
+            VkDescriptorSetLayoutBinding b[3]{};
             b[0].binding = 0; b[0].descriptorCount = 1;
             b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; b[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
             b[1].binding = 1; b[1].descriptorCount = 1;
             b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; b[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; b[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
             VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-            slci.bindingCount = 2; slci.pBindings = b;
+            slci.bindingCount = 3; slci.pBindings = b;
             if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_debrisDrawSetLayout) != VK_SUCCESS) {
                 logError("[rhi] debris draw set layout failed"); return false; }
         }
@@ -637,12 +704,15 @@ bool VulkanRenderDevice::createDebris() {
                     logError("[rhi] debris draw set alloc failed"); return false; }
                 VkDescriptorBufferInfo ubi{ m_debrisDrawUboBuf[i], 0, sizeof(GpuDebrisDrawUBO) };
                 VkDescriptorBufferInfo pool{ m_debrisPoolBuf, 0, VK_WHOLE_SIZE };
-                VkWriteDescriptorSet w[2]{};
+                VkDescriptorBufferInfo shards{ m_debrisShardBuf, 0, VK_WHOLE_SIZE };
+                VkWriteDescriptorSet w[3]{};
                 w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_debrisDrawSet[i];
                 w[0].dstBinding = 0; w[0].descriptorCount = 1; w[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[0].pBufferInfo = &ubi;
                 w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_debrisDrawSet[i];
                 w[1].dstBinding = 1; w[1].descriptorCount = 1; w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[1].pBufferInfo = &pool;
-                vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+                w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = m_debrisDrawSet[i];
+                w[2].dstBinding = 2; w[2].descriptorCount = 1; w[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[2].pBufferInfo = &shards;
+                vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
             }
 
             const VkFormat hdrFmt = kHdrFormat;
@@ -654,13 +724,10 @@ bool VulkanRenderDevice::createDebris() {
             stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vs; stages[0].pName = "main";
             stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
-            VkVertexInputBindingDescription vib{ 0, sizeof(glm::vec3) * 2, VK_VERTEX_INPUT_RATE_VERTEX };
-            VkVertexInputAttributeDescription via[2]{
-                { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 },
-                { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, sizeof(glm::vec3) } };
+            // No vertex-input bindings: the vertex shader fetches shard geometry
+            // from the shard-set SSBO (binding 2) by gl_VertexIndex + a per-instance
+            // shard selection hash, so one draw renders several distinct meshes.
             VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-            vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &vib;
-            vin.vertexAttributeDescriptionCount = 2; vin.pVertexAttributeDescriptions = via;
             VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
             ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
             VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
@@ -693,7 +760,8 @@ bool VulkanRenderDevice::createDebris() {
             if (pr != VK_SUCCESS) { logError("[rhi] debris draw pipeline create failed"); return false; }
         }
 
-        logInfo("[rhi] GPU-compute debris world ready (compute integrate + instanced cube draw, capacity "
+        logInfo("[rhi] GPU-compute debris world ready (compute integrate + instanced shard draw, "
+                + std::to_string(IRenderDevice::kGpuDebrisShardCount) + " shard meshes, capacity "
                 + std::to_string(kDebrisCapacity) + ")");
         return true;
     }
@@ -709,8 +777,7 @@ void VulkanRenderDevice::destroyDebris() {
             killBuf(m_debrisParamsBuf[i],  m_debrisParamsAlloc[i],  m_debrisParamsMapped[i]);
             killBuf(m_debrisDrawUboBuf[i], m_debrisDrawUboAlloc[i], m_debrisDrawUboMapped[i]);
         }
-        killBuf2(m_debrisCubeVbo, m_debrisCubeAlloc);
-        killBuf2(m_debrisCubeIbo, m_debrisCubeIboAlloc);
+        killBuf2(m_debrisShardBuf, m_debrisShardAlloc);
         if (m_debrisComputePipeline) { vkDestroyPipeline(m_dev.device, m_debrisComputePipeline, nullptr); m_debrisComputePipeline = VK_NULL_HANDLE; }
         if (m_debrisDrawPipeline)    { vkDestroyPipeline(m_dev.device, m_debrisDrawPipeline, nullptr);    m_debrisDrawPipeline = VK_NULL_HANDLE; }
         if (m_debrisComputeLayout)   { vkDestroyPipelineLayout(m_dev.device, m_debrisComputeLayout, nullptr); m_debrisComputeLayout = VK_NULL_HANDLE; }

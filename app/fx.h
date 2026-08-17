@@ -42,6 +42,12 @@ enum class WeaponFxKind : uint8_t {
     Plasma,
     Lightning,
     Rocket,      // heavy explosive: big orange launch flash, fireball impact
+    // ---- weapon-vfx lane (2026-08): the canon-12 elemental reads. These are the
+    // DamageType-keyed impact/bolt consumer rows — the flamethrower/freezeray/napalm
+    // used to borrow Rocket/Plasma and read as generic bolts.
+    Flame,       // FIRE: orange->red gradient puffs that grow + rise, ignition cone
+    Frost,       // ICE: cyan-white crystals that shrink in flight, crystalline burst
+    Napalm,      // rocket-class fireball + the burning ground pool on impact
 };
 
 // Map a WeaponDef FX-id string (e.g. "muzzle_plasma", "impact_bullet") onto a
@@ -55,6 +61,12 @@ inline WeaponFxKind fxKindFromId(std::string_view id) {
     if (has("shotgun"))   return WeaponFxKind::Shotgun;
     if (has("smg"))       return WeaponFxKind::Smg;
     if (has("pistol"))    return WeaponFxKind::Pistol;
+    // Elemental rows BEFORE rocket: "napalm" ids must not fall through to a
+    // generic kind, and "flame"/"freeze"/"frost"/"cryo" are the DamageType-keyed
+    // reads (Bio burn -> Flame scorch, Cryo -> Frost crystals).
+    if (has("napalm"))    return WeaponFxKind::Napalm;
+    if (has("flame"))                                 return WeaponFxKind::Flame;
+    if (has("freeze") || has("frost") || has("cryo")) return WeaponFxKind::Frost;
     if (has("rocket") || has("explosion")) return WeaponFxKind::Rocket;
     return WeaponFxKind::Default;
 }
@@ -159,6 +171,57 @@ constexpr float kMuzzleFlashTime = 0.04f;
 // Half-extent (m) of the muzzle flash box.
 constexpr float kMuzzleFlashSize = 0.05f;
 
+// ---- In-flight BOLT style (weapon-vfx lane) --------------------------------
+// The per-kind look of a TRAVELLING projectile core (what boltFx drops each frame).
+// Factored out of boltFx into a queryable table row so the flame/frost reads are
+// testable headlessly (--test-weapons asserts the params are in range) instead of
+// living as literals inside a render-path switch. Colors are linear HDR (feed the
+// additive bloom chain); sizes are billboard half-extents in meters.
+struct BoltStyle {
+    float r, g, b;          // core tint at BIRTH
+    float r1, g1, b1;       // core tint at DEATH (gradient over the core's life;
+                            // == birth for every legacy kind, so nothing re-reads)
+    float coreSize;         // core half-extent at birth (m)
+    float endScale;         // core half-extent multiplier at death (legacy 0.7;
+                            // FIRE grows >1, ICE shrinks <1)
+    float rise;             // upward drift (m/s) given to the core (fire rises)
+    float life;             // core lifetime (s)
+};
+inline BoltStyle boltStyleFor(WeaponFxKind k) {
+    switch (k) {
+        case WeaponFxKind::Plasma:    return { 0.5f, 1.9f, 6.0f,  0.5f, 1.9f, 6.0f,  0.16f, 0.7f, 0.0f, 0.06f }; // blue-cyan
+        case WeaponFxKind::Rocket:
+        case WeaponFxKind::Napalm:    return { 6.0f, 2.2f, 0.5f,  6.0f, 2.2f, 0.5f,  0.20f, 0.7f, 0.0f, 0.06f }; // orange fire shell
+        case WeaponFxKind::Lightning: return { 0.9f, 2.4f, 5.0f,  0.9f, 2.4f, 5.0f,  0.12f, 0.7f, 0.0f, 0.06f }; // light electric blue
+        // FIRE: hot orange core that COOLS to deep red as it dies, GROWS (a flame
+        // front expands) and DRIFTS UPWARD (heat rises — matches the weapon's own
+        // -8 m/s^2 projectileGravity, which is data for the same truth).
+        case WeaponFxKind::Flame:     return { 5.0f, 1.9f, 0.35f, 1.9f, 0.30f, 0.06f, 0.15f, 1.9f, 0.9f, 0.22f };
+        // ICE: cyan-white crystal that pales toward white and SHRINKS slightly
+        // over its life (a crystal sublimating, not a flame front).
+        case WeaponFxKind::Frost:     return { 1.3f, 3.4f, 6.2f,  2.6f, 4.6f, 7.0f,  0.11f, 0.55f, 0.0f, 0.10f };
+        default:                      return { 5.0f, 3.4f, 1.0f,  5.0f, 3.4f, 1.0f,  0.13f, 0.7f, 0.0f, 0.06f }; // hot yellow
+    }
+}
+
+// ---- FLAME LICKS (weapon-vfx iteration; Tim: "fire should be flames not puffs") -
+// The particle renderer draws CAMERA-FACING billboards with no stretch axis, so
+// every flame element rendered through it is a circle — a cone of circles reads
+// as beads, not fire. Licks are VELOCITY-STRETCHED emissive ribbons (the same
+// oriented-ribbon + drawMeshEmissive path the lightning bolt uses), drawn per
+// frame from a bounded pool: elongated tongues along the stream that overlap
+// into one connected flame body near the nozzle and break into separated,
+// jittered licks at the tail. Emission is RATE-based (licks/second, dt-scaled,
+// probabilistic carry) so the stream is equally connected at 60 Hz and 165 Hz.
+constexpr int   kMaxFlameLicks   = 384;  // hard bound (ring, oldest recycled).
+                                         // Worst case ~280 live: held flamethrower
+                                         // ~11 bolts x 70/s x ~0.17 s life ≈ 130,
+                                         // + 6 pools x 60/s (30 clumped pairs) x
+                                         // ~0.55 s ≈ 198, + a few muzzle licks (~330 total).
+constexpr float kFlameLickRate   = 70.0f; // licks/s per travelling flame bolt
+                                          // (30 m/s / 70 = 0.43 m spacing < the
+                                          // ~0.6 m lick length -> always overlapped)
+
 // ---- GPU-instanced particle pool (combat juice) ----
 // Bounded CPU-simulated, GPU-instanced billboard pool. The CPU integrates each
 // live particle (pos/vel/gravity/drag/life/fade) into a FIXED ring (no per-frame
@@ -235,7 +298,12 @@ public:
     // additive core billboard at the bolt position + a dimmer trail speck behind it
     // (60 fps of overlapping cores reads as a continuous glowing bolt with a fading
     // tail). Rocket additionally puffs alpha smoke so the exhaust trail lingers.
-    void boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, WeaponFxKind kind);
+    // `streamPhase` (Flame only): the bolt's flight fraction 0..1 (traveled/range).
+    // Near the nozzle (0) the fire is a FAT, BRIGHT, TIGHT connected body; toward
+    // the tail (1) it narrows, dims and gains turbulent jitter so it breaks into
+    // separated licks — Tim's "flames not puffs" note. -1 = unknown (mid defaults).
+    void boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, WeaponFxKind kind,
+                float streamPhase = -1.0f);
     // Hit on an enemy: a short spray of dark-red alpha blood along the shot `dir`.
     void spawnBlood(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
     // Enemy death: a burst of debris chunks (alpha, gravity) + a lingering smoke
@@ -248,6 +316,17 @@ public:
     void spawnExplosion(const x3::phys::Vec3& center, float radius);
     // Lingering smoke puff (alpha, slow rise) — used by death + as a generic cue.
     void spawnSmoke(const x3::phys::Vec3& pos);
+    // ---- NAPALM FIRE-POOL visual (weapon-vfx lane) -------------------------
+    // Renders one live burning ground pool for THIS frame: dt-SCALED (house rule)
+    // probabilistic emission of licking flame billboards (orange->red gradient,
+    // grow + rise), popping embers and low black smoke across the pool disc at
+    // `center`/`radius`. The flicker is intrinsic (jittered counts/sizes/lifetimes).
+    // Call once per live pool per frame while the pool burns; the pool's LOGIC
+    // (damage ticks, expiry, the water rule) lives in FirePoolSystem (weapon.h) —
+    // this is only the look. Steam variant: `extinguishFx` is the one-shot white
+    // puff for a napalm shell that lands in WATER and never ignites.
+    void firePoolFx(const x3::phys::Vec3& center, float radius, float dt);
+    void extinguishFx(const x3::phys::Vec3& pos);
 
     // ---- SHIP-SCALE damage-state FX (space combat readability) -------------
     // The on-foot presets above are sized for a 2 m humanoid at 5-20 m; a
@@ -301,6 +380,8 @@ public:
 
     // Live particle count (for --bench reporting / debug).
     int liveParticleCount() const;
+    // Live flame-lick count (bounded by kMaxFlameLicks) — --bench reporting.
+    int liveFlameLickCount() const;
 
     // Destroy the shared meshes. Call once on exit (no VMA leaks).
     void shutdown(x3::rhi::IRenderDevice& device);
@@ -401,6 +482,26 @@ private:
     };
     Arc  m_arcs[kMaxArcs];
     int  m_nextArc = 0;
+
+    // ---- Flame-lick pool (velocity-stretched fire tongues; see kMaxFlameLicks) -
+    struct FlameLick {
+        x3::phys::Vec3 pos{};     // ribbon center
+        x3::phys::Vec3 vel{};     // drift + STRETCH AXIS (ribbon runs along vel)
+        float len     = 0.5f;     // ribbon length along vel (m)
+        float width   = 0.15f;    // ribbon width at birth (m); tapers with age
+        float bright  = 2.0f;     // emissive intensity multiplier at birth
+        float life    = 0.0f;     // remaining seconds (<=0 == free)
+        float maxLife = 0.2f;
+    };
+    FlameLick m_licks[kMaxFlameLicks];
+    int       m_nextLick = 0;
+    // The last update() dt — boltFx has no dt parameter (called per bolt per
+    // frame between updates), and the lick emission is RATE-based (licks/second),
+    // so it reads the frame's dt from here. Seeded to 1/60 for the first frame.
+    float     m_lastDt = 1.0f / 60.0f;
+    // Claim a ring slot (oldest recycled — the stated bound).
+    void spawnFlameLick(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel,
+                        float len, float width, float bright, float life);
     // Spawn a ring of arc tendrils whipping off a lightning hit (called by
     // spawnImpact for the Lightning kind).
     void spawnArcs(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
@@ -420,6 +521,11 @@ private:
         float size0    = 0.1f;     // half-extent at birth (m)
         float size1    = 0.1f;     // half-extent at death (m)
         float r = 1, g = 1, b = 1; // linear RGB (scaled by intensity at birth)
+        // Optional END color (weapon-vfx lane): when r1 >= 0 the submitted color
+        // LERPS birth->death over the particle's life — the fire read's orange->red
+        // cooling gradient. Default -1 = no gradient (legacy particles unchanged;
+        // submit() reads r/g/b exactly as before).
+        float r1 = -1.0f, g1 = -1.0f, b1 = -1.0f;
         float a0       = 1.0f;     // opacity at birth
         float gravity  = 0.0f;     // * world gravity (m/s^2 along -Y)
         float drag     = 0.0f;     // per-second velocity damping (0 = none)

@@ -2441,6 +2441,10 @@ void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
                       m_baseTint[1] * m_phaseTintMul[1],
                       m_baseTint[2] * m_phaseTintMul[2],
                       m_baseTint[3] };
+    // FROST TINT (weapon-vfx lane): a chilled enemy READS cold — icy blue shift
+    // keyed off the SAME timer as the speed slow, so it applies and reverts
+    // exactly with the mechanic (see kFrostTint* in monster.h).
+    applyFrostTint(tint, isChilled());
     // Toward red: keep R, knock down G/B by the flash amount.
     tint[1] *= (1.0f - 0.85f * flashAmt);
     tint[2] *= (1.0f - 0.85f * flashAmt);

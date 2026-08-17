@@ -4,6 +4,9 @@
 // IPhysicsWorld + Scene interfaces only. No purchased C# copied.
 #include "weapon.h"
 #include "mesh_prims.h"
+// weapon-vfx lane: WeaponFxKind / fxKindFromId / boltStyleFor — the FV tests pin
+// the flame/frost/napalm consumer rows + particle params headlessly.
+#include "fx.h"
 // kCryoSlowFactor / kCryoSlowDuration — W17f asserts the engine-side chill constants
 // still mirror the FreezeRay's own freezeSlowFactor/freezeDuration (they are set in
 // two places because the host cannot thread the per-shot payload; see monster.h).
@@ -798,11 +801,16 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.continuous  = true;                // port isContinuous
         w.burnDuration= 3.0f;                // port appliesBurn — the DOT is the point
         w.burnDps     = 8;
-        w.viewmodelGlb = "WeaponRocketLauncher.glb";  // bulky tube/nozzle reads as a projector
-        w.vmScale     = 0.24f;
-        w.vmMuzzle    = {  0.001f, 0.368f, 0.916f };  // WeaponRocketLauncher.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
-        w.muzzleFx    = "muzzle_rocket";     // hot orange discharge (nearest existing kind)
-        w.impactFx    = "impact_explosion";
+        // Armory swap 2026-08 (assets/weapon-models lane): a REAL flamethrower
+        // silhouette (Meshy-generated, store-distributed) — the rocket-launcher
+        // stand-in is retired. Scale derived, not eyeballed: source is 1.55 m
+        // long (probe AABB), rocket-launcher-class projector read targets ~0.93 m
+        // -> 1.55 m source * 0.30 * 2x boost = 0.93 m draw (good-8 band 0.65-0.99).
+        w.viewmodelGlb = "WeaponFlameThrower.glb";
+        w.vmScale     = 0.30f;                        // 1.55 m source * 2x boost -> 0.93 m draw
+        w.vmMuzzle    = { -0.001f, 0.490f, 0.868f };  // WeaponFlameThrower.glb nozzle tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_flame";      // IGNITION CONE (weapon-vfx lane: WeaponFxKind::Flame)
+        w.impactFx    = "impact_flame";      // fire splash + scorch, not a rocket fireball per puff
         w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";
         w.fireSfxLoop = true;                // continuous stream: ONE loop voice
         r.push_back(w);
@@ -866,8 +874,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.viewmodelGlb = "WeaponSciFiMissileLauncher.glb";
         w.vmScale     = 0.38f;                        // 1.308 m source * 2x boost -> 0.99 m draw (rocket-launcher-class: it draws at 0.985 m)
         w.vmMuzzle    = { -0.000f, 0.165f, 0.538f };  // WeaponSciFiMissileLauncher.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
-        w.muzzleFx    = "muzzle_rocket";
-        w.impactFx    = "impact_explosion";
+        w.muzzleFx    = "muzzle_napalm";     // rocket-class launch pop, warmer tint
+        w.impactFx    = "impact_napalm";     // fireball + the BURNING GROUND POOL (weapon-vfx lane)
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";
         r.push_back(w);
     }
@@ -920,8 +928,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.viewmodelGlb = "WeaponFreezeRayCryo.glb";
         w.vmScale     = 0.50f;                        // 0.904 m source * 2x boost -> 0.90 m draw (bulky projector, BFG-class read)
         w.vmMuzzle    = { -0.000f, 0.122f, 0.523f };  // WeaponFreezeRayCryo.glb emitter tip (MEASURED: tools/weapon_muzzle_probe.py)
-        w.muzzleFx    = "muzzle_plasma";     // cool-tint energy flash (nearest existing kind)
-        w.impactFx    = "impact_plasma";
+        w.muzzleFx    = "muzzle_freeze";     // icy cyan-white discharge (weapon-vfx lane: WeaponFxKind::Frost)
+        w.impactFx    = "impact_freeze";     // crystalline burst + pale frost ring (no scorch)
         w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";
         w.fireSfxLoop = true;                // continuous cone: ONE loop voice
         w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";
@@ -1799,6 +1807,72 @@ bool runPickupSelfTest() {
 }
 
 // ===========================================================================
+// NAPALM FIRE POOLS — the firePool payload consumer (see weapon.h for design).
+// ===========================================================================
+FirePoolSpawn FirePoolSystem::spawn(const x3::phys::Vec3& center, float radius, int dps,
+                                    float duration, SurfaceType surf) {
+    // SURFACE RULE (app/surface_type.h): fire does not survive on water — the
+    // shell lands, hisses, and is gone. Lava needs no pool: it IS the burning
+    // ground already. Everything else (Unknown included: solid by design) burns.
+    if (surf == SurfaceType::Water) return FirePoolSpawn::ExtinguishedWater;
+    if (surf == SurfaceType::Lava)  return FirePoolSpawn::AlreadyBurningLava;
+    // Claim a free slot; if all kMaxFirePools are live, recycle the OLDEST pool
+    // (smallest spawn seq) — the stated bound: at most kMaxFirePools simultaneous,
+    // oldest expires first.
+    int slot = -1;
+    for (int i = 0; i < kMaxFirePools; ++i)
+        if (m_pools[i].remaining <= 0.0f) { slot = i; break; }
+    if (slot < 0) {
+        uint64_t oldSeq = ~0ull;
+        for (int i = 0; i < kMaxFirePools; ++i)
+            if (m_pools[i].seq < oldSeq) { oldSeq = m_pools[i].seq; slot = i; }
+    }
+    Pool& p = m_pools[slot];
+    p.center    = center;
+    p.radius    = (radius > 0.1f) ? radius : 0.1f;
+    p.dps       = (dps > 0) ? dps : 0;
+    p.remaining = (duration > 0.0f) ? duration : 0.0f;
+    p.tickTimer = kFirePoolTickSec;
+    p.dmgAccum  = 0.0f;
+    p.seq       = m_nextSeq++;
+    return FirePoolSpawn::Ignited;
+}
+
+int FirePoolSystem::update(float dt, Tick* out, int maxOut) {
+    if (dt <= 0.0f) return 0;
+    int n = 0;
+    for (int i = 0; i < kMaxFirePools; ++i) {
+        Pool& p = m_pools[i];
+        if (p.remaining <= 0.0f) continue;
+        // dt-SCALED damage accumulation (house rule): the long-run rate is exactly
+        // dps at any frame rate — the tick merely QUANTIZES delivery, it never
+        // changes the total (integer remainder carries to the next tick).
+        p.dmgAccum  += (float)p.dps * dt;
+        p.tickTimer -= dt;
+        while (p.tickTimer <= 0.0f) {
+            const int dmg = (int)p.dmgAccum;
+            if (dmg > 0 && out && n < maxOut) {
+                out[n].center = p.center;
+                out[n].radius = p.radius;
+                out[n].damage = dmg;
+                ++n;
+                p.dmgAccum -= (float)dmg;
+            }
+            p.tickTimer += kFirePoolTickSec;
+        }
+        p.remaining -= dt;
+        if (p.remaining <= 0.0f) { p.remaining = 0.0f; p.dmgAccum = 0.0f; }
+    }
+    return n;
+}
+
+int FirePoolSystem::liveCount() const {
+    int n = 0;
+    for (const Pool& p : m_pools) if (p.remaining > 0.0f) ++n;
+    return n;
+}
+
+// ===========================================================================
 // Headless self-test (--test-weapons). Exercises the data-driven Arsenal with NO
 // window / Vulkan / physics. Covers: roster + switching, fire-rate gating, ammo
 // gating, reload refill, shotgun pellet count, and hitscan-vs-projectile resolve.
@@ -2346,7 +2420,9 @@ bool runWeaponsSelfTest() {
             // NEW model (never inherited across a model change).
             { "laser",        "WeaponSciFiLaserGun.glb",         0.000f, 0.090f, 0.346f },
             { "railgun",      "WeaponRailgun.glb",               0.000f, 0.494f, 0.909f },
-            { "flamethrower", "WeaponRocketLauncher.glb",        0.001f, 0.368f, 0.916f },
+            // 2026-08 weapon-vfx lane: the Meshy flamethrower landed (assets/
+            // weapon-models @ fc3c22f8) — muzzle RE-MEASURED on the new GLB.
+            { "flamethrower", "WeaponFlameThrower.glb",         -0.001f, 0.490f, 0.868f },
             { "napalm",       "WeaponSciFiMissileLauncher.glb", -0.000f, 0.165f, 0.538f },
             { "freezeray",    "WeaponFreezeRayCryo.glb",        -0.000f, 0.122f, 0.523f },
             { "bfg11k",       "WeaponBFG.glb",                  -0.003f, 0.528f, 0.864f },
@@ -2907,6 +2983,172 @@ bool runWeaponsSelfTest() {
         wcheck(arcs && flatStaysFlat,
                "W18c integrator form: napalm arcs under v.y-=g*dt at 165 Hz; "
                "zero-gravity bolts stay flat");
+    }
+
+    // ==== FP: NAPALM FIRE POOLS (weapon-vfx lane) — the firePool payload is ====
+    // finally CONSUMED. Pure logic (FirePoolSystem), no host needed.
+
+    // ---- FP1: a pool spawns, damages at exactly its authored DPS, and expires. -
+    // Stepped at dt = kFirePoolTickSec so the arithmetic is exact: 5.0 s at 25 dps
+    // must deliver 125 damage in 10 ticks and then free the slot.
+    {
+        FirePoolSystem fp;
+        const FirePoolSpawn r = fp.spawn(x3::phys::Vec3{ 1, 0, 2 }, 3.0f, 25, 5.0f,
+                                         SurfaceType::Unknown);
+        int totalDmg = 0, nTicks = 0;
+        FirePoolSystem::Tick out[kMaxFirePools];
+        for (int s = 0; s < 12; ++s) {                       // 6.0 s > the 5.0 s life
+            const int n = fp.update(kFirePoolTickSec, out, kMaxFirePools);
+            for (int t = 0; t < n; ++t) { totalDmg += out[t].damage; ++nTicks; }
+        }
+        wcheck(r == FirePoolSpawn::Ignited && totalDmg == 125 && nTicks == 10 &&
+               fp.liveCount() == 0,
+               "FP1 pool ignites, delivers dps*duration exactly (125 in 10 ticks), expires");
+    }
+
+    // ---- FP2: the SURFACE RULE — water extinguishes, lava needs no pool. ------
+    {
+        FirePoolSystem fp;
+        const bool water = fp.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Water)
+                               == FirePoolSpawn::ExtinguishedWater && fp.liveCount() == 0;
+        const bool lava  = fp.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Lava)
+                               == FirePoolSpawn::AlreadyBurningLava && fp.liveCount() == 0;
+        const bool solid = fp.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Concrete)
+                               == FirePoolSpawn::Ignited && fp.liveCount() == 1;
+        wcheck(water && lava && solid,
+               "FP2 surface rule: Water extinguishes, Lava is already burning, solids ignite");
+    }
+
+    // ---- FP3: the HARD BOUND — kMaxFirePools simultaneous, oldest recycled. ---
+    {
+        FirePoolSystem fp;
+        for (int i = 0; i < kMaxFirePools + 2; ++i)
+            fp.spawn(x3::phys::Vec3{ (float)i, 0, 0 }, 3.0f, 25, 5.0f, SurfaceType::Unknown);
+        bool oldestGone = true, newestAlive = false;
+        for (int i = 0; i < FirePoolSystem::capacity(); ++i) {
+            const auto& p = fp.pool(i);
+            if (p.remaining <= 0.0f) continue;
+            if (p.center.x < 1.5f) oldestGone = false;             // pools 0/1 were recycled
+            if (p.center.x == (float)(kMaxFirePools + 1)) newestAlive = true;
+        }
+        wcheck(fp.liveCount() == kMaxFirePools && oldestGone && newestAlive,
+               "FP3 bound: at most kMaxFirePools pools; overflow recycles the OLDEST");
+    }
+
+    // ---- FP4: dt-CORRECTNESS (house rule) — 60 Hz and 165 Hz agree. -----------
+    {
+        FirePoolSystem a60, a165;
+        a60.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Unknown);
+        a165.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Unknown);
+        FirePoolSystem::Tick out[kMaxFirePools];
+        int d60 = 0, d165 = 0;
+        for (int s = 0; s < 360; ++s) {                      // 6.0 s at 60 Hz
+            const int n = a60.update(1.0f / 60.0f, out, kMaxFirePools);
+            for (int t = 0; t < n; ++t) d60 += out[t].damage;
+        }
+        for (int s = 0; s < 990; ++s) {                      // 6.0 s at 165 Hz
+            const int n = a165.update(1.0f / 165.0f, out, kMaxFirePools);
+            for (int t = 0; t < n; ++t) d165 += out[t].damage;
+        }
+        // Same wall time, same total burn to within one tick's rounding.
+        const int diff = (d60 > d165) ? d60 - d165 : d165 - d60;
+        wcheck(diff <= 13 && d60 >= 110 && d60 <= 126 &&
+               a60.liveCount() == 0 && a165.liveCount() == 0,
+               "FP4 pool burn is dt-scaled: 60 Hz and 165 Hz deliver the same total damage");
+    }
+
+    // ---- FP5: END TO END — the napalm SHOT's own payload ignites a pool with ---
+    // the harvested port numbers (5.0 s / 25 dps / 3.0 m: firePoolDuration+DPS 1:1,
+    // radius 60 port-units x0.05 — CreateFirePool in the port's weapon.cpp).
+    {
+        Arsenal a;
+        bool payload = false, ignites = false;
+        if (a.selectByName("napalm")) {
+            a.tick(10.0f);
+            ResolvedFire shot = a.fire(eye, fwd, rng);
+            if (!shot.projectiles.empty()) {
+                const ProjectileSpawn& pj = shot.projectiles[0];
+                payload = pj.firePoolDuration == 5.0f && pj.firePoolDps == 25 &&
+                          pj.firePoolRadius == 3.0f;
+                FirePoolSystem fp;
+                ignites = fp.spawn(eye, pj.firePoolRadius, pj.firePoolDps,
+                                   pj.firePoolDuration, SurfaceType::Unknown)
+                              == FirePoolSpawn::Ignited && fp.liveCount() == 1;
+            }
+        }
+        wcheck(payload && ignites,
+               "FP5 napalm spawn payload (5.0 s / 25 dps / 3.0 m harvested) ignites a pool");
+    }
+
+    // ==== FV: the ELEMENTAL FX consumer rows (weapon-vfx lane). ================
+
+    // ---- FV1: the DamageType-keyed kind rows resolve from the roster's fx ids,
+    // and ONLY the elemental weapons land on them (a stray substring match would
+    // silently re-skin another gun's muzzle).
+    {
+        Arsenal a;
+        using K = x3::game::WeaponFxKind;
+        const int fi = a.indexOf("flamethrower"), zi = a.indexOf("freezeray"),
+                  ni = a.indexOf("napalm");
+        const bool rows = fi >= 0 && zi >= 0 && ni >= 0 &&
+            fxKindFromId(a.def(fi).muzzleFx) == K::Flame &&
+            fxKindFromId(a.def(fi).impactFx) == K::Flame &&
+            fxKindFromId(a.def(zi).muzzleFx) == K::Frost &&
+            fxKindFromId(a.def(zi).impactFx) == K::Frost &&
+            fxKindFromId(a.def(ni).muzzleFx) == K::Napalm &&
+            fxKindFromId(a.def(ni).impactFx) == K::Napalm;
+        bool noStray = true;
+        for (int i = 0; i < a.count(); ++i) {
+            if (i == fi || i == zi || i == ni) continue;
+            const K mk = fxKindFromId(a.def(i).muzzleFx), ik = fxKindFromId(a.def(i).impactFx);
+            if (mk == K::Flame || mk == K::Frost || mk == K::Napalm ||
+                ik == K::Flame || ik == K::Frost || ik == K::Napalm) noStray = false;
+        }
+        wcheck(rows && noStray,
+               "FV1 flame/frost/napalm FX rows resolve from the roster ids; no other weapon strays onto them");
+    }
+
+    // ---- FV2: flame/frost PARTICLE PARAMS in range — fire is an orange-red ----
+    // gradient that GROWS and RISES; ice is cyan-white that SHRINKS and doesn't.
+    {
+        const BoltStyle fl = boltStyleFor(x3::game::WeaponFxKind::Flame);
+        const BoltStyle fr = boltStyleFor(x3::game::WeaponFxKind::Frost);
+        const bool flameOk =
+            fl.r > fl.g && fl.g > fl.b &&        // orange-red at birth
+            fl.r1 < fl.r && fl.g1 < fl.g &&      // cools toward deep red
+            fl.endScale > 1.0f &&                // the flame front EXPANDS
+            fl.rise > 0.0f &&                    // heat rises (matches the -8 m/s^2 data)
+            fl.life > 0.05f && fl.life < 1.0f;
+        const bool frostOk =
+            fr.b > fr.g && fr.g > fr.r &&        // cyan-white
+            fr.endScale < 1.0f &&                // the crystal SHRINKS (sublimates)
+            fr.rise == 0.0f &&                   // ice does not rise
+            fr.life > 0.02f && fr.life < 1.0f;
+        // Legacy kinds must be untouched: no gradient (end == birth), classic 0.7 shrink.
+        const BoltStyle pl = boltStyleFor(x3::game::WeaponFxKind::Plasma);
+        const bool legacyOk = pl.r1 == pl.r && pl.g1 == pl.g && pl.b1 == pl.b &&
+                              pl.endScale == 0.7f && pl.rise == 0.0f;
+        wcheck(flameOk && frostOk && legacyOk,
+               "FV2 flame grows/rises/cools orange->red; frost is cyan and shrinks; legacy bolts untouched");
+    }
+
+    // ---- FV3: the FROST TINT applies while chilled and REVERTS EXACTLY. -------
+    // The fold is pure; drawMonster keys it off isChilled() — the same timer as
+    // the speed slow — so apply/revert cannot drift from the mechanic.
+    {
+        const float base[4] = { 0.8f, 0.7f, 0.6f, 1.0f };
+        float chilled[4] = { base[0], base[1], base[2], base[3] };
+        float warm[4]    = { base[0], base[1], base[2], base[3] };
+        applyFrostTint(chilled, true);
+        applyFrostTint(warm, false);
+        const bool applies = chilled[0] < base[0] &&          // red stolen
+                             chilled[2] > base[2] &&          // blue pushed
+                             chilled[3] == base[3];           // alpha untouched
+        const bool reverts = warm[0] == base[0] && warm[1] == base[1] &&
+                             warm[2] == base[2] && warm[3] == base[3];   // BYTE-exact
+        const bool sane = kFrostTintR < 1.0f && kFrostTintB > 1.0f;
+        wcheck(applies && reverts && sane,
+               "FV3 frost tint: icy shift while chilled, byte-exact identity when not");
     }
 
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +

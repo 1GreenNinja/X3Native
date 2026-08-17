@@ -689,6 +689,120 @@ bool runDebrisSelfTest() {
     return passed == total;
 }
 
+// ---------------------------------------------------------------------------
+// --test-gibs : gib shard-mesh acceptance self-test (fix/gib-meshes).
+//
+// Tim, from live play: "Gibs are square boxes." The debris draw used to render ONE
+// shared unit cube for every fragment; it now renders a small set of DISTINCT
+// procedural irregular shard meshes, selected per pool slot by a hash the CPU can
+// mirror (IRenderDevice::gpuDebrisShardHash — MUST match shaders/debris.vert).
+// Drives the REAL Vulkan device HEADLESS (the shard SSBO + draw pipeline are
+// exercised on the GPU) and asserts:
+//   (a) a monster-kill-sized burst spawns fully and spans >1 distinct shard mesh
+//       (the shard set itself must hold >1 mesh — device init hard-fails otherwise),
+//   (b) after settling, NO gib is below the floor (minY >= groundY: gibs REST on
+//       the ground, never sink — SurfaceType penetration rule family), no NaNs,
+//       bounded positions, most asleep and ~motionless,
+//   (c) the pool is BOUNDED: a full-capacity spawn clamps to capacity, and an
+//       overflow burst recycles the OLDEST slots instead of growing (max live
+//       gibs == gpuDebrisCapacity(), oldest culled).
+// Prints "gibs: X/Y passed" and returns true iff all pass.
+bool runGibsSelfTest() {
+    using namespace x3::rhi;
+    int passed = 0, total = 0;
+    auto check = [&](const char* name, bool ok) {
+        ++total; if (ok) ++passed;
+        x3::logInfo(std::string("  [gibs] ") + (ok ? "PASS " : "FAIL ") + name);
+        return ok;
+    };
+
+    if (!glfwInit()) { x3::logError("[gibs] glfwInit failed"); return false; }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+    std::unique_ptr<IRenderDevice> device(createRenderDevice());
+    DeviceDesc desc{};
+    desc.width = 640; desc.height = 360; desc.headless = true;
+#ifdef _DEBUG
+    desc.validation = true;
+#endif
+    if (!device->init(desc)) { x3::logError("[gibs] device init failed"); glfwTerminate(); return false; }
+
+    // Ground plane at y=0; settle-friendly params (same family as --test-debris).
+    IRenderDevice::GpuDebrisParams p{};
+    p.groundY = 0.0f;
+    p.restitution = 0.10f;
+    p.friction = 0.6f;
+    p.linearDamping = 0.6f;
+    p.sleepLinSpeed = 0.30f;
+    p.sleepAngSpeed = 0.6f;
+    p.sleepFrames = 8;
+    device->gpuDebrisConfig(p);
+
+    // --- (a) One monster-kill-sized gib burst (app_run.cpp spawns 16-20/kill). ---
+    const uint32_t N = 24;
+    const float spawnPos[3] = { 0.0f, 1.6f, 0.0f };
+    // Long lifetime so nothing expires inside the settle window below.
+    uint32_t spawned = device->gpuDebrisSpawnBurst(spawnPos, N, /*speed*/7.0f,
+                                                   /*lifetime*/10.0f, /*halfExtent*/0.07f, /*seed*/4242u);
+    check("spawn count == requested", spawned == N);
+    check("alive == N right after spawn", device->gpuDebrisAliveCount() == N);
+    // Mesh variety: the shard set holds >1 distinct mesh, and this burst's slots
+    // (a fresh device spawns from slot 0) select >1 of them. gpuDebrisShardHash is
+    // the canonical CPU mirror of the shader's per-instance shard selection.
+    check("shard mesh set holds >1 distinct mesh",
+          IRenderDevice::kGpuDebrisShardCount > 1);
+    {
+        bool used[IRenderDevice::kGpuDebrisShardCount] = {};
+        uint32_t distinct = 0;
+        for (uint32_t slot = 0; slot < N; ++slot) {
+            uint32_t s = IRenderDevice::gpuDebrisShardHash(slot) % IRenderDevice::kGpuDebrisShardCount;
+            if (!used[s]) { used[s] = true; ++distinct; }
+        }
+        check("burst spans >1 distinct shard mesh", distinct > 1);
+    }
+
+    const float tint[4] = { 0.42f, 0.06f, 0.05f, 1.0f };   // the app's gib tint
+    const float dt = 1.0f / 60.0f;
+    auto stepFrame = [&]() {
+        device->setCamera(0.0f, 1.5f, 6.0f, -1.5708f, -0.2f, 60.0f);
+        FrameContext fc = device->beginFrame();
+        if (!fc.valid) return;
+        device->gpuDebrisStep(dt);
+        device->gpuDebrisDraw(fc, tint);
+        device->endFrame(fc);
+    };
+
+    // --- (b) Settle ~4s (well inside the >=7s min lifetime), then prove the
+    //     grounding rule: rest ON the floor, never below it (fragment centers sit
+    //     at groundY + halfExtent when resting). ---
+    for (int i = 0; i < 240; ++i) stepFrame();
+    IRenderDevice::GpuDebrisStats settled = device->gpuDebrisReadback(1.0e4f);
+    check("no NaNs after settle", settled.nanCount == 0);
+    check("bounded positions after settle", settled.outOfBounds == 0);
+    check("none below the floor after settle (minY >= groundY)",
+          settled.minY >= p.groundY - 1.0e-3f);
+    check("most gibs settled to sleep", settled.settled > (N * 3) / 4);
+    check("settled gibs are ~motionless", settled.maxSpeed < 1.0f);
+
+    // --- (c) Bounded pool: a full-capacity spawn clamps to capacity; overflow
+    //     recycles the OLDEST slots (ring cursor) instead of growing. ---
+    const uint32_t cap = device->gpuDebrisCapacity();
+    uint32_t big = device->gpuDebrisSpawnBurst(spawnPos, cap + 1000u, 3.0f,
+                                               /*lifetime*/5.0f, 0.07f, 999u);
+    check("full-capacity spawn clamps to capacity",
+          big == cap && device->gpuDebrisAliveCount() == cap);
+    device->gpuDebrisSpawnBurst(spawnPos, 128, 3.0f, 5.0f, 0.07f, 1000u);
+    check("overflow recycles oldest (alive stays == capacity)",
+          device->gpuDebrisAliveCount() == cap);
+
+    device->shutdown();
+    glfwTerminate();
+
+    std::printf("gibs: %d/%d passed\n", passed, total);
+    x3::logInfo("gibs: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
+    return passed == total;
+}
+
 // --test-gpuskin : GPU compute-skinning self-test (GPU SKINNING OF MODELS).
 //
 // Drives the REAL Vulkan render device HEADLESS (no window) so the compute skinning
