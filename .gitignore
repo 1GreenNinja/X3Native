@@ -163,3 +163,6 @@ assets/rigged_glb/SalvariPrincess_anim.glb
 
 # agent scratch (per-worktree handoff notes, never mainline)
 HANDOFF.md
+
+# the asset catalog JSON is a 17 MB rebuildable index (tools/unitypackage_index.py)
+docs/design/ASSET_CATALOG.json
