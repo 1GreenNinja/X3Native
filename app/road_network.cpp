@@ -2674,6 +2674,11 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
         // LANE MARKINGS: solid at both edges of the running surface, DASHED on
         // the three interior lines. 40 ft cycle at 60% duty is the US
         // convention, and dashes are what tell you at speed which way it bends.
+        // Dashes are cut as TRUE duty-cycle windows within the segment, not
+        // one whole-segment yes/no on fmod(u0): that quantisation was fine at
+        // 61 m nodes and became near-solid lines the moment the horizontal
+        // smoothing brought 4-15 m segments (seen in the barrier_mix eye
+        // capture — six solid lines, no dashes).
         const float laneM = kLaneFt * kFtToM;
         const float halfPaint = 0.06f;              // ~5 in stripe
         for (int lane = 0; lane <= kLaneCount; ++lane) {
@@ -2681,7 +2686,27 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
             const bool edge = (lane == 0 || lane == kLaneCount);
             if (!edge) {
                 const float cycle = 12.19f;         // 40 ft
-                if (std::fmod(u0, cycle) > cycle * 0.6f) continue;
+                const float duty  = 0.6f;
+                float e0[3], e1[3], f0[3], f1[3];   // segment-end stripe corners
+                at(k,   lat - halfPaint, e0); at(k,   lat + halfPaint, e1);
+                at(k+1, lat - halfPaint, f0); at(k+1, lat + halfPaint, f1);
+                auto lerp3 = [](const float A[3], const float B[3], float t, float o[3]) {
+                    o[0] = A[0] + (B[0] - A[0]) * t;
+                    o[1] = A[1] + (B[1] - A[1]) * t + 0.012f;
+                    o[2] = A[2] + (B[2] - A[2]) * t;
+                };
+                for (float c0 = std::floor(u0 / cycle) * cycle; c0 < u1; c0 += cycle) {
+                    const float s0 = std::max(u0, c0);
+                    const float s1 = std::min(u1, c0 + cycle * duty);
+                    if (s1 <= s0 + 0.05f) continue;
+                    const float ta = (s0 - u0) / (u1 - u0);
+                    const float tb = (s1 - u0) / (u1 - u0);
+                    float da[3], db[3], dc[3], dd[3];
+                    lerp3(e0, f0, ta, da); lerp3(e1, f1, ta, db);
+                    lerp3(e1, f1, tb, dc); lerp3(e0, f0, tb, dd);
+                    paint.quad(da, db, dc, dd, 0.0f, 1.0f, 0.0f, 1.0f);
+                }
+                continue;
             }
             float pa[3], pb[3], pc[3], pd[3];
             at(k,   lat - halfPaint, pa); at(k,   lat + halfPaint, pb);
