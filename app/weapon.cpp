@@ -706,9 +706,12 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 2.4f;
         w.beam        = true;                // render as a solid beam (host hint)
         w.continuous  = true;                // port isContinuous: ONE unbroken beam
-        w.viewmodelGlb = "WeaponEnergyPistol2.glb";  // compact emitter reads as a beam gun
-        w.vmScale     = 0.20f;
-        w.vmMuzzle    = { -0.003f, 0.652f, 0.855f };  // WeaponEnergyPistol2.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
+        // Armory swap 2026-08: purpose-shaped laser carbine (Protofactor SCI FI
+        // SHOOTER VOL 3 SM_SciFiLaserGun, PBR albedo+normal+emissive), replacing
+        // the WeaponEnergyPistol2 stand-in. Source is 0.444 m long -> larger scale.
+        w.viewmodelGlb = "WeaponSciFiLaserGun.glb";
+        w.vmScale     = 0.90f;                        // 0.444 m source * 2x boost -> 0.80 m draw (railgun-class read: railgun draws at 0.91 m)
+        w.vmMuzzle    = {  0.000f, 0.090f, 0.346f };  // WeaponSciFiLaserGun.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
         w.muzzleFx    = "muzzle_lightning";  // closest existing kind: electric-blue energy
         w.impactFx    = "impact_lightning";
         w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";  // sustained beam tone
@@ -857,9 +860,12 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.firePoolRadius   = 3.0f;           // the standing-fire footprint
         w.burnDuration= 4.0f;                // port appliesBurn
         w.burnDps     = 10;
-        w.viewmodelGlb = "WeaponRocketLauncher.glb";  // a launcher tube — literally the right read
-        w.vmScale     = 0.26f;
-        w.vmMuzzle    = {  0.001f, 0.368f, 0.916f };  // WeaponRocketLauncher.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
+        // Armory swap 2026-08: dedicated boxy missile pod (Protofactor SCI FI
+        // SHOOTER VOL 3 SM_SciFiMissileLauncher, PBR albedo+normal+emissive) so
+        // the napalm no longer shares the rocket's WeaponRocketLauncher silhouette.
+        w.viewmodelGlb = "WeaponSciFiMissileLauncher.glb";
+        w.vmScale     = 0.38f;                        // 1.308 m source * 2x boost -> 0.99 m draw (rocket-launcher-class: it draws at 0.985 m)
+        w.vmMuzzle    = { -0.000f, 0.165f, 0.538f };  // WeaponSciFiMissileLauncher.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
         w.muzzleFx    = "muzzle_rocket";
         w.impactFx    = "impact_explosion";
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";
@@ -907,9 +913,13 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.continuous  = true;                // port isContinuous
         w.freezeDuration   = 2.5f;           // port appliesFreeze — THE payload
         w.freezeSlowFactor = 0.35f;          // down to 35% move speed while frozen
-        w.viewmodelGlb = "WeaponBFG.glb";    // wide emitter aperture reads as a projector
-        w.vmScale     = 0.22f;
-        w.vmMuzzle    = { -0.003f, 0.528f, 0.864f };  // WeaponBFG.glb emitter tip (MEASURED: tools/weapon_muzzle_probe.py)
+        // Armory swap 2026-08: NO cryo weapon mesh exists in any library, so this
+        // is the sanctioned reskin — Protofactor SM_SciFiLightingGun tinted cold
+        // (cyan baseColorFactor + icy emissiveFactor over the source textures),
+        // exported as WeaponFreezeRayCryo.glb. Distinct silhouette from the BFG.
+        w.viewmodelGlb = "WeaponFreezeRayCryo.glb";
+        w.vmScale     = 0.50f;                        // 0.904 m source * 2x boost -> 0.90 m draw (bulky projector, BFG-class read)
+        w.vmMuzzle    = { -0.000f, 0.122f, 0.523f };  // WeaponFreezeRayCryo.glb emitter tip (MEASURED: tools/weapon_muzzle_probe.py)
         w.muzzleFx    = "muzzle_plasma";     // cool-tint energy flash (nearest existing kind)
         w.impactFx    = "impact_plasma";
         w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";
@@ -2331,12 +2341,15 @@ bool runWeaponsSelfTest() {
         Arsenal a;
         struct Measured { const char* slot; const char* glb; float x, y, z; };
         const Measured measured[] = {
-            { "laser",        "WeaponEnergyPistol2.glb", -0.003f, 0.652f, 0.855f },
-            { "railgun",      "WeaponRailgun.glb",        0.000f, 0.494f, 0.909f },
-            { "flamethrower", "WeaponRocketLauncher.glb", 0.001f, 0.368f, 0.916f },
-            { "napalm",       "WeaponRocketLauncher.glb", 0.001f, 0.368f, 0.916f },
-            { "freezeray",    "WeaponBFG.glb",           -0.003f, 0.528f, 0.864f },
-            { "bfg11k",       "WeaponBFG.glb",           -0.003f, 0.528f, 0.864f },
+            // 2026-08 armory swap: laser/napalm moved to Protofactor models,
+            // freezeray to the cyan cryo reskin — each muzzle RE-MEASURED on the
+            // NEW model (never inherited across a model change).
+            { "laser",        "WeaponSciFiLaserGun.glb",         0.000f, 0.090f, 0.346f },
+            { "railgun",      "WeaponRailgun.glb",               0.000f, 0.494f, 0.909f },
+            { "flamethrower", "WeaponRocketLauncher.glb",        0.001f, 0.368f, 0.916f },
+            { "napalm",       "WeaponSciFiMissileLauncher.glb", -0.000f, 0.165f, 0.538f },
+            { "freezeray",    "WeaponFreezeRayCryo.glb",        -0.000f, 0.122f, 0.523f },
+            { "bfg11k",       "WeaponBFG.glb",                  -0.003f, 0.528f, 0.864f },
         };
         bool muzzlesMeasured = true, glbsMatch = true;
         for (const Measured& m : measured) {

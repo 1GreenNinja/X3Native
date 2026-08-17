@@ -133,6 +133,9 @@ assets/rigged_glb/WeaponShotgun2.glb
 assets/rigged_glb/WeaponRocketLauncher.glb
 assets/rigged_glb/WeaponBFG.glb
 assets/rigged_glb/WeaponRailgun.glb
+assets/rigged_glb/WeaponSciFiLaserGun.glb
+assets/rigged_glb/WeaponSciFiMissileLauncher.glb
+assets/rigged_glb/WeaponFreezeRayCryo.glb
 
 # L6 (docs/KNOWN_BUGS.md): ONE BUILD DIR PER AGENT. Concurrent agents sharing a build
 # dir silently debug a STALE exe (MSBuild holds .obj files and skips recompiles). Agents
