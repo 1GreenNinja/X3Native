@@ -306,6 +306,24 @@ FxTuning& fxTuning();   // the live tuning state (mutable singleton; fx.cpp)
 // value untouched — bare hosts without the engine cvar catalog stay at defaults.
 void applyWeaponFxCVars(const x3::con::IConsole& console);
 
+// ---- FLAME LICKS (weapon-vfx iteration; Tim: "fire should be flames not puffs") -
+// The particle renderer draws CAMERA-FACING billboards with no stretch axis, so
+// every flame element rendered through it is a circle — a cone of circles reads
+// as beads, not fire. Licks are VELOCITY-STRETCHED emissive ribbons (the same
+// oriented-ribbon + drawMeshEmissive path the lightning bolt uses), drawn per
+// frame from a bounded pool: elongated tongues along the stream that overlap
+// into one connected flame body near the nozzle and break into separated,
+// jittered licks at the tail. Emission is RATE-based (licks/second, dt-scaled,
+// probabilistic carry) so the stream is equally connected at 60 Hz and 165 Hz.
+constexpr int   kMaxFlameLicks   = 384;  // hard bound (ring, oldest recycled).
+                                         // Worst case ~280 live: held flamethrower
+                                         // ~11 bolts x 70/s x ~0.17 s life ≈ 130,
+                                         // + 6 pools x 60/s (30 clumped pairs) x
+                                         // ~0.55 s ≈ 198, + a few muzzle licks (~330 total).
+constexpr float kFlameLickRate   = 70.0f; // licks/s per travelling flame bolt
+                                          // (30 m/s / 70 = 0.43 m spacing < the
+                                          // ~0.6 m lick length -> always overlapped)
+
 // ---- GPU-instanced particle pool (combat juice) ----
 // Bounded CPU-simulated, GPU-instanced billboard pool. The CPU integrates each
 // live particle (pos/vel/gravity/drag/life/fade) into a FIXED ring (no per-frame
@@ -382,7 +400,12 @@ public:
     // additive core billboard at the bolt position + a dimmer trail speck behind it
     // (60 fps of overlapping cores reads as a continuous glowing bolt with a fading
     // tail). Rocket additionally puffs alpha smoke so the exhaust trail lingers.
-    void boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, WeaponFxKind kind);
+    // `streamPhase` (Flame only): the bolt's flight fraction 0..1 (traveled/range).
+    // Near the nozzle (0) the fire is a FAT, BRIGHT, TIGHT connected body; toward
+    // the tail (1) it narrows, dims and gains turbulent jitter so it breaks into
+    // separated licks — Tim's "flames not puffs" note. -1 = unknown (mid defaults).
+    void boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, WeaponFxKind kind,
+                float streamPhase = -1.0f);
     // Hit on an enemy: a short spray of dark-red alpha blood along the shot `dir`.
     void spawnBlood(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
     // Enemy death: a burst of debris chunks (alpha, gravity) + a lingering smoke
@@ -459,6 +482,8 @@ public:
 
     // Live particle count (for --bench reporting / debug).
     int liveParticleCount() const;
+    // Live flame-lick count (bounded by kMaxFlameLicks) — --bench reporting.
+    int liveFlameLickCount() const;
 
     // Destroy the shared meshes. Call once on exit (no VMA leaks).
     void shutdown(x3::rhi::IRenderDevice& device);
@@ -559,6 +584,26 @@ private:
     };
     Arc  m_arcs[kMaxArcs];
     int  m_nextArc = 0;
+
+    // ---- Flame-lick pool (velocity-stretched fire tongues; see kMaxFlameLicks) -
+    struct FlameLick {
+        x3::phys::Vec3 pos{};     // ribbon center
+        x3::phys::Vec3 vel{};     // drift + STRETCH AXIS (ribbon runs along vel)
+        float len     = 0.5f;     // ribbon length along vel (m)
+        float width   = 0.15f;    // ribbon width at birth (m); tapers with age
+        float bright  = 2.0f;     // emissive intensity multiplier at birth
+        float life    = 0.0f;     // remaining seconds (<=0 == free)
+        float maxLife = 0.2f;
+    };
+    FlameLick m_licks[kMaxFlameLicks];
+    int       m_nextLick = 0;
+    // The last update() dt — boltFx has no dt parameter (called per bolt per
+    // frame between updates), and the lick emission is RATE-based (licks/second),
+    // so it reads the frame's dt from here. Seeded to 1/60 for the first frame.
+    float     m_lastDt = 1.0f / 60.0f;
+    // Claim a ring slot (oldest recycled — the stated bound).
+    void spawnFlameLick(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel,
+                        float len, float width, float bright, float life);
     // Spawn a ring of arc tendrils whipping off a lightning hit (called by
     // spawnImpact for the Lightning kind).
     void spawnArcs(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);

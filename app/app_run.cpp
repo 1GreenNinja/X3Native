@@ -4750,13 +4750,43 @@ int runDefaultHost(HostContext& hc) {
 
             const bool particlesThisFrame = fxBench && (f >= halfFrames);
             if (particlesThisFrame) {
-                // Spawn a heavy burst spread across the view each frame so the pool
-                // stays near its kMaxParticles cap (worst-case particle draw load).
-                for (int s = 0; s < 24; ++s) {
-                    x3::phys::Vec3 o{ bEye.x + bLook.x * (6.0f + s * 0.6f),
-                                      bEye.y + bLook.y * (6.0f + s * 0.6f) + (float)((s % 5) - 2),
-                                      bEye.z + bLook.z * (6.0f + s * 0.6f) + (float)((s % 7) - 3) };
-                    combatFx.spawnImpact(o, x3::phys::Vec3{ -bLook.x, 1.0f, -bLook.z });
+                // X3_BENCH_FLAME: drive the WEAPON-VFX flame stack instead of the
+                // generic impact burst, so the bench measures what the flame
+                // iteration actually costs rather than a proxy. `=licks0` drives
+                // the same emission with the velocity-stretched LICKS suppressed —
+                // i.e. the pre-iteration ("puffs") cost — so a single build yields
+                // a true before/after delta for the licks.
+                //   worst case staged here = a HELD flamethrower (11 bolts in
+                //   flight at 12 shots/s x 3 puffs over a 0.3 s crossing) + one
+                //   burning ground pool, which is the game's real ceiling.
+                const char* bf = std::getenv("X3_BENCH_FLAME");
+                if (bf) {
+                    const bool noLicks = (std::string(bf).find("licks0") != std::string::npos);
+                    for (int s = 0; s < 11; ++s) {
+                        const float d = 1.0f + s * 0.8f;
+                        x3::phys::Vec3 o{ bEye.x + bLook.x * d + (float)((s % 3) - 1) * 0.3f,
+                                          bEye.y + bLook.y * d + (float)((s % 5) - 2) * 0.2f,
+                                          bEye.z + bLook.z * d + (float)((s % 7) - 3) * 0.3f };
+                        const x3::phys::Vec3 bv{ bLook.x * 30.0f, bLook.y * 30.0f, bLook.z * 30.0f };
+                        combatFx.boltFx(o, bv,
+                                        noLicks ? x3::game::WeaponFxKind::Rocket
+                                                : x3::game::WeaponFxKind::Flame,
+                                        (float)s / 11.0f);
+                    }
+                    if (!noLicks)
+                        combatFx.firePoolFx(x3::phys::Vec3{ bEye.x + bLook.x * 4.0f,
+                                                            bEye.y - 1.6f,
+                                                            bEye.z + bLook.z * 4.0f },
+                                            3.0f, 1.0f / 120.0f);
+                } else {
+                    // Spawn a heavy burst spread across the view each frame so the pool
+                    // stays near its kMaxParticles cap (worst-case particle draw load).
+                    for (int s = 0; s < 24; ++s) {
+                        x3::phys::Vec3 o{ bEye.x + bLook.x * (6.0f + s * 0.6f),
+                                          bEye.y + bLook.y * (6.0f + s * 0.6f) + (float)((s % 5) - 2),
+                                          bEye.z + bLook.z * (6.0f + s * 0.6f) + (float)((s % 7) - 3) };
+                        combatFx.spawnImpact(o, x3::phys::Vec3{ -bLook.x, 1.0f, -bLook.z });
+                    }
                 }
                 combatFx.update(1.0f / 120.0f);
             }
@@ -4798,8 +4828,9 @@ int runDefaultHost(HostContext& hc) {
             const double gOn  = nOn  ? sumGpuOn  / nOn  : 0.0;
             char pb[256];
             std::snprintf(pb, sizeof(pb),
-                "BENCH-PARTICLES live=%d | GPU off=%.3f ms  on=%.3f ms  particle delta=%.3f ms",
-                combatFx.liveParticleCount(), gOff, gOn, gOn - gOff);
+                "BENCH-PARTICLES live=%d licks=%d | GPU off=%.3f ms  on=%.3f ms  particle delta=%.3f ms",
+                combatFx.liveParticleCount(), combatFx.liveFlameLickCount(),
+                gOff, gOn, gOn - gOff);
             x3::logInfo(pb);
         }
 
@@ -5701,14 +5732,29 @@ int runDefaultHost(HostContext& hc) {
                     const float flight = cd.range / cd.projSpeed;
                     const float spreadT = std::tan(cd.spreadDeg * 3.14159265f / 180.0f);
                     const x3::phys::Vec3 rH{ -fxLook.z, 0.0f, fxLook.x };   // horizontal right
-                    for (int pk = 0; pk < cd.pellets; ++pk) {
-                        uint32_t h = (uint32_t)(i * 2654435761u) ^ (uint32_t)((pk + 1) * 40503u);
+                    // 5 flight-phase samples per pellet per settle frame: the LIVE
+                    // loop calls boltFx every frame for every airborne bolt (~11 at
+                    // once for a held flamethrower), so a single sample per pellet
+                    // under-fills the still — the "flames not puffs" body needs the
+                    // capture density to match play density.
+                    for (int pk = 0; pk < cd.pellets; ++pk)
+                    for (int sm = 0; sm < 5; ++sm) {
+                        uint32_t h = (uint32_t)(i * 2654435761u)
+                                   ^ (uint32_t)((pk + 1) * 40503u)
+                                   ^ (uint32_t)((sm + 1) * 968699u);
                         h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15;
                         const float u0 = (float)(h & 0xFFFFu) / 65536.0f;          // flight phase
                         const float u1 = (float)((h >> 16) & 0xFFFFu) / 65536.0f;  // cone azimuth
+                        // Radial sample INSIDE the cone disc (sqrt = uniform by
+                        // area), matching what applySpread does per shot. Using
+                        // the cone's full radius for every sample drew a hollow
+                        // SHELL — the still showed a ring of fire with a dark
+                        // core, which is a staging artifact, not the weapon.
+                        const uint32_t h2 = (h * 2246822519u) ^ (h >> 13);
+                        const float u2 = (float)(h2 & 0xFFFFu) / 65536.0f;         // radial
                         const float tt   = 0.05f + u0 * flight;
                         const float dist = cd.projSpeed * tt;
-                        const float lat  = dist * spreadT;
+                        const float lat  = dist * spreadT * std::sqrt(u2);
                         x3::phys::Vec3 bp{
                             mz.x + fxLook.x * dist + rH.x * std::cos(u1 * 6.2831853f) * lat,
                             mz.y + fxLook.y * dist + std::sin(u1 * 6.2831853f) * lat
@@ -5717,7 +5763,8 @@ int runDefaultHost(HostContext& hc) {
                         combatFx.boltFx(bp, x3::phys::Vec3{ fxLook.x * cd.projSpeed,
                                                             fxLook.y * cd.projSpeed,
                                                             fxLook.z * cd.projSpeed },
-                                        x3::game::fxKindFromId(cd.impactFx));
+                                        x3::game::fxKindFromId(cd.impactFx),
+                                        (flight > 0.0f) ? tt / flight : -1.0f);
                     }
                 }
                 combatFx.update(dt);
@@ -5736,6 +5783,17 @@ int runDefaultHost(HostContext& hc) {
                 if (console->getInt("shot_fire") == 0 && !fxDemo) combatFx.update(dt);
             }
             if (fxDemo) combatFx.update(dt);
+            // weapon-vfx: report the FX population at the captured frame — the
+            // measured answer to "how much did the flame iteration cost", from
+            // the offscreen path (the GPU --bench needs a window, which the
+            // capture rules forbid).
+            if (i == kSettleFrames - 1 &&
+                (console->getInt("shot_fire") != 0 || std::getenv("X3_SHOT_FIREPOOL")))
+                x3::logInfo("[fxcount] at capture: particles=" +
+                            std::to_string(combatFx.liveParticleCount()) +
+                            " flameLicks=" + std::to_string(combatFx.liveFlameLickCount()) +
+                            " (caps " + std::to_string(x3::game::kMaxParticles) + "/" +
+                            std::to_string(x3::game::kMaxFlameLicks) + ")");
             // --world canonlevel SCREENSHOT lighting + cull: feed the player's visible
             // rooms' ceiling lights PLUS the opening-space dressing's motivated lights
             // (flickering tube / red alarm / cyan terminal), and set the visible-room
@@ -11097,7 +11155,11 @@ int runDefaultHost(HostContext& hc) {
                     b.traveled += stepLen;
                     // Make the travelling bolt VISIBLE in flight (glowing core + trail;
                     // rocket also puffs exhaust smoke) — bolts were invisible before.
-                    combatFx.boltFx(b.pos, b.vel, b.impactKind);
+                    // Flame bolts also pass their FLIGHT PHASE (traveled/range) so the
+                    // stream is a fat connected body at the nozzle and breaks into
+                    // separated licks at the tail ("flames not puffs" iteration).
+                    combatFx.boltFx(b.pos, b.vel, b.impactKind,
+                                    (b.range > 0.0f) ? b.traveled / b.range : -1.0f);
                     if (b.traveled >= b.range) consumed = true;   // out of range -> despawn
                 }
                 if (consumed) { projectiles[pi] = projectiles.back(); projectiles.pop_back(); }
