@@ -12,5 +12,5 @@ run() {
 }
 run barrier_mix2  "3252,23.5,240,1.67,-0.08"
 run jersey_close  "3244,23.6,452,1.60,-0.14"
-run hairpin_top   "-2080,190,1930,2.29,-1.25"
+run hairpin_top   "-2085,210,1945,2.29,-1.35"
 ls -la shots_wcurves/*.png
