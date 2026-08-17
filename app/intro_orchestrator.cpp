@@ -1385,6 +1385,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (f2 && !f2Prev) pilot.toggleCameraMode();
                 f2Prev = f2;
             }
+            // F5: test-only 6DOF speed x2 (owner: A/B the dart feel live without a
+            // rebuild). Edge-detected; toggles the uniform speed multiplier 1<->2.
+            {
+                static bool f5Prev = false;
+                const bool f5 = glfwGetKey(hc.window, GLFW_KEY_F5) == GLFW_PRESS;
+                if (f5 && !f5Prev) pilot.setSpeedMul(pilot.speedMul() == 1.0f ? 2.0f : 1.0f);
+                f5Prev = f5;
+            }
             // F9: skip the ENTIRE intro (owner dev shortcut) — latch + bail this
             // beat; the orchestrator returns canon ShotDown at the next boundary.
             if (glfwGetKey(hc.window, GLFW_KEY_F9) == GLFW_PRESS) {
