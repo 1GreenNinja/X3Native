@@ -876,6 +876,42 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/CityPerson_Boy.glb",
+      "sha256": "bbb06839887312d87085e9352cd68cf062945b722e3320432020616d2c58abd4",
+      "size": 626776,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_Elder.glb",
+      "sha256": "88bc9c7a4af74b7a05f6e3f3d0f4be26bd497b3dbe9697c588c3c96fa31c1406",
+      "size": 502864,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_ManCasual.glb",
+      "sha256": "a8d5ac00a5b5e72577fd4f00354111fa29988b2af42e8c71d15384d663300732",
+      "size": 586988,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_ManJacket.glb",
+      "sha256": "2d3615ce3c308f4f7e2c6cab088e207e3ae5117f4a0e264ec3abbf583d5cb9d0",
+      "size": 615696,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_WomanCasual.glb",
+      "sha256": "1408dac9efa759144f0a20920c42685b26ec6b0af74747f8a2461a02660fec84",
+      "size": 456400,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_WomanCoat.glb",
+      "sha256": "21ca375135c95110b2d7ce412531453aa4d3d4168cafcf89c06f83297e326a63",
+      "size": 497252,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
       "repo_path": "assets/rigged_glb/DroneExportWMotion.glb",
       "sha256": "5b293a03bd50390392be5448130c00476c98906c6aa849e94fdbcc2a4b82f14c",
       "size": 21458424,

@@ -23,10 +23,13 @@
 //     synthesized by tools/gen_campfire_audio.py, the gen_water_audio.py
 //     offline-bake pattern) through IAudioSystem::startLoop3D;
 //   * PEOPLE: 2-3 characters per fire through the shared AnimatedCharacter
-//     module (app/character_anim.h — the ONE way characters animate), on the
-//     crowd_skin roster rigs with their MEASURED exact-name clips
-//     (town.cpp::townPedClipTable is the receipt: Idle/Walk/Run, AnnaCasual
-//     additionally Sit/CarryIdle). One AnnaCasual SITS ON THE BENCH (her Sit
+//     module (app/character_anim.h — the ONE way characters animate), cast
+//     from the CIVILIAN roster — the six CityPerson_* rigs the town walks
+//     (tools/town_people.py), NOT crowd_skin's club cast, which is a civilian
+//     woman plus a clawed mutant and a SWAT operator. Clips resolve by
+//     MEASURED exact name (town.cpp::townPedClipTable: Idle/Walk/Run/
+//     LookAround; AnnaCasual additionally Sit/CarryIdle). One AnnaCasual
+//     SITS ON THE BENCH (her Sit
 //     clip's hips perch at ~0.44 m — the bench seat height; the bench is the
 //     seat prop) holding a STICK toward the fire through the rig's own hand
 //     bone (AnimatedCharacter::boneWorld) with a hot dog on the end — an

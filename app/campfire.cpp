@@ -263,7 +263,9 @@ void Campfires::buildRing(Scene& scene, x3::rhi::IRenderDevice& device, Fire& f)
 }
 
 // ---------------------------------------------------------------------------
-// PEOPLE — the shared AnimatedCharacter module on the crowd_skin roster rigs.
+// PEOPLE — the shared AnimatedCharacter module on the CIVILIAN roster (the
+// six CityPerson_* rigs the town walks, + AnnaCasual for the seated/stick
+// roles). Read the cast comment below before changing a name.
 // ---------------------------------------------------------------------------
 void Campfires::spawnPeople(Fire& f, uint32_t idx, x3::rhi::IRenderDevice& device,
                             x3::phys::IPhysicsWorld& phys,
@@ -281,20 +283,41 @@ void Campfires::spawnPeople(Fire& f, uint32_t idx, x3::rhi::IRenderDevice& devic
 
     struct Cast { const char* rig; const CharacterClipTable* table;
                   bool onBench; bool stick; };
-    // Per-fire casts, cycled: bench sitters + stick holders only where the rig
-    // actually owns the clip (Anna); everyone else STANDS at Idle. Two people
-    // standing beat one broken sitter — the directive, encoded.
-    const Cast cast0[] = { { "AnnaCasual_anim.glb",     &sitTable,   true,  true  },
-                           { "marcus_webb_anim.glb",    &standTable, false, false },
-                           { "chief_martinez_anim.glb", &standTable, false, false } };
-    const Cast cast1[] = { { "AnnaCasual_anim.glb",     &carryTable, false, true  },
-                           { "marcus_webb_anim.glb",    &standTable, false, false } };
-    const Cast cast2[] = { { "AnnaCasual_anim.glb",     &sitTable,   true,  false },
-                           { "chief_martinez_anim.glb", &standTable, false, false } };
-    const Cast cast3[] = { { "marcus_webb_anim.glb",    &standTable, false, false },
-                           { "chief_martinez_anim.glb", &standTable, false, false } };
+    // ---- THE CAST IS CIVILIANS. -------------------------------------------
+    // This list was first written off CrowdSkin::defaultRigs() —
+    // AnnaCasual_anim / marcus_webb_anim / chief_martinez_anim — which is cast
+    // for the CLUB scene and picked purely on "has Idle/Walk/Run". Rendered,
+    // that roster is a civilian woman, A CLAWED GREEN-VEINED MUTANT, and a
+    // black-clad SWAT operator (tools/glb_contact_sheet.py; W-TOWN caught the
+    // identical defect on Main Street and app/town.cpp:spawnPedestrians
+    // carries the full receipt). A monster and a tactical officer roasting hot
+    // dogs at a roadside bench is exactly the class of slop NO_SLOP rule 2
+    // exists for — it compiles, the numbers are right, and it is wrong.
+    //
+    // So the fires cast from the same six ORDINARY PEOPLE the town walks:
+    // CityPerson_* (licensed `City People FREE Samples`, built by
+    // tools/town_people.py, each carrying Idle/Walk/Run/LookAround under those
+    // EXACT names — the contract townPedClipTable() reads). PAIRED VALUES
+    // (rule 4): this roster and town.cpp's kRigs are the same six files; a
+    // rig removed there must be removed here.
+    //
+    // AnnaCasual stays for the SEATED and STICK roles and only those: she is a
+    // civilian too, and she is the ONLY rig in the tree that owns real `Sit`
+    // and `CarryIdle` clips. The CityPerson rigs have no seated pose, so they
+    // STAND — two people standing beat one broken sitter (the directive).
+    const Cast cast0[] = { { "AnnaCasual_anim.glb",         &sitTable,   true,  true  },
+                           { "CityPerson_ManJacket.glb",    &standTable, false, false },
+                           { "CityPerson_WomanCoat.glb",    &standTable, false, false } };
+    const Cast cast1[] = { { "AnnaCasual_anim.glb",         &carryTable, false, true  },
+                           { "CityPerson_ManCasual.glb",    &standTable, false, false },
+                           { "CityPerson_WomanCasual.glb",  &standTable, false, false } };
+    const Cast cast2[] = { { "AnnaCasual_anim.glb",         &sitTable,   true,  false },
+                           { "CityPerson_Elder.glb",        &standTable, false, false },
+                           { "CityPerson_Boy.glb",          &standTable, false, false } };
+    const Cast cast3[] = { { "CityPerson_ManJacket.glb",    &standTable, false, false },
+                           { "CityPerson_WomanCasual.glb",  &standTable, false, false } };
     const Cast* casts[4]  = { cast0, cast1, cast2, cast3 };
-    const uint32_t nCast[4] = { 3, 2, 2, 2 };
+    const uint32_t nCast[4] = { 3, 3, 3, 2 };
 
     const Cast* cast = casts[idx % 4];
     const uint32_t n  = nCast[idx % 4];
