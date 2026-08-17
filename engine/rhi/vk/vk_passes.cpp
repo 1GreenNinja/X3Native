@@ -1826,8 +1826,13 @@ void VulkanRenderDevice::prepareFrameData() {
         // The IBL probe bake replays this frame's indirect commands on a one-time
         // submit BEFORE the frame's command buffer (so before the cull dispatch
         // could bump instanceCount). Fall back to the CPU cull for that one frame
-        // so the probe sees real instance counts. Rare (sky change only).
-        if (m_cullPathActive >= 1 && m_iblReady && m_iblDirty) m_cullPathActive = 0;
+        // so the probe sees real instance counts.
+        // MULTI-INSTANCE LANE: this asks the SAME predicate the bake site asks
+        // (iblBakeDueThisFrame), not the raw dirty flag. With the rate limit in
+        // place a live time-of-day sky is dirty on almost every frame but bakes
+        // ~10 times a second; falling back to the CPU cull on the ~90 % of frames
+        // that do NOT bake would be a silent perf regression of its own.
+        if (m_cullPathActive >= 1 && iblBakeDueThisFrame()) m_cullPathActive = 0;
         // HZB occlusion phase: needs the GPU path, the pyramid, and a VALID
         // last-frame depth (never reduce an unrendered depth image).
         m_hzbActiveThisFrame = (m_cullPathActive >= 1) && m_hzbEnabled &&

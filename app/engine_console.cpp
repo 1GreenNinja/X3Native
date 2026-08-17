@@ -14,8 +14,11 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <thread>       // paceFrame: the background frame cap's sleep
 #include <vector>
 
 namespace x3::game {
@@ -45,6 +48,10 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     // refresh); 0 = uncapped. Stops vsync-off from needlessly maxing the GPU on
     // frames the display never shows. Live-tunable: `r_maxfps 0` for uncapped.
     console.registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    // MULTI-INSTANCE LANE: r_presentmode + r_bgfps ride the shared catalog so the
+    // campaign host gets them for free; the bespoke world hosts call
+    // registerMultiInstanceCVars() themselves (see engine_console.h).
+    registerMultiInstanceCVars(console);
     // [P3-5] LOG-1: combat/AI per-event log spam, DEFAULT QUIET (app/combat_log.h).
     // `combat_log 1` restores the per-hit lines ("[monster] hit for", "[player] took",
     // HEADSHOT / kill lines); `ai_log 1` restores the "[ai] entity N A -> B" state-
@@ -533,6 +540,96 @@ void registerEngineConsole(x3::con::IConsole& console, GLFWwindow* window,
                            const EngineConsoleHooks& hooks) {
     registerEngineConsoleCVars(console);
     registerEngineConsoleCommands(console, window, hooks);
+}
+
+// ============================================================================
+// MULTI-INSTANCE LANE (Bug 2) — present mode + the focus-aware frame cap.
+//
+// THE DEFECT: one windowed X3Engine ran at 179 FPS; two ran at ~10 FPS EACH.
+// A 5090 does not lose 95 % of itself to a second copy of this engine, and the
+// repo's standing "NEVER --smoketest in parallel (Bug 2 Vulkan contention)"
+// warning is the same disease wearing a headless costume.
+//
+// What the instrumented frame breakdown actually said: the PRESENT PATH IS
+// INNOCENT — wait.present ~0.1 ms, wait.acquire ~0.005 ms, wait.fence ~0.004 ms
+// even under load. The cost is submitted GPU work plus the blocking one-time
+// submits that wait on it, and a second process simply doubles the demand on a
+// device that was already saturated. So the fix is not a smarter wait: it is to
+// stop the instance nobody is looking at from ASKING. r_presentmode exists
+// alongside it because the mode was a hardcoded ternary nobody could A/B.
+// ============================================================================
+void registerMultiInstanceCVars(x3::con::IConsole& console) {
+    console.registerCVar("r_presentmode", "auto",
+        "swapchain present mode: auto|fifo|mailbox|immediate|relaxed (auto = vsync ? fifo : mailbox)");
+    // r_bgfps DEFAULT = 5, and that number is measured, not taste. echotropolis,
+    // two instances, RTX 5090: no cap 16.7 FPS focused / 16.6 background; cap 20 ->
+    // 29.3 focused; cap 10 -> 32.4; cap 5 -> 48.1 focused, against a 48.2 FPS SOLO
+    // baseline in the same session. Only 5 actually clears the bar the owner set
+    // ("play at the same time as running all sorts of other stuff and it will
+    // still be playable") — at 5 the focused window is indistinguishable from
+    // running alone. Raise it (`r_bgfps 30`) if you want a livelier background
+    // window and are willing to pay for it out of the one you are looking at.
+    console.registerCVar("r_bgfps", "5",
+        "frame cap while this window is NOT focused (0 = no background cap)");
+    console.registerCVar("r_iblrate", "10",
+        "max IBL probe rebakes per second — the blocking submit that WAS the multi-instance collapse (0 = every dirty frame)");
+}
+
+int presentModeFromCVar(x3::con::IConsole& console) {
+    std::string v = console.getString("r_presentmode");
+    std::transform(v.begin(), v.end(), v.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    if (v == "fifo"      || v == "1") return 1;
+    if (v == "mailbox"   || v == "2") return 2;
+    if (v == "immediate" || v == "3") return 3;
+    if (v == "relaxed"   || v == "4") return 4;
+    return 0;   // auto / unknown
+}
+
+void paceFrame(x3::con::IConsole& console, GLFWwindow* window, double& prevTime) {
+    // Focused => r_maxfps: byte-for-byte the block this replaces. Unfocused =>
+    // r_bgfps, which is the whole point — a background instance that sleeps most
+    // of its frame releases the GPU (and its share of the driver's submission
+    // path) to whichever window the owner is actually playing in.
+    bool focused = true;
+    if (window) {
+        focused = glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0;
+        // An ICONIFIED window is background even while the platform still calls
+        // it focused (and a minimized window renders frames nobody can see).
+        if (glfwGetWindowAttrib(window, GLFW_ICONIFIED) != 0) focused = false;
+    }
+
+    // X3_BGFPS overrides the cvar for harnesses that have no console access (and
+    // is how this lane's own A/B was measured: X3_BGFPS=0 reproduces the old
+    // behaviour on the identical binary). Read once.
+    static const float s_bgEnv = []() -> float {
+        if (const char* e = std::getenv("X3_BGFPS")) return (float)std::atof(e);
+        return -1.0f;   // -1 = not set, use the cvar
+    }();
+
+    float cap = (float)std::atof(console.getString("r_maxfps").c_str());
+    if (!focused) {
+        const float bg = (s_bgEnv >= 0.0f) ? s_bgEnv
+                                           : (float)std::atof(console.getString("r_bgfps").c_str());
+        // 0 = background cap OFF (historical behaviour). Otherwise the background
+        // cap WINS even when r_maxfps is uncapped (0) — that is the case it
+        // exists for.
+        if (bg > 0.0f) cap = (cap > 0.0f) ? std::min(cap, bg) : bg;
+    }
+    if (cap > 0.0f) {
+        const double target = prevTime + 1.0 / (double)cap;
+        double nowc = glfwGetTime();
+        if (nowc < target) {
+            const double remain = target - nowc;
+            // Sleep the bulk, spin the last ~1 ms. A background instance at 20 FPS
+            // spends ~49 ms of every 50 ms in a real OS sleep — off the CPU, off
+            // the GPU, off the driver's submission queue.
+            if (remain > 0.002)
+                std::this_thread::sleep_for(std::chrono::duration<double>(remain - 0.001));
+            while (glfwGetTime() < target) { /* short spin to the deadline */ }
+        }
+    }
+    prevTime = glfwGetTime();
 }
 
 bool runEngineConsoleSelfTest() {

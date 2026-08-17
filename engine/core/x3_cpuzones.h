@@ -105,6 +105,23 @@ enum Zone : uint32_t {
     Z_SimLamps,         // streetLamps.update (flicker machines)
     Z_SimLights,        // lamp/shop/region light gather + device->setPointLights
     Z_SimRoadLights,    // ECHO ROADS night lamp sort (full sort of roads->lights())
+    // ---- PRESENT SPLIT (multi-instance lane 2026-08) ---------------------------
+    // "Two windowed instances collapse to 10 FPS each" needed an answer finer than
+    // cpu.beginframe / cpu.submit_present: those two rows each mix real CPU work
+    // with a BLOCKING WAIT ON THE PRESENTATION ENGINE, and only the wait halves
+    // serialize between processes. These three are NESTED sub-buckets (not leaves)
+    // printed under their parents, exactly like the as.* rows — the partition math
+    // is untouched, but the three numbers that decide this lane are now named.
+    Z_FenceWait,        // beginFrame: vkWaitForFences on the ring slot   (GPU back-pressure)
+    Z_Acquire,          // beginFrame: vkAcquireNextImageKHR             (swapchain back-pressure)
+    Z_Present,          // endFrame:   vkQueuePresentKHR                 (DWM/queue back-pressure)
+    // ---- SPLIT OF cpu.endframe_rest (same lane) --------------------------------
+    // The present split above came back saying the waits are ~0.1 ms and 72 % of
+    // the frame sits in cpu.endframe_rest — "endFrame minus its named children",
+    // the one row nobody had ever opened. These name its two blocking one-time
+    // submits so that row stops being a shrug.
+    Z_IblBake,          // endFrame: regenIblFromSky (one-time submit + ITS fence wait)
+    Z_RtGate,           // endFrame: ensureRtCore/ensureRtaoReady + RT UBO prep
     Z_Count
 };
 
@@ -154,6 +171,11 @@ inline const char* zoneName(uint32_t z) {
         case Z_SimLamps:      return "  sim.streetlamps";
         case Z_SimLights:     return "  sim.pointlights";
         case Z_SimRoadLights: return "  sim.roadlights";
+        case Z_FenceWait:     return "  wait.fence";
+        case Z_Acquire:       return "  wait.acquire";
+        case Z_Present:       return "  wait.present";
+        case Z_IblBake:       return "  end.ibl_bake";
+        case Z_RtGate:        return "  end.rt_gate";
         default:              return "cpu.?";
     }
 }
