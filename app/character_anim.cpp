@@ -283,17 +283,42 @@ void AnimatedCharacter::update(Player& player, const Intent& in, float camYaw,
                                x3::rhi::IRenderDevice& device) {
     dt = std::max(dt, 1e-4f);
 
-    // ---- 1) THE CONTACT LAW (NO_SLOP rule 11 v2). Clamp the capsule to the
-    // TOPMOST WALKABLE SURFACE: max of the terrain height field and a downward
-    // static raycast from above the head — roads/decks ride ABOVE the field,
-    // so the field alone once entombed a man under his own carriageway.
+    // ---- 1) THE CONTACT LAW (NO_SLOP rule 11 v3). Clamp the capsule to the
+    // TOPMOST WALKABLE SURFACE: max of the terrain height field and a SHORT
+    // downward static raycast — roads/decks ride ABOVE the field, so the field
+    // alone once entombed a man under his own carriageway.
+    //
+    // v2 -> v3, THE TUNNEL EJECTION (owner, 2026-08-17: "I popped ABOVE the
+    // tunnel" and then "I could swear there was just a tunnel here"). v2
+    // started the ray 40 m above the feet, which INSIDE A BORE starts above
+    // the 458 m x 58 m backfill lid: the ray came down, hit the TOP of the
+    // lid, and the law dutifully "lifted the character onto the surface" —
+    // through the tunnel roof, onto the hillside. He then looked back at a
+    // road ending in a cut face and reasonably concluded the tunnel was gone.
+    // It was under his feet.
+    //
+    // The ray must never see anything ABOVE the character's head. 1.0 m is
+    // enough: standing on a deck, the feet are already on it, so a short
+    // downward ray finds it immediately. The only case +40 bought was
+    // "character is metres BELOW a deck", which is precisely the tunnel case
+    // it broke. The header's promise that "the law never fights tunnels" is
+    // true of the height field and became false the moment the raycast was
+    // added; this restores it.
     {
         const x3::phys::Vec3 jf = player.feet();
         float gy = terrainHeightAtWorld(jf.x, jf.z);
         const x3::phys::RayHit rh = phys.rayCast(
-            x3::phys::Vec3{ jf.x, jf.y + 40.0f, jf.z },
-            x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 120.0f, x3::phys::Layer::Static);
+            x3::phys::Vec3{ jf.x, jf.y + 1.0f, jf.z },
+            x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 4.0f, x3::phys::Layer::Static);
         if (rh.hit) gy = std::max(gy, rh.point.y);
+        // ... and inside a bore even the FIELD is the hilltop, because the
+        // corridor carve only cuts the open approach — so a lid overhead means
+        // the field is not our floor. If a static surface is close above the
+        // head, trust the raycast/current stance and never the field.
+        const x3::phys::RayHit up = phys.rayCast(
+            x3::phys::Vec3{ jf.x, jf.y + 0.2f, jf.z },
+            x3::phys::Vec3{ 0.0f, 1.0f, 0.0f }, 12.0f, x3::phys::Layer::Static);
+        if (up.hit && gy > jf.y) gy = rh.hit ? rh.point.y : jf.y;
         if (jf.y < gy - 0.25f) {
             player.setFeetPosition(phys, x3::phys::Vec3{ jf.x, gy + 0.15f, jf.z });
             x3::logInfo("[char] CONTACT LAW: character lifted onto the surface "
