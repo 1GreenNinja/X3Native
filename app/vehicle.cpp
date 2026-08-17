@@ -1128,10 +1128,11 @@ bool runDriveEnterExitSelfTest() {
     //   H3 NOS: same pull with the 200-shot (x1.6); logs how close the 220
     //      spec is (gear-reachability is the gate; the drag equilibrium is
     //      reported honestly).
-    //   H4 SLALOM + CURB STRIKE at ~100 mph, run TWICE — shipped aero
-    //      (downforce 1, roll damping on) vs none — so the flip-resistance
-    //      hardware has an A/B receipt, and the shipped config must survive
-    //      without rolling over.
+    //   H4 SLALOM at ~100 mph on clean pavement, run TWICE — shipped aero
+    //      (downforce 1, roll damping on) vs none: the SPIN gate.
+    //   H5 CURB STRIKE (12 cm staggered, straight line) at ~100 mph, same
+    //      A/B: the FLIP gate. Kept SEPARATE from H4 on purpose — see the
+    //      comment at handlingRun for the receipt.
     // =======================================================================
     {
         auto buildLongWorld = [&](std::unique_ptr<x3::phys::IPhysicsWorld>& outPhys,
@@ -1145,21 +1146,28 @@ bool runDriveEnterExitSelfTest() {
             outPhys->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
                                    g.cindex.data(), (uint32_t)g.cindex.size());
             if (withCurbs) {
-                // Two 12-cm curbs, LEFT wheels first then RIGHT 8 m later —
-                // a staggered strike is the roll excitation a symmetric bump
-                // is not. Placement math (rule 9): spawn z=+7800, the WOT
-                // phase covers ~130-160 m to 100 mph, the slalom starts
-                // ~z=7650 and covers ~400 m — curbs at 7450/7442 land ~4-5 s
-                // INTO the slalom, mid-flick. Curb halves span [0.5, 60.5]
-                // and [-60.5, -0.5] in x: the car weaves about x=0, so its
-                // LEFT wheels (x ~ -0.85) strike the left curb, the RIGHT
-                // wheels the right one, 8 m later.
+                // Two 12-cm curbs (half-extent 0.06 -> top at y=0.12), LEFT
+                // wheels first then RIGHT 8 m later — a staggered strike is
+                // the roll excitation a symmetric bump is not. Curb halves
+                // span [-60.5, -0.5] and [0.5, 60.5] in x, so the car running
+                // down x=0 puts its LEFT wheels (x = -0.80) on the first and
+                // its RIGHT wheels on the second.
+                //
+                // THE 3-METRE LENGTH IS LOAD-BEARING (W-HANDLING3, rule 10).
+                // W-HANDLING2 authored these 0.30 m long in z and the strike
+                // NEVER HAPPENED: at 100 mph a 60 Hz step advances the wheel
+                // 44.7/60 = 0.745 m, so the suspension raycast stepped clean
+                // OVER a 0.30 m curb and sampled flat slab on both sides —
+                // roll came back 7e-6 deg, a green that meant "no test ran".
+                // 3 m (hz 1.5) is ~4 guaranteed samples at 100 mph AND is what
+                // a real curb/rumble strip section is. Any bump test in this
+                // engine must be longer than v_max/60 or it is not a test.
                 x3::prims::PrimMesh cl =
-                    x3::prims::makeBox(30.0f, 0.06f, 0.15f, -30.5f, 0.06f, 7450.0f, 0.1f);
+                    x3::prims::makeBox(30.0f, 0.06f, 1.5f, -30.5f, 0.06f, 7450.0f, 0.1f);
                 outPhys->addStaticMesh(cl.cverts.data(), (uint32_t)(cl.cverts.size() / 3),
                                        cl.cindex.data(), (uint32_t)cl.cindex.size());
                 x3::prims::PrimMesh cr =
-                    x3::prims::makeBox(30.0f, 0.06f, 0.15f, 30.5f, 0.06f, 7442.0f, 0.1f);
+                    x3::prims::makeBox(30.0f, 0.06f, 1.5f, 30.5f, 0.06f, 7442.0f, 0.1f);
                 outPhys->addStaticMesh(cr.cverts.data(), (uint32_t)(cr.cverts.size() / 3),
                                        cr.cindex.data(), (uint32_t)cr.cindex.size());
             }
@@ -1253,87 +1261,140 @@ bool runDriveEnterExitSelfTest() {
             hcar.shutdown(); ph->shutdown();
         }
 
-        // ---- H4 SLALOM + CURB STRIKE at ~100 mph: shipped aero vs none. ----
-        auto slalomRun = [&](bool shippedAero, float& outMaxRoll, int& outTwoUp,
-                             bool& outUpright, float& outVStrike) -> bool {
+        // ---- H4 SLALOM / H5 CURB STRIKE at ~100 mph: shipped aero vs none. ----
+        // THE TWO COMPLAINTS ARE TWO TESTS (W-HANDLING3, 2026-08-17). W-HANDLING2
+        // ran the slalom THROUGH the curbs in one section and the result was
+        // uninterpretable: the no-aero car spun out at the first flick and never
+        // reached the curbs, so "shipped rolls, no-aero doesn't" compared a
+        // curb strike against a spin. Split:
+        //   H4 = flicks on CLEAN pavement  -> the SPIN complaint ("harder to
+        //        ... spin it just driving").
+        //   H5 = straight over the staggered curbs -> the FLIP complaint
+        //        ("harder to flip the car upside down"), same speed, same
+        //        A/B, no steering input to confound it.
+        struct HRun { float maxRoll, maxSlip, vStrike, maxAsym; int twoUp; bool upright, spun; };
+        auto handlingRun = [&](bool shippedAero, bool curbs, bool slalom,
+                               const char* tag, HRun& out) -> bool {
             std::unique_ptr<x3::phys::IPhysicsWorld> p2;
             DriveDemo c2;
-            if (!buildLongWorld(p2, c2, /*withCurbs*/true)) return false;
+            if (!buildLongWorld(p2, c2, curbs)) return false;
             if (!shippedAero) {
                 x3::phys::WheeledTuning t;
                 t.downforce = 0.0f; t.rollDamp = 0.0f;   // the "before" car
                 c2.applyTuning(t);
             }
-            float maxRoll = 0.0f; int twoUp = 0; float vAtCurb = 0.0f;
+            out = HRun{0.0f, 0.0f, 0.0f, 0.0f, 0, false, false};
             // Phase 1: WOT to ~100 mph (spawn z=+7800, curbs at ~+7446).
-            int i = 0;
-            for (; i < 1500 && c2.forwardSpeed() < 44.7f; ++i) {
+            for (int i = 0; i < 1500 && c2.forwardSpeed() < 44.7f; ++i) {
                 x3::phys::VehicleInput in{}; in.throttle = 1.0f;
                 c2.setInput(in); c2.preStep(dt); p2->step(dt); c2.postStep(dt);
             }
-            // Phase 2: VIOLENT slalom — full digital flicks every 0.55 s (the
-            // owner's actual A/D input at speed), part throttle to hold ~100 —
-            // straight through the staggered curbs. 9 s total.
+            // Phase 2 (9 s): either VIOLENT slalom — full digital flicks every
+            // 0.55 s, the owner's actual A/D input at speed — or dead straight.
             for (int j = 0; j < 540; ++j) {
                 x3::phys::VehicleInput in{};
                 in.throttle = c2.forwardSpeed() < 44.7f ? 0.7f : 0.2f;
-                in.steer    = ((j / 33) % 2 == 0) ? 1.0f : -1.0f;
+                in.steer    = slalom ? (((j / 33) % 2 == 0) ? 1.0f : -1.0f) : 0.0f;
                 c2.setInput(in); c2.preStep(dt); p2->step(dt); c2.postStep(dt);
-                const float r = std::fabs(rollDeg(*p2, c2));
-                maxRoll = std::max(maxRoll, r);
+                out.maxRoll = std::max(out.maxRoll, std::fabs(rollDeg(*p2, c2)));
                 int up = 0;
+                float susp[4] = {0,0,0,0};
                 for (uint32_t wi = 0; wi < c2.controller()->wheelCount(); ++wi) {
                     x3::phys::WheelState ws;
-                    if (c2.controller()->wheelState(wi, ws) && !ws.hasContact) ++up;
+                    if (c2.controller()->wheelState(wi, ws)) {
+                        if (!ws.hasContact) ++up;
+                        if (wi < 4) susp[wi] = ws.suspensionLength;
+                    }
                 }
-                if (up >= 2) ++twoUp;
+                if (up >= 2) ++out.twoUp;
+                // LEFT/RIGHT SUSPENSION ASYMMETRY = THE STRIKE INSTRUMENT.
+                // A wheel up on a 12 cm curb rides ~0.12 m more compressed
+                // than its partner. Without this, a curb the sim stepped over
+                // (see the 3-metre receipt in buildLongWorld) reads as a
+                // PASS — the test has to prove it hit something. Wheel order
+                // is FL, FR, RL, RR (buildPhysics).
+                out.maxAsym = std::max(out.maxAsym,
+                                       std::max(std::fabs(susp[0] - susp[1]),
+                                                std::fabs(susp[2] - susp[3])));
                 float cp[3]; c2.chassisPos(cp);
-                if (vAtCurb == 0.0f && cp[2] < 7446.0f) vAtCurb = c2.forwardSpeed();
+                if (out.vStrike == 0.0f && cp[2] < 7446.0f) out.vStrike = c2.forwardSpeed();
+                // Body slip = the SPIN measure (angle between where the car
+                // points and where it is going). Sampled every tick, not just
+                // at trace time, so a spin can't hide between log lines.
+                float vel[3]; p2->getBodyLinearVelocity(c2.chassis(), vel);
+                float q2[4]; p2->getBodyRotation(c2.chassis(), q2);
+                float f2[3], u2[3]; vehcam::hullAxes(q2, f2, u2);
+                const float vFwd = c2.forwardSpeed();
+                const float right2[3] = { f2[1]*u2[2] - f2[2]*u2[1],
+                                          f2[2]*u2[0] - f2[0]*u2[2],
+                                          f2[0]*u2[1] - f2[1]*u2[0] };
+                const float vLat = vel[0]*right2[0] + vel[1]*right2[1] + vel[2]*right2[2];
+                const float slipDeg = std::atan2(std::fabs(vLat),
+                                        std::max(0.5f, std::fabs(vFwd))) * 57.2958f;
+                out.maxSlip = std::max(out.maxSlip, slipDeg);
                 // 1 Hz diagnostic trace (rule 9): where does the roll build —
                 // the flicks, or the curbs (z 7450/7442)? Body slip names a
                 // spin-then-trip; roll without slip names a suspension pump.
                 if ((j % 60) == 59) {
-                    float vel[3]; p2->getBodyLinearVelocity(c2.chassis(), vel);
-                    float q2[4]; p2->getBodyRotation(c2.chassis(), q2);
-                    float f2[3], u2[3]; vehcam::hullAxes(q2, f2, u2);
-                    const float vFwd = c2.forwardSpeed();
-                    const float right2[3] = { f2[1]*u2[2] - f2[2]*u2[1],
-                                              f2[2]*u2[0] - f2[0]*u2[2],
-                                              f2[0]*u2[1] - f2[1]*u2[0] };
-                    const float vLat = vel[0]*right2[0] + vel[1]*right2[1] + vel[2]*right2[2];
-                    x3::logInfo("[drive-test] H4 trace t=" + std::to_string((j + 1) / 60) +
+                    x3::logInfo(std::string("[drive-test] ") + tag + " trace t=" +
+                                std::to_string((j + 1) / 60) +
                                 "s z=" + std::to_string(cp[2]) +
                                 " v=" + std::to_string(vFwd * 2.23694f) +
                                 " mph roll=" + std::to_string(rollDeg(*p2, c2)) +
-                                " slip=" + std::to_string(std::atan2(std::fabs(vLat),
-                                    std::max(0.5f, std::fabs(vFwd))) * 57.2958f) +
+                                " slip=" + std::to_string(slipDeg) +
                                 " deg up=" + std::to_string(up));
                 }
             }
             // Upright + recovered?
             float q[4]; p2->getBodyRotation(c2.chassis(), q);
             float f[3], u[3]; vehcam::hullAxes(q, f, u);
-            outUpright = u[1] > 0.7f;
-            outMaxRoll = maxRoll; outTwoUp = twoUp; outVStrike = vAtCurb;
+            out.upright = u[1] > 0.7f;
+            out.spun    = out.maxSlip > 45.0f;
             c2.shutdown(); p2->shutdown();
             return true;
         };
-        float rollOn = 0.0f, rollOff = 0.0f, vs1 = 0.0f, vs0 = 0.0f;
-        int upOn = 0, upOff = 0; bool okOn = false, okOff = false;
-        const bool ranOn  = slalomRun(true,  rollOn,  upOn,  okOn,  vs1);
-        const bool ranOff = slalomRun(false, rollOff, upOff, okOff, vs0);
-        x3::logInfo("[drive-test] H4 SLALOM+CURB ~100 mph (curb strike at " +
-                    std::to_string(vs1 * 2.23694f) + " mph): SHIPPED aero maxRoll=" +
-                    std::to_string(rollOn) + " deg, 2-wheel-lift ticks=" +
-                    std::to_string(upOn) + ", upright=" + (okOn ? "YES" : "NO") +
-                    "  |  NO aero maxRoll=" + std::to_string(rollOff) +
-                    " deg, lift=" + std::to_string(upOff) +
-                    ", upright=" + (okOff ? "YES" : "NO"));
-        check(ranOn && ranOff, "H4 slalom: both A/B runs completed");
-        check(okOn, "H4 slalom: shipped car ends UPRIGHT (does not roll over)");
-        check(rollOn < 45.0f, "H4 slalom: shipped car never exceeds 45 deg of roll");
-        check(rollOn <= rollOff + 2.0f,
-              "H4 slalom: downforce+roll-damping do not WORSEN the roll transient");
+
+        // ---- H4: the SPIN gate — flicks at ~100 mph on clean pavement. ----
+        HRun s1{}, s0{};
+        const bool ranS1 = handlingRun(true,  /*curbs*/false, /*slalom*/true,  "H4-aero", s1);
+        const bool ranS0 = handlingRun(false, /*curbs*/false, /*slalom*/true,  "H4-none", s0);
+        x3::logInfo("[drive-test] H4 SLALOM ~100 mph (clean pavement): SHIPPED aero maxRoll=" +
+                    std::to_string(s1.maxRoll) + " deg, maxSlip=" + std::to_string(s1.maxSlip) +
+                    " deg, spun=" + (s1.spun ? "YES" : "NO") + ", upright=" +
+                    (s1.upright ? "YES" : "NO") + "  |  NO aero maxRoll=" +
+                    std::to_string(s0.maxRoll) + " deg, maxSlip=" + std::to_string(s0.maxSlip) +
+                    " deg, spun=" + (s0.spun ? "YES" : "NO") + ", upright=" +
+                    (s0.upright ? "YES" : "NO"));
+        check(ranS1 && ranS0, "H4 slalom: both A/B runs completed");
+        check(s1.upright, "H4 slalom: shipped car ends UPRIGHT");
+        check(s1.maxRoll < 10.0f, "H4 slalom: shipped car stays FLAT (< 10 deg roll)");
+        check(!s1.spun, "H4 slalom: shipped car does NOT spin (body slip < 45 deg)");
+        check(s1.maxSlip < s0.maxSlip,
+              "H4 slalom: the aero car holds a straighter line than the no-aero car (owner's spin complaint)");
+
+        // ---- H5: the FLIP gate — straight over the staggered curbs. ----
+        HRun k1{}, k0{};
+        const bool ranK1 = handlingRun(true,  /*curbs*/true, /*slalom*/false, "H5-aero", k1);
+        const bool ranK0 = handlingRun(false, /*curbs*/true, /*slalom*/false, "H5-none", k0);
+        x3::logInfo("[drive-test] H5 CURB STRIKE (12 cm staggered, hit at " +
+                    std::to_string(k1.vStrike * 2.23694f) + " mph): SHIPPED aero maxRoll=" +
+                    std::to_string(k1.maxRoll) + " deg, susp asym=" +
+                    std::to_string(k1.maxAsym) + " m, 2-wheel-lift ticks=" +
+                    std::to_string(k1.twoUp) + ", upright=" + (k1.upright ? "YES" : "NO") +
+                    "  |  NO aero maxRoll=" + std::to_string(k0.maxRoll) +
+                    " deg, asym=" + std::to_string(k0.maxAsym) +
+                    " m, lift=" + std::to_string(k0.twoUp) +
+                    ", upright=" + (k0.upright ? "YES" : "NO"));
+        check(ranK1 && ranK0, "H5 curb: both A/B runs completed");
+        // THE TEST-RAN GATE (rule 9, and the 3-metre receipt above): a curb
+        // the wheels never sampled reports perfect zero roll and passes
+        // everything. Prove the strike before believing the result.
+        check(k1.maxAsym > 0.05f && k0.maxAsym > 0.05f,
+              "H5 curb: the car ACTUALLY struck the curbs (suspension asymmetry > 5 cm)");
+        check(k1.upright, "H5 curb: shipped car ends UPRIGHT (does not roll over)");
+        check(k1.maxRoll < 45.0f, "H5 curb: shipped car never exceeds 45 deg of roll");
+        check(k1.maxRoll <= k0.maxRoll + 2.0f,
+              "H5 curb: downforce+roll-damping do not WORSEN the roll transient");
     }
 
     x3::logInfo("[drive-test] " + std::to_string(passN) + " passed, " +
