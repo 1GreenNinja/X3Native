@@ -2,6 +2,7 @@
 
 #include "engine/core/x3_log.h"
 #include "weapon.h"        // kVmDef* viewmodel defaults
+#include "fx.h"            // kWeaponFxKindCount / weaponFxKindName (w_flash_* cvars)
 #include "mesh_lod.h"      // registerLodCVars (Lane 5 discrete LOD cvars)
 #include "space_pilot.h"   // flightModeName / parseFlightMode / (get|set)RequestedFlightMode
 
@@ -254,6 +255,28 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     console.registerCVar("grip_yaw",   "0", "3P held-weapon grip override: +degrees twist about hand-up; live, current weapon");
     console.registerCVar("grip_roll",  "0", "3P held-weapon grip override: +degrees roll about the barrel; live, current weapon");
     console.registerCVar("grip_scale", "0", "3P held-weapon grip override: +added to the weapon's scaleMul; live, current weapon");
+
+    // ---- WEAPONS TUNING (Tim, live play 2026-08-16) ------------------------
+    // "lightning thickness needs to be a slider in the weapons menu ... with a
+    // test button that continuously shoots lightning .. for each weapon."
+    // These are the sliders; `wtest <weapon>` (app_run.cpp) is the test button.
+    // All are LIVE — applyWeaponFxCVars() syncs them into x3::game::fxTuning()
+    // every frame, so a typed value shows on the next frame with no restart.
+    console.registerCVar("w_lightning_thickness", "1",
+        "WEAPONS TUNING: lightning arc thickness scale (0.1 hairline .. 8 rope; 1 = shipped). Live; the blue corona tracks the core.");
+    console.registerCVar("w_tracer_len", "2.5",
+        "WEAPONS TUNING: bullet-streak LENGTH in meters for hitscan tracers (the travelling window of the ray, not a full-length beam). Live.");
+    console.registerCVar("w_tracer_speed", "160",
+        "WEAPONS TUNING: bullet-streak TRAVEL SPEED (m/s) muzzle->hit. Presentation only — the hitscan ray already resolved. Live.");
+    // Per-kind muzzle-flash SIZE multipliers, stacked on the shipped per-kind
+    // flashScale row (fx.h muzzleStyleFor). Registered from the ONE name table so
+    // the cvar set can never drift from the enum.
+    for (int k = 0; k < x3::game::kWeaponFxKindCount; ++k) {
+        const char* n = x3::game::weaponFxKindName(k);
+        if (!n) continue;
+        console.registerCVar(std::string("w_flash_") + n, "1",
+            "WEAPONS TUNING: muzzle-flash size multiplier for this weapon kind (0 = no flash, 1 = shipped). Live.");
+    }
 
     // ---- ZERO-STUTTER GUARANTEE (docs/ZERO_STUTTER.md) ---------------------
     // r_strictpso: any pipeline/shader-module/descriptor-pool created after the
