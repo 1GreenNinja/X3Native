@@ -7,12 +7,20 @@ deliberately confined to the LOD/mesh path; the carve geometry is untouched.**
 
 ## State
 
+**LANE COMPLETE — Lane 1 may rebase.** Three commits, `app/terrain.cpp` +
+`app/terrain.h` ONLY (no host files touched, so the carve-interface ripple is
+free of conflicts).
+
 | item | status |
 |---|---|
-| 1. Distance-scope the corridor refine (#33) | **DONE** — commit `2b296d13` |
-| 2. Retire `corridorPin && dist < 420`? | instrument shipped, MEASURING |
-| 3. Ridge-LOD blade towers (#26) | **DONE** — commit `2b296d13`, gate T4 |
-| 4. Horizon-ring inner-hole seam | not yet triaged |
+| 1. Distance-scope the corridor refine (#33) | **DONE** `2b296d13` — but see FINDING 1: dormant at today's radius |
+| 2. Retire `corridorPin && dist < 420`? | **ANSWERED: KEEP IT** — 1.4% tris, 0.000 ms (FINDING 3) |
+| 3. Ridge-LOD blade towers (#26) | **DONE** `2b296d13` — 5.96 m -> 0.00 m, captures read |
+| 4. Horizon-ring inner-hole seam | **ROOT-CAUSED, left to the host's owner** (FINDING 5) |
+| (bonus) safety coupling defect | **FIXED** `3ec146de` |
+
+Commits: `2b296d13` mesher work · `d5a798d6` third A/B instrument + measurements ·
+`3ec146de` ridge-filter corridor exclusion decoupled from the debug env var.
 
 ## Commit `2b296d13` — what landed
 
@@ -124,18 +132,42 @@ is 22 m and invisible, so **the capture path structurally cannot see the bug the
 owner sees**. Residual beyond the paired fix: the ring is static while the focus
 moves, so the hole is only covered while the player is near the route midpoint.
 
+### Captures — READ, not just written (`shots_wperf/`)
+
+* `ridge_D_filter_off.png` vs `ridge_A_filter_on.png` — same camera
+  (-301.9, 17.6, -472.2) yaw 2.051 pitch 0.25, aimed at the tunnel ridge 445 m
+  out (Quarter LOD, `kRanges[4]`, amp 460 m). **Filter off:** the crest is a
+  jagged sawtooth of isolated fins separated by deep V-notches — the blade
+  towers. **Filter on:** one continuous rounded massif, notches filled, reads
+  as rock. This is task #26's before/after.
+* `A_after/`, `B_before_scope/`, `C_nopin/`, `D_noridge/`, `FINAL/` — the 9
+  showcase cameras per config. `FINAL/06_mouth_headon.png` and
+  `A_after/08_exit_portal.png` show the portal seam tight, terrain below the
+  road slab, **no green strip** at any LOD.
+* NOTE, unexplained and NOT mine: a pale translucent sail-shaped sliver above
+  the treeline at mid-left, **identical in filter-on and filter-off**, so it is
+  not the ridge LOD. Distance ~450 m — consistent with the horizon-ring hole of
+  FINDING 5. Worth a look by whoever takes that fix.
+
 ## Open / next
 
-1. Ridge blade-tower **visual** before/after (config D, `X3_NO_RIDGE_FILTER=1`)
-   — numeric proof is in hand, captures still owed. GPU contended.
-2. Tile **generation** cost, the untested suspect behind "FPS varies widely":
+1. Tile **generation** cost, the untested suspect behind "FPS varies widely":
    the ridge filter roughly **3x**es field sampling on mountain tiles
    (~1,459 -> ~4,435 `terrainHeightAt` calls per tile). Optimisation already
    identified if it measures material: the Full-LOD pass already samples the
    whole LOD0 lattice — cache it in `generate()` and the Half/Quarter max-filters
    become a reduction over that array instead of re-sampling the field.
-3. Decide `kCorridorRefineNearM`: leave at 500 m as dormant headroom (documented)
-   or tie it to the residency reach so it engages when the radius grows.
+2. Decide `kCorridorRefineNearM`: left at 500 m as dormant headroom, now
+   documented as such. Deliberately NOT lowered — there is no measured perf
+   problem for it to solve (1.5 ms GPU), and lowering it would trade exactness
+   for triangles nobody needs while adding shoulder-gap risk. Lowering it on
+   the strength of "it should help" would be exactly the rule-9 guess this lane
+   is supposed to avoid. Revisit when the residency radius grows.
+3. Horizon-ring fix (FINDING 5) — a ~2-line paired-value change at
+   `host_tunnel.cpp:689-699`. Left to the tunnel host's owner (Lane 1) rather
+   than conflicting with an in-flight lane for an unverifiable gain: the
+   headless capture path runs radius 14, where the defect is 22 m and invisible,
+   so **any fix must be verified interactively at radius 9**, not by a capture.
 
 ## Etiquette
 
