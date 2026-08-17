@@ -14,6 +14,7 @@
 #include "../scene.h"
 #include "../terrain.h"
 #include "../tunnel_corridor.h"
+#include "../road_trees.h"
 #include "../tunnel_fitout.h"
 #include "../tunnel_rooms.h"
 #include "../player.h"
@@ -736,6 +737,22 @@ int hostTunnel(HostContext& hc) {
     }
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
 
+    // Tall broadleaf groves shading the open-country stretches of the road
+    // (Tim 2026-08: "somE Tall Trees!! Shading the road... In some areas").
+    // Purely visual; failure = treeless road, never fatal. The showcase camera
+    // poses become trunk keep-outs so no crown ever swallows a proof shot (the
+    // exit-portal three-quarter pose stands ON the bank inside the planting
+    // band). See app/road_trees.h.
+    x3::game::RoadTrees trees;
+    {
+        std::vector<x3::game::RoadTrees::KeepOut> camKeepOut;
+        for (int i = 0; i < x3::game::TunnelCorridorWorld::kShowcaseShots; ++i) {
+            float cam[5]; tunnel.showcaseCamera(route, i, cam);
+            camKeepOut.push_back({ cam[0], cam[2], 12.0f });
+        }
+        trees.build(*device, route, camKeepOut);
+    }
+
     // ---- THE INTERIOR PROGRAM, decided and COUNTED at boot -----------------
     // This is the whole hook the rooms lane needs from the host: the fitout says
     // where the service doors are, the room program says what is behind them,
@@ -1209,6 +1226,7 @@ int hostTunnel(HostContext& hc) {
                 auto frame = device->beginFrame();
                 if (frame.valid) {
                     scene.render(*device, frame);
+                    trees.draw(*device, frame);
                     if (carBuilt) car.render(frame);
                     if (weatherOn) precip.submit(*device, frame);
                 }
@@ -1405,6 +1423,7 @@ int hostTunnel(HostContext& hc) {
         }
 
         if (carBuilt) car.shutdown();
+        trees.shutdown(*device);
         tunnel.shutdown(*device, *phys);
         for (auto& w : tourBores) w->shutdown(*device, *phys);
         // Shared across every bore, so it is released ONCE here rather than by
@@ -2496,7 +2515,11 @@ int hostTunnel(HostContext& hc) {
                                        0.05f + 0.40f * (1.0f - skyVis));
         }
         auto frame = device->beginFrame();
-        if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
+        if (frame.valid) {
+            scene.render(*device, frame);
+            trees.draw(*device, frame);
+            if (carBuilt) car.render(frame);
+        }
 
         // ---- WHEEL-SPIN FX: spawn skid marks + smoke when the rears slip ----
         if (frame.valid && carBuilt) {
@@ -2945,6 +2968,7 @@ int hostTunnel(HostContext& hc) {
 
     if (audioOn) engineNote.shutdown();          // bank voices before the mixer dies
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
+    trees.shutdown(*device);
     tunnel.shutdown(*device, *phys);
     for (auto& w : tourBores) w->shutdown(*device, *phys);
     x3::game::shutdownTunnelSurfaces(*device);   // shared sets, released once
