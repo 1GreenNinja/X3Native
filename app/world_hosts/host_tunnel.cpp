@@ -931,6 +931,8 @@ int hostTunnel(HostContext& hc) {
     // something plays those clips, and now something does.
     x3::anim::Skinner jakeSkin;
     bool  jakeAnimated = false;
+    int   jakeJumpClip = -1;
+    float jakeJumpT    = -1.0f;      // >=0 while the jump one-shot plays
     float jakeYaw = 0.0f;                    // faces his MOVEMENT, not the camera
     float jakePrevFeet[3] = { 0, 0, 0 };
 
@@ -2094,6 +2096,16 @@ int hostTunnel(HostContext& hc) {
                             jakeModel = jakeLoader->load("Jake_44_actions.glb");
                             if (jakeModel.ok) {
                                 jakeDraw = x3::asset::makeDrawables(jakeModel);
+                                // EXACT clip lookup — the fuzzy matcher chose
+                                // 'Leftstrafewalking' for walk and
+                                // 'BackRight_Run' for run (clip order beat
+                                // intent): Jake strafed when walking. Exact
+                                // names from the rig's own 44-clip list.
+                                auto exactClip = [&](const char* nm) -> int {
+                                    for (uint32_t ci2 = 0; ci2 < jakeSkin.clipCount(); ++ci2)
+                                        if (jakeSkin.clipName(ci2) == std::string_view(nm)) return (int)ci2;
+                                    return -1;
+                                };
                                 if (jakeSkin.bind(jakeModel)) {
                                     // ROOT-Y LOCK: the Jake clips are the family
                                     // with the -0.9488 armature-offset root Y
@@ -2101,9 +2113,12 @@ int hostTunnel(HostContext& hc) {
                                     // rig); his world Y is owned by the capsule.
                                     jakeSkin.setRootYLock(true);
                                     jakeSkin.enableGpuSkinning(*device, jakeModel);
-                                    int idle = jakeSkin.findClip({ "idle", "stand", "breath" });
-                                    int walk = jakeSkin.findClip({ "walking", "walk" });
-                                    int run  = jakeSkin.findClip({ "run", "sprint", "jog" });
+                                    int idle = exactClip("Idle");
+                                    int walk = exactClip("Walking");
+                                    int run  = exactClip("Running");
+                                    jakeJumpClip = exactClip("Regular_Jump");
+                                    if (jakeJumpClip < 0) jakeJumpClip = exactClip("Jump");
+                                    if (idle < 0) idle = jakeSkin.findClip({ "idle" });
                                     if (idle < 0) idle = 0;
                                     jakeSkin.setLocomotionClips(idle, walk, run, 0.2f, 2.0f);
                                     jakeSkin.setLocomotionSpeed(0.0f);
@@ -2196,8 +2211,19 @@ int hostTunnel(HostContext& hc) {
                     while (d < -3.14159265f) d += 6.2831853f;
                     jakeYaw += d * std::min(1.0f, fdt * 10.0f);
                 }
-                jakeSkin.setLocomotionSpeed(planar);
-                jakeSkin.applyLocomotion(jakeModel, *device, fdt);
+                // JUMP ONE-SHOT: Regular_Jump overrides locomotion for its
+                // own duration, then locomotion resumes.
+                if (pin.jumpPressed && jakeJumpClip >= 0 && jakeJumpT < 0.0f)
+                    jakeJumpT = 0.0f;
+                if (jakeJumpT >= 0.0f && jakeJumpClip >= 0) {
+                    jakeJumpT += fdt;
+                    jakeSkin.apply(jakeModel, *device, (uint32_t)jakeJumpClip, jakeJumpT);
+                    if (jakeJumpT >= jakeSkin.clipDuration((uint32_t)jakeJumpClip))
+                        jakeJumpT = -1.0f;
+                } else {
+                    jakeSkin.setLocomotionSpeed(planar);
+                    jakeSkin.applyLocomotion(jakeModel, *device, fdt);
+                }
             }
         }
 
