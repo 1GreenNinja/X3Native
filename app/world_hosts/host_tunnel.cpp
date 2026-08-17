@@ -3027,10 +3027,14 @@ int hostTunnel(HostContext& hc) {
             const int jetSavedR = streamer.radius();
             streamer.setRadius(14);
 
-            // Stage on the valley road's own start, thrusting along the route:
-            // open country, the river and the road in frame, and the massif on
-            // the horizon to give 300 mph something to move against.
-            const float jsx = startPos[0], jsz = startPos[2];
+            // Stage 1.2 km PAST the corridor, thrusting on along the route.
+            // NOT at startPos: the bore is roofed from s=88 to s=546 (the
+            // tunnelmouth gate prints exactly that), so a climb launched there
+            // bonks the cut-and-cover lid at a few metres and the "flight"
+            // skims the tunnel roof at 3 m AGL — which is what the first run of
+            // this staging photographed. Past s=640 the sky is open.
+            const float jsx = startPos[0] + route.dirX * 1200.0f;
+            const float jsz = startPos[2] + route.dirZ * 1200.0f;
             const float jsy = x3::game::terrainHeightAtWorld(jsx, jsz) + 1.2f;
             if (!footSpawned) { onFoot.spawn(*phys, jsx, jsy, jsz); footSpawned = true; }
             else onFoot.setFeetPosition(*phys, x3::phys::Vec3{ jsx, jsy, jsz });
@@ -3098,22 +3102,49 @@ int hostTunnel(HostContext& hc) {
                 c5[4] = std::atan2(dyc, std::sqrt(dxc * dxc + dzc * dzc));
             };
 
-            // ---- CLIMB: Space to ignite, W held nose-up 25 deg, until he is
-            // clear of the ground and spooling.
-            jin.moveFwd = 1.0f; jin.jumpHeld = true; jetPitch = 0.4363f;  // 25 deg
-            for (int i = 0; i < 60; ++i) { shotTick(dt); phys->step(dt); }
+            // ONE step for the staged flight: the streamer MUST tick here too.
+            // The first cut of this block only ever streamed inside
+            // settleAndGrab, so the 600 frames of climb+cruise ran with a
+            // frozen tile disc — which made the "streamer keeps up?" receipt
+            // below measure my own staging instead of the streamer (it read a
+            // meaningless 92% miss). Same trap as the weather/river/town
+            // comments in the settle loop, one level up.
+            float jetApexY = -1e9f, jetApexAgl = -1e9f;
+            auto jetStep = [&]() {
+                const x3::phys::Vec3 f0 = onFoot.feet();
+                streamer.update(scene, *device, *phys, f0.x, f0.z);
+                shotTick(dt);
+                phys->step(dt);
+                const x3::phys::Vec3 f1 = onFoot.feet();
+                jetApexY = std::max(jetApexY, f1.y);
+                jetApexAgl = std::max(jetApexAgl,
+                                      f1.y - x3::game::terrainHeightAtWorld(f1.x, f1.z));
+            };
+            // ---- CLIMB: Space to ignite, W held nose-up 40 deg. Climb time is
+            // chosen to CRUISE AT ~180 m, not higher: the second run of this
+            // staging levelled at 722 m and photographed a pure black
+            // silhouette, because that far up he is past the last outdoor
+            // shadow cascade and everything on him reads as shadowed. 180 m
+            // keeps him lit AND puts the ground close enough that 300 mph looks
+            // like 300 mph instead of a dot over a map.
+            jin.moveFwd = 1.0f; jin.jumpHeld = true; jetPitch = 0.6981f;  // 40 deg
+            for (int i = 0; i < 60; ++i) jetStep();
             jin.jumpHeld = false;
-            for (int i = 0; i < 240; ++i) { shotTick(dt); phys->step(dt); }
+            for (int i = 0; i < 240; ++i) jetStep();
             // ---- CRUISE: level out and let the spool ARRIVE at the clamp.
+            // Levelling from a climb sinks (the vertical target goes to zero and
+            // eases), so this is where the altitude actually settles.
             jetPitch = 0.0f;
-            for (int i = 0; i < 300; ++i) { shotTick(dt); phys->step(dt); }
+            for (int i = 0; i < 300; ++i) jetStep();
             {
                 const x3::phys::Vec3 ft = onFoot.feet();
                 char jb[240];
                 std::snprintf(jb, sizeof(jb),
                     "[jet-shot] cruise: feet=(%.0f, %.0f, %.0f) agl=%.0f m "
-                    "speed=%.1f m/s (%.0f mph) flying=%d thrustVis=%.2f",
+                    "(apex y=%.0f, apex agl=%.0f) speed=%.1f m/s (%.0f mph) "
+                    "flying=%d thrustVis=%.2f",
                     ft.x, ft.y, ft.z, ft.y - x3::game::terrainHeightAtWorld(ft.x, ft.z),
+                    jetApexY, jetApexAgl,
                     onFoot.jetSpeed(), onFoot.jetSpeed() * 2.23694f,
                     onFoot.jetFlying() ? 1 : 0, jetThrustVis);
                 x3::logInfo(jb);
@@ -3154,7 +3185,7 @@ int hostTunnel(HostContext& hc) {
             bool jetLanded = false;
             float jetTouchY = 0.0f, jetGroundY = 0.0f;
             for (int i = 0; i < 7200 && !jetLanded; ++i) {
-                shotTick(dt); phys->step(dt);
+                jetStep();
                 if (!onFoot.jetFlying() && onFoot.grounded()) {
                     const x3::phys::Vec3 ft = onFoot.feet();
                     jetTouchY  = ft.y;
