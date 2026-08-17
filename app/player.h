@@ -201,6 +201,31 @@ public:
     // includes terrain.h.
     using WaterQueryFn = std::function<float(float x, float z)>;
     void setWaterQuery(WaterQueryFn fn) { m_waterQuery = std::move(fn); }
+    // ---- JETPACK (the `fly` command) ---------------------------------------
+    // Diegetic flight for the on-foot character — NOT noclip: collision stays
+    // on (moveCharacter), the mesh keeps drawing/animating, and THE CONTACT
+    // LAW still owns the boots. Mode on = the pack is WORN; flight itself
+    // engages on the first thrust (W / Space) and hands back to plain walking
+    // the moment the feet touch down slow — so `fly` once, hop around the
+    // world, land, walk, lift off again, `fly` again to take the pack off.
+    //
+    // FLIGHT MODEL (owner's numbers are spec — NO_SLOP rule 8):
+    //   * hold W  = thrust toward the FULL look direction (pitch = altitude),
+    //     spooling up over a few seconds to 300 mph (134.1 m/s, kJetTopSpeed);
+    //   * hold S  = air-brake (hard velocity bleed);
+    //   * A/D     = gentle lateral nudge; Space/Ctrl = rise/sink channels;
+    //   * no input = auto-hover: velocity eases to zero and altitude holds
+    //     (gravity is off through the same physics switch swimming uses);
+    //   * landing = cut thrust, descend: inside the last few metres a FLARE
+    //     caps the sink rate, and touchdown returns the walking controller.
+    //     The ground probe raycasts DOWN FROM THE FEET — never from above the
+    //     head (the tunnel-lid trap, NO_SLOP rule 11 v3).
+    void setJetpack(bool on, x3::phys::IPhysicsWorld& physics);
+    bool jetpack()   const { return m_jetpack; }    // pack worn (mode on)
+    bool jetFlying() const { return m_jetFlying; }  // actually airborne under thrust
+    // Live speed through the air (m/s) — HUD readout + FOV ease.
+    float jetSpeed() const;
+
     // True while the swim state is active (deep water). While swimming:
     // gravity is off (physics swim mode), a gentle buoyancy spring settles the
     // eye just above the surface, movement follows the FULL look direction
@@ -260,6 +285,11 @@ private:
     WaterQueryFn m_waterQuery;            // host-wired; empty => never swims
     bool  m_swimming = false;
     float m_swimVelX = 0.0f, m_swimVelY = 0.0f, m_swimVelZ = 0.0f; // smoothed swim velocity
+
+    // ---- JETPACK state (the `fly` command) ---------------------------------
+    bool  m_jetpack   = false;            // pack worn (mode toggled on)
+    bool  m_jetFlying = false;            // airborne under the flight model
+    float m_jetVelX = 0.0f, m_jetVelY = 0.0f, m_jetVelZ = 0.0f; // smoothed flight velocity
 
     // ---- Audio hook state (audio-assets pass, W2-B) -----------------------
     GameCueFn m_cueSink;                // host-wired; empty => throttled log (see cues.h)

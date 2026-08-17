@@ -84,6 +84,11 @@ CharacterClipTable jakeClipTable() {
     t.turnLeft    = "Leftturn90";       t.turnLeftRad  = +1.5586f;  // +89.3 deg
     t.turnRight   = "Rightturn90";      t.turnRightRad = -1.7767f;  // -101.8 deg
     t.fall        = "Fall_Down";
+    // JETPACK pose: Riflejump's mid-air frame (0.58 s one-shot; ~half-way is
+    // the legs-tucked, chest-forward airborne read). Chosen BY EYE against
+    // Fall_Down held, which reads as a man losing his balance, not flying —
+    // see the X3_SHOT_JETPACK proof captures.
+    t.jetFly      = "Riflejump";        t.jetFlyHold = 0.30f;
     t.idleVariant = "Idle_11";          t.idleVariantEvery = 20.0f;
     t.swim        = "Swim";
     t.swimIdle    = "SwimIdle";
@@ -181,6 +186,7 @@ bool AnimatedCharacter::load(x3::rhi::IRenderDevice& device,
         m_turnL    = resolve(table.turnLeft);
         m_turnR    = resolve(table.turnRight);
         m_fall     = resolve(table.fall);
+        m_jetFly   = resolve(table.jetFly);
         m_idleVar  = resolve(table.idleVariant);
         m_swim     = resolve(table.swim);
         m_swimIdle = resolve(table.swimIdle);
@@ -250,13 +256,22 @@ void AnimatedCharacter::setArmed(bool armed) {
 bool AnimatedCharacter::boneWorld(const char* boneName, const Player& player,
                                   float yawTrimRad, float yTrim, float out[16]) {
     if (!m_animated || !boneName || !out) return false;
-    if (m_boneNode < 0 || m_boneName != boneName) {
-        m_boneName = boneName;
-        m_boneNode = m_skin.resolveNodeByName(m_model, boneName);
-        if (m_boneNode < 0) return false;
+    // Two-slot cache: the hand socket (rifle) and the spine mount (jetpack)
+    // are both queried every frame — a one-slot cache thrashed and re-walked
+    // the node list twice per frame.
+    int node = -1;
+    for (BoneSlot& s : m_boneCache)
+        if (s.node >= 0 && s.name == boneName) { node = s.node; break; }
+    if (node < 0) {
+        node = m_skin.resolveNodeByName(m_model, boneName);
+        if (node < 0) return false;
+        BoneSlot& slot = (m_boneCache[0].node < 0) ? m_boneCache[0]
+                                                   : m_boneCache[1];
+        slot.name = boneName;
+        slot.node = node;
     }
     float bone[16];
-    if (!m_skin.boneGlobal((uint32_t)m_boneNode, bone)) return false;
+    if (!m_skin.boneGlobal((uint32_t)node, bone)) return false;
     const x3::phys::Vec3 ft = player.feet();
     const float a  = m_yaw + yawTrimRad;
     const float ca = std::cos(a), sa = std::sin(a);
@@ -364,6 +379,12 @@ void AnimatedCharacter::update(Player& player, const Intent& in, float camYaw,
     if (player.swimming()) {
         sel = moving ? m_swim : m_swimIdle;      // river lane: swimClipset()
         faceTarget = camFace;
+    } else if (m_jetpackMode && !player.grounded() && m_jetFly >= 0) {
+        // JETPACK FLIGHT: the held airborne pose, facing the camera — you fly
+        // where you look, so the body lines up with the thrust vector. Wins
+        // over the fall clip below (a jetpack descent is not a stumble).
+        sel = m_jetFly;
+        faceTarget = camFace;
     } else if (!player.grounded() && m_airT > 0.4f && vy < -1.0f && m_fall >= 0) {
         sel = m_fall;                            // held on its last frame below
     } else if (moving && backing && m_walkBack >= 0) {
@@ -466,7 +487,9 @@ void AnimatedCharacter::update(Player& player, const Intent& in, float camYaw,
         if (sel == m_turnClip && m_turnT >= 0.0f)      m_moveT = m_turnT;
         else if (sel == m_idleVar && m_idleVarT >= 0.0f) m_moveT = m_idleVarT;
         else m_moveT += dt * std::clamp(rate, 0.6f, 1.8f);
-        if (sel == m_fall)                                    // hold the fall
+        if (m_jetpackMode && sel == m_jetFly)                 // hold the flight pose
+            m_moveT = m_table.jetFlyHold;
+        else if (sel == m_fall)                               // hold the fall
             m_moveT = std::min(m_moveT,
                 m_skin.clipDuration((uint32_t)m_fall) - 0.02f);
         applyExclusive(device, sel, m_moveT);

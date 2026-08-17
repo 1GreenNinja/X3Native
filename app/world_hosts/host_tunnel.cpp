@@ -21,6 +21,7 @@
 #include "../tunnel_rooms.h"
 #include "../player.h"
 #include "../character_anim.h"           // AnimatedCharacter — Jake's shared rig runtime
+#include "../jetpack.h"                  // W-JETPACK — the `fly` command's pack + thrust FX
 #include "../weapon.h"                   // Arsenal — the campaign's data-driven weapon core (REUSED)
 #include "../fx.h"                       // CombatFx — tracers/muzzle/impact/boom (REUSED)
 #include "../thirdperson.h"              // kJakeHandBone + TpGrip table + tpComposeGrip (REUSED)
@@ -1365,6 +1366,17 @@ int hostTunnel(HostContext& hc) {
     x3::game::AnimatedCharacter::SwimClipset jakeSwimClipset;
     float jakeCamToast = 0.0f;       // seconds left on the F1 mode banner
 
+    // ---- THE JETPACK (W-JETPACK). Owner: "we need a fly command.. that
+    // spawns a jetpack... that flies at 300MPH.. so jake can get over the
+    // whole world quickly to observe." Flight physics = Player::setJetpack
+    // (player.cpp), the pose = AnimatedCharacter::setJetpack, the visible
+    // pack + plume = JetpackRig (app/jetpack.h). This is NOT noclip — Jake
+    // keeps rendering, collision stays on, THE CONTACT LAW owns the landing.
+    x3::game::JetpackRig jetRig;
+    bool  jetpackOn    = false;      // the `fly` toggle (pack worn)
+    float jetThrustVis = 0.0f;       // smoothed 0..1 driving the plume FX
+    int   jetSavedStreamRadius = -1; // streamer radius to restore on `fly 0`
+
     x3::game::Player onFoot;
     // W10 SWIMMING, wired (owner: "we need water.. you can swim in"). The
     // Player has carried the full swim state machine since W10 — buoyancy
@@ -1651,6 +1663,75 @@ int hostTunnel(HostContext& hc) {
             g.live = true;
             return;
         }
+    };
+    // ---- STEP OUT OF THE CAR — ONE implementation (NO_SLOP rule 4's twin
+    // sites lesson, applied preemptively): the E key and the `fly` command
+    // both put Jake on the pavement, and two copies of the candidate-raycast
+    // spawn would drift the day one of them is fixed. Factored VERBATIM from
+    // the E block; E now calls this.
+    auto stepOutOfCar = [&]() {
+        if (!driving || !carBuilt) return;
+        float vp[3]; car.chassisPos(vp);
+        parkedAt[0] = vp[0]; parkedAt[1] = vp[1]; parkedAt[2] = vp[2];
+        // Step out on the LEFT, a car's width clear of the shell, and
+        // above the floor -- spawning inside the car's own collision
+        // launches the capsule through the roof.
+        // LEFT of travel. tunnel_corridor builds its frame as
+        // right = (-dirZ, 0, dirX), so left is its negation -- taken
+        // from the route rather than the car's own heading so you
+        // always step toward the walkway, even if you stopped skewed.
+        // FEET ABOVE GROUND — THE LAW (Tim, third strike: "make
+        // his Feet stay ABOVE GROUND"). The old spawn was chassis
+        // arithmetic (+2.4 m left, +1.2 up): midair on an
+        // embankment, INSIDE the hill in a cut — and a capsule
+        // under the heightfield never comes back. Candidates are
+        // tried left / right / behind; each one's Y is a downward
+        // RAYCAST (topmost surface — pavement or dirt), floored by
+        // the terrain height. Feet land ON something, always.
+        const float cand[3][2] = {
+            {  route.dirZ * 2.4f, -route.dirX * 2.4f },   // left
+            { -route.dirZ * 2.4f,  route.dirX * 2.4f },   // right
+            { -route.dirX * 3.2f, -route.dirZ * 3.2f },   // behind
+        };
+        float sx = vp[0], sy = vp[1] + 1.2f, sz = vp[2];
+        for (int ci = 0; ci < 3; ++ci) {
+            const float cx2 = vp[0] + cand[ci][0], cz2 = vp[2] + cand[ci][1];
+            float gy = x3::game::terrainHeightAtWorld(cx2, cz2);
+            const x3::phys::RayHit rh = phys->rayCast(
+                x3::phys::Vec3{ cx2, vp[1] + 30.0f, cz2 },
+                x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 90.0f,
+                x3::phys::Layer::Static);
+            if (rh.hit) gy = std::max(gy, rh.point.y);
+            // A candidate more than 4 m below the car is a drop-off
+            // (bridge edge) — try the next side.
+            if (gy > vp[1] - 4.0f) { sx = cx2; sz = cz2; sy = gy + 1.1f; break; }
+        }
+        if (!footSpawned) {
+            onFoot.spawn(*phys, sx, sy, sz);
+            footSpawned = true;
+        } else {
+            onFoot.setFeetPosition(*phys, x3::phys::Vec3{ sx, sy, sz });
+        }
+        driving = false;
+        // Load him ONCE, on the first exit rather than at boot: most
+        // runs of this world never leave the car, and a 1.4 MB rig
+        // plus its textures is not worth paying for on the chance.
+        if (!jakeTried) {
+            jakeTried = true;
+            // THE WHOLE RECIPE lives in AnimatedCharacter now:
+            // exact-name clips from the MEASURED jakeClipTable()
+            // (labels untrusted), root-Y lock, GPU skinning,
+            // contact-law clamp, facing, one-shots. Jake_44_actions
+            // (post tools/jake_bake.py: feet at origin, -Z facing
+            // baked, clips in-place), NOT JakeClone_player (zero
+            // textures, combat clips only — the white statue).
+            if (jake.load(*device, x3::game::assetRoot() + "/rigged_glb",
+                          "Jake_44_actions.glb", x3::game::jakeClipTable()))
+                jakeSwimClipset = jake.swimClipset();   // river lane hook
+            else
+                x3::logWarn("[tunnel] Jake_44_actions.glb failed to load - no body on foot");
+        }
+        x3::logInfo("[tunnel] on foot - E near the car to get back in");
     };
     // Grenade integration: a hot glowing core + smoke trail in flight (the
     // CombatFx Rocket bolt visual — the arc READS with no mesh, so there is no
@@ -3652,6 +3733,46 @@ int hostTunnel(HostContext& hc) {
                           car.turboEnabled() ? "on" : "off");
             con->print(b);
         }, "print the car's live state");
+        // ---- THE JETPACK (W-JETPACK). Owner: "we need a fly command.. that
+        // spawns a jetpack... that flies at 300MPH.. so jake can get over the
+        // whole world quickly to observe." THE ARG CONVENTION (IConsole.h,
+        // gate-locked by --test-console): args[0] is the FIRST ARGUMENT.
+        // Issued from the driver's seat it steps Jake out first (the same
+        // stepOutOfCar the E key runs) — `fly` means fly, not an error.
+        con->registerCommand("fly", [&, con](const std::vector<std::string>& args) {
+            bool want = !jetpackOn;
+            if (!args.empty()) want = (args[0] != "0");
+            if (want == jetpackOn) {
+                con->print(std::string("fly = ") + (jetpackOn ? "1 (pack on)" : "0"));
+                return;
+            }
+            if (want) {
+                if (driving) stepOutOfCar();
+                if (!footSpawned) { con->print("fly: no one on foot to strap the pack to"); return; }
+                // The pack pieces load lazily, the way Jake himself does.
+                jetRig.load(*device, x3::game::convertedGlbRoot());
+                onFoot.setJetpack(true, *phys);
+                // STREAMING AT 300 MPH: 134 m/s crosses a 32 m tile every
+                // 0.24 s; the interactive radius-9 disc is 288 m — 2.1 s of
+                // flight — so the ring is widened to the headless radius (14,
+                // 448 m) while the pack is on. PAIRED with kStreamRadiusTiles
+                // above (NO_SLOP rule 4). Restored on `fly 0`.
+                jetSavedStreamRadius = streamer.radius();
+                streamer.setRadius(14);
+                jetpackOn = true;
+                con->print("JETPACK ON - SPACE lifts off; hold W: thrust where you look "
+                           "(pitch = altitude), S: air-brake, CTRL: sink, no input: hover. "
+                           "300 mph flat out. 'fly' again to unstrap.");
+                x3::logInfo("[tunnel] JETPACK ON");
+            } else {
+                onFoot.setJetpack(false, *phys);
+                jake.setJetpack(false);
+                if (jetSavedStreamRadius > 0) streamer.setRadius(jetSavedStreamRadius);
+                jetpackOn = false;
+                con->print("JETPACK OFF");
+                x3::logInfo("[tunnel] JETPACK OFF");
+            }
+        }, "fly [0|1] - toggle Jake's jetpack: 300 mph flight to observe the world");
         // W-STATIONS: the LIVE fuel commands (`fuel`, `fuel_stations`). The
         // pure-data fuel_* cvars are already here — registerEngineConsoleCVars
         // registers them for every host (app/engine_console.cpp).
@@ -3995,67 +4116,9 @@ int hostTunnel(HostContext& hc) {
             // ticket in reach owns the press (W-FACTORY). Both yield to get-in.
             if (eDown && !eWasDown && carBuilt && !atPump && !eConsumed) {
                 if (driving) {
-                    float vp[3]; car.chassisPos(vp);
-                    parkedAt[0] = vp[0]; parkedAt[1] = vp[1]; parkedAt[2] = vp[2];
-                    // Step out on the LEFT, a car's width clear of the shell, and
-                    // above the floor -- spawning inside the car's own collision
-                    // launches the capsule through the roof.
-                    // LEFT of travel. tunnel_corridor builds its frame as
-                    // right = (-dirZ, 0, dirX), so left is its negation -- taken
-                    // from the route rather than the car's own heading so you
-                    // always step toward the walkway, even if you stopped skewed.
-                    // FEET ABOVE GROUND — THE LAW (Tim, third strike: "make
-                    // his Feet stay ABOVE GROUND"). The old spawn was chassis
-                    // arithmetic (+2.4 m left, +1.2 up): midair on an
-                    // embankment, INSIDE the hill in a cut — and a capsule
-                    // under the heightfield never comes back. Candidates are
-                    // tried left / right / behind; each one's Y is a downward
-                    // RAYCAST (topmost surface — pavement or dirt), floored by
-                    // the terrain height. Feet land ON something, always.
-                    const float cand[3][2] = {
-                        {  route.dirZ * 2.4f, -route.dirX * 2.4f },   // left
-                        { -route.dirZ * 2.4f,  route.dirX * 2.4f },   // right
-                        { -route.dirX * 3.2f, -route.dirZ * 3.2f },   // behind
-                    };
-                    float sx = vp[0], sy = vp[1] + 1.2f, sz = vp[2];
-                    for (int ci = 0; ci < 3; ++ci) {
-                        const float cx2 = vp[0] + cand[ci][0], cz2 = vp[2] + cand[ci][1];
-                        float gy = x3::game::terrainHeightAtWorld(cx2, cz2);
-                        const x3::phys::RayHit rh = phys->rayCast(
-                            x3::phys::Vec3{ cx2, vp[1] + 30.0f, cz2 },
-                            x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 90.0f,
-                            x3::phys::Layer::Static);
-                        if (rh.hit) gy = std::max(gy, rh.point.y);
-                        // A candidate more than 4 m below the car is a drop-off
-                        // (bridge edge) — try the next side.
-                        if (gy > vp[1] - 4.0f) { sx = cx2; sz = cz2; sy = gy + 1.1f; break; }
-                    }
-                    if (!footSpawned) {
-                        onFoot.spawn(*phys, sx, sy, sz);
-                        footSpawned = true;
-                    } else {
-                        onFoot.setFeetPosition(*phys, x3::phys::Vec3{ sx, sy, sz });
-                    }
-                    driving = false;
-                    // Load him ONCE, on the first exit rather than at boot: most
-                    // runs of this world never leave the car, and a 1.4 MB rig
-                    // plus its textures is not worth paying for on the chance.
-                    if (!jakeTried) {
-                        jakeTried = true;
-                        // THE WHOLE RECIPE lives in AnimatedCharacter now:
-                        // exact-name clips from the MEASURED jakeClipTable()
-                        // (labels untrusted), root-Y lock, GPU skinning,
-                        // contact-law clamp, facing, one-shots. Jake_44_actions
-                        // (post tools/jake_bake.py: feet at origin, -Z facing
-                        // baked, clips in-place), NOT JakeClone_player (zero
-                        // textures, combat clips only — the white statue).
-                        if (jake.load(*device, x3::game::assetRoot() + "/rigged_glb",
-                                      "Jake_44_actions.glb", x3::game::jakeClipTable()))
-                            jakeSwimClipset = jake.swimClipset();   // river lane hook
-                        else
-                            x3::logWarn("[tunnel] Jake_44_actions.glb failed to load - no body on foot");
-                    }
-                    x3::logInfo("[tunnel] on foot - E near the car to get back in");
+                    // The whole candidate-raycast spawn + Jake load lives in
+                    // stepOutOfCar (shared with the `fly` command).
+                    stepOutOfCar();
                 } else {
                     float fx, fy, fz, fyaw, fpit;
                     onFoot.camera(fx, fy, fz, fyaw, fpit);
@@ -4160,12 +4223,28 @@ int hostTunnel(HostContext& hc) {
             // job now. The Babylon flip and the -0.9488 yFix are GONE: the
             // asset was baked to the engine convention (tools/jake_bake.py).
             {
+                // JETPACK sync: the module holds the flight pose only while
+                // the Player is actually airborne under thrust — with the
+                // pack worn but boots down, locomotion is untouched.
+                jake.setJetpack(jetpackOn && onFoot.jetFlying());
                 x3::game::AnimatedCharacter::Intent ji;
                 ji.moveFwd     = pin.moveFwd;
                 ji.moveStrafe  = pin.moveStrafe;
                 ji.sprint      = pin.sprint;
                 ji.jumpPressed = pin.jumpPressed;
                 jake.update(onFoot, ji, camYaw, fdt, *phys, *device);
+            }
+            // JET PLUME DRIVE: full while a thrust key is held in flight, a
+            // quarter idle-burn in the hover, cold on the ground. Smoothed
+            // (1-exp — the dt HARD RULE) so the plume breathes, not blinks.
+            {
+                const bool thrustHeld = onFoot.jetFlying() &&
+                    (kd(GLFW_KEY_W) || kd(GLFW_KEY_SPACE) ||
+                     kd(GLFW_KEY_LEFT_CONTROL) || kd(GLFW_KEY_C));
+                const float want = thrustHeld ? 1.0f
+                                 : (onFoot.jetFlying() ? 0.25f : 0.0f);
+                jetThrustVis += (want - jetThrustVis)
+                              * (1.0f - std::exp(-6.0f * fdt));
             }
         }
 
@@ -4315,7 +4394,20 @@ int hostTunnel(HostContext& hc) {
         }
         float vp[3] = { startPos[0], startPos[1], startPos[2] };
         if (carBuilt) car.chassisPos(vp);
-        streamer.update(scene, *device, *phys, vp[0], vp[2]);
+        {
+            // THE STREAMER FOLLOWS THE PLAYER, NOT THE PARKED CAR (W-JETPACK
+            // find): this focus was pinned to the car, so Jake walking — and
+            // at 300 mph, FLYING — away from it marched off the resident disc
+            // and the ground ran out from under him. Focus = whoever the
+            // player currently is, the same rule traffic/riverLife already
+            // follow a few lines down.
+            float sfx = vp[0], sfz = vp[2];
+            if (!driving && footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                sfx = ft.x; sfz = ft.z;
+            }
+            streamer.update(scene, *device, *phys, sfx, sfz);
+        }
         riverLife.prePhysics(fdt);            // boat autopilot BEFORE the step
         {   // TRAFFIC: sim + kinematic march, before the step (the bodies'
             // step-target velocities come from moveKinematic). Focus follows
@@ -4616,8 +4708,15 @@ int hostTunnel(HostContext& hc) {
                 const int useMode = aimCam
                     ? (int)x3::game::CharacterCamMode::ThirdNear : camMode;
                 x3::game::characterCameraEye(onFoot, useMode, cx, cy, cz, camYaw, camPitch);
+                // JET FOV: the walking lens is deliberately fixed (the FOV
+                // comment above), but 300 mph with a static lens reads like a
+                // slideshow — flight eases up to +16 deg with airspeed, and
+                // jetSpeed() itself is smoothed so this never steps.
+                float onFootFov = 74.0f;
+                if (jetpackOn && onFoot.jetFlying())
+                    onFootFov += 16.0f * std::min(1.0f, onFoot.jetSpeed() / 134.112f);
                 device->setCamera(cx, cy, cz, camYaw, camPitch,
-                                  aimCam ? 62.0f : 74.0f);
+                                  aimCam ? 62.0f : onFootFov);
             } else {
                 device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
             }
@@ -4794,7 +4893,7 @@ int hostTunnel(HostContext& hc) {
         // bakes the needle atlas, tools/make_gauge_textures.py makes the gate.
         // The dial face carries NO text: the gear digit and the MPH readout
         // below own those two strips, and baked labels collided with them.
-        if (frame.valid && carBuilt && texDial.valid()) {
+        if (frame.valid) {
             int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
             const float fw = (float)fbw, fh = (float)fbh;
             // LAYOUT. The whole cluster is dial (2R tall) + gap + gate (0.9R),
@@ -4803,17 +4902,27 @@ int hostTunnel(HostContext& hc) {
             // the screen.
             float R = 0.0f, gcx = 0.0f, gcy = 0.0f;
             gaugeClusterAnchor(fw, fh, R, gcx, gcy);
-            const float mar = 0.030f * fh;
+            const float mar = 0.030f * fh; (void)mar;
             const float gateH = R * 0.90f;
+            const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+            const float rpmNow = carBuilt ? car.engineRPM() : 0.0f;
 
-            const float rpmNow = car.engineRPM();
+            // ---- THE CAR CLUSTER IS THE DRIVING STATE'S (owner: "in Walk
+            // mode.. the car gauges disappear"). RECEIPT: every dial below
+            // was gated on carBuilt alone, so the whole cluster — tach, gate,
+            // boost, NOS, fuel, MPH, gear, shift lights, driving key hints,
+            // TC line — stayed painted over Jake ON FOOT. `driving` owns
+            // every one of them now; what survives on foot is the shared HUD
+            // (prompts, minimap, thermometer, tickets) further down. The
+            // outer gate also no longer holds the WEATHER and JAKE draws
+            // hostage to the gauge art loading (frame.valid alone now).
+            if (driving && carBuilt && texDial.valid()) {
             const float frac   = std::min(1.0f, std::max(0.0f, rpmNow / 8000.0f));
 
             // Framerate-independent needle smoothing — raw rpm buzzes at 165 Hz.
             static float shownFrac = 0.0f;
             shownFrac += (frac - shownFrac) * (1.0f - std::exp(-9.0f * fdt));
 
-            const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
             device->drawHudImage(frame, texDial, gcx - R, gcy - R, 2.0f * R, 2.0f * R, white);
 
             if (texNeedle.valid()) {
@@ -4830,6 +4939,7 @@ int hostTunnel(HostContext& hc) {
                 device->drawHudImage(frame, texGate, gcx - gw * 0.5f,
                                      gcy + R + R * 0.12f, gw, gh, white);
             }
+            } // driving cluster part 1 (tach) — boost/NOS/fuel/readouts below
 
             // FALLING SNOW / RAIN. Submitted here, inside the frame: the device
             // adds no particle pass at all when the count is zero, so clear
@@ -4878,6 +4988,34 @@ int hostTunnel(HostContext& hc) {
                 if (rifleArmed && !firstPerson) {
                     float wm[16];
                     if (heldRifleWorld(wm)) rifle.drawCurrentAt(*device, frame, wm);
+                }
+                // THE JETPACK ON HIS BACK — the pack rides the spine socket
+                // through the module's boneWorld, the rifle's own attachment
+                // pattern one bone up. Drawn whenever the pack is WORN (also
+                // standing — you can see what you strapped on); hidden with
+                // the body in FP. The plume FX submit lives here too so pack
+                // and fire can never draw in different frames.
+                if (jetpackOn && jetRig.loaded() && !firstPerson) {
+                    float sm[16];
+                    if (jake.boneWorld("mixamorigSpine2", onFoot,
+                            (console ? console->getFloat("jake_yaw") : 0.0f) * 0.0174533f,
+                            console ? console->getFloat("jake_y") : 0.0f, sm)) {
+                        jetRig.draw(frame, *device, sm);
+                        // Wearer velocity from the feet delta — the plume
+                        // inherits a share so it trails honestly at speed.
+                        static float jpPrev[3] = { 0, 0, 0 };
+                        static bool  jpHave = false;
+                        const x3::phys::Vec3 ft = onFoot.feet();
+                        float jvel[3] = { 0, 0, 0 };
+                        if (jpHave && fdt > 1e-4f) {
+                            jvel[0] = (ft.x - jpPrev[0]) / fdt;
+                            jvel[1] = (ft.y - jpPrev[1]) / fdt;
+                            jvel[2] = (ft.z - jpPrev[2]) / fdt;
+                        }
+                        jpPrev[0] = ft.x; jpPrev[1] = ft.y; jpPrev[2] = ft.z;
+                        jpHave = true;
+                        jetRig.submitThrustFx(*device, fdt, jetThrustVis, jvel);
+                    }
                 }
 
                 // ---- RIFLE HUD: ammo bottom-left; crosshair while aiming
@@ -4938,7 +5076,7 @@ int hostTunnel(HostContext& hc) {
             // It reads NEGATIVE off-throttle. A boost gauge pinned at zero
             // whenever you lift is the tell that no manifold model is behind
             // it, and vacuum is where a real one lives most of the time.
-            if (texBoost.valid()) {
+            if (driving && carBuilt && texBoost.valid()) {
                 const float R2  = R * 0.70f;
                 const float bcx = gcx - R - R2 - R * 0.10f;
                 const float bcy = gcy + R - R2;              // bottoms line up
@@ -4974,7 +5112,7 @@ int hostTunnel(HostContext& hc) {
                                     bcy + R2 * 0.26f, bp, bc);
             }
 
-            if (texNos.valid()) {
+            if (driving && carBuilt && texNos.valid()) {
                 // ---- NOS TANK — SOLID LUMINESCENT CURVED BAR (Tim: "Curving
                 // bar like NFS had 20 years ago... not beads. solid
                 // luminescent bars"). A 32-state baked-arc atlas (hot core +
@@ -5005,8 +5143,9 @@ int hostTunnel(HostContext& hc) {
             // ---- THE FUEL GAUGE (W-STATIONS). Drawn by the SAME function the
             // headless proof capture calls (app/gas_station.h), anchored on this
             // cluster's tach so it always rides under the dials.
-            x3::game::drawFuelBar(*device, frame, gasStations.fuel(),
-                                  gasStations.refuelling(), R, gcx, gcy);
+            if (driving && carBuilt)
+                x3::game::drawFuelBar(*device, frame, gasStations.fuel(),
+                                      gasStations.refuelling(), R, gcx, gcy);
 
             // THE THERMOMETER. Only when weather is running: a gauge pinned at
             // a constant is worse than no gauge, because it teaches the player
@@ -5019,6 +5158,7 @@ int hostTunnel(HostContext& hc) {
                     wetness.condition() == x3::game::SurfaceCondition::Ice);
             }
 
+            if (driving && carBuilt) {
             char gbuf[64];
             const int   gnum = car.gear();
             const float mph  = std::fabs(car.forwardSpeed()) * 2.23694f;
@@ -5062,7 +5202,16 @@ int hostTunnel(HostContext& hc) {
                     device->drawHudQuad(frame, x0 + i * (lw + gp), y0, lw, lh, c4);
                 }
             }
+            } // driving cluster part 2 (MPH / gear / shift lights)
             {   // ---- MINIMAP v2 (owner: bigger, WITH roads and water) -----
+                // Centred on WHOEVER THE PLAYER IS — on foot (and at 300 mph
+                // on the jetpack) the old car-centred map showed the parking
+                // spot, not the player.
+                float mmPx = vp[0], mmPz = vp[2];
+                if (!driving && footSpawned) {
+                    const x3::phys::Vec3 ft = onFoot.feet();
+                    mmPx = ft.x; mmPz = ft.z;
+                }
                 const float mmR   = 0.16f * fh;               // half-size, px
                 const float mmCx  = fw - mmR - 16.0f;
                 const float mmCy  = mmR + 52.0f;
@@ -5094,30 +5243,39 @@ int hostTunnel(HostContext& hc) {
                     const x3::game::WorldRiverNode* rn = x3::game::worldRiverNodes(nR);
                     const float wcol[4] = { 0.25f, 0.55f, 0.95f, 0.80f };
                     for (uint32_t i2 = 0; rn && i2 + 1 < nR; ++i2)
-                        mmStampLine(rn[i2].x - vp[0],   rn[i2].z - vp[2],
-                                    rn[i2+1].x - vp[0], rn[i2+1].z - vp[2],
+                        mmStampLine(rn[i2].x - mmPx,   rn[i2].z - mmPz,
+                                    rn[i2+1].x - mmPx, rn[i2+1].z - mmPz,
                                     5.0f, wcol, false);
                 }
                 const float roadc[4] = { 0.95f, 0.96f, 0.99f, 0.92f };
                 for (const auto& o : mapRoutes) {
                     const size_t n = std::min(o.x.size(), o.z.size());
                     for (size_t i2 = 0; i2 + 1 < n; ++i2) {
-                        const float ax = o.x[i2] - vp[0],    az = o.z[i2] - vp[2];
-                        const float bx2 = o.x[i2+1] - vp[0], bz2 = o.z[i2+1] - vp[2];
+                        const float ax = o.x[i2] - mmPx,    az = o.z[i2] - mmPz;
+                        const float bx2 = o.x[i2+1] - mmPx, bz2 = o.z[i2+1] - mmPz;
                         if ((ax*ax + az*az > mmRange*mmRange) &&
                             (bx2*bx2 + bz2*bz2 > mmRange*mmRange)) continue;
                         mmStampLine(ax, az, bx2, bz2, 3.6f, roadc, o.dashed);
                     }
                 }
-                // the car: bright blip + heading tick
-                float cq2[4]; phys->getBodyRotation(car.chassis(), cq2);
-                float mfw[3], mup[3];
-                x3::game::vehcam::hullAxes(cq2, mfw, mup);
+                // the player: bright blip + heading tick (car heading while
+                // driving, Jake's facing on foot).
+                float mhx = 0.0f, mhz = 0.0f;
+                if (driving && carBuilt) {
+                    float cq2[4]; phys->getBodyRotation(car.chassis(), cq2);
+                    float mfw[3], mup[3];
+                    x3::game::vehcam::hullAxes(cq2, mfw, mup);
+                    mhx = mfw[0]; mhz = mfw[2];
+                } else {
+                    // Module yaw: 0 faces -Z (AXES LAW) -> planar heading.
+                    mhx = -std::sin(jake.yaw()); mhz = -std::cos(jake.yaw());
+                }
                 const float blip[4] = { 1.0f, 0.35f, 0.25f, 1.0f };
                 device->drawHudQuad(frame, mmCx - 3.5f, mmCy - 3.5f, 7.0f, 7.0f, blip);
-                device->drawHudQuad(frame, mmCx + mfw[0] * 11.0f - 2.0f,
-                                    mmCy + mfw[2] * 11.0f - 2.0f, 4.0f, 4.0f, blip);
+                device->drawHudQuad(frame, mmCx + mhx * 11.0f - 2.0f,
+                                    mmCy + mhz * 11.0f - 2.0f, 4.0f, 4.0f, blip);
             }
+            if (driving && carBuilt) {
             {   // Key hints on the glass. A binding nobody can see does not
                 // exist: T toggled traction control for a whole session while
                 // the only mention of it went to a log file.
@@ -5142,6 +5300,25 @@ int hostTunnel(HostContext& hc) {
                 const char* t = car.climbMode() ? "CLIMB" : (tcOn ? "TC" : "TC OFF");
                 device->drawHudText(frame, t, gcx - (float)std::strlen(t) * px * 0.5f,
                                     gcy - R * 1.30f, px, c4);
+            }
+            } // driving cluster part 3 (key hints + TC line)
+            // ---- JET READOUT — the observation HUD. On foot with the pack
+            // burning, the two numbers the owner is flying by: airspeed (the
+            // 300 mph claim, live) and height over the ground directly below.
+            if (!driving && footSpawned && jetpackOn && onFoot.jetFlying()) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                const float agl = ft.y - x3::game::terrainHeightAtWorld(ft.x, ft.z);
+                char jb[64];
+                std::snprintf(jb, sizeof(jb), "JET  %d MPH   ALT %d M",
+                              (int)(onFoot.jetSpeed() * 2.23694f + 0.5f),
+                              (int)(agl + 0.5f));
+                const float px = std::floor(fh * 0.024f);
+                const float tw = (float)std::strlen(jb) * px;
+                const float tx = (fw - tw) * 0.5f, ty = fh * 0.88f;
+                const float sh4[4] = { 0.0f, 0.0f, 0.0f, 0.75f };
+                const float jc4[4] = { 0.62f, 0.88f, 1.0f, 1.0f };
+                device->drawHudText(frame, jb, tx + 1.0f, ty + 1.0f, px, sh4);
+                device->drawHudText(frame, jb, tx, ty, px, jc4);
             }
         }
         // ---- DRIVING-HUD WAYPOINT CHEVRON (map/HUD wiring; M CLOSED) -------

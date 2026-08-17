@@ -148,6 +148,9 @@ add_library(x3app SHARED
     monster.cpp
     anim.cpp
     character_anim.cpp
+    # W-JETPACK: the `fly` command's pack visuals + thrust FX (flight physics
+    # lives in player.cpp, the pose in character_anim.cpp).
+    jetpack.cpp
     thirdperson.cpp
     melee.cpp
     objective.cpp
