@@ -186,7 +186,8 @@ RoadSpec makeValleyRoad(const RiverBridgePlan& p, uint32_t* outGapA, uint32_t* o
     return s;
 }
 
-RiverRoadResult registerRiverRoad() {
+RiverRoadResult registerRiverRoad(const RoadSpec* ringSpec,
+                                  const std::vector<float>* ringRoadY) {
     RiverRoadResult out;
     out.plan = planRiverBridge();
     if (!out.plan.ok) {
@@ -200,7 +201,49 @@ RiverRoadResult registerRiverRoad() {
     g.y0 = g.y1 = out.plan.deckY;   // the deck is LEVEL — no superelevation,
                                     // no grade, exactly as bridges are built
     out.spec.gaps.push_back(g);
+    // HORIZONTAL FLOW, freeway class — same law as every route. The gap goes
+    // on FIRST so the smoother locks the bridge reach (a deck is straight)
+    // and remaps the gap's node indices through the subdivision.
+    out.spec.minTurnRadiusM   = 250.0f;
+    out.spec.maxDeflectionDeg = 3.0f;
+    smoothHorizontalCurves(out.spec);
+    // THE RING LANDINGS — attach both ends to the tour at grade (see .h).
+    if (ringSpec && ringRoadY) {
+        out.ringJctA = attachRoadEndToRoute(out.spec, /*atFront=*/true,
+                                            *ringSpec, *ringRoadY, &out.ringNodeA);
+        out.ringJctB = attachRoadEndToRoute(out.spec, /*atFront=*/false,
+                                            *ringSpec, *ringRoadY, &out.ringNodeB);
+        if (!out.ringJctA.valid || !out.ringJctB.valid)
+            x3::logWarn("valley road: a leg end is not on the tour — landing skipped");
+    }
     out.road = registerRoad(out.spec, &out.roadY);
+    if (out.road.ok && !out.roadY.empty()) {
+        if (out.ringJctA.valid) {
+            out.ringJctA.endY = out.roadY.front();
+            registerRoadJunctionThroat(out.ringJctA.endX, out.ringJctA.endZ,
+                                       out.ringJctA.jx, out.ringJctA.jz,
+                                       out.ringJctA.jy);
+        }
+        if (out.ringJctB.valid) {
+            out.ringJctB.endY = out.roadY.back();
+            registerRoadJunctionThroat(out.ringJctB.endX, out.ringJctB.endZ,
+                                       out.ringJctB.jx, out.ringJctB.jz,
+                                       out.ringJctB.jy);
+        }
+        if (out.ringJctA.valid || out.ringJctB.valid) {
+            char jb[300];
+            std::snprintf(jb, sizeof(jb),
+                "valley road: ring landings at grade — west (%.0f, %.0f) datum "
+                "%.1f (end off %.2f ft), east (%.0f, %.0f) datum %.1f (end off "
+                "%.2f ft), pin deficit %.2f ft",
+                out.ringJctA.jx, out.ringJctA.jz, out.ringJctA.jy,
+                (out.roadY.front() - out.ringJctA.jy) * 3.28084f,
+                out.ringJctB.jx, out.ringJctB.jz, out.ringJctB.jy,
+                (out.roadY.back() - out.ringJctB.jy) * 3.28084f,
+                out.road.pinErrM * 3.28084f);
+            x3::logInfo(jb);
+        }
+    }
 
     char b[300];
     std::snprintf(b, sizeof(b),

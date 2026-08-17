@@ -200,7 +200,12 @@ int hostTunnel(HostContext& hc) {
         const char* e = std::getenv("X3_RIVER_ROAD");
         riverOn = !(e && e[0] == '0');   // DEFAULT ON — X3_RIVER_ROAD=0 to disable
         if (riverOn) {
-            riverRoad = x3::game::registerRiverRoad();
+            // The ring goes along so both leg ends LAND on it at grade —
+            // junction machinery, not stacked pavements (owner: "This is so
+            // bad.. at least swoop curves down to it").
+            riverRoad = x3::game::registerRiverRoad(
+                ringOn ? &ringSpec : nullptr,
+                ringOn ? &ringRoadY : nullptr);
             if (!riverRoad.road.ok) {
                 x3::logError("--world tunnel: river road registration FAILED");
                 riverOn = false;
@@ -733,6 +738,13 @@ int hostTunnel(HostContext& hc) {
         x3::game::buildRoadRibbon(riverRoad.spec, scene, *device, *phys,
                                   &riverRoad.roadY);
         x3::game::buildRiverBridge(riverRoad.plan, scene, *device, *phys);
+        // The two ring landings get the same mouth every other junction has:
+        // ruled twist onto the tour's surface + swooping merge fillets both
+        // ways. Before this, the valley road's ends just stacked on the ring.
+        if (riverRoad.ringJctA.valid)
+            x3::game::buildJunctionMouth(riverRoad.ringJctA, scene, *device, *phys);
+        if (riverRoad.ringJctB.valid)
+            x3::game::buildJunctionMouth(riverRoad.ringJctB, scene, *device, *phys);
     }
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
 

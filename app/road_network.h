@@ -191,6 +191,11 @@ void     clearRoadJunctions();
 uint32_t roadJunctionCount();
 float    distToNearestRoadJunction(float x, float z);   // 1e9 if none noted
 
+// How far back from a main road's centreline a branch's terminal node sits;
+// the junction mouth (ruled twist + the swooping merge fillets) owns this
+// reach. Widened +20 -> +40 for the merges' ~40 m tangent legs.
+constexpr float kJunctionSetbackM = kPavedHalfM + 40.0f;
+
 // Grade the route against the natural height field and register it as chained
 // corridors. Returns what was built; ok == false if the registry is full or the
 // spec is degenerate. If outRoadY is given it receives the graded datum per
@@ -376,10 +381,48 @@ struct RoadJunction {
     float endX = 0.0f, endZ = 0.0f, endY = 0.0f;  // branch ribbon's terminal node + datum
 };
 
-// The mouth patch (asphalt transition + cement flare wings), with collision.
+// The mouth patch (asphalt transition + cement flare wings + the swooping
+// merge fillets both ways), with collision.
 RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
                                     x3::rhi::IRenderDevice& device,
                                     x3::phys::IPhysicsWorld& phys);
+
+// ---------------------------------------------------------------------------
+// ATTACH A ROUTE END TO ANOTHER ROAD, AT GRADE — the machinery every branch
+// shares, exported for routes authored outside this module (the valley road's
+// leg tables END on the inner tour, and until this existed they just... did:
+// two independently graded pavements stacked at the meeting point, sheer
+// skirt face between the decks, both roads' lane paint crisscrossing one
+// surface — the owner's screenshot, verbatim: "This is so bad.. at least
+// swoop curves down to it").
+//
+// Where routes MEET at different grades the answer is an AT-GRADE junction:
+// this finds the nearest main-road node to the given end, RETREATS the
+// terminal node to the junction setback along the route's own last leg, and
+// pins its datum to the main road's graded datum — the grade relaxation and
+// the portal-ramp ceiling then bring the approach down (or up) the swooping
+// way, at <= maxGrade with the vertical-curve K held. Call AFTER any
+// horizontal smoothing and BEFORE registerRoad (it edits the spec); after a
+// successful registerRoad, set .endY from the graded datum, call
+// registerRoadJunctionThroat() for the box + exclusion notes, and hand the
+// returned frame to buildJunctionMouth(). Returns valid=false when the end
+// is nowhere near the main road (> 120 m).
+//
+// (A STRUCTURAL grade split — one route bridging over another — is different
+// machinery: a span gap over the lower road plus RAMP branches built from
+// exactly this attachment. No route in the network crosses another mid-line
+// today — gate R2 proves it stays that way unless authored deliberately.)
+// ---------------------------------------------------------------------------
+RoadJunction attachRoadEndToRoute(RoadSpec& s, bool atFront,
+                                  const RoadSpec& mainSpec,
+                                  const std::vector<float>& mainRoadY,
+                                  uint32_t* outMainNode = nullptr);
+
+// The junction-throat cut (2-node corridor across the mouth) + the exclusion
+// notes that keep barriers away and the skirt feathered. Same call the
+// in-module junctions make.
+void registerRoadJunctionThroat(float endX, float endZ,
+                                float jx, float jz, float datumY);
 
 // ---------------------------------------------------------------------------
 // THE SPAWN CONNECTOR — the road from the spawn corridor's far end (past the
