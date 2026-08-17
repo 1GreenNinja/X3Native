@@ -165,7 +165,6 @@ namespace {
 constexpr float kPanelCol[4] = { 0.05f, 0.06f, 0.08f, 0.92f };
 constexpr float kTitleCol[4] = { 0.40f, 0.88f, 1.0f, 1.0f };
 constexpr float kHintCol[4]  = { 0.55f, 0.58f, 0.64f, 1.0f };
-constexpr float kDimCol[4]   = { 0.0f, 0.0f, 0.0f, 0.55f };
 constexpr float kNoteCol[4]  = { 0.72f, 0.86f, 0.94f, 1.0f };
 } // namespace
 
@@ -187,40 +186,34 @@ void WorldGameMenu::draw(const x3::rhi::FrameContext& frame, const x3::ui::UiInp
     m_ui.end();
 }
 
-void WorldGameMenu::drawMenu(float w, float h) {
-    m_ui.quad(0, 0, w, h, kDimCol);
+void WorldGameMenu::drawMenu(float, float) {
+    // THE GAME'S OWN PAUSE MENU, REUSED WHOLE (x3::ui::PauseMenu — the screen
+    // --ui-demo / --screenshot-menu captures). This host does not author a
+    // second one; it only says which rows it can actually service. There is no
+    // save system, no TRAVEL and no main menu to quit to in a --world host, so
+    // those rows do not draw (NO_SLOP rule 6), and the three live-tuning rows
+    // this world DOES have take their place.
+    x3::ui::PauseRows rows{};
+    rows.travel = rows.save = rows.load = rows.quitToMenu = false;
+    rows.weatherPanel = rows.lightingPanel = true;
+    rows.worldMap = rows.console = rows.quitToDesktop = true;
+    rows.hint = "ESC resumes  -  the sim is stopped  -  F4/F5 panels tune LIVE while you drive";
 
-    const float pw = std::min(440.0f, w * 0.55f);
-    const float bh = std::max(38.0f, h * 0.062f);
-    const float gap = bh * 0.24f;
-    const float titlePx = std::max(24.0f, pw / 14.0f);
-    const int   rows = 7;
-    const float ph = titlePx + 22.0f + rows * bh + (rows - 1) * gap + 74.0f;
-    const float px = w * 0.5f - pw * 0.5f;
-    const float py = h * 0.5f - ph * 0.5f;
+    x3::ui::PauseAction act = x3::ui::PauseAction::None;
+    const x3::ui::GameState next = m_pauseScreen.update(m_ui, act, rows);
 
-    m_ui.panel(px, py, pw, ph, kPanelCol);
-    m_ui.textCentered("PAUSED", w * 0.5f, py + 22.0f, titlePx, kTitleCol,
-                      x3::ui::UiContext::FontRole::Title);
-
-    const float bw = pw - 48.0f;
-    float by = py + 22.0f + titlePx + 22.0f;
-    auto row = [&](const char* label) {
-        const bool hit = m_ui.button(label, px + 24.0f, by, bw, bh);
-        by += bh + gap;
-        return hit;
-    };
-
-    if (row("RESUME"))                 m_screen = Screen::None;
-    if (row("WEATHER PANEL   (F4)"))   m_screen = Screen::Weather;
-    if (row("LIGHTING PANEL  (F5)"))   m_screen = Screen::Lighting;
-    if (row("SETTINGS")) { seedSettingsFromCVars(); m_screen = Screen::Settings; }
-    if (row("WORLD MAP       (M)"))  { m_wantMap = true;     m_screen = Screen::None; }
-    if (row("CONSOLE         (~)"))  { m_wantConsole = true; m_screen = Screen::None; }
-    if (row("QUIT TO DESKTOP"))        m_wantQuit = true;
-
-    m_ui.textCentered("ESC resumes  -  the sim is stopped  -  F4/F5 panels tune LIVE while you drive",
-                      w * 0.5f, by + 8.0f, std::max(11.0f, h * 0.015f), kHintCol);
+    if (next == x3::ui::GameState::Playing)  m_screen = Screen::None;
+    if (next == x3::ui::GameState::Settings) { seedSettingsFromCVars(); m_screen = Screen::Settings; }
+    switch (act) {
+        case x3::ui::PauseAction::WeatherPanel:  m_screen = Screen::Weather;  break;
+        case x3::ui::PauseAction::LightingPanel: m_screen = Screen::Lighting; break;
+        // These three hand the host a one-frame request and close the menu —
+        // the map and the console are the host's surfaces, not the menu's.
+        case x3::ui::PauseAction::WorldMap:      m_wantMap = true;     m_screen = Screen::None; break;
+        case x3::ui::PauseAction::Console:       m_wantConsole = true; m_screen = Screen::None; break;
+        case x3::ui::PauseAction::QuitToDesktop: m_wantQuit = true;    break;
+        default: break;
+    }
 }
 
 void WorldGameMenu::seedSettingsFromCVars() {

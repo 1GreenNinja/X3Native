@@ -676,7 +676,7 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
 // ===========================================================================
 // PauseMenu
 // ===========================================================================
-GameState PauseMenu::update(UiContext& ui, PauseAction& outAction, bool showEditor) {
+GameState PauseMenu::update(UiContext& ui, PauseAction& outAction, const PauseRows& rows) {
     outAction = PauseAction::None;
     const float w = (float)ui.screenW();
     const float h = (float)ui.screenH();
@@ -687,45 +687,73 @@ GameState PauseMenu::update(UiContext& ui, PauseAction& outAction, bool showEdit
     const float dim[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
     ui.quad(0, 0, w, h, dim);
 
-    // Panel (RESUME / TRAVEL / SAVE / LOAD / SETTINGS / QUIT = 6 buttons).
     const float pw = std::min(420.0f, w * 0.6f);
-    const float ph = std::min(560.0f, h * 0.86f);
     const float px = cx - pw * 0.5f;
-    const float py = h * 0.5f - ph * 0.5f;
+    const float titlePx = std::max(24.0f, pw / 14.0f);
+
+    // PANEL HEIGHT, PINNED TO THE OLD NUMBER. The screen used to be a fixed
+    // 560 px box holding the campaign's six rows, with the row height derived
+    // FROM the box — so a seventh row overflowed it. Row height and gap still
+    // come off that reference box (they must not move), but the box now grows
+    // by exactly one row pitch per extra row. For the 6-row campaign set the
+    // arithmetic below cancels back to `refPh` EXACTLY, so the campaign pause
+    // screen is pixel-identical to what --screenshot-menu has always captured.
+    const float refPh = std::min(560.0f, h * 0.86f);
+    const float bh    = std::max(38.0f, refPh * 0.115f);
+    const float gap   = bh * 0.26f;
+    const float headH = 24.0f + titlePx + 22.0f;
+    const float footH = refPh - (headH + 6.0f * bh + 5.0f * gap);  // today's leftover
+    const int   n     = std::max(1, rows.count());
+    // A hint line needs its own band under the last row, or it prints across
+    // the panel's bottom edge. The campaign passes no hint, so its panel keeps
+    // exactly the leftover above and does not move.
+    const float hintPx  = std::max(11.0f, h * 0.015f);
+    const float hintBand = rows.hint ? hintPx + 14.0f : 0.0f;
+    const float ph    = headH + (float)n * bh + (float)(n - 1) * gap + footH + hintBand;
+    const float py    = h * 0.5f - ph * 0.5f;
     ui.panel(px, py, pw, ph, kColPanel);
 
-    const float titlePx = std::max(24.0f, pw / 14.0f);
     const float titleCol[4] = { 0.40f, 0.88f, 1.0f, 1.0f };
     ui.textCentered("PAUSED", cx, py + 24.0f, titlePx, titleCol, UiContext::FontRole::Title);
 
     const float bw = pw - 48.0f;
-    const float bh = std::max(38.0f, ph * 0.115f);
-    const float gap = bh * 0.26f;
-    float by = py + 24.0f + titlePx + 22.0f;
-
+    float by = py + headH;
     GameState next = GameState::Paused;
-    if (ui.button("RESUME", px + 24.0f, by, bw, bh))        next = GameState::Playing;
-    by += bh + gap;
+    // ONE fixed row order. The campaign subset of it is byte-for-byte the
+    // order the screen has always drawn; the world-host rows slot in where
+    // they belong rather than being a second menu.
+    auto row = [&](bool show, const char* label) {
+        if (!show) return false;
+        const bool hit = ui.button(label, px + 24.0f, by, bw, bh);
+        by += bh + gap;
+        return hit;
+    };
+
+    if (row(rows.resume,        "RESUME"))              next = GameState::Playing;
+    // The live tuning surfaces (tunnel/world hosts). They close the menu and
+    // resume the sim — the panels are meant to be used WHILE you drive.
+    if (row(rows.weatherPanel,  "WEATHER PANEL   (F4)")) outAction = PauseAction::WeatherPanel;
+    if (row(rows.lightingPanel, "LIGHTING PANEL  (F5)")) outAction = PauseAction::LightingPanel;
     // TRAVEL: the world / place selection menu — every place in the game, and an
     // honest word about how each one is reached. (Also on F6 in the canon loop.)
-    if (ui.button("TRAVEL / WORLDS", px + 24.0f, by, bw, bh)) outAction = PauseAction::Worlds;
-    by += bh + gap;
-    if (ui.button("SAVE CHECKPOINT", px + 24.0f, by, bw, bh)) outAction = PauseAction::Save;
-    by += bh + gap;
-    if (ui.button("LOAD CHECKPOINT", px + 24.0f, by, bw, bh)) outAction = PauseAction::Load;
-    by += bh + gap;
-    if (ui.button("SETTINGS", px + 24.0f, by, bw, bh))      next = GameState::Settings;
-    by += bh + gap;
+    if (row(rows.travel,        "TRAVEL / WORLDS"))     outAction = PauseAction::Worlds;
+    if (row(rows.save,          "SAVE CHECKPOINT"))     outAction = PauseAction::Save;
+    if (row(rows.load,          "LOAD CHECKPOINT"))     outAction = PauseAction::Load;
+    if (row(rows.settings,      "SETTINGS"))            next = GameState::Settings;
+    if (row(rows.worldMap,      "WORLD MAP       (M)")) outAction = PauseAction::WorldMap;
+    if (row(rows.console,       "CONSOLE         (~)")) outAction = PauseAction::Console;
     // LEVEL EDITOR — DEV ONLY (cvar ui_editor). Most players never need to edit a level,
     // so the row simply does not exist for them; and the editor's ImGui context is not
     // even created until this is picked (the host lazy-inits it), so a normal run pays
     // nothing for a tool it never opens.
-    if (showEditor) {
-        if (ui.button("LEVEL EDITOR", px + 24.0f, by, bw, bh)) outAction = PauseAction::Editor;
-        by += bh + gap;
-    }
-    if (ui.button("QUIT TO MENU", px + 24.0f, by, bw, bh))  next = GameState::MainMenu;
+    if (row(rows.editor,        "LEVEL EDITOR"))        outAction = PauseAction::Editor;
+    if (row(rows.quitToMenu,    "QUIT TO MENU"))        next = GameState::MainMenu;
+    if (row(rows.quitToDesktop, "QUIT TO DESKTOP"))     outAction = PauseAction::QuitToDesktop;
 
+    if (rows.hint) {
+        const float hintCol[4] = { 0.55f, 0.58f, 0.64f, 1.0f };
+        ui.textCentered(rows.hint, cx, by - gap + 12.0f, hintPx, hintCol);
+    }
     return next;
 }
 

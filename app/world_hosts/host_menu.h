@@ -149,6 +149,10 @@ private:
     x3::con::IConsole*      m_con = nullptr;
     x3::rhi::IRenderDevice* m_dev = nullptr;
     x3::ui::UiContext       m_ui;
+    // BOTH menu screens are the GAME'S OWN, reused whole — not copies. The
+    // pause screen is x3::ui::PauseMenu (what --screenshot-menu captures) with
+    // a world-host PauseRows set; the settings screen is x3::ui::SettingsMenu.
+    x3::ui::PauseMenu       m_pauseScreen;
     x3::ui::SettingsMenu    m_settingsScreen;
     x3::ui::SettingsModel   m_model{};
     // The device has no vsync GETTER, so the menu tracks what it last set

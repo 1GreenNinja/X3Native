@@ -420,18 +420,64 @@ public:
 // Worlds = the player picked TRAVEL / WORLD SELECT: the host opens the world/place
 // selection menu (app/world_menu.*). The pause screen is where it belongs — it is the
 // game's own menu, not a dev console.
-enum class PauseAction : uint8_t { None = 0, Save = 1, Load = 2, Worlds = 3, Editor = 4 };
+enum class PauseAction : uint8_t {
+    None = 0, Save = 1, Load = 2, Worlds = 3, Editor = 4,
+    // ---- rows only a --world host offers (see PauseRows) ----
+    WeatherPanel = 5, LightingPanel = 6, WorldMap = 7, Console = 8, QuitToDesktop = 9
+};
+
+// WHICH ROWS THIS PAUSE SCREEN OFFERS.
+//
+// There is ONE pause menu in this game. Before this struct existed the tunnel
+// host had grown a second `PAUSED` panel with its own copy of the chrome maths
+// (panel width, title size, row height, gap, dim quad) — two implementations of
+// one screen, which is precisely the drift NO_SLOP rule 4 is about. The rows a
+// host can't honour are the reason a copy gets made, so the rows are data now.
+//
+// Every field defaults to TODAY'S CAMPAIGN SCREEN, so `update(ui, action)` and
+// `update(ui, action, showEditor)` are unchanged — same rows, same geometry, to
+// the pixel (the panel-height formula below is pinned to reproduce the 6-row
+// number exactly). A --world host switches the campaign-only rows off and its
+// own on: there is no save system, no main menu to quit to and no TRAVEL in the
+// tunnel world, and a row wired to nothing is a lie (NO_SLOP rule 6).
+struct PauseRows {
+    bool resume        = true;
+    bool travel        = true;   // TRAVEL / WORLDS   -> PauseAction::Worlds
+    bool save          = true;   // SAVE CHECKPOINT   -> PauseAction::Save
+    bool load          = true;   // LOAD CHECKPOINT   -> PauseAction::Load
+    bool settings      = true;   // SETTINGS          -> GameState::Settings
+    bool editor        = false;  // LEVEL EDITOR      -> PauseAction::Editor (dev, cvar ui_editor)
+    bool quitToMenu    = true;   // QUIT TO MENU      -> GameState::MainMenu
+    // ---- world-host rows. All default OFF: the campaign screen never grows a
+    // row it cannot service, and no existing capture moves.
+    bool weatherPanel  = false;  // WEATHER PANEL (F4)  -> PauseAction::WeatherPanel
+    bool lightingPanel = false;  // LIGHTING PANEL (F5) -> PauseAction::LightingPanel
+    bool worldMap      = false;  // WORLD MAP (M)       -> PauseAction::WorldMap
+    bool console       = false;  // CONSOLE (~)         -> PauseAction::Console
+    bool quitToDesktop = false;  // QUIT TO DESKTOP     -> PauseAction::QuitToDesktop
+    // Optional single hint line under the rows (null = none, as the campaign has).
+    const char* hint   = nullptr;
+    // Rows actually drawn, in the fixed order update() emits them.
+    int count() const {
+        return (int)resume + travel + save + load + settings + editor + quitToMenu
+             + weatherPanel + lightingPanel + worldMap + console + quitToDesktop;
+    }
+};
 
 // The pause overlay (drawn over a frozen, dimmed scene).
 class PauseMenu {
 public:
     // Returns: Paused (stay), Playing (RESUME), Settings (SETTINGS), MainMenu
-    // (QUIT TO MENU). `outAction` is set to Save/Load on the frame the SAVE/LOAD
-    // button is activated (the returned state stays Paused in that case).
-    // `showEditor` draws the LEVEL EDITOR row. It is OFF by default and the host only
-    // turns it on for a dev build (cvar ui_editor): most players never need to edit a
-    // level, and a shipping pause menu should not offer them a level editor.
-    GameState update(UiContext& ui, PauseAction& outAction, bool showEditor = false);
+    // (QUIT TO MENU). `outAction` is set on the frame an action row is
+    // activated (the returned state stays Paused in that case).
+    GameState update(UiContext& ui, PauseAction& outAction, const PauseRows& rows);
+    // Campaign convenience: today's row set, with the dev LEVEL EDITOR row
+    // optional (cvar ui_editor). Most players never need to edit a level, and a
+    // shipping pause menu should not offer them a level editor.
+    GameState update(UiContext& ui, PauseAction& outAction, bool showEditor = false) {
+        PauseRows r{}; r.editor = showEditor;
+        return update(ui, outAction, r);
+    }
 };
 
 // True the frame the user picked LEVEL EDITOR in the pause menu.
