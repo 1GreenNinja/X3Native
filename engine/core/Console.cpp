@@ -64,6 +64,11 @@ public:
         auto args = tokenize(line);
         if (args.empty()) return;
         std::string head = args[0];
+        // THE ERASE THAT ATE THE CONSOLE (see IConsole.h, THE ARG CONVENTION):
+        // the command name is stripped HERE — handlers get arguments only,
+        // starting at args[0]. Two days of dead numeric commands came from
+        // handlers assuming argv[0]-is-the-name. Change this line and you
+        // change every handler in the game.
         args.erase(args.begin());
 
         auto ci = m_cmds.find(head);

@@ -72,16 +72,17 @@ public:
     // All four wheels touching ground? (drive self-test assert)
     bool allWheelsInContact() const;
 
-    // THE CONTACT LAW ("no tires can EVER be underground") — see postStep.
-    // OPT-IN, because it measures burial against the PROCEDURAL height field,
-    // which answers everywhere: in a world whose ground is a flat collider
-    // rather than the terrain (the headless drive/skidpad harnesses, a shop
-    // floor, the showroom slab) the field reads the car as metres buried while
-    // it sits perfectly still, and the law lifts it every frame. Hosts that
-    // genuinely drive on streamed terrain switch it on.
-    void setTerrainContactLaw(bool on) { m_terrainContactLaw = on; }
-    bool terrainContactLaw() const { return m_terrainContactLaw; }
-
+    // THE CONTACT LAW lives further down — see setTerrainContactLaw below.
+    //
+    // BOTH LANES FOUND THIS BUG AND BOTH WROTE THIS FUNCTION, under the same
+    // name, within a day. They differed only in DEFAULT: this lane made it
+    // opt-in (off, terrain hosts enable), the vehicle-feel lane made it on
+    // everywhere with the slab harnesses opting out. Theirs is kept, because a
+    // safety property you can forget to switch on is not much of one — and the
+    // failure it prevents (tires under the world) is worse than the failure it
+    // can cause (a slab harness that must say so). The duplicate definition
+    // this merge produced would not have compiled, which is the one mercy.
+    //
     // Feed driver input + advance one step. Call setInput()+preStep() BEFORE the
     // host's physics->step(), then postStep() AFTER. drive() is a convenience that
     // does setInput()+preStep() (host steps next).
@@ -136,6 +137,18 @@ public:
     // Traction control (default ON — see setInput). Off = full burnout mode.
     void  setTractionControl(bool on) { m_tcEnabled = on; }
     bool  tractionControl() const { return m_tcEnabled; }
+
+    // THE CONTACT LAW toggle (NO_SLOP rule 11 — default ON, every WORLD keeps
+    // it on). Exists ONLY for the headless self-tests, which drive on a flat
+    // slab world that is NOT the streamed terrain: postStep's lifter samples
+    // terrainHeightAtWorld() — the procedural WORLD field — and after the
+    // W-MOUNTAIN merge that field rises ~37 m a few hundred meters from the
+    // test origin, so the slab-test car was hoisted up a PHANTOM mountainside
+    // at 140 mph (chassis.y = 37 m on a flat slab; broke the wheels-contact /
+    // ride-height / skidpad sections, 2026-08-16). Tests on non-terrain worlds
+    // call setTerrainContactLaw(false); every real host leaves it on.
+    void  setTerrainContactLaw(bool on) { m_contactLaw = on; }
+    bool  terrainContactLaw() const { return m_contactLaw; }
 
     // ---- CLIMB MODE: crawl traction for steep terrain -----------------------
     // The car is already AWD; what stops it on a mountainside is wheelspin —
@@ -260,6 +273,7 @@ private:
     SteerParams m_steerP;                // speed-sensitive steering map (see steerParams)
     float m_steerNow = 0.0f;             // slewed steering actually at the wheels
     bool m_tcEnabled = false;            // TC off — grip 10 hooks up and the box shifts; T toggles
+    bool m_contactLaw = true;            // terrain contact-law lifter (see setTerrainContactLaw)
     bool m_tcCutting = false;            // TC hysteresis latch — stays cut until slip falls (see setInput)
     float m_tcTrim = 1.0f;               // smoothed TC trim (one-pole, see setInput)
     bool m_climbMode = false;            // crawl traction (see setClimbMode)
@@ -304,7 +318,6 @@ private:
 
     // ---- Hero-car GLB skin (optional; graybox fallback when absent) ----
     bool m_skinned = false;
-    bool m_terrainContactLaw = false;   // opt-in; see setTerrainContactLaw
     std::unique_ptr<x3::asset::IAssetSource> m_skinSrc;
     std::unique_ptr<x3::asset::IModelLoader> m_skinLoader;
     x3::asset::Model m_skinModel;

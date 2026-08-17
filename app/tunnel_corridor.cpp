@@ -655,17 +655,29 @@ void deriveRoute(const RouteSeed& seed, TunnelRoute& route, TerrainCorridor& c) 
     // the roadway. Monotone (depths only rise), so it converges — in practice in
     // one or two passes — and it is deterministic, which is what makes the
     // result survive a regenerated height field with no hand-placed fudge.
+    // Walk DENSER than the self-check that grades it (0.5 m stations, 13 lats
+    // over ±road width there), and demand a small negative margin. The old walk
+    // (1.0 m / 9 lats / worst <= 0.0) proved "clear" only on ITS lattice: the
+    // North Massif Tunnel shipped a -0.07 m hairline at s=156 that the
+    // W-MOUNTAIN scale-varied bluff strata flipped to +0.08 m — 8 cm of rock
+    // lip standing on the roadway BETWEEN the walk's samples, found by the
+    // check and never by the guarantee. 0.5 m x 19 lats is a superset of the
+    // check's lattice (plus the 0.9 m shoulder margin), and the -0.05 m
+    // epsilon means a between-samples bump needs a >5 cm crest in <1 m of
+    // ground — not something the km-scale fbm fields produce — before it can
+    // stand on the road again.
+    constexpr float kCloseEps = 0.05f;   // converge to 5 cm BELOW the floor
     for (int pass = 0; pass < 8; ++pass) {
         std::vector<float> add((size_t)kRouteNodes, 0.0f);
         float worst = -1e9f;
-        for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 1.0f) {
+        for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 0.5f) {
             const float floorWant = route.roadYAt(s) - kFloorClear;
-            for (int k = -4; k <= 4; ++k) {
-                const float lat = (float)k * (kTcRoadHalfWidth + 0.9f) / 4.0f;
+            for (int k = -9; k <= 9; ++k) {
+                const float lat = (float)k * (kTcRoadHalfWidth + 0.9f) / 9.0f;
                 float qx = 0.0f, qz = 0.0f;
                 route.worldAt(s, lat, qx, qz);
                 const float h = tunnelNaturalHeightAt(qx, qz) - terrainCorridorDepthAt(c, qx, qz);
-                const float over = h - floorWant;
+                const float over = h - floorWant + kCloseEps;
                 if (over > worst) worst = over;
                 if (over <= 0.0f) continue;
                 const int i0 = clampi((int)std::floor(s / ds), 0, kRouteNodes - 1);
@@ -828,9 +840,10 @@ void unregisterTunnelLightSource(const TunnelCorridorWorld* t) {
     v.erase(std::remove(v.begin(), v.end(), t), v.end());
 }
 
-uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3]) {
+uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3],
+                            const x3::rhi::PointLight* extra, uint32_t extraCount) {
     const auto& v = liveTunnels();
-    if (v.empty()) return 0;
+    if (v.empty() && extraCount == 0) return 0;
 
     // Gather with the squared distance to the camera. Squared: the ordering is
     // identical and it avoids a sqrt per light per frame.
@@ -845,19 +858,23 @@ uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3
             pool.push_back({ dx*dx + dy*dy + dz*dz, l });
         }
     }
-    if (pool.empty()) return 0;
+    if (pool.empty() && extraCount == 0) return 0;
 
     const uint32_t k = (uint32_t)std::min<size_t>(pool.size(), kMaxTunnelLightsInFlight);
     // partial_sort, not sort: we need the nearest K in order, not all of them.
-    std::partial_sort(pool.begin(), pool.begin() + k, pool.end(),
-                      [](const Scored& a, const Scored& b) { return a.d2 < b.d2; });
+    if (k > 0)
+        std::partial_sort(pool.begin(), pool.begin() + k, pool.end(),
+                          [](const Scored& a, const Scored& b) { return a.d2 < b.d2; });
 
     static std::vector<x3::rhi::PointLight> out;
     out.clear();
-    out.reserve(k);
+    out.reserve(k + extraCount);
+    // Transients FIRST (weapons task): a muzzle flash must survive even when
+    // the tunnel pool alone already fills the K budget.
+    for (uint32_t i = 0; i < extraCount; ++i) out.push_back(extra[i]);
     for (uint32_t i = 0; i < k; ++i) out.push_back(pool[i].l);
-    device.setPointLights(out.data(), k);
-    return k;
+    device.setPointLights(out.data(), (uint32_t)out.size());
+    return (uint32_t)out.size();
 }
 
 const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {
@@ -1207,13 +1224,19 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // which is far more than depth precision needs at this range. Dropping
         // it to a hair leaves the markings proud of the slab and takes the step
         // down to ~0.74 ft — a kerb, which is what a road edge should look like.
-        // 0.02 -> 0.07 (Tim's seam screenshot): adjacent terrain tiles can
-        // disagree about the carve by a few cm at their border, and at 0.02
-        // proud the loser knifes grass up through the pavement in a diagonal
-        // line. 7 cm is invisible at driving height and above any measured
-        // border disagreement. The REAL fix is border-consistent carving in
-        // the streamer (tile-seam class, docs/ENGINE_GOTCHAS.md).
-        constexpr float kSlabProud = 0.07f;
+        // 0.02 -> 0.07 (Tim's seam screenshot) -> BACK TO 0.02. The 0.07 lift
+        // was masking, and it never masked the real thing: the "few-cm border
+        // disagreement" theory was wrong. The strip was the CORRIDOR x TILE-LOD
+        // WEDGE — a Half/Quarter terrain tile interpolating 2/4 m chords across
+        // the carve's smoothstep shoulder, standing METRES above the carved
+        // surface (measured 5.96 m of coarse-over-Full excess at the spawn
+        // cutting; no slab lift can outrun that). The root fix is in
+        // buildTileMeshAbs: cells inside a corridor's influence mesh at FULL
+        // resolution at every LOD, so the coarse surface is bit-identical to
+        // Full there (--test-terraincorridor C7, --test-tunnelmouth M7,
+        // --test-roadnetwork W1/W1b all gate it). With the wedge dead, 2 cm is
+        // all the slab ever needed — see the 0.14 -> 0.02 story above.
+        constexpr float kSlabProud = 0.02f;
         MeshBuf mb;
         const float up[3] = { 0.0f, 1.0f, 0.0f };
         auto P = [&](const Frame& f, float r, float u, float out[3]) {
@@ -1238,21 +1261,51 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             out[2] = f.p[2] + right[2]*r;
         };
         const float hw = kTcRoadHalfWidth;
+        // CONCRETE APRONS (Tim, reading 01_approach: "There is no concrete
+        // apron in that shot"). The demo road was the ONLY route without
+        // them — every road_network route carries kApronFt of cement each
+        // side. Width here is budgeted by the CARVE, not the spec: the
+        // corridor's flat floor is kTcCorridorHalfW (10.1 m) and the
+        // pavement takes kTcRoadHalfWidth (7.32), leaving 2.78 m of floor
+        // before the smoothstep shoulder rises — a wider apron would bury
+        // its outer edge in the cut bank. PAIRED with kTcCorridorHalfW
+        // (tunnel_corridor.h): widen the carve and this can grow toward
+        // road_network's 20 ft.
+        constexpr float kApronW    = 2.6f;   // ~8.5 ft of cement each side
+        constexpr float kApronDrop = 0.01f;  // apron 1 cm under the slab lip
+        const float hwA = hw + kApronW;
+        const float apY = kSlabProud - kApronDrop;
+        MeshBuf mbA;                          // cement: aprons + outer skirts
         for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
             const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
-            float aL[3], aR[3], bL[3], bR[3], aLd[3], aRd[3], bLd[3], bRd[3];
-            P(a, -hw, kSlabProud, aL); P(a, hw, kSlabProud, aR);
-            P(b, -hw, kSlabProud, bL); P(b, hw, kSlabProud, bR);
-            PA(a, -hw, edgeBottom(a, -hw), aLd); PA(a, hw, edgeBottom(a, hw), aRd);
-            PA(b, -hw, edgeBottom(b, -hw), bLd); PA(b, hw, edgeBottom(b, hw), bRd);
             const float nU[3] = { 0, 1, 0 };
-            mb.quad(aL, aR, bR, bL, nU, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
             const float nR[3] = {  right[0], 0.0f,  right[2] };
             const float nL[3] = { -right[0], 0.0f, -right[2] };
-            mb.quad(aR, aRd, bRd, bR, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
-            mb.quad(aL, aLd, bLd, bL, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
             const float nD[3] = { 0, -1, 0 };
-            mb.quad(aLd, aRd, bRd, bLd, nD, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
+            // ---- pavement top at +/-hw, with a 1 cm lip face down to the
+            // apron so there is no sliver of daylight at the joint.
+            float aL[3], aR[3], bL[3], bR[3];
+            P(a, -hw, kSlabProud, aL); P(a, hw, kSlabProud, aR);
+            P(b, -hw, kSlabProud, bL); P(b, hw, kSlabProud, bR);
+            mb.quad(aL, aR, bR, bL, nU, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
+            float aLl[3], aRl[3], bLl[3], bRl[3];
+            P(a, -hw, apY, aLl); P(a, hw, apY, aRl);
+            P(b, -hw, apY, bLl); P(b, hw, apY, bRl);
+            mb.quad(aR, aRl, bRl, bR, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            mb.quad(aL, aLl, bLl, bL, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            // ---- cement apron tops, hw -> hwA each side.
+            float aRo[3], bRo[3], aLo[3], bLo[3];
+            P(a,  hwA, apY, aRo); P(b,  hwA, apY, bRo);
+            P(a, -hwA, apY, aLo); P(b, -hwA, apY, bLo);
+            mbA.quad(aRl, aRo, bRo, bRl, nU, 0.0f, 1.0f, a.s * 0.06f, b.s * 0.06f);
+            mbA.quad(aLo, aLl, bLl, bLo, nU, 0.0f, 1.0f, a.s * 0.06f, b.s * 0.06f);
+            // ---- outer skirts + slab bottom now hang from the APRON edge.
+            float aLd[3], aRd[3], bLd[3], bRd[3];
+            PA(a, -hwA, edgeBottom(a, -hwA), aLd); PA(a, hwA, edgeBottom(a, hwA), aRd);
+            PA(b, -hwA, edgeBottom(b, -hwA), bLd); PA(b, hwA, edgeBottom(b, hwA), bRd);
+            mbA.quad(aRo, aRd, bRd, bRo, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            mbA.quad(aLo, aLd, bLd, bLo, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            mbA.quad(aLd, aRd, bRd, bLd, nD, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
         }
         // REAL ASPHALT when the library has it, the procedural checker when it
         // does not — same shape as the bore/portal sets above. The road is the
@@ -1262,6 +1315,14 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         if (roadSet.ok) { m.alb = roadSet.albedo; m.mr = roadSet.mr; m.nrm = roadSet.normal; }
         else            { m.alb = asphaltTex;     m.mr = roughMR; }
         upload(mb, m, /*collide*/true);
+        // Aprons in the SAME cement as road_network's (mw_concrete_panels_a,
+        // already loaded as portalSet) with the same warm tint, so the demo
+        // road and the network routes read as one build standard.
+        Material mA;
+        if (portalSet.ok) { mA.alb = portalSet.albedo; mA.mr = portalSet.mr; mA.nrm = portalSet.normal; }
+        else              { mA.alb = concreteTex;      mA.mr = wallMR; }
+        mA.tint[0] = 0.86f; mA.tint[1] = 0.85f; mA.tint[2] = 0.82f;
+        upload(mbA, mA, /*collide*/true);
 
         // ---- Lane markings. BL §3.4 as DATA: solid white edge lines at
         // +/-(w/2 - 0.5) every segment, dashed centre on a 5 m grid (dash 60 %).
@@ -3053,10 +3114,24 @@ void TunnelCorridorWorld::showcaseCamera(const TunnelRoute& route, int which, fl
         // Framed so the lid can actually be JUDGED: 190 m up and 300 m back put
         // the whole ridge inside a few pixels and showed nothing but streamer
         // LOD. 85 m up, 210 m back, pitched into the hill.
+        //
+        // TERRAIN-CLAMPED (W-MOUNTAIN 2026-08-16): "+85 m over the road" was a
+        // constant tuned against the 162 m ridge; the owner's raise put the
+        // flank at this station well above it and the frame was a rock-texture
+        // close-up FROM INSIDE THE HILL (shots_mountain/04_saddle, first
+        // pass). The eye height now rides the measured ground at the camera's
+        // own footprint, and the pitch is re-aimed at the lid over mid-bore
+        // instead of a canned angle, so the pose composes at ANY massif height.
         const float mid = (route.boreS0 + route.boreS1) * 0.5f;
         float p[3]; route.posAt(std::max(0.0f, mid - 210.0f), p);
         cam[0] = p[0]; cam[1] = p[1] + 85.0f; cam[2] = p[2];
-        cam[3] = yawFwd; cam[4] = -0.30f;
+        const float camGround = terrainHeightAtWorld(cam[0], cam[2]);
+        if (cam[1] < camGround + 30.0f) cam[1] = camGround + 30.0f;
+        float t[3]; route.posAt(mid, t);
+        t[1] = terrainHeightAtWorld(t[0], t[2]) + 10.0f;     // the lid itself
+        const float dx = t[0]-cam[0], dy = t[1]-cam[1], dz = t[2]-cam[2];
+        const float hl = std::sqrt(dx*dx + dz*dz);
+        cam[3] = yawFwd; cam[4] = std::atan2(dy, std::max(1.0f, hl));
         return;
     }
     if (which == 4) {
@@ -3256,6 +3331,25 @@ bool runTunnelMouthSelfTest() {
               "M5 the graded road still respects kTcMaxGrade", d);
     }
 
+    // ---- [diag] THE LARGE MOUNTAIN'S NATURAL SUMMIT (not a gate). The owner
+    // tunes this massif by eye ("taller... bluish dark cliffs.. stepped
+    // bluffs"); this prints the measured summit so a raise lands in the
+    // receipts as a NUMBER (rule 9), not a vibe. Scans the ridge band's bbox
+    // (kRanges tunnel ridge, spine (-753,-740)->(-431,36), outW 240) on the
+    // NATURAL field (corridor delta backed out).
+    {
+        float top = -1e9f, tx = 0.0f, tz = 0.0f;
+        for (float sz = -1000.0f; sz <= 300.0f; sz += 6.0f)
+            for (float sx = -1020.0f; sx <= -170.0f; sx += 6.0f) {
+                const float h = terrainHeightAtWorld(sx, sz) - terrainCorridorDelta(sx, sz);
+                if (h > top) { top = h; tx = sx; tz = sz; }
+            }
+        std::snprintf(d, sizeof(d),
+                      "[diag] Large Mountain natural summit %.1f m (%.0f ft) at (%.0f, %.0f)",
+                      top, top * 3.28084f, tx, tz);
+        x3::logInfo(d);
+    }
+
     // ---- M6: REGENERATION PROOF. Re-derive the whole construction on other
     // hillsides and re-assert M1 on each, entirely off the registry.
     {
@@ -3292,6 +3386,100 @@ bool runTunnelMouthSelfTest() {
             "across all of them %+.3f m", (int)(sizeof(seeds)/sizeof(seeds[0])), seedFails, worstAll);
         check(seedFails == 0 && worstAll <= 0.0f,
               "M6 the construction survives a regenerated terrain", d);
+    }
+
+    // ---- M7: THE TILE-LOD WEDGE, on the REAL spawn stretch. M1 proves the
+    // FIELD is clear; the owner's green strip through the spawn-road pavement
+    // was the MESH — a Half/Quarter tile interpolating 2/4 m chords across the
+    // carve's shoulder and standing decimetres above the carved datum (it
+    // survived kSlabProud 0.07 because no slab lift can outrun a mesh wedge).
+    // Survey every tile the route touches through the REAL mesher at all three
+    // LODs, rasterise the emitted surface triangles over the ROADWAY at 0.5 m,
+    // and require max(terrainMeshY - corridorDatumY) <= -0.02 m — the terrain
+    // mesh strictly BELOW the road datum, at every LOD, everywhere a slab lies.
+    {
+        const TerrainConfig& wcfg = worldTerrainConfig();
+        const float pad = kTcCorridorHalfW + kTcCorridorFall;
+        float bx0 = 1e9f, bx1 = -1e9f, bz0 = 1e9f, bz1 = -1e9f;
+        for (const TunnelStation& n : route.st) {
+            bx0 = std::min(bx0, n.x - pad); bx1 = std::max(bx1, n.x + pad);
+            bz0 = std::min(bz0, n.z - pad); bz1 = std::max(bz1, n.z + pad);
+        }
+        // Datum under (x,z): project onto the spine polyline; off-roadway or
+        // off-route answers "not a road sample".
+        auto datumAt = [&](float x, float z, float& outDatum) {
+            float bestD2 = 1e18f, bestS = 0.0f;
+            for (size_t i = 0; i + 1 < route.st.size(); ++i) {
+                const TunnelStation& A = route.st[i];
+                const TunnelStation& B = route.st[i + 1];
+                const float abx = B.x - A.x, abz = B.z - A.z;
+                const float len2 = abx * abx + abz * abz;
+                if (len2 < 1e-6f) continue;
+                float t = ((x - A.x) * abx + (z - A.z) * abz) / len2;
+                t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+                const float dx = x - (A.x + abx * t), dz = z - (A.z + abz * t);
+                const float d2 = dx * dx + dz * dz;
+                if (d2 < bestD2) { bestD2 = d2; bestS = A.s + (B.s - A.s) * t; }
+            }
+            const float hw = kTcRoadHalfWidth + 0.6f;   // pavement + a kerb rim
+            if (bestD2 > hw * hw) return false;
+            if (bestS < 1.0f || bestS > route.totalLen - 1.0f) return false;
+            outDatum = route.roadYAt(bestS);
+            return true;
+        };
+        const float ts = wcfg.tileSize;
+        float worstAll = -1e9f, worstX = 0.0f, worstZ = 0.0f;
+        int   worstLod = 0;
+        std::vector<x3::rhi::MeshVertex> mv;
+        std::vector<uint32_t> mi;
+        for (int lod = 0; lod < 3; ++lod) {
+            float worstLodM = -1e9f, lx = 0.0f, lz = 0.0f;
+            for (float tz = std::floor(bz0 / ts) * ts; tz < bz1; tz += ts) {
+                for (float tx = std::floor(bx0 / ts) * ts; tx < bx1; tx += ts) {
+                    uint32_t surfN = 0;
+                    mv.clear(); mi.clear();
+                    buildTileMeshAbs(wcfg, tx, tz, (TerrainLod)lod, mv, mi, &surfN);
+                    for (uint32_t t3 = 0; t3 + 2 < surfN; t3 += 3) {
+                        const auto& A = mv[mi[t3]]; const auto& B = mv[mi[t3 + 1]];
+                        const auto& C = mv[mi[t3 + 2]];
+                        const float minX = std::min(A.pos[0], std::min(B.pos[0], C.pos[0]));
+                        const float maxX = std::max(A.pos[0], std::max(B.pos[0], C.pos[0]));
+                        const float minZ = std::min(A.pos[2], std::min(B.pos[2], C.pos[2]));
+                        const float maxZ = std::max(A.pos[2], std::max(B.pos[2], C.pos[2]));
+                        const float den = (B.pos[0] - A.pos[0]) * (C.pos[2] - A.pos[2]) -
+                                          (C.pos[0] - A.pos[0]) * (B.pos[2] - A.pos[2]);
+                        if (std::fabs(den) < 1e-6f) continue;
+                        for (float sz = std::ceil(minZ / 0.5f) * 0.5f; sz <= maxZ; sz += 0.5f) {
+                            for (float sx = std::ceil(minX / 0.5f) * 0.5f; sx <= maxX; sx += 0.5f) {
+                                const float w0 = ((B.pos[0] - sx) * (C.pos[2] - sz) -
+                                                  (C.pos[0] - sx) * (B.pos[2] - sz)) / den;
+                                const float w1 = ((C.pos[0] - sx) * (A.pos[2] - sz) -
+                                                  (A.pos[0] - sx) * (C.pos[2] - sz)) / den;
+                                const float w2 = 1.0f - w0 - w1;
+                                if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f) continue;
+                                float datum = 0.0f;
+                                if (!datumAt(sx, sz, datum)) continue;
+                                const float meshY = w0 * A.pos[1] + w1 * B.pos[1] + w2 * C.pos[1];
+                                const float err = meshY - datum;
+                                if (err > worstLodM) { worstLodM = err; lx = sx; lz = sz; }
+                                if (err > worstAll) {
+                                    worstAll = err; worstX = sx; worstZ = sz; worstLod = lod;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            std::snprintf(d, sizeof(d),
+                "  [m7] LOD%d worst terrainMeshY - datumY over the roadway: %+.3f m at (%.0f, %.0f)",
+                lod, worstLodM, lx, lz);
+            x3::logInfo(d);
+        }
+        std::snprintf(d, sizeof(d),
+            "worst terrainMeshY - datumY %+.3f m at (%.0f, %.0f) LOD%d (gate <= -0.02 m)",
+            worstAll, worstX, worstZ, worstLod);
+        check(worstAll <= -0.02f,
+              "M7 terrain mesh stays BELOW the road datum at EVERY tile LOD (the green-strip gate)", d);
     }
 
     char sum[160];

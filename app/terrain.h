@@ -128,7 +128,13 @@ struct WorldRiverNode { float x, z, waterY; };
 const WorldRiverNode* worldRiverNodes(uint32_t& count);   // full ribbon polyline
 uint32_t worldRiverCarveCount();                          // leading nodes that carve
 constexpr float kWorldRiverHalfWidth = 34.0f;             // water ribbon half-width (m)
-constexpr float kWorldRiverBedDrop   = 3.2f;              // bed depth below waterY (m)
+// Bank-shelf bed depth below waterY (m) — the shallows a wader stands on.
+constexpr float kWorldRiverBedDrop   = 3.2f;
+// MID-CHANNEL bed depth below waterY (m) — the deep cut down the spine. The
+// owner's exact number: "the water is 18 feet deep" — 5.5 m, mid-channel.
+// Feathers back to the shelf by ~26 m out; waterline, levee and crests
+// unchanged. See terrain.cpp's river carve.
+constexpr float kWorldRiverMidDrop   = 5.5f;
 
 // ---------------------------------------------------------------------------
 // W10 (SWIMMING) — the world WATER SURFACE query. Pure, like the placement API
@@ -368,11 +374,65 @@ float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ);
 // artifacts (skirts, LOD interpolation, hole drops), and this lane has been
 // bitten by exactly that gap (the torn mountain shipped through a green
 // field-level test).
+//
+// `refineFocusXZ` (optional, {x,z}): the STREAM-REQUEST focus this tile was
+// generated for. Within kCorridorRefineNearM of it the corridor x tile-LOD
+// refinement is the exact LOD0-lattice re-mesh; beyond it the cheap far-field
+// CLAMP variant runs instead (see the block comment in the .cpp). nullptr
+// (the default — every direct self-test/survey caller) = exact everywhere,
+// bit-identical to the pre-scoping mesher.
 void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
                       TerrainLod lod,
                       std::vector<x3::rhi::MeshVertex>& outVerts,
                       std::vector<uint32_t>& outIdx,
-                      uint32_t* outSurfIdxCount = nullptr);
+                      uint32_t* outSurfIdxCount = nullptr,
+                      const float* refineFocusXZ = nullptr);
+
+// ---------------------------------------------------------------------------
+// CORRIDOR x TILE-LOD support (the spawn-road green-wedge class).
+//
+// The carve is part of h(x,z), so mesh VERTICES agree at every LOD — but a
+// coarse tile's TRIANGLES interpolate linearly between samples 2/4 m apart,
+// and a chord across the carve's smoothstep shoulder reconstructs ABOVE the
+// carved datum. buildTileMeshAbs re-meshes any coarse cell inside a corridor's
+// influence at FULL resolution (see the block comment there); these are the
+// registry queries + the survey instrument that fix rests on.
+// ---------------------------------------------------------------------------
+// W-PERF (task #33) — the DISTANCE SCOPE of that refinement. Within this many
+// meters of the tile-request focus a hot cell is re-meshed EXACTLY on the LOD0
+// lattice (identical surface at every LOD — the near-field fix). Beyond it the
+// mesher switches to the far-field CLAMP: hot coarse cells keep their 2 coarse
+// triangles, but every corner vertex is clamped to min(own height, the carved
+// field's minimum over its incident hot cells) — so a coarse chord can never
+// stand ABOVE the carved field (the green strip stays dead at any range) while
+// the full-res triangle cost dies. ONE constant, shared by the mesher and the
+// far-field gate (--test-terraincorridor C8) so the two can never drift.
+constexpr float kCorridorRefineNearM = 500.0f;
+
+// One registered corridor SEGMENT whose influence can reach a queried rect.
+struct TerrainCorridorSegRef {
+    float ax = 0, az = 0, bx = 0, bz = 0;   // segment endpoints (world XZ)
+    float halfWidth = 0;                    // flat floor half-width
+    float reach = 0;                        // halfWidth + falloff
+    float depth0 = 0, depth1 = 0;           // node depths (lerped along the segment)
+};
+// Append every registered corridor segment whose influence (reach) can touch
+// the axis-aligned rect. Pure accelerator: segments it skips provably
+// contribute exactly 0 anywhere inside the rect.
+void terrainCorridorSegmentsNearRect(float minX, float minZ, float maxX, float maxZ,
+                                     std::vector<TerrainCorridorSegRef>& out);
+
+// SURVEY INSTRUMENT: build the tile's REAL mesh at `lod` and measure the worst
+// (meshSurfaceY - trueFieldY) over a 0.5 m sample grid restricted to corridor
+// FLAT FLOOR (>= 0.5 m inside halfWidth, carve depth > 0.3 m) — i.e. how far
+// terrain mesh stands ABOVE the carved datum where pavement lives. 0 when no
+// corridor touches the tile. outWorstX/Z (optional) receive the offender.
+// `refineFocusXZ` forwards to buildTileMeshAbs (survey the far-field clamp
+// variant); nullptr = the exact near-field mesh, as every existing gate does.
+float terrainTileCorridorWedge(const TerrainConfig& cfg, float originX, float originZ,
+                               TerrainLod lod,
+                               float* outWorstX = nullptr, float* outWorstZ = nullptr,
+                               const float* refineFocusXZ = nullptr);
 
 // One terrain tile: addressable by SIGNED grid coords (gx,gz), owns its 3 LOD
 // render meshes, a collision body, and the scene entity that draws the active
@@ -387,6 +447,12 @@ struct TerrainTile {
     x3::phys::BodyId    body;                  // static collision (LOD0 triangles)
     uint32_t            entityId = kNoLink;    // scene entity drawing the active LOD
     TerrainLod          activeLod = TerrainLod::Full;
+    // THE SEAM FIX: tiles touching a corridor are PINNED to full LOD. Coarse
+    // triangles spanning the corridor edge interpolate bank->road and slice a
+    // grass wedge up through the pavement (the owner's diagonal seam). The
+    // verts were honest; the interpolation was the knife. Roads are where the
+    // player looks — full res there is the cheapest correctness on offer.
+    bool corridorPin = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -530,9 +596,11 @@ private:
     };
 
     // Generate one tile's CPU data (pure, thread-safe). Static so it can run on a
-    // worker with only the config + coords captured.
+    // worker with only the config + coords captured. focusX/focusZ = the stream
+    // focus at REQUEST time — the corridor refine's distance scope (see
+    // kCorridorRefineNearM); the streamer always has one.
     static void generate(const TerrainConfig& cfg, int32_t gx, int32_t gz,
-                         TileGenResult& out);
+                         float focusX, float focusZ, TileGenResult& out);
 
     // Make a resident tile from a finished gen result (main thread: GPU+physics).
     void upload(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -589,6 +657,9 @@ private:
     std::vector<uint32_t>     m_freeEntities;
 
     uint32_t                  m_inFlight = 0;
+    // The focus of the CURRENT init()/update() call — captured into each tile
+    // request so generation scopes the corridor refine to it (task #33).
+    float                     m_reqFocusX = 0.0f, m_reqFocusZ = 0.0f;
     // SEAM 3: keep-out rect {x0,z0,x1,z1} — see setKeepOut().
     float                     m_keepOut[4] = { 0, 0, 0, 0 };
     bool                      m_keepOutOn = false;

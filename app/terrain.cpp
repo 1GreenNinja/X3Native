@@ -52,6 +52,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
@@ -134,6 +135,57 @@ x3::rhi::MeshVertex makeTerrainVertex(const TerrainConfig& cfg,
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// 2D distance helpers for the corridor x tile-LOD refinement. Pure, world-space
+// — BOTH tiles sharing a border evaluate these on the SAME world coordinates,
+// which is what makes the hot/cold decision seam-consistent by construction.
+// ---------------------------------------------------------------------------
+inline float segPointDist2(float ax, float az, float bx, float bz, float px, float pz) {
+    const float abx = bx - ax, abz = bz - az;
+    const float len2 = abx * abx + abz * abz;
+    float t = (len2 > 1e-12f) ? ((px - ax) * abx + (pz - az) * abz) / len2 : 0.0f;
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    const float dx = px - (ax + abx * t), dz = pz - (az + abz * t);
+    return dx * dx + dz * dz;
+}
+inline float cross2(float ox, float oz, float ax, float az, float bx, float bz) {
+    return (ax - ox) * (bz - oz) - (az - oz) * (bx - ox);
+}
+inline float segSegDist2(float ax, float az, float bx, float bz,
+                         float cx, float cz, float dx, float dz) {
+    // Proper intersection => distance 0.
+    const float d1 = cross2(cx, cz, dx, dz, ax, az);
+    const float d2 = cross2(cx, cz, dx, dz, bx, bz);
+    const float d3 = cross2(ax, az, bx, bz, cx, cz);
+    const float d4 = cross2(ax, az, bx, bz, dx, dz);
+    if (((d1 > 0.0f && d2 < 0.0f) || (d1 < 0.0f && d2 > 0.0f)) &&
+        ((d3 > 0.0f && d4 < 0.0f) || (d3 < 0.0f && d4 > 0.0f)))
+        return 0.0f;
+    float best = segPointDist2(ax, az, bx, bz, cx, cz);
+    best = std::min(best, segPointDist2(ax, az, bx, bz, dx, dz));
+    best = std::min(best, segPointDist2(cx, cz, dx, dz, ax, az));
+    best = std::min(best, segPointDist2(cx, cz, dx, dz, bx, bz));
+    return best;
+}
+// Distance^2 from a segment to an axis-aligned rect (0 if it touches/enters).
+inline float segRectDist2(float ax, float az, float bx, float bz,
+                          float minX, float minZ, float maxX, float maxZ) {
+    auto inside = [&](float x, float z) {
+        return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
+    };
+    if (inside(ax, az) || inside(bx, bz)) return 0.0f;
+    float best = segSegDist2(ax, az, bx, bz, minX, minZ, maxX, minZ);
+    best = std::min(best, segSegDist2(ax, az, bx, bz, maxX, minZ, maxX, maxZ));
+    best = std::min(best, segSegDist2(ax, az, bx, bz, maxX, maxZ, minX, maxZ));
+    best = std::min(best, segSegDist2(ax, az, bx, bz, minX, maxZ, minX, minZ));
+    return best;
+}
+
+// Fwd decl — defined beside kRanges below (same anonymous namespace resumes
+// there). Task #26 ridge filter: true when (x,z) lies within `pad` of an
+// authored mountain-range band's footprint (the only narrow-crest country).
+bool terrainNearRangeBand(float x, float z, float pad);
+
 } // namespace — buildTileMeshAbs below is EXPORTED (terrain.h): self-tests
   //             survey the real emitted mesh through it. Helpers above stay
   //             internal; it may still call them (same TU, defined earlier).
@@ -148,7 +200,8 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
                       TerrainLod lod,
                       std::vector<x3::rhi::MeshVertex>& outVerts,
                       std::vector<uint32_t>& outIdx,
-                      uint32_t* outSurfIdxCount /*= nullptr, see terrain.h*/) {
+                      uint32_t* outSurfIdxCount /*= nullptr, see terrain.h*/,
+                      const float* refineFocusXZ /*= nullptr, see terrain.h*/) {
     outVerts.clear();
     outIdx.clear();
 
@@ -164,6 +217,67 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
     outVerts.reserve((size_t)vpe * vpe + (size_t)vpe * 4);
     outIdx.reserve((size_t)quads * quads * 6 + (size_t)quads * 4 * 6);
 
+    // Corridor influence near this tile — gathered up front because BOTH the
+    // corridor x tile-LOD refinement below AND the ridge filter in the grid
+    // loop consult it.
+    // Gather pad = one coarse cell + 0.5 m: the far-field clamp below also
+    // tests the RING of cells just outside the tile (a border vertex's clamp
+    // must see the same hot cells from both sides of a seam), so segments
+    // reaching only that ring must be in the list too. Harmless for the exact
+    // path — cellHot() still measures true distance.
+    //
+    // THE GATHER IS UNCONDITIONAL, and that is deliberate. The list feeds two
+    // consumers with different natures: the refine (a PERF/quality choice, and
+    // so legitimately A/B-able) and the ridge filter's corridor exclusion (a
+    // SAFETY invariant — never raise a vertex over a carved road, the M7/C7/W1b
+    // green-strip gates). This used to be gathered only when the refine was
+    // enabled, which quietly tied the safety property to a debug env var:
+    // X3_NO_CORRIDOR_LOD_REFINE=1 emptied the list, un-scoped the ridge filter,
+    // and let it raise terrain over the roadway — so the one instrument meant to
+    // MEASURE the wedge could manufacture one. The env var now gates only
+    // `refineOn` below; the exclusion always sees the real corridors.
+    std::vector<TerrainCorridorSegRef> hotSegs;
+    if (lod != TerrainLod::Full && terrainCorridorCount() > 0)
+        terrainCorridorSegmentsNearRect(ox - cell - 0.5f, oz - cell - 0.5f,
+                                        ox + tileSize + cell + 0.5f,
+                                        oz + tileSize + cell + 0.5f,
+                                        hotSegs);
+    const float fineCell = tileSize / (float)(cfg.tileVerts - 1);
+
+    // ---- RIDGE-PRESERVING FILTER (task #26 — the blade towers) -------------
+    // buildTileMeshAbs POINT-samples h(x,z) at the LOD stride (4 m at Quarter).
+    // A mountain crest only a few metres across falls BETWEEN samples and
+    // ceases to exist except where a vertex happens to land on it — distant
+    // ridges render as thin vertical BLADES. Fix (TUNNEL_MOUTH_LOD.md bug 1):
+    // at coarse LODs an interior vertex takes the MAX of the field over the
+    // cell-sized block it represents (the blocks tile the plane, so every
+    // fine-lattice crest sample survives into some vertex). Scoped to the
+    // authored mountain-range bands (the only narrow-crest country), and OFF:
+    //   * on BORDER verts — they stay exact point samples, so two tiles at
+    //     ANY LOD pair still agree bit-for-bit along a shared edge (the max
+    //     kernel is LOD-sized, so a filtered border would disagree across a
+    //     Full/coarse seam — the step TUNNEL_MOUTH_LOD.md §caveat warns of);
+    //   * within a corridor's influence (+1 cell) — the corridor refine and
+    //     the M7/C7/W1b parity gates own that ground; raising a vertex there
+    //     could resurrect a portal-hole curtain or stand above the carve;
+    //   * at Full LOD (1 m sampling carries the crest already).
+    // X3_NO_RIDGE_FILTER=1 is the A/B instrument (measure the blades from one
+    // build); --test-terrain T4 gates the crest survival. Nothing else sets it.
+    static const bool kRidgeFilterDisabled = [] {
+        const char* e = std::getenv("X3_NO_RIDGE_FILTER");
+        return e && e[0] == '1';
+    }();
+    const bool ridgeFilterOn = !kRidgeFilterDisabled && cfg.worldFeatures &&
+                               lod != TerrainLod::Full;
+    auto vertInCorridorInfluence = [&](float wx, float wz) {
+        for (const TerrainCorridorSegRef& s : hotSegs) {
+            const float pad = s.reach + cell;
+            if (segPointDist2(s.ax, s.az, s.bx, s.bz, wx, wz) <= pad * pad)
+                return true;
+        }
+        return false;
+    };
+
     // ---- Top surface grid ------------------------------------------------
     for (uint32_t j = 0; j < vpe; ++j) {
         for (uint32_t i = 0; i < vpe; ++i) {
@@ -172,6 +286,18 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
             const float u  = (float)i / (float)quads * uvScale;
             const float v  = (float)j / (float)quads * uvScale;
             outVerts.push_back(makeTerrainVertex(cfg, wx, wz, u, v, eps));
+            if (ridgeFilterOn && i > 0 && j > 0 && i < vpe - 1 && j < vpe - 1 &&
+                terrainNearRangeBand(wx, wz, cell) &&
+                !vertInCorridorInfluence(wx, wz)) {
+                float& y = outVerts.back().pos[1];
+                const int h = (int)(step >> 1);
+                for (int oj = -h; oj <= h; ++oj)
+                    for (int oi = -h; oi <= h; ++oi) {
+                        if (oi == 0 && oj == 0) continue;
+                        y = std::max(y, terrainHeightAt(cfg,
+                                wx + (float)oi * fineCell, wz + (float)oj * fineCell));
+                    }
+            }
         }
     }
     // PORTAL HOLES (see terrain.h): with none registered this is the exact
@@ -192,14 +318,219 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
         }
         outIdx.insert(outIdx.end(), { a, b, c });
     };
+
+    // ---- CORRIDOR x TILE-LOD REFINEMENT (the spawn-road green-wedge fix) ---
+    // The carve is part of h(x,z), so the VERTICES above already agree at
+    // every LOD. The wedge lives BETWEEN them: a Half/Quarter cell interpolates
+    // 2/4 m chords, and a chord across the corridor's smoothstep shoulder
+    // reconstructs ABOVE the carved datum — measured 1.75 m of terrain standing
+    // through the spawn-road pavement at Quarter LOD (it survived lifting the
+    // road slab 0.07 m proud, because it is a MESH artifact, not a carve
+    // disagreement; see --test-terraincorridor C7 / --test-tunnelmouth M7).
+    //
+    // Fix: any coarse cell whose square lies within a corridor's influence
+    // (halfWidth + falloff of a spine segment) is meshed at FULL resolution,
+    // so inside the influence the surface is IDENTICAL at every LOD — the
+    // wedge cannot exist, and a tile border crossing a corridor matches its
+    // differently-LODed neighbour vertex for vertex. Hot/cold is decided from
+    // pure world-space geometry, so both sides of a border agree.
+    //
+    // WATERTIGHTNESS: an inserted vertex on a refined cell's EDGE samples the
+    // true field only when that EDGE is itself inside the influence; otherwise
+    // it is pinned to the coarse chord. An edge inside the influence forces
+    // BOTH its cells hot (edge ⊂ cell ⇒ cellDist <= edgeDist), so a hot cell
+    // meets a cold neighbour only across a cold edge — where its inserted
+    // verts lie exactly ON the cold neighbour's straight triangle edge.
+    // (kRefineDisabled + hotSegs gathered above the grid loop — the ridge
+    // filter consults them too.)
+    const bool refineOn = !hotSegs.empty();
+    auto edgeHot = [&](float x0, float z0, float x1, float z1) {
+        for (const TerrainCorridorSegRef& s : hotSegs)
+            if (segSegDist2(s.ax, s.az, s.bx, s.bz, x0, z0, x1, z1) <= s.reach * s.reach)
+                return true;
+        return false;
+    };
+    auto cellHot = [&](uint32_t i, uint32_t j) {
+        const float x0 = ox + i * cell, z0 = oz + j * cell;
+        for (const TerrainCorridorSegRef& s : hotSegs)
+            if (segRectDist2(s.ax, s.az, s.bx, s.bz, x0, z0, x0 + cell, z0 + cell)
+                    <= s.reach * s.reach)
+                return true;
+        return false;
+    };
+    // ---- FAR-FIELD CLAMP (W-PERF, task #33) — the refine's distance scope --
+    // The exact refine above is the NEAR-FIELD fix: within kCorridorRefineNearM
+    // of the stream-request focus a hot cell is re-meshed on the LOD0 lattice.
+    // Paying that full-res triangle bill at EVERY distance is what it costs
+    // today; at range the correctness requirement is only one-sided — terrain
+    // must never stand ABOVE the carved road (the green strip), while standing
+    // a little BELOW it is invisible (the road ribbon draws on top). So beyond
+    // the scope a hot cell keeps its 2 coarse triangles and instead every
+    // corner vertex of every CARVED hot cell is clamped to
+    //     y = min(y, min(carved field over the cell's LOD0 lattice))
+    // Every interior chord point of the cell is a convex combination of its
+    // corners, so mesh(P) <= max(corner y) <= min(field over cell) <= field(P)
+    // for every P in the cell — the wedge is unrepresentable, at 2 tris/cell.
+    // Seam-safe: the clamp of a border vertex scans its full 2x2 incident-cell
+    // ring in WORLD space (including cells outside this tile — the gather pad
+    // above), so both tiles sharing the vertex compute the identical minimum.
+    // Bored reaches (depth ~0: a tunnel does not carve the mountain above it)
+    // are exempt — clamping there would pull the LID down toward the portal
+    // holes' yTop and tear it open; there is no wedge over a bore to kill.
+    // Gate: --test-terraincorridor C8 (wedge dead + triangles actually saved +
+    // seam parity at range).
+    bool farClamp = false;
+    if (refineOn && refineFocusXZ) {
+        const float fx = refineFocusXZ[0], fz = refineFocusXZ[1];
+        const float nxp = std::min(std::max(fx, ox), ox + tileSize);
+        const float nzp = std::min(std::max(fz, oz), oz + tileSize);
+        const float ddx = fx - nxp, ddz = fz - nzp;   // focus -> nearest tile point
+        farClamp = (ddx * ddx + ddz * ddz) >
+                   kCorridorRefineNearM * kCorridorRefineNearM;
+    }
+    if (farClamp) {
+        // Hot-for-clamp: within reach of a CARVED segment (depth > 0.3 m).
+        auto cellHotCarved = [&](float x0, float z0) {
+            for (const TerrainCorridorSegRef& s : hotSegs)
+                if (std::max(s.depth0, s.depth1) > 0.3f &&
+                    segRectDist2(s.ax, s.az, s.bx, s.bz,
+                                 x0, z0, x0 + cell, z0 + cell) <= s.reach * s.reach)
+                    return true;
+            return false;
+        };
+        // Scan the tile's cells PLUS the one-cell ring outside it, so border
+        // vertices receive the same clamp from either side of the seam.
+        for (int cj = -1; cj <= (int)quads; ++cj) {
+            for (int ci = -1; ci <= (int)quads; ++ci) {
+                const float x0 = ox + (float)ci * cell;
+                const float z0 = oz + (float)cj * cell;
+                if (!cellHotCarved(x0, z0)) continue;
+                float m = std::numeric_limits<float>::infinity();
+                for (uint32_t fj = 0; fj <= step; ++fj)
+                    for (uint32_t fi = 0; fi <= step; ++fi)
+                        m = std::min(m, terrainHeightAt(cfg,
+                                x0 + (float)fi * fineCell, z0 + (float)fj * fineCell));
+                for (int dj = 0; dj <= 1; ++dj)
+                    for (int di = 0; di <= 1; ++di) {
+                        const int vi = ci + di, vj = cj + dj;
+                        if (vi < 0 || vj < 0 || vi >= (int)vpe || vj >= (int)vpe)
+                            continue;
+                        float& y = outVerts[(size_t)vj * vpe + (size_t)vi].pos[1];
+                        y = std::min(y, m);
+                    }
+            }
+        }
+    }
+    // Refined border cells hand their fine outer-edge vertex chains to the
+    // skirt pass below (a coarse-chord skirt under a refined border would
+    // stand proud of the carved surface — the wedge back again, as a curtain).
+    std::vector<std::vector<uint32_t>> southChain(refineOn ? quads : 0);
+    std::vector<std::vector<uint32_t>> northChain(refineOn ? quads : 0);
+    std::vector<std::vector<uint32_t>> westChain (refineOn ? quads : 0);
+    std::vector<std::vector<uint32_t>> eastChain (refineOn ? quads : 0);
+
     for (uint32_t j = 0; j < quads; ++j) {
         for (uint32_t i = 0; i < quads; ++i) {
             const uint32_t a = j * vpe + i;
             const uint32_t b = a + 1;
             const uint32_t c = a + vpe;
             const uint32_t d = c + 1;
-            pushTri(a, c, b);
-            pushTri(b, c, d);
+            if (!refineOn || farClamp || !cellHot(i, j)) {
+                // Coarse cell (also every FAR-CLAMPED hot cell: its corner
+                // verts were already pulled under the carved field above).
+                pushTri(a, c, b);
+                pushTri(b, c, d);
+                continue;
+            }
+            // FULL-RES REFINEMENT of this cell. Fine grid indices run over the
+            // LOD0 lattice (gi = i*step + fi), so positions/heights/normals are
+            // bit-identical to what a Full-LOD build emits at the same spots.
+            const uint32_t n   = step;
+            const uint32_t gi0 = i * step, gj0 = j * step;
+            // Corner verts are the coarse grid's own (same world position — the
+            // fine lattice contains the coarse one).
+            const x3::rhi::MeshVertex vA = outVerts[a], vB = outVerts[b];
+            const x3::rhi::MeshVertex vC = outVerts[c], vD = outVerts[d];
+            const float ex0 = ox + (float)gi0 * fineCell;
+            const float ez0 = oz + (float)gj0 * fineCell;
+            const float ex1 = ox + (float)(gi0 + n) * fineCell;
+            const float ez1 = oz + (float)(gj0 + n) * fineCell;
+            const bool hotS = edgeHot(ex0, ez0, ex1, ez0);
+            const bool hotN = edgeHot(ex0, ez1, ex1, ez1);
+            const bool hotW = edgeHot(ex0, ez0, ex0, ez1);
+            const bool hotE = edgeHot(ex1, ez0, ex1, ez1);
+            auto lerpVert = [](const x3::rhi::MeshVertex& A, const x3::rhi::MeshVertex& B,
+                               float t) {
+                x3::rhi::MeshVertex o;
+                for (int q = 0; q < 3; ++q) {
+                    o.pos[q]    = A.pos[q]    + (B.pos[q]    - A.pos[q])    * t;
+                    o.normal[q] = A.normal[q] + (B.normal[q] - A.normal[q]) * t;
+                }
+                const float nl = std::sqrt(o.normal[0]*o.normal[0] + o.normal[1]*o.normal[1] +
+                                           o.normal[2]*o.normal[2]);
+                if (nl > 1e-6f) { o.normal[0] /= nl; o.normal[1] /= nl; o.normal[2] /= nl; }
+                o.uv[0] = A.uv[0] + (B.uv[0] - A.uv[0]) * t;
+                o.uv[1] = A.uv[1] + (B.uv[1] - A.uv[1]) * t;
+                return o;
+            };
+            std::vector<uint32_t> fidx((size_t)(n + 1) * (n + 1));
+            for (uint32_t fj = 0; fj <= n; ++fj) {
+                for (uint32_t fi = 0; fi <= n; ++fi) {
+                    uint32_t& slot = fidx[(size_t)fj * (n + 1) + fi];
+                    const bool onS = (fj == 0), onN = (fj == n);
+                    const bool onW = (fi == 0), onE = (fi == n);
+                    if ((onS || onN) && (onW || onE)) {   // corner: reuse coarse vert
+                        slot = onS ? (onW ? a : b) : (onW ? c : d);
+                        continue;
+                    }
+                    slot = (uint32_t)outVerts.size();
+                    bool trueField = true;
+                    if      (onS) trueField = hotS;
+                    else if (onN) trueField = hotN;
+                    else if (onW) trueField = hotW;
+                    else if (onE) trueField = hotE;
+                    if (trueField) {
+                        const float wx = ox + (float)(gi0 + fi) * fineCell;
+                        const float wz = oz + (float)(gj0 + fj) * fineCell;
+                        const float u  = (float)(gi0 + fi) / (float)(cfg.tileVerts - 1) * uvScale;
+                        const float v  = (float)(gj0 + fj) / (float)(cfg.tileVerts - 1) * uvScale;
+                        outVerts.push_back(makeTerrainVertex(cfg, wx, wz, u, v, eps));
+                    } else {
+                        // chord-pinned: exactly on the cold neighbour's edge
+                        if      (onS) outVerts.push_back(lerpVert(vA, vB, (float)fi / (float)n));
+                        else if (onN) outVerts.push_back(lerpVert(vC, vD, (float)fi / (float)n));
+                        else if (onW) outVerts.push_back(lerpVert(vA, vC, (float)fj / (float)n));
+                        else          outVerts.push_back(lerpVert(vB, vD, (float)fj / (float)n));
+                    }
+                }
+            }
+            for (uint32_t fj = 0; fj < n; ++fj) {
+                for (uint32_t fi = 0; fi < n; ++fi) {
+                    const uint32_t fa = fidx[(size_t)fj * (n + 1) + fi];
+                    const uint32_t fb = fidx[(size_t)fj * (n + 1) + fi + 1];
+                    const uint32_t fc = fidx[(size_t)(fj + 1) * (n + 1) + fi];
+                    const uint32_t fd = fidx[(size_t)(fj + 1) * (n + 1) + fi + 1];
+                    pushTri(fa, fc, fb);
+                    pushTri(fb, fc, fd);
+                }
+            }
+            // Hand fine border chains to the skirt pass (+i / +j order).
+            if (j == 0) {
+                auto& ch = southChain[i]; ch.resize(n + 1);
+                for (uint32_t fi = 0; fi <= n; ++fi) ch[fi] = fidx[fi];
+            }
+            if (j == quads - 1) {
+                auto& ch = northChain[i]; ch.resize(n + 1);
+                for (uint32_t fi = 0; fi <= n; ++fi) ch[fi] = fidx[(size_t)n * (n + 1) + fi];
+            }
+            if (i == 0) {
+                auto& ch = westChain[j]; ch.resize(n + 1);
+                for (uint32_t fj = 0; fj <= n; ++fj) ch[fj] = fidx[(size_t)fj * (n + 1)];
+            }
+            if (i == quads - 1) {
+                auto& ch = eastChain[j]; ch.resize(n + 1);
+                for (uint32_t fj = 0; fj <= n; ++fj) ch[fj] = fidx[(size_t)fj * (n + 1) + n];
+            }
         }
     }
     // The surface/skirt boundary is no longer a fixed quads*quads*6 once holes
@@ -224,11 +555,9 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
     // of a shared seam, so the two tiles still agree bit-for-bit (the
     // --test-terraincorridor C3 seam check).
     const bool anyCorridor = (terrainCorridorCount() > 0);
-    auto addSkirtEdge = [&](uint32_t i0, uint32_t j0, uint32_t i1, uint32_t j1) {
-        const uint32_t topA = j0 * vpe + i0;
-        const uint32_t topB = j1 * vpe + i1;
-        const x3::rhi::MeshVertex& va = outVerts[topA];
-        const x3::rhi::MeshVertex& vb = outVerts[topB];
+    auto addSkirtEdgeV = [&](uint32_t topA, uint32_t topB) {
+        const x3::rhi::MeshVertex va = outVerts[topA];
+        const x3::rhi::MeshVertex vb = outVerts[topB];
         float depth = skirtDepth;
         const float mx = (va.pos[0] + vb.pos[0]) * 0.5f;
         const float mz = (va.pos[2] + vb.pos[2]) * 0.5f;
@@ -249,8 +578,17 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
         // render-only rock wall across the carriageway (skirts carry no
         // collision, so the car drove through it). Containment sees the tube
         // under the lid; delta cannot.
-        if (anyCorridor && terrainCorridorContains(mx, mz))
-            depth = std::min(depth, 2.5f);
+        if (anyCorridor && terrainCorridorContains(mx, mz)) {
+            float cap = 2.5f;
+            // Far-clamped tiles sit BELOW the field near the carve; the
+            // neighbouring tile may mesh the field itself (exact refine, or a
+            // different LOD's clamp). Deepen the short corridor skirt by the
+            // local drop so that seam gap stays curtained.
+            if (farClamp)
+                cap += std::max(0.0f, terrainHeightAt(cfg, mx, mz) -
+                                      std::min(va.pos[1], vb.pos[1]));
+            depth = std::min(depth, cap);
+        }
         x3::rhi::MeshVertex la = va, lb = vb;
         la.pos[1] -= depth; lb.pos[1] -= depth;
         float ex = vb.pos[0] - va.pos[0], ez = vb.pos[2] - va.pos[2];
@@ -268,10 +606,35 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
         outIdx.insert(outIdx.end(), { base + 0, base + 2, base + 1,
                                       base + 1, base + 2, base + 3 });
     };
-    for (uint32_t i = 0; i < quads; ++i) addSkirtEdge(i, 0, i + 1, 0);
-    for (uint32_t i = 0; i < quads; ++i) addSkirtEdge(i + 1, vpe - 1, i, vpe - 1);
-    for (uint32_t j = 0; j < quads; ++j) addSkirtEdge(0, j + 1, 0, j);
-    for (uint32_t j = 0; j < quads; ++j) addSkirtEdge(vpe - 1, j, vpe - 1, j + 1);
+    // Border skirts, per border CELL: a refined border cell hangs its skirt
+    // from its FINE outer-edge chain (a coarse chord under a refined border
+    // would stand proud of the carved surface inside a corridor — the wedge
+    // again, as a curtain); an unrefined cell keeps the coarse pair. `fwd`
+    // preserves each border's original winding (south/east run +, north/west
+    // run -, exactly the four legacy loops).
+    auto skirtCell = [&](const std::vector<uint32_t>* chain,
+                         uint32_t coarseA, uint32_t coarseB, bool fwd) {
+        if (chain && !chain->empty()) {
+            const auto& ch = *chain;
+            if (fwd) { for (size_t k = 0; k + 1 < ch.size(); ++k) addSkirtEdgeV(ch[k], ch[k + 1]); }
+            else     { for (size_t k = ch.size(); k >= 2; --k)    addSkirtEdgeV(ch[k - 1], ch[k - 2]); }
+            return;
+        }
+        if (fwd) addSkirtEdgeV(coarseA, coarseB);
+        else     addSkirtEdgeV(coarseB, coarseA);
+    };
+    for (uint32_t i = 0; i < quads; ++i)
+        skirtCell(refineOn ? &southChain[i] : nullptr,
+                  0 * vpe + i, 0 * vpe + i + 1, /*fwd=*/true);
+    for (uint32_t i = 0; i < quads; ++i)
+        skirtCell(refineOn ? &northChain[i] : nullptr,
+                  (vpe - 1) * vpe + i, (vpe - 1) * vpe + i + 1, /*fwd=*/false);
+    for (uint32_t j = 0; j < quads; ++j)
+        skirtCell(refineOn ? &westChain[j] : nullptr,
+                  j * vpe + 0, (j + 1) * vpe + 0, /*fwd=*/false);
+    for (uint32_t j = 0; j < quads; ++j)
+        skirtCell(refineOn ? &eastChain[j] : nullptr,
+                  j * vpe + (vpe - 1), (j + 1) * vpe + (vpe - 1), /*fwd=*/true);
 }
 
 namespace {   // internal helpers resume
@@ -483,12 +846,36 @@ x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
 
 // LOD by center-to-camera distance. Thresholds scale with tile size so the
 // scheme is resolution-independent. Near = Full, mid = Half, far = Quarter.
+// 9-point corridor-touch test for a tile footprint (corners, edge midpoints,
+// center). 32 m tiles vs ~27 m corridors: if any sample is inside, pin.
+bool tileTouchesCorridor(float ox, float oz, float size) {
+    for (int j = 0; j <= 2; ++j)
+        for (int i = 0; i <= 2; ++i)
+            if (terrainCorridorContains(ox + size * 0.5f * i, oz + size * 0.5f * j))
+                return true;
+    return false;
+}
+
 TerrainLod lodForDist(const TerrainConfig& cfg, float dist) {
     const float nearD = cfg.tileSize * 2.5f;
     const float midD  = cfg.tileSize * 6.0f;
     if (dist < nearD) return TerrainLod::Full;
     if (dist < midD)  return TerrainLod::Half;
     return TerrainLod::Quarter;
+}
+
+// A/B instrument for the corridor Full-LOD pin (mirrors X3_NO_CORRIDOR_LOD_REFINE):
+// X3_NO_CORRIDOR_PIN=1 drops the "<420 m => Full" pin so its triangle/fps cost
+// can be MEASURED against the corridor x tile-LOD refinement, which already
+// makes the coarse meshes IDENTICAL to Full over every corridor floor
+// (--test-terraincorridor C7 / --test-roadnetwork W1b). Task #33's question:
+// is the pin now pure belt-and-suspenders? Nothing else should ever set this.
+bool corridorPinEnabled() {
+    static const bool on = [] {
+        const char* e = std::getenv("X3_NO_CORRIDOR_PIN");
+        return !(e && e[0] == '1');
+    }();
+    return on;
 }
 
 } // namespace
@@ -550,14 +937,31 @@ const RangeDef kRanges[kRangeCount] = {
     {  9200.0f, -2000.0f,  9200.0f,  2500.0f, 550.0f, 2300.0f, 460.0f, 2.0f, 45.0f,   0.0f }, // E volcanic
     { -2800.0f, -9000.0f,  3500.0f, -9000.0f, 500.0f, 2100.0f, 230.0f, 1.1f,  0.0f, 195.0f }, // S mesa
     { -8600.0f, -2000.0f, -8600.0f,  1800.0f, 600.0f, 2400.0f, 320.0f, 1.3f,  0.0f,   0.0f }, // W crystal hills
-    // TUNNEL RIDGE. The four ranges above sit 8-9 km out, so the corridor route
-    // at (-592,-352) bored through the BASE rolling field (heightScale 55 m) —
-    // which is why the worst soil cover over the shell was only 2.46 m. A freeway
-    // tunnel needs a mountain. Runs PERPENDICULAR to the route heading so the bore
-    // crosses it square, and is short enough that outW does not reach the
-    // Scrapyard City pad at (-600,500).
-    {  -753.0f,  -740.0f,  -431.0f,    36.0f, 110.0f,  240.0f, 285.0f, 2.5f, 58.0f,   0.0f }, // tunnel ridge
+    // TUNNEL RIDGE — the sketch's LARGE MOUNTAIN (ROAD_NETWORK_SKETCH.png, NW
+    // massif; route-spec law). The four ranges above sit 8-9 km out, so the
+    // corridor route at (-592,-352) bored through the BASE rolling field
+    // (heightScale 55 m) — which is why the worst soil cover over the shell was
+    // only 2.46 m. A freeway tunnel needs a mountain. Runs PERPENDICULAR to the
+    // route heading so the bore crosses it square, and is short enough that
+    // outW does not reach the Scrapyard City pad at (-600,500) — outW is the
+    // pad-clearance cap (spine end (-431,36) to pad centre is 494 m; pad r 250),
+    // so TALLER comes from amp, not footprint.
+    // amp 285 -> 460 (owner, 2026-08-16: "The mountain in that scene should be
+    // taller"; measured natural summit went 168 m -> 262 m over the bore —
+    // the M-gates re-derive the cut-and-cover from the field, so the bore,
+    // backfill lid and 4.5% road profile adapt at boot). ridgeExp 2.5 -> 2.3
+    // widens the crest mass a touch so the raise reads as a massif, not a spike.
+    {  -753.0f,  -740.0f,  -431.0f,    36.0f, 110.0f,  240.0f, 460.0f, 2.3f, 64.0f,   0.0f }, // tunnel ridge / Large Mountain
 };
+
+// Task #26 (ridge filter) — see the fwd decl above buildTileMeshAbs.
+bool terrainNearRangeBand(float x, float z, float pad) {
+    for (int i = 0; i < kRangeCount; ++i) {
+        const RangeDef& r = kRanges[i];
+        if (segDist(x, z, r.ax, r.az, r.bx, r.bz) < r.outW + pad) return true;
+    }
+    return false;
+}
 
 // Flat pads: blend the field toward padY inside r, fully the field by r*1.7.
 struct PadDef { float cx, cz, r, padY; };
@@ -865,6 +1269,19 @@ float authoredLandforms(float h, float x, float z) {
                 // Channel: 24 m bed, banks over 26 m (gentler than the canyon).
                 const float target = bed + (h - bed) * sstep(12.0f, 38.0f, d);
                 if (target < h) h += (target - h) * g;
+                // DEEP CHANNEL (owner, 2026-08: "the water is 18 feet deep").
+                // The waterline STAYS where it is — the bounded-water law
+                // forbids raising waterY — so the BED is carved deeper
+                // instead: a second, narrower cut down the spine to
+                // kWorldRiverMidDrop (5.5 m = 18 ft) below the surface,
+                // feathering back to the original 3.2 m shelf by 26 m out so
+                // the bank shallows, levee and crests are byte-identical. The
+                // bridge plan's piers sample this carved bed at boot
+                // (planRiverBridge reads terrain), so the pier collars land
+                // on the NEW bed with no bridge change.
+                const float deepBed = w - kWorldRiverMidDrop;
+                const float deepTarget = deepBed + (h - deepBed) * sstep(4.0f, 26.0f, d);
+                if (deepTarget < h) h += (deepTarget - h) * g;
             }
         }
     }
@@ -929,10 +1346,24 @@ float mountainHeight(float x, float z, uint32_t seed) {
             // slope and only the upper massif breaks into benches.
             if (hm > kBluffStart) {
                 const float up01 = clampf01((hm - kBluffStart) / kBluffFull);
-                const float band = hm / kBluffBandH;
+                // SCALE-VARIED STRATA (owner 2026-08-16: "stepped bluffs").
+                // A fixed 26 m band spacing benched every face at the same
+                // vertical rhythm, which is the tell of a machined terrace, not
+                // strata. Real bed thickness varies ACROSS a massif (thin
+                // shales here, massive sandstone there), so the band height is
+                // modulated ~19..33 m by a ~1 km-wavelength noise — locally
+                // coherent (one face keeps one rhythm; sstep continuity in f is
+                // untouched), globally varied (no two shoulders band alike).
+                // Same field also wanders the band PHASE (hm/bandH shifts with
+                // bandH), so shelf lines are not world-height contours. Pure in
+                // (x,z,seed): the corridor refine and every carve sit on top of
+                // this bit-stably, exactly as before.
+                const float sv    = fbm(x, z, 0.0011f, 2, seed + 15000u + (uint32_t)i * 389u);
+                const float bandH = kBluffBandH * (0.72f + 0.56f * sv);
+                const float band = hm / bandH;
                 const float f    = band - std::floor(band);
                 const float shaped = sstep(0.42f, 0.92f, f);
-                hm += kBluffBandH * (shaped - f) * kBluffStrength * up01 * mask;
+                hm += bandH * (shaped - f) * kBluffStrength * up01 * mask;
             }
         }
         if (r.capY > 0.0f && hm > r.capY) hm = r.capY;           // mesa flat tops
@@ -1179,6 +1610,91 @@ bool terrainCorridorContains(float x, float z) {
         }
     }
     return false;
+}
+
+void terrainCorridorSegmentsNearRect(float minX, float minZ, float maxX, float maxZ,
+                                     std::vector<TerrainCorridorSegRef>& out) {
+    const CorridorRegistry& reg = corridorRegistry();
+    for (uint32_t i = 0; i < reg.count; ++i) {
+        const CorridorRec& r = reg.rec[i];
+        if (maxX < r.minX || minX > r.maxX || maxZ < r.minZ || minZ > r.maxZ) continue;
+        const TerrainCorridor& c = r.c;
+        const float reach = c.halfWidth + c.falloff;
+        for (int s = 0; s + 1 < c.nodeCount; ++s) {
+            const float ax = c.x[s], az = c.z[s], bx = c.x[s + 1], bz = c.z[s + 1];
+            if (std::max(ax, bx) + reach < minX || std::min(ax, bx) - reach > maxX ||
+                std::max(az, bz) + reach < minZ || std::min(az, bz) - reach > maxZ)
+                continue;
+            out.push_back({ ax, az, bx, bz, c.halfWidth, reach,
+                            c.depth[s], c.depth[s + 1] });
+        }
+    }
+}
+
+// SURVEY INSTRUMENT — see terrain.h. Rasterise every surface triangle of the
+// REAL emitted mesh over a 0.5 m grid, keep the samples on corridor FLAT FLOOR
+// (>= 0.5 m inside halfWidth, carve depth > 0.3 m), and report the worst
+// (meshY - trueFieldY). This is how the spawn-road green wedge was measured
+// (a field query cannot see it: the field is correct, the MESH stands above it).
+float terrainTileCorridorWedge(const TerrainConfig& cfg, float originX, float originZ,
+                               TerrainLod lod, float* outWorstX, float* outWorstZ,
+                               const float* refineFocusXZ) {
+    std::vector<TerrainCorridorSegRef> segs;
+    terrainCorridorSegmentsNearRect(originX, originZ,
+                                    originX + cfg.tileSize, originZ + cfg.tileSize, segs);
+    if (segs.empty()) return 0.0f;
+    auto onFloor = [&](float x, float z) {
+        for (const TerrainCorridorSegRef& s : segs) {
+            const float hw = s.halfWidth - 0.5f;
+            if (hw <= 0.0f) continue;
+            const float abx = s.bx - s.ax, abz = s.bz - s.az;
+            const float len2 = abx * abx + abz * abz;
+            float t = (len2 > 1e-12f) ? ((x - s.ax) * abx + (z - s.az) * abz) / len2 : 0.0f;
+            t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+            const float dx = x - (s.ax + abx * t), dz = z - (s.az + abz * t);
+            if (dx * dx + dz * dz > hw * hw) continue;
+            if (s.depth0 + (s.depth1 - s.depth0) * t > 0.3f) return true;
+        }
+        return false;
+    };
+    std::vector<x3::rhi::MeshVertex> verts;
+    std::vector<uint32_t> idx;
+    uint32_t surfIdxCount = 0;
+    buildTileMeshAbs(cfg, originX, originZ, lod, verts, idx, &surfIdxCount,
+                     refineFocusXZ);
+    const float stepM = 0.5f;
+    float worst = 0.0f;
+    for (uint32_t t = 0; t + 2 < surfIdxCount; t += 3) {
+        const x3::rhi::MeshVertex& A = verts[idx[t]];
+        const x3::rhi::MeshVertex& B = verts[idx[t + 1]];
+        const x3::rhi::MeshVertex& C = verts[idx[t + 2]];
+        const float minX = std::min(A.pos[0], std::min(B.pos[0], C.pos[0]));
+        const float maxX = std::max(A.pos[0], std::max(B.pos[0], C.pos[0]));
+        const float minZ = std::min(A.pos[2], std::min(B.pos[2], C.pos[2]));
+        const float maxZ = std::max(A.pos[2], std::max(B.pos[2], C.pos[2]));
+        const float den = (B.pos[0] - A.pos[0]) * (C.pos[2] - A.pos[2]) -
+                          (C.pos[0] - A.pos[0]) * (B.pos[2] - A.pos[2]);
+        if (std::fabs(den) < 1e-6f) continue;
+        for (float sz = std::ceil(minZ / stepM) * stepM; sz <= maxZ; sz += stepM) {
+            for (float sx = std::ceil(minX / stepM) * stepM; sx <= maxX; sx += stepM) {
+                const float w0 = ((B.pos[0] - sx) * (C.pos[2] - sz) -
+                                  (C.pos[0] - sx) * (B.pos[2] - sz)) / den;
+                const float w1 = ((C.pos[0] - sx) * (A.pos[2] - sz) -
+                                  (A.pos[0] - sx) * (C.pos[2] - sz)) / den;
+                const float w2 = 1.0f - w0 - w1;
+                if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f) continue;
+                if (!onFloor(sx, sz)) continue;
+                const float meshY = w0 * A.pos[1] + w1 * B.pos[1] + w2 * C.pos[1];
+                const float err = meshY - terrainHeightAt(cfg, sx, sz);
+                if (err > worst) {
+                    worst = err;
+                    if (outWorstX) *outWorstX = sx;
+                    if (outWorstZ) *outWorstZ = sz;
+                }
+            }
+        }
+    }
+    return worst;
 }
 
 namespace {
@@ -1461,6 +1977,7 @@ void Terrain::build(Scene& scene, x3::rhi::IRenderDevice& device,
             t.originZ = m_worldMinZ + gz * m_cfg.tileSize;
             t.centerX = t.originX + m_cfg.tileSize * 0.5f;
             t.centerZ = t.originZ + m_cfg.tileSize * 0.5f;
+            t.corridorPin = tileTouchesCorridor(t.originX, t.originZ, m_cfg.tileSize);
 
             for (int l = 0; l < (int)TerrainLod::Count; ++l) {
                 buildTileMeshAbs(m_cfg, t.originX, t.originZ, (TerrainLod)l, verts, idx);
@@ -1521,7 +2038,13 @@ uint32_t Terrain::updateLod(Scene& scene, float camX, float camZ) {
     for (auto& t : m_tiles) {
         const float dx = t.centerX - camX, dz = t.centerZ - camZ;
         const float dist = std::sqrt(dx * dx + dz * dz);
-        const TerrainLod want = lodForDist(m_cfg, dist);
+        TerrainLod want = lodForDist(m_cfg, dist);
+        // The seam fix, SCOPED (26 fps lesson): pinning every corridor tile
+        // at every distance tripled the triangle load — 46 miles of road all
+        // at full res. The wedge only reads near the camera; past 420 m it is
+        // sub-pixel. Near pin stays absolute.
+        if (corridorPinEnabled() && t.corridorPin && dist < 420.0f)
+            want = TerrainLod::Full;
         if (want != t.activeLod) {
             t.activeLod = want;
             if (t.entityId != kNoLink && t.entityId < scene.size())
@@ -1559,6 +2082,7 @@ uint32_t Terrain::activeTriangleCount() const {
 struct TerrainStreamer::GenJob {
     TerrainStreamer*               self = nullptr;
     int32_t                        gx = 0, gz = 0;
+    float                          focusX = 0.0f, focusZ = 0.0f;   // request focus
     std::unique_ptr<TileGenResult> result;   // owned by the job until pushed
 };
 
@@ -1584,18 +2108,30 @@ bool TerrainStreamer::focusTileResident(float worldX, float worldZ) const {
 // Pure CPU generation: fill a TileGenResult for the tile at (gx,gz). Thread-safe
 // (config + coords only). Builds the 3 LOD meshes + the LOD0 collision surface.
 void TerrainStreamer::generate(const TerrainConfig& cfg, int32_t gx, int32_t gz,
-                               TileGenResult& out) {
+                               float focusX, float focusZ, TileGenResult& out) {
     out.gx = gx; out.gz = gz;
     out.originX = gx * cfg.tileSize;
     out.originZ = gz * cfg.tileSize;
     out.centerX = out.originX + cfg.tileSize * 0.5f;
     out.centerZ = out.originZ + cfg.tileSize * 0.5f;
 
+    // A/B instrument, third of the set (X3_NO_CORRIDOR_LOD_REFINE=1 drops the
+    // refine entirely, X3_NO_CORRIDOR_PIN=1 drops the Full-LOD pin): with
+    // X3_NO_REFINE_SCOPE=1 the streamer passes NO focus, so every tile builds
+    // the EXACT refine at any range — the pre-task-#33 mesher, reproduced from
+    // this same build so the far-field clamp's triangle/fps saving can be
+    // MEASURED rather than argued (NO_SLOP rule 9). Nothing else sets it.
+    static const bool kNoRefineScope = [] {
+        const char* e = std::getenv("X3_NO_REFINE_SCOPE");
+        return e && e[0] == '1';
+    }();
+    const float focusXZ[2] = { focusX, focusZ };   // corridor-refine scope
+    const float* focusPtr = kNoRefineScope ? nullptr : focusXZ;
     uint32_t surfIdx = 0;   // LOD0 surface index count (holes may shrink it)
     for (int l = 0; l < (int)TerrainLod::Count; ++l) {
         buildTileMeshAbs(cfg, out.originX, out.originZ, (TerrainLod)l,
                          out.lodVerts[l], out.lodIdx[l],
-                         l == 0 ? &surfIdx : nullptr);
+                         l == 0 ? &surfIdx : nullptr, focusPtr);
     }
 
     // Collision: LOD0 top surface only (first vpe*vpe verts / surfIdx indices).
@@ -1621,7 +2157,7 @@ void TerrainStreamer::generate(const TerrainConfig& cfg, int32_t gx, int32_t gz,
 void TerrainStreamer::jobThunk(void* user) {
     GenJob* job = static_cast<GenJob*>(user);
     TerrainStreamer* self = job->self;
-    generate(self->m_cfg, job->gx, job->gz, *job->result);
+    generate(self->m_cfg, job->gx, job->gz, job->focusX, job->focusZ, *job->result);
     {
         std::lock_guard<std::mutex> lk(self->m_doneMtx);
         self->m_done.push_back(std::move(job->result));
@@ -1670,7 +2206,7 @@ void TerrainStreamer::requestTile(int32_t gx, int32_t gz, bool synchronous) {
         // Counted as in-flight (an outstanding result to drain) so the drain's
         // per-result --m_inFlight stays balanced across sync + async alike.
         auto r = obtainResult();
-        generate(m_cfg, gx, gz, *r);
+        generate(m_cfg, gx, gz, m_reqFocusX, m_reqFocusZ, *r);
         {
             std::lock_guard<std::mutex> lk(m_doneMtx);
             m_done.push_back(std::move(r));
@@ -1684,6 +2220,7 @@ void TerrainStreamer::requestTile(int32_t gx, int32_t gz, bool synchronous) {
     if (m_inFlight >= m_maxInFlight) return;   // try again next frame (re-requested)
     GenJob* job = new GenJob();
     job->self = this; job->gx = gx; job->gz = gz;
+    job->focusX = m_reqFocusX; job->focusZ = m_reqFocusZ;
     job->result = obtainResult();
     m_pending[k] = 1;
     ++m_inFlight;
@@ -1699,6 +2236,7 @@ void TerrainStreamer::upload(Scene& scene, x3::rhi::IRenderDevice& device,
     TerrainTile& t = *tile;
     t.gx = r.gx; t.gz = r.gz;
     t.originX = r.originX; t.originZ = r.originZ;
+    t.corridorPin = tileTouchesCorridor(t.originX, t.originZ, m_cfg.tileSize);   // seam fix
     t.centerX = r.centerX; t.centerZ = r.centerZ;
     t.minY = r.minY; t.maxY = r.maxY;
 
@@ -1757,6 +2295,7 @@ void TerrainStreamer::init(Scene& scene, x3::rhi::IRenderDevice& device,
     m_radius = radius;
     m_groundTex = makeGroundTexture(device);
     if (m_jobs) m_counter = m_jobs->allocCounter();
+    m_reqFocusX = focusX; m_reqFocusZ = focusZ;   // corridor-refine scope
 
     const int32_t ctx = tileFloor(focusX);
     const int32_t ctz = tileFloor(focusZ);
@@ -1788,6 +2327,7 @@ void TerrainStreamer::init(Scene& scene, x3::rhi::IRenderDevice& device,
 uint32_t TerrainStreamer::update(Scene& scene, x3::rhi::IRenderDevice& device,
                                  x3::phys::IPhysicsWorld& physics,
                                  float focusX, float focusZ) {
+    m_reqFocusX = focusX; m_reqFocusZ = focusZ;   // corridor-refine scope
     const int32_t ctx = tileFloor(focusX);
     const int32_t ctz = tileFloor(focusZ);
 
@@ -1895,7 +2435,13 @@ uint32_t TerrainStreamer::update(Scene& scene, x3::rhi::IRenderDevice& device,
         TerrainTile& t = *kv.second;
         const float dx = t.centerX - focusX, dz = t.centerZ - focusZ;
         const float dist = std::sqrt(dx * dx + dz * dz);
-        const TerrainLod want = lodForDist(m_cfg, dist);
+        TerrainLod want = lodForDist(m_cfg, dist);
+        // The seam fix, SCOPED (26 fps lesson): pinning every corridor tile
+        // at every distance tripled the triangle load — 46 miles of road all
+        // at full res. The wedge only reads near the camera; past 420 m it is
+        // sub-pixel. Near pin stays absolute.
+        if (corridorPinEnabled() && t.corridorPin && dist < 420.0f)
+            want = TerrainLod::Full;
         if (want != t.activeLod) {
             t.activeLod = want;
             if (t.entityId != kNoLink && t.entityId < scene.size())
@@ -2045,6 +2591,58 @@ bool runTerrainSelfTest() {
         const bool savesTris = activeTris < terrain.activeTriangleCount() + 1;
         check(ordered && applied && savesTris,
               "T3 LOD coarsens with distance (near=Full, far=Quarter)");
+    }
+
+    // ---- T4: RIDGE SURVIVAL at coarse LOD (task #26 — the blade towers) ------
+    // Point-sampling at the 4 m Quarter stride drops any crest narrower than
+    // the stride: the ridge vanishes except where a vertex lands on it — thin
+    // vertical blades on every distant mountain. Gate: walk the tunnel ridge's
+    // spine (the narrowest authored range), find each covering tile's true
+    // crest (max field over the LOD0 lattice, interior cells only), and demand
+    // the REAL Quarter mesh carries a vertex within one coarse cell of it at
+    // >= that height (the ridge filter's tiling-blocks guarantee). Pre-fix
+    // (X3_NO_RIDGE_FILTER=1) this measures the blades: metres of lost crest.
+    {
+        const TerrainConfig& wcfg = worldTerrainConfig();
+        const float ax = -753.0f, az = -740.0f, bx = -431.0f, bz = 36.0f; // kRanges[4]
+        const float ts = wcfg.tileSize;
+        const float fine = ts / (float)(wcfg.tileVerts - 1);
+        float worstDeficit = -1e9f, wpx = 0.0f, wpz = 0.0f;
+        std::vector<x3::rhi::MeshVertex> mv; std::vector<uint32_t> mi;
+        for (int si = 1; si <= 11; ++si) {
+            const float t = (float)si / 12.0f;
+            const float sx = ax + (bx - ax) * t, sz = az + (bz - az) * t;
+            const float tx = std::floor(sx / ts) * ts, tz = std::floor(sz / ts) * ts;
+            // true crest over the tile's INTERIOR (>= 1 Quarter cell from the
+            // border — border verts stay point samples by design)
+            const float cellQ = ts / (float)((wcfg.tileVerts - 1) / 4);
+            float crest = -1e9f, px = 0.0f, pz = 0.0f;
+            for (uint32_t fj = 0; fj < wcfg.tileVerts; ++fj)
+                for (uint32_t fi = 0; fi < wcfg.tileVerts; ++fi) {
+                    const float x = tx + fi * fine, z = tz + fj * fine;
+                    if (x < tx + cellQ || x > tx + ts - cellQ ||
+                        z < tz + cellQ || z > tz + ts - cellQ) continue;
+                    const float h = terrainHeightAt(wcfg, x, z);
+                    if (h > crest) { crest = h; px = x; pz = z; }
+                }
+            if (crest < -1e8f) continue;
+            mv.clear(); mi.clear();
+            buildTileMeshAbs(wcfg, tx, tz, TerrainLod::Quarter, mv, mi);
+            const uint32_t vpeQ = (wcfg.tileVerts - 1) / 4 + 1;
+            float best = -1e9f;
+            for (uint32_t v = 0; v < vpeQ * vpeQ; ++v) {
+                if (std::fabs(mv[v].pos[0] - px) > cellQ + 0.01f ||
+                    std::fabs(mv[v].pos[2] - pz) > cellQ + 0.01f) continue;
+                best = std::max(best, mv[v].pos[1]);
+            }
+            const float deficit = crest - best;
+            if (deficit > worstDeficit) { worstDeficit = deficit; wpx = px; wpz = pz; }
+        }
+        x3::logInfo("[terrain-test] T4 worst Quarter-LOD crest deficit along the "
+                    "tunnel ridge: " + std::to_string(worstDeficit) + " m at (" +
+                    std::to_string(wpx) + ", " + std::to_string(wpz) + ")");
+        check(worstDeficit <= 0.01f,
+              "T4 narrow ridge crests survive Quarter LOD (no blade towers)");
     }
 
     physics->shutdown();
@@ -2770,6 +3368,239 @@ bool runTerrainCorridorSelfTest() {
         checkC(capped && rejectShort && rejectLong && rejectZero && rejectNan &&
                empty && dupOk && inert,
                "C6 registry caps at kMaxTerrainCorridors + rejects degenerate corridors");
+    }
+
+    // ---- C7: CORRIDOR x TILE-LOD WEDGE (the spawn-road green-strip class) ---
+    // A field query cannot see this defect: the FIELD is correct at every
+    // point; the coarse MESH interpolates 2/4 m chords across the carve's
+    // smoothstep shoulder and reconstructs a wedge ABOVE the carved datum —
+    // the strip of grass knifing through the spawn-road pavement, which
+    // survived lifting the slab 0.07 m proud because it is a mesh artifact.
+    // Register a demo-route-class corridor (10.1/14 profile, 8 m deep,
+    // diagonal at the spawn heading so it crosses cells and tile borders at
+    // a grazing angle) and survey every tile it touches through the REAL
+    // mesher at all three LODs. Gate: the mesh never stands more than 2 cm
+    // above the true field anywhere on the corridor floor.
+    // (X3_NO_CORRIDOR_LOD_REFINE=1 reproduces the pre-fix mesh; this gate
+    // then fails with the measured wedge — the A/B instrument.)
+    {
+        clearTerrainCorridors();
+        TerrainCorridor road{};
+        road.nodeCount = 3;
+        // heading 157.5 deg (the demo spawn route's), through a tile corner
+        const float dirX = -0.9239f, dirZ = 0.3827f;
+        for (int i = 0; i < 3; ++i) {
+            const float s = -90.0f + 90.0f * (float)i;
+            road.x[i] = -600.0f + dirX * s;
+            road.z[i] = -350.0f + dirZ * s;
+            road.depth[i] = 8.0f;
+        }
+        road.halfWidth = 10.1f;   // the tunnel corridor's own cross-section
+        road.falloff   = 14.0f;
+        checkC(registerTerrainCorridor(road), "C7a the demo-class corridor registers");
+
+        // The metric is LOD PARITY, not an absolute: at Full LOD a 1 m chord
+        // over the rocky natural relief already stands ~0.3 m above the field's
+        // interior dips (honest mesh interpolation — invisible, because the
+        // carve derivation cuts against the field's MAX, not its dips). The
+        // wedge class is the EXCESS a coarser LOD adds on top of Full; with
+        // the refinement in, Half/Quarter emit the IDENTICAL surface inside
+        // the corridor, so the excess must be ~0. Measured pre-fix (the A/B
+        // env): Full 0.36 m, Half 1.24 m, Quarter 3.34 m — the strip.
+        float worstPerLod[3] = { 0.0f, 0.0f, 0.0f };
+        float worstX = 0.0f, worstZ = 0.0f;
+        const float pad  = road.halfWidth + road.falloff;
+        const float bx0  = std::min(road.x[0], road.x[2]) - pad;
+        const float bx1  = std::max(road.x[0], road.x[2]) + pad;
+        const float bz0  = std::min(road.z[0], road.z[2]) - pad;
+        const float bz1  = std::max(road.z[0], road.z[2]) + pad;
+        const float ts   = wcfg.tileSize;
+        for (int lod = 0; lod < (int)TerrainLod::Count; ++lod) {
+            for (float tz = std::floor(bz0 / ts) * ts; tz < bz1; tz += ts) {
+                for (float tx = std::floor(bx0 / ts) * ts; tx < bx1; tx += ts) {
+                    float wx = 0.0f, wz = 0.0f;
+                    const float w = terrainTileCorridorWedge(wcfg, tx, tz,
+                                                             (TerrainLod)lod, &wx, &wz);
+                    if (w > worstPerLod[lod]) {
+                        worstPerLod[lod] = w;
+                        if (lod > 0) { worstX = wx; worstZ = wz; }
+                    }
+                }
+            }
+            x3::logInfo("[corridor-test] C7 LOD" + std::to_string(lod) +
+                        " worst mesh-above-field on the corridor floor: " +
+                        std::to_string(worstPerLod[lod]) + " m");
+        }
+        const float excess = std::max(worstPerLod[1], worstPerLod[2]) - worstPerLod[0];
+        if (excess > 0.02f)
+            x3::logError("[corridor-test] C7 LOD excess over Full: " + std::to_string(excess) +
+                         " m, worst at (" + std::to_string(worstX) + ", " +
+                         std::to_string(worstZ) + ")");
+        checkC(excess <= 0.02f,
+               "C7 Half/Quarter mesh the corridor floor IDENTICALLY to Full (LOD excess <= 2 cm)");
+        clearTerrainCorridors();
+    }
+
+    // ---- C8: the refine's DISTANCE SCOPE (W-PERF task #33) -----------------
+    // Beyond kCorridorRefineNearM of the tile-request focus the mesher swaps
+    // the exact LOD0-lattice refine for the far-field CLAMP (2 coarse tris per
+    // hot cell, corner verts pulled under the carved field). Gates, over the
+    // same demo-class corridor as C7:
+    //   C8a  a NEAR focus is bit-identical to the no-focus build (plumbing a
+    //        focus through the streamer changed nothing near-field), and Full
+    //        LOD (collision source) is bit-identical even FAR.
+    //   C8b  the clamp holds at range: far-built Half/Quarter meshes never
+    //        stand > 2 cm above the carved field on the corridor floor.
+    //   C8c  the triangles actually died: far coarse meshes carry strictly
+    //        fewer indices than the exact refine's.
+    //   C8d  seam parity at range: two adjacent far tiles agree bit-for-bit
+    //        on their shared border (the clamp scans incident cells in world
+    //        space, so a border vertex resolves identically from both sides).
+    {
+        clearTerrainCorridors();
+        TerrainCorridor road{};
+        road.nodeCount = 3;
+        const float dirX = -0.9239f, dirZ = 0.3827f;   // C7's grazing heading
+        for (int i = 0; i < 3; ++i) {
+            const float s = -90.0f + 90.0f * (float)i;
+            road.x[i] = -600.0f + dirX * s;
+            road.z[i] = -350.0f + dirZ * s;
+            road.depth[i] = 8.0f;
+        }
+        road.halfWidth = 10.1f;
+        road.falloff   = 14.0f;
+        checkC(registerTerrainCorridor(road), "C8 the corridor registers");
+
+        const float focusNear[2] = { -600.0f, -350.0f };            // on the road
+        const float focusFar[2]  = { -600.0f + kCorridorRefineNearM + 400.0f,
+                                     -350.0f };                     // ~730 m out
+        const float pad = road.halfWidth + road.falloff;
+        const float bx0 = std::min(road.x[0], road.x[2]) - pad;
+        const float bx1 = std::max(road.x[0], road.x[2]) + pad;
+        const float bz0 = std::min(road.z[0], road.z[2]) - pad;
+        const float bz1 = std::max(road.z[0], road.z[2]) + pad;
+        const float ts  = wcfg.tileSize;
+
+        bool nearIdentical = true, fullIdentical = true;
+        uint64_t exactIdx = 0, farIdx = 0;
+        std::vector<x3::rhi::MeshVertex> vA, vB;
+        std::vector<uint32_t> iA, iB;
+        for (int lod = 0; lod < (int)TerrainLod::Count; ++lod) {
+            for (float tz = std::floor(bz0 / ts) * ts; tz < bz1; tz += ts) {
+                for (float tx = std::floor(bx0 / ts) * ts; tx < bx1; tx += ts) {
+                    // exact (no focus) vs near-focus vs far-focus builds
+                    buildTileMeshAbs(wcfg, tx, tz, (TerrainLod)lod, vA, iA);
+                    buildTileMeshAbs(wcfg, tx, tz, (TerrainLod)lod, vB, iB,
+                                     nullptr, focusNear);
+                    if (vA.size() != vB.size() || iA != iB ||
+                        std::memcmp(vA.data(), vB.data(),
+                                    vA.size() * sizeof(vA[0])) != 0)
+                        nearIdentical = false;
+                    buildTileMeshAbs(wcfg, tx, tz, (TerrainLod)lod, vB, iB,
+                                     nullptr, focusFar);
+                    if (lod == 0) {
+                        if (vA.size() != vB.size() || iA != iB ||
+                            std::memcmp(vA.data(), vB.data(),
+                                        vA.size() * sizeof(vA[0])) != 0)
+                            fullIdentical = false;
+                    } else {
+                        exactIdx += iA.size();
+                        farIdx   += iB.size();
+                    }
+                }
+            }
+        }
+        checkC(nearIdentical && fullIdentical,
+               "C8a near-focus build bit-identical to no-focus; Full LOD unchanged even far");
+
+        // C8b — the clamp holds at range, gated the way C7 gates: RELATIVE to
+        // the Full-LOD mesh, never against absolute zero.
+        // WHY RELATIVE (the trap that failed this gate on its first run, at an
+        // absolute 2 cm): terrainTileCorridorWedge probes triangles on a 0.5 m
+        // grid, but the finest mesh lattice is 1 m, so between two lattice
+        // samples ANY mesh — Full LOD included, the very surface collision uses
+        // — stands slightly above the field. C7 measures that floor at 0.625 m
+        // on its corridor and so compares coarse-to-Full; C8b must too, or it
+        // is gating the probe's resolution rather than the clamp.
+        // The clamp's guarantee is pointwise and STRONGER than "no worse than
+        // Full": a far cell's corners are all pulled to
+        //   m = min(field over the cell's LOD0 lattice) <= min over the 1 m
+        // cell containing P <= fullMesh(P), and the coarse chord is a convex
+        // combination of those corners — so farMesh(P) <= fullMesh(P) for every
+        // P. The gate therefore demands NO EXCESS OVER FULL (2 cm slack only to
+        // keep it a float comparison), and the measured excess is negative.
+        {
+            bool clampHolds = true;
+            float worstFar = 0.0f, worstFull = 0.0f, worstExcess = -1e9f;
+            float wx = 0.0f, wz = 0.0f;
+            for (float tz = std::floor(bz0 / ts) * ts; tz < bz1; tz += ts) {
+                for (float tx = std::floor(bx0 / ts) * ts; tx < bx1; tx += ts) {
+                    const float wFull = terrainTileCorridorWedge(
+                        wcfg, tx, tz, TerrainLod::Full);
+                    worstFull = std::max(worstFull, wFull);
+                    for (int lod = 1; lod < (int)TerrainLod::Count; ++lod) {
+                        float px = 0.0f, pz = 0.0f;
+                        const float wFar = terrainTileCorridorWedge(
+                            wcfg, tx, tz, (TerrainLod)lod, &px, &pz, focusFar);
+                        worstFar = std::max(worstFar, wFar);
+                        if (wFar - wFull > worstExcess) {
+                            worstExcess = wFar - wFull; wx = px; wz = pz;
+                        }
+                        if (wFar > wFull + 0.02f) clampHolds = false;
+                    }
+                }
+            }
+            x3::logInfo("[corridor-test] C8b far-field worst mesh-above-field on "
+                        "the corridor floor: far=" + std::to_string(worstFar) +
+                        " m vs Full(collision)=" + std::to_string(worstFull) +
+                        " m; worst per-tile excess over Full=" +
+                        std::to_string(worstExcess) + " m at (" +
+                        std::to_string(wx) + ", " + std::to_string(wz) + ")");
+            checkC(clampHolds,
+                   "C8b the far-field clamp holds at range (never above the Full-LOD mesh)");
+        }
+        x3::logInfo("[corridor-test] C8c coarse-LOD indices exact=" +
+                    std::to_string(exactIdx) + " far=" + std::to_string(farIdx) +
+                    " (saved " + std::to_string(exactIdx > 0 ?
+                        (double)(exactIdx - farIdx) * 100.0 / (double)exactIdx : 0.0) +
+                    "%)");
+        checkC(farIdx < exactIdx,
+               "C8c the far variant emits strictly fewer triangles than the exact refine");
+
+        // C8d — seam parity: walk tile pairs sharing a vertical border where
+        // both sides feel the corridor, and demand bit-equal border verts.
+        {
+            bool seamOk = true; int pairs = 0;
+            for (int lod = 1; lod < (int)TerrainLod::Count; ++lod) {
+                for (float tz = std::floor(bz0 / ts) * ts; tz < bz1; tz += ts) {
+                    for (float tx = std::floor(bx0 / ts) * ts; tx + ts < bx1; tx += ts) {
+                        buildTileMeshAbs(wcfg, tx, tz, (TerrainLod)lod, vA, iA,
+                                         nullptr, focusFar);
+                        buildTileMeshAbs(wcfg, tx + ts, tz, (TerrainLod)lod, vB, iB,
+                                         nullptr, focusFar);
+                        const float bx = tx + ts;
+                        ++pairs;
+                        // surface verts only (skirts duplicate positions)
+                        const uint32_t stepL = 1u << lod;
+                        const uint32_t vpeL  = (wcfg.tileVerts - 1) / stepL + 1;
+                        for (uint32_t j = 0; j < vpeL; ++j) {
+                            const x3::rhi::MeshVertex& a =
+                                vA[(size_t)j * vpeL + (vpeL - 1)];   // A's east edge
+                            const x3::rhi::MeshVertex& b =
+                                vB[(size_t)j * vpeL + 0];            // B's west edge
+                            if (a.pos[0] != bx || b.pos[0] != bx ||
+                                a.pos[1] != b.pos[1] || a.pos[2] != b.pos[2])
+                                seamOk = false;
+                        }
+                    }
+                }
+            }
+            x3::logInfo("[corridor-test] C8d checked " + std::to_string(pairs) +
+                        " adjacent far-tile pairs");
+            checkC(seamOk && pairs > 0,
+                   "C8d far tiles agree bit-for-bit across shared borders");
+        }
+        clearTerrainCorridors();
     }
 
     clearTerrainCorridors();   // leave the global registry exactly as we found it

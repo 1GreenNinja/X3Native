@@ -3,7 +3,10 @@
 
 #include <GLFW/glfw3.h>
 #include "engine/core/x3_log.h"
+#include "../engine_console.h"     // D-CONSOLE fold: the shared r_*/cheat catalog + noclip + help
+#include "world_host_common.h"     // applyLiveHostRenderCVars (live console -> device push)
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -79,7 +82,31 @@ void HostShell::attach(GLFWwindow* window, x3::rhi::IRenderDevice* device) {
     // Hud::init registers hud_fps / r_stats and the quit, fps, stats and
     // r_speeds commands, and points `quit` at our flag.
     m_hud.init(*m_console, &m_quit);
-    m_console->print("~ console  |  ESC menu  |  F3 stats  |  SHIFT+ESC quit");
+
+    // ---- D-CONSOLE fold: the SAME cvar/command catalog the campaign console
+    // has (app/engine_console.h) — r_exposure, r_bloom*, r_taa, r_velocity,
+    // r_fog*, r_rtao*, r_wetness*, r_csm*, combat_log/ai_log, boot_budget_ms,
+    // ~90 cvars in all — plus noclip/idclip (REAL here: a detached freefly,
+    // see trackCamera/overrideCamera) and the grouped/paged 'help'. Cheats
+    // needing campaign state (god, idkfa/idfa, vigil_link, intro_play) are
+    // left as null hooks, which register as "campaign only" stubs — never
+    // "unknown: <cmd>". Before this call a --world host's console had NONE of
+    // this: the owner's screenshot ("typing noclip/idclip -> unknown") was
+    // taken against exactly this gap.
+    {
+        x3::game::EngineConsoleHooks hooks{};
+        hooks.setNoclip = [this](bool on) {
+            if (on && !m_fly.active && m_haveLastCam) {
+                m_fly.pos[0] = m_lastCam[0]; m_fly.pos[1] = m_lastCam[1]; m_fly.pos[2] = m_lastCam[2];
+                m_fly.yaw    = m_lastCam[3]; m_fly.pitch  = m_lastCam[4];
+            }
+            m_fly.active = on;
+            m_flyMouseSeeded = false;   // re-seed the mouse delta so the first frame doesn't jump
+        };
+        hooks.getNoclip = [this]() { return m_fly.active; };
+        x3::game::registerEngineConsole(*m_console, window, hooks);
+    }
+    m_console->print("~ console  |  ESC menu  |  F3 stats  |  noclip freefly  |  SHIFT+ESC quit");
 
     g_shell = this;
     g_window = window;
@@ -207,8 +234,69 @@ bool HostShell::key(int glfwKey) const {
     return glfwGetKey(m_window, glfwKey) == GLFW_PRESS;
 }
 
+// ---------------------------------------------------------------------------
+// NOCLIP — a real detached freefly camera. Registered under 'noclip'/'idclip'
+// by attach() above; this is the movement half.
+// ---------------------------------------------------------------------------
+void HostShell::trackCamera(float x, float y, float z, float yaw, float pitch) {
+    m_lastCam[0] = x; m_lastCam[1] = y; m_lastCam[2] = z;
+    m_lastCam[3] = yaw; m_lastCam[4] = pitch;
+    m_haveLastCam = true;
+}
+
+bool HostShell::overrideCamera(float dt, float fovDeg) {
+    if (!m_fly.active || !m_window || !m_device) return false;
+
+    // Console/menu owns input: hold position, keep rendering from the last
+    // pose rather than freezing the frame (the world stays visible around the
+    // frozen flycam, exactly like every other paused-but-drawn overlay here).
+    if (m_paused || m_hud.consoleOpen()) {
+        m_device->setCamera(m_fly.pos[0], m_fly.pos[1], m_fly.pos[2], m_fly.yaw, m_fly.pitch, fovDeg);
+        return true;
+    }
+
+    double mx = 0.0, my = 0.0;
+    glfwGetCursorPos(m_window, &mx, &my);
+    if (!m_flyMouseSeeded) { m_flyLastMX = mx; m_flyLastMY = my; m_flyMouseSeeded = true; }
+    const float ddx = (float)(mx - m_flyLastMX), ddy = (float)(my - m_flyLastMY);
+    m_flyLastMX = mx; m_flyLastMY = my;
+
+    m_fly.yaw   += ddx * 0.0025f;
+    m_fly.pitch -= ddy * 0.0025f;
+    if (m_fly.pitch >  1.5f) m_fly.pitch =  1.5f;
+    if (m_fly.pitch < -1.5f) m_fly.pitch = -1.5f;
+
+    // Same yaw/pitch -> direction convention every host in this file already
+    // uses for its own chase cam (host_tunnel.cpp / host_drive.cpp), so the
+    // freefly orients exactly like the camera it just detached from.
+    const float fwd[3]   = { std::cos(m_fly.pitch) * std::cos(m_fly.yaw), std::sin(m_fly.pitch),
+                             std::cos(m_fly.pitch) * std::sin(m_fly.yaw) };
+    const float right[3] = { -fwd[2], 0.0f, fwd[0] };
+    const float speed = (key(GLFW_KEY_LEFT_SHIFT) ? 40.0f : 12.0f) * dt;
+    if (key(GLFW_KEY_W)) { m_fly.pos[0] += fwd[0]*speed;   m_fly.pos[1] += fwd[1]*speed;   m_fly.pos[2] += fwd[2]*speed; }
+    if (key(GLFW_KEY_S)) { m_fly.pos[0] -= fwd[0]*speed;   m_fly.pos[1] -= fwd[1]*speed;   m_fly.pos[2] -= fwd[2]*speed; }
+    if (key(GLFW_KEY_D)) { m_fly.pos[0] += right[0]*speed; m_fly.pos[2] += right[2]*speed; }
+    if (key(GLFW_KEY_A)) { m_fly.pos[0] -= right[0]*speed; m_fly.pos[2] -= right[2]*speed; }
+    if (key(GLFW_KEY_SPACE))        m_fly.pos[1] += speed;   // straight up, independent of pitch
+    if (key(GLFW_KEY_LEFT_CONTROL)) m_fly.pos[1] -= speed;   // straight down
+
+    m_device->setCamera(m_fly.pos[0], m_fly.pos[1], m_fly.pos[2], m_fly.yaw, m_fly.pitch, fovDeg);
+    return true;
+}
+
+void HostShell::flyCamPose(float& x, float& y, float& z, float& yaw, float& pitch) const {
+    x = m_fly.pos[0]; y = m_fly.pos[1]; z = m_fly.pos[2]; yaw = m_fly.yaw; pitch = m_fly.pitch;
+}
+
 void HostShell::draw(const x3::rhi::FrameContext& frame, float dt) {
     if (!m_device || !frame.valid) return;
+
+    // LIVE CONSOLE -> DEVICE (D-CONSOLE fold, world_host_common.h). Every host
+    // that calls shell.draw() gets this "for free": type `r_exposure 0.5` /
+    // `r_bloom 0` / `r_taa 0` / `r_velocity 1` at THIS console and the frame
+    // changes, without waiting for a re-launch with `--set`. Cheap — hashed,
+    // re-applied only on an actual change, checked every ~15th frame.
+    x3::apphost::applyLiveHostRenderCVars(*m_console, *m_device, m_liveApplyFrame++, m_liveApplyHash);
 
     if (m_paused) drawPauseMenu(frame);
 
@@ -297,8 +385,11 @@ void HostShell::addFloatCommand(const char* name, const char* help,
     auto* con = m_console;
     std::string nm = name;
     con->registerCommand(name, [con, nm, apply](const std::vector<std::string>& args) {
-        if (args.size() < 2) { con->print(nm + ": needs a number"); return; }
-        const float v = (float)std::atof(args[1].c_str());
+        // Console::exec STRIPS the command name before dispatch — the value is
+        // args[0]. Written against args[1] originally: every float command in
+        // the game printed 'needs a number' instead of acting, for two days.
+        if (args.empty()) { con->print(nm + ": needs a number"); return; }
+        const float v = (float)std::atof(args[0].c_str());
         apply(v);
         char buf[128];
         std::snprintf(buf, sizeof(buf), "%s = %.4g", nm.c_str(), (double)v);
@@ -313,7 +404,7 @@ void HostShell::addToggleCommand(const char* name, const char* help,
     auto* con = m_console;
     std::string nm = name;
     con->registerCommand(name, [con, nm, get, set](const std::vector<std::string>& args) {
-        const bool v = (args.size() < 2) ? !get() : (std::atoi(args[1].c_str()) != 0);
+        const bool v = args.empty() ? !get() : (std::atoi(args[0].c_str()) != 0);
         set(v);
         con->print(nm + " = " + (v ? "1" : "0"));
     }, help);

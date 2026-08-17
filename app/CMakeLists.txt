@@ -25,6 +25,9 @@ add_library(x3app SHARED
     cli.cpp
     # #28 deep monolith split — default host (interactive render loop)
     app_run.cpp
+    # D-CONSOLE fold — the shared cvar/command registry app_run AND HostShell
+    # both call (one registry, no drift). See app/engine_console.h.
+    engine_console.cpp
     # #28 deep monolith split — headless screenshot/capture handlers
     screenshot_hosts.cpp
     # #28 deep monolith split — extracted self-contained --world hosts
@@ -60,8 +63,13 @@ add_library(x3app SHARED
     world_hosts/host_gallery.cpp
     world_hosts/host_tunnel.cpp
     tunnel_corridor.cpp
+    # W-TREES — tall broadleaf groves along the tunnel road (--world tunnel)
+    road_trees.cpp
+    # W-FOREST — the sketch's brown regions: area forests, two-tier draw
+    forest.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
+    river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp
@@ -132,6 +140,7 @@ add_library(x3app SHARED
     weapon.cpp
     monster.cpp
     anim.cpp
+    character_anim.cpp
     thirdperson.cpp
     melee.cpp
     objective.cpp

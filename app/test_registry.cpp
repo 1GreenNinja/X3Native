@@ -16,6 +16,7 @@
 #include "engine/core/x3_log.h"
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
+#include "engine_console.h"   // D-CONSOLE fold: --test-engineconsole self-test
 #include "club_listen.h"   // CLUB LISTEN MODE self-test (--test-listen)
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/rhi/FrustumCull.h"
@@ -317,6 +318,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testConsole) {
         x3::logInfo("running console (D6) self-test...");
         return x3::con::runConsoleSelfTest() ? 0 : 1;
+    }
+    if (tf.testEngineConsole) {
+        x3::logInfo("running engine console (D-CONSOLE fold: shared registry + noclip + help) self-test...");
+        return x3::game::runEngineConsoleSelfTest() ? 0 : 1;
     }
     if (tf.testPhysics) {
         x3::logInfo("running physics (M3) self-test...");

@@ -2359,13 +2359,24 @@ void VulkanRenderDevice::prepareFrameData() {
             w.p1 = glm::vec4(m_water.waveLength, m_water.speed, m_water.specular, m_water.fresnel);
             const float invW = (m_extent.width  > 0) ? 1.0f / (float)m_extent.width  : 0.0f;
             const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
-            w.p2 = glm::vec4(kWaterPatchHalf, invW, invH, 0.0f);
+            // p2.w = the LIVE camera far plane. water.frag linearizes the scene
+            // depth buffer to recover how much water the view ray crosses (the
+            // shallow->deep refraction gradient); it used to hardcode far=200,
+            // which is only correct for worlds that never call setCameraFar —
+            // an open-terrain host at far=4000 got garbage water depth, i.e. a
+            // flat "surface texture" with no shoreline. Passing the real far
+            // keeps far=200 worlds byte-identical (the shader falls back to
+            // 200 when this is 0, and computes the same value when it is 200).
+            w.p2 = glm::vec4(kWaterPatchHalf, invW, invH, m_camFar);
             // horizonColor: negative red = "not supplied" -> the shader keeps the
             // historic analytic-sky fade (byte-identical for every world that
             // never sets it).
             const bool hasHorizon = m_water.horizonColor[0] >= 0.0f;
             w.p3 = glm::vec4(m_water.horizonColor[0], m_water.horizonColor[1],
                              m_water.horizonColor[2], hasHorizon ? 1.0f : 0.0f);
+            // Clarity (see WaterParams::clarity): 0 keeps the historic opaque
+            // surface byte-identical (alpha 1 through the enabled blend).
+            w.p4 = glm::vec4(m_water.clarity, 0.0f, 0.0f, 0.0f);
             std::memcpy(m_waterUboMapped[m_frameIdx], &w, sizeof(WaterUBO));
         }
 
