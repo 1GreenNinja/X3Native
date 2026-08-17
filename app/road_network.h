@@ -57,6 +57,44 @@ constexpr float kRunningHalfM  = (kLaneFt * (float)kLaneCount * 0.5f) * kFtToM; 
 constexpr float kShoulderHalfM = kRunningHalfM + kShoulderFt * kFtToM;           // 28 ft
 constexpr float kPavedHalfM    = kShoulderHalfM + kApronFt * kFtToM;             // 48 ft
 
+// ---------------------------------------------------------------------------
+// THE FREEWAY — twin separate carriageways, I-17 style (Tim: "make the road
+// wider... much wider. Its a freeway", then "If we make 8 lanes each side,
+// that is better. You can have a separate road carrying north and south
+// traffic like I17 does in AZ").
+//
+// EACH carriageway is a full roadway of its own — 8 x 12 ft lanes, the same
+// 4 ft shoulders / 20 ft aprons / prism skirts / own barriers as the base
+// profile — and the two are separated by a MEDIAN that varies with the
+// terrain: tens of metres of graded ground where the country is close to the
+// datum, narrowing to a concrete jersey-wall median (the F-shape from the
+// barrier work) where the route is in cut or on fill. TURNAROUND CROSSOVERS
+// pave the median every ~1.7 km (and at every junction landing, so crossing
+// traffic has its gap where the side road arrives). Lane paint is WHITE ONLY
+// — solid edges, dashed lane lines, and NO double yellow: opposing traffic
+// is on the other roadway, which is the whole point of dividing it.
+//
+// One centreline drives everything (RoadSpec::dualCarriageway): the grader,
+// the corridor chain (ONE chain — the whole span is carved flat, so the
+// median is graded ground like a real depressed freeway median, and the
+// registry budget is untouched), the ribbon, the barriers and the junctions
+// all derive the twin roadways from it. Tunnels stay 4-lane bores, so routes
+// that hand reaches to a bore keep the base profile; the freeway profile is
+// applied to the INNER TOUR (the main drag) first.
+// ---------------------------------------------------------------------------
+constexpr int   kFwyLaneCount     = 8;                                             // per carriageway
+constexpr float kFwyRunningHalfM  = (kLaneFt * (float)kFwyLaneCount * 0.5f) * kFtToM; // 48 ft
+constexpr float kFwyShoulderHalfM = kFwyRunningHalfM + kShoulderFt * kFtToM;          // 52 ft
+constexpr float kFwyPavedHalfM    = kFwyShoulderHalfM + kApronFt * kFtToM;            // 72 ft
+constexpr float kFwyMedianMinHalfM  = 1.1f;   // jersey-median: inner aprons abut the wall
+constexpr float kFwyMedianMaxHalfM  = 12.0f;  // wide graded median (24 m between inner aprons)
+constexpr float kFwyMedianWallHalfM = 3.0f;   // below this half-width the median wall stands
+// Total half-span of the dual cross-section at the widest median, + 1 m of
+// cut ground past the outer apron edges (same margin the base profile keeps).
+constexpr float kFwyDualMaxHalfM  = kFwyMedianMaxHalfM + 2.0f * kFwyPavedHalfM + 1.0f;
+constexpr float kFwyTurnaroundSpacingM = 1700.0f;  // ~1.5-2 km, Tim's turnarounds
+constexpr float kFwyTurnaroundLenM     = 42.0f;    // paved crossover length along the route
+
 // One authored route: a centreline in world XZ. Y is derived from the terrain.
 struct RoadSpec {
     std::string name  = "road";
@@ -88,6 +126,12 @@ struct RoadSpec {
     // skips the pass (the A/B instrument, mirroring X3_NO_VCURVE).
     float minTurnRadiusM   = 200.0f;   // class floor: bends tighter get eased
     float maxDeflectionDeg = 3.0f;     // max heading change per node after smoothing
+    // TWIN CARRIAGEWAYS (see the FREEWAY block above): the centreline becomes
+    // the median axis; registerRoad carves the full dual span, buildRoadRibbon
+    // lays two 8-lane roadways + the median features, planRoadBarriers samples
+    // each carriageway's own offside. Routes with bore/deck gaps must keep
+    // this false — a tunnel is a 4-lane tube and cannot swallow a freeway.
+    bool  dualCarriageway  = false;
     std::vector<float> x, z;     // centreline nodes, world (same length, >= 2)
 
     // THE SPAN GAP (bores + bridges). A gap is a run of nodes [i0..i1] whose
@@ -277,6 +321,55 @@ struct OuterRingResult {
 OuterRingResult registerOuterRing();
 
 // ---------------------------------------------------------------------------
+// THE MEDIAN PLAN (dual routes) — per-node median HALF-width, decided by the
+// terrain: wide (kFwyMedianMaxHalfM) where the natural country across the
+// median zone sits within ~2.5 m of the graded datum, narrow
+// (kFwyMedianMinHalfM, the jersey-wall median) where the route is in real cut
+// or on fill. Slew-limited so the carriageway offset curves stay gentle. PURE
+// and registration-order independent (the natural surface is recovered as
+// field - corridorDelta), so registerRoad (which carves against it) and
+// buildRoadRibbon / planRoadBarriers (which lay pavement and barriers by it)
+// always agree. Returns one value per spec node; empty for a non-dual spec.
+// ---------------------------------------------------------------------------
+std::vector<float> computeMedianPlan(const RoadSpec& spec,
+                                     const std::vector<float>& roadY);
+
+// ---------------------------------------------------------------------------
+// TURNAROUND CROSSOVERS (dual routes) — paved median gaps, as [u0, u1] arc-
+// length intervals along the route: one every ~kFwyTurnaroundSpacingM, one at
+// u=0 on a closed route (the spawn stands there), and one aligned at every
+// noted junction landing within reach of the route (a side road meeting a
+// divided freeway needs its median gap where it arrives). Gap reaches
+// (bores/decks) never get one. Pure; deterministic in (spec, junctions).
+// ---------------------------------------------------------------------------
+struct RoadTurnaround { float u0 = 0.0f, u1 = 0.0f; };
+std::vector<RoadTurnaround> planTurnarounds(const RoadSpec& spec);
+
+// ---------------------------------------------------------------------------
+// THE RENDER PATH — the fine-sampled spline every ribbon rides (the owner's
+// "Get rid of ALLLLL jointed bends"). The corridor CARVE stays at the coarse
+// nodes (registry budget untouched); the RIBBON — pavement edges, painted
+// lines, shoulders, aprons, barrier runs, the median wall — samples a
+// Catmull-Rom spline THROUGH the final smoothed nodes at 6..20 m intervals,
+// adaptive by curvature, so a curve's edge line reads as a continuous arc at
+// driving height instead of a chain of ~40-60 m facets. Original nodes are
+// interpolated exactly (pins, portal edges and junction landings hold);
+// gap-flagged reaches stay linear on the chord (a tunnel spine is straight).
+// ---------------------------------------------------------------------------
+struct RoadRenderStation {
+    float    x = 0.0f, z = 0.0f;   // centreline position
+    float    y = 0.0f;             // datum (pavement rides y + proud)
+    float    tx = 1.0f, tz = 0.0f; // unit tangent
+    float    u = 0.0f;             // arc length from the route start
+    uint32_t seg = 0;              // source spec segment (barrier mask / gaps)
+    bool     gap = false;          // inside a bore/deck gap: no ribbon here
+    float    medianHalf = 0.0f;    // dual routes: median half-width here
+};
+void buildRoadRenderPath(const RoadSpec& spec, const std::vector<float>* roadY,
+                         const std::vector<float>* medianPlan,
+                         std::vector<RoadRenderStation>& out);
+
+// ---------------------------------------------------------------------------
 // THE RIBBON — the surface you actually drive on.
 //
 // registerRoad() only CARVES: it grades a datum and tells the height field to
@@ -317,6 +410,12 @@ struct RoadRibbonResult {
     float    railMinDropM = 0.0f;
     uint32_t jerseySegments = 0;
     float    jerseyMinDropM = 0.0f;
+    // Dual-carriageway dressing (0 on single routes):
+    uint32_t medianWallRuns  = 0;   // continuous jersey-median wall runs emitted
+    uint32_t turnaroundCount = 0;   // paved median crossovers
+    uint32_t workZoneCones   = 0;   // the work-zone taper's cones
+    uint32_t workZoneBarrels = 0;   // ... and its drums (dynamic bodies)
+    uint32_t fineStations    = 0;   // render-path stations the ribbon rode
 };
 
 // PURE barrier planning — which segments of a route earn a barrier, per side,
@@ -374,6 +473,15 @@ struct RoadJunction {
     float mainTX = 1.0f, mainTZ = 0.0f;     // main road unit tangent there
     float mainGrade = 0.0f;                 // main datum slope along (mainTX, mainTZ), m/m
     float endX = 0.0f, endZ = 0.0f, endY = 0.0f;  // branch ribbon's terminal node + datum
+    // MAIN-ROAD CROSS-SECTION at the junction, as lateral offsets from the
+    // main centreline. A branch landing on a DIVIDED freeway meets the NEAR
+    // carriageway: the merge fillets go tangent to its outer shoulder edge and
+    // the twist must be complete by its outer apron edge — both much further
+    // out than a single roadway's. Producers fill these from the main spec
+    // (median at the landing + the freeway offsets); the defaults are the
+    // single-carriageway profile, so existing junctions are unchanged.
+    float mainShoulderEdgeM = kShoulderHalfM;  // fillets go tangent here
+    float mainPavedEdgeM    = kPavedHalfM;     // twist complete by here
 };
 
 // The mouth patch (asphalt transition + cement flare wings), with collision.

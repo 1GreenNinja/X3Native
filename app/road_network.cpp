@@ -781,6 +781,15 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
     };
     for (size_t i = 0; i + 1 < n; ++i)
         if (segInGap(i)) r.gapLenM += segLen[i];
+    // DUAL routes: the carve must cover the full twin-carriageway span, but the
+    // span breathes with the MEDIAN — per chained corridor, the half-width is
+    // (2 carriageways + 1 m) plus the widest median that chain's reach plans,
+    // so a mountain stretch running the narrow jersey median doesn't pay for
+    // open-country median width in cut. Same plan the ribbon and the barrier
+    // planner derive (computeMedianPlan is pure in spec + datum), so pavement
+    // always lands on carved ground.
+    const std::vector<float> medianPlan =
+        spec.dualCarriageway ? computeMedianPlan(spec, roadY) : std::vector<float>{};
     const uint32_t kPer = (uint32_t)TerrainCorridor::kMaxNodes;
     size_t start = 0;
     while (start + 1 < n) {
@@ -795,6 +804,12 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
         TerrainCorridor c{};
         c.nodeCount = (int)count;
         c.halfWidth = spec.halfWidth;
+        if (!medianPlan.empty()) {
+            float mMax = 0.0f;
+            for (size_t k = 0; k < count; ++k)
+                mMax = std::max(mMax, medianPlan[start + k]);
+            c.halfWidth = 2.0f * kFwyPavedHalfM + 1.0f + mMax;
+        }
         c.falloff   = spec.falloff;
         for (size_t k = 0; k < count; ++k) {
             const size_t i = start + k;
@@ -827,7 +842,7 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
                     const float want = (roadY[i] + (roadY[i+1] - roadY[i]) * t)
                                      - kRoadFloorClear;
                     for (int lt = -4; lt <= 4; ++lt) {
-                        const float off = (float)lt * spec.halfWidth / 4.0f;
+                        const float off = (float)lt * c.halfWidth / 4.0f;
                         const float qx = spec.x[i] + dx * t + px * off;
                         const float qz = spec.z[i] + dz * t + pz * off;
                         const float raw = terrainHeightAtWorld(qx, qz)
@@ -890,6 +905,21 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
         r.maxGradeRatePost, r.maxGradeRatePost > 1e-9f ? 0.01f / r.maxGradeRatePost : 9999.0f,
         spec.maxGradeRate,  spec.maxGradeRate  > 1e-9f ? 0.01f / spec.maxGradeRate  : 9999.0f);
     x3::logInfo(b);
+    if (!medianPlan.empty()) {
+        float mMin = 1e9f, mMax = 0.0f, wideM = 0.0f;
+        for (size_t i = 0; i + 1 < n; ++i) {
+            mMin = std::min(mMin, medianPlan[i]);
+            mMax = std::max(mMax, medianPlan[i]);
+            if (medianPlan[i] > kFwyMedianWallHalfM) wideM += segLen[i];
+        }
+        std::snprintf(b, sizeof(b),
+            "road '%s': DUAL CARRIAGEWAY — 2 x %d lanes, median half %.1f..%.1f m "
+            "(%.1f miles open median, rest jersey-walled), carve span up to %.0f ft, "
+            "STILL %u corridors (one chain — the dual profile costs no registry)",
+            spec.name.c_str(), kFwyLaneCount, mMin, mMax, wideM / 1609.34f,
+            (2.0f * (2.0f * kFwyPavedHalfM + 1.0f + mMax)) * kMToFt, r.corridorCount);
+        x3::logInfo(b);
+    }
     if (r.pinErrM > 0.06f) {   // 0.2 ft — the same step budget the bridge deck gets
         std::snprintf(b, sizeof(b),
             "road '%s': a pinned datum could not be reached at grade — %.1f ft short. "
@@ -1047,9 +1077,14 @@ RoadSpec makeInnerCourse() {
         wp.push_back(w);
     }
     RoadSpec s = makeRoadFromWaypoints("inner tour", wp, 61.0f, /*closed=*/true);
-    // 88 ft of pavement: 4 x 12 ft lanes plus a 20 ft cement apron each side,
-    // wide enough to pull a dead car fully clear of the running surface.
-    s.halfWidth = kPavedHalfM + 1.0f;   // +1 m so the apron edge sits on cut ground
+    // THE FREEWAY (Tim: "8 lanes each side... a separate road carrying north
+    // and south traffic like I17 does in AZ"): twin 8-lane carriageways about
+    // this centreline with a terrain-varied median between them. The carve
+    // half-width covers the full dual span at the WIDEST median; registerRoad
+    // narrows each chained corridor to the median its reach actually plans,
+    // so mountain cuts don't pay for open-country median width.
+    s.dualCarriageway = true;
+    s.halfWidth = kFwyDualMaxHalfM;
     s.falloff   = 18.0f;                // a wider road wants a longer batter
     s.maxGrade  = 0.07f;
     // HORIZONTAL FLOW: freeway class. The authored fillets are genuine
@@ -1468,10 +1503,22 @@ SpawnConnectorResult registerSpawnConnector(const TunnelRoute& spawnRoute,
     float mainGrade = 0.0f;
     if (mtl > 1e-4f) { mtx /= mtl; mtz /= mtl; mainGrade = (ringRoadY[jp] - ringRoadY[jm]) / mtl; }
 
+    // The MAIN ROAD's cross-section at the landing. The inner tour is a
+    // DIVIDED FREEWAY: the branch meets the NEAR carriageway, whose edges sit
+    // (median + carriageway offsets) from the centreline — the setback, the
+    // twist run and the merge fillets all measure from those, or the branch
+    // would end inside the freeway's pavement.
+    float mainShoulderEdge = kShoulderHalfM, mainPavedEdge = kPavedHalfM;
+    if (ringSpec.dualCarriageway) {
+        const std::vector<float> mp = computeMedianPlan(ringSpec, ringRoadY);
+        const float mJ = (J < mp.size()) ? mp[J] : kFwyMedianMinHalfM;
+        mainShoulderEdge = mJ + kFwyPavedHalfM + kFwyShoulderHalfM;
+        mainPavedEdge    = mJ + 2.0f * kFwyPavedHalfM;
+    }
     // CENTRELINE: exit -> a point set back square of the ring, as a gentle
     // S-curve (Tim: "they do not curve"). Ends forced straight so the first
     // segment continues the tunnel's heading and the last arrives radially.
-    const float setback = kJctSetbackM;
+    const float setback = mainPavedEdge + 40.0f;
     float adx = jx - e[0], adz = jz - e[2];
     const float L0 = std::sqrt(adx * adx + adz * adz);
     adx /= L0; adz /= L0;
@@ -1516,6 +1563,8 @@ SpawnConnectorResult registerSpawnConnector(const TunnelRoute& spawnRoute,
         out.ringJct.endX = out.spec.x.back();
         out.ringJct.endZ = out.spec.z.back();
         out.ringJct.endY = out.roadY.back();
+        out.ringJct.mainShoulderEdgeM = mainShoulderEdge;
+        out.ringJct.mainPavedEdgeM    = mainPavedEdge;
     }
     char b[360];
     std::snprintf(b, sizeof(b),
@@ -1619,10 +1668,21 @@ OuterConnectorResult registerOuterConnector(const RoadSpec& ringSpec,
     const float L0 = std::sqrt(adx * adx + adz * adz);
     adx /= L0; adz /= L0;
 
-    // Both ends stand back by the junction setback the mouth patch owns.
-    const float bx0 = rx + adx * kJctSetbackM, bz0 = rz + adz * kJctSetbackM;
+    // Both ends stand back by the junction setback the mouth patch owns. The
+    // INNER end lands on the divided freeway: its setback measures from the
+    // near carriageway's outer apron edge, or the branch would end inside the
+    // freeway's own pavement.
+    float ringShoulderEdge = kShoulderHalfM, ringPavedEdge = kPavedHalfM;
+    if (ringSpec.dualCarriageway) {
+        const std::vector<float> mp = computeMedianPlan(ringSpec, ringRoadY);
+        const float mI = (I < mp.size()) ? mp[I] : kFwyMedianMinHalfM;
+        ringShoulderEdge = mI + kFwyPavedHalfM + kFwyShoulderHalfM;
+        ringPavedEdge    = mI + 2.0f * kFwyPavedHalfM;
+    }
+    const float setbackRing = ringPavedEdge + 40.0f;
+    const float bx0 = rx + adx * setbackRing,  bz0 = rz + adz * setbackRing;
     const float bx1 = ox - adx * kJctSetbackM, bz1 = oz - adz * kJctSetbackM;
-    const float run = L0 - 2.0f * kJctSetbackM;
+    const float run = L0 - setbackRing - kJctSetbackM;
     if (run < 120.0f) {
         x3::logError("outer connector: the tours are too close here for a junction pair");
         return out;
@@ -1682,6 +1742,8 @@ OuterConnectorResult registerOuterConnector(const RoadSpec& ringSpec,
     };
     mouth(ringSpec,  ringRoadY,  I, out.spec.x.front(), out.spec.z.front(),
           out.roadY.front(), out.ringJct);
+    out.ringJct.mainShoulderEdgeM = ringShoulderEdge;   // divided-freeway main
+    out.ringJct.mainPavedEdgeM    = ringPavedEdge;
     mouth(outerSpec, outerRoadY, J, out.spec.x.back(),  out.spec.z.back(),
           out.roadY.back(),  out.outerJct);
 
@@ -2333,6 +2395,247 @@ constexpr float kPaveProud = 0.02f;
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// THE MEDIAN PLAN — see road_network.h. Pure and registration-order
+// independent: the natural surface is recovered as (field - corridorDelta),
+// which is the pristine pre-carve ground however many corridors are already
+// in, so the carve (registerRoad) and the pavement (buildRoadRibbon) always
+// derive the SAME median from the same inputs.
+// ---------------------------------------------------------------------------
+std::vector<float> computeMedianPlan(const RoadSpec& spec,
+                                     const std::vector<float>& roadY) {
+    std::vector<float> m;
+    const size_t n = spec.x.size();
+    if (!spec.dualCarriageway || n < 2 || roadY.size() != n || spec.z.size() != n)
+        return m;
+    m.assign(n, kFwyMedianMinHalfM);
+    std::vector<float> segLen(n, 0.0f);
+    for (size_t i = 0; i + 1 < n; ++i) {
+        const float dx = spec.x[i + 1] - spec.x[i], dz = spec.z[i + 1] - spec.z[i];
+        segLen[i] = std::sqrt(dx * dx + dz * dz);
+    }
+    // Terrain fit per node: how far the natural country across the median zone
+    // strays from the graded datum. Close to it -> the median can be open
+    // graded ground (I-17); far from it (cut / fill) -> narrow + jersey wall.
+    for (size_t i = 0; i < n; ++i) {
+        const size_t ip = (i + 1 < n) ? i + 1 : i;
+        const size_t im = (i > 0) ? i - 1 : i;
+        float tx = spec.x[ip] - spec.x[im], tz = spec.z[ip] - spec.z[im];
+        const float tl = std::sqrt(tx * tx + tz * tz);
+        if (tl > 1e-4f) { tx /= tl; tz /= tl; }
+        float worst = 0.0f;
+        for (int k = -4; k <= 4; ++k) {
+            const float off = (float)k * kFwyMedianMaxHalfM / 4.0f;
+            const float qx = spec.x[i] + (-tz) * off;
+            const float qz = spec.z[i] + ( tx) * off;
+            const float nat = terrainHeightAtWorld(qx, qz) - terrainCorridorDelta(qx, qz);
+            worst = std::max(worst, std::fabs(nat - roadY[i]));
+        }
+        m[i] = (worst < 2.5f) ? kFwyMedianMaxHalfM : kFwyMedianMinHalfM;
+    }
+    const bool closed = std::fabs(spec.x[0] - spec.x[n - 1]) < 0.01f &&
+                        std::fabs(spec.z[0] - spec.z[n - 1]) < 0.01f;
+    // Low-pass so an isolated one-node state flip doesn't pinch the roadways...
+    for (int pass = 0; pass < 2; ++pass) {
+        std::vector<float> t(m);
+        for (size_t i = 1; i + 1 < n; ++i)
+            m[i] = 0.25f * t[i - 1] + 0.5f * t[i] + 0.25f * t[i + 1];
+        if (closed) m[0] = m[n - 1] = 0.5f * (m[1] + m[n - 2]);
+    }
+    // ...then a slew limit (3 cm of median per metre of route) swept both ways
+    // to a fixed point, so the carriageway offset polylines curve gently
+    // between the wide and walled states instead of kinking.
+    const float kSlew = 0.03f;
+    for (int pass = 0; pass < 64; ++pass) {
+        float moved = 0.0f;
+        for (size_t i = 1; i < n; ++i) {
+            const float cap = m[i - 1] + kSlew * std::max(1.0f, segLen[i - 1]);
+            if (m[i] > cap) { moved += m[i] - cap; m[i] = cap; }
+        }
+        for (size_t i = n - 1; i > 0; --i) {
+            const float cap = m[i] + kSlew * std::max(1.0f, segLen[i - 1]);
+            if (m[i - 1] > cap) { moved += m[i - 1] - cap; m[i - 1] = cap; }
+        }
+        if (closed) {
+            const float w = std::min(m[0], m[n - 1]);
+            moved += (m[0] - w) + (m[n - 1] - w);
+            m[0] = m[n - 1] = w;
+        }
+        if (moved < 1e-4f) break;
+    }
+    for (float& v : m)
+        v = std::max(kFwyMedianMinHalfM, std::min(kFwyMedianMaxHalfM, v));
+    return m;
+}
+
+// ---------------------------------------------------------------------------
+// TURNAROUND CROSSOVERS — see road_network.h. Arc-length intervals; pure.
+// ---------------------------------------------------------------------------
+std::vector<RoadTurnaround> planTurnarounds(const RoadSpec& spec) {
+    std::vector<RoadTurnaround> out;
+    const size_t n = spec.x.size();
+    if (!spec.dualCarriageway || n < 2) return out;
+    std::vector<float> U(n, 0.0f);
+    for (size_t i = 0; i + 1 < n; ++i) {
+        const float dx = spec.x[i + 1] - spec.x[i], dz = spec.z[i + 1] - spec.z[i];
+        U[i + 1] = U[i] + std::sqrt(dx * dx + dz * dz);
+    }
+    const float total = U[n - 1];
+    if (total < 2.0f * kFwyTurnaroundLenM) return out;
+    struct Iv { float a, b; };
+    std::vector<Iv> gapIv;
+    for (const RoadSpec::Gap& g : spec.gaps)
+        if (g.i1 < n) gapIv.push_back({ U[g.i0], U[g.i1] });
+    auto blocked = [&](float a, float b) {
+        for (const Iv& iv : gapIv)
+            if (a < iv.b + 60.0f && b > iv.a - 60.0f) return true;
+        return false;
+    };
+    const float half = kFwyTurnaroundLenM * 0.5f;
+    auto addAt = [&](float c) {
+        float a = c - half, b = c + half;
+        if (a < 0.0f)   { a = 0.0f; b = kFwyTurnaroundLenM; }
+        if (b > total)  { b = total; a = total - kFwyTurnaroundLenM; }
+        if (blocked(a, b)) return;
+        for (const RoadTurnaround& t : out)
+            if (a < t.u1 + 120.0f && b > t.u0 - 120.0f) return;
+        out.push_back({ a, b });
+    };
+    const bool closed = std::fabs(spec.x[0] - spec.x[n - 1]) < 0.01f &&
+                        std::fabs(spec.z[0] - spec.z[n - 1]) < 0.01f;
+    // A junction landing gets its gap FIRST (crossing traffic needs it exactly
+    // there), then the spawn crossover on a closed route, then the rhythm.
+    {
+        uint32_t jn = roadJunctionCount();
+        for (uint32_t j = 0; j < jn; ++j) {
+            const JctPoint& p = jctPoints()[j];
+            float bestD2 = 45.0f * 45.0f, bestU = -1.0f;
+            for (size_t i = 0; i + 1 < n; ++i) {
+                const float abx = spec.x[i + 1] - spec.x[i], abz = spec.z[i + 1] - spec.z[i];
+                const float len2 = abx * abx + abz * abz;
+                if (len2 < 1e-6f) continue;
+                float t = ((p.x - spec.x[i]) * abx + (p.z - spec.z[i]) * abz) / len2;
+                t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+                const float dx = p.x - (spec.x[i] + abx * t), dz = p.z - (spec.z[i] + abz * t);
+                const float d2 = dx * dx + dz * dz;
+                if (d2 < bestD2) { bestD2 = d2; bestU = U[i] + std::sqrt(len2) * t; }
+            }
+            if (bestU >= 0.0f) addAt(bestU);
+        }
+    }
+    if (closed) addAt(half);
+    for (float c = kFwyTurnaroundSpacingM; c < total - 100.0f; c += kFwyTurnaroundSpacingM)
+        addAt(c);
+    std::sort(out.begin(), out.end(),
+              [](const RoadTurnaround& a, const RoadTurnaround& b) { return a.u0 < b.u0; });
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// THE RENDER PATH — see road_network.h. Catmull-Rom through the final nodes
+// (positions AND datum, so the profile is C1 at nodes too), adaptive 6..20 m.
+// ---------------------------------------------------------------------------
+void buildRoadRenderPath(const RoadSpec& spec, const std::vector<float>* roadY,
+                         const std::vector<float>* medianPlan,
+                         std::vector<RoadRenderStation>& out) {
+    out.clear();
+    const size_t n = spec.x.size();
+    if (n < 2 || spec.z.size() != n) return;
+    if (roadY && roadY->size() != n) roadY = nullptr;
+    if (medianPlan && medianPlan->size() != n) medianPlan = nullptr;
+    std::vector<float> Y(n);
+    for (size_t i = 0; i < n; ++i)
+        Y[i] = roadY ? (*roadY)[i]
+                     : terrainHeightAtWorld(spec.x[i], spec.z[i]) + kRoadFloorClear;
+    const bool closed = std::fabs(spec.x[0] - spec.x[n - 1]) < 0.01f &&
+                        std::fabs(spec.z[0] - spec.z[n - 1]) < 0.01f;
+    auto segInGap = [&](size_t k) {
+        for (const RoadSpec::Gap& g : spec.gaps)
+            if (k >= g.i0 && k < g.i1) return true;
+        return false;
+    };
+    auto ctrl = [&](long i) -> size_t {
+        if (closed) {
+            const long m = (long)n - 1;             // unique nodes 0..n-2
+            return (size_t)(((i % m) + m) % m);
+        }
+        return (size_t)std::max(0L, std::min((long)n - 1, i));
+    };
+    std::vector<float> defl(n, 0.0f);
+    for (size_t i = 1; i + 1 < n; ++i)
+        defl[i] = deflectionAt(spec.x, spec.z, i - 1, i, i + 1) * kRadToDeg;
+    if (closed && n >= 4) {
+        defl[0] = deflectionAt(spec.x, spec.z, n - 2, 0, 1) * kRadToDeg;
+        defl[n - 1] = defl[0];
+    }
+    auto cr = [](float p0, float p1, float p2, float p3, float t) {
+        const float t2 = t * t, t3 = t2 * t;
+        return 0.5f * ((2.0f * p1) + (-p0 + p2) * t +
+                       (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2 +
+                       (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3);
+    };
+    out.reserve(n * 4);
+    for (size_t k = 0; k + 1 < n; ++k) {
+        const float dxs = spec.x[k + 1] - spec.x[k], dzs = spec.z[k + 1] - spec.z[k];
+        const float len = std::sqrt(dxs * dxs + dzs * dzs);
+        if (len < 1e-3f) continue;
+        const bool gap = segInGap(k);
+        int nSub;
+        if (gap) {
+            // a bore chord / bridge deck is straight LAW — linear, coarse
+            nSub = std::max(1, (int)std::ceil(len / 20.0f));
+        } else {
+            // /18 not /20: the spline ARC between stations runs a little past
+            // the chord subdivision on a bend (measured 21.1 m from a /20
+            // base), and the promise is "up to ~20 m on true straights".
+            const float dm = std::max(defl[k], defl[k + 1]);
+            nSub = std::max((int)std::ceil(len / 18.0f), (int)std::ceil(dm / 0.75f));
+            nSub = std::min(nSub, std::max(1, (int)std::ceil(len / 6.0f)));
+            nSub = std::max(1, nSub);
+        }
+        const size_t i0 = ctrl((long)k - 1), i3 = ctrl((long)k + 2);
+        for (int sSub = 0; sSub < nSub; ++sSub) {
+            const float t = (float)sSub / (float)nSub;
+            RoadRenderStation st;
+            st.seg = (uint32_t)k;
+            st.gap = gap;
+            if (gap || nSub == 1 || (i0 == k && i3 == k + 1)) {
+                st.x = spec.x[k] + dxs * t;
+                st.z = spec.z[k] + dzs * t;
+                st.y = Y[k] + (Y[k + 1] - Y[k]) * t;
+            } else {
+                st.x = cr(spec.x[i0], spec.x[k], spec.x[k + 1], spec.x[i3], t);
+                st.z = cr(spec.z[i0], spec.z[k], spec.z[k + 1], spec.z[i3], t);
+                st.y = cr(Y[i0], Y[k], Y[k + 1], Y[i3], t);
+            }
+            if (medianPlan)
+                st.medianHalf = (*medianPlan)[k] + ((*medianPlan)[k + 1] - (*medianPlan)[k]) * t;
+            out.push_back(st);
+        }
+    }
+    {   // the final node, verbatim
+        RoadRenderStation st;
+        st.seg = (uint32_t)(n - 2);
+        st.gap = segInGap(n - 2);
+        st.x = spec.x[n - 1]; st.z = spec.z[n - 1]; st.y = Y[n - 1];
+        if (medianPlan) st.medianHalf = (*medianPlan)[n - 1];
+        out.push_back(st);
+    }
+    // arc length + tangents (finite difference; wrap on a closed route)
+    for (size_t i = 1; i < out.size(); ++i) {
+        const float dx = out[i].x - out[i - 1].x, dz = out[i].z - out[i - 1].z;
+        out[i].u = out[i - 1].u + std::sqrt(dx * dx + dz * dz);
+    }
+    const size_t m = out.size();
+    for (size_t i = 0; i < m; ++i) {
+        size_t ip = (i + 1 < m) ? i + 1 : (closed ? 1 : m - 1);
+        size_t im = (i > 0) ? i - 1 : (closed ? m - 2 : 0);
+        float tx = out[ip].x - out[im].x, tz = out[ip].z - out[im].z;
+        const float tl = std::sqrt(tx * tx + tz * tz);
+        if (tl > 1e-4f) { out[i].tx = tx / tl; out[i].tz = tz / tl; }
+    }
+}
+
 // PURE barrier planning — see road_network.h. The drop test, PER EDGE: each
 // side of each segment samples ITS OWN offside ground ~6 m beyond ITS apron
 // edge against the datum — left and right are independent measurements and
@@ -2357,13 +2660,25 @@ BarrierPlan planRoadBarriers(const RoadSpec& spec, const std::vector<float>* roa
         if (roadY) return (*roadY)[i];
         return terrainHeightAtWorld(spec.x[i], spec.z[i]) + kRoadFloorClear;
     };
+    // DUAL routes: each carriageway samples ITS OWN offside — 6 m beyond its
+    // outer apron edge, which sits (median + 2 x carriageway) from the
+    // centreline. Single routes keep the base offset.
+    std::vector<float> medianPlan;
+    if (spec.dualCarriageway) {
+        std::vector<float> ry(n);
+        for (size_t i = 0; i < n; ++i) ry[i] = datumAt(i);
+        medianPlan = computeMedianPlan(spec, ry);
+    }
     auto dropAt = [&](size_t i, int side) {
         const size_t ip = (i + 1 < n) ? i + 1 : i;
         const size_t im = (i > 0) ? i - 1 : i;
         float tx = spec.x[ip] - spec.x[im], tz = spec.z[ip] - spec.z[im];
         const float tl = std::sqrt(tx * tx + tz * tz);
         if (tl > 1e-4f) { tx /= tl; tz /= tl; }
-        const float lat = (kPavedHalfM + 6.0f) * (float)side;
+        const float edge = (!medianPlan.empty())
+            ? medianPlan[i] + 2.0f * kFwyPavedHalfM
+            : kPavedHalfM;
+        const float lat = (edge + 6.0f) * (float)side;
         const float qx = spec.x[i] + (-tz) * lat;
         const float qz = spec.z[i] + ( tx) * lat;
         return datumAt(i) - terrainHeightAtWorld(qx, qz);
@@ -2420,29 +2735,37 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
     if (!asphalt.ok || !cement.ok)
         x3::logWarn("road ribbon: surface set(s) unavailable - flat colour fallback");
 
-    const float run = kRunningHalfM;   // 24 ft: half of the 4-lane running width
-    const float sho = kShoulderHalfM;  // 28 ft: + the 4 ft paved shoulder
-    const float pav = kPavedHalfM;     // 48 ft: + the 20 ft cement apron
+    const bool dual = spec.dualCarriageway;
 
-    // THE ROAD PRISM. Tim: "it also needs to be THICK CONCRETE in the base and
-    // aprons.. not floating on top!!!" A bare ribbon is a zero-thickness sheet:
-    // anywhere the ground falls away from the apron's outer edge (side-slopes,
-    // hollows, the pinned portal-ramp floats) the pavement reads as paper. The
-    // fix is geometry: from each apron edge, a VERTICAL concrete face at least
-    // kSkirtFace deep, then a BATTERED face running out and down until its toe
-    // laps kSkirtLap UNDER the carved ground — buried where the road sits in a
-    // cutting (harmless, hidden), a real poured base wherever the terrain drops.
-    // Never coplanar with the terrain, so nothing z-fights.
-    constexpr float kSkirtFace    = 0.62f;   // minimum visible vertical face (m)
-    constexpr float kSkirtOut     = 0.9f;    // batter run outward (m)
-    constexpr float kSkirtLap     = 0.6f;    // toe depth under the carved ground
-    constexpr float kSkirtMaxDrop = 14.0f;   // don't build a curtain wall off a cliff
+    // ---- THE FINE RENDER PATH (owner: "Get rid of ALLLLL jointed bends") ---
+    // Every strip below — pavement, paint, shoulders, aprons, skirts, barrier
+    // runs, the median wall — rides this spline, NOT the coarse node chords.
+    std::vector<float> medianPlan;
+    if (dual) {
+        std::vector<float> ry;
+        if (!roadY) {
+            ry.resize(n);
+            for (size_t i = 0; i < n; ++i)
+                ry[i] = terrainHeightAtWorld(spec.x[i], spec.z[i]) + kRoadFloorClear;
+        }
+        medianPlan = computeMedianPlan(spec, roadY ? *roadY : ry);
+    }
+    std::vector<RoadRenderStation> path;
+    buildRoadRenderPath(spec, roadY, medianPlan.empty() ? nullptr : &medianPlan, path);
+    if (path.size() < 2) return out;
+    out.fineStations = (uint32_t)path.size();
 
-    RibbonMesh road, shoulders, apronL, apronR, paint, skirt, rails, jersey;
-    // Guardrail COLLISION is a continuous thin wall per railed run — the car
-    // must be able to LEAN on it and be saved; per-post boxes would shred it.
-    std::vector<float>    railColV;
-    std::vector<uint32_t> railColI;
+    const std::vector<RoadTurnaround> turnarounds =
+        dual ? planTurnarounds(spec) : std::vector<RoadTurnaround>{};
+    out.turnaroundCount = (uint32_t)turnarounds.size();
+    auto inTurnaround = [&](float u) {
+        for (const RoadTurnaround& t : turnarounds)
+            if (u >= t.u0 && u <= t.u1) return true;
+        return false;
+    };
+
+    // Barrier plan stays PER SPEC SEGMENT (the drop test's granularity);
+    // fine stations map back through their source segment.
     const BarrierPlan barriers = [&]() {
         const char* e = std::getenv("X3_ROAD_BARRIERS");   // 0 = A/B capture off
         if (e && e[0] == '0') return BarrierPlan{};
@@ -2452,72 +2775,228 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
     out.railMinDropM   = barriers.minDropM;
     out.jerseySegments = barriers.jerseySegments;
     out.jerseyMinDropM = barriers.jerseyMinDropM;
-    float uRun = 0.0f;
 
-    auto at = [&](size_t idx, float lat, float o[3]) {
-        const size_t ip = (idx + 1 < n) ? idx + 1 : idx;
-        const size_t im = (idx > 0) ? idx - 1 : idx;
-        float tx = spec.x[ip] - spec.x[im], tz = spec.z[ip] - spec.z[im];
-        const float tl = std::sqrt(tx*tx + tz*tz);
-        if (tl > 1e-4f) { tx /= tl; tz /= tl; }
-        o[0] = spec.x[idx] + (-tz) * lat;
-        o[2] = spec.z[idx] + ( tx) * lat;
-        if (roadY) {
-            // The graded DATUM, straight from registerRoad. Load-bearing where
-            // a deeper carve crosses this road (deepest-wins would drag a
-            // ground-derived ribbon into the other cut) and on pinned
-            // approaches, where the datum deliberately floats above ground.
-            o[1] = (*roadY)[idx] + kPaveProud;
-        } else {
-            // Recover the DATUM from the carved field: the corridor cut to
-            // (datum - clear), so the surface goes back on top of that.
-            o[1] = terrainHeightAtWorld(o[0], o[2]) + kRoadFloorClear + kPaveProud;
+    // THE ROAD PRISM constants (see the fortress-edge story in git history):
+    constexpr float kSkirtFace    = 0.62f;   // minimum visible vertical face (m)
+    constexpr float kSkirtOut     = 0.9f;    // batter run outward (m)
+    constexpr float kSkirtLap     = 0.6f;    // toe depth under the carved ground
+    constexpr float kSkirtMaxDrop = 14.0f;   // don't build a curtain wall off a cliff
+
+    RibbonMesh road, shoulders, aprons, paint, skirt, rails, jersey, crossover;
+    std::vector<float>    railColV;
+    std::vector<uint32_t> railColI;
+
+    auto P = [&](const RoadRenderStation& st, float lat, float o[3]) {
+        o[0] = st.x + (-st.tz) * lat;
+        o[1] = st.y + kPaveProud;
+        o[2] = st.z + ( st.tx) * lat;
+    };
+
+    // THE F-SHAPE JERSEY PROFILE — the ONE wall profile (offside barriers AND
+    // the median wall are extrusions of it; no second wall was invented).
+    static const float jp[4][2] = {
+        { 0.30f, 0.00f },    // base edge
+        { 0.30f, 0.075f },   // top of the vertical toe
+        { 0.17f, 0.33f },    // top of the 55-degree haunch
+        { 0.115f, 0.81f },   // crown edge
+    };
+    auto jerseyRun = [&](RibbonMesh& mesh, const RoadRenderStation& a,
+                         const RoadRenderStation& b, float latA, float latB,
+                         float u0, float u1) {
+        auto wallPt = [&](const RoadRenderStation& st, float lat, float off,
+                          float h, float o[3]) {
+            P(st, lat + off, o);
+            o[1] = st.y + kPaveProud - 0.05f + h;   // seat 5 cm into the pavement
+        };
+        for (int face = -1; face <= 1; face += 2) {
+            for (int j = 0; j + 1 < 4; ++j) {
+                float aB[3], bB[3], aT[3], bT[3];
+                wallPt(a, latA, jp[j][0]     * (float)face, jp[j][1],     aB);
+                wallPt(b, latB, jp[j][0]     * (float)face, jp[j][1],     bB);
+                wallPt(a, latA, jp[j + 1][0] * (float)face, jp[j + 1][1], aT);
+                wallPt(b, latB, jp[j + 1][0] * (float)face, jp[j + 1][1], bT);
+                const float v0 = 0.1f * (float)j, v1 = 0.1f * (float)(j + 1);
+                mesh.quadN(aB, aT, bT, bB, v0, v1, u0 * 0.35f, u1 * 0.35f);
+                mesh.quadN(aT, aB, bB, bT, v0, v1, u0 * 0.35f, u1 * 0.35f);
+            }
+        }
+        float aL[3], bL[3], aR[3], bR[3];
+        wallPt(a, latA, -jp[3][0], jp[3][1], aL);
+        wallPt(b, latB, -jp[3][0], jp[3][1], bL);
+        wallPt(a, latA,  jp[3][0], jp[3][1], aR);
+        wallPt(b, latB,  jp[3][0], jp[3][1], bR);
+        mesh.quadN(aL, aR, bR, bL, 0.40f, 0.46f, u0 * 0.35f, u1 * 0.35f);
+        mesh.quadN(aR, aL, bL, bR, 0.40f, 0.46f, u0 * 0.35f, u1 * 0.35f);
+    };
+    // A wall must END CLEANLY at a turnaround gap / junction zone (the
+    // junction exclusion discipline): a vertical nose closing the profile.
+    auto jerseyEndCap = [&](RibbonMesh& mesh, const RoadRenderStation& st, float lat) {
+        auto wp = [&](float off, float h, float o[3]) {
+            P(st, lat + off, o);
+            o[1] = st.y + kPaveProud - 0.05f + h;
+        };
+        for (int j = 0; j + 1 < 4; ++j) {
+            float p0[3], p1[3], p2[3], p3[3];
+            wp(-jp[j][0],     jp[j][1],     p0);
+            wp( jp[j][0],     jp[j][1],     p1);
+            wp( jp[j + 1][0], jp[j + 1][1], p2);
+            wp(-jp[j + 1][0], jp[j + 1][1], p3);
+            mesh.quadN(p0, p1, p2, p3, 0.0f, 0.1f, 0.0f, 0.2f);
+            mesh.quadN(p1, p0, p3, p2, 0.0f, 0.1f, 0.0f, 0.2f);
         }
     };
-    auto segInGap = [&](size_t k) {
-        for (const RoadSpec::Gap& g : spec.gaps)
-            if (k >= g.i0 && k < g.i1) return true;
-        return false;
-    };
 
-    for (size_t k = 0; k + 1 < n; ++k) {
-        const float dx = spec.x[k+1] - spec.x[k], dz = spec.z[k+1] - spec.z[k];
-        const float seg = std::sqrt(dx*dx + dz*dz);
-        const float u0 = uRun, u1 = uRun + seg;
-        uRun = u1;
-        if (segInGap(k)) continue;   // a tunnel or a deck owns this reach
-        out.lengthM += seg;
+    // Per-carriageway cross-section: the freeway runs 8 lanes a side, the base
+    // profile keeps its 4. Everything else (shoulder, apron, prism) is shared.
+    const int   lanes   = dual ? kFwyLaneCount     : kLaneCount;
+    const float runHalf = dual ? kFwyRunningHalfM  : kRunningHalfM;
+    const float shoHalf = dual ? kFwyShoulderHalfM : kShoulderHalfM;
+    const float pavHalf = dual ? kFwyPavedHalfM    : kPavedHalfM;
+    const float laneM   = kLaneFt * kFtToM;
+    const float halfPaint = 0.06f;              // ~5 in stripe
 
-        float aL[3], aR[3], bL[3], bR[3];
-        at(k, -run, aL); at(k, run, aR); at(k+1, -run, bL); at(k+1, run, bR);
-        road.quad(aL, aR, bR, bL, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+    bool wallOpen = false;
+    for (size_t si = 0; si + 1 < path.size(); ++si) {
+        const RoadRenderStation& a = path[si];
+        const RoadRenderStation& b = path[si + 1];
+        if (a.gap || b.gap) {   // a tunnel or a deck owns this reach
+            if (wallOpen) { jerseyEndCap(jersey, a, 0.0f); wallOpen = false; }
+            continue;
+        }
+        const float u0 = a.u, u1 = b.u;
+        if (u1 - u0 < 1e-4f) continue;
+        out.lengthM += u1 - u0;
+        const uint32_t k = a.seg;
 
-        // THE SHOULDER: 4 ft of asphalt outside the edge line, same surface,
-        // its own strip so it can weather a shade differently from the lanes.
-        float aLs[3], bLs[3], aRs[3], bRs[3];
-        at(k, -sho, aLs); at(k+1, -sho, bLs);
-        at(k,  sho, aRs); at(k+1,  sho, bRs);
-        shoulders.quad(aLs, aL, bL, bLs, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
-        shoulders.quad(aR, aRs, bRs, bR, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+        // Junction feather factor, shared by every skirt this segment emits.
+        const float dj = std::min(distToNearestRoadJunction(a.x, a.z),
+                                  distToNearestRoadJunction(b.x, b.z));
+        const float tj = std::max(0.0f, std::min(1.0f,
+            (dj - kJunctionBarrierClearM) / 15.0f));   // 0 in the zone -> 1 outside
+        const float faceH = 0.06f + (kSkirtFace - 0.06f) * tj;
+        const float slope = 3.0f - 1.5f * tj;          // out-run per metre of drop
 
-        float aLo[3], bLo[3], aRo[3], bRo[3];
-        at(k, -pav, aLo); at(k+1, -pav, bLo);
-        at(k,  pav, aRo); at(k+1,  pav, bRo);
-        apronL.quad(aLo, aLs, bLs, bLo, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
-        apronR.quad(aRs, aRo, bRo, bRs, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+        const int nCw = dual ? 2 : 1;
+        for (int cw = 0; cw < nCw; ++cw) {
+            // carriageway centre offset from the route centreline (0 on single)
+            const float sideC = dual ? (cw == 0 ? -1.0f : 1.0f) : 0.0f;
+            const float cA = dual ? sideC * (a.medianHalf + kFwyPavedHalfM) : 0.0f;
+            const float cB = dual ? sideC * (b.medianHalf + kFwyPavedHalfM) : 0.0f;
 
-        // GUARDRAILS (Tim: "We really need BARRIERS.") where the drop test
-        // fired: two horizontal W-beam-read bands (0.26-0.36 m and 0.50-0.60 m
-        // up) on posts every ~4 m, just inside the apron's outer edge, both
-        // faces emitted (a rail is seen from the road AND from the drop).
-        // Collision is the continuous 1 m wall accumulated per railed run.
-        if (k < barriers.mask.size() && barriers.mask[k]) {
+            float aL[3], aR[3], bL[3], bR[3];
+            P(a, cA - runHalf, aL); P(a, cA + runHalf, aR);
+            P(b, cB - runHalf, bL); P(b, cB + runHalf, bR);
+            road.quad(aL, aR, bR, bL, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+
+            float aLs[3], bLs[3], aRs[3], bRs[3];
+            P(a, cA - shoHalf, aLs); P(b, cB - shoHalf, bLs);
+            P(a, cA + shoHalf, aRs); P(b, cB + shoHalf, bRs);
+            shoulders.quad(aLs, aL, bL, bLs, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+            shoulders.quad(aR, aRs, bRs, bR, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+
+            float aLo[3], bLo[3], aRo[3], bRo[3];
+            P(a, cA - pavHalf, aLo); P(b, cB - pavHalf, bLo);
+            P(a, cA + pavHalf, aRo); P(b, cB + pavHalf, bRo);
+            aprons.quad(aLo, aLs, bLs, bLo, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+            aprons.quad(aRs, aRo, bRo, bRs, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+
+            // THE PRISM SKIRT, both edges of this carriageway. On a dual route
+            // the median-facing edge gets the same treatment — the median
+            // ground is the carved field ~0.2 m below the slab, so it reads as
+            // a poured kerb dropping to the graded median, exactly what a
+            // depressed-median freeway edge is.
+            for (int side = -1; side <= 1; side += 2) {
+                const float latA = cA + pavHalf * (float)side;
+                const float latB = cB + pavHalf * (float)side;
+                float aT[3], bT[3];
+                P(a, latA, aT); P(b, latB, bT);
+                float aK[3] = { aT[0], aT[1] - faceH, aT[2] };
+                float bK[3] = { bT[0], bT[1] - faceH, bT[2] };
+                auto outRun = [&](const RoadRenderStation& st, float lat, const float top[3]) {
+                    float probe[3];
+                    P(st, lat + 2.0f * (float)side, probe);
+                    const float ground = terrainHeightAtWorld(probe[0], probe[2]);
+                    const float drop = std::max(0.0f,
+                        std::min(top[1] - ground, kSkirtMaxDrop));
+                    return std::max(kSkirtOut, std::min(24.0f, drop * slope));
+                };
+                float aO[3], bO[3];
+                P(a, latA + outRun(a, latA, aT) * (float)side, aO);
+                P(b, latB + outRun(b, latB, bT) * (float)side, bO);
+                auto toeY = [&](const float top[3], const float o[3]) {
+                    const float ground = terrainHeightAtWorld(o[0], o[2]);
+                    float y = std::min(top[1] - faceH, ground) - kSkirtLap;
+                    return std::max(y, top[1] - kSkirtMaxDrop);
+                };
+                aO[1] = toeY(aT, aO);
+                bO[1] = toeY(bT, bO);
+                const float faceV0 = 0.0f, faceV1 = faceH / 6.1f;
+                const float batV1  = faceV1 + (faceH + kSkirtLap) / 6.1f;
+                if (side > 0) {
+                    skirt.quadN(aT, aK, bK, bT, faceV0, faceV1, u0 * 0.06f, u1 * 0.06f);
+                    skirt.quadN(aK, aO, bO, bK, faceV1, batV1,  u0 * 0.06f, u1 * 0.06f);
+                } else {
+                    skirt.quadN(aK, aT, bT, bK, faceV1, faceV0, u0 * 0.06f, u1 * 0.06f);
+                    skirt.quadN(aO, aK, bK, bO, batV1,  faceV1, u0 * 0.06f, u1 * 0.06f);
+                }
+            }
+
+            // LANE MARKINGS — WHITE ONLY. This is a divided road: opposing
+            // traffic is on the other carriageway, so there is NO double
+            // yellow anywhere. Solid edges, dashed interior lines (40 ft
+            // cycle, 60% duty, cut as true duty windows in u).
+            for (int lane = 0; lane <= lanes; ++lane) {
+                const float latLA = cA - runHalf + (float)lane * laneM;
+                const float latLB = cB - runHalf + (float)lane * laneM;
+                const bool edge = (lane == 0 || lane == lanes);
+                if (!edge) {
+                    const float cycle = 12.19f;         // 40 ft
+                    const float duty  = 0.6f;
+                    float e0[3], e1[3], f0[3], f1[3];
+                    P(a, latLA - halfPaint, e0); P(a, latLA + halfPaint, e1);
+                    P(b, latLB - halfPaint, f0); P(b, latLB + halfPaint, f1);
+                    auto lerp3 = [](const float A[3], const float B[3], float t, float o[3]) {
+                        o[0] = A[0] + (B[0] - A[0]) * t;
+                        o[1] = A[1] + (B[1] - A[1]) * t + 0.012f;
+                        o[2] = A[2] + (B[2] - A[2]) * t;
+                    };
+                    for (float c0 = std::floor(u0 / cycle) * cycle; c0 < u1; c0 += cycle) {
+                        const float s0 = std::max(u0, c0);
+                        const float s1 = std::min(u1, c0 + cycle * duty);
+                        if (s1 <= s0 + 0.05f) continue;
+                        const float ta = (s0 - u0) / (u1 - u0);
+                        const float tb = (s1 - u0) / (u1 - u0);
+                        float da[3], db[3], dc[3], dd[3];
+                        lerp3(e0, f0, ta, da); lerp3(e1, f1, ta, db);
+                        lerp3(e1, f1, tb, dc); lerp3(e0, f0, tb, dd);
+                        paint.quad(da, db, dc, dd, 0.0f, 1.0f, 0.0f, 1.0f);
+                    }
+                    continue;
+                }
+                float pa[3], pb[3], pc[3], pd[3];
+                P(a, latLA - halfPaint, pa); P(a, latLA + halfPaint, pb);
+                P(b, latLB + halfPaint, pc); P(b, latLB - halfPaint, pd);
+                pa[1] += 0.012f; pb[1] += 0.012f; pc[1] += 0.012f; pd[1] += 0.012f;
+                paint.quad(pa, pb, pc, pd, 0.0f, 1.0f, 0.0f, 1.0f);
+            }
+        }
+
+        // GUARDRAILS + OFFSIDE JERSEY from the drop-test plan. On a dual route
+        // side -1/-left maps to the LEFT carriageway's outer edge and +1 to the
+        // RIGHT's — each roadway carries its own barriers; the median is the
+        // median wall's job below.
+        auto barLat = [&](const RoadRenderStation& st, int side, float inset) {
+            const float edge = dual ? (st.medianHalf + 2.0f * kFwyPavedHalfM)
+                                    : kPavedHalfM;
+            return (edge - inset) * (float)side;
+        };
+        if (k < barriers.mask.size() && (barriers.mask[k] & 3)) {
             for (int side = -1; side <= 1; side += 2) {
                 const uint8_t bit = (side < 0) ? 1 : 2;
                 if (!(barriers.mask[k] & bit)) continue;
-                const float lat = (pav - 0.3f) * (float)side;
                 float a0[3], b0[3];
-                at(k, lat, a0); at(k+1, lat, b0);
+                P(a, barLat(a, side, 0.3f), a0);
+                P(b, barLat(b, side, 0.3f), b0);
                 auto band = [&](float y0, float y1) {
                     float aB[3] = { a0[0], a0[1] + y0, a0[2] };
                     float bB[3] = { b0[0], b0[1] + y0, b0[2] };
@@ -2528,7 +3007,6 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
                 };
                 band(0.26f, 0.36f);
                 band(0.50f, 0.60f);
-                // posts on a global 4 m rhythm so runs stay in step across nodes
                 for (float su = std::ceil(u0 / 4.0f) * 4.0f; su < u1; su += 4.0f) {
                     const float t = (su - u0) / (u1 - u0);
                     float p0[3] = { a0[0] + (b0[0] - a0[0]) * t,
@@ -2543,17 +3021,10 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
                     rails.quadN(pA, pB, pC, pD, 0.0f, 0.12f, 0.0f, 0.65f);
                     rails.quadN(pB, pA, pD, pC, 0.0f, 0.12f, 0.0f, 0.65f);
                 }
-                // The continuous collision wall for this railed segment —
-                // BOTH windings. Jolt mesh triangles are single-sided, and
-                // the first cut emitted one fixed winding regardless of road
-                // side: the left rail's collision faced the ditch, and the
-                // owner reported it live ("Railings only prevent egress from
-                // the RIght side of the road, not the left"). Two-sided
-                // means a car can lean on the rail from EITHER edge.
                 const uint32_t cb = (uint32_t)(railColV.size() / 3);
                 const float wall[4][3] = {
-                    { a0[0], a0[1],         a0[2] }, { b0[0], b0[1],         b0[2] },
-                    { b0[0], b0[1] + 1.0f,  b0[2] }, { a0[0], a0[1] + 1.0f,  a0[2] } };
+                    { a0[0], a0[1],        a0[2] }, { b0[0], b0[1],        b0[2] },
+                    { b0[0], b0[1] + 1.0f, b0[2] }, { a0[0], a0[1] + 1.0f, a0[2] } };
                 for (const auto& w : wall) {
                     railColV.push_back(w[0]); railColV.push_back(w[1]); railColV.push_back(w[2]);
                 }
@@ -2562,157 +3033,196 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
                 railColI.insert(railColI.end(), wi, wi + 12);
             }
         }
-
-        // JERSEY WALLS (Tim: "thick concrete barriers to not go off in the
-        // ditch"): where the offside falls a ditch-depth 0.6-2 m, a
-        // continuous concrete barrier in the classic F-shape — 0.81 m tall
-        // on a 0.60 m base: vertical toe, 55-degree lower haunch, near-
-        // vertical upper face, flat cap — extruded along the apron edge.
-        // Both faces emitted both-wound (seen from the road AND the ditch,
-        // and the collision mesh must stop a car from either side).
         if (k < barriers.mask.size() && (barriers.mask[k] & 12)) {
-            // half-profile: lateral offset from the wall's centre plane, height
-            static const float jp[4][2] = {
-                { 0.30f, 0.00f },    // base edge
-                { 0.30f, 0.075f },   // top of the vertical toe
-                { 0.17f, 0.33f },    // top of the 55-degree haunch
-                { 0.115f, 0.81f },   // crown edge
-            };
             for (int side = -1; side <= 1; side += 2) {
                 const uint8_t bit = (side < 0) ? 4 : 8;
                 if (!(barriers.mask[k] & bit)) continue;
-                const float lat = (pav - 0.45f) * (float)side;
-                auto wallPt = [&](size_t node, float off, float h, float o[3]) {
-                    at(node, lat + off * (float)side, o);
-                    float base[3];
-                    at(node, lat, base);
-                    o[1] = base[1] - 0.05f + h;   // seat 5 cm into the apron
-                };
-                for (int face = -1; face <= 1; face += 2) {   // road face / ditch face
-                    for (int j = 0; j + 1 < 4; ++j) {
-                        float aB[3], bB[3], aT[3], bT[3];
-                        wallPt(k,     jp[j][0]   * (float)face, jp[j][1],   aB);
-                        wallPt(k + 1, jp[j][0]   * (float)face, jp[j][1],   bB);
-                        wallPt(k,     jp[j+1][0] * (float)face, jp[j+1][1], aT);
-                        wallPt(k + 1, jp[j+1][0] * (float)face, jp[j+1][1], bT);
-                        const float v0 = 0.1f * (float)j, v1 = 0.1f * (float)(j + 1);
-                        jersey.quadN(aB, aT, bT, bB, v0, v1, u0 * 0.35f, u1 * 0.35f);
-                        jersey.quadN(aT, aB, bB, bT, v0, v1, u0 * 0.35f, u1 * 0.35f);
-                    }
-                }
-                {   // the crown cap
-                    float aL[3], bL[3], aR2[3], bR2[3];
-                    wallPt(k,     -jp[3][0], jp[3][1], aL);
-                    wallPt(k + 1, -jp[3][0], jp[3][1], bL);
-                    wallPt(k,      jp[3][0], jp[3][1], aR2);
-                    wallPt(k + 1,  jp[3][0], jp[3][1], bR2);
-                    jersey.quadN(aL, aR2, bR2, bL, 0.40f, 0.46f, u0 * 0.35f, u1 * 0.35f);
-                    jersey.quadN(aR2, aL, bL, bR2, 0.40f, 0.46f, u0 * 0.35f, u1 * 0.35f);
-                }
+                jerseyRun(jersey, a, b, barLat(a, side, 0.45f), barLat(b, side, 0.45f),
+                          u0, u1);
             }
         }
 
-        // THE PRISM SKIRT, both sides. The top edge reuses the apron edge
-        // verts' positions exactly (same at() call), so pavement and skirt
-        // share an edge — no hairline crack for the sky to leak through.
-        //
-        // THE FORTRESS-EDGE FIX (owner, pinned against it at a junction):
-        // the first cut ran a 0.62 m vertical face and then a batter only
-        // 0.9 m out, so on any real drop the "batter" was an 80-degree
-        // plate wall a car falls against and sticks to. Now the batter RUN
-        // SCALES WITH THE DROP (~1.5:1 away from junctions — a car scraping
-        // it deflects along), and inside a junction's exclusion zone the
-        // skirt FEATHERS: near-zero face, ~3:1 (18 deg) ramp to natural
-        // ground — a drivable transition, not a plinth edge.
-        {
-            const float dj = std::min(
-                distToNearestRoadJunction(spec.x[k],     spec.z[k]),
-                distToNearestRoadJunction(spec.x[k + 1], spec.z[k + 1]));
-            const float tj = std::max(0.0f, std::min(1.0f,
-                (dj - kJunctionBarrierClearM) / 15.0f));   // 0 in the zone -> 1 outside
-            const float face  = 0.06f + (kSkirtFace - 0.06f) * tj;
-            const float slope = 3.0f - 1.5f * tj;          // out-run per metre of drop
-            for (int side = -1; side <= 1; side += 2) {
-                const float lat = pav * (float)side;
-                float aT[3], bT[3];
-                at(k, lat, aT); at(k+1, lat, bT);
-                // knee: bottom of the (short) vertical face
-                float aK[3] = { aT[0], aT[1] - face, aT[2] };
-                float bK[3] = { bT[0], bT[1] - face, bT[2] };
-                // toe: out by slope * drop (min the old 0.9), down to
-                // kSkirtLap under the carved ground
-                auto outRun = [&](size_t node, const float top[3]) {
-                    float probe[3];
-                    at(node, lat + 2.0f * (float)side, probe);
-                    const float ground = terrainHeightAtWorld(probe[0], probe[2]);
-                    const float drop = std::max(0.0f,
-                        std::min(top[1] - ground, kSkirtMaxDrop));
-                    return std::max(kSkirtOut, std::min(24.0f, drop * slope));
-                };
-                float aO[3], bO[3];
-                at(k,   lat + outRun(k,     aT) * (float)side, aO);
-                at(k+1, lat + outRun(k + 1, bT) * (float)side, bO);
-                auto toeY = [&](const float top[3], const float o[3]) {
-                    const float ground = terrainHeightAtWorld(o[0], o[2]);
-                    float y = std::min(top[1] - face, ground) - kSkirtLap;
-                    return std::max(y, top[1] - kSkirtMaxDrop);
-                };
-                aO[1] = toeY(aT, aO);
-                bO[1] = toeY(bT, bO);
-                const float faceV0 = 0.0f, faceV1 = face / 6.1f;
-                const float batV1  = faceV1 + (face + kSkirtLap) / 6.1f;
-                if (side > 0) {
-                    skirt.quadN(aT, aK, bK, bT, faceV0, faceV1, u0 * 0.06f, u1 * 0.06f);
-                    skirt.quadN(aK, aO, bO, bK, faceV1, batV1,  u0 * 0.06f, u1 * 0.06f);
-                } else {
-                    skirt.quadN(aK, aT, bT, bK, faceV1, faceV0, u0 * 0.06f, u1 * 0.06f);
-                    skirt.quadN(aO, aK, bK, bO, batV1,  faceV1, u0 * 0.06f, u1 * 0.06f);
+        // MEDIAN FEATURES (dual): the continuous jersey median wall where the
+        // median is narrow, ending cleanly at every turnaround gap and inside
+        // every junction exclusion zone; the paved crossover in the gaps.
+        if (dual) {
+            const float uMid = 0.5f * (u0 + u1);
+            const bool ta = inTurnaround(uMid);
+            const bool wallHere = !ta && dj >= kJunctionBarrierClearM &&
+                0.5f * (a.medianHalf + b.medianHalf) <= kFwyMedianWallHalfM;
+            if (wallHere) {
+                if (!wallOpen) { jerseyEndCap(jersey, a, 0.0f); ++out.medianWallRuns; wallOpen = true; }
+                jerseyRun(jersey, a, b, 0.0f, 0.0f, u0, u1);
+            } else if (wallOpen) {
+                jerseyEndCap(jersey, a, 0.0f);
+                wallOpen = false;
+            }
+            if (ta) {
+                // THE TURNAROUND: asphalt across the median, lapped 3 m onto
+                // each inner apron, with closure faces down to the graded
+                // median ground so the slab edge reads poured, not floating.
+                const float wA = a.medianHalf + 3.0f, wB = b.medianHalf + 3.0f;
+                float c0[3], c1[3], c2[3], c3[3];
+                P(a, -wA, c0); P(a, wA, c1); P(b, wB, c2); P(b, -wB, c3);
+                c0[1] += 0.006f; c1[1] += 0.006f; c2[1] += 0.006f; c3[1] += 0.006f;
+                crossover.quad(c0, c1, c2, c3, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+            }
+        }
+    }
+    if (wallOpen) { jerseyEndCap(jersey, path.back(), 0.0f); wallOpen = false; }
+
+    // TURNAROUND FILLETS — a small cement flare at each crossover corner so
+    // the mouth reads as a paved feature, not a butt-jointed patch.
+    if (dual) {
+        auto stAtU = [&](float u) {
+            size_t lo = 0, hi = path.size() - 1;
+            while (lo + 1 < hi) {
+                const size_t mid = (lo + hi) / 2;
+                if (path[mid].u <= u) lo = mid; else hi = mid;
+            }
+            const RoadRenderStation& A = path[lo];
+            const RoadRenderStation& B = path[hi];
+            const float span = std::max(1e-4f, B.u - A.u);
+            const float t = std::max(0.0f, std::min(1.0f, (u - A.u) / span));
+            RoadRenderStation st = A;
+            st.x = A.x + (B.x - A.x) * t;
+            st.z = A.z + (B.z - A.z) * t;
+            st.y = A.y + (B.y - A.y) * t;
+            st.tx = A.tx; st.tz = A.tz;
+            st.medianHalf = A.medianHalf + (B.medianHalf - A.medianHalf) * t;
+            st.u = u;
+            return st;
+        };
+        RibbonMesh fillets;
+        for (const RoadTurnaround& t : turnarounds) {
+            for (int endSide = 0; endSide < 2; ++endSide) {
+                const float uE = endSide == 0 ? t.u0 : t.u1;
+                const float uF = endSide == 0 ? std::max(0.0f, t.u0 - 9.0f)
+                                              : std::min(path.back().u, t.u1 + 9.0f);
+                const RoadRenderStation sE = stAtU(uE), sF = stAtU(uF);
+                for (int side = -1; side <= 1; side += 2) {
+                    float p0[3], p1[3], p2[3];
+                    P(sE, (float)side * (sE.medianHalf + 3.0f), p0);
+                    P(sE, (float)side *  sE.medianHalf,         p1);
+                    P(sF, (float)side * (sF.medianHalf + 0.6f), p2);
+                    p0[1] += 0.004f; p1[1] += 0.004f; p2[1] += 0.004f;
+                    if ((side > 0) == (endSide == 0)) fillets.quad(p0, p1, p2, p0, 0.0f, 0.5f, 0.0f, 0.5f);
+                    else                              fillets.quad(p1, p0, p2, p1, 0.0f, 0.5f, 0.0f, 0.5f);
                 }
             }
         }
+        // fold the fillets into the crossover mesh (same asphalt-adjacent look)
+        const uint32_t base = (uint32_t)crossover.v.size();
+        crossover.v.insert(crossover.v.end(), fillets.v.begin(), fillets.v.end());
+        for (uint32_t idx : fillets.i) crossover.i.push_back(base + idx);
+    }
 
-        // LANE MARKINGS: solid at both edges of the running surface, DASHED on
-        // the three interior lines. 40 ft cycle at 60% duty is the US
-        // convention, and dashes are what tell you at speed which way it bends.
-        // Dashes are cut as TRUE duty-cycle windows within the segment, not
-        // one whole-segment yes/no on fmod(u0): that quantisation was fine at
-        // 61 m nodes and became near-solid lines the moment the horizontal
-        // smoothing brought 4-15 m segments (seen in the barrier_mix eye
-        // capture — six solid lines, no dashes).
-        const float laneM = kLaneFt * kFtToM;
-        const float halfPaint = 0.06f;              // ~5 in stripe
-        for (int lane = 0; lane <= kLaneCount; ++lane) {
-            const float lat = -run + (float)lane * laneM;
-            const bool edge = (lane == 0 || lane == kLaneCount);
-            if (!edge) {
-                const float cycle = 12.19f;         // 40 ft
-                const float duty  = 0.6f;
-                float e0[3], e1[3], f0[3], f1[3];   // segment-end stripe corners
-                at(k,   lat - halfPaint, e0); at(k,   lat + halfPaint, e1);
-                at(k+1, lat - halfPaint, f0); at(k+1, lat + halfPaint, f1);
-                auto lerp3 = [](const float A[3], const float B[3], float t, float o[3]) {
-                    o[0] = A[0] + (B[0] - A[0]) * t;
-                    o[1] = A[1] + (B[1] - A[1]) * t + 0.012f;
-                    o[2] = A[2] + (B[2] - A[2]) * t;
-                };
-                for (float c0 = std::floor(u0 / cycle) * cycle; c0 < u1; c0 += cycle) {
-                    const float s0 = std::max(u0, c0);
-                    const float s1 = std::min(u1, c0 + cycle * duty);
-                    if (s1 <= s0 + 0.05f) continue;
-                    const float ta = (s0 - u0) / (u1 - u0);
-                    const float tb = (s1 - u0) / (u1 - u0);
-                    float da[3], db[3], dc[3], dd[3];
-                    lerp3(e0, f0, ta, da); lerp3(e1, f1, ta, db);
-                    lerp3(e1, f1, tb, dc); lerp3(e0, f0, tb, dd);
-                    paint.quad(da, db, dc, dd, 0.0f, 1.0f, 0.0f, 1.0f);
-                }
-                continue;
+    // ---- THE WORK ZONE (first dressing example, dual routes) ---------------
+    // A lane closure on the right carriageway of one stretch: a taper of
+    // traffic cones closing the OUTSIDE lane over ~150 m, three orange-and-
+    // white drums at the head. Cones are render-only (drive-over is fine);
+    // drums are LIGHT DYNAMIC BODIES — hit one and it scatters.
+    RibbonMesh coneField;
+    std::vector<float> barrelSpots;   // x,y,z triples
+    if (dual && path.back().u > 5000.0f) {
+        auto stAtU = [&](float u) {
+            size_t lo = 0, hi = path.size() - 1;
+            while (lo + 1 < hi) {
+                const size_t mid = (lo + hi) / 2;
+                if (path[mid].u <= u) lo = mid; else hi = mid;
             }
-            float pa[3], pb[3], pc[3], pd[3];
-            at(k,   lat - halfPaint, pa); at(k,   lat + halfPaint, pb);
-            at(k+1, lat + halfPaint, pc); at(k+1, lat - halfPaint, pd);
-            pa[1] += 0.012f; pb[1] += 0.012f; pc[1] += 0.012f; pd[1] += 0.012f;
-            paint.quad(pa, pb, pc, pd, 0.0f, 1.0f, 0.0f, 1.0f);
+            const RoadRenderStation& A = path[lo];
+            const RoadRenderStation& B = path[hi];
+            const float span = std::max(1e-4f, B.u - A.u);
+            const float t = std::max(0.0f, std::min(1.0f, (u - A.u) / span));
+            RoadRenderStation st = A;
+            st.x = A.x + (B.x - A.x) * t;
+            st.z = A.z + (B.z - A.z) * t;
+            st.y = A.y + (B.y - A.y) * t;
+            st.medianHalf = A.medianHalf + (B.medianHalf - A.medianHalf) * t;
+            st.u = u;
+            return st;
+        };
+        const float total = path.back().u;
+        float uWz = -1.0f;
+        for (float cand = total * 0.25f; cand < total * 0.7f; cand += 50.0f) {
+            bool ok = true;
+            for (float uu = cand - 40.0f; uu <= cand + 260.0f && ok; uu += 10.0f) {
+                if (inTurnaround(std::max(0.0f, uu))) ok = false;
+                const RoadRenderStation st = stAtU(std::max(0.0f, std::min(total, uu)));
+                if (st.gap) ok = false;
+                if (distToNearestRoadJunction(st.x, st.z) < 90.0f) ok = false;
+            }
+            if (ok) { uWz = cand; break; }
+        }
+        if (uWz > 0.0f) {
+            // A ~0.7 m traffic cone baked in world space (render-only).
+            auto emitCone = [&](const float base[3]) {
+                const int   seg = 10;
+                const float rB = 0.17f, rT = 0.035f, h = 0.70f, plate = 0.21f;
+                const float kTwoPi = 6.2831853f;
+                // square-ish base plate (a low slab)
+                for (int q = 0; q < 4; ++q) {
+                    const float a0 = kTwoPi * (float)q / 4.0f + 0.7854f;
+                    const float a1 = kTwoPi * (float)(q + 1) / 4.0f + 0.7854f;
+                    float p0[3] = { base[0] + std::cos(a0) * plate, base[1] + 0.035f,
+                                    base[2] + std::sin(a0) * plate };
+                    float p1[3] = { base[0] + std::cos(a1) * plate, base[1] + 0.035f,
+                                    base[2] + std::sin(a1) * plate };
+                    float c[3]  = { base[0], base[1] + 0.035f, base[2] };
+                    coneField.quadN(c, p0, p1, c, 0.5f, 0.5f, 0.02f, 0.06f);
+                    float g0[3] = { p0[0], base[1], p0[2] };
+                    float g1[3] = { p1[0], base[1], p1[2] };
+                    coneField.quadN(p0, g0, g1, p1, 0.5f, 0.5f, 0.0f, 0.04f);
+                }
+                for (int q = 0; q < seg; ++q) {
+                    const float a0 = kTwoPi * (float)q / (float)seg;
+                    const float a1 = kTwoPi * (float)(q + 1) / (float)seg;
+                    float b0[3] = { base[0] + std::cos(a0) * rB, base[1] + 0.05f,
+                                    base[2] + std::sin(a0) * rB };
+                    float b1[3] = { base[0] + std::cos(a1) * rB, base[1] + 0.05f,
+                                    base[2] + std::sin(a1) * rB };
+                    float t0[3] = { base[0] + std::cos(a0) * rT, base[1] + h,
+                                    base[2] + std::sin(a0) * rT };
+                    float t1[3] = { base[0] + std::cos(a1) * rT, base[1] + h,
+                                    base[2] + std::sin(a1) * rT };
+                    // v runs bottom->top so the band texture reads upright
+                    coneField.quadN(b0, b1, t1, t0,
+                                    (float)q / (float)seg, (float)(q + 1) / (float)seg,
+                                    0.07f, 1.0f);
+                }
+            };
+            // Taper: 13 cones walking the outside lane closed over ~150 m on
+            // the RIGHT (cw +1) carriageway, then the drums across its head.
+            const float taper = 150.0f;
+            for (int i = 0; i <= 12; ++i) {
+                const float s = uWz + (float)i * (taper / 12.0f);
+                const RoadRenderStation st = stAtU(s);
+                const float cOff = st.medianHalf + kFwyPavedHalfM;
+                const float lat = cOff + kFwyRunningHalfM
+                                - laneM * std::min(1.0f, (s - uWz) / taper);
+                float bp[3];
+                P(st, lat, bp);
+                emitCone(bp);
+                ++out.workZoneCones;
+            }
+            for (int i = 0; i < 3; ++i) {
+                const RoadRenderStation st = stAtU(uWz + taper + 8.0f + (float)i * 3.5f);
+                const float cOff = st.medianHalf + kFwyPavedHalfM;
+                const float lat = cOff + kFwyRunningHalfM - laneM
+                                + laneM * (0.25f + 0.25f * (float)i);
+                float bp[3];
+                P(st, lat, bp);
+                barrelSpots.push_back(bp[0]);
+                barrelSpots.push_back(bp[1]);
+                barrelSpots.push_back(bp[2]);
+            }
+            char wb[160];
+            std::snprintf(wb, sizeof(wb),
+                "road '%s': work zone at u %.0f m — %u cones tapering the outside "
+                "lane over %.0f m, 3 drums at the head",
+                spec.name.c_str(), uWz, out.workZoneCones, taper);
+            x3::logInfo(wb);
         }
     }
 
@@ -2735,57 +3245,131 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
         }
     };
 
-    // FALLBACK TINTS THAT STILL READ AS A ROAD. rd_asphalt_01 does not exist in
-    // the tree yet, so every ribbon road was hitting the untextured path with a
-    // WHITE tint — 46 miles of glowing white pavement (and the junction laps
-    // read sky-blue against it). Until the asphalt set lands, the untextured
-    // fallback is tinted like the material it stands in for.
     float roadTint [4] = { 1.0f, 1.0f, 1.0f, 1.0f };
     if (!asphalt.ok) { roadTint[0] = 0.055f; roadTint[1] = 0.056f; roadTint[2] = 0.060f; }
     float apronTint[4] = { 0.86f, 0.85f, 0.82f, 1.0f };
     if (!cement.ok)  { apronTint[0] = 0.42f; apronTint[1] = 0.41f; apronTint[2] = 0.38f; }
     const float paintC[4] = { 1.8f, 1.8f, 1.7f, 1.0f };
     upload(road,   &asphalt, roadTint,  true);
-    // The shoulder weathers a shade differently from the lanes — that contrast
-    // is what tells you at speed you have left the running surface.
     float shoulderTint[4] = { 0.78f, 0.78f, 0.79f, 1.0f };
     if (!asphalt.ok) { shoulderTint[0] = 0.072f; shoulderTint[1] = 0.072f; shoulderTint[2] = 0.076f; }
     upload(shoulders, &asphalt, shoulderTint, true);
-    upload(apronL, &cement,  apronTint, true);
-    upload(apronR, &cement,  apronTint, true);
-    // The prism skirt is CONCRETE STRUCTURE, slightly darker than the apron it
-    // holds up so the edge reads as a poured base, not more paving.
+    upload(aprons, &cement,  apronTint, true);
     float skirtTint[4] = { 0.74f, 0.73f, 0.70f, 1.0f };
     if (!cement.ok) { skirtTint[0] = 0.34f; skirtTint[1] = 0.33f; skirtTint[2] = 0.31f; }
     upload(skirt,  &cement,  skirtTint, true);
-    // Galvanized-steel gray, dielectric — an untextured metallic-1 surface
-    // renders BLACK (X3_WORLD_RULES rule 5), so the rail is painted gray with
-    // its geometry (two bands + posts) doing the W-beam read.
     const float railTint[4] = { 0.60f, 0.62f, 0.65f, 1.0f };
     upload(rails,  nullptr,  railTint,  false);
     if (!railColI.empty())
         phys.addStaticMesh(railColV.data(), (uint32_t)(railColV.size() / 3),
                            railColI.data(), (uint32_t)railColI.size());
-    // The jersey wall is POURED CONCRETE — the cement set, a touch darker
-    // than the apron so it reads as a barrier standing ON the pavement, and
-    // FULL collision from its own faces (both-wound, so it stops a car from
-    // the road side and holds one that already went over).
     float jerseyTint[4] = { 0.70f, 0.69f, 0.66f, 1.0f };
     if (!cement.ok) { jerseyTint[0] = 0.31f; jerseyTint[1] = 0.30f; jerseyTint[2] = 0.28f; }
     upload(jersey, &cement,  jerseyTint, true);
+    // the crossover is asphalt paved slightly darker than the lanes (new mix)
+    float crossTint[4] = { 0.92f, 0.92f, 0.94f, 1.0f };
+    if (!asphalt.ok) { crossTint[0] = 0.048f; crossTint[1] = 0.049f; crossTint[2] = 0.053f; }
+    upload(crossover, &asphalt, crossTint, true);
     upload(paint,  nullptr,  paintC,    false);
 
+    // Work-zone dressing: cones (render-only, banded texture) + dynamic drums.
+    if (!coneField.empty() || !barrelSpots.empty()) {
+        // Orange with two white retroreflective bands, v = height fraction.
+        const uint32_t tw = 4, th = 64;
+        std::vector<uint8_t> px((size_t)tw * th * 4);
+        for (uint32_t y = 0; y < th; ++y) {
+            const float v = (float)y / (float)(th - 1);
+            const bool white = (v > 0.42f && v < 0.58f) || (v > 0.72f && v < 0.86f);
+            const uint8_t r = white ? 235 : 235;
+            const uint8_t g = white ? 235 : 88;
+            const uint8_t bcol = white ? 230 : 18;
+            for (uint32_t x = 0; x < tw; ++x) {
+                uint8_t* p = &px[((size_t)y * tw + x) * 4];
+                p[0] = r; p[1] = g; p[2] = bcol; p[3] = 255;
+            }
+        }
+        x3::rhi::TextureHandle bandTex =
+            device.createTexture(px.data(), tw, th, /*srgb=*/true);
+        if (!coneField.empty()) {
+            Entity e;
+            e.mesh = device.createMesh(coneField.v.data(), (uint32_t)coneField.v.size(),
+                                       coneField.i.data(), (uint32_t)coneField.i.size());
+            if (e.mesh.valid()) {
+                e.tex = bandTex;
+                scene.add(e);
+                ++out.meshCount;
+            }
+        }
+        if (!barrelSpots.empty()) {
+            // One drum mesh (origin at the base centre), one entity + one
+            // light dynamic body per drum — Scene::update syncs them, so a
+            // clipped drum slides away instead of stopping the car dead.
+            RibbonMesh drum;
+            const int   seg = 14;
+            const float r = 0.29f, h = 0.94f;
+            const float kTwoPi = 6.2831853f;
+            for (int q = 0; q < seg; ++q) {
+                const float a0 = kTwoPi * (float)q / (float)seg;
+                const float a1 = kTwoPi * (float)(q + 1) / (float)seg;
+                float b0[3] = { std::cos(a0) * r, 0.0f, std::sin(a0) * r };
+                float b1[3] = { std::cos(a1) * r, 0.0f, std::sin(a1) * r };
+                float t0[3] = { b0[0], h, b0[2] };
+                float t1[3] = { b1[0], h, b1[2] };
+                drum.quadN(b0, b1, t1, t0,
+                           (float)q / (float)seg, (float)(q + 1) / (float)seg,
+                           0.02f, 0.98f);
+                float c0[3] = { 0.0f, h, 0.0f };
+                drum.quadN(t0, t1, c0, c0, 0.5f, 0.5f, 0.95f, 1.0f);
+            }
+            x3::rhi::MeshHandle drumMesh =
+                device.createMesh(drum.v.data(), (uint32_t)drum.v.size(),
+                                  drum.i.data(), (uint32_t)drum.i.size());
+            for (size_t i = 0; i + 2 < barrelSpots.size(); i += 3) {
+                const float bx = barrelSpots[i], by = barrelSpots[i + 1], bz = barrelSpots[i + 2];
+                x3::phys::BodyId body = phys.addBox({ 0.29f, 0.47f, 0.29f },
+                                                    { bx, by + 0.47f, bz },
+                                                    9.0f, x3::phys::Layer::Dynamic);
+                Entity e;
+                e.mesh = drumMesh;
+                e.tex = bandTex;
+                e.body = body;
+                e.bodyVisualOffsetY = 0.47f;
+                e.transform[12] = bx; e.transform[13] = by; e.transform[14] = bz;
+                e.tag = (uint32_t)Tag::Prop;
+                scene.add(e);
+                ++out.workZoneBarrels;
+                ++out.meshCount;
+            }
+        }
+    }
+
     out.ok = out.meshCount > 0;
-    char b[320];
-    std::snprintf(b, sizeof(b),
-        "road ribbon: %.2f miles | %u meshes, %u quads | 4 x %.0f ft lanes + %.0f ft "
-        "shoulders + %.0f ft aprons = %.0f ft paved | prism skirt %.2f m face | "
-        "%u guardrail segments (min drop railed %.1f m) | %u jersey-wall segments "
-        "(ditch band, min drop %.1f m)",
-        out.lengthM / 1609.34f, out.meshCount, out.quadCount,
-        kLaneFt, kShoulderFt, kApronFt, kPavedHalfM * 2.0f / kFtToM, kSkirtFace,
-        out.railSegments, out.railMinDropM,
-        out.jerseySegments, out.jerseyMinDropM);
+    char b[420];
+    if (dual) {
+        std::snprintf(b, sizeof(b),
+            "road ribbon '%s': %.2f miles DUAL | %u meshes, %u quads, %u fine stations | "
+            "2 x (%d x %.0f ft lanes + %.0f ft shoulders + %.0f ft aprons) = 2 x %.0f ft paved, "
+            "median %.1f..%.1f m | %u median wall runs, %u turnarounds | "
+            "%u rail + %u jersey offside segments | %u cones, %u drums",
+            spec.name.c_str(), out.lengthM / 1609.34f, out.meshCount, out.quadCount,
+            out.fineStations, lanes, kLaneFt, kShoulderFt, kApronFt,
+            pavHalf * 2.0f / kFtToM,
+            kFwyMedianMinHalfM * 2.0f, kFwyMedianMaxHalfM * 2.0f,
+            out.medianWallRuns, out.turnaroundCount,
+            out.railSegments, out.jerseySegments,
+            out.workZoneCones, out.workZoneBarrels);
+    } else {
+        std::snprintf(b, sizeof(b),
+            "road ribbon '%s': %.2f miles | %u meshes, %u quads, %u fine stations | "
+            "%d x %.0f ft lanes + %.0f ft shoulders + %.0f ft aprons = %.0f ft paved | "
+            "%u guardrail segments (min drop railed %.1f m) | %u jersey-wall segments "
+            "(ditch band, min drop %.1f m)",
+            spec.name.c_str(), out.lengthM / 1609.34f, out.meshCount, out.quadCount,
+            out.fineStations, lanes, kLaneFt, kShoulderFt, kApronFt,
+            kPavedHalfM * 2.0f / kFtToM,
+            out.railSegments, out.railMinDropM,
+            out.jerseySegments, out.jerseyMinDropM);
+    }
     x3::logInfo(b);
     return out;
 }
@@ -2825,7 +3409,9 @@ RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
     // edge, or the patch meets the main pavement half-twisted (measured on
     // paper: up to ±0.9 m at the wing tips on a 7% main grade). That is what
     // the kJctSetbackM run exists for.
-    const float twistRun = std::max(2.0f, setb - kPavedHalfM);
+    // ... complete by the MAIN pavement's edge — which on a divided freeway is
+    // the NEAR CARRIAGEWAY's outer apron edge, not the centreline profile.
+    const float twistRun = std::max(2.0f, setb - j.mainPavedEdgeM);
     auto heightAt = [&](float u, float v) {
         // world point of (u,v)
         const float wx = j.endX + dx * v + pxd * u;
@@ -2911,7 +3497,10 @@ RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
     // traffic from EITHER main-road direction sweeps in without a corner.
     {
         constexpr float kMergeR = 45.0f;      // target fillet radius (>= ~40 asked)
-        const float mainEdge = kShoulderHalfM;
+        // On a divided freeway the fillets go tangent to the NEAR carriageway's
+        // outer shoulder edge (producers fill mainShoulderEdgeM from the median
+        // at the landing); on a single road this is the base profile's value.
+        const float mainEdge = j.mainShoulderEdgeM;
         // main-road unit normal pointing back toward the branch end
         float nx = -j.mainTZ, nz = j.mainTX;
         if (nx * (j.endX - j.jx) + nz * (j.endZ - j.jz) < 0.0f) { nx = -nx; nz = -nz; }
@@ -2968,7 +3557,9 @@ RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
                 // lapped-not-coplanar is the no-z-fight rule everywhere here.
                 o[0] = wx; o[2] = wz; o[1] = heightAt(u, v) + 0.012f;
             };
-            const int N = 14;
+            // FINE ARC ("Get rid of ALLLLL jointed bends" applies to the
+            // junction fillets too): ~4 m facets instead of the old 14 fixed.
+            const int N = std::max(16, (int)std::ceil(R * std::fabs(sweep) / 4.0f));
             float Xp[3]; surfaced(Xx, Xz, Xp);
             for (int i = 0; i < N; ++i) {
                 const float aa = a0 + sweep * (float)i / (float)N;
@@ -3658,6 +4249,130 @@ bool runRoadNetworkSelfTest() {
                     worstPerLod[0], worstPerLod[1], worstPerLod[2], worstExcess, wxp, wzp);
                 check(worstExcess <= 0.02f,
                       "W1b coarse tiles mesh the corridor floors IDENTICALLY to Full LOD", d);
+            }
+
+            // ================= THE FREEWAY (dual carriageway) ================
+            // Tim: "make the road wider... much wider. Its a freeway" / "8
+            // lanes each side... a separate road carrying north and south
+            // traffic like I17 does in AZ".
+            {
+                // F1 — the cross-section arithmetic, from the constants the
+                // ribbon actually builds with.
+                const float cwPavedFt = 2.0f * kFwyPavedHalfM / kFtToM;
+                const float maxSpanM  = 2.0f * (2.0f * kFwyPavedHalfM + 1.0f
+                                                + kFwyMedianMaxHalfM);
+                std::snprintf(d, sizeof(d),
+                    "%d x %.0f ft lanes/carriageway, carriageway %.0f ft paved, "
+                    "dual span up to %.0f m (%.0f ft)",
+                    kFwyLaneCount, kLaneFt, cwPavedFt, maxSpanM, maxSpanM / kFtToM);
+                check(ringSpec.dualCarriageway && kFwyLaneCount == 8 &&
+                      std::fabs(cwPavedFt - 144.0f) < 0.5f,
+                      "F1 the inner tour is a divided freeway: 8 x 12 ft lanes EACH WAY", d);
+
+                // F2 — the median plan: bounded, terrain-varied (both states
+                // genuinely occur), and slew-limited so the carriageways
+                // never kink between states.
+                const std::vector<float> mp = computeMedianPlan(ringSpec, ringY);
+                bool bounded = mp.size() == ringSpec.x.size() && !mp.empty();
+                bool hasWide = false, hasNarrow = false;
+                float worstSlew = 0.0f;
+                for (size_t i = 0; i < mp.size(); ++i) {
+                    if (mp[i] < kFwyMedianMinHalfM - 1e-3f ||
+                        mp[i] > kFwyMedianMaxHalfM + 1e-3f) bounded = false;
+                    if (mp[i] > kFwyMedianWallHalfM) hasWide = true;
+                    if (mp[i] <= kFwyMedianWallHalfM) hasNarrow = true;
+                    if (i + 1 < mp.size()) {
+                        const float dx = ringSpec.x[i + 1] - ringSpec.x[i];
+                        const float dz = ringSpec.z[i + 1] - ringSpec.z[i];
+                        const float sl = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
+                        worstSlew = std::max(worstSlew,
+                                             std::fabs(mp[i + 1] - mp[i]) / sl);
+                    }
+                }
+                std::snprintf(d, sizeof(d),
+                    "median half %.1f..%.1f m over %u nodes, wide=%d walled=%d, "
+                    "worst slew %.3f m/m (cap 0.031)",
+                    mp.empty() ? 0.0f : *std::min_element(mp.begin(), mp.end()),
+                    mp.empty() ? 0.0f : *std::max_element(mp.begin(), mp.end()),
+                    (uint32_t)mp.size(), hasWide ? 1 : 0, hasNarrow ? 1 : 0,
+                    worstSlew);
+                check(bounded && hasWide && hasNarrow && worstSlew <= 0.031f,
+                      "F2 the median varies with the terrain, I-17 style, without kinks", d);
+
+                // F3 — turnaround crossovers: the ~1.7 km rhythm, the spawn
+                // crossover at u~0, and one ALIGNED at the junction landing
+                // (a side road meeting a divided freeway needs its gap there).
+                const std::vector<RoadTurnaround> tas = planTurnarounds(ringSpec);
+                float ringLen = 0.0f;
+                std::vector<float> U(ringSpec.x.size(), 0.0f);
+                for (size_t i = 0; i + 1 < ringSpec.x.size(); ++i) {
+                    const float dx = ringSpec.x[i + 1] - ringSpec.x[i];
+                    const float dz = ringSpec.z[i + 1] - ringSpec.z[i];
+                    U[i + 1] = U[i] + std::sqrt(dx * dx + dz * dz);
+                }
+                ringLen = U.back();
+                bool spacingOk = !tas.empty();
+                for (size_t i = 0; i + 1 < tas.size(); ++i) {
+                    const float gapC = 0.5f * (tas[i + 1].u0 + tas[i + 1].u1)
+                                     - 0.5f * (tas[i].u0 + tas[i].u1);
+                    if (gapC > 2600.0f) spacingOk = false;
+                }
+                const float uJct = U[cx.ringNode];
+                bool jctAligned = false;
+                for (const RoadTurnaround& t : tas)
+                    if (std::fabs(0.5f * (t.u0 + t.u1) - uJct) < 120.0f) jctAligned = true;
+                const bool spawnGap = !tas.empty() && tas.front().u0 <= 1.0f;
+                std::snprintf(d, sizeof(d),
+                    "%u crossovers over %.1f miles (junction-aligned=%d, spawn=%d), "
+                    "max centre spacing gate 2.6 km",
+                    (uint32_t)tas.size(), ringLen / 1609.34f,
+                    jctAligned ? 1 : 0, spawnGap ? 1 : 0);
+                check(tas.size() >= 10 && spacingOk && jctAligned && spawnGap,
+                      "F3 turnarounds every ~1.7 km, one at the junction, one at spawn", d);
+
+                // F4 — THE JOINTED-BENDS KILLER (owner: "Get rid of ALLLLL
+                // jointed bends. PLEASE."): the ribbon rides a fine spline,
+                // not the node chords. Gate the actual render path: station
+                // spacing <= 20.5 m, and the heading change between
+                // consecutive fine segments — the thing the eye reads as a
+                // facet in the edge line — under 2 degrees EVERYWHERE on
+                // every connected route (daylight; a bore chord is straight).
+                auto pathGate = [&](const char* gate, const RoadSpec& s2,
+                                    const std::vector<float>& y2) {
+                    std::vector<float> mp2;
+                    if (s2.dualCarriageway) mp2 = computeMedianPlan(s2, y2);
+                    std::vector<RoadRenderStation> path;
+                    buildRoadRenderPath(s2, &y2, mp2.empty() ? nullptr : &mp2, path);
+                    float maxSpace = 0.0f, maxTurnDeg = 0.0f;
+                    for (size_t i = 0; i + 1 < path.size(); ++i) {
+                        if (path[i].gap || path[i + 1].gap) continue;
+                        maxSpace = std::max(maxSpace, path[i + 1].u - path[i].u);
+                        const float dot = path[i].tx * path[i + 1].tx +
+                                          path[i].tz * path[i + 1].tz;
+                        maxTurnDeg = std::max(maxTurnDeg,
+                            std::acos(std::max(-1.0f, std::min(1.0f, dot))) * kRadToDeg);
+                    }
+                    std::snprintf(d, sizeof(d),
+                        "'%s': %u stations (%u nodes), max spacing %.1f m, "
+                        "max facet %.2f deg (gate 2.0)",
+                        s2.name.c_str(), (uint32_t)path.size(),
+                        (uint32_t)s2.x.size(), maxSpace, maxTurnDeg);
+                    check(path.size() >= s2.x.size() && maxSpace <= 20.5f &&
+                          maxTurnDeg <= 2.0f, gate, d);
+                };
+                pathGate("F4 the freeway's render path has NO jointed bends", ringSpec, ringY);
+                pathGate("F4b the connector's render path has NO jointed bends",
+                         cx.spec, cx.roadY);
+
+                // F5 — THE BUDGET: dual carriageways must cost NO extra
+                // corridors (one chain per route; the span rides halfWidth).
+                std::snprintf(d, sizeof(d),
+                    "inner tour %u corridors (was 21 single-carriageway), "
+                    "registry %u of %u with the whole spawn network in",
+                    ringR.corridorCount, terrainCorridorCount(), kMaxTerrainCorridors);
+                check(ringR.corridorCount <= 25 &&
+                      terrainCorridorCount() <= kMaxTerrainCorridors - 40,
+                      "F5 the freeway profile costs no corridor budget", d);
             }
 
             // THE RANGE CIRCUIT — registered before the spur so the spur's
