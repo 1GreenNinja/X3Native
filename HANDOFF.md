@@ -116,11 +116,79 @@ Three tools now exist for looking at the real thing:
 * `tp lot|spur|bore|ring` console command — wired, never confirmed end to end.
   `X3_SPAWN` is the route that is known to work.
 
+
+## AGAINST THE SKETCH — what the world has, and what it does not
+
+`docs/design/ROAD_NETWORK_SKETCH_V2.png`. Tim, this session, downgrading it:
+**"Well its more of a strong suggestion"** — and **"it shows what we need"**.
+So: a target to be measured against, not a spec to be satisfied literally.
+
+Measured against the live `--world tunnel` boot log:
+
+| on the sketch | in the world |
+|---|---|
+| "Tunnels through Mountains" | **YES** — 6 bores (demo + 5 on the outer tour) |
+| "Parking Lot on Top of Mountain" | **YES**, new this session — 32 stalls, 350 ft |
+| SHOP, entered by a loop UNDER the tunnel road | **PARTLY** — LNS shop + garage + 15% ramp exist; the under-the-road loop does not |
+| City Blocks | **YES** — city.cpp massing |
+| Forest (the brown) | **YES** — 22,425 trees in 8 named belts |
+| Countryside / farmland | **YES** — rolling country |
+| the RED SQUIGGLE: a dense mat of switchbacks all over the large mountain | **BARELY** — one 1.44-mile summit spur, plus this session's 4.83-mile ridge road. The sketch draws ~15-20 interlocking legs. **This is the biggest single gap, and it is the same missing mechanism the ridge road needs: switchbacks.** |
+| LARGE RIVER | **UNDERSIZED** — Tim: *"I do not thnk we have a river that big"*. Ours is `kWorldRiverHalfWidth = 34 m` (223 ft bank to bank), 5.5 m deep mid-channel. The sketch's river is the widest feature on the map and carries a cliffside highway down both banks. |
+| tributaries feeding it | **NONE** — Tim: *"or the tributaries that we need"*. `riverChain()` is a single Chaikin spline. There is no branching in the model at all. |
+| Underground river, under the mountain | **NOT IN THE OPEN WORLD.** Tim: *"That will be Amazinng"*. NOTE: `app/cave_river.{h,cpp}` already builds an underground water ribbon with bank lights, and `club_bedrock` uses it — the machinery exists, it has just never been pointed at the open-world mountain. |
+| the Lake (top-left) | **NONE** |
+| 2 bridges | **ONE** — Bridge No.1, 280 ft deck, 106.5 ft over the water |
+| CLIFFSIDE HIGHWAY along the river | **NOT AS DRAWN** — the valley road runs the reach, but not as a cliff-face corniche |
+| Small Mountain Town, radial-road Mountain | **NONE** |
+
+## BUG — water renders where there is no water body
+
+Tim, in noclip: **"in Noclip mode we do indeed have water underground.. which I
+do not like. We just want water IN bodies of water and rivers, like real life."**
+
+Diagnosed, and it is NOT the water model — it is the water MESH:
+
+* `worldWaterLevelAt()` (terrain.cpp:1791) is already correct and already
+  bounded. It returns a level only within `kWorldRiverHalfWidth` of the river
+  spline, or inside the ocean basin where the terrain actually dropped below
+  `kWorldSeaLevel`; otherwise `kWorldWaterDry`. Physics and swimming read this,
+  so they are right.
+* The RENDERED water in this host is something else. host_tunnel.cpp:1142 says
+  it in its own comment: *"This host draws ONE flat Gerstner plane at the bridge
+  plan's waterY"*. One plane, unbounded, at a single Y. Underground, with the
+  terrain no longer hiding it, you fly straight into it — exactly what Tim saw.
+* The fix is to make the drawn water match the query that is already right: a
+  RIBBON along the river spline plus the ocean basin, not a world-sized quad.
+  `world_regions.cpp` already builds precisely that (`m_riverSegments`, "W9:
+  river water ribbon"), and `cave_river.cpp` builds one underground. The bounded
+  mesh exists in two places; this host just is not using either.
+* Worth fixing before the river is widened or tributaries are added — every one
+  of those is another chance for an unbounded plane to show up somewhere wrong.
+
+## CSG — Tim asked, and this codebase already answered
+
+*"I also really like the CSG idea.. but its hard with an open world engine,
+right"* — right, and the project already took the other road. `terrain.h`,
+just above the corridor API:
+
+> *TERRAIN CORRIDOR DEPRESSION — the polyline generalization of the river carve,
+> and the mechanism that makes freeway tunnels possible WITHOUT CSG, voxels or
+> holes in the heightfield.*
+
+Every tunnel in the world is cut-and-cover: depress the height field along a
+polyline, build a shell in the trench, lay a backfill lid back over it. No holes
+in the terrain, so streaming/LOD/collision all keep working unchanged — which is
+exactly what CSG on a streamed heightfield would have broken. The underground
+river would ride the same trick (cave_river already does it indoors).
+
 ## OPEN, in priority order
 
 1. **The ridge road's two red gates**, then the loop's two short legs — above.
    Switchbacks at the ends, not more weight-tuning.
-2. **`rd_asphalt_01` is INCOMPLETE in this worktree** — every road and the lot
+2. **Water renders outside water bodies** — the section above. Small, precise,
+   and it blocks nothing else; do it before touching the river.
+3. **`rd_asphalt_01` is INCOMPLETE in this worktree** — every road and the lot
    slab fall back to flat colour (`[surface-lib] set 'rd_asphalt_01' incomplete`).
    Not a code defect: run `python tools/asset_store.py fetch --all` (there are
    still `*.pre-fetch.bak` files and untracked `assets/converted_glb/Vehicles/*`
