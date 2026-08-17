@@ -294,6 +294,17 @@ struct CliOptions {
     // from across the valley. Implies --world tunnel + headless.
     bool        townShot = false;
     std::string townShotDir = "docs/screenshots/town";
+    // --screenshot-cutaway <dir>: the LEVEL ARCHITECT CUTAWAY proof set
+    // (`--world cutaway`, headless). Three eyes-on gates against
+    // docs/design/LEVEL_ARCHITECT_CUTAWAY_REF.png: the whole stack in X-ray, the
+    // same stack with the upper floors hidden, and a hover card up over the
+    // Neural Interface Lab. Implies --world cutaway + headless.
+    bool        cutawayShot = false;
+    std::string cutawayShotDir = "docs/screenshots/cutaway";
+    // --test-cutaway: the cutaway model's headless self-test (canonical project
+    // loads; 7 floors / 124 rooms / 160 doors; bands, groups, descriptions,
+    // legend coverage and the hover ray-pick). No window, no Vulkan.
+    bool        testCutaway = false;
 
     // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
     // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp

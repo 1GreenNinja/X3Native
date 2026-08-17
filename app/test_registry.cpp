@@ -28,6 +28,7 @@
 #include "engine/physics/Destruction.h"
 #include "tunnel_corridor.h"    // fix/tunnel-mouth: runTunnelMouthSelfTest
 #include "strata.h"              // R-3 fold: runStrataSelfTest
+#include "cutaway.h"             // W-CUTAWAY: runCutawaySelfTest (--test-cutaway)
 #include "elevator_showcase.h"  // R-4 fold: runElevatorShowcaseSelfTest
 #include "inventory.h"          // W9-3 RPG: runInventorySelfTest
 #include "progression.h"        // W9-3 RPG: runProgressionSelfTest
@@ -838,6 +839,12 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testGallery) {
         x3::logInfo("running CHARACTER GALLERY (--world gallery) cast + clip-cycle self-test...");
         return x3::apphost::runGallerySelfTest() ? 0 : 1;
+    }
+    if (tf.testCutaway) {
+        x3::logInfo("running LEVEL ARCHITECT CUTAWAY (--world cutaway) model self-test "
+                    "(canonical project -> 7 floors / 124 rooms / 160 doors, bands, "
+                    "structure groups, hover descriptions, legend coverage, ray-pick)...");
+        return x3::game::runCutawaySelfTest() ? 0 : 1;
     }
     if (tf.testSpireMid) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "

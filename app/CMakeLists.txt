@@ -51,6 +51,11 @@ add_library(x3app SHARED
     world_hosts/host_valley.cpp
     world_hosts/host_cliffs.cpp
     world_hosts/host_mines.cpp   # mine-entrance showcase (inspx/mines)
+    # W-CUTAWAY — the Level Architect CUTAWAY VIEW: the whole canonical facility
+    # in X-ray (--world cutaway / --screenshot-cutaway / --test-cutaway).
+    # docs/design/LEVEL_ARCHITECT_CUTAWAY_REF{,2,3}.png is the spec.
+    world_hosts/host_cutaway.cpp
+    cutaway.cpp
     world_hosts/host_streamed.cpp
     # Phase 2 — space-combat stack folded from feat/cockpit-vattalus
     world_hosts/host_space.cpp
