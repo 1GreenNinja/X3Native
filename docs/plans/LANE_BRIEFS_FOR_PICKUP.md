@@ -54,16 +54,42 @@ not fixed:
      mild rudder. Full aerobatics — rolls, loops, inverted must all work.
    - **700 mph full thrust, 277 mph hands-off coast** (owner's numbers are
      spec — make them fall out of thrust/drag, don't clamp).
-   - The **6DOF camera** an earlier session built for the space host is for the
-     CAMERA only (free-look decoupled from flight) — find and reuse it.
+   - **THE FLIGHT CONTROLLER ALREADY EXISTS — REUSE IT (rule 1).**
+     `app/space_pilot.{h,cpp}`: `SpacePilotController`, a complete 6DOF
+     controller with a Tuning struct (maxLinearAccel, maxStrafeAccel,
+     maxAngularAccel, linear/angular drag, boostMul, a hard maxSpeed cap,
+     `noseFollow` arcade velocity-chase steering, `flightAssist` +
+     `assistDelay` so a burst coasts before the brake engages), a 3P chase
+     camera, three live-swappable feel modes (Arcade/Assist/Loose), a
+     process-global `requestedFlightMode()` latch built precisely for "another
+     host wants this flight feel", AND its own selftest (space_pilot.cpp
+     ~:1031 — rolls, pitch, speed cap). Live consumers to read:
+     `host_space.cpp:2100` and `host_echotropolis.cpp:2702/4035/4772` (its fly
+     mode — Q/E roll with gentle self-righting when neither key is held — is
+     the HUD in the owner's own screenshot). Tune it for a WINGED CAR (700 mph
+     cap, atmospheric bank-to-turn, gravity + lift, `noseFollow` for the arcade
+     feel) instead of writing a second integrator. The 6DOF camera the owner
+     remembers is this module's chase camera.
    - **Crashing hurts**: violent tumble, damage state, overdrive lockout.
    - **P = PARACHUTE** (owner was explicit: not E, not SPACE). Jake ejects via
      the shared AnimatedCharacter module, canopy, steerable drift, CONTACT LAW
      landing; the car crashes on without him.
-4. **ALL OF THIS LIVES IN THE SHARED VEHICLE LAYER** (`app/vehicle.*`), not
+4. **THE WINGS MUST GLEAM.** Owner: "We want the wings to Gleam in the sun...
+   like" + `docs/design/GLEAM_REFERENCE.png` — a low sun throwing a sharp
+   specular glitter-track across a surface (that shot is terrain reading like
+   sunlit water). So the wings want a low-roughness, slightly anisotropic
+   metallic finish that catches a moving highlight as the car banks: the
+   gleam should SWEEP along the wing as its angle to the sun changes, which
+   means a real specular response, not an emissive cheat. Rule 5 applies —
+   a full-metal material with no mrTex renders BLACK; give it a proper
+   metallic-roughness map. Bloom already exists in the chain; a tight
+   highlight will bloom on its own. Prove it with a capture at a low sun
+   angle mid-bank, and a second at a different bank angle showing the
+   highlight has MOVED.
+5. **ALL OF THIS LIVES IN THE SHARED VEHICLE LAYER** (`app/vehicle.*`), not
    host_tunnel — the owner was explicit ("That's NOT going to be in host_tunnel
    lol"). Part of the job is MOVING the existing host-local NOS block down.
-5. Gate the wheel-lift CONTACT LAW in `DriveDemo::postStep` on wings-retracted
+6. Gate the wheel-lift CONTACT LAW in `DriveDemo::postStep` on wings-retracted
    (rule 4 comment pairing), and measure terrain streaming at 313 m/s.
 
 **Gates:** vehicle 37+, roadnetwork, terraincorridor, tunnelmouth, riverbridge,

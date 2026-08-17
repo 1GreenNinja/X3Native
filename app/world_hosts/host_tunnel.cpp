@@ -2244,6 +2244,13 @@ int hostTunnel(HostContext& hc) {
                     dsp.exposure = 0.55f;
                     device->setSkyParams(dsp);
                 }
+                // THE WINDOWS FOLLOW THE SUN, and this line is the pairing
+                // (NO_SLOP rule 4). Without it the dial sat at its old default
+                // of 1 forever and every daylight capture showed the panes as
+                // pale tan cards glued to the clapboard — a lit window at noon.
+                // The sun above is the ONLY thing that moves it, so read it
+                // from the same place, every frame, in the same loop.
+                if (townOn) town.setNightFromSun(townDusk ? 0.055f : 0.92f);
 
                 // THE TOWN WALKS IN CAPTURES TOO. ENGINE_GOTCHAS 4.4 is right
                 // that a still cannot PROVE motion — but a still of six
@@ -5032,6 +5039,12 @@ int hostTunnel(HostContext& hc) {
         // gate slides, the stacks make smoke. Cheap — a few entity transforms
         // and one particle integrator.
         if (facOn) factory.update(scene, fdt);
+        // The windows follow the sun here too. This world currently stands at a
+        // fixed noon (every setSkyParams above pushes sunDir.y 0.92), so this
+        // resolves to full day — but it is written as the SUN, not as a
+        // constant 0, so the day a real time-of-day cycle lands the town lights
+        // up with it instead of quietly staying dark (NO_SLOP rule 4/6).
+        if (townOn) town.setNightFromSun(0.92f);
 
         auto frame = device->beginFrame();
         if (frame.valid) {

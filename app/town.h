@@ -21,21 +21,41 @@
 // the car cannot drive through a shop. A full triangle-mesh collider per
 // 100k-tri prefab would be twenty broadphase monsters for no gameplay gain.
 //
-// THE ART: armory prefabs from the HouseForge kit (D:/Assets/_glb/
-// prefab_buildings/HouseForge — whole, curated, PBR-textured BUILDINGS, not
-// modular wall panels), re-baked into assets/converted_glb/Town/ by
-// tools/town_assets.py: KHR_draco_mesh_compression decoded (the loader reads
-// draco, but a decoded file is one less thing to be wrong about) and, the
-// load-bearing part, EXT_texture_webp transcoded to PNG/JPEG. THE RECEIPT:
-// engine/asset/ModelLoader.cpp links draco but there is NO WebP decoder
-// anywhere in the tree, so every one of these prefabs would have rendered
-// grey and untextured — NO_SLOP rule 3, caught by inspecting the GLB rather
-// than by shipping it.
+// THE ART — SWAPPED 2026-08-17, and why. Round one dressed this town in the
+// armory's HouseForge prefabs. Eyes-on at full res they read as DERELICT: dark,
+// spiky, broken silhouettes, because that kit is authored as COLLAPSED RUINS
+// (docs/design/TOWN_ASSET_SCOUT.md reached the same verdict independently, and
+// the armory's own thumbnail bakes show it too). Nothing was wrong with the
+// placement machinery, so nothing about it changed — only the tables did.
 //
-// ORIENTATION IS MEASURED, NOT GUESSED (X3_WORLD_RULES rule 0/3): each
-// prefab's FRONT is the horizontal direction from its bounding-box centre to
-// its named door node (SM_*_Door*). Those angles are baked into kLots below,
-// one per asset, and listed in docs/design/TOWN_MANIFEST.md.
+// The kit is now the licensed `Complete Racing Game URP All in One` pack:
+// Red_House House_1..4 as the shells, its own 7.2 m highway lamp, its roadside
+// billboards and its picket fence. ONE pack means one register, and that pack
+// was authored for a DRIVING game, so the town belongs to this world's road
+// network instead of being a medieval village a freeway happens to pass.
+// Eight facades come from four shells in two real photographic paints.
+//
+// THE PIPELINE TRAP, and the receipt (tools/town_assets.py):
+//   * the pack ships NO Unity `.mat`/`.meta` files at all, so FBX2glTF emits
+//     1x1 WHITE PLACEHOLDER textures and convert_unity_pack.py's GUID
+//     resolution has nothing to resolve — every building would have been flat
+//     grey (NO_SLOP rule 3). The tool injects the pack's real albedos BY
+//     MATERIAL NAME instead;
+//   * three of the four wall/roof albedos are TIFF, and
+//     engine/asset/ModelLoader.cpp decodes embedded images with stb_image,
+//     which cannot read TIFF. They are transcoded to JPEG.
+// `town_assets.py verify` asserts both — plus that no bound image is a
+// placeholder and no material is untextured near-metal — and is GREEN. It is
+// the same gate that caught round one's WebP (the tree has no WebP decoder
+// either), generalised so the next kit cannot slip through.
+//
+// ORIENTATION IS MEASURED, NOT GUESSED (X3_WORLD_RULES rule 0/3): each shell's
+// FRONT is the horizontal direction from its bounding-box centre to the
+// centroid of its DOOR material. Where that is ambiguous the render is the
+// arbiter — House_2 has no door material at all, and its entrance was found by
+// rendering it at 0/90/180/270 and looking. Those angles, and the MEASURED
+// positions of each shell's front-elevation window glass, are baked into
+// kAssets in town.cpp and listed in docs/design/TOWN_MANIFEST.md.
 //
 // KEEP-OUTS ARE LAW: nothing is ever placed inside |lat| < kStreetKeepOutM of
 // the street centreline — that band is pavement, shoulder, apron and skirt,
@@ -71,9 +91,22 @@ namespace x3::game {
 // PAIRED with kSidewalkLatM below and with RoadSpec::halfWidth in
 // road_network.h — widen the road and this must move with it.
 constexpr float kStreetKeepOutM = 17.5f;
-// Where the pedestrian loop runs: on the verge, outside the apron, inside the
-// shop fronts (nearest shop face sits at ~19 m).
-constexpr float kSidewalkLatM   = 16.4f;
+// Where the pedestrian loop runs: on the OUTER APRON, and it has to be inside
+// the road's carve or the walkers are not on a sidewalk at all.
+//
+// THE RECEIPT. This was 16.4 m — "on the verge, outside the apron". But
+// `RoadSpec::halfWidth` is kPavedHalfM + 1 = 15.63 m, and the corridor only
+// carves the height field out to there. Beyond it the field is the raw
+// hillside, and beside a CUT road (this spur cuts 34 ft) that is the batter
+// slope. So the loop ran up a bank: the walkers climbed a mud embankment
+// instead of a pavement, and the pedestrian gate's camera — which grounds
+// itself on the same terrain — ended up buried in it, 60% of the frame dirt.
+// 13.6 m is on the apron (which spans kShoulderHalfM 8.53 m to kPavedHalfM
+// 14.63 m), so the ground under it is the graded road surface, while still
+// leaving 5 m between a walker and the running lanes.
+// PAIRED with kPavedHalfM / RoadSpec::halfWidth in road_network.h — this must
+// stay strictly inside the carve.
+constexpr float kSidewalkLatM   = 13.6f;
 // Pedestrians tick only this close to the camera (terrain residency + fps).
 constexpr float kPedActiveM     = 320.0f;
 
@@ -119,11 +152,22 @@ public:
     uint32_t draw(x3::rhi::IRenderDevice& device,
                   const x3::rhi::FrameContext& frame) const;
 
-    // NIGHT DIAL, 0 = full day .. 1 = full night. Scales the shop-window
-    // emissive and the lamp lights. Windows glowing at noon is its own kind of
-    // slop, so the host drives this from its time of day; the default (1) is
-    // the dusk the lane was briefed for.
+    // NIGHT DIAL, 0 = full day .. 1 = full night. Scales the window emissive
+    // and the lamp lights.
+    //
+    // THE DEFAULT IS 0 — DAY — and that is a bug fix. It used to be 1, and
+    // nothing ever called this, so every window in the town burned at full
+    // strength under a noon sun: eyes-on, the panes read as pale tan cards
+    // stuck to the clapboard. "Windows glowing at noon is its own kind of
+    // slop" was already written here; the dial just had no driver.
     void setNight(float k);
+
+    // THE DRIVER, so the dial cannot drift from the sky again. Sun elevation
+    // and the night dial are ONE VALUE (NO_SLOP rule 4): full day above
+    // sunDir.y 0.25, full night at or below 0.05, ramped between. The host
+    // calls this wherever it pushes SkyParams, and the two can no longer
+    // disagree — which is exactly how the noon-lit windows happened.
+    void setNightFromSun(float sunDirY);
 
     // Warm point lights, one per street lamp/torch — feed these to
     // IRenderDevice::setPointLights alongside the host's own.
@@ -195,7 +239,7 @@ private:
     float m_dirX = 1.0f, m_dirZ = 0.0f;    // street tangent at the centre
     float m_uCentre = 0.0f;
 
-    float    m_night     = 1.0f;
+    float    m_night     = 0.0f;   // DAY by default; see setNightFromSun
     uint32_t m_buildings = 0, m_props = 0, m_cars = 0;
     float    m_cx = 0.0f, m_cz = 0.0f, m_cy = 0.0f;
     bool     m_built = false;
