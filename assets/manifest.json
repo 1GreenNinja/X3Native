@@ -433,15 +433,15 @@
     },
     {
       "repo_path": "assets/converted_glb/nature/OakBigTree01.glb",
-      "sha256": "615db24c47a9c6a18bd3998f37cb826d9337963cec14fcd29998fa5c9a4cd0cf",
-      "size": 9692928,
-      "source_note": "W-TREES2 2026-08-16: real bark+leaf textures harvested from Big Oak Tree FREE / Big Poplar Tree FREE (fresh FBX2glTF geometry pass, LOD0 split into bark+leaf materials, leaf alpha MASK). Replaces the earlier textureless placeholders."
+      "sha256": "285e72ff6d163ff1b5eae2567c1ea9c3bf8323930c107c70edff2b5de6a02ecb",
+      "size": 11761208,
+      "source_note": "billboard far-LOD cards textured: real pack atlases (BigOakBillboard01/PoplarTree001_Billboard), oak alpha keyed by border flood fill"
     },
     {
       "repo_path": "assets/converted_glb/nature/PoplarTree001.glb",
-      "sha256": "88a6800847003eb6824f062bac8ede5e8b9ee8b0aae478e302f6c9341de19762",
-      "size": 17726072,
-      "source_note": "W-TREES2 2026-08-16: real bark+leaf textures harvested from Big Oak Tree FREE / Big Poplar Tree FREE (fresh FBX2glTF geometry pass, LOD0 split into bark+leaf materials, leaf alpha MASK). Replaces the earlier textureless placeholders."
+      "sha256": "0326d2d5e32d7b70214c064b3999c21c525886f1a5886165c2c3d7824668fa30",
+      "size": 22345944,
+      "source_note": "billboard far-LOD cards textured: real pack atlases (BigOakBillboard01/PoplarTree001_Billboard), oak alpha keyed by border flood fill"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaBodySuit.glb",
