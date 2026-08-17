@@ -158,6 +158,13 @@ public:
         // GAUGE ART and this number change TOGETHER (the art is now drawn
         // -10..+40 with red from 30) — the earlier defect was never the 35,
         // it was 35 psi of model under 20 psi of dial.
+        // THE OTHER TWO SITES, by name (NO_SLOP rule 4 wants the pair spelled
+        // at every end): tools/compose_gauge_dial.py BOOST_MIN_PSI/
+        // BOOST_MAX_PSI/BOOST_HOT_PSI draw the scale, and app/gauge_hud.h
+        // kGaugeMinPsi/kGaugeMaxPsi/kGaugeHotPsi map psi onto the needle atlas
+        // and colour the digits. 35 must sit inside the drawn span and inside
+        // the red band; --screenshot-tunnel with X3_SHOT_GAUGES=1 photographs
+        // the needle at 34.2 psi so that stays an eyes-on fact, not a claim.
         float maxPsi        = 35.0f;   // peak manifold pressure over atmosphere
         // SHORTER SPOOL (2026-08-16, "MORE acceleration"): 1800/0.45 was nearly
         // half a second of nothing at WOT — the single cheapest place the car

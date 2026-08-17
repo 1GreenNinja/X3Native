@@ -87,6 +87,9 @@ add_library(x3app SHARED
     factory.cpp         # THE GLIMVALE WORKS + the golden-ticket hunt
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
     gas_station.cpp     # W-STATIONS — forecourts off the network + the fuel stub
+    # The car gauge cluster. Lifted out of host_tunnel's interactive loop so the
+    # headless proof set can photograph the dials at all (see gauge_hud.h).
+    gauge_hud.cpp
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp
@@ -158,6 +161,9 @@ add_library(x3app SHARED
     monster.cpp
     anim.cpp
     character_anim.cpp
+    # W-JETPACK: the `fly` command's pack visuals + thrust FX (flight physics
+    # lives in player.cpp, the pose in character_anim.cpp).
+    jetpack.cpp
     thirdperson.cpp
     melee.cpp
     objective.cpp

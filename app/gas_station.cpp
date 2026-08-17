@@ -925,8 +925,20 @@ void drawFuelBar(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& fr
     if (!tank.armed) return;
     const float R2 = R * 0.70f;
     const float bw = R * 1.34f, bh = R * 0.13f;
-    const float bx = gcx - R * 0.67f;
-    const float by = gcy + R + R * 0.12f + R2 * 0.10f + R * 0.34f;
+    // IT WAS DRAWN THROUGH THE SHIFT GATE. Found by eyes-on the first capture
+    // this cluster ever had (X3_SHOT_GAUGES, shots_gauges/30_gauges_incar.png):
+    // the bar sat at gcx +- 0.67R / gcy + 1.53R, and gauge_gate.png occupies
+    // gcy + 1.12R .. gcy + 2.02R centred on gcx — so "E [====] F" was painted
+    // straight across the gate's centre rail, between the 1-3-5 row and the
+    // 2-4-6-R row. Two lanes anchored to the same tach and neither had a
+    // screenshot to notice with.
+    // It moves LEFT and UP, under the boost dial: same cluster, its own space.
+    // The boost dial's centre is (gcx - R - R2 - 0.10R, gcy + R - R2) and the
+    // NOS arc around it reaches gcy + 1.29R, so 1.36R clears both, and the
+    // gate's left edge is at gcx - 0.90R, well right of this bar's end.
+    const float bcx = gcx - R - R2 - R * 0.10f;   // == the boost dial centre
+    const float bx = bcx - bw * 0.5f;
+    const float by = gcy + R * 1.36f;
     const float f  = std::min(1.0f, std::max(0.0f, tank.frac()));
     const float plate[4] = { 0.02f, 0.025f, 0.035f, 0.80f };
     const float track[4] = { 0.09f, 0.10f, 0.13f, 1.0f };
