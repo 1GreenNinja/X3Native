@@ -104,6 +104,7 @@
 #include "act2_caves.h"
 #include "rifthub.h"                        // --test-rifthub (Stargate portal hub)
 #include "grounding.h"   // x3::game::runGroundingSelfTest (--test-grounding)
+#include "apron_landing.h" // x3::game::runApronLandingSelfTest (--test-apronlanding, ONE WORLD landing)
 #include "basis.h"                          // --test-basis (KNOWN_BUGS R3: the MIRROR invariant)
 #include "tod.h"
 #include "weather.h"
@@ -648,6 +649,12 @@ int dispatchTests(const TestFlags& tf) {
                     "Entrance-room spawn vs live tower data + armed arrival + "
                     "escaped-flags import, with shot_down negative controls)...");
         return x3::apphost::runSurfaceHandoffSelfTest() ? 0 : 1;
+    }
+    if (tf.testApronLanding) {
+        x3::logInfo("running ONE WORLD APRON-LANDING self-test (intro flyable outcomes "
+                    "land IN canonlevel: apron spawn/facing + ship set-down datum + "
+                    "walk-to-breach nav probe + the 'apron' registry row)...");
+        return x3::game::runApronLandingSelfTest() ? 0 : 1;
     }
     if (tf.testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
