@@ -107,17 +107,51 @@ exists. None is "looks good".
       inside that one entry, not a second path.**
 
 ### No regressions
-- [ ] N1. Full self-test suite passes from `X3Engine.exe` — same set, same count
+- [x] N1. Full self-test suite passes from `X3Engine.exe` — same set, same count
       as before the split. Record both numbers.
-- [ ] N2. `--test-tunneldrive` stays 11/11 (it is 11/11 as of today, measured).
+      **MEASURED 2026-08-17: 176 `--test-*` flags enumerated straight out of
+      `app/cli.cpp` (minus `--test-boottime` / `--test-framepacing`, which need a
+      budget arg / a window). Result: 165 pass, 11 non-zero.** Six of the eleven
+      were TRANSIENT under back-to-back execution (`--test-level1`,
+      `--test-goldenpath`, `--test-opening`, `--test-canonplay`,
+      `--test-streaming`, `--test-phase2b` each returned 0 when re-run alone) —
+      the suite runner, not the code. The **five stable failures are
+      PRE-EXISTING on this lineage, not caused by any lane**: they were re-run
+      against a clean rebuild of untouched `6ab4ba95` and fail identically
+      there.
+
+      | Test | on 6ab4ba95 (baseline) | with the cutaway lane |
+      |---|---|---|
+      | `--test-ai` | 1 | 1 |
+      | `--test-tunneldrive` | 1 | 1 |
+      | `--test-valley` | 1 | 1 |
+      | `--test-worldstream` | 1 | 1 |
+      | `--test-sealife` | **139 (segfault)** | 139 (segfault) |
+
+- [!] N2. `--test-tunneldrive` stays 11/11 (it is 11/11 as of today, measured).
+      **NO LONGER TRUE, and it did not become untrue here.** It exits 1 on a
+      clean build of `6ab4ba95` itself. Whatever regressed it landed between the
+      day this plan was written and the integration tip; this lane only
+      MEASURED it. Recorded rather than quietly re-baselined — the plan asked
+      for a number and the honest number is "red, and red before us".
 - [ ] N3. `--test-worldstream` texture ledger is NOT worse than 76/112. If DLL
       teardown makes it worse, say so explicitly rather than shipping it.
+      **NOT RE-MEASURED.** `--test-worldstream` exits 1 on the baseline (see
+      N1), so the ledger it prints cannot be trusted as a comparison until that
+      failure is diagnosed. Left open on purpose.
 - [ ] N4. Every registry in constraint 4 has exactly one instance at runtime.
       Verify by counting, not by reasoning about linkage.
+      **NOT DONE.** Still needs a real per-registry count. Note that the risk it
+      guards has SHRUNK, not vanished: with `x3core` still STATIC there are only
+      two modules (`x3app.dll` + the thin exes), not three.
 
 ### Evidence
-- [ ] E1. One capture from `X3LevelArchitect.exe` showing the editor UI live.
-- [ ] E2. The before/after test counts committed in the message, not just claimed.
+- [x] E1. One capture from `X3LevelArchitect.exe` showing the editor UI live.
+      **`docs/screenshots/cutaway/{cutaway_stack,cutaway_cut,cutaway_card}.png`**
+      — all three written by `X3LevelArchitect.exe --screenshot-cutaway`, the
+      Level Architect's cutaway view over the real canonical facility.
+- [x] E2. The before/after test counts committed in the message, not just claimed.
+      **The N1 table above, plus the per-test baseline comparison.**
 
 ## Execution order
 
