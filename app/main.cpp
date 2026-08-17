@@ -380,6 +380,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testPackSpiders = o.testPackSpiders;
         _tf.testClone = o.testClone;
         _tf.testGallery = o.testGallery;
+        _tf.testCutaway = o.testCutaway;
         _tf.testSpireMid = o.testSpireMid;
         _tf.testNexus = o.testNexus;
         _tf.testSpireTop = o.testSpireTop;
@@ -868,6 +869,7 @@ int x3AppMain(int argc, char** argv) {
         _hc.tunnelShot       = o.tunnelShot;       _hc.tunnelShotDir    = o.tunnelShotDir;
         _hc.jakeShot         = o.jakeShot;         _hc.jakeShotDir      = o.jakeShotDir;
         _hc.townShot         = o.townShot;         _hc.townShotDir      = o.townShotDir;
+        _hc.cutawayShot      = o.cutawayShot;      _hc.cutawayShotDir   = o.cutawayShotDir;
         // THE A/B SWITCHES HAVE TO BE SET BEFORE THE DISPATCH. These were only
         // assigned further down, in the block feeding the DEFAULT host — i.e.
         // after dispatchScreenshotHosts() had already returned. Every screenshot
