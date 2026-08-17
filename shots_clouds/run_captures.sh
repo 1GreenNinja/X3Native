@@ -15,8 +15,8 @@ guard() {
     i=0
     while tasklist //FI "IMAGENAME eq X3Engine.exe" | grep -q X3Engine; do
         i=$((i + 1))
-        if [ "$i" -gt 120 ]; then
-            echo "ABORT: an X3Engine.exe has held the GPU for 10 min — code+build only"; exit 2
+        if [ "$i" -gt 480 ]; then
+            echo "ABORT: an X3Engine.exe has held the GPU for 40 min — code+build only"; exit 2
         fi
         [ "$i" = 3 ] && echo "  (waiting for a clear GPU...)"
         sleep 5
@@ -102,11 +102,27 @@ unset X3_CLOUD
 # dimmed the near ground 31% under the storm. The fog was eating the signal,
 # not the shading. Near ground, no fog, honest number.
 #
-# ONE RUN, ONE BUILD — the whole ladder or none of it. The 2026-08-17 round
-# had ladder 0.00..0.75 shot at 01:19 and 1.00 re-shot at 01:44 with x3app.dll
-# rebuilt at 01:33 in between, and the resulting "ladder" read flat-flat-flat-
-# flat-then-a-34%-drop. That is not a lighting curve, it is two builds in a
-# trenchcoat. Never patch one rung; re-run the loop.
+# ONE RUN, ONE BUILD — the whole ladder or none of it. The 2026-08-17 round had
+# ladder 0.00..0.75 shot at 01:19 and 1.00 re-shot at 01:44 with x3app.dll
+# rebuilt at 01:33 in between. Re-run the loop; never patch one rung.
+#
+# AND READ THE RESULT HONESTLY. That ladder came back flat-flat-flat-flat-then
+# -34%, and the first reading of it here ("two builds in a trenchcoat") was
+# WRONG — verify_new_field.py had already written down the real reason and it
+# is not a defect: A GROUND CAMERA STANDS UNDER ONE DECK CELL. 100 m of visible
+# ground projects to 100 m on a deck whose features are ~1.8 km across, so this
+# cam samples a single cumulus-sized patch of sky. That patch is a HOLE at
+# cover 0.00..0.75 (identical luma to the last decimal — the ground really is
+# unshaded in all four) and closes at 1.00. A step is the CORRECT output of a
+# one-cell sample; a smooth curve here would mean the deck had no structure.
+# The monotonic curve lives in two other places, and those are the receipts:
+#   * verify_new_field.py's landscape average of cloudShadowFactor over 8 km
+#     (1.000 / 0.934 / 0.763 / 0.470 / 0.219 direct sun kept) — the shader's
+#     own function, averaged over many cells instead of standing in one;
+#   * the wide/elevated shadow shots, where dozens of cells are in frame at
+#     once and the dapple is visible as dapple.
+# So: this ladder proves the deck HAS cells and that cover 1.0 closes them. It
+# is not, and cannot be, the dimming curve.
 for c in 0.00 0.25 0.50 0.75 1.00; do
     X3_CLOUD=$c ; export X3_CLOUD
     shoot "ladder_${c}.png" "" "ladder_${c}"
