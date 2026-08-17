@@ -3,6 +3,7 @@
 #include "engine/core/x3_log.h"
 #include "weapon.h"        // kVmDef* viewmodel defaults
 #include "mesh_lod.h"      // registerLodCVars (Lane 5 discrete LOD cvars)
+#include "gas_station.h"   // registerFuelCVars (W-STATIONS fuel_* cvars)
 #include "space_pilot.h"   // flightModeName / parseFlightMode / (get|set)RequestedFlightMode
 
 #include <GLFW/glfw3.h>
@@ -295,6 +296,12 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     console.registerCVar("r_shadowforward", "0.0", "slide the LEGACY single shadow cascade forward along the camera axis (meters); 0 = historical");
     // ---- DISCRETE MESH LOD (Lane 5): r_meshlod / r_meshlod_err / r_meshlod_hyst.
     x3::game::registerLodCVars(console);
+    // ---- FUEL (W-STATIONS): fuel_on / fuel_burn / fuel_cap / fuel_rate. Pure
+    // data, so it belongs in the ONE shared catalog — `fuel_on` is discoverable
+    // in every host, not only the one that happens to drive. The commands that
+    // need live tank state (`fuel`, `fuel_stations`) are registered by
+    // GasStationWorld::registerConsole from the driving host.
+    x3::game::registerFuelCVars(console);
 }
 
 namespace {
@@ -318,6 +325,7 @@ std::vector<HelpGroup> buildHelpGroups(const x3::con::IConsole& console) {
         { "VEHICLE (car_*)",     {} },
         { "WEATHER (wx_*/rain_*)", {} },
         { "TURBO (turbo_*)",     {} },
+        { "FUEL (fuel*)",        {} },
         { "MISC",                {} },
     };
     auto starts = [](const std::string& s, const char* p) { return s.rfind(p, 0) == 0; };
@@ -326,7 +334,8 @@ std::vector<HelpGroup> buildHelpGroups(const x3::con::IConsole& console) {
         else if (starts(n, "car_"))                       groups[1].names.push_back(n);
         else if (starts(n, "wx_") || starts(n, "rain_"))   groups[2].names.push_back(n);
         else if (starts(n, "turbo_"))                      groups[3].names.push_back(n);
-        else                                                groups[4].names.push_back(n);
+        else if (starts(n, "fuel"))                        groups[4].names.push_back(n);
+        else                                                groups[5].names.push_back(n);
     }
     return groups;
 }

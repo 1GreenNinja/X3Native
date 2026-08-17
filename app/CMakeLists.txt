@@ -73,6 +73,7 @@ add_library(x3app SHARED
     traffic.cpp         # W-TRAFFIC — AI traffic on the 16-lane freeway
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
+    gas_station.cpp     # W-STATIONS — forecourts off the network + the fuel stub
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp

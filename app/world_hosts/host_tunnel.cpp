@@ -31,6 +31,7 @@
 #include "../river_bridge.h"
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
 #include "../traffic.h"          // W-TRAFFIC — AI traffic on the 16-lane freeway
+#include "../gas_station.h"      // W-STATIONS — forecourts + the fuel stub
 #include "../vehicle.h"
 #include "../mesh_prims.h"
 #include "../asset_root.h"
@@ -93,6 +94,18 @@ namespace x3 { namespace apphost {
 // cover, and none at all under open sky (the common case exits on the first ray).
 // (The old file-static g_tunnelHud char-callback trampoline is gone: HostShell
 // owns the GLFW callbacks now, and chains to whatever a host installed first.)
+
+// THE GAUGE-CLUSTER ANCHOR, in ONE place. The interactive HUD and the headless
+// proof capture both put the fuel bar under the tach; two copies of this
+// arithmetic is the drift that makes a proof shot stop proving anything
+// (NO_SLOP rule 4). dial (2R tall) + gap + gate (0.9R) = 3.0R of vertical room.
+static void gaugeClusterAnchor(float fw, float fh, float& R, float& gcx, float& gcy) {
+    R = 0.150f * fh;
+    const float mar = 0.030f * fh;
+    const float gateH = R * 0.90f;
+    gcx = fw - mar - R;
+    gcy = fh - mar - gateH - R * 0.12f - R;
+}
 
 static float skyVisibleAt(x3::phys::IPhysicsWorld& phys, float x, float y, float z,
                           float dirX, float dirZ) {
@@ -396,6 +409,28 @@ int hostTunnel(HostContext& hc) {
                 outerConnOn = false;
             }
         }
+    }
+
+    // ==== W-STATIONS — "places for cars to go, to fuel up" ==================
+    // Sited from the routes just registered (the freeway's turnaround
+    // crossovers, the town approach, the country crossroads), then CARVED here
+    // — this is the last stop before the height-query gate closes at
+    // TerrainStreamer::init(), and it must also precede buildRoadRibbon()
+    // because registerPads() notes each driveway mouth as a road junction and
+    // that is what stops planRoadBarriers() laying a jersey wall across it.
+    x3::game::GasStationWorld gasStations;
+    {
+        const char* e = std::getenv("X3_STATIONS");
+        if (!(e && e[0] == '0')) {
+            gasStations.plan(ringOn ? &ringSpec : nullptr, ringOn ? &ringRoadY : nullptr,
+                             riverOn ? &riverRoad.spec : nullptr,
+                             riverOn ? &riverRoad.roadY : nullptr,
+                             connOn ? &connector.spec : nullptr,
+                             connOn ? &connector.roadY : nullptr);
+            gasStations.registerPads();
+        }
+    }
+    {
         char cb[128];
         std::snprintf(cb, sizeof(cb), "--world tunnel: corridor registry %u of %u used",
                       x3::game::terrainCorridorCount(), x3::game::kMaxTerrainCorridors);
@@ -889,6 +924,13 @@ int hostTunnel(HostContext& hc) {
     }
     device->setPointLights(tunnel.lights().data(), (uint32_t)tunnel.lights().size());
 
+    // W-STATIONS — forecourt aprons + driveways (collision: the car drives ON
+    // them) and the canopy/pump/kiosk structures. AFTER the ribbons, so the
+    // driveway laps pavement that already exists; BEFORE optimizeBroadphase().
+    const x3::game::GasStationBuildResult stationBuild =
+        gasStations.build(scene, *device, *phys);
+    (void)stationBuild;
+
     // Tall broadleaf groves shading the open-country stretches of the road
     // (Tim 2026-08: "somE Tall Trees!! Shading the road... In some areas").
     // Purely visual; failure = treeless road, never fatal. The showcase camera
@@ -902,6 +944,12 @@ int hostTunnel(HostContext& hc) {
             float cam[5]; tunnel.showcaseCamera(route, i, cam);
             camKeepOut.push_back({ cam[0], cam[2], 12.0f });
         }
+        // A tree through a station canopy, or one standing in the driveway
+        // mouth, is exactly the defect the keep-out list exists for.
+        std::vector<float> stationDiscs;
+        gasStations.keepOutDiscs(stationDiscs);
+        for (size_t k = 0; k + 2 < stationDiscs.size(); k += 3)
+            camKeepOut.push_back({ stationDiscs[k], stationDiscs[k+1], stationDiscs[k+2] });
         // The minBenchY shim (drawn-plane level) is GONE: the drawn river now
         // follows the same worldWaterLevelAt table (task #32 — one truth), so
         // RoadTrees' own water-table check IS the drawn waterline. `phys` stays
@@ -1774,6 +1822,25 @@ int hostTunnel(HostContext& hc) {
         std::function<void(float)> shotTick;
         std::function<void(const x3::rhi::FrameContext&)> shotDraw;
 
+        // X3_SHOT_PUMP=1 draws the station HUD into the still (see the block
+        // inside the settle loop); X3_SHOT_PUMP=2 additionally holds E, so the
+        // "REFUELLING..." state and the filling bar can be photographed too.
+        const char* shotPumpEnv = std::getenv("X3_SHOT_PUMP");
+        const bool shotPump      = shotPumpEnv && shotPumpEnv[0] != '0';
+        const bool shotPumpHoldE = shotPumpEnv && shotPumpEnv[0] == '2';
+        if (shotPump) {
+            // STAGE THE TANK, or the proof photographs the wrong state: a
+            // factory-fresh tank is FULL, so the honest prompt under the canopy
+            // is "TANK FULL" and neither the E-REFUEL hint nor the flow can
+            // ever appear in the still (the first proof run showed exactly
+            // that). This is the SAME state the console command `fuel 24`
+            // leaves a player in — litres set, gauge armed — staged through the
+            // same public FuelTank, and then update()/drawPumpPrompt/
+            // drawFuelBar below run unmodified.
+            gasStations.fuel().litres = gasStations.fuel().capacityL * 0.35f;
+            gasStations.fuel().armed  = true;
+        }
+
         auto settleAndGrab = [&](const float cam[5], const std::string& out) -> bool {
             // The streamer only enqueues the full ring on a focus-tile crossing
             // (host_cliffs.cpp's trick): nudge the focus on frame 1, then hold.
@@ -1872,6 +1939,7 @@ int hostTunnel(HostContext& hc) {
                     scene.render(*device, frame);
                     trees.draw(*device, frame);
                     if (townOn) town.draw(*device, frame);
+                    gasStations.draw(*device, frame);
                     // forests: camera fwd = (cos yaw, 0, sin yaw) — gotcha 4.1
                     forests.draw(*device, frame, cam,
                                  std::cos(cam[3]), std::sin(cam[3]));
@@ -1880,6 +1948,31 @@ int hostTunnel(HostContext& hc) {
                     riverLife.render(*device, frame, scene);
                     if (shotDraw) shotDraw(frame);   // the staged swimmer
                     if (weatherOn) precip.submit(*device, frame);
+                    // ---- X3_SHOT_PUMP=1: the PUMP PROOF. Opt-in and default
+                    // off (no existing reference capture moves), for the same
+                    // reason ECHO_SHOT_STREAMED exists: the HUD lives only in
+                    // the interactive loop, so a still of the forecourt could
+                    // never show the hint the player is actually offered, and
+                    // "E  REFUEL works" would be an untested claim on a
+                    // screenshot. This runs the REAL proximity check against
+                    // the camera position and draws the REAL prompt + gauge
+                    // through gas_station.h's shared renderers.
+                    if (shotPump) {
+                        // =2: hold E only over the LAST 90 settle frames. Held
+                        // for all 200 the pump moves 200/60*22 = 73 L — more
+                        // than the whole tank — so the still lands on TANK
+                        // FULL every time; 90 frames moves ~33 L from the
+                        // staged 35% and the capture catches the flow mid-fill.
+                        const bool holdE = shotPumpHoldE && i >= kFrames - 90;
+                        gasStations.update(1.0f / 60.0f, cam[0], cam[2], 0.0f,
+                                           0.0f, holdE);
+                        x3::game::drawPumpPrompt(*device, frame, gasStations.prompt());
+                        uint32_t phw = 0, phh = 0; device->hudSize(phw, phh);
+                        float pR = 0.0f, pgx = 0.0f, pgy = 0.0f;
+                        gaugeClusterAnchor((float)phw, (float)phh, pR, pgx, pgy);
+                        x3::game::drawFuelBar(*device, frame, gasStations.fuel(),
+                                              gasStations.refuelling(), pR, pgx, pgy);
+                    }
                 }
 
                 device->endFrame(frame);
@@ -2145,6 +2238,7 @@ int hostTunnel(HostContext& hc) {
                     if (fr.valid) {
                         scene.render(*device, fr);
                         trees.draw(*device, fr);
+                        gasStations.draw(*device, fr);
                         if (carBuilt) car.render(fr);
                         jake.draw(fr, *device, onFoot, 0.0f, 0.0f,
                                   fixedCam != nullptr || camMode != 0);
@@ -2908,6 +3002,7 @@ int hostTunnel(HostContext& hc) {
         }
 
         if (carBuilt) car.shutdown();
+        gasStations.shutdown(*device);
         trees.shutdown(*device);
         if (townOn) town.shutdown(*device);
         forests.shutdown(*device);
@@ -3238,6 +3333,10 @@ int hostTunnel(HostContext& hc) {
                           car.turboEnabled() ? "on" : "off");
             con->print(b);
         }, "print the car's live state");
+        // W-STATIONS: the LIVE fuel commands (`fuel`, `fuel_stations`). The
+        // pure-data fuel_* cvars are already here — registerEngineConsoleCVars
+        // registers them for every host (app/engine_console.cpp).
+        gasStations.registerConsole(*con);
     }
 
     // X3_PERF_LOG=1: rolling avg-FPS to the log every 5 s (host_echotropolis
@@ -3288,6 +3387,7 @@ int hostTunnel(HostContext& hc) {
             auto pf = device->beginFrame();
             if (pf.valid) {
                 scene.render(*device, pf);
+                gasStations.draw(*device, pf);          // the forecourt does not vanish on pause
                 if (carBuilt) car.render(pf);
                 float pcam[3] = { startPos[0], startPos[1], startPos[2] };
                 if (carBuilt) car.chassisPos(pcam);
@@ -3518,6 +3618,29 @@ int hostTunnel(HostContext& hc) {
             f1Was = f1Now;
         }
 
+        // ---- W-STATIONS: THE PUMP ----------------------------------------
+        // Runs BEFORE the E block because it CLAIMS E: parked under a canopy,
+        // E means refuel, not get out. Without that claim, the first press of
+        // a held refuel would eject the driver onto the forecourt — the hint
+        // says REFUEL and the car says goodbye.
+        bool atPump = false;
+        {
+            if (auto* fcon = shell.console()) gasStations.syncCVars(*fcon);
+            float fp[3] = { 0.0f, 0.0f, 0.0f };
+            if (carBuilt) car.chassisPos(fp);
+            static float lastFx = 0.0f, lastFz = 0.0f; static bool lastFvalid = false;
+            const float moved = lastFvalid
+                ? std::hypot(fp[0] - lastFx, fp[2] - lastFz) : 0.0f;
+            lastFx = fp[0]; lastFz = fp[2]; lastFvalid = true;
+            // LOAD, from measured speed rather than the input flag: a car
+            // coasting at 30 mph is not drinking like one pinned at 140.
+            const float load = carBuilt
+                ? std::min(1.0f, std::fabs(car.forwardSpeed()) / 40.0f) : 0.0f;
+            gasStations.update(fdt, fp[0], fp[2], driving ? moved : 0.0f, load,
+                               driving && kd(GLFW_KEY_E));
+            atPump = driving && gasStations.atStation() >= 0;
+        }
+
         // ---- E: GET OUT / GET IN ----------------------------------------
         // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
         // to the car. Without that gate E teleports you into a car you left half
@@ -3525,7 +3648,7 @@ int hostTunnel(HostContext& hc) {
         {
             static bool eWasDown = false;
             const bool eDown = kd(GLFW_KEY_E);   // shell-gated: E while typing is just a letter
-            if (eDown && !eWasDown && carBuilt) {
+            if (eDown && !eWasDown && carBuilt && !atPump) {
                 if (driving) {
                     float vp[3]; car.chassisPos(vp);
                     parkedAt[0] = vp[0]; parkedAt[1] = vp[1]; parkedAt[2] = vp[2];
@@ -4201,6 +4324,7 @@ int hostTunnel(HostContext& hc) {
             scene.render(*device, frame);
             trees.draw(*device, frame);
             if (townOn) town.draw(*device, frame);
+            gasStations.draw(*device, frame);
             {   // forests: prune by the live camera (fwd = cos/sin yaw, 4.1)
                 const float fcam[3] = { cx, cy, cz };
                 forests.draw(*device, frame, fcam,
@@ -4323,11 +4447,10 @@ int hostTunnel(HostContext& hc) {
             // so it needs 3.0R of vertical room; the first pass anchored on the
             // dial alone and pushed the gate and the TC line off the bottom of
             // the screen.
-            const float R   = 0.150f * fh;
+            float R = 0.0f, gcx = 0.0f, gcy = 0.0f;
+            gaugeClusterAnchor(fw, fh, R, gcx, gcy);
             const float mar = 0.030f * fh;
             const float gateH = R * 0.90f;
-            const float gcx = fw - mar - R;
-            const float gcy = fh - mar - gateH - R * 0.12f - R;
 
             const float rpmNow = car.engineRPM();
             const float frac   = std::min(1.0f, std::max(0.0f, rpmNow / 8000.0f));
@@ -4366,22 +4489,22 @@ int hostTunnel(HostContext& hc) {
             {
                 uint32_t hw2 = 0, hh2 = 0; device->hudSize(hw2, hh2);
                 const char* prompt = nullptr;
-                if (driving) prompt = "E  GET OUT";
+                // Under a canopy the pump owns the line AND the key (see the
+                // atPump gate on the E block above) — "E  GET OUT" there would
+                // advertise the one thing E no longer does.
+                if (driving && gasStations.prompt()) prompt = gasStations.prompt();
+                else if (driving) prompt = "E  GET OUT";
                 else if (footSpawned) {
                     const float dxc = cx - parkedAt[0], dzc = cz - parkedAt[2];
                     prompt = (dxc*dxc + dzc*dzc <= 16.0f)
                                  ? (pushing ? "PUSHING..." : "E  GET IN    F  PUSH")
                                  : "WALK BACK TO THE CAR TO DRIVE";
                 }
-                if (prompt && hw2 && hh2) {
-                    const float px = std::floor((float)hh2 * 0.026f);
-                    const float tw = (float)std::strlen(prompt) * px;
-                    const float tx = ((float)hw2 - tw) * 0.5f, ty = (float)hh2 * 0.86f;
-                    const float sh[4]  = { 0.0f, 0.0f, 0.0f, 0.75f };
-                    const float fgc[4] = { 1.0f, 0.93f, 0.72f, 1.0f };
-                    device->drawHudText(frame, prompt, tx + 1.0f, ty + 1.0f, px, sh);
-                    device->drawHudText(frame, prompt, tx, ty, px, fgc);
-                }
+                // ONE prompt renderer, shared with the headless proof capture
+                // (app/gas_station.h drawPumpPrompt): a screenshot of a hint the
+                // player is not actually shown proves nothing.
+                (void)hw2; (void)hh2;
+                x3::game::drawPumpPrompt(*device, frame, prompt);
             }
 
             // ---- DRAW JAKE. Placement, facing and the yFix that used to live
@@ -4524,6 +4647,12 @@ int hostTunnel(HostContext& hc) {
                 device->drawHudText(frame, "NOS", bcx - R2 * 1.22f - lp2 * 1.2f,
                                     bcy + R2 * 0.95f, lp2, lc2);
             }
+
+            // ---- THE FUEL GAUGE (W-STATIONS). Drawn by the SAME function the
+            // headless proof capture calls (app/gas_station.h), anchored on this
+            // cluster's tach so it always rides under the dials.
+            x3::game::drawFuelBar(*device, frame, gasStations.fuel(),
+                                  gasStations.refuelling(), R, gcx, gcy);
 
             // THE THERMOMETER. Only when weather is running: a gauge pinned at
             // a constant is worse than no gauge, because it teaches the player
@@ -4744,6 +4873,7 @@ int hostTunnel(HostContext& hc) {
     traffic.shutdown(phys.get());                          // kinematic boxes out before phys
     riverLife.shutdown(audioOn ? audio.get() : nullptr);   // outboard loops + hulls
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
+    gasStations.shutdown(*device);
     trees.shutdown(*device);
     if (townOn) town.shutdown(*device);
     forests.shutdown(*device);

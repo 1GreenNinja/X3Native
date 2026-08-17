@@ -57,6 +57,17 @@ constexpr float kRunningHalfM  = (kLaneFt * (float)kLaneCount * 0.5f) * kFtToM; 
 constexpr float kShoulderHalfM = kRunningHalfM + kShoulderFt * kFtToM;           // 28 ft
 constexpr float kPavedHalfM    = kShoulderHalfM + kApronFt * kFtToM;             // 48 ft
 
+// THE PAVEMENT LIFT. Sit the pavement just above the carve floor: the carve
+// cuts to (datum - kRoadFloorClear), so this puts the driving surface back AT
+// the datum with a hair of clearance — the same trick as the tunnel slab, and
+// deliberately 0.02 m rather than the 0.14 m that had Tim's tunnel road
+// standing 1.18 ft proud of its own shoulder.
+// PAIRED VALUE (NO_SLOP rule 4): anything that lays a drivable surface meant to
+// join this pavement without a step reads THIS constant, never its own copy —
+// app/gas_station.cpp's forecourt apron and driveway do exactly that. A change
+// here IS a change there.
+constexpr float kPaveProud     = 0.02f;
+
 // ---------------------------------------------------------------------------
 // THE FREEWAY — twin separate carriageways, I-17 style (Tim: "make the road
 // wider... much wider. Its a freeway", then "If we make 8 lanes each side,
