@@ -1580,13 +1580,13 @@ int hostTunnel(HostContext& hc) {
             con->print(b);
         }, "print the whole rain chain: state -> sample -> fed amount -> live particles");
         con->registerCommand("rain", [con](const std::vector<std::string>& args) {
-            if (args.size() < 2) { con->print("rain 0-10: 0 off | 1-3 sprinkle | 4-6 downpour | 7-8 heavy | 9-10 MONSOON"); return; }
-            const float v = std::min(10.0f, std::max(0.0f, (float)std::atof(args[1].c_str())));
+            if (args.empty()) { con->print("rain 0-10: 0 off | 1-3 sprinkle | 4-6 downpour | 7-8 heavy | 9-10 MONSOON"); return; }
+            const float v = std::min(10.0f, std::max(0.0f, (float)std::atof(args[0].c_str())));
             if (v < 0.5f)      { con->set("wx", "off"); con->print("rain: off"); return; }
             con->set("wx", v >= 8.5f ? "storm" : "rain");
             char mb[32]; std::snprintf(mb, sizeof(mb), "%.2f", 0.4f + v * 0.42f);
             con->set("wx_precip_mult", mb);
-            con->print(std::string("rain ") + args[1] + (v >= 8.5f ? "  (MONSOON - storm cell, lightning live)"
+            con->print(std::string("rain ") + args[0] + (v >= 8.5f ? "  (MONSOON - storm cell, lightning live)"
                         : v >= 6.5f ? "  (heavy)" : v >= 3.5f ? "  (downpour)" : "  (sprinkle)"));
         }, "rain 0-10 — Sprinkle to Downpour to MONSOON, with every in-between");
         con->registerCVar("wx_precip_mult", "2.4",
@@ -1914,7 +1914,13 @@ int hostTunnel(HostContext& hc) {
                     else if (wxWant == "rain")   weather.forceState(WS::Rain,   true);
                     else if (wxWant == "fog")    weather.forceState(WS::Fog,    true);
                     else if (wxWant == "cloudy") weather.forceState(WS::Cloudy, true);
-                    else                          weather.forceState(WS::Clear,  true);
+                    else {
+                        if (wxWant != "clear" && wxWant != "on")
+                            console->print("wx: unknown '" + wxWant + "' — off|clear|cloudy|rain|storm|fog|snow (or use: rain 0-10)");
+                        else if (wxWant == "on")
+                            console->print("wx on = clear skies. You want RAIN: try 'rain 7' or 'wx storm'.");
+                        weather.forceState(WS::Clear,  true);
+                    }
                     // Re-prime the snowpack to whatever depth was asked for. The
                     // model integrates in real time at an inch an hour, so
                     // without this "wx snow" on a bare road stays bare for forty

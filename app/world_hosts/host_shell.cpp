@@ -297,8 +297,11 @@ void HostShell::addFloatCommand(const char* name, const char* help,
     auto* con = m_console;
     std::string nm = name;
     con->registerCommand(name, [con, nm, apply](const std::vector<std::string>& args) {
-        if (args.size() < 2) { con->print(nm + ": needs a number"); return; }
-        const float v = (float)std::atof(args[1].c_str());
+        // Console::exec STRIPS the command name before dispatch — the value is
+        // args[0]. Written against args[1] originally: every float command in
+        // the game printed 'needs a number' instead of acting, for two days.
+        if (args.empty()) { con->print(nm + ": needs a number"); return; }
+        const float v = (float)std::atof(args[0].c_str());
         apply(v);
         char buf[128];
         std::snprintf(buf, sizeof(buf), "%s = %.4g", nm.c_str(), (double)v);
@@ -313,7 +316,7 @@ void HostShell::addToggleCommand(const char* name, const char* help,
     auto* con = m_console;
     std::string nm = name;
     con->registerCommand(name, [con, nm, get, set](const std::vector<std::string>& args) {
-        const bool v = (args.size() < 2) ? !get() : (std::atoi(args[1].c_str()) != 0);
+        const bool v = args.empty() ? !get() : (std::atoi(args[0].c_str()) != 0);
         set(v);
         con->print(nm + " = " + (v ? "1" : "0"));
     }, help);
