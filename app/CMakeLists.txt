@@ -83,6 +83,9 @@ add_library(x3app SHARED
     factory.cpp         # THE GLIMVALE WORKS + the golden-ticket hunt
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
     gas_station.cpp     # W-STATIONS — forecourts off the network + the fuel stub
+    # The car gauge cluster. Lifted out of host_tunnel's interactive loop so the
+    # headless proof set can photograph the dials at all (see gauge_hud.h).
+    gauge_hud.cpp
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp

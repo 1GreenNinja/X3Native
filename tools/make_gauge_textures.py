@@ -254,21 +254,35 @@ def make_needle_atlas():
 
 
 def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
-    dial = make_dial()
-    p1 = os.path.normpath(os.path.join(OUT_DIR, "gauge_dial.png"))
-    dial.save(p1)
-    print("wrote", p1, dial.size)
+    """THIS SCRIPT OWNS THE GATE, AND ONLY THE GATE.
 
+    NO_SLOP rule 4, found while rebuilding the dial art: make_dial() and
+    make_needle_atlas() below ALSO write gauge_dial.png and gauge_needle.png —
+    and they draw a DIFFERENT SWEEP from the live composer
+    (210 deg / 240 deg span here, 216 / 252 in tools/compose_gauge_dial.py).
+    Two owners of one file, exactly the wx_snow_in defect: whichever script ran
+    last won, and running this one to regenerate the gate would silently swap
+    the shipped tach for an older face whose needle atlas no longer lines up
+    with its own scale. Nobody would see it until they looked at the gauge.
+
+    The pipeline is, and is only:
+        1. tools/render_gauge_bezel.py    -> gauge_bezel.png   (Blender, the metal)
+        2. tools/compose_gauge_dial.py    -> gauge_dial.png, gauge_boost.png,
+                                             gauge_needle.png, gauge_nos.png
+        3. THIS SCRIPT                    -> gauge_gate.png    (the shift gate)
+
+    make_dial() / make_needle_atlas() are KEPT (they are the reference for the
+    original vector treatment and are still readable prior art) but they are no
+    longer wired to an output. If you ever want them back, they have to agree
+    with compose_gauge_dial.py's SWEEP_START_DEG / SWEEP_TOTAL_DEG first.
+    """
+    os.makedirs(OUT_DIR, exist_ok=True)
     gate = make_gate()
     pg = os.path.normpath(os.path.join(OUT_DIR, "gauge_gate.png"))
     gate.save(pg)
     print("wrote", pg, gate.size)
-
-    nee = make_needle_atlas()
-    p2 = os.path.normpath(os.path.join(OUT_DIR, "gauge_needle.png"))
-    nee.save(p2)
-    print("wrote", p2, nee.size, "(%dx%d atlas, %d frames)" % (ATLAS_N, ATLAS_N, ATLAS_N * ATLAS_N))
+    print("(dial + needle are compose_gauge_dial.py's — this script no longer "
+          "writes them; see main()'s docstring for the receipt)")
 
 
 if __name__ == "__main__":

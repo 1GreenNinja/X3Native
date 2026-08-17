@@ -22,6 +22,7 @@
 #include "../player.h"
 #include "../character_anim.h"           // AnimatedCharacter — Jake's shared rig runtime
 #include "../jetpack.h"                  // W-JETPACK — the `fly` command's pack + thrust FX
+#include "../gauge_hud.h"                // the car cluster — ONE draw, host + proof capture
 #include "../weapon.h"                   // Arsenal — the campaign's data-driven weapon core (REUSED)
 #include "../fx.h"                       // CombatFx — tracers/muzzle/impact/boom (REUSED)
 #include "../thirdperson.h"              // kJakeHandBone + TpGrip table + tpComposeGrip (REUSED)
@@ -101,17 +102,11 @@ namespace x3 { namespace apphost {
 // (The old file-static g_tunnelHud char-callback trampoline is gone: HostShell
 // owns the GLFW callbacks now, and chains to whatever a host installed first.)
 
-// THE GAUGE-CLUSTER ANCHOR, in ONE place. The interactive HUD and the headless
-// proof capture both put the fuel bar under the tach; two copies of this
-// arithmetic is the drift that makes a proof shot stop proving anything
-// (NO_SLOP rule 4). dial (2R tall) + gap + gate (0.9R) = 3.0R of vertical room.
-static void gaugeClusterAnchor(float fw, float fh, float& R, float& gcx, float& gcy) {
-    R = 0.150f * fh;
-    const float mar = 0.030f * fh;
-    const float gateH = R * 0.90f;
-    gcx = fw - mar - R;
-    gcy = fh - mar - gateH - R * 0.12f - R;
-}
+// THE GAUGE-CLUSTER ANCHOR now lives in app/gauge_hud.h (x3::game::
+// gaugeClusterAnchor) next to the cluster it anchors, so the host, the fuel
+// bar and the headless proof all read ONE copy. This using-declaration keeps
+// every call site in this file spelled the way it always was.
+using x3::game::gaugeClusterAnchor;
 
 static float skyVisibleAt(x3::phys::IPhysicsWorld& phys, float x, float y, float z,
                           float dirX, float dirZ) {
@@ -3719,6 +3714,90 @@ int hostTunnel(HostContext& hc) {
             ok = ok && mapOk;
         }
 
+        // ==== GAUGE CLUSTER PROOF (X3_SHOT_GAUGES=1) ========================
+        // Owner: the dials should look like "the quality that a game set 30
+        // years after NFS should look like", and "in Walk mode.. the car gauges
+        // disappear".
+        //
+        // Both halves of that are eyes-on questions and NEITHER could be
+        // photographed before: the cluster only ever drew in the interactive
+        // loop, which a --screenshot run never reaches. It is a shared module
+        // now (app/gauge_hud.h) and this calls THE SAME drawGaugeCluster the
+        // windscreen calls — a proof of the real path, not a parallel render.
+        //
+        // Two shots, and the second one is the point: the host wraps its single
+        // call in `if (driving && carBuilt)`, so the gating is one predicate at
+        // one site. Shot 31 calls the block with that predicate FALSE and the
+        // glass comes back clean, which is the whole of the walk-mode fix.
+        //
+        // State is STAGED, the way X3_SHOT_PUMP stages the tank: parked in a
+        // headless proof the car reads 0 rpm / 0 mph / no boost, and a
+        // photograph of a dead instrument proves nothing about a live one.
+        // 34.2 psi is chosen deliberately — TurboParams::maxPsi is 35 (rule 4),
+        // so the needle must land inside the art's red band and short of the
+        // scale's +40 end. If those three ever drift apart again, this shot
+        // shows it.
+        if (const char* ge = std::getenv("X3_SHOT_GAUGES"); ge && ge[0] == '1') {
+            std::error_code gEc; fs::create_directories(dir, gEc);
+            x3::game::GaugeClusterTex gtex;
+            gtex.dial  = texDial; gtex.needle = texNeedle; gtex.gate = texGate;
+            gtex.boost = texBoost; gtex.nos = texNos;
+            x3::game::GaugeClusterState gst;
+            gst.rpm       = 6820.0f;    // on the cam, shift lights climbing
+            gst.mph       = 148.0f;
+            gst.gear      = 4;
+            gst.boostPsi  = 34.2f;      // PAIRED: TurboParams::maxPsi = 35
+            gst.nosFrac   = 0.62f;
+            gst.nosActive = false;
+            gst.tcOn      = false;
+            gst.dt        = 1.0f;       // one big step: the needle smoothing
+                                        // settles on frame 1 instead of easing
+                                        // up from zero across the 3-frame grab
+            gst.now       = 0.20f;
+            x3::game::FuelTank gfuel;
+            gfuel.litres = gfuel.capacityL * 0.42f;
+            gfuel.armed  = true;
+
+            float gvp[3] = { startPos[0], startPos[1], startPos[2] };
+            if (carBuilt) car.chassisPos(gvp);
+            auto gaugeShot = [&](const char* name, bool drivingNow) -> bool {
+                const std::string path = dir + "/" + name;
+                for (int i = 0; i < 3; ++i) {
+                    glfwPollEvents();
+                    device->setCamera(gvp[0], gvp[1] + 1.35f, gvp[2],
+                                      std::atan2(route.dirZ, route.dirX), -0.06f, 68.0f);
+                    if (i == 2) device->armCapture(path.c_str());
+                    auto f = device->beginFrame();
+                    if (f.valid) {
+                        scene.render(*device, f);
+                        trees.draw(*device, f);
+                        if (carBuilt && drivingNow) car.render(f);
+                        // THE GATE, spelled exactly as the windscreen spells it.
+                        if (drivingNow && carBuilt)
+                            x3::game::drawGaugeCluster(*device, f, (float)W, (float)H,
+                                                       gtex, gst, gfuel, false);
+                    }
+                    device->endFrame(f);
+                }
+                // armCapture only ARMS the readback; captureFrame() is what
+                // consumes the path and writes the PNG (VulkanRenderDevice
+                // says so on armCapture: "path is consumed by captureFrame()
+                // at finalize time"). Arming alone logged a cheerful "wrote"
+                // and produced no file — every other proof in this host pairs
+                // the two, and so does this one now.
+                const bool wrote = device->captureFrame(path.c_str());
+                if (wrote)
+                    x3::logInfo(std::string("[gauge-shot] wrote ") + path +
+                                (drivingNow ? "  (cluster ON — in car)"
+                                            : "  (cluster OFF — walk mode)"));
+                else
+                    x3::logError(std::string("[gauge-shot] FAILED to write ") + path);
+                return wrote;
+            };
+            ok = gaugeShot("30_gauges_incar.png",  true)  && ok;
+            ok = gaugeShot("31_gauges_onfoot.png", false) && ok;
+        }
+
         // 10: MINIMAP CONTRAST + POI EDGE-ARROWS proof (W-MAP v3). The
         // minimap is host-only HUD drawing (device->drawHudQuad direct,
         // never through WorldMapSystem), so mapShot2 above can't exercise
@@ -5547,30 +5626,32 @@ int hostTunnel(HostContext& hc) {
             // (prompts, minimap, thermometer, tickets) further down. The
             // outer gate also no longer holds the WEATHER and JAKE draws
             // hostage to the gauge art loading (frame.valid alone now).
-            if (driving && carBuilt && texDial.valid()) {
-            const float frac   = std::min(1.0f, std::max(0.0f, rpmNow / 8000.0f));
-
-            // Framerate-independent needle smoothing — raw rpm buzzes at 165 Hz.
-            static float shownFrac = 0.0f;
-            shownFrac += (frac - shownFrac) * (1.0f - std::exp(-9.0f * fdt));
-
-            device->drawHudImage(frame, texDial, gcx - R, gcy - R, 2.0f * R, 2.0f * R, white);
-
-            if (texNeedle.valid()) {
-                const int NF = 64, AT = 8;
-                int fi = (int)(shownFrac * (NF - 1) + 0.5f);
-                fi = fi < 0 ? 0 : (fi > NF - 1 ? NF - 1 : fi);
-                const float u0 = (float)(fi % AT) / (float)AT;
-                const float v0 = (float)(fi / AT) / (float)AT;
-                device->drawHudImage(frame, texNeedle, gcx - R, gcy - R, 2.0f * R, 2.0f * R,
-                                     white, u0, v0, u0 + 1.0f / AT, v0 + 1.0f / AT);
+            if (driving && carBuilt) {
+                // ONE PREDICATE, ONE CALL. Owner: "in Walk mode.. the car
+                // gauges disappear." The receipt: every dial used to be gated
+                // on carBuilt ALONE and scattered across three separate blocks
+                // in this loop, so tach, gate, boost, NOS, fuel, MPH, gear,
+                // shift lights, key hints and the TC line all stayed painted
+                // over Jake ON FOOT, and each one could regress on its own.
+                // The cluster now lives in app/gauge_hud.cpp — which is also
+                // what lets the headless proof set PHOTOGRAPH it, both in the
+                // car and on foot, through this same code (X3_SHOT_GAUGES).
+                x3::game::GaugeClusterTex gtex;
+                gtex.dial  = texDial; gtex.needle = texNeedle; gtex.gate = texGate;
+                gtex.boost = texBoost; gtex.nos = texNos;
+                x3::game::GaugeClusterState gst;
+                gst.rpm       = rpmNow;
+                gst.mph       = std::fabs(car.forwardSpeed()) * 2.23694f;
+                gst.gear      = car.gear();
+                gst.boostPsi  = car.boostPsi();
+                gst.nosFrac   = nosTank;
+                gst.nosActive = nosActive;
+                gst.tcOn      = car.tractionControl();
+                gst.dt        = fdt;
+                gst.now       = now;
+                x3::game::drawGaugeCluster(*device, frame, fw, fh, gtex, gst,
+                                           gasStations.fuel(), gasStations.refuelling());
             }
-            if (texGate.valid()) {
-                const float gw = gateH * 2.0f, gh = gateH;
-                device->drawHudImage(frame, texGate, gcx - gw * 0.5f,
-                                     gcy + R + R * 0.12f, gw, gh, white);
-            }
-            } // driving cluster part 1 (tach) — boost/NOS/fuel/readouts below
 
             // FALLING SNOW / RAIN. Submitted here, inside the frame: the device
             // adds no particle pass at all when the count is zero, so clear
@@ -5707,76 +5788,6 @@ int hostTunnel(HostContext& hc) {
             // It reads NEGATIVE off-throttle. A boost gauge pinned at zero
             // whenever you lift is the tell that no manifold model is behind
             // it, and vacuum is where a real one lives most of the time.
-            if (driving && carBuilt && texBoost.valid()) {
-                const float R2  = R * 0.70f;
-                const float bcx = gcx - R - R2 - R * 0.10f;
-                const float bcy = gcy + R - R2;              // bottoms line up
-
-                constexpr float kPsiMin = -10.0f, kPsiMax = 40.0f;   // == the art (35-psi build)
-                const float psi = car.boostPsi();
-                const float bf  = std::min(1.0f, std::max(0.0f,
-                                    (psi - kPsiMin) / (kPsiMax - kPsiMin)));
-
-                static float shownBoost = 0.0f;
-                shownBoost += (bf - shownBoost) * (1.0f - std::exp(-12.0f * fdt));
-
-                device->drawHudImage(frame, texBoost, bcx - R2, bcy - R2,
-                                     2.0f * R2, 2.0f * R2, white);
-                if (texNeedle.valid()) {
-                    const int NF = 64, AT = 8;
-                    int bi = (int)(shownBoost * (NF - 1) + 0.5f);
-                    bi = bi < 0 ? 0 : (bi > NF - 1 ? NF - 1 : bi);
-                    const float u0 = (float)(bi % AT) / (float)AT;
-                    const float v0 = (float)(bi / AT) / (float)AT;
-                    device->drawHudImage(frame, texNeedle, bcx - R2, bcy - R2,
-                                         2.0f * R2, 2.0f * R2, white,
-                                         u0, v0, u0 + 1.0f / AT, v0 + 1.0f / AT);
-                }
-                char bbuf[32];
-                std::snprintf(bbuf, sizeof(bbuf), "%+.1f", (double)psi);
-                const float bp = R2 * 0.26f;
-                const float bw = (float)std::strlen(bbuf) * bp;
-                const bool  over = psi >= 30.0f;   // the art's red band
-                const float bc[4] = { over ? 1.0f : 0.97f, over ? 0.32f : 0.98f,
-                                      over ? 0.24f : 1.0f, 1.0f };
-                device->drawHudText(frame, bbuf, bcx - bw * 0.5f,
-                                    bcy + R2 * 0.26f, bp, bc);
-            }
-
-            if (driving && carBuilt && texNos.valid()) {
-                // ---- NOS TANK — SOLID LUMINESCENT CURVED BAR (Tim: "Curving
-                // bar like NFS had 20 years ago... not beads. solid
-                // luminescent bars"). A 32-state baked-arc atlas (hot core +
-                // glow, husk for the spent span); the frame is picked by tank
-                // level — the needle-atlas pattern applied to a fill. Drains
-                // in ~4 s of spray, RECHARGES off the button in ~16 s.
-                const float R2  = R * 0.70f;
-                const float bcx = gcx - R - R2 - R * 0.10f;
-                const float bcy = gcy + R - R2;
-                const int NF2 = 32, AC = 8;
-                int fi = (int)(nosTank * (NF2 - 1) + 0.5f);
-                fi = fi < 0 ? 0 : (fi > NF2 - 1 ? NF2 - 1 : fi);
-                const float u0 = (float)(fi % AC) / (float)AC;
-                const float v0 = (float)(fi / AC) / 4.0f;
-                // Cell arc radius is 0.86 * half-cell; on screen the arc sits
-                // at 1.22 * R2, so the drawn cell spans 2 * 1.22 / 0.86 * R2.
-                const float side = 2.837f * R2;
-                float tint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-                if (nosActive) { tint[0] = 1.25f; tint[1] = 1.15f; }   // spray flare
-                device->drawHudImage(frame, texNos, bcx - side * 0.5f, bcy - side * 0.5f,
-                                     side, side, tint, u0, v0, u0 + 1.0f / AC, v0 + 0.25f);
-                const float lp2 = R * 0.085f;
-                const float lc2[4] = { 0.55f, 0.85f, 1.0f, 1.0f };
-                device->drawHudText(frame, "NOS", bcx - R2 * 1.22f - lp2 * 1.2f,
-                                    bcy + R2 * 0.95f, lp2, lc2);
-            }
-
-            // ---- THE FUEL GAUGE (W-STATIONS). Drawn by the SAME function the
-            // headless proof capture calls (app/gas_station.h), anchored on this
-            // cluster's tach so it always rides under the dials.
-            if (driving && carBuilt)
-                x3::game::drawFuelBar(*device, frame, gasStations.fuel(),
-                                      gasStations.refuelling(), R, gcx, gcy);
 
             // THE THERMOMETER. Only when weather is running: a gauge pinned at
             // a constant is worse than no gauge, because it teaches the player
@@ -5789,51 +5800,6 @@ int hostTunnel(HostContext& hc) {
                     wetness.condition() == x3::game::SurfaceCondition::Ice);
             }
 
-            if (driving && carBuilt) {
-            char gbuf[64];
-            const int   gnum = car.gear();
-            const float mph  = std::fabs(car.forwardSpeed()) * 2.23694f;
-
-            std::snprintf(gbuf, sizeof(gbuf), "%d", (int)(mph + 0.5f));
-            {
-                // 0.275R, not 0.34R: at three digits the wider face ran into the
-                // "0" and "8" numerals, which sit at x = +-0.455R.
-                const float px = R * 0.275f;
-                const float w  = (float)std::strlen(gbuf) * px;
-                const float col[4] = { 0.97f, 0.98f, 1.0f, 1.0f };
-                device->drawHudText(frame, gbuf, gcx - w * 0.5f, gcy + R * 0.235f, px, col);
-                const float lp = R * 0.095f;
-                const float lc[4] = { 0.35f, 0.78f, 0.95f, 1.0f };   // cyan, per the reference
-                device->drawHudText(frame, "MPH", gcx - 1.5f * lp, gcy + R * 0.55f, lp, lc);
-            }
-            {
-                const char* gs = (gnum < 0) ? "R" : (gnum == 0 ? "N" : "123456" + ((gnum - 1) % 6));
-                char one[2] = { gs[0], 0 };
-                const bool hot = rpmNow > 7312.0f * 0.985f;
-                const float px = R * 0.22f;
-                const float col[4] = { hot ? 1.0f : 0.35f, hot ? 0.30f : 0.82f,
-                                       hot ? 0.22f : 0.98f, 1.0f };
-                device->drawHudText(frame, one, gcx - px * 0.5f, gcy - R * 0.46f, px, col);
-            }
-            {   // shift lights along the top of the bezel
-                const int   NL = 8;
-                const float lw = R * 0.115f, lh = R * 0.052f, gp = lw * 0.30f;
-                const float tot = NL * lw + (NL - 1) * gp;
-                const float x0 = gcx - tot * 0.5f, y0 = gcy - R * 1.17f;
-                const float lit = std::min(1.0f, std::max(0.0f, (rpmNow - 6000.0f) / 1312.0f));
-                const bool  fl  = rpmNow >= 7312.0f && std::fmod((float)now * 4.5f, 1.0f) < 0.5f;
-                for (int i = 0; i < NL; ++i) {
-                    const bool on = lit >= (float)(i + 1) / (float)NL || fl;
-                    const float tt = (float)i / (float)(NL - 1);
-                    float c4[4];
-                    if (fl)       { c4[0]=1.0f; c4[1]=0.16f; c4[2]=0.12f; c4[3]=1.0f; }
-                    else if (!on) { c4[0]=0.12f; c4[1]=0.14f; c4[2]=0.18f; c4[3]=0.8f; }
-                    else          { c4[0]=0.25f+0.75f*tt; c4[1]=0.85f-0.58f*tt;
-                                    c4[2]=0.98f-0.84f*tt; c4[3]=1.0f; }
-                    device->drawHudQuad(frame, x0 + i * (lw + gp), y0, lw, lh, c4);
-                }
-            }
-            } // driving cluster part 2 (MPH / gear / shift lights)
             if (mapMode == kMmMini) {   // ---- MINIMAP v2 (owner: bigger, WITH roads and water) --
                 // Centred on WHOEVER THE PLAYER IS — on foot (and at 300 mph
                 // on the jetpack) the old car-centred map showed the parking
@@ -5959,33 +5925,6 @@ int hostTunnel(HostContext& hc) {
                     }
                 }
             }
-            if (driving && carBuilt) {
-            {   // Key hints on the glass. A binding nobody can see does not
-                // exist: T toggled traction control for a whole session while
-                // the only mention of it went to a log file.
-                const float hp = R * 0.085f;
-                const float hcol[4] = { 0.52f, 0.57f, 0.66f, 1.0f };
-                device->drawHudText(frame, "~  CONSOLE",      gcx - R * 0.95f,
-                                    gcy - R * 1.64f, hp, hcol);
-                device->drawHudText(frame, "SHIFT  NITROUS",  gcx - R * 0.95f,
-                                    gcy - R * 1.88f, hp, hcol);
-                device->drawHudText(frame, "T  TRACTION",     gcx - R * 0.95f,
-                                    gcy - R * 1.52f, hp, hcol);
-                device->drawHudText(frame, "C  CLIMB",        gcx - R * 0.95f,
-                                    gcy - R * 1.76f, hp, hcol);
-                device->drawHudText(frame, "SPACE  HANDBRAKE", gcx - R * 0.95f,
-                                    gcy - R * 1.40f, hp, hcol);
-            }
-            {
-                const bool tcOn = car.tractionControl();
-                const float px = R * 0.105f;
-                const float c4[4] = { tcOn ? 0.35f : 1.0f, tcOn ? 0.78f : 0.58f,
-                                      tcOn ? 0.95f : 0.20f, 1.0f };
-                const char* t = car.climbMode() ? "CLIMB" : (tcOn ? "TC" : "TC OFF");
-                device->drawHudText(frame, t, gcx - (float)std::strlen(t) * px * 0.5f,
-                                    gcy - R * 1.30f, px, c4);
-            }
-            } // driving cluster part 3 (key hints + TC line)
             // ---- JET READOUT — the observation HUD. On foot with the pack
             // burning, the two numbers the owner is flying by: airspeed (the
             // 300 mph claim, live) and height over the ground directly below.
