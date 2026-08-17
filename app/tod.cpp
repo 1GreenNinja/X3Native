@@ -173,6 +173,71 @@ TodSample TimeOfDay::sampleAt(float t) const {
         } break;
     }
 
+    // ---- THE SUN ARC, computed FIRST (W-NIGHT). ------------------------------
+    // It used to be computed after the look was already written into s.sky,
+    // which forced the phase table to be the ONLY thing deciding how dark the
+    // sky is. That is a clock, and darkness is a fact about the SUN.
+    //
+    // THE RECEIPT: with the tunnel world's config, 22:00 lands at t=0.677. The
+    // Night phase spans [0.604, 1.0) and its look only reaches kLookNight at
+    // its MIDPOINT — so the blend at 22:00 was 69% DUSK, and the dome rendered
+    // a warm cream sunset horizon (0.695, 0.308, 0.132) with the sun 28 DEGREES
+    // BELOW THE HORIZON. Full dark did not arrive until ~01:00. The eye gate
+    // caught it on the first night capture: bright sunset sky, no stars, and
+    // a campfire invisible against it.
+    float elev = 0.0f;
+    float sunDirRaw[3] = { 0.0f, 1.0f, 0.0f };
+    {
+        float dayStart = m_cfg.dawnStart;
+        float dayEnd   = m_cfg.nightStart;
+        float daySpan  = dayEnd - dayStart;
+        if (daySpan <= 0.0f) daySpan = 1.0f;
+
+        float p;
+        if (t >= dayStart && t <= dayEnd) {
+            p = (t - dayStart) / daySpan;                  // 0..1 across the day
+        } else {
+            float tt = (t < dayStart) ? t + 1.0f : t;
+            float nightSpan = (dayStart + 1.0f) - dayEnd;
+            if (nightSpan <= 0.0f) nightSpan = 1.0f;
+            p = 1.0f + (tt - dayEnd) / nightSpan;          // 1..2 across the night
+        }
+
+        float phi  = p * kPi;                              // 0..pi day, pi..2pi night
+        elev       = std::sin(phi) * m_cfg.middayElevation;// + above horizon, - below
+        float az   = lerp(m_cfg.sunAzimuthEast, m_cfg.sunAzimuthWest, clamp01(p));
+
+        // Direction TOWARD the sun (engine convention; normalized internally).
+        // `elev` IS the y component (a sine), so the horizontal magnitude must be
+        // sqrt(1 - y^2). The old cos(|elev| * pi/2) treated a sine as an angle
+        // fraction and UNDER-stated the horizontal term at every elevation (at
+        // elev 0.99 by 12x), pinning midday to the zenith: with no horizontal sun
+        // component every vertical facade gets N.L ~ 0 (flat, ambient-only towers)
+        // and every cast shadow falls straight down inside its own footprint.
+        float cosE = std::sqrt(std::max(0.0f, 1.0f - elev * elev));
+        sunDirRaw[0] = std::sin(az) * cosE;
+        sunDirRaw[1] = elev;
+        sunDirRaw[2] = std::cos(az) * cosE * 0.6f + 0.2f;
+    }
+
+    // ---- TWILIGHT COLLAPSE: the whole look falls to NIGHT as the sun sinks. --
+    // Keyed on real twilight geometry, not on the clock. elev is sin(altitude),
+    // so the classical bands are: civil = 0 .. -0.105 (-6 deg), nautical
+    // -0.208 (-12 deg), astronomical -0.309 (-18 deg) = full dark. The ramp
+    // starts a hair below the horizon (-0.015) and is complete by -0.275
+    // (~-16 deg), which puts the tunnel world's 22:00 (elev -0.482) at FULL
+    // night and keeps a real, gradual dusk between.
+    // Above the horizon darkK is 0, so every daytime sample — and every
+    // existing calibrated daytime capture — is untouched.
+    {
+        const float darkK = smooth(clamp01((-elev - 0.015f) / 0.260f));
+        if (darkK > 0.0f) {
+            SkyLook nl;
+            lerpLook(look, kLookNight, darkK, nl);
+            look = nl;
+        }
+    }
+
     s.sky.enabled      = true;
     s.sky.sunColor[0]  = look.sunColor[0];
     s.sky.sunColor[1]  = look.sunColor[1];
@@ -191,40 +256,11 @@ TodSample TimeOfDay::sampleAt(float t) const {
     s.ambient[1]       = look.ambient[1];
     s.ambient[2]       = look.ambient[2];
 
-    // ---- Sun arc. Map the clock to a solar parameter p: 0 at sunrise (east
-    // horizon) -> 1 at sunset (west horizon); night continues to p in [1,2) so the
-    // sun keeps moving + sits below the horizon. Daytime spans [dawnStart, nightStart].
+    // ---- The arc's results land here (computed above, before the collapse). --
     {
-        float dayStart = m_cfg.dawnStart;
-        float dayEnd   = m_cfg.nightStart;
-        float daySpan  = dayEnd - dayStart;
-        if (daySpan <= 0.0f) daySpan = 1.0f;
-
-        float p;
-        if (t >= dayStart && t <= dayEnd) {
-            p = (t - dayStart) / daySpan;                  // 0..1 across the day
-        } else {
-            float tt = (t < dayStart) ? t + 1.0f : t;
-            float nightSpan = (dayStart + 1.0f) - dayEnd;
-            if (nightSpan <= 0.0f) nightSpan = 1.0f;
-            p = 1.0f + (tt - dayEnd) / nightSpan;          // 1..2 across the night
-        }
-
-        float phi  = p * kPi;                              // 0..pi day, pi..2pi night
-        float elev = std::sin(phi) * m_cfg.middayElevation;// + above horizon, - below
-        float az   = lerp(m_cfg.sunAzimuthEast, m_cfg.sunAzimuthWest, clamp01(p));
-
-        // Direction TOWARD the sun (engine convention; normalized internally).
-        // `elev` IS the y component (a sine), so the horizontal magnitude must be
-        // sqrt(1 - y^2). The old cos(|elev| * pi/2) treated a sine as an angle
-        // fraction and UNDER-stated the horizontal term at every elevation (at
-        // elev 0.99 by 12x), pinning midday to the zenith: with no horizontal sun
-        // component every vertical facade gets N.L ~ 0 (flat, ambient-only towers)
-        // and every cast shadow falls straight down inside its own footprint.
-        float cosE = std::sqrt(std::max(0.0f, 1.0f - elev * elev));
-        s.sky.sunDir[0] = std::sin(az) * cosE;
-        s.sky.sunDir[1] = elev;
-        s.sky.sunDir[2] = std::cos(az) * cosE * 0.6f + 0.2f;
+        s.sky.sunDir[0] = sunDirRaw[0];
+        s.sky.sunDir[1] = sunDirRaw[1];
+        s.sky.sunDir[2] = sunDirRaw[2];
         s.sunElevation  = elev;
         // DUSTY-DAY FIX (Tim: "blue sky!") — placed AFTER sunElevation is set
         // (the first draft read it before assignment): a HIGH sun burns the

@@ -45,6 +45,8 @@
 // ===========================================================================
 
 #include "character_anim.h"
+#include "env_art.h"          // the bench model, when the fires site themselves
+#include "road_network.h"     // RoadSpec — the fallback siting walks a polyline
 #include "road_trees.h"
 #include "scene.h"
 #include "surface_library.h"
@@ -58,16 +60,58 @@
 
 namespace x3::game {
 
+// ---------------------------------------------------------------------------
+// FALLBACK SITING — bench sites along a plain road polyline.
+//
+// THE RECEIPT (2026-08-17, W-NIGHT). RoadTrees plants groves (and seats a bench
+// under some of them) along the TunnelRoute the tunnel demo registers — and on
+// that route it plants NOTHING, every boot, silently:
+//
+//   [INFO] tunnel corridor: 'demo ridge' — 640 m spine ... ROOFED s=88..546
+//   [INFO] road_trees: 0 trees in 0 groves, 0 benches, along 640 m (0 rejected)
+//   [WARN] road_trees: NOTHING PLANTED — tree GLBs missing? ...
+//
+// The GLBs are fine. The route is 640 m long, 458 m of it is roofed, and
+// RoadTrees keeps kPortalMargin = 80 m clear either side of the bore: the two
+// open spans are 25..8 and 626..615 — both NEGATIVE. Zero rejections is the
+// tell (nothing was even tried). "0 positions rejected" plus a warning blaming
+// the assets is why this survived: the diagnostic pointed at the wrong thing
+// (NO_SLOP rule 9 — the number was there, nobody read it).
+//
+// The fires are not going to wait for the tree lane. They site themselves on
+// a real road polyline — the VALLEY ROAD (registerRiverRoad: ~3.9 miles of
+// two-lane country road through the river valley, which is where a roadside
+// fire belongs anyway, not on the 16-lane freeway) — using the same verge
+// lateral band, the same 4-corner flatness probe, the same water/datum
+// clearances and the same yaw convention RoadTrees' own bench block uses.
+// PAIRED VALUES (rule 4): those constants live in road_trees.cpp's bench block
+// and are mirrored here; a change to either is a change to both.
+//
+// When RoadTrees DOES seat benches (a route with open country), pass its
+// benchSites() and `placeBench = false` — the model is already in the world.
+// These sites carry no model, so `placeBench = true` puts one there.
+std::vector<RoadTrees::BenchSite> benchSitesAlongRoad(
+        const RoadSpec& spec, const std::vector<float>& roadY,
+        float spacingM, uint32_t maxSites, uint32_t seed);
+
 class Campfires {
 public:
     // Pick up to kMaxFires bench sites (spaced apart along the road) and build
     // the rings/logs/embers as Scene entities + spawn the people. Returns the
     // number of fires lit (0 if no bench sites — never fatal, the road is
     // simply fireless). `audio` may be null (silent fires).
+    // `placeBench`: true when the sites came from benchSitesAlongRoad() and no
+    // bench model exists there yet — the fires then place the same two armory
+    // bench GLBs RoadTrees uses (nature/SM_WoodBench_01a, nature/SM_Bench).
     uint32_t build(Scene& scene, x3::rhi::IRenderDevice& device,
                    x3::phys::IPhysicsWorld& phys,
                    const std::vector<RoadTrees::BenchSite>& benches,
-                   x3::audio::IAudioSystem* audio);
+                   x3::audio::IAudioSystem* audio,
+                   bool placeBench = false);
+
+    // Draw the benches this system placed (no-op when placeBench was false).
+    void drawProps(x3::rhi::IRenderDevice& device,
+                   const x3::rhi::FrameContext& frame) const;
 
     // Advance the fire clock + tick the nearby people (camera-gated).
     void update(float dt, float camX, float camZ,
@@ -123,6 +167,8 @@ private:
 
     std::vector<Fire> m_fires;
     float m_clock = 0.0f;
+    EnvArtSystem m_props;                  // the bench GLBs, when we place them
+    bool  m_propsBuilt = false;
     SurfaceLibrary m_surf;                 // cv_rock_flume for the stones
     x3::rhi::MeshHandle m_stoneMesh[3]{};  // three jittered faceted variants
     x3::rhi::MeshHandle m_logMesh{};

@@ -225,6 +225,65 @@ static x3::rhi::IRenderDevice::SkyParams skyFromWeather(
     return sp;
 }
 
+// ---------------------------------------------------------------------------
+// HEADLIGHTS (W-NIGHT). "without them night driving is unplayable" — and the
+// sun sets ten minutes into any drive now that the clock actually moves.
+//
+// THE CONSTRAINT, measured before writing anything: IRenderDevice has POINT
+// lights only. There is no spot/cone lane in the whole RHI (grep `struct
+// PointLight` — position, range, colour; nothing angular). So a "headlight"
+// cannot be a cone, and the first version — two point lights at the bumper —
+// photographed as a HALO AROUND A PARKED CAR with the carriageway ahead still
+// black (eyes-on, shots_wnight/02, first pass). A point light at the bumper
+// lights the HOOD.
+//
+// A low beam's throw is therefore built as a LADDER of point lights down the
+// car's own forward axis: a bright pair at the bumper for the near spill, then
+// three progressively wider, dimmer pools at 13 / 26 / 44 m, each low over the
+// tarmac. From the driver's seat and from a chase camera alike that reads as
+// the pool a pair of beams lays on the road.
+//
+// ONE producer for BOTH the settle loop and the live loop (NO_SLOP rule 4 —
+// this used to be two copies, and the capture path's copy is the one every
+// proof shot is taken through). `hk` is the dusk ease-in (0..1).
+// SPACING IS THE WHOLE TRICK. Three lamps at 13/26/44 m rendered as three
+// separate BLOBS on the tarmac (eyes-on, shots_wnight/02, second pass) — a
+// point light's falloff is steep, so a pool is only ~4-5 m wide before it dies.
+// The ladder is therefore spaced ~4-9 m (tighter near, wider far, matching how
+// the pools grow with distance) with each range generous enough to overlap its
+// neighbours, and the gain RISES down the ladder to hold brightness as the pool
+// spreads. That merges into one continuous throw instead of a dotted line.
+static constexpr uint32_t kHeadlightCount = 9;
+static uint32_t carHeadlights(const float cp0[3], const float cfw[3],
+                              const float rgt[3], float hk,
+                              x3::rhi::PointLight* out) {
+    struct Lamp { float ahead, side, up, range, gain; };
+    static const Lamp kLamps[kHeadlightCount] = {
+        {  3.0f, -0.78f, 0.15f, 13.0f, 2.2f },   // bumper pair: the near spill
+        {  3.0f,  0.78f, 0.15f, 13.0f, 2.2f },
+        {  7.0f,  0.00f, 0.05f, 18.0f, 2.6f },   // the throw, down the lane
+        { 12.0f,  0.00f, 0.05f, 24.0f, 3.2f },
+        { 18.0f,  0.00f, 0.05f, 30.0f, 3.8f },
+        { 25.0f,  0.00f, 0.10f, 36.0f, 4.4f },
+        { 33.0f,  0.00f, 0.10f, 42.0f, 5.0f },
+        { 42.0f,  0.00f, 0.15f, 50.0f, 5.4f },
+        { 52.0f,  0.00f, 0.20f, 58.0f, 5.6f },
+    };
+    uint32_t n = 0;
+    for (const Lamp& L : kLamps) {
+        x3::rhi::PointLight& l = out[n++];
+        l.pos[0] = cp0[0] + cfw[0] * L.ahead + rgt[0] * L.side;
+        l.pos[1] = cp0[1] + cfw[1] * L.ahead + L.up;
+        l.pos[2] = cp0[2] + cfw[2] * L.ahead + rgt[2] * L.side;
+        l.range  = L.range;
+        // Halogen white, a touch warm. hk eases the whole rig in with dusk.
+        l.color[0] = L.gain * 1.00f * hk;
+        l.color[1] = L.gain * 0.96f * hk;
+        l.color[2] = L.gain * 0.86f * hk;
+    }
+    return n;
+}
+
 // X3_TOD=0 pin: the base that makes skyFromWeather() reproduce its pre-ToD
 // output exactly — fixed 14:00 sun, neutral color (the tint division cancels),
 // haze 0 (the max() then yields the weather's own haze), unit exposure/
@@ -2085,12 +2144,36 @@ int hostTunnel(HostContext& hc) {
     // and 2-3 AnimatedCharacters warming themselves (one on the bench with a
     // roasting stick where the rig owns the pose). DEFAULT ON (rule 6);
     // X3_CAMPFIRES=0 is the off switch. See app/campfire.h.
+    //
+    // WHERE: RoadTrees' grove benches when there are any — but on this world's
+    // 640 m demo-ridge route there never are (458 m of it is roofed and the
+    // 80 m portal margins eat both open spans, so the grove pass plants zero
+    // trees and zero benches, every boot, while blaming the assets in the log).
+    // The receipt is in campfire.h. So the fires fall back to siting themselves
+    // on the VALLEY ROAD — ~3.9 miles of two-lane country road through the
+    // river valley, which is where a roadside fire and a bench belong anyway —
+    // and place their own bench there. When the tree lane fixes the grove pass,
+    // its benches win automatically; nothing here changes.
     x3::game::Campfires campfires;
     {
         const char* e = std::getenv("X3_CAMPFIRES");
-        if (!(e && e[0] == '0'))
-            campfires.build(scene, *device, *phys, trees.benchSites(),
-                            audioOn ? audio.get() : nullptr);
+        if (!(e && e[0] == '0')) {
+            const auto& groveBenches = trees.benchSites();
+            if (!groveBenches.empty()) {
+                campfires.build(scene, *device, *phys, groveBenches,
+                                audioOn ? audio.get() : nullptr, false);
+            } else if (riverOn && riverRoad.road.ok) {
+                const auto sites = x3::game::benchSitesAlongRoad(
+                    riverRoad.spec, riverRoad.roadY, 900.0f, 6u, 0xCA11F13Eu);
+                x3::logInfo("campfire: no grove benches — siting on the valley "
+                            "road (" + std::to_string(sites.size()) + " sites)");
+                campfires.build(scene, *device, *phys, sites,
+                                audioOn ? audio.get() : nullptr, true);
+            } else {
+                x3::logWarn("campfire: no grove benches and no valley road — "
+                            "no fires");
+            }
+        }
     }
 
     // ==== FREEWAY TRAFFIC (W-TRAFFIC) =======================================
@@ -2376,12 +2459,13 @@ int hostTunnel(HostContext& hc) {
                 // no existing reference moves.
                 campfires.update(dt, cam[0], cam[2], *phys, *device);
                 if (shotTod) {
-                    x3::rhi::PointLight shotEx[12];
+                    x3::rhi::PointLight shotEx[20];   // 8 fires + 5 headlamps + slack
                     uint32_t shotEn = campfires.lights(shotEx, 8, cam);
                     // The parked car's headlights, on at night (the staged
                     // "road under headlights" proof) — from the LIVE chassis
                     // pose, never typed-in numbers.
-                    if (carBuilt && shotTodSample.night > 0.25f && shotEn + 2 <= 12) {
+                    if (carBuilt && shotTodSample.night > 0.25f &&
+                        shotEn + kHeadlightCount <= 20) {
                         float cq[4]; phys->getBodyRotation(car.chassis(), cq);
                         float cfw[3], cup[3];
                         x3::game::vehcam::hullAxes(cq, cfw, cup);
@@ -2389,15 +2473,9 @@ int hostTunnel(HostContext& hc) {
                         const float rgt[3] = { cfw[1]*cup[2] - cfw[2]*cup[1],
                                                cfw[2]*cup[0] - cfw[0]*cup[2],
                                                cfw[0]*cup[1] - cfw[1]*cup[0] };
-                        for (int hl = 0; hl < 2; ++hl) {
-                            const float side = hl ? 0.8f : -0.8f;
-                            x3::rhi::PointLight& l = shotEx[shotEn++];
-                            l.pos[0] = cp0[0] + cfw[0] * 5.5f + rgt[0] * side;
-                            l.pos[1] = cp0[1] + 0.15f + cfw[1] * 5.5f;
-                            l.pos[2] = cp0[2] + cfw[2] * 5.5f + rgt[2] * side;
-                            l.range  = 26.0f;
-                            l.color[0] = 5.5f; l.color[1] = 5.2f; l.color[2] = 4.6f;
-                        }
+                        const float hk = std::min(1.0f,
+                                                  (shotTodSample.night - 0.25f) / 0.35f);
+                        shotEn += carHeadlights(cp0, cfw, rgt, hk, shotEx + shotEn);
                     }
                     const float lcp[3] = { cam[0], cam[1], cam[2] };
                     x3::game::uploadTunnelLights(*device, lcp,
@@ -2430,6 +2508,7 @@ int hostTunnel(HostContext& hc) {
                     if (townOn) town.draw(*device, frame);
                     // Fire people + roasting sticks + flame/smoke particles —
                     // in the capture fan for the same reason the town walks.
+                    campfires.drawProps(*device, frame);
                     campfires.drawCharacters(frame, *device);
                     campfires.submitFx(*device, cam[0], cam[2]);
                     gasStations.draw(*device, frame);
@@ -2596,6 +2675,25 @@ int hostTunnel(HostContext& hc) {
                 const uint32_t fi = (uint32_t)std::atoi(fe);
                 if (!campfires.showcaseCamera(fi, cam))
                     x3::logError("--world tunnel: X3_SHOT_FIRE index out of range");
+            }
+            // X3_SHOT_CAR=1: the HEADLIGHT proof — a chase pose behind the
+            // parked car looking down its own nose, derived from the LIVE
+            // chassis transform (gotcha 4.1), so the frame is the road the
+            // beams actually light. Pair with X3_SHOT_TOD=22.
+            if (const char* ce = std::getenv("X3_SHOT_CAR")) {
+                if (ce[0] != '0' && carBuilt) {
+                    float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                    float cfw[3], cup[3];
+                    x3::game::vehcam::hullAxes(cq, cfw, cup);
+                    float cp0[3]; car.chassisPos(cp0);
+                    cam[0] = cp0[0] - cfw[0] * 7.5f;
+                    cam[1] = cp0[1] + 2.35f;
+                    cam[2] = cp0[2] - cfw[2] * 7.5f;
+                    cam[3] = std::atan2(cfw[2], cfw[0]);   // device yaw
+                    cam[4] = -0.085f;
+                } else if (ce[0] != '0') {
+                    x3::logError("--world tunnel: X3_SHOT_CAR but no car built");
+                }
             }
             {   // Log the resolved camera (parity with the multi-shot branch): a
                 // custom --shot-cam is DERIVED from this print, not eyeballed
@@ -5141,7 +5239,7 @@ int hostTunnel(HostContext& hc) {
           x3::rhi::PointLight ex[40];
           uint32_t en = weaponLights(fdt, ex);
           en += campfires.lights(ex + en, 8, cp);
-          if (carBuilt && nightK > 0.25f && en + 2 <= 40) {
+          if (carBuilt && nightK > 0.25f && en + kHeadlightCount <= 40) {
               float cq[4]; phys->getBodyRotation(car.chassis(), cq);
               float cfw[3], cup[3];
               x3::game::vehcam::hullAxes(cq, cfw, cup);
@@ -5150,17 +5248,8 @@ int hostTunnel(HostContext& hc) {
                                      cfw[2]*cup[0] - cfw[0]*cup[2],
                                      cfw[0]*cup[1] - cfw[1]*cup[0] };
               const float hk = std::min(1.0f, (nightK - 0.25f) / 0.35f); // ease in with dusk
-              for (int hl = 0; hl < 2; ++hl) {
-                  const float side = hl ? 0.8f : -0.8f;
-                  x3::rhi::PointLight& l = ex[en++];
-                  // The POOL the beams throw on the road ahead, not bulbs in
-                  // the housings: a point light at the bumper lights the hood.
-                  l.pos[0] = cp0[0] + cfw[0] * 5.5f + rgt[0] * side;
-                  l.pos[1] = cp0[1] + 0.15f + cfw[1] * 5.5f;
-                  l.pos[2] = cp0[2] + cfw[2] * 5.5f + rgt[2] * side;
-                  l.range  = 26.0f;
-                  l.color[0] = 5.5f * hk; l.color[1] = 5.2f * hk; l.color[2] = 4.6f * hk;
-              }
+              // ONE producer with the capture path (top of file).
+              en += carHeadlights(cp0, cfw, rgt, hk, ex + en);
           }
           if (townOn && nightK > 0.05f) {
               // Nearest town practicals (lamps + lit windows), budgeted.
@@ -5289,6 +5378,7 @@ int hostTunnel(HostContext& hc) {
             scene.render(*device, frame);
             trees.draw(*device, frame);
             if (townOn) town.draw(*device, frame);
+            campfires.drawProps(*device, frame);   // the bench, when we placed it
             campfires.drawCharacters(frame, *device);
             campfires.submitFx(*device, cx, cz);   // additive flames feed bloom
             gasStations.draw(*device, frame);

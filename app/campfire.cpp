@@ -23,9 +23,15 @@ constexpr float    kSpacingM   = 300.0f; // fires spread along the road, not clu
 constexpr float    kActiveM    = 280.0f; // people tick within this of the camera
 constexpr float    kFxM        = 350.0f; // particles submit within this
 constexpr float    kLightM     = 400.0f; // fire lights upload within this
-constexpr float    kRingR      = 0.55f;  // stone ring radius (m)
-constexpr float    kFireFromBench = 2.10f; // ring centre this far in front of the bench
-constexpr float    kPeopleR    = 1.80f;  // standers this far from the flames
+constexpr float    kRingR      = 0.72f;  // stone ring radius (m) — PAIRED with the
+                                         //   stone scale in buildRing: the stones
+                                         //   must girdle this circle shoulder to
+                                         //   shoulder, not sprinkle it (rule 4).
+constexpr float    kFireFromBench = 2.10f; // ring centre this far off the bench (FIELD side)
+constexpr float    kStickLen   = 0.90f;  // roasting switch, unit-scale length (m)
+constexpr float    kPeopleR    = 2.15f;  // standers this far from the flames — 1.80
+                                         //   put the far stander's face inside the
+                                         //   fire light's hot zone and blew her out
 
 constexpr float kPi = 3.14159265358979f;
 
@@ -58,7 +64,94 @@ inline void basisM(const float X[3], const float Y[3], const float Z[3],
     out[12]=T[0]; out[13]=T[1]; out[14]=T[2]; out[15]=1;
 }
 
+// The two armory bench models RoadTrees seats under its groves. PAIRED with
+// road_trees.cpp's kBenchGlbA/B (rule 4) — same models, so a fire the trees
+// sited and a fire that sited itself are indistinguishable in the world.
+constexpr const char* kBenchGlbA = "nature/SM_WoodBench_01a.glb";
+constexpr const char* kBenchGlbB = "nature/SM_Bench.glb";
+constexpr float kBenchSink = 0.03f;   // legs settled in, never floating
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// FALLBACK SITING — see the receipt in campfire.h.
+// ---------------------------------------------------------------------------
+std::vector<RoadTrees::BenchSite> benchSitesAlongRoad(
+        const RoadSpec& spec, const std::vector<float>& roadY,
+        float spacingM, uint32_t maxSites, uint32_t seed) {
+    std::vector<RoadTrees::BenchSite> out;
+    const size_t N = spec.x.size();
+    if (N < 3 || spec.z.size() != N) return out;
+
+    // Nodes inside a GAP belong to a bridge deck or a bore — no verge there.
+    std::vector<uint8_t> inGap(N, 0);
+    for (const RoadSpec::Gap& g : spec.gaps)
+        for (uint32_t i = g.i0; i <= g.i1 && i < N; ++i) inGap[i] = 1;
+
+    Lcg rng(seed);
+    float sinceLast = spacingM;   // allow the first eligible node
+    for (size_t i = 1; i + 1 < N; ++i) {
+        const float segX = spec.x[i] - spec.x[i - 1];
+        const float segZ = spec.z[i] - spec.z[i - 1];
+        sinceLast += std::sqrt(segX * segX + segZ * segZ);
+        if (sinceLast < spacingM) continue;
+        // A bench needs a verge on BOTH neighbours too (no deck ends).
+        if (inGap[i] || inGap[i - 1] || inGap[i + 1]) continue;
+
+        // Road tangent from the neighbours (the centred difference is stabler
+        // than one segment on a resampled polyline), and the across-road
+        // perpendicular. AXES LAW: XZ plane, +Y up.
+        float tdx = spec.x[i + 1] - spec.x[i - 1];
+        float tdz = spec.z[i + 1] - spec.z[i - 1];
+        const float tl = std::sqrt(tdx * tdx + tdz * tdz);
+        if (tl < 0.01f) continue;
+        tdx /= tl; tdz /= tl;
+        const float pdx = -tdz, pdz = tdx;          // +lat, across the road
+        const float side = (rng.next() < 0.5f) ? 1.0f : -1.0f;
+
+        // Walk OUT from the pavement edge until the ground is flat enough to
+        // sit on — road_trees.cpp's bench block, same band, same probe, same
+        // clearances (rule 4: these constants are one value with that block).
+        const float halfPaved = kPavedHalfM * spec.widthScale;
+        bool ok = false;
+        float bx = 0.0f, bz = 0.0f, ty = 0.0f;
+        // Start 4 m clear of the pavement edge, not 2.5: the SITE is only the
+        // bench, but the fire ring sits ~2 m further out and its standers ~2 m
+        // beyond that, so the whole group has to fit on the verge.
+        for (float blat = halfPaved + 4.0f; blat <= halfPaved + 11.0f; blat += 0.75f) {
+            bx = spec.x[i] + pdx * side * blat;
+            bz = spec.z[i] + pdz * side * blat;
+            float hMin = 1e9f, hMax = -1e9f;
+            for (int ci = 0; ci < 4; ++ci) {
+                const float su = (ci & 1) ? 0.9f : -0.9f;
+                const float sv = (ci & 2) ? 0.3f : -0.3f;
+                const float h = terrainHeightAtWorld(bx + tdx * su + pdx * sv,
+                                                     bz + tdz * su + pdz * sv);
+                hMin = std::fmin(hMin, h); hMax = std::fmax(hMax, h);
+            }
+            if (hMax - hMin > 0.22f) continue;
+            ty = (hMax + hMin) * 0.5f;
+            // Never a seat the swollen river can lap (kWorldRiverRainRiseMax
+            // is the bounded rain rise — terrain.h), never in a hole below the
+            // road it faces.
+            if (ty < worldWaterLevelAt(bx, bz) + 0.5f + kWorldRiverRainRiseMax) continue;
+            const float datum = (i < roadY.size()) ? roadY[i] : ty;
+            if (ty < datum - 3.0f) continue;
+            ok = true;
+            break;
+        }
+        if (!ok) continue;
+
+        // Model long axis is +Z; yaw maps it onto the tangent (road_trees'
+        // convention exactly, so both producers hand out the same yaw).
+        const float yaw = std::atan2(tdx, tdz);
+        out.push_back(RoadTrees::BenchSite{ bx, ty, bz, yaw,
+                                            -side * pdx, -side * pdz });
+        sinceLast = 0.0f;
+        if (out.size() >= maxSites) break;
+    }
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // BUILD
@@ -66,7 +159,8 @@ inline void basisM(const float X[3], const float Y[3], const float Z[3],
 uint32_t Campfires::build(Scene& scene, x3::rhi::IRenderDevice& device,
                           x3::phys::IPhysicsWorld& phys,
                           const std::vector<RoadTrees::BenchSite>& benches,
-                          x3::audio::IAudioSystem* audio) {
+                          x3::audio::IAudioSystem* audio,
+                          bool placeBench) {
     if (m_built) return (uint32_t)m_fires.size();
     m_built = true;
     if (benches.empty()) {
@@ -108,10 +202,14 @@ uint32_t Campfires::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                         pm.index.data(), (uint32_t)pm.index.size());
     }
     {
-        x3::prims::PrimMesh pm = x3::prims::makeBox(0.008f, 0.008f, 0.45f, 0, 0, 0, 1.0f);
+        // Half-extents: the stick is kStickLen long along +Z at unit scale and
+        // drawCharacters scales that basis to the hand-to-fire reach (rule 4:
+        // kStickLen and that scale are one value).
+        x3::prims::PrimMesh pm = x3::prims::makeBox(0.011f, 0.011f, kStickLen * 0.5f,
+                                                    0, 0, 0, 1.0f);
         m_stickMesh = device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
                                         pm.index.data(), (uint32_t)pm.index.size());
-        x3::prims::PrimMesh hd = x3::prims::makeBox(0.024f, 0.024f, 0.070f, 0, 0, 0, 1.0f);
+        x3::prims::PrimMesh hd = x3::prims::makeBox(0.026f, 0.026f, 0.075f, 0, 0, 0, 1.0f);
         m_hotdogMesh = device.createMesh(hd.verts.data(), (uint32_t)hd.verts.size(),
                                          hd.index.data(), (uint32_t)hd.index.size());
     }
@@ -133,6 +231,13 @@ uint32_t Campfires::build(Scene& scene, x3::rhi::IRenderDevice& device,
                         "(run tools/gen_campfire_audio.py)");
     }
 
+    // ---- The BENCH, when these sites carry no model yet (fallback siting).
+    if (placeBench) {
+        m_propsBuilt = m_props.beginFromDir(device, convertedGlbRoot());
+        if (!m_propsBuilt)
+            x3::logWarn("campfire: converted_glb mount failed — fires get no bench");
+    }
+
     uint32_t fireIdx = 0;
     for (const RoadTrees::BenchSite* b : picked) {
         Fire f{};
@@ -142,12 +247,22 @@ uint32_t Campfires::build(Scene& scene, x3::rhi::IRenderDevice& device,
         f.seed         = 0xF17E5EEDu + fireIdx * 977u;
         f.lightPhase   = (float)fireIdx * 2.13f;
 
-        // Ring centre: in front of the bench, on ground FLAT ENOUGH for the
-        // ring + the standers (same honesty test the bench itself passed).
+        // Ring centre: OFF the pavement — the bench's field side, never its
+        // road side. THE RECEIPT (eyes-on, 2026-08-17): the first version put
+        // the ring at bench + towardRoad * 2.1 m, which on a verge bench is
+        // 2 m INTO the carriageway. The stones, the log teepee, the ember bed
+        // and the flame billboards all sat UNDER the road ribbon's deck (the
+        // ribbon is a mesh laid over the carved height field, and
+        // terrainHeightAtWorld returns the field, not the deck): the night
+        // capture showed a woman standing on empty asphalt with no fire
+        // anywhere. Away from the road it is grass, the ground IS the field,
+        // and the CONTACT LAW is satisfied by construction.
+        // Ground must be FLAT ENOUGH for the ring + the standers (the same
+        // honesty test the bench site itself passed).
         bool ok = false;
         for (float off = kFireFromBench; off >= 1.5f && !ok; off -= 0.3f) {
-            const float fx = b->x + b->towardRoadX * off;
-            const float fz = b->z + b->towardRoadZ * off;
+            const float fx = b->x - b->towardRoadX * off;
+            const float fz = b->z - b->towardRoadZ * off;
             const float y0 = terrainHeightAtWorld(fx, fz);
             float hMin = y0, hMax = y0;
             for (int c = 0; c < 4; ++c) {
@@ -161,6 +276,20 @@ uint32_t Campfires::build(Scene& scene, x3::rhi::IRenderDevice& device,
             ok = true;
         }
         if (!ok) continue;   // batter too steep here — skip the site, keep going
+
+        if (m_propsBuilt) {
+            // Same transform shape road_trees.cpp builds: model long axis +Z
+            // rotated onto the road tangent, base sunk kBenchSink so the legs
+            // are IN the ground and not standing on it (rule 4 / CONTACT LAW).
+            const float c = std::cos(b->yaw), sn = std::sin(b->yaw);
+            const float T[16] = { c, 0, -sn, 0,
+                                  0, 1,  0,  0,
+                                  sn, 0, c,  0,
+                                  b->x, b->y - kBenchSink, b->z, 1 };
+            const char* glb = (fireIdx & 1u) ? kBenchGlbB : kBenchGlbA;
+            if (!m_props.addGlbInstance(glb, T))
+                x3::logWarn(std::string("campfire: bench model unavailable: ") + glb);
+        }
 
         buildRing(scene, device, f);
         spawnPeople(f, fireIdx, device, phys, *b);
@@ -198,7 +327,12 @@ void Campfires::buildRing(Scene& scene, x3::rhi::IRenderDevice& device, Fire& f)
         const float sx = f.x + std::cos(a) * rr;
         const float sz = f.z + std::sin(a) * rr;
         const float sy = terrainHeightAtWorld(sx, sz);
-        const float sc  = 0.75f + rng.next() * 0.75f;      // fist to melon
+        // Scale: the base crystal is 0.24 m across, so 1.4-2.5 puts these at
+        // 0.34-0.60 m — the size of a stone somebody actually carried over and
+        // dropped. The first pass ran 0.75-1.5 (0.18-0.36 m) and the eye gate
+        // read the ring as gravel: at 5 m, by firelight, small dark rocks on
+        // dark grass are not a fire ring, they are noise (NO_SLOP rule 2).
+        const float sc  = 1.40f + rng.next() * 1.10f;
         const float yaw = rng.next() * 2.0f * kPi;
         const float c = std::cos(yaw), sn = std::sin(yaw);
         Entity e;
@@ -274,12 +408,19 @@ void Campfires::spawnPeople(Fire& f, uint32_t idx, x3::rhi::IRenderDevice& devic
 
     // MEASURED tables (town.cpp's receipt — exact names or a sliding statue).
     const CharacterClipTable standTable = townPedClipTable();
-    CharacterClipTable sitTable = standTable;
-    sitTable.idle = "Sit";                    // AnnaCasual only; hips perch ~0.44 m
-    sitTable.idleVariant = nullptr;           // never drift out of the pose
-    CharacterClipTable carryTable = standTable;
-    carryTable.idle = "CarryIdle";            // AnnaCasual: hands carrying at the waist
-    carryTable.idleVariant = nullptr;
+    // NOBODY SITS. AnnaCasual owns a real `Sit` clip and it RESOLVES (the boot
+    // log proves it: "AnnaCasual_anim.glb animated: idle=6" is Sit's index) —
+    // but AnimatedCharacter::load calls m_skin.setRootYLock(true)
+    // unconditionally (character_anim.cpp:167, "the capsule owns world Y"), and
+    // update() clamps that capsule onto the terrain every frame (the CONTACT
+    // LAW). A seated clip's whole content is the hips dropping ~0.45 m while
+    // the feet stay put; the root-Y lock cancels exactly that, so the rig plays
+    // Sit's arm and leg curves at STANDING root height. Eyes-on (2026-08-17,
+    // shots_wnight/03): a woman standing bolt upright beside the bench with
+    // seated arms. Seating needs a root-Y-lock opt-out in the shared module —
+    // a change to a module four other systems ride, not a campfire's business.
+    // The directive already ruled on this case: two people standing at a fire
+    // beat one broken sitter. So they stand, and the bench is a bench.
 
     struct Cast { const char* rig; const CharacterClipTable* table;
                   bool onBench; bool stick; };
@@ -301,31 +442,47 @@ void Campfires::spawnPeople(Fire& f, uint32_t idx, x3::rhi::IRenderDevice& devic
     // (rule 4): this roster and town.cpp's kRigs are the same six files; a
     // rig removed there must be removed here.
     //
-    // AnnaCasual stays for the SEATED and STICK roles and only those: she is a
-    // civilian too, and she is the ONLY rig in the tree that owns real `Sit`
-    // and `CarryIdle` clips. The CityPerson rigs have no seated pose, so they
-    // STAND — two people standing beat one broken sitter (the directive).
-    const Cast cast0[] = { { "AnnaCasual_anim.glb",         &sitTable,   true,  true  },
-                           { "CityPerson_ManJacket.glb",    &standTable, false, false },
-                           { "CityPerson_WomanCoat.glb",    &standTable, false, false } };
-    const Cast cast1[] = { { "AnnaCasual_anim.glb",         &carryTable, false, true  },
+    // AnnaCasual is OUT as well, and not for a rigging reason: she is dressed
+    // for the club — crop top and shorts — and under a campfire's key light,
+    // 2 m from the lens, that much lit skin reads as a nude figure on the
+    // capture (eyes-on, shots_wnight/03, second pass). The six CityPerson rigs
+    // are people in jackets and coats standing at a fire at night, which is the
+    // picture. They carry Idle/Walk/Run/LookAround only — no seated, no carry —
+    // so everyone stands, and the STICK comes out of the Idle pose's own right
+    // hand (the hand bone probe below; the stick is fitted to the hand-to-fire
+    // distance so the frankfurter genuinely ends up over the flames).
+    // Fire 0 is the hero shot's fire; its three are picked for how they READ by
+    // firelight. CityPerson_WomanCoat's coat maps to the palette atlas's CREAM
+    // cloth swatch (people_pal.png: skin / hair / cloth / B&W columns — verified
+    // by extracting the GLB's own texture), and cream under a warm key at 2 m
+    // reads as bare skin on the capture. Nothing is wrong with the rig; it is
+    // the wrong costume for THIS light. She keeps her place at the other fires,
+    // where the frame is not the proof.
+    const Cast cast0[] = { { "CityPerson_ManJacket.glb",    &standTable, false, true  },
                            { "CityPerson_ManCasual.glb",    &standTable, false, false },
-                           { "CityPerson_WomanCasual.glb",  &standTable, false, false } };
-    const Cast cast2[] = { { "AnnaCasual_anim.glb",         &sitTable,   true,  false },
-                           { "CityPerson_Elder.glb",        &standTable, false, false },
+                           { "CityPerson_Boy.glb",          &standTable, false, false } };
+    const Cast cast1[] = { { "CityPerson_WomanCasual.glb",  &standTable, false, true  },
+                           { "CityPerson_ManCasual.glb",    &standTable, false, false },
+                           { "CityPerson_Elder.glb",        &standTable, false, false } };
+    const Cast cast2[] = { { "CityPerson_ManCasual.glb",    &standTable, false, true  },
+                           { "CityPerson_WomanCoat.glb",    &standTable, false, false },
                            { "CityPerson_Boy.glb",          &standTable, false, false } };
     const Cast cast3[] = { { "CityPerson_ManJacket.glb",    &standTable, false, false },
-                           { "CityPerson_WomanCasual.glb",  &standTable, false, false } };
+                           { "CityPerson_WomanCasual.glb",  &standTable, false, true  } };
     const Cast* casts[4]  = { cast0, cast1, cast2, cast3 };
     const uint32_t nCast[4] = { 3, 3, 3, 2 };
 
     const Cast* cast = casts[idx % 4];
     const uint32_t n  = nCast[idx % 4];
 
-    // Standers ring the fire on the slots the bench does not occupy. Angle 0 =
-    // the toward-road axis (bench -> fire direction); the bench sits at 180.
+    // Standers ring the fire on the slots the bench does not occupy. The fire
+    // sits on the bench's FIELD side, so from the fire the bench lies along
+    // +towardRoad (angle 0 here); the standers take the far arc.
+    // 120/-120/180 put all three on the FAR arc: from the road-side camera
+    // they lined up shoulder to shoulder behind the flames instead of ringing
+    // them (eyes-on, shots_wnight/03). +-72 and 180 is a ring.
     const float baseA = std::atan2(f.towardRoadZ, f.towardRoadX);
-    const float standAngles[3] = { baseA + 0.55f, baseA - 0.75f, baseA + 2.30f };
+    const float standAngles[3] = { baseA + 1.25f, baseA - 1.25f, baseA + kPi };
     uint32_t standSlot = 0;
 
     for (uint32_t i = 0; i < n; ++i) {
@@ -337,11 +494,12 @@ void Campfires::spawnPeople(Fire& f, uint32_t idx, x3::rhi::IRenderDevice& devic
         }
         float px, pz;
         if (cast[i].onBench) {
-            // ON THE BENCH: feet just in front of the seat plank so the Sit
-            // clip's 0.44 m hip perch lands on the ~0.45 m seat. The bench IS
-            // the seat prop (crowd_skin's updateSeat receipt for the height).
-            px = bench.x + f.towardRoadX * 0.32f;
-            pz = bench.z + f.towardRoadZ * 0.32f;
+            // (Unused today — nobody sits; see the root-Y-lock receipt above.
+            // Kept so the day the shared module can seat a rig, the site the
+            // bench provides is already here.) Standing in front of the plank,
+            // on the FIRE side of it.
+            px = bench.x - f.towardRoadX * 0.32f;
+            pz = bench.z - f.towardRoadZ * 0.32f;
         } else {
             const float a = standAngles[standSlot % 3]; ++standSlot;
             px = f.x + std::cos(a) * kPeopleR;
@@ -382,6 +540,12 @@ void Campfires::update(float dt, float camX, float camZ,
     }
 }
 
+void Campfires::drawProps(x3::rhi::IRenderDevice& device,
+                          const x3::rhi::FrameContext& frame) const {
+    if (!m_propsBuilt) return;
+    m_props.draw(device, frame);
+}
+
 void Campfires::drawCharacters(const x3::rhi::FrameContext& frame,
                                x3::rhi::IRenderDevice& device) {
     for (Fire& f : m_fires) {
@@ -418,11 +582,17 @@ void Campfires::drawCharacters(const x3::rhi::FrameContext& frame,
             }
             if (!have) continue;
 
-            // Stick runs from the hand toward a point over the embers.
+            // Stick runs from the hand to a point over the embers, and is CUT
+            // TO THAT LENGTH. The first version drew a fixed 0.9 m switch and
+            // hung the frankfurter in mid-air a metre short of the fire (the
+            // standers are 2.15 m out) — a stick pointing vaguely flame-ward is
+            // not roasting a hot dog. Now the mesh's Z basis is scaled by
+            // zl/kStickLen so the tip lands ON the target, every time, whatever
+            // the rig's hand height and reach.
             const float hx = hand[12], hy = hand[13], hz = hand[14];
-            float Z[3] = { f.x - hx, (f.y + 0.42f) - hy, f.z - hz };
+            float Z[3] = { f.x - hx, (f.y + 0.46f) - hy, f.z - hz };
             const float zl = std::sqrt(Z[0]*Z[0] + Z[1]*Z[1] + Z[2]*Z[2]);
-            if (zl < 0.3f) continue;
+            if (zl < 0.3f || zl > 2.6f) continue;   // absurd reach: no prop
             Z[0] /= zl; Z[1] /= zl; Z[2] /= zl;
             float X[3] = { -Z[2], 0.0f, Z[0] };
             float xl = std::sqrt(X[0]*X[0] + X[2]*X[2]);
@@ -431,13 +601,18 @@ void Campfires::drawCharacters(const x3::rhi::FrameContext& frame,
             const float Y[3] = { Z[1]*X[2] - Z[2]*X[1], Z[2]*X[0] - Z[0]*X[2],
                                  Z[0]*X[1] - Z[1]*X[0] };
             float m[16];
-            const float mid[3] = { hx + Z[0]*0.45f, hy + Z[1]*0.45f, hz + Z[2]*0.45f };
-            basisM(X, Y, Z, mid, m);
-            const float stickCol[4]  = { 0.30f, 0.20f, 0.11f, 1.0f };  // hazel switch
+            const float sk = zl / kStickLen;              // fit the switch to the reach
+            const float Zs[3] = { Z[0] * sk, Z[1] * sk, Z[2] * sk };
+            const float mid[3] = { hx + Z[0]*zl*0.5f, hy + Z[1]*zl*0.5f, hz + Z[2]*zl*0.5f };
+            basisM(X, Y, Zs, mid, m);
+            // A PEELED green switch, not bark: 0.30/0.20/0.11 is dark brown and
+            // at night, against dark grass, it was invisible in the capture.
+            const float stickCol[4]  = { 0.62f, 0.53f, 0.33f, 1.0f };
             device.drawMesh(frame, m_stickMesh, x3::rhi::TextureHandle{}, stickCol, m);
-            const float tip[3] = { hx + Z[0]*0.86f, hy + Z[1]*0.86f, hz + Z[2]*0.86f };
+            const float tip[3] = { hx + Z[0]*(zl - 0.07f), hy + Z[1]*(zl - 0.07f),
+                                   hz + Z[2]*(zl - 0.07f) };
             basisM(X, Y, Z, tip, m);
-            const float dogCol[4] = { 0.52f, 0.17f, 0.07f, 1.0f };     // the hot dog
+            const float dogCol[4] = { 0.62f, 0.22f, 0.10f, 1.0f };     // the hot dog
             device.drawMesh(frame, m_hotdogMesh, x3::rhi::TextureHandle{}, dogCol, m);
         }
     }
@@ -545,8 +720,11 @@ uint32_t Campfires::lights(x3::rhi::PointLight* out, uint32_t max,
                                 + 0.03f * std::sin(m_clock * 23.7f + ph * 3.1f);
         x3::rhi::PointLight& l = out[n++];
         l.pos[0] = f.x; l.pos[1] = f.y + 0.55f; l.pos[2] = f.z;
-        l.range  = 13.0f;
-        l.color[0] = 2.60f * k; l.color[1] = 1.10f * k; l.color[2] = 0.32f * k;
+        l.range  = 14.0f;
+        // 2.60/1.10/0.32 blew the near standers' faces to flat pink at 1.8 m
+        // (eyes-on, shots_wnight/03). Pulled back with the ring widened to
+        // 2.15 m: still the only light in the frame, no longer a flashbulb.
+        l.color[0] = 2.05f * k; l.color[1] = 0.88f * k; l.color[2] = 0.26f * k;
     }
     return n;
 }
@@ -566,19 +744,27 @@ bool Campfires::firePos(uint32_t i, float out[3]) const {
 bool Campfires::showcaseCamera(uint32_t i, float out[5]) const {
     if (i >= m_fires.size()) return false;
     const Fire& f = m_fires[i];
-    // Three-quarter from beside the ring: along the bench axis, pulled off the
-    // road side, low — flames, stones, sitter and standers all in frame.
+    // Stand on the ROAD side and look OUT across the fire, in the ONE azimuth
+    // slot nobody occupies. The people ring the fire at +-72 and 180 degrees
+    // off the bench axis and the bench itself sits at 0; a camera at 0 + ~25
+    // degrees threads between the bench and the nearest stander, so the frame
+    // is bench-in-the-near-ground / flames / three faces, with open country and
+    // sky behind instead of a wall of asphalt. The previous pose sat at ~64
+    // degrees — 8 degrees off a stander — and photographed his back
+    // (eyes-on, shots_wnight/03, third pass).
     const float tX = std::sin(f.benchYaw), tZ = std::cos(f.benchYaw);   // bench long axis
-    float dX = tX * 0.80f - f.towardRoadX * 0.60f;
-    float dZ = tZ * 0.80f - f.towardRoadZ * 0.60f;
+    float dX = f.towardRoadX * 0.91f + tX * 0.42f;
+    float dZ = f.towardRoadZ * 0.91f + tZ * 0.42f;
     const float dl = std::sqrt(dX * dX + dZ * dZ);
     dX /= dl; dZ /= dl;
-    const float cx = f.x + dX * 5.0f, cz = f.z + dZ * 5.0f;
+    const float cx = f.x + dX * 5.6f, cz = f.z + dZ * 5.6f;
     out[0] = cx;
-    out[1] = terrainHeightAtWorld(cx, cz) + 1.55f;
+    out[1] = terrainHeightAtWorld(cx, cz) + 1.50f;
     out[2] = cz;
     out[3] = std::atan2(f.z - cz, f.x - cx);   // device yaw: fwd = (cos, ., sin)
-    out[4] = -0.10f;
+    // Aim at ~0.7 m over the ring, not at its ground point: that is the top of
+    // the flame column and the standers' chests, which is the shot.
+    out[4] = -0.16f;
     return true;
 }
 
@@ -591,6 +777,7 @@ void Campfires::shutdown(x3::rhi::IRenderDevice& device) {
     if (m_emberMesh.valid())  { device.destroyMesh(m_emberMesh);  m_emberMesh = {}; }
     if (m_stickMesh.valid())  { device.destroyMesh(m_stickMesh);  m_stickMesh = {}; }
     if (m_hotdogMesh.valid()) { device.destroyMesh(m_hotdogMesh); m_hotdogMesh = {}; }
+    if (m_propsBuilt) { m_props.destroy(device); m_propsBuilt = false; }
     m_surf.destroyAll(device);
     m_built = false;
 }
