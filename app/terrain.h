@@ -128,7 +128,13 @@ struct WorldRiverNode { float x, z, waterY; };
 const WorldRiverNode* worldRiverNodes(uint32_t& count);   // full ribbon polyline
 uint32_t worldRiverCarveCount();                          // leading nodes that carve
 constexpr float kWorldRiverHalfWidth = 34.0f;             // water ribbon half-width (m)
-constexpr float kWorldRiverBedDrop   = 3.2f;              // bed depth below waterY (m)
+// Bank-shelf bed depth below waterY (m) — the shallows a wader stands on.
+constexpr float kWorldRiverBedDrop   = 3.2f;
+// MID-CHANNEL bed depth below waterY (m) — the deep cut down the spine. The
+// owner's exact number: "the water is 18 feet deep" — 5.5 m, mid-channel.
+// Feathers back to the shelf by ~26 m out; waterline, levee and crests
+// unchanged. See terrain.cpp's river carve.
+constexpr float kWorldRiverMidDrop   = 5.5f;
 
 // ---------------------------------------------------------------------------
 // W10 (SWIMMING) — the world WATER SURFACE query. Pure, like the placement API
@@ -373,6 +379,38 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
                       std::vector<x3::rhi::MeshVertex>& outVerts,
                       std::vector<uint32_t>& outIdx,
                       uint32_t* outSurfIdxCount = nullptr);
+
+// ---------------------------------------------------------------------------
+// CORRIDOR x TILE-LOD support (the spawn-road green-wedge class).
+//
+// The carve is part of h(x,z), so mesh VERTICES agree at every LOD — but a
+// coarse tile's TRIANGLES interpolate linearly between samples 2/4 m apart,
+// and a chord across the carve's smoothstep shoulder reconstructs ABOVE the
+// carved datum. buildTileMeshAbs re-meshes any coarse cell inside a corridor's
+// influence at FULL resolution (see the block comment there); these are the
+// registry queries + the survey instrument that fix rests on.
+// ---------------------------------------------------------------------------
+// One registered corridor SEGMENT whose influence can reach a queried rect.
+struct TerrainCorridorSegRef {
+    float ax = 0, az = 0, bx = 0, bz = 0;   // segment endpoints (world XZ)
+    float halfWidth = 0;                    // flat floor half-width
+    float reach = 0;                        // halfWidth + falloff
+    float depth0 = 0, depth1 = 0;           // node depths (lerped along the segment)
+};
+// Append every registered corridor segment whose influence (reach) can touch
+// the axis-aligned rect. Pure accelerator: segments it skips provably
+// contribute exactly 0 anywhere inside the rect.
+void terrainCorridorSegmentsNearRect(float minX, float minZ, float maxX, float maxZ,
+                                     std::vector<TerrainCorridorSegRef>& out);
+
+// SURVEY INSTRUMENT: build the tile's REAL mesh at `lod` and measure the worst
+// (meshSurfaceY - trueFieldY) over a 0.5 m sample grid restricted to corridor
+// FLAT FLOOR (>= 0.5 m inside halfWidth, carve depth > 0.3 m) — i.e. how far
+// terrain mesh stands ABOVE the carved datum where pavement lives. 0 when no
+// corridor touches the tile. outWorstX/Z (optional) receive the offender.
+float terrainTileCorridorWedge(const TerrainConfig& cfg, float originX, float originZ,
+                               TerrainLod lod,
+                               float* outWorstX = nullptr, float* outWorstZ = nullptr);
 
 // One terrain tile: addressable by SIGNED grid coords (gx,gz), owns its 3 LOD
 // render meshes, a collision body, and the scene entity that draws the active

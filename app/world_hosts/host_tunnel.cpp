@@ -24,6 +24,7 @@
 #include <memory>
 #include "../road_network.h"
 #include "../river_bridge.h"
+#include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
 #include "../vehicle.h"
 #include "../mesh_prims.h"
 #include "../asset_root.h"
@@ -928,6 +929,37 @@ int hostTunnel(HostContext& hc) {
     float jakeCamToast = 0.0f;       // seconds left on the F1 mode banner
 
     x3::game::Player onFoot;
+    // W10 SWIMMING, wired (owner: "we need water.. you can swim in"). The
+    // Player has carried the full swim state machine since W10 — buoyancy
+    // spring, swim-along-look, Space-up/Ctrl-down, enter/exit hysteresis — it
+    // just never got a water feed in THIS host, so Jake hiked the riverbed
+    // dry under the water table.
+    //
+    // THE FEED IS THE SURFACE HE CAN SEE. This host draws ONE flat Gerstner
+    // plane at the bridge plan's waterY, while worldWaterLevelAt reports the
+    // spline's sloping level — 0.26 m below the plane a mere 32 m downstream.
+    // Fed the spline, he treads with his head under the drawn surface. So
+    // inside the bridge reach the PLANE owns the answer; beyond it (and in
+    // the ocean) the spline query stands. Same clamp the fish got.
+    {
+        const bool  rOn = riverOn && riverRoad.plan.ok;
+        const float rcx = rOn ? riverRoad.plan.cx : 0.0f;
+        const float rcz = rOn ? riverRoad.plan.cz : 0.0f;
+        const float rwy = rOn ? riverRoad.plan.waterY : 0.0f;
+        // The +0.35 m bias: the Player's buoyancy rests the EYE just above the
+        // fed surface, which leaves the drawn head bobbing right AT the
+        // waterline — reading as submerged whenever a crest rolls through. A
+        // treading human rides higher than his eye line; reporting the surface
+        // a hand-span HIGH makes the buoyancy lift him that much further, so
+        // head + shoulders clear the drawn plane.
+        onFoot.setWaterQuery([rOn, rcx, rcz, rwy](float x, float z) {
+            const float w = x3::game::worldWaterLevelAt(x, z);
+            if (!rOn || w <= x3::game::kWorldWaterDry + 1.0f) return w;
+            const float dx = x - rcx, dz = z - rcz;
+            if (dx * dx + dz * dz < 260.0f * 260.0f) return rwy + 0.35f;
+            return w;
+        });
+    }
     bool  driving      = true;
     bool  footSpawned  = false;
     float parkedAt[3]  = { 0, 0, 0 };   // where the car was left, for the re-entry prompt
@@ -1202,6 +1234,52 @@ int hostTunnel(HostContext& hc) {
         texNos    = loadPng("gauge_nos.png");   // 32-state curved fill atlas (8x4)
     }
 
+    // ==== RIVER LIFE (W-RIVER): fish + two AI speedboats on the bridge reach.
+    // Everything reused: FishSystem, BoatDemo, the crowd-skin driver pattern,
+    // submitParticles wakes, startLoop3D outboards. See app/river_life.h.
+    x3::game::RiverLife riverLife;
+    if (riverOn && riverRoad.plan.ok)
+        riverLife.build(scene, *device, *phys,
+                        audioOn ? audio.get() : nullptr, riverRoad.plan);
+
+    // THE RIVER HOLDS WATER — one lambda, BOTH render paths. The water pass
+    // used to be armed only inside the interactive loop, so every headless
+    // capture (the proof shots included) rendered a dry river: the gate was
+    // fine, the pass was never enabled on that path at all. Tone per the
+    // owner's eyes-on: "too bright... reject from echo harbor" — a river under
+    // this sun is dark blue-green with a modest glint, so deep/shallow go
+    // darker+greener than the sea defaults, specular drops 12->5 and the
+    // fresnel floor 0.02->0.012 (less sky mirror face-on). Caustics ride along
+    // (the canon undersea pass) so the deepened bed reads THROUGH the surface.
+    auto applyRiverWater = [&](float t) {
+        if (!(riverOn && riverRoad.plan.ok)) return;
+        x3::rhi::IRenderDevice::WaterParams wpr{};
+        wpr.enabled   = true;
+        wpr.seaLevel  = riverRoad.plan.waterY;
+        wpr.time      = t;
+        wpr.amplitude = 0.16f;          // a river swell, not an ocean — and low
+                                        // enough that a treading head clears
+                                        // the crests instead of strobing them
+        wpr.steepness = 0.35f;
+        wpr.waveLength= 9.0f;
+        wpr.speed     = 0.8f;
+        wpr.deepColor[0]    = 0.008f; wpr.deepColor[1]    = 0.030f; wpr.deepColor[2]    = 0.038f;
+        wpr.shallowColor[0] = 0.050f; wpr.shallowColor[1] = 0.150f; wpr.shallowColor[2] = 0.140f;
+        wpr.specular  = 5.0f;
+        wpr.fresnel   = 0.012f;
+        // See-through shallows (WaterParams::clarity): the bed, the fish and a
+        // swimmer's body read THROUGH face-on water; depth + grazing angles
+        // close it back to a surface. 0 would be the legacy opaque plane.
+        wpr.clarity   = 0.60f;
+        wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
+        device->setWaterParams(wpr);
+        x3::rhi::IRenderDevice::CausticsParams cp{};
+        cp.enabled = true; cp.waterY = riverRoad.plan.waterY;
+        cp.time = t; cp.intensity = 0.85f;
+        device->setCaustics(cp);
+    };
+    float riverWaterClock = 0.0f;
+
     phys->optimizeBroadphase();
 
     const float dt = 1.0f / 60.0f;
@@ -1213,6 +1291,11 @@ int hostTunnel(HostContext& hc) {
         const std::string dir = hc.tunnelShot ? hc.tunnelShotDir : std::string("docs/screenshots/tunnel");
         fs::create_directories(dir, ec);
 
+        // SWIM-PROOF HOOKS (X3_SHOT_SWIM): the staged swimmer ticks the Player
+        // and draws Jake through these; empty for every ordinary proof shot.
+        std::function<void(float)> shotTick;
+        std::function<void(const x3::rhi::FrameContext&)> shotDraw;
+
         auto settleAndGrab = [&](const float cam[5], const std::string& out) -> bool {
             // The streamer only enqueues the full ring on a focus-tile crossing
             // (host_cliffs.cpp's trick): nudge the focus on frame 1, then hold.
@@ -1221,7 +1304,19 @@ int hostTunnel(HostContext& hc) {
                 glfwPollEvents();
                 const float fx = (i == 1) ? cam[0] + 40.0f : cam[0];
                 streamer.update(scene, *device, *phys, fx, cam[2]);
+                // THE RIVER HOLDS WATER IN CAPTURES TOO. This settle loop never
+                // armed the water pass (it lived only in the interactive loop),
+                // which is why every proof shot showed a dry river no matter
+                // what the runtime gate said. Same lambda, same tone, plus the
+                // boats/fish so the capture proves the LIVING river.
+                riverWaterClock += dt;
+                applyRiverWater(riverWaterClock);
+                riverLife.prePhysics(dt);
+                if (shotTick) shotTick(dt);   // staged swimmer BEFORE the step
                 phys->step(dt);
+                riverLife.postPhysics(dt, scene, *device, *phys,
+                                      audioOn ? audio.get() : nullptr,
+                                      x3::phys::Vec3{ cam[0], cam[1], cam[2] });
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 68.0f);
 
                 // THE CAPTURE LOOP NEEDS THE WEATHER TOO. This settle loop is
@@ -1259,6 +1354,8 @@ int hostTunnel(HostContext& hc) {
                     scene.render(*device, frame);
                     trees.draw(*device, frame);
                     if (carBuilt) car.render(frame);
+                    riverLife.render(*device, frame, scene);
+                    if (shotDraw) shotDraw(frame);   // the staged swimmer
                     if (weatherOn) precip.submit(*device, frame);
                 }
 
@@ -1409,6 +1506,167 @@ int hostTunnel(HostContext& hc) {
             ok = jakeSeq("18_cam_near",       80, 1, 0, false, -1, kFace, nullptr, 1) && ok;
             placeJake(0.0f);
             ok = jakeSeq("19_cam_far",        80, 1, 0, false, -1, kFace, nullptr, 2) && ok;
+        }
+
+        // ==== SWIM PROOF (X3_SHOT_SWIM=1) — Jake treading mid-channel, then
+        // FULLY SUBMERGED over the 18 ft bed. The REAL Player swim state (the
+        // same W10 machine the interactive path runs, water-fed above) and the
+        // REAL Jake rig, staged on the headless path so the gate has eyes.
+        if (const char* se = std::getenv("X3_SHOT_SWIM");
+            se && se[0] == '1' && riverOn && riverRoad.plan.ok) {
+            // Mid-channel, ~32 m along the reach from the deck (out from under
+            // the bridge shadow): the reach axis is the deck axis rotated 90°.
+            const auto& plan = riverRoad.plan;
+            const float rdx = plan.dirZ, rdz = -plan.dirX;   // river direction
+            const float sx = plan.cx + rdx * 32.0f;
+            const float sz = plan.cz + rdz * 32.0f;
+            const float wy = plan.waterY;
+
+            // Jake's rig — the SAME shared-module load the interactive exit
+            // runs (W-RIVER's hand-rolled Skinner recipe + |restY| yFix are
+            // gone: the baked asset has feet at origin, so the module draws
+            // at the capsule's feet with ZERO compensation, land or water;
+            // Swim/SwimIdle come from the measured clip table).
+            jakeTried = true;
+            jake.load(*device, x3::game::assetRoot() + "/rigged_glb",
+                      "Jake_44_actions.glb", x3::game::jakeClipTable());
+            onFoot.spawn(*phys, sx, wy + 0.6f, sz);   // drops in, swim state takes him
+            const float downstreamYaw = std::atan2(rdz, rdx);   // camYaw convention
+            bool diveHeld = false;
+            shotTick = [&](float d) {
+                x3::game::PlayerInput pin;            // no move — tread / sink only
+                pin.diveHeld = diveHeld;
+                onFoot.update(pin, d, *phys);
+                x3::game::AnimatedCharacter::Intent ji;   // idle intent
+                jake.update(onFoot, ji, downstreamYaw, d, *phys, *device);
+            };
+            shotDraw = [&](const x3::rhi::FrameContext& fr) {
+                jake.draw(fr, *device, onFoot, 0.0f, 0.0f, true);
+            };
+
+            // PRE-SETTLE: he spawns just over the surface and drops in; the
+            // swim state's buoyancy then floats him to rest at the surface.
+            // Give that 6 seconds of physics BEFORE the first framed capture,
+            // or the shot catches him mid-sink standing on the bed.
+            for (int i = 0; i < 360; ++i) { shotTick(dt); phys->step(dt); }
+            {   // The gate's instruments, not vibes: where is he, is the water
+                // query wet there, and did the swim state actually engage?
+                const x3::phys::Vec3 ft = onFoot.feet();
+                const float wq = x3::game::worldWaterLevelAt(ft.x, ft.z);
+                char sb[224];
+                std::snprintf(sb, sizeof(sb),
+                    "[swim-shot] feet=(%.1f, %.2f, %.1f) waterQ=%.2f (plane %.2f) "
+                    "depth=%.2f swimming=%d",
+                    ft.x, ft.y, ft.z, wq, wy,
+                    (wq > x3::game::kWorldWaterDry + 1.0f) ? wq - ft.y : -1.0f,
+                    onFoot.swimming() ? 1 : 0);
+                x3::logInfo(sb);
+            }
+
+            // SHOT A — treading at the surface: head/shoulders above, the body
+            // refracting below. Framed off his LIVE feet, chest at the
+            // waterline in the image center.
+            {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                const float px = ft.x - rdz * 4.5f, pz = ft.z + rdx * 4.5f;
+                const float yawA = std::atan2(ft.z - pz, ft.x - px);
+                const float camY = wy + 1.0f;
+                const float pitchA = std::atan2((wy - 0.2f) - camY, 4.5f);
+                const float camA[5] = { px, camY, pz, yawA, pitchA };
+                ok = settleAndGrab(camA, dir + "/10_swim_tread.png") && ok;
+            }
+            // SHOT B — fully submerged: dive held, camera UNDER the surface
+            // beside him — bed ~5.5 m below, surface overhead, green fog on
+            // (the interactive camera block owns the fog edge; this staged
+            // path sets it directly, then clears it).
+            {
+                diveHeld = true;
+                x3::rhi::IRenderDevice::FogParams fp{};
+                fp.enabled  = true;
+                fp.color[0] = 0.010f; fp.color[1] = 0.045f; fp.color[2] = 0.055f;
+                fp.density  = 0.055f; fp.start = 0.15f; fp.maxOpacity = 0.96f;
+                device->setFog(fp);
+                // Let the DIVE finish before framing: 240 held frames take him
+                // to the bed, THEN the camera is aimed at where he actually is
+                // (mid-column, tipped to hold him, the bed and the caustics in
+                // one frame with the surface underside closing the top).
+                for (int i = 0; i < 240; ++i) { shotTick(dt); phys->step(dt); }
+                const x3::phys::Vec3 ft = onFoot.feet();
+                char sb[192];
+                std::snprintf(sb, sizeof(sb),
+                    "[swim-shot] after dive feet=(%.1f, %.2f, %.1f) bedHere=%.2f",
+                    ft.x, ft.y, ft.z,
+                    x3::game::terrainHeightAtWorld(ft.x, ft.z));
+                x3::logInfo(sb);
+                const float px = ft.x - rdz * 7.0f, pz = ft.z + rdx * 7.0f;
+                const float yawB = std::atan2(ft.z - pz, ft.x - px);
+                const float camBY = wy - 1.6f;
+                const float pitchB = std::atan2((ft.y + 1.0f) - camBY, 7.0f);
+                const float camB[5] = { px, camBY, pz, yawB, pitchB };
+                {   char cb2[160];
+                    std::snprintf(cb2, sizeof(cb2),
+                        "[swim-shot] camB=(%.1f, %.2f, %.1f) yaw=%.3f pitch=%.3f",
+                        camB[0], camB[1], camB[2], camB[3], camB[4]);
+                    x3::logInfo(cb2); }
+                ok = settleAndGrab(camB, dir + "/11_swim_submerged.png") && ok;
+                {   // CONTROL: same aim from ABOVE the surface — isolates
+                    // "not drawn at the bed" from "not visible to an
+                    // underwater camera".
+                    const float cY2 = wy + 3.0f;
+                    const float pitch2 = std::atan2((ft.y + 1.0f) - cY2, 7.0f);
+                    const float camB2[5] = { px, cY2, pz, yawB, pitch2 };
+                    ok = settleAndGrab(camB2, dir + "/11b_dive_above.png") && ok;
+                }
+                diveHeld = false;
+
+                // SHOT C — THE FISH, from under the surface: aimed at the LIVE
+                // center of the bream school (the schools drift downstream
+                // through all this settling — the seed point is long stale).
+                // Real pose-baked fish, the caustic bed and the green column.
+                for (uint32_t si = 0; si < riverLife.fish().schoolCount(); ++si) {
+                    const x3::game::FishSchool& sc = riverLife.fish().school(si);
+                    if (sc.species != x3::game::FishSpecies::Bream) continue;
+                    const float fsY = std::min(
+                        x3::game::worldWaterLevelAt(sc.cx, sc.cz), wy);
+                    const float fpx = sc.cx - rdz * 6.0f, fpz = sc.cz + rdx * 6.0f;
+                    const float yawC = std::atan2(sc.cz - fpz, sc.cx - fpx);
+                    const float camCY = fsY - 1.6f;
+                    const float pitchC = std::atan2((fsY - 2.6f) - camCY, 6.0f);
+                    const float camC[5] = { fpx, camCY, fpz, yawC, pitchC };
+                    ok = settleAndGrab(camC, dir + "/12_fish_school.png") && ok;
+                    break;
+                }
+
+                x3::rhi::IRenderDevice::FogParams off{};
+                device->setFog(off);
+
+                // SHOT D — A SPEEDBOAT MID-RUN WITH ITS WAKE: quarter-view
+                // camera placed abeam of where the LIVE hull will be mid-way
+                // through the settle (heading * speed lead — a fixed camera
+                // cannot chase an 8 m/s boat, so it ambushes the lane).
+                if (riverLife.boatCount() > 0) {
+                    const uint32_t bi = riverLife.boatCount() > 1 ? 1u : 0u;
+                    float bp[3]; riverLife.boatPos(bi, bp);
+                    const float hd = riverLife.boatHeading(bi);
+                    const float sp2 = std::max(4.0f, riverLife.boatSpeed(bi));
+                    // HIGH quarter view: wide enough that waypoint turns and
+                    // prediction error keep the hull in frame, and the foam
+                    // trail reads as a LINE behind it.
+                    const float lead = std::min(30.0f, sp2 * 1.6f);
+                    const float tx2 = bp[0] + std::cos(hd) * lead;
+                    const float tz2 = bp[2] + std::sin(hd) * lead;
+                    const float cx2 = tx2 - std::cos(hd) * 18.0f - std::sin(hd) * 8.0f;
+                    const float cz2 = tz2 - std::sin(hd) * 18.0f + std::cos(hd) * 8.0f;
+                    const float camDY = wy + 16.0f;
+                    const float dh = std::sqrt(18.0f * 18.0f + 8.0f * 8.0f);
+                    const float yawD = std::atan2(tz2 - cz2, tx2 - cx2);
+                    const float pitchD = std::atan2(wy - camDY, dh);
+                    const float camD[5] = { cx2, camDY, cz2, yawD, pitchD };
+                    ok = settleAndGrab(camD, dir + "/13_boat_wake.png") && ok;
+                }
+            }
+            shotTick = nullptr;
+            shotDraw = nullptr;
         }
 
         // ==== MAP/HUD PROOF SET (map/HUD wiring) — overview / drive-zoom /
@@ -1565,6 +1823,7 @@ int hostTunnel(HostContext& hc) {
 
         if (carBuilt) car.shutdown();
         trees.shutdown(*device);
+        riverLife.shutdown(audioOn ? audio.get() : nullptr);
         tunnel.shutdown(*device, *phys);
         for (auto& w : tourBores) w->shutdown(*device, *phys);
         // Shared across every bore, so it is released ONCE here rather than by
@@ -1908,6 +2167,7 @@ int hostTunnel(HostContext& hc) {
             if (pf.valid) {
                 scene.render(*device, pf);
                 if (carBuilt) car.render(pf);
+                riverLife.render(*device, pf, scene);   // boats stay visible paused
                 shell.draw(pf, fdt);
             }
             device->endFrame(pf);
@@ -1920,27 +2180,9 @@ int hostTunnel(HostContext& hc) {
         // is the most interesting thing the model does and nobody is going to
         // sit through twenty-four hours to watch the desert cool off.
         // ---- THE RIVER HAS WATER (Tim: "Can we pour the water in now").
-        if (riverOn && riverRoad.plan.ok) {
-            static float waterClock = 0.0f;
-            waterClock += fdt;
-            x3::rhi::IRenderDevice::WaterParams wpr{};
-            wpr.enabled   = true;
-            wpr.seaLevel  = riverRoad.plan.waterY;
-            wpr.time      = waterClock;
-            wpr.amplitude = 0.28f;          // a river swell, not an ocean
-            wpr.steepness = 0.35f;
-            wpr.waveLength= 9.0f;
-            wpr.speed     = 0.8f;
-            // DEEP DARK BLUE (Tim: "MORE DEEPER DARKER BLUE WATER") — linear
-            // river tones: near-black navy deep, restrained slate shallow,
-            // glint dialed down so the surface reads water, not white sheet.
-            wpr.deepColor[0] = 0.004f; wpr.deepColor[1] = 0.016f; wpr.deepColor[2] = 0.045f;
-            wpr.shallowColor[0] = 0.03f; wpr.shallowColor[1] = 0.09f; wpr.shallowColor[2] = 0.13f;
-            wpr.specular = 6.0f;
-            wpr.fresnel  = 0.015f;
-            wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
-            device->setWaterParams(wpr);
-        }
+        // One lambda with the headless path — same tone, same clock shape.
+        riverWaterClock += fdt;
+        applyRiverWater(riverWaterClock);
         if (weatherOn) {
             weather.tick(fdt);
             // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
@@ -2246,8 +2488,28 @@ int hostTunnel(HostContext& hc) {
             pin.jumpPressed = spaceNow && !spaceWas;
             pin.jumpHeld    = spaceNow;
             spaceWas = spaceNow;
+            // W10 swim channels: Space held strokes UP (jumpHeld above), Ctrl/C
+            // held dives. Only read while the swim state is active, so dry-land
+            // movement is untouched.
+            pin.diveHeld = kd(GLFW_KEY_LEFT_CONTROL) || kd(GLFW_KEY_C);
             pin.lookDX = ddx; pin.lookDY = ddy;
             onFoot.update(pin, fdt, *phys);
+
+            // COMBAT ONE-SHOTS: LMB = hooks combo, RMB = sweep kick (owner:
+            // "Punch and kick do not work" — they were never wired). The
+            // module's playOneShot layer owns playback (it refuses while one
+            // is active, so mashing can't stutter-restart a combo); the HOST
+            // owns the binding, gated on shell input so clicking the console
+            // does not throw punches. Animation-only: damage lands with the
+            // campaign melee system (task 20).
+            if (shell.inputEnabled()) {
+                static bool lmbWas = false, rmbWas = false;
+                const bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                const bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+                if (lmb && !lmbWas)      jake.playOneShot("Backflip_and_Hooks");
+                else if (rmb && !rmbWas) jake.playOneShot("Backflip_Sweep_Kick");
+                lmbWas = lmb; rmbWas = rmb;
+            }
 
             // Everything the rig needs — the CONTACT LAW feet clamp, facing,
             // clip selection (walk/run/backpedal/strafe/turn/jump/fall/idle
@@ -2403,6 +2665,7 @@ int hostTunnel(HostContext& hc) {
         float vp[3] = { startPos[0], startPos[1], startPos[2] };
         if (carBuilt) car.chassisPos(vp);
         streamer.update(scene, *device, *phys, vp[0], vp[2]);
+        riverLife.prePhysics(fdt);            // boat autopilot BEFORE the step
         phys->step(fdt);
         if (carBuilt) car.postStep(fdt);
         // RE-SAMPLE THE CHASE TARGET AFTER THE STEP.
@@ -2419,6 +2682,16 @@ int hostTunnel(HostContext& hc) {
         // needs the current pose.
         if (carBuilt) car.chassisPos(vp);
         scene.update(*phys);
+        // River life AFTER scene.update (the monster-prop draw contract): boat
+        // postStep, driver pose-follow, fish sim, wakes, outboard emitters.
+        // Focus = whoever the player currently is (car or Jake) so the schools
+        // gate on the real viewpoint.
+        {
+            x3::phys::Vec3 lifeFocus{ vp[0], vp[1], vp[2] };
+            if (!driving && footSpawned) lifeFocus = onFoot.feet();
+            riverLife.postPhysics(fdt, scene, *device, *phys,
+                                  audioOn ? audio.get() : nullptr, lifeFocus);
+        }
 
         // ---- ENGINE NOTE: re-pitch from live RPM, and move the emitter ------
         // pitch tracks RPM across the powerband; vol fades in off idle so a
@@ -2675,6 +2948,29 @@ int hostTunnel(HostContext& hc) {
             } else {
                 device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
             }
+            // UNDERWATER TINT (cheap: the engine's own Beer-Lambert fog pass;
+            // full underwater rendering is another lane's task). The moment
+            // the CAMERA is below the water surface at its own (x,z), the
+            // world greens out over ~18 m instead of rendering dry air with a
+            // white ceiling. Edge-triggered so the fog lever stays free.
+            {
+                const float wSurf = x3::game::worldWaterLevelAt(cx, cz);
+                const bool under = (wSurf > x3::game::kWorldWaterDry + 1.0f) &&
+                                   (cy < wSurf - 0.05f);
+                static bool wasUnder = false;
+                if (under != wasUnder) {
+                    wasUnder = under;
+                    x3::rhi::IRenderDevice::FogParams fp{};
+                    if (under) {
+                        fp.enabled  = true;
+                        fp.color[0] = 0.010f; fp.color[1] = 0.045f; fp.color[2] = 0.055f;
+                        fp.density  = 0.055f;      // ~18 m of green visibility
+                        fp.start    = 0.15f;
+                        fp.maxOpacity = 0.96f;
+                    }
+                    device->setFog(fp);
+                }
+            }
             // Sky visibility does double duty: precipitation gating AND the
             // room-reverb estimate (SND-OPUS item: the tunnel bore should
             // ECHO). One probe, two consumers — zero new raycast kinds.
@@ -2695,6 +2991,7 @@ int hostTunnel(HostContext& hc) {
             scene.render(*device, frame);
             trees.draw(*device, frame);
             if (carBuilt) car.render(frame);
+            riverLife.render(*device, frame, scene);   // boats + drivers + wakes
         }
 
         // ---- WHEEL-SPIN FX: spawn skid marks + smoke when the rears slip ----
@@ -3190,6 +3487,7 @@ int hostTunnel(HostContext& hc) {
     }
 
     if (audioOn) engineNote.shutdown();          // bank voices before the mixer dies
+    riverLife.shutdown(audioOn ? audio.get() : nullptr);   // outboard loops + hulls
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     trees.shutdown(*device);
     tunnel.shutdown(*device, *phys);

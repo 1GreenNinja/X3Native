@@ -44,7 +44,14 @@ static float wrapAngle(float a) {
 //   Straferight        16  RIGHT (-X rig), 0.87 m/s
 //   Leftturn90          5  in-place turn, net hips yaw +89.3 deg (LEFT)
 //   Rightturn90        11  in-place turn, net hips yaw -101.8 deg (RIGHT)
-//   Regular_Jump       38  jump one-shot (owner-approved, kept)
+//   Jump                3  jump one-shot — MEASURED dead in-place (net AND
+//                          stance). Preferred over Regular_Jump (idx 38),
+//                          which keeps a -0.28 m BACK stance drift even
+//                          post-bake; its pre-bake root motion lunged the
+//                          mesh through the chase camera (owner: "jumping
+//                          switches camera to INSIDE JAKE" — f15ce5f1 made
+//                          the same call and deferred the final word to
+//                          this table).
 //   Fall_Down          35  losing-balance fall (held on last frame airborne)
 //   Idle_11            37  idle variation, 1.9 s
 //   Swim / SwimIdle 17/18  in-place; selection ready for the river lane
@@ -58,7 +65,7 @@ CharacterClipTable jakeClipTable() {
     t.idle        = "Idle";
     t.walk        = "Walking";          t.walkSpeed  = 0.2f;  // blend-map m/s
     t.run         = "Running";          t.runSpeed   = 2.0f;  // (host-proven)
-    t.jump        = "Regular_Jump";
+    t.jump        = "Jump";            // in-place (see measurement above)
     t.walkBack    = "Walkingbackwards"; t.walkBackSpeed  = 1.26f;
     t.runBack     = "Runbackwards";     t.runBackSpeed   = 3.16f;
     t.strafeLeft  = "Strafeleft";       t.strafeLeftSpeed  = 1.59f;

@@ -1220,6 +1220,15 @@ public:
         // nothing left to reveal. Negative red (the default) keeps the historic
         // sky-fade behavior byte-for-byte, for every world that has no far mesh.
         float horizonColor[3] = { -1.0f, -1.0f, -1.0f };
+        // WATER CLARITY (0..1; default 0 = the historic OPAQUE surface,
+        // byte-identical for every existing world). Above 0 the surface is
+        // alpha-blended over the lit scene: face-on SHALLOW water turns
+        // translucent (you see the bed, the fish, a swimmer's body through
+        // it), going opaque again with depth (the shallow->deep gradient) and
+        // at grazing angles (Fresnel — distant water stays a mirror). This is
+        // what makes a river read as WATER instead of a painted ribbon: the
+        // shoreline shows its bed, and life under the surface is visible.
+        float clarity = 0.0f;
     };
     // Set the active water parameters for subsequent frames (cached + re-applied
     // each frame, like setSkyParams). Calling with enabled=false disables water.

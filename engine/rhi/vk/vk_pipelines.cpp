@@ -2074,7 +2074,18 @@ bool VulkanRenderDevice::createWater() {
         dss.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
         VkPipelineColorBlendAttachmentState cba{};
-        cba.blendEnable = VK_FALSE; // opaque water (depth-color carries the look)
+        // Alpha blend, driven by WaterParams::clarity. The shader outputs
+        // alpha 1.0 whenever clarity is 0 (every legacy world), and
+        // src*1 + dst*0 is bitwise the old opaque write — so the default look
+        // is byte-identical while a clarity>0 world gets translucent shallows
+        // (the bed, the fish, a swimmer visible THROUGH face-on water).
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
         cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
         VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
         cb.attachmentCount = 1; cb.pAttachments = &cba;
