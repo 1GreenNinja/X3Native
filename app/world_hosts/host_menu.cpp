@@ -413,6 +413,18 @@ void WorldGameMenu::drawLighting(float w, float h) {
     auto pushNow = [&] { if (m_dev) pushLiveHostCVarsToDevice(con, *m_dev); };
     auto toggleCVar = [&](const char* label, const char* cvar, int rowI) {
         const bool on = con.getInt(cvar) != 0;
+        // X3_MENU_DEBUG=1 prints what each row READ, so "the pill disagrees
+        // with the cvar" is one run to settle instead of a guessing loop.
+        // (Receipt: it settled exactly that, and the answer was that the
+        // capture had been written into the RUN directory, not the repo — the
+        // panel was right all along. Read the fresh file, not the old path.)
+        static const bool kMenuDbg = std::getenv("X3_MENU_DEBUG") != nullptr;
+        if (kMenuDbg) {
+            char tb[160];
+            std::snprintf(tb, sizeof(tb), "[menu-dbg] row %d %-22s %s -> getString '%s' getInt %d",
+                          rowI, label, cvar, con.getString(cvar).c_str(), con.getInt(cvar));
+            x3::logInfo(tb);
+        }
         if (m_ui.toggle(label, on, L.rx, L.rowY(rowI), L.rw, L.rh)) {
             con.set(cvar, on ? "0" : "1");
             con.print(std::string(cvar) + " = " + (on ? "0" : "1"));

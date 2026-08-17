@@ -2492,6 +2492,22 @@ int hostTunnel(HostContext& hc) {
                 WorldGameMenu uiMenu;
                 uiMenu.init(uiCon.get(), device);
                 uint32_t shw = 0, shh = 0; device->hudSize(shw, shh);
+                // RECEIPT: the console state this still is photographing. A
+                // capture can be cropped and a pill misread; the log cannot —
+                // and every value the LIGHTING panel draws comes from here, so
+                // this line is the check that the panel is not lying.
+                {
+                    char lb[320];
+                    std::snprintf(lb, sizeof(lb),
+                        "[tunnel] X3_SHOT_UI=%s staged console: r_ddgi %d | r_ddgi_intensity %.2f "
+                        "| r_ddgi_rays %d | r_rtreflections %d | r_rtao %d | r_ssao %d | r_bloom %d "
+                        "| r_exposure %.2f | wx %s",
+                        shotUi, uiCon->getInt("r_ddgi"), (double)uiCon->getFloat("r_ddgi_intensity"),
+                        uiCon->getInt("r_ddgi_rays"), uiCon->getInt("r_rtreflections"),
+                        uiCon->getInt("r_rtao"), uiCon->getInt("r_ssao"), uiCon->getInt("r_bloom"),
+                        (double)uiCon->getFloat("r_exposure"), uiCon->getString("wx").c_str());
+                    x3::logInfo(lb);
+                }
 
                 if (std::strcmp(shotUi, "preset") == 0) {
                     // THE BEFORE/AFTER PAIR — same camera, the ONLY delta is
@@ -2553,6 +2569,19 @@ int hostTunnel(HostContext& hc) {
                     };
                     ok = settleAndGrab(cam, out2);
                     shotDraw = nullptr;
+                    {   // POST receipt: paired with the PRE line above. A panel
+                        // that draws something the console does not say is the
+                        // exact defect this pair exists to catch.
+                        char lb2[192];
+                        std::snprintf(lb2, sizeof(lb2),
+                            "[tunnel] X3_SHOT_UI=%s console AFTER: r_ddgi %d | r_rtao %d "
+                            "| r_ssao %d | r_bloom %d | wx %s | wx_precip_mult %.2f",
+                            shotUi, uiCon->getInt("r_ddgi"), uiCon->getInt("r_rtao"),
+                            uiCon->getInt("r_ssao"), uiCon->getInt("r_bloom"),
+                            uiCon->getString("wx").c_str(),
+                            (double)uiCon->getFloat("wx_precip_mult"));
+                        x3::logInfo(lb2);
+                    }
                 }
             } else {
                 const std::string out = screenshot ? screenshotPath : std::string("w_tunnel.png");

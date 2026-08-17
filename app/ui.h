@@ -247,6 +247,12 @@ private:
     int  m_widgetIndex    = 0;   // running index assigned to focusable widgets this frame
     int  m_lastFocusCount = 0;   // focusable widgets emitted last completed frame
     bool m_mouseMovedFocus= false; // a hover claimed focus this frame
+    // DRAG CAPTURE (sliderEx). A slider claims the pointer on the press inside
+    // its row and KEEPS it until the button comes up, so a drag that wanders
+    // off the 34 px row — which every real drag does — still moves the value
+    // instead of freezing at the row edge. Persists across frames; cleared in
+    // begin() the moment the mouse is no longer down. -1 = nobody holds it.
+    int  m_dragWidget     = -1;
 };
 
 // ===========================================================================

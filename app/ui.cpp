@@ -53,6 +53,9 @@ void UiContext::begin(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
 
     m_widgetIndex     = 0;
     m_mouseMovedFocus = false;
+    // The pointer goes back to nobody as soon as the button is up (see
+    // m_dragWidget in ui.h — sliderEx's drag capture).
+    if (!m_in.mouseDown) m_dragWidget = -1;
 }
 
 void UiContext::end() {
@@ -262,7 +265,13 @@ bool UiContext::sliderEx(const char* label, float& value, float minV, float maxV
     const int idx = m_widgetIndex++;
 
     const bool hovered = pointIn(x, y, w, h);
-    if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
+    // DRAG CAPTURE: the press inside the row claims the pointer; the claim
+    // survives until mouseDown goes false (cleared in begin()). Without it a
+    // drag dies the instant the cursor leaves a 34 px row, which is the first
+    // thing a hand does when it pulls RAIN from 0 to 10.
+    if (hovered && m_in.mousePressed && m_dragWidget < 0) m_dragWidget = idx;
+    const bool dragging = (m_dragWidget == idx);
+    if (hovered || dragging) { m_focus = idx; m_mouseMovedFocus = true; }
     const bool hot = (m_focus == idx);
 
     if (maxV <= minV) maxV = minV + 1.0f;
@@ -308,8 +317,12 @@ bool UiContext::sliderEx(const char* label, float& value, float minV, float maxV
     quad(knobX, knobY, knobW, knobH, kColBtnEdge);
 
     // ---- Interaction: drag snaps to `step`; keys nudge by one step ----------
+    // `dragging || (hovered && ...)`: the second half is the FIRST frame of a
+    // press whose mousePressed edge the caller never raised (the staged capture
+    // holds the button down across every settle frame), so a held cursor still
+    // reads as a drag.
     float nv = v;
-    if (hovered && m_in.mouseDown) {
+    if ((dragging || hovered) && m_in.mouseDown) {
         float t = (m_in.mouseX - trackX) / trackW;
         if (t < 0.0f) t = 0.0f; if (t > 1.0f) t = 1.0f;
         nv = minV + std::round(t * (maxV - minV) / step) * step;
