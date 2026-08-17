@@ -86,6 +86,10 @@ The sketch's ladder-switchback town, made real.
 
 ### LANE 6 — W-FACTORY: the chocolate factory (from #35)
 "A chocolate factory to win tickets to." The hero landmark.
+**HISTORY, owner's words: a chocolate factory was already built once and "it was
+pure pure pure SLOP." Do NOT import or reference the old one — this build starts
+from the packs under NO_SLOP law (eyes-on, textured, real massing) and must be
+the anti-slop proof piece.**
 - Distinct silhouette on the skyline (sketch-consistent placement — NE forest edge
   or riverside): big massing, smokestacks with particle smoke, emissive signage at
   dusk, gated drive, fence line. Pack-mined industrial kit (1900s Industrial /
