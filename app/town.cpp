@@ -990,8 +990,13 @@ bool Town::showcaseCamera(int which, float out[5]) const {
         const float nx = st.tz, nz = -st.tx;      // left normal
         // A third of the way to the kerb on the hero's side: still inside the
         // keep-out, so still guaranteed clear of every plot.
-        const float lat = kStreetKeepOutM * 0.34f;
-        out[0] = st.x - nx * lat; out[2] = st.z - nz * lat;
+        // Stand on the FAR side of the centreline from the hero. Sitting on
+        // the hero's own side put the camera on top of the road's jersey-wall
+        // /guardrail furniture, which filled the left third of the frame with a
+        // pale slab a couple of metres from the lens. Across the street is also
+        // simply the right place to photograph a facade from.
+        const float lat = kStreetKeepOutM * 0.42f;
+        out[0] = st.x + nx * lat; out[2] = st.z + nz * lat;
         out[1] = st.y + 2.3f;
         // Look back down the street and across to the hero front, so the lit
         // panes, the lamps and the pavement they light are all in frame.
