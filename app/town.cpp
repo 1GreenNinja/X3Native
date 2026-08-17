@@ -389,7 +389,12 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // shop grounded on it disappears behind its own bank. Clamp the plot to
         // the street: never more than 1.2 m above the datum, free to follow the
         // ground DOWN (a hillside town steps down, it does not levitate).
-        const float groundY = std::min(lo, datumY + 1.2f);
+        // Clamped BOTH ways. Round two clamped only the upper side and the
+        // square's hero landed in a 9 m hollow below its own street (receipt:
+        // the shop-front capture framed a roofline from above). A main street
+        // is a graded pad: nothing more than 1.2 m above the pavement it fronts,
+        // nothing more than 1.6 m below it.
+        const float groundY = std::max(std::min(lo, datumY + 1.2f), datumY - 1.6f);
         // THE BURIED-BUILDING FIX (receipt: the first capture round, where only
         // roof spikes showed above the grass). The HouseForge prefabs put their
         // ORIGIN at the ground-FLOOR plane with 3-5 m of foundation/rock plinth

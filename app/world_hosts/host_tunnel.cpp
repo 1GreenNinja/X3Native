@@ -792,7 +792,7 @@ int hostTunnel(HostContext& hc) {
         // applyRiverWater's seaLevel; see RoadTrees::build minBenchY).
         const float benchDryY = (riverOn && riverRoad.plan.ok)
                               ? riverRoad.plan.waterY + 0.3f : -1.0e9f;
-        trees.build(*device, route, camKeepOut, benchDryY);
+        trees.build(*device, route, camKeepOut, benchDryY, phys.get());
     }
 
     // ==== THE SMALL MOUNTAIN TOWN (W-TOWN) ==================================
