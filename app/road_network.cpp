@@ -3042,6 +3042,96 @@ RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
     return out;
 }
 
+namespace {
+// ---------------------------------------------------------------------------
+// TILE-LOD WEDGE AUDIT over a road's pavement — the spawn-road green strip.
+// Builds the REAL tile mesh at every LOD over the node window [i0..i1], rasters
+// the emitted surface triangles at 0.5 m, keeps samples on the PAVEMENT
+// (|lat| <= kPavedHalfM against this spec's polyline), and reports the worst
+// (terrainMeshY - roadDatumY) per LOD. Positive = terrain standing above the
+// datum where a slab lies (the strip). Same instrument as --test-tunnelmouth
+// M7, generalised to a RoadSpec.
+// ---------------------------------------------------------------------------
+float roadTileLodWedge(const RoadSpec& spec, const std::vector<float>& roadY,
+                       size_t i0, size_t i1, float perLod[3],
+                       float* outX = nullptr, float* outZ = nullptr) {
+    const size_t n = std::min(spec.x.size(), roadY.size());
+    if (i1 >= n) i1 = n ? n - 1 : 0;
+    if (i0 + 1 >= i1) { perLod[0] = perLod[1] = perLod[2] = 0.0f; return 0.0f; }
+    const TerrainConfig& wcfg = worldTerrainConfig();
+    auto datumAt = [&](float x, float z, float& outDatum) {
+        float bestD2 = 1e18f, bestY = 0.0f;
+        for (size_t i = i0; i < i1; ++i) {
+            const float abx = spec.x[i + 1] - spec.x[i], abz = spec.z[i + 1] - spec.z[i];
+            const float len2 = abx * abx + abz * abz;
+            if (len2 < 1e-6f) continue;
+            float t = ((x - spec.x[i]) * abx + (z - spec.z[i]) * abz) / len2;
+            t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+            const float dx = x - (spec.x[i] + abx * t), dz = z - (spec.z[i] + abz * t);
+            const float d2 = dx * dx + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; bestY = roadY[i] + (roadY[i + 1] - roadY[i]) * t; }
+        }
+        if (bestD2 > kPavedHalfM * kPavedHalfM) return false;
+        outDatum = bestY;
+        return true;
+    };
+    float bx0 = 1e9f, bx1 = -1e9f, bz0 = 1e9f, bz1 = -1e9f;
+    for (size_t i = i0; i <= i1; ++i) {
+        bx0 = std::min(bx0, spec.x[i]); bx1 = std::max(bx1, spec.x[i]);
+        bz0 = std::min(bz0, spec.z[i]); bz1 = std::max(bz1, spec.z[i]);
+    }
+    const float pad = spec.halfWidth + 2.0f;
+    bx0 -= pad; bx1 += pad; bz0 -= pad; bz1 += pad;
+    const float ts = wcfg.tileSize;
+    float worstAll = -1e9f;
+    std::vector<x3::rhi::MeshVertex> mv;
+    std::vector<uint32_t> mi;
+    for (int lod = 0; lod < 3; ++lod) {
+        float worstLod = -1e9f;
+        for (float tz = std::floor(bz0 / ts) * ts; tz < bz1; tz += ts) {
+            for (float tx = std::floor(bx0 / ts) * ts; tx < bx1; tx += ts) {
+                uint32_t surfN = 0;
+                mv.clear(); mi.clear();
+                buildTileMeshAbs(wcfg, tx, tz, (TerrainLod)lod, mv, mi, &surfN);
+                for (uint32_t t3 = 0; t3 + 2 < surfN; t3 += 3) {
+                    const auto& A = mv[mi[t3]]; const auto& B = mv[mi[t3 + 1]];
+                    const auto& C = mv[mi[t3 + 2]];
+                    const float minX = std::min(A.pos[0], std::min(B.pos[0], C.pos[0]));
+                    const float maxX = std::max(A.pos[0], std::max(B.pos[0], C.pos[0]));
+                    const float minZ = std::min(A.pos[2], std::min(B.pos[2], C.pos[2]));
+                    const float maxZ = std::max(A.pos[2], std::max(B.pos[2], C.pos[2]));
+                    const float den = (B.pos[0] - A.pos[0]) * (C.pos[2] - A.pos[2]) -
+                                      (C.pos[0] - A.pos[0]) * (B.pos[2] - A.pos[2]);
+                    if (std::fabs(den) < 1e-6f) continue;
+                    for (float sz = std::ceil(minZ / 0.5f) * 0.5f; sz <= maxZ; sz += 0.5f) {
+                        for (float sx = std::ceil(minX / 0.5f) * 0.5f; sx <= maxX; sx += 0.5f) {
+                            const float w0 = ((B.pos[0] - sx) * (C.pos[2] - sz) -
+                                              (C.pos[0] - sx) * (B.pos[2] - sz)) / den;
+                            const float w1 = ((C.pos[0] - sx) * (A.pos[2] - sz) -
+                                              (A.pos[0] - sx) * (C.pos[2] - sz)) / den;
+                            const float w2 = 1.0f - w0 - w1;
+                            if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f) continue;
+                            float datum = 0.0f;
+                            if (!datumAt(sx, sz, datum)) continue;
+                            const float err = (w0 * A.pos[1] + w1 * B.pos[1] + w2 * C.pos[1])
+                                            - datum;
+                            if (err > worstLod) worstLod = err;
+                            if (err > worstAll) {
+                                worstAll = err;
+                                if (outX) *outX = sx;
+                                if (outZ) *outZ = sz;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        perLod[lod] = worstLod;
+    }
+    return worstAll;
+}
+} // namespace
+
 bool runRoadNetworkSelfTest() {
     // SURVEY MODE (X3_RING_SURVEY="r0,r1,..."): dump the graded-cut profile
     // along candidate circles about the ring centre. This is the instrument the
@@ -3491,6 +3581,84 @@ bool runRoadNetworkSelfTest() {
             check(ringR.maxGradeRatePost <= 5.0e-4f * 1.10f &&
                   cx.road.maxGradeRatePost <= 5.0e-4f * 1.10f,
                   "K4c vertical flow holds through the connected network", d);
+
+            // W1 — THE GREEN STRIP (tile-LOD wedge) on the actual SPAWN ROAD.
+            // The owner's screenshots show a strip of terrain knifing through
+            // the spawn-road pavement; it survived lifting the slab 0.07 m
+            // proud because it is a MESH artifact: a Half/Quarter tile
+            // interpolates 2/4 m chords across the carve's smoothstep
+            // shoulder, and with this road's floor only 1 m wider than its
+            // pavement (halfWidth = kPavedHalfM + 1) the chord lands ON the
+            // apron. Audit the first ~1.2 km of the connector (the spawn
+            // stretch) through the REAL tile mesher at all three LODs: the
+            // terrain mesh must sit strictly BELOW the road datum everywhere
+            // a slab lies. (X3_NO_CORRIDOR_LOD_REFINE=1 reproduces the
+            // pre-fix mesh and this gate then measures the strip.)
+            {
+                size_t iEnd = 1;
+                float acc = 0.0f;
+                for (size_t i = 0; i + 1 < cx.spec.x.size() && acc < 1200.0f; ++i) {
+                    const float dx = cx.spec.x[i + 1] - cx.spec.x[i];
+                    const float dz = cx.spec.z[i + 1] - cx.spec.z[i];
+                    acc += std::sqrt(dx * dx + dz * dz);
+                    iEnd = i + 1;
+                }
+                float perLod[3] = { 0, 0, 0 }, wx = 0.0f, wz = 0.0f;
+                const float worst = roadTileLodWedge(cx.spec, cx.roadY, 0, iEnd,
+                                                     perLod, &wx, &wz);
+                std::snprintf(d, sizeof(d),
+                    "terrainMeshY - datumY over %.0f m of spawn road: LOD0 %+.3f, "
+                    "LOD1 %+.3f, LOD2 %+.3f m; worst %+.3f at (%.0f, %.0f) [gate <= -0.02]",
+                    acc, perLod[0], perLod[1], perLod[2], worst, wx, wz);
+                check(worst <= -0.02f,
+                      "W1 no terrain mesh stands above the spawn-road datum at ANY tile LOD", d);
+            }
+
+            // W1b — LOD PARITY over the whole spawn network's corridor floors.
+            // The datum gate above covers the slabs; the STRIP the owner
+            // photographed stands on the corridor floor margin BESIDE the
+            // pavement (the flat floor runs ~1-3 m past the apron) where the
+            // datum has nothing to say — at driving height it occludes the
+            // road and reads as grass through the pavement. The invariant
+            // that kills it: a coarse tile must mesh the corridor floor
+            // IDENTICALLY to Full LOD (the refinement makes them the same
+            // vertices), so the coarse-LOD EXCESS over Full is ~0 everywhere.
+            // Measured pre-fix (X3_NO_CORRIDOR_LOD_REFINE=1): metres.
+            {
+                float ex0 = 1e9f, ex1 = -1e9f, ez0 = 1e9f, ez1 = -1e9f;
+                auto grow = [&](float x, float z) {
+                    ex0 = std::min(ex0, x); ex1 = std::max(ex1, x);
+                    ez0 = std::min(ez0, z); ez1 = std::max(ez1, z);
+                };
+                for (const auto& st : spawn->st) grow(st.x, st.z);
+                for (size_t i = 0; i < cx.spec.x.size(); ++i) grow(cx.spec.x[i], cx.spec.z[i]);
+                const float pad = 40.0f;
+                ex0 -= pad; ex1 += pad; ez0 -= pad; ez1 += pad;
+                const TerrainConfig& wcfg = worldTerrainConfig();
+                const float ts = wcfg.tileSize;
+                float worstExcess = 0.0f, wxp = 0.0f, wzp = 0.0f;
+                float worstPerLod[3] = { 0, 0, 0 };
+                for (float tz = std::floor(ez0 / ts) * ts; tz < ez1; tz += ts) {
+                    for (float tx = std::floor(ex0 / ts) * ts; tx < ex1; tx += ts) {
+                        float w[3] = { 0, 0, 0 };
+                        for (int lod = 0; lod < 3; ++lod) {
+                            w[lod] = terrainTileCorridorWedge(wcfg, tx, tz, (TerrainLod)lod);
+                            worstPerLod[lod] = std::max(worstPerLod[lod], w[lod]);
+                        }
+                        const float excess = std::max(w[1], w[2]) - w[0];
+                        if (excess > worstExcess) {
+                            worstExcess = excess;
+                            wxp = tx + ts * 0.5f; wzp = tz + ts * 0.5f;
+                        }
+                    }
+                }
+                std::snprintf(d, sizeof(d),
+                    "corridor-floor mesh-above-field: LOD0 %.3f, LOD1 %.3f, LOD2 %.3f m; "
+                    "worst coarse-over-Full excess %.3f m near (%.0f, %.0f) [gate 0.02]",
+                    worstPerLod[0], worstPerLod[1], worstPerLod[2], worstExcess, wxp, wzp);
+                check(worstExcess <= 0.02f,
+                      "W1b coarse tiles mesh the corridor floors IDENTICALLY to Full LOD", d);
+            }
 
             // THE RANGE CIRCUIT — registered before the spur so the spur's
             // peak search must avoid it, same order as the host.
