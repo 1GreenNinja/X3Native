@@ -29,6 +29,7 @@
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -371,6 +372,9 @@ inline constexpr TpGrip kTpGripTable[] = {
     // name           fwd     right   down    yaw    pitch  roll   scale
     { "pistol",      0.07f,  0.01f,  0.04f,   0.0f,  -8.0f,  0.0f,  1.00f },
     { "smg",         0.11f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.00f },
+    // The tunnel world's rifle (host_tunnel tunnelRifleRoster: the Railgun
+    // longarm on the Jake_44 rig) — seeded from the smg row (same model).
+    { "rifle",       0.11f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.00f },
     { "shotgun",     0.16f,  0.00f,  0.05f,   0.0f,  -4.0f,  0.0f,  1.05f },
     { "plasma",      0.10f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.00f },
     { "chaingun",    0.18f,  0.00f,  0.06f,   0.0f,  -3.0f,  0.0f,  1.10f },
@@ -397,6 +401,29 @@ inline constexpr const TpGrip& tpGripFor(std::string_view name) {
 // camera-relative viewmodel; in the hand it reads about the same). Multiplied by
 // the per-weapon TpGrip::scaleMul.
 inline constexpr float kTpHeldWeaponScaleMul = 1.0f;
+
+// Compose a grip TRS (column-major 4x4) in the hand-bone LOCAL frame from
+// absolute grip values (meters / degrees; hand-local axes: +X right toward the
+// thumb, +Y up out of the palm, +Z forward down the barrel). Rotation order
+// R = Ry(yaw) * Rx(pitch) * Rz(roll), then the translation. ONE composer,
+// shared by ThirdPersonView::handSocketWorld (campaign 3P) and the tunnel
+// host's module-socketed rifle (AnimatedCharacter::boneWorld consumer), so the
+// two grip frames can never drift apart.
+inline void tpComposeGrip(float forward, float right, float down,
+                          float yawDeg, float pitchDeg, float rollDeg,
+                          float out[16]) {
+    constexpr float d2r = 3.14159265f / 180.0f;
+    const float cy = std::cos(yawDeg * d2r),   sy = std::sin(yawDeg * d2r);
+    const float cp = std::cos(pitchDeg * d2r), sp = std::sin(pitchDeg * d2r);
+    const float cr = std::cos(rollDeg * d2r),  sr = std::sin(rollDeg * d2r);
+    const float Rz[16] = { cr, sr, 0,0,  -sr, cr, 0,0,  0,0,1,0,  0,0,0,1 };
+    const float Rx[16] = { 1,0,0,0,  0, cp, sp, 0,  0,-sp, cp, 0,  0,0,0,1 };
+    const float Ry[16] = { cy,0,-sy,0,  0,1,0,0,  sy,0,cy,0,  0,0,0,1 };
+    float RxRz[16];
+    x3::asset::mulMat4(Rx, Rz, RxRz);
+    x3::asset::mulMat4(Ry, RxRz, out);
+    out[12] = right; out[13] = -down; out[14] = forward;
+}
 
 // ---------------------------------------------------------------------------
 // CROUCH (TASK#46.2) — Jake's 22-clip Mixamo rig has NO crouch clip. We fake a
