@@ -113,6 +113,7 @@
 #include "tunnel_corridor.h"   // x3::game::runTunnelDriveSelfTest (--test-tunneldrive)
 #include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
+#include "factory.h"           // x3::game::runFactorySelfTest (--test-factory)
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
@@ -756,6 +757,13 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running RIVER BRIDGE self-test (the valley road meets the river "
                     "square, the span gap leaves it untouched, the at-grade control drowns)...");
         return x3::game::runRiverBridgeSelfTest() ? 0 : 1;
+    }
+    if (tf.testFactory) {
+        x3::logInfo("running FACTORY self-test (the Glimvale Works is sited in the "
+                    "sketch's NE sector on ground flat enough to build on, its drive "
+                    "reaches the freeway at grade, and five tickets hide in five "
+                    "real places)...");
+        return x3::game::runFactorySelfTest() ? 0 : 1;
     }
     if (tf.testTunnelDrive) {
         x3::logInfo("running TUNNEL DRIVE-THROUGH self-test (real rig through the demo "

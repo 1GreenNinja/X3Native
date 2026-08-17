@@ -69,6 +69,7 @@ add_library(x3app SHARED
     forest.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
+    factory.cpp         # THE GLIMVALE WORKS + the golden-ticket hunt
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
     rifthub.cpp
     rift_depths.cpp
