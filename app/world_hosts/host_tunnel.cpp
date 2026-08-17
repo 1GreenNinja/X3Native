@@ -1568,6 +1568,20 @@ int hostTunnel(HostContext& hc) {
         // Live trims for Jake's placement, so a wrong-facing or sunk rig is a
         // console line to diagnose instead of a rebuild: degrees added to his
         // travel yaw, metres added to his measured ground compensation.
+        con->registerCommand("jake_debug", [&, con](const std::vector<std::string>&) {
+            const x3::phys::Vec3 jf = onFoot.feet();
+            const float gy = x3::game::terrainHeightAtWorld(jf.x, jf.z);
+            const x3::phys::RayHit rh = phys->rayCast(
+                x3::phys::Vec3{ jf.x, jf.y + 40.0f, jf.z },
+                x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 120.0f, x3::phys::Layer::Static);
+            char b[256];
+            std::snprintf(b, sizeof(b),
+                "feet(%.1f, %.2f, %.1f) | terrain %.2f | topmost-static %s%.2f | "
+                "driving=%d spawned=%d",
+                jf.x, jf.y, jf.z, gy, rh.hit ? "" : "(miss) ",
+                rh.hit ? rh.point.y : 0.0f, (int)driving, (int)footSpawned);
+            con->print(b);
+        }, "print Jake's feet vs terrain vs topmost surface — the burial confession");
         con->registerCommand("wx_debug", [&, con](const std::vector<std::string>&) {
             const x3::game::WeatherSample& ws = weather.sample();
             char b[256];
@@ -2118,14 +2132,26 @@ int hostTunnel(HostContext& hc) {
             spaceWas = spaceNow;
             pin.lookDX = ddx; pin.lookDY = ddy;
             onFoot.update(pin, fdt, *phys);
-            {   // FEET-ABOVE-GROUND INVARIANT — not a fix, a LAW enforced per
-                // frame: whatever goes wrong anywhere else, if Jake's feet are
-                // ever below the terrain surface they are put back on it NOW.
-                // One height query per on-foot frame.
+            {   // FEET-ABOVE-GROUND INVARIANT v2. v1 clamped to the TERRAIN
+                // height field — but Jake walks on ROADS, which ride ABOVE the
+                // field on embankments and decks. Fall through pavement into
+                // the gap beneath and v1 was satisfied (feet above dirt) while
+                // he was entombed under the road ("Jake is STILL underground").
+                // v2 clamps to the TOPMOST WALKABLE SURFACE: max of the height
+                // field and a downward raycast from above his head — the same
+                // painted-road rule the car spawn learned.
                 const x3::phys::Vec3 jf = onFoot.feet();
-                const float gy = x3::game::terrainHeightAtWorld(jf.x, jf.z);
-                if (jf.y < gy - 0.25f)
+                float gy = x3::game::terrainHeightAtWorld(jf.x, jf.z);
+                const x3::phys::RayHit jrh = phys->rayCast(
+                    x3::phys::Vec3{ jf.x, jf.y + 40.0f, jf.z },
+                    x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 120.0f,
+                    x3::phys::Layer::Static);
+                if (jrh.hit) gy = std::max(gy, jrh.point.y);
+                if (jf.y < gy - 0.25f) {
                     onFoot.setFeetPosition(*phys, x3::phys::Vec3{ jf.x, gy + 0.15f, jf.z });
+                    x3::logInfo("[tunnel] CONTACT LAW: Jake lifted onto the surface "
+                                "(was below by more than 0.25 m)");
+                }
             }
 
             // Drive the rig from what the capsule actually DID: planar speed
