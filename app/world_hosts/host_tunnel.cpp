@@ -2916,43 +2916,51 @@ int hostTunnel(HostContext& hc) {
                     device->drawHudQuad(frame, x0 + i * (lw + gp), y0, lw, lh, c4);
                 }
             }
-            {   // ---- MINIMAP (translucent, upper-left of the gauges) ------
-                // North-up v1: the world's roads within 700 m, stamped from
-                // the SAME polylines the world map draws (one data source —
-                // NO_SLOP rule 4), the car as a blip with a heading tick.
-                const float mmR   = 0.105f * fh;              // half-size, px
-                const float mmCx  = fw - mmR - 18.0f;
-                const float mmCy  = mmR + 60.0f;
-                const float mmRange = 700.0f;                 // metres shown
+            {   // ---- MINIMAP v2 (owner: bigger, WITH roads and water) -----
+                const float mmR   = 0.16f * fh;               // half-size, px
+                const float mmCx  = fw - mmR - 16.0f;
+                const float mmCy  = mmR + 52.0f;
+                const float mmRange = 900.0f;                 // metres shown
                 const float mmScale = mmR / mmRange;
-                const float bgq[4] = { 0.04f, 0.06f, 0.09f, 0.42f };
+                const float bgq[4] = { 0.04f, 0.06f, 0.09f, 0.40f };
                 device->drawHudQuad(frame, mmCx - mmR, mmCy - mmR, mmR * 2.0f, mmR * 2.0f, bgq);
                 const float rim[4] = { 0.55f, 0.65f, 0.75f, 0.55f };
                 device->drawHudQuad(frame, mmCx - mmR, mmCy - mmR, mmR * 2.0f, 2.0f, rim);
                 device->drawHudQuad(frame, mmCx - mmR, mmCy + mmR - 2.0f, mmR * 2.0f, 2.0f, rim);
                 device->drawHudQuad(frame, mmCx - mmR, mmCy - mmR, 2.0f, mmR * 2.0f, rim);
                 device->drawHudQuad(frame, mmCx + mmR - 2.0f, mmCy - mmR, 2.0f, mmR * 2.0f, rim);
-                const float roadc[4] = { 0.92f, 0.94f, 0.97f, 0.85f };
+                auto mmStampLine = [&](float ax, float az, float bx2, float bz2,
+                                       float px, const float col[4], bool dashed) {
+                    const float segLen = std::sqrt((bx2-ax)*(bx2-ax) + (bz2-az)*(bz2-az));
+                    const int steps = std::max(2, (int)(segLen * mmScale / 1.6f));
+                    for (int k2 = 0; k2 <= steps; ++k2) {
+                        if (dashed && ((k2 / 5) & 1)) continue;
+                        const float t2 = (float)k2 / (float)steps;
+                        const float px2 = ax + (bx2-ax)*t2, pz2 = az + (bz2-az)*t2;
+                        if (px2*px2 + pz2*pz2 > mmRange*mmRange) continue;
+                        device->drawHudQuad(frame, mmCx + px2 * mmScale - px * 0.5f,
+                                            mmCy + pz2 * mmScale - px * 0.5f, px, px, col);
+                    }
+                };
+                // WATER first (under the roads): the river's own working chain.
+                {
+                    uint32_t nR = 0;
+                    const x3::game::WorldRiverNode* rn = x3::game::worldRiverNodes(nR);
+                    const float wcol[4] = { 0.25f, 0.55f, 0.95f, 0.80f };
+                    for (uint32_t i2 = 0; rn && i2 + 1 < nR; ++i2)
+                        mmStampLine(rn[i2].x - vp[0],   rn[i2].z - vp[2],
+                                    rn[i2+1].x - vp[0], rn[i2+1].z - vp[2],
+                                    5.0f, wcol, false);
+                }
+                const float roadc[4] = { 0.95f, 0.96f, 0.99f, 0.92f };
                 for (const auto& o : mapRoutes) {
                     const size_t n = std::min(o.x.size(), o.z.size());
                     for (size_t i2 = 0; i2 + 1 < n; ++i2) {
-                        const float ax = o.x[i2] - vp[0],   az = o.z[i2] - vp[2];
+                        const float ax = o.x[i2] - vp[0],    az = o.z[i2] - vp[2];
                         const float bx2 = o.x[i2+1] - vp[0], bz2 = o.z[i2+1] - vp[2];
                         if ((ax*ax + az*az > mmRange*mmRange) &&
                             (bx2*bx2 + bz2*bz2 > mmRange*mmRange)) continue;
-                        // stamp the segment: +x east -> right, +z -> DOWN
-                        const float segLen = std::sqrt((bx2-ax)*(bx2-ax) + (bz2-az)*(bz2-az));
-                        const int steps = std::max(1, (int)(segLen * mmScale / 2.5f));
-                        for (int k2 = 0; k2 <= steps; ++k2) {
-                            const float t2 = (float)k2 / (float)steps;
-                            const float px2 = ax + (bx2-ax)*t2, pz2 = az + (bz2-az)*t2;
-                            if (px2*px2 + pz2*pz2 > mmRange*mmRange) continue;
-                            const float sx2 = mmCx + px2 * mmScale;
-                            const float sy2 = mmCy + pz2 * mmScale;
-                            const float dotpx = o.dashed && ((k2 / 3) & 1) ? 0.0f : 2.6f;
-                            if (dotpx > 0.0f)
-                                device->drawHudQuad(frame, sx2 - 1.3f, sy2 - 1.3f, dotpx, dotpx, roadc);
-                        }
+                        mmStampLine(ax, az, bx2, bz2, 3.6f, roadc, o.dashed);
                     }
                 }
                 // the car: bright blip + heading tick
@@ -2960,9 +2968,9 @@ int hostTunnel(HostContext& hc) {
                 float mfw[3], mup[3];
                 x3::game::vehcam::hullAxes(cq2, mfw, mup);
                 const float blip[4] = { 1.0f, 0.35f, 0.25f, 1.0f };
-                device->drawHudQuad(frame, mmCx - 3.0f, mmCy - 3.0f, 6.0f, 6.0f, blip);
-                device->drawHudQuad(frame, mmCx + mfw[0] * 9.0f - 1.5f,
-                                    mmCy + mfw[2] * 9.0f - 1.5f, 3.0f, 3.0f, blip);
+                device->drawHudQuad(frame, mmCx - 3.5f, mmCy - 3.5f, 7.0f, 7.0f, blip);
+                device->drawHudQuad(frame, mmCx + mfw[0] * 11.0f - 2.0f,
+                                    mmCy + mfw[2] * 11.0f - 2.0f, 4.0f, 4.0f, blip);
             }
             {   // Key hints on the glass. A binding nobody can see does not
                 // exist: T toggled traction control for a whole session while
