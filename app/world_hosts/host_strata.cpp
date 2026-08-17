@@ -60,8 +60,14 @@ int hostStrata(HostContext& hc) {
             device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
             const int kSettle = 30;
             const float dt = 1.0f / 60.0f;
+            // Fallback (headless with no --screenshot, i.e. `--smoketest --world
+            // strata` or a worldswitch landing here): a loose scratch grab in the
+            // repo root. It used to be an absolute "C:/GameDev/X3Native-engine/..."
+            // — a path from before the move to D:, so the write always failed and a
+            // perfectly healthy strata world exited 1 (same bug class host_club.cpp
+            // fixed; found by `--test-worldswitch strata` on audit/rifthub-portals).
             const std::string outPath = screenshot ? screenshotPath
-                                                   : std::string("C:/GameDev/X3Native-engine/agent_strata.png");
+                                                   : std::string("agent_strata.png");
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
                 strata.update(dt, stscene, *device, { cam[0], cam[1], cam[2] });

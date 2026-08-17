@@ -534,130 +534,76 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse01.glb",
-      "sha256": "b0e37c841b954ebfb03aeb2a6d03ff0d06aea805e5d42e8ae21a805f6a104d9a",
-      "size": 13278756,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/Billboard_1.glb",
+      "sha256": "8116b207269ccc6255f4822875efad1caa43e898af45328c67ed114ca2e8c0eb",
+      "size": 508480,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse02.glb",
-      "sha256": "5f7a95bb55264833825b1267254f518410ae652f45cf2207173edc3bce940d00",
-      "size": 12226996,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/Billboard_2.glb",
+      "sha256": "64359d4f0ab58955a049f072587791846085e37ada94b9f7df8ebd3ae6480240",
+      "size": 523572,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse03.glb",
-      "sha256": "5d4d8fa22cb3eb6b21ee2002cae87dd0d8ad46f4dbaabeaf83bac77e8642e305",
-      "size": 14610324,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_1_Red.glb",
+      "sha256": "bd0b90ebf5c5e5905c9f8edba64085dd963f30fc614e116f2ee50a96e90ad63e",
+      "size": 595960,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse04.glb",
-      "sha256": "aaaa34fdc1aa55cef419dbaf7407aa41d3c577bf7749da56ac5fe9c83bf6e6a6",
-      "size": 13982976,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_1_White.glb",
+      "sha256": "7910c88392ac94def87162057e1debc7a6303aae0b533c172ffecc5434f67ebe",
+      "size": 616564,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StockageWood_01a.glb",
-      "sha256": "9a523284fd3a9edb4e2c232eb0443537da5f3a6d50973843dbec847c4859f6a4",
-      "size": 462132,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_2_Red.glb",
+      "sha256": "0236261950b0a23a636f2617b075aa42ee9124ba3a4df6ee7aaf2f5b50cc16e7",
+      "size": 476252,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StoneHouse01_JustBuilding.glb",
-      "sha256": "a3f754570776bd0ba774c12d96b37e73ce3d5fa052e818a51ed9c39238c22252",
-      "size": 13684324,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_2_White.glb",
+      "sha256": "05a4445308d6e4c905019ae3b3d85d37d9cb9b4c98bc5cadeb5fa98690bbac67",
+      "size": 496856,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StoneHouse01_WithSetDressing.glb",
-      "sha256": "9ff7cfae56e6ea40cdc2ba4d2c3d8c54003d346badd427f22b4282b92bf480f6",
-      "size": 21103424,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_3_Red.glb",
+      "sha256": "1ac45aefd40872a712715ce06addcd8928fa1eadafbfe475b4f4d9e29271c55c",
+      "size": 621212,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StoneHouse02.glb",
-      "sha256": "bdfc50beffc777a8083c1e555a168e4767dc0ae3730568d514aeafca4eff5b8f",
-      "size": 12506088,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_3_White.glb",
+      "sha256": "377361b980a755539f588466c3f0c574ffb19a99cd49728d345a4a2c0864d210",
+      "size": 641816,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01a.glb",
-      "sha256": "a55c87e4d1d0c79a0c46ce4642c0865241ae9b4dd202f89e1cc78a959933dedc",
-      "size": 567008,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_4_Red.glb",
+      "sha256": "7885caad905d944be7148e6d1198678a869c795878fbbcc6c550e740e8ca3573",
+      "size": 950348,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01c.glb",
-      "sha256": "f328aac8c8174a66d764f9f68142bf2273da4caa1492de57cbd377449a89095f",
-      "size": 772604,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_4_White.glb",
+      "sha256": "2f492491c287f447a61c97ffd59a6aa082bcc248a123cfa45606196bbf6a1050",
+      "size": 970952,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01e.glb",
-      "sha256": "995d3d34428f223ad1f4dca556f0c6aa8f755a1ca23dc713df34741f3092c21a",
-      "size": 933908,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/Light_2.glb",
+      "sha256": "ce9c3096c1689fbb979b1dda4916d2d421ec181b7e8f81d2ff0decdc25b7adb4",
+      "size": 267376,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01f.glb",
-      "sha256": "db3df894d1109c5df2be8bef9dc2f3298d67ca24d0fe5fbfc69347934a15b69f",
-      "size": 1037824,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodCart_01a.glb",
-      "sha256": "d5c7b83892fac7e2b239fa5e8a4a959430dce68bd2574282654057de7a8c21e2",
-      "size": 801664,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodCart_02a.glb",
-      "sha256": "fb0f551539695aff5bd83ee3cbd1662f0adde98e4108cc512446d2b2e8ed4e1e",
-      "size": 876884,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodLightTorch_01a.glb",
-      "sha256": "326b49685564ad1e589aa66bfb220864d7e16512fbb6d068505374b35cb9d3b8",
-      "size": 296532,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodLightTorch_01b.glb",
-      "sha256": "25efa57c67c7faef9169570897071c993b4900ac7a9fe263592e6ab17f9f9ad9",
-      "size": 296428,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodStorage_01b.glb",
-      "sha256": "2cd9ef10cd0c55163a33505958cdba9718acbe7aea39234f9927dc40b4a6507d",
-      "size": 1090392,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodStorage_01c.glb",
-      "sha256": "60bc5ff8f9b124e66033ea5a09e0c1406ee3d28ab47e90634503d2654551f74a",
-      "size": 924440,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodenHouse01_JustBuilding.glb",
-      "sha256": "da9b4d6a115bee7880f6272ef150d2e35a0df963fe2946027e26f63183ed509c",
-      "size": 10526028,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodenHouse02.glb",
-      "sha256": "43a10d374aef4058d69c320f77ef5aa212bb83892ed7f99862d42cf751dc4620",
-      "size": 9186040,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodenHouse03.glb",
-      "sha256": "ba784a16bdc46232c5773493477b057ce837cfdfea31b00debd0d8b2a281807b",
-      "size": 11400584,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/Wood_Fence.glb",
+      "sha256": "d006d6d33cb2c2632f7bc59a1608e60881290f4751941e077b2f5663381f30ba",
+      "size": 131228,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/CTR.glb",
@@ -882,6 +828,42 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/CityPerson_Boy.glb",
+      "sha256": "bbb06839887312d87085e9352cd68cf062945b722e3320432020616d2c58abd4",
+      "size": 626776,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_Elder.glb",
+      "sha256": "88bc9c7a4af74b7a05f6e3f3d0f4be26bd497b3dbe9697c588c3c96fa31c1406",
+      "size": 502864,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_ManCasual.glb",
+      "sha256": "a8d5ac00a5b5e72577fd4f00354111fa29988b2af42e8c71d15384d663300732",
+      "size": 586988,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_ManJacket.glb",
+      "sha256": "2d3615ce3c308f4f7e2c6cab088e207e3ae5117f4a0e264ec3abbf583d5cb9d0",
+      "size": 615696,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_WomanCasual.glb",
+      "sha256": "1408dac9efa759144f0a20920c42685b26ec6b0af74747f8a2461a02660fec84",
+      "size": 456400,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_WomanCoat.glb",
+      "sha256": "21ca375135c95110b2d7ce412531453aa4d3d4168cafcf89c06f83297e326a63",
+      "size": 497252,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
       "repo_path": "assets/rigged_glb/DroneExportWMotion.glb",
       "sha256": "5b293a03bd50390392be5448130c00476c98906c6aa849e94fdbcc2a4b82f14c",
       "size": 21458424,
@@ -1014,6 +996,18 @@
       "source_note": "2026-07-11 regenerated by tools/rebind_weapon_textures.py: per-weapon Rodin PBR maps (shared-atlas camo bug fixed); shotgun maps extracted from base_basic_pbr.usdz"
     },
     {
+      "repo_path": "assets/rigged_glb/WeaponFlameThrower.glb",
+      "sha256": "cf45b847d8d51089b57b3dbc18ef0eabb885a351d18cfa501c35c7cc823c17a0",
+      "size": 4417540,
+      "source_note": "Canon-12 armory: FlameThrower generated with Meshy text-to-3D (preview 01a00e4d-4ea2-7e89-aee8-9bb494c1fbe6, refine 2026-08-16), oriented +Z forward / 1.55m via Blender post (scratch ft_post.py); muzzleLocal {-0.001, 0.490, 0.868}"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponFreezeRayCryo.glb",
+      "sha256": "381836d428a3c7ba6897a39a826fb202418a1fcfc0bb50f87fc30a4dc7e17f01",
+      "size": 4018484,
+      "source_note": "Canon-12 armory swap: Protofactor SCI FI SHOOTER VOL 3 SM_SciFiLaserGun (laser) + SM_SciFiMissileLauncher (napalm), and a cyan cryo reskin of SM_SciFiLightingGun (freezeray). Draco-decompressed via headless Blender; muzzles measured with tools/weapon_muzzle_probe.py"
+    },
+    {
       "repo_path": "assets/rigged_glb/WeaponRailgun.glb",
       "sha256": "493dd1d7ff867fd1a115cceaa148788feb9ce24c28a266ab20da3c0a519fc178",
       "size": 6389304,
@@ -1024,6 +1018,18 @@
       "sha256": "ce100f3651cc6f75c20082dbb99600350d9bfd2e28f116057dec6d21d9d05b2d",
       "size": 8664256,
       "source_note": "2026-07-11 regenerated by tools/rebind_weapon_textures.py: per-weapon Rodin PBR maps (shared-atlas camo bug fixed); shotgun maps extracted from base_basic_pbr.usdz"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponSciFiLaserGun.glb",
+      "sha256": "58870d36c0ba840efda595ddb031f1e1daa9842b8ebc95e1d651042e23f01e7c",
+      "size": 2656460,
+      "source_note": "Canon-12 armory swap: Protofactor SCI FI SHOOTER VOL 3 SM_SciFiLaserGun (laser) + SM_SciFiMissileLauncher (napalm), and a cyan cryo reskin of SM_SciFiLightingGun (freezeray). Draco-decompressed via headless Blender; muzzles measured with tools/weapon_muzzle_probe.py"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponSciFiMissileLauncher.glb",
+      "sha256": "89b9a4bf598319f6ba8eba7878ac3291375ebb56871170a0e2d7cb3bced00d04",
+      "size": 2478300,
+      "source_note": "Canon-12 armory swap: Protofactor SCI FI SHOOTER VOL 3 SM_SciFiLaserGun (laser) + SM_SciFiMissileLauncher (napalm), and a cyan cryo reskin of SM_SciFiLightingGun (freezeray). Draco-decompressed via headless Blender; muzzles measured with tools/weapon_muzzle_probe.py"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponShotGun.glb",

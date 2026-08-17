@@ -113,6 +113,9 @@ struct HostContext {
     bool        jakeShot = false;           std::string jakeShotDir = "docs/screenshots/jake";
     // --screenshot-town: the W-TOWN mountain-town proof set (see cli.h).
     bool        townShot = false;           std::string townShotDir = "docs/screenshots/town";
+    // --screenshot-cutaway: the LEVEL ARCHITECT CUTAWAY proof set (stacked
+    // floors / upper floors hidden / hover card). Runs through --world cutaway.
+    bool        cutawayShot = false;        std::string cutawayShotDir = "docs/screenshots/cutaway";
 
     // ---- A/B / GI force switches consulted by some hosts' settle logic ----
     bool        ddgiForce = false;          // --ddgi: longer probe-convergence settle

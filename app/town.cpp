@@ -27,22 +27,48 @@ namespace {
 //            of it), so a lot that ignores this puts the building metres off
 //            its plot — and, on a street, half of it in the road.
 //   hx/hz    bbox half extents (the footprint the collider and the plot use).
-//   loY/hiY  bbox vertical span relative to the origin plane. loY is NEGATIVE
-//            on every house in the kit: they ship a foundation/plinth below
-//            the ground-floor origin, which is exactly what a hillside town
-//            wants — plant the origin on the terrain and the plinth buries
-//            itself into the slope instead of leaving a floating skirt
-//            (X3_WORLD_RULES rule 4).
+//   loY/hiY  bbox vertical span relative to the origin plane. This kit sits ON
+//            its origin (loY ~ 0) rather than modelling a plinth below it, so
+//            the -loY lift below is a no-op here; it is kept because the placer
+//            must stay correct for any kit (X3_WORLD_RULES rule 4).
 //   frontDeg the asset's own front, in the engine yaw convention (0 = -Z),
-//            measured as the direction from the bbox centre to the named
-//            SM_*_Door* node. Rule 3 wants orientation DOCUMENTED per asset;
-//            this table is that document, and docs/design/TOWN_MANIFEST.md
-//            repeats it in prose.
+//            measured as the direction from the bbox centre to the centroid of
+//            the asset's DOOR material. Rule 3 wants orientation DOCUMENTED per
+//            asset; this table is that document, and
+//            docs/design/TOWN_MANIFEST.md repeats it in prose.
+//   win[3]   WHERE THE LIT PANES GO — one entry per REAL window, measured by
+//            clustering the asset's own front-elevation `Glass` triangles into
+//            connected components. Round one guessed two fixed storey heights
+//            (2.35 m / 5.20 m) because the ruined kit modelled no glazing; the
+//            kit's houses run 9 m to 25.7 m tall, so one fixed pair would have
+//            put House_2's upper pane inside its roof. The FIRST attempt here
+//            averaged a whole storey's glass, which put the pane on the blank
+//            wall BETWEEN two windows — visible in the capture as grey cards
+//            stuck to the clapboard. Per-window, with each window's own size,
+//            is the version that is actually right.
 //
-// PF_PrimitiveHouse01/02 are deliberately ABSENT: their one untextured
-// material is a WALL / roof end (a 0.8-grey slab facing the street would be
-// NO_SLOP rule 3 in the flesh). 03/04's is a roof overhang, high up and
-// small, and it gets a MaterialOverride below.
+// ---------------------------------------------------------------------------
+// THE KIT (swapped 2026-08-17; see docs/design/TOWN_MANIFEST.md section 2).
+// Round one built this town from the armory's HouseForge prefabs. Eyes-on at
+// full res, they read as DERELICT — dark, spiky, broken silhouettes — because
+// that kit is authored as COLLAPSED RUINS. docs/design/TOWN_ASSET_SCOUT.md
+// reached the same verdict independently. The placer was never the problem, so
+// only these tables changed.
+//
+// Everything structural now comes from ONE licensed pack, `Complete Racing Game
+// URP All in One` — authored for a DRIVING game, so the town reads as a place
+// on this world's road network. Baked by tools/town_assets.py, which injects
+// the pack's real photographic albedos BY MATERIAL NAME (the pack ships no
+// Unity .mat files at all, so FBX2glTF writes 1x1 white placeholders and the
+// GUID path in convert_unity_pack.py has nothing to resolve), and transcodes
+// its TIFFs to JPEG because ModelLoader decodes with stb_image, which cannot
+// read TIFF. `town_assets.py verify` asserts both, and is GREEN.
+//
+// Eight facades come from four shells, in two real paints (red clapboard +
+// scalloped shingle / white clapboard + plank roof). The pack's UVs are
+// authored to tile, so this is variety by MATERIAL — which is how a real street
+// of one builder's houses actually looks — rather than the same mesh repeated,
+// which is the uniform lattice the x3native-environments skill forbids.
 // ---------------------------------------------------------------------------
 struct AssetDef {
     const char* glb;
@@ -50,40 +76,56 @@ struct AssetDef {
     float hx, hz;      // bbox half extents
     float loY, hiY;    // bbox vertical span about the origin plane
     float frontDeg;    // measured front (engine yaw, 0 = -Z)
+    // MEASURED lit-window positions, one entry per REAL window: height above
+    // the bbox bottom, offset along the front wall, and the window's own HALF
+    // SIZE. The emissive quad is cut to the opening it sits in, so unlit it
+    // vanishes against the dark glass instead of reading as a card on the
+    // wall — which is exactly what the averaged version looked like.
+    struct Pane { float y, along, depth, hw, hh; } win[3];
 };
 
+// Buildings FIRST: `isBuilding` below is an ordering test against A_LAST_BLDG.
 enum : uint8_t {
-    A_PRIM3 = 0, A_PRIM4, A_STONE1, A_STONE1D, A_STONE2,
-    A_WOOD1, A_WOOD2, A_WOOD3,
-    A_MKT_A, A_MKT_C, A_MKT_E, A_MKT_F,
-    A_CART1, A_CART2, A_TORCH_A, A_TORCH_B,
-    A_STORE_B, A_STORE_C, A_STOCK, A_BENCH_A, A_BENCH_B,
+    A_H1R = 0, A_H1W, A_H2R, A_H2W, A_H3R, A_H3W, A_H4R, A_H4W,
+    A_LAST_BLDG = A_H4W,
+    A_LAMP, A_FENCE, A_SIGN1, A_SIGN2, A_BENCH_A, A_BENCH_B,
     A_COUNT
 };
 
 const AssetDef kAssets[A_COUNT] = {
-    { "Town/PF_PrimitiveHouse03.glb",             -1.50f,  5.06f, 11.70f,  9.91f, -4.77f, 10.10f,   -4.5f },
-    { "Town/PF_PrimitiveHouse04.glb",             -3.00f,  2.68f,  7.67f,  6.06f, -0.16f,  9.46f, -141.9f },
-    { "Town/PF_StoneHouse01_JustBuilding.glb",    -5.97f,  7.45f,  9.21f,  8.26f, -5.39f,  9.67f,  -84.9f },
-    { "Town/PF_StoneHouse01_WithSetDressing.glb", -4.93f,  8.22f, 11.05f, 10.55f, -5.40f,  9.69f,  -68.7f },
-    { "Town/PF_StoneHouse02.glb",                 -5.42f, -3.94f,  9.64f,  7.63f, -3.82f,  9.83f,  -73.7f },
-    { "Town/PF_WoodenHouse01_JustBuilding.glb",   -5.47f, -6.66f,  8.79f,  6.87f, -3.25f,  6.69f, -124.8f },
-    { "Town/PF_WoodenHouse02.glb",                -3.00f, -1.90f,  6.34f,  4.97f, -3.33f,  6.82f, -124.4f },
-    { "Town/PF_WoodenHouse03.glb",                -3.78f, -4.74f,  7.01f,  7.88f, -3.25f,  9.44f, -147.5f },
-    { "Town/PF_StorageMarket_01a.glb",             1.33f,  1.07f,  2.69f,  1.72f, -0.59f,  1.98f,    0.0f },
-    { "Town/PF_StorageMarket_01c.glb",             0.62f,  0.09f,  3.67f,  2.23f, -0.26f,  2.41f,    0.0f },
-    { "Town/PF_StorageMarket_01e.glb",             0.61f,  0.95f,  3.17f,  1.97f, -0.04f,  2.32f,    0.0f },
-    { "Town/PF_StorageMarket_01f.glb",             0.54f,  0.76f,  3.23f,  1.57f, -1.27f,  2.84f,    0.0f },
-    { "Town/PF_WoodCart_01a.glb",                  0.54f, -0.16f,  2.52f,  2.14f, -0.94f,  1.10f,    0.0f },
-    { "Town/PF_WoodCart_02a.glb",                  1.11f,  0.13f,  2.53f,  1.73f, -0.74f,  0.86f,    0.0f },
-    { "Town/PF_WoodLightTorch_01a.glb",            0.00f, -0.01f,  1.11f,  1.12f, -0.73f,  2.33f,    0.0f },
-    { "Town/PF_WoodLightTorch_01b.glb",            0.00f,  0.00f,  0.69f,  0.87f, -0.10f,  2.31f,    0.0f },
-    { "Town/PF_WoodStorage_01b.glb",              -0.86f, -0.14f,  3.90f,  3.11f, -0.55f,  4.30f,    0.0f },
-    { "Town/PF_WoodStorage_01c.glb",               0.41f,  0.13f,  3.54f,  2.99f, -2.18f,  4.93f,    0.0f },
-    { "Town/PF_StockageWood_01a.glb",              0.14f,  0.24f,  1.03f,  0.92f,  0.00f,  1.02f,    0.0f },
+    // Regenerate with `python tools/town_assets.py report` and paste the block
+    // it prints. If the kit is re-baked, re-run it and update this table in the
+    // same commit — PAIRED VALUES ARE ONE VALUE (NO_SLOP rule 4).
+    // Buildings first: `isBuilding` is an ordering test against A_LAST_BLDG.
+    { "Town/House_1_Red.glb",                  -0.95f,  -0.13f,  11.50f,   9.24f, -0.00f,  15.75f,   101.9f,
+      { {  8.45f,  -6.78f,   6.28f, 0.40f, 1.03f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
+    { "Town/House_1_White.glb",                -0.95f,  -0.13f,  11.50f,   9.24f, -0.00f,  15.75f,   101.9f,
+      { {  8.45f,  -6.78f,   6.28f, 0.40f, 1.03f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
+    { "Town/House_2_Red.glb",                  -0.05f,  -0.41f,  13.75f,   7.44f, -0.00f,   9.00f,   180.0f,
+      { {  3.38f,   8.61f,   5.99f, 1.29f, 0.40f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
+    { "Town/House_2_White.glb",                -0.05f,  -0.41f,  13.75f,   7.44f, -0.00f,   9.00f,   180.0f,
+      { {  3.38f,   8.61f,   5.99f, 1.29f, 0.40f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
+    { "Town/House_3_Red.glb",                  -0.60f,   1.25f,   7.49f,  12.50f, -0.00f,  15.86f,    -0.6f,
+      { {  8.35f,  -0.11f,  10.93f, 1.06f, 1.06f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
+    { "Town/House_3_White.glb",                -0.60f,   1.25f,   7.49f,  12.50f, -0.00f,  15.86f,    -0.6f,
+      { {  8.35f,  -0.11f,  10.93f, 1.06f, 1.06f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
+    { "Town/House_4_Red.glb",                  -3.73f,   0.50f,  18.76f,  12.56f, -0.08f,  25.64f,  -179.5f,
+      { {  7.45f, -10.88f,   8.61f, 1.51f, 1.20f}, {  7.45f,  -3.99f,   8.54f, 0.66f, 1.29f}, {  7.45f,   9.72f,   8.42f, 0.40f, 1.20f} } },
+    { "Town/House_4_White.glb",                -3.73f,   0.50f,  18.76f,  12.56f, -0.08f,  25.64f,  -179.5f,
+      { {  7.45f, -10.88f,   8.61f, 1.51f, 1.20f}, {  7.45f,  -3.99f,   8.54f, 0.66f, 1.29f}, {  7.45f,   9.72f,   8.42f, 0.40f, 1.20f} } },
+    { "Town/Light_2.glb",                       0.12f,   0.00f,   0.57f,   0.57f, -0.00f,   7.16f,     0.0f,
+      { {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
+    { "Town/Wood_Fence.glb",                    0.06f,  -0.14f,   2.78f,   0.15f, -0.00f,   2.32f,     0.0f,
+      { {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
+    { "Town/Billboard_1.glb",                  -0.84f,   1.88f,   0.15f,   0.87f, -0.64f,   1.81f,     0.0f,
+      { {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
+    { "Town/Billboard_2.glb",                  -0.15f,   1.71f,   0.13f,   1.03f, -0.40f,   1.88f,     0.0f,
+      { {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f}, {  0.00f,   0.00f,   0.00f, 0.00f, 0.00f} } },
     // Already decoded and in-tree from the road_trees lane (armory GLBs).
-    { "nature/SM_WoodBench_01a.glb",               0.00f,  0.00f,  1.10f,  0.55f,  0.00f,  0.90f,    0.0f },
-    { "nature/SM_Bench.glb",                       0.00f,  0.00f,  1.10f,  0.55f,  0.00f,  0.90f,    0.0f },
+    { "nature/SM_WoodBench_01a.glb",             0.00f,   0.00f,   1.10f,   0.55f,  0.00f,   0.90f,     0.0f,
+      { {0,0,0,0,0}, {0,0,0,0,0}, {0,0,0,0,0} } },
+    { "nature/SM_Bench.glb",                     0.00f,   0.00f,   1.10f,   0.55f,  0.00f,   0.90f,     0.0f,
+      { {0,0,0,0,0}, {0,0,0,0,0}, {0,0,0,0,0} } },
 };
 
 // Anything with a footprint at least this wide gets a static collider. Below
@@ -95,83 +137,109 @@ constexpr float kCollideMinHalfM = 1.6f;
 // THE LOT TABLE — the town, authored. This is the curation the
 // x3native-environments skill demands: a designer's street, not a lattice.
 // Rules it encodes by hand:
-//   * varied MASSING — three stone shops, four timber houses, two big
-//     primitives, market stalls; nothing repeats twice in a row;
-//   * varied SETBACK — shops crowd the pavement at 19-21 m, houses sit back
-//     at 26-34 m, stalls sell off the verge at 18.5 m;
-//   * varied GAPS — 26 m to 62 m between plots, wide at the ends, tight
-//     through the middle where the town is densest;
-//   * a SQUARE at u~300: the hero (StoneHouse01_WithSetDressing) set back on
-//     the north side with the market spread in front of it;
+//   * varied MASSING — the long low House_2 (27.5 x 9 m), the narrow tall
+//     House_3 (15 x 15.9 m), the barn-fronted House_1 (23 x 15.8 m) and the
+//     big House_4 lodge (37.5 x 25.7 m) as the square's hero; no shell and no
+//     PAINT repeats twice running on the same side of the street;
+//   * varied SETBACK — main street crowds the pavement at 18.5-20.5 m, the
+//     approaches and outskirts sit back at 24-30 m;
+//   * varied GAPS — the along-street clear space between neighbours runs 23 m
+//     to 57 m, tight through the middle where the town is densest;
+//   * a SQUARE at u~306: House_4 as the hero, set back on the -side;
 //   * broken alignment — every plot carries its own yaw jitter so no two
 //     facades are parallel.
-// `lat` is the distance from the street centreline to the BBOX CENTRE (not to
-// the asset origin — the placer removes the asset's own centre offset), and
-// nothing may sit closer than kStreetKeepOutM.
+//
+// `lat` IS THE SETBACK OF THE FRONT FACE FROM THE STREET CENTRELINE — not, as
+// round one had it, the distance to the bbox CENTRE. That change is a bug fix,
+// not a rename: under centre-distance semantics a plot at lat 18.4 holding an
+// asset whose front support is 9.2 m put its facade 9.2 m off the centreline,
+// i.e. INSIDE kPavedHalfM (14.63 m) — a building standing in the road. The
+// placer now adds each asset's own MEASURED front support (see `place`), so the
+// number in this table is the thing a level designer actually cares about and
+// the keep-out is enforced on the FACE, which is what the keep-out is for.
+// PAIRED with kStreetKeepOutM in town.h.
 // ---------------------------------------------------------------------------
 struct Lot { float u; int8_t side; float lat; uint8_t asset; float jitterDeg; };
 
+// The tables are authored against this reach and rescaled onto whatever reach
+// the host gives, so the town stretches with the spur instead of falling off
+// the end of it. PAIRED with the `u` columns of kLots/kProps/kParks — these
+// three tables share one coordinate; move the reach and all three move.
+constexpr float kAuthoredU0   = 70.0f;
+constexpr float kAuthoredSpan = 620.0f;
+
 const Lot kLots[] = {
     // ---- lower town: the approach, loose and rural ----
-    {  70.0f, -1, 30.0f, A_WOOD2,   -9.0f },
-    {  96.0f, +1, 33.0f, A_PRIM4,   12.0f },
-    { 138.0f, -1, 26.5f, A_WOOD3,    5.0f },
-    { 152.0f, +1, 21.0f, A_STORE_C,  0.0f },
-    { 184.0f, +1, 28.0f, A_STONE2,  -6.0f },
-    // ---- main street proper: shops fronting the pavement ----
-    { 206.0f, -1, 20.0f, A_STONE1,   3.0f },
-    { 232.0f, +1, 19.5f, A_WOOD1,   -4.0f },
-    { 244.0f, -1, 18.6f, A_MKT_C,    8.0f },
-    { 262.0f, -1, 20.5f, A_WOOD2,    7.0f },
-    { 268.0f, +1, 18.4f, A_MKT_A,  -14.0f },
-    { 286.0f, +1, 20.0f, A_STONE2,   2.0f },
-    // ---- the square ----
-    { 306.0f, -1, 27.0f, A_STONE1D, -5.0f },   // the hero, set back off the square
-    { 296.0f, -1, 18.5f, A_MKT_E,   22.0f },
-    { 312.0f, -1, 18.5f, A_MKT_F,  -18.0f },
-    { 300.0f, -1, 22.5f, A_CART1,   40.0f },
-    { 318.0f, +1, 18.6f, A_CART2,  -30.0f },
-    { 322.0f, +1, 21.5f, A_STORE_B,  6.0f },
-    // ---- upper street, climbing ----
-    { 348.0f, -1, 19.5f, A_WOOD3,   -8.0f },
-    { 364.0f, +1, 20.5f, A_STONE1,   9.0f },
-    { 398.0f, -1, 24.0f, A_PRIM3,   -3.0f },
-    { 412.0f, +1, 19.0f, A_MKT_C,  -11.0f },
-    { 434.0f, +1, 26.0f, A_WOOD1,   14.0f },
-    { 462.0f, -1, 21.0f, A_WOOD2,   -6.0f },
-    { 488.0f, +1, 30.0f, A_PRIM4,   -20.0f },
-    { 512.0f, -1, 25.0f, A_STONE2,   4.0f },
+    {  78.0f, -1, 26.0f, A_H2W,  -7.0f },
+    { 104.0f, +1, 28.0f, A_H1W,  11.0f },
+    { 130.0f, -1, 24.0f, A_H3R,   5.0f },
+    { 158.0f, +1, 24.5f, A_H2R,  -6.0f },
+    // ---- main street proper: fronting the pavement, and DENSE ----
+    // The first cut of this table put ~77 m between neighbours on the same
+    // side and the capture read as scattered farmsteads, not a main street.
+    // Through the middle third the gaps are now 18-26 m of clear ground, which
+    // is what makes a street feel like one; the ends stay loose so the town
+    // still thins into the switchbacks instead of ending at a wall.
+    { 172.0f, -1, 19.5f, A_H1R,   3.0f },
+    { 196.0f, +1, 19.0f, A_H2R,  -5.0f },
+    { 214.0f, +1, 18.5f, A_H3W,  -9.0f },
+    { 232.0f, -1, 20.0f, A_H3W,   6.0f },
+    { 252.0f, -1, 18.8f, A_H2W,  -8.0f },
+    { 268.0f, +1, 19.0f, A_H1R, -13.0f },
+    { 286.0f, +1, 20.0f, A_H3R,   9.0f },
+    // ---- the square: the hero set back, the street tight around it ----
+    { 306.0f, -1, 24.0f, A_H4R,  -4.0f },   // THE HERO (kHeroLot)
+    { 330.0f, +1, 19.5f, A_H2W,   8.0f },
+    { 348.0f, -1, 19.0f, A_H1W,  -6.0f },
+    // ---- upper street, climbing and tightening ----
+    { 366.0f, -1, 20.0f, A_H3W,   7.0f },
+    { 380.0f, +1, 20.5f, A_H3R, -10.0f },
+    { 396.0f, -1, 19.0f, A_H2R,   4.0f },
+    { 414.0f, +1, 19.5f, A_H1R,  -8.0f },
+    { 430.0f, +1, 22.0f, A_H1W,  13.0f },
+    { 452.0f, -1, 20.0f, A_H3R,  -5.0f },
+    { 490.0f, +1, 21.5f, A_H2R,   7.0f },
     // ---- the outskirts, thinning toward the switchbacks ----
-    { 556.0f, +1, 27.0f, A_WOOD3,   16.0f },
-    { 588.0f, -1, 32.0f, A_WOOD1,   -12.0f },
-    { 624.0f, +1, 24.0f, A_STORE_C,  0.0f },
-    { 648.0f, -1, 29.0f, A_WOOD2,    8.0f },
+    { 520.0f, -1, 26.0f, A_H1W, -12.0f },
+    { 556.0f, +1, 28.0f, A_H3W,  15.0f },
+    { 600.0f, -1, 30.0f, A_H2W,   6.0f },
+    { 630.0f, +1, 25.0f, A_H1R, -14.0f },
 };
 constexpr uint32_t kLotCount = (uint32_t)(sizeof(kLots) / sizeof(kLots[0]));
+// The square's hero, by INDEX into kLots — the shop-front eye gate aims here.
+// Round one matched on an ASSET ID, which silently aims at whichever plot comes
+// last whenever that asset is used more than once; an index cannot drift.
+constexpr uint32_t kHeroLot = 11;
 
-// Street furniture: lamps (torches) both sides at a loose rhythm, benches and
-// crates on the verge. Same lot form, but never colliding and never lit unless
-// it is a torch.
+// Street furniture: the pack's own 7.2 m highway lamp standard both sides at a
+// loose rhythm (round one used a medieval torch — the ruined kit's register),
+// benches on the verge, fence runs closing the gaps between houses, and two
+// roadside billboards at the approaches. Same lot form, but these never carry
+// a collider (an invisible wall on a sidewalk is worse than walking through a
+// bench) and only the lamps are lit.
 const Lot kProps[] = {
-    {  88.0f, -1, 18.0f, A_TORCH_A,  0.0f },
-    { 130.0f, +1, 18.0f, A_TORCH_B,  0.0f },
-    { 168.0f, -1, 18.0f, A_TORCH_A,  0.0f },
-    { 178.0f, +1, 18.2f, A_BENCH_A, 90.0f },
-    { 212.0f, +1, 18.0f, A_TORCH_A,  0.0f },
-    { 226.0f, -1, 18.2f, A_STOCK,   25.0f },
-    { 254.0f, -1, 18.0f, A_TORCH_B,  0.0f },
-    { 280.0f, +1, 18.1f, A_BENCH_B, 90.0f },
-    { 292.0f, +1, 18.0f, A_TORCH_A,  0.0f },
-    { 308.0f, -1, 24.5f, A_STOCK,  -35.0f },
-    { 330.0f, -1, 18.0f, A_TORCH_A,  0.0f },
-    { 356.0f, +1, 18.2f, A_BENCH_A, 90.0f },
-    { 372.0f, +1, 18.0f, A_TORCH_B,  0.0f },
-    { 404.0f, -1, 18.0f, A_TORCH_A,  0.0f },
-    { 446.0f, +1, 18.0f, A_TORCH_A,  0.0f },
-    { 470.0f, -1, 18.2f, A_BENCH_B, 90.0f },
-    { 496.0f, -1, 18.0f, A_TORCH_B,  0.0f },
-    { 540.0f, +1, 18.0f, A_TORCH_A,  0.0f },
-    { 600.0f, -1, 18.0f, A_TORCH_A,  0.0f },
+    {  92.0f, -1, 17.8f, A_SIGN1,    4.0f },
+    { 116.0f, +1, 17.8f, A_LAMP,     0.0f },
+    { 144.0f, -1, 17.6f, A_FENCE,    2.0f },
+    { 150.0f, -1, 17.6f, A_FENCE,   -1.0f },
+    { 176.0f, +1, 17.8f, A_LAMP,     0.0f },
+    { 196.0f, -1, 17.9f, A_BENCH_A, 90.0f },
+    { 208.0f, -1, 17.8f, A_LAMP,     0.0f },
+    { 248.0f, +1, 17.9f, A_BENCH_B, 90.0f },
+    { 258.0f, +1, 17.8f, A_LAMP,     0.0f },
+    { 290.0f, -1, 17.8f, A_LAMP,     0.0f },
+    { 312.0f, +1, 17.9f, A_BENCH_A, 90.0f },
+    { 344.0f, +1, 17.8f, A_LAMP,     0.0f },
+    { 366.0f, -1, 17.6f, A_FENCE,    3.0f },
+    { 372.0f, -1, 17.6f, A_FENCE,   -2.0f },
+    { 408.0f, -1, 17.8f, A_LAMP,     0.0f },
+    { 442.0f, +1, 17.9f, A_BENCH_B, 90.0f },
+    { 466.0f, +1, 17.8f, A_LAMP,     0.0f },
+    { 508.0f, -1, 17.8f, A_LAMP,     0.0f },
+    { 544.0f, +1, 17.6f, A_FENCE,    1.0f },
+    { 550.0f, +1, 17.6f, A_FENCE,   -3.0f },
+    { 574.0f, +1, 17.8f, A_LAMP,     0.0f },
+    { 612.0f, -1, 17.8f, A_SIGN2,   -5.0f },
 };
 constexpr uint32_t kPropCount = (uint32_t)(sizeof(kProps) / sizeof(kProps[0]));
 
@@ -220,6 +288,18 @@ inline void yawXZ(float a, float x, float z, float& ox, float& oz) {
 }
 // Engine yaw of a planar direction (AXES LAW; 0 = -Z).
 inline float yawOf(float dx, float dz) { return std::atan2(-dx, -dz); }
+
+// HOW FAR THE FRONT FACE STANDS FROM THE BBOX CENTRE, along the asset's own
+// front direction. This is what turns a designer's FACE setback (the `lat`
+// column of kLots) into the centre offset the placer needs, and it is why a
+// building can no longer end up with its facade inside the carriageway.
+// It is the support function of the axis-aligned box in direction `front`,
+// which for a box is just |fx|*hx + |fz|*hz.
+inline float frontSupport(const AssetDef& A) {
+    const float fx = -std::sin(A.frontDeg * kDeg);
+    const float fz = -std::cos(A.frontDeg * kDeg);
+    return std::fabs(fx) * A.hx + std::fabs(fz) * A.hz;
+}
 
 } // anonymous namespace
 
@@ -320,29 +400,21 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
         x3::logWarn("town: converted_glb root mount failed — no town");
         return false;
     }
-    // THE PACK'S OWN GAPS, patched at load (env_art's MaterialOverride exists
-    // for exactly this): a handful of sub-materials in the HouseForge kit ship
-    // at the glTF default 0.8 grey with no texture, which a bright sun + ACES
-    // renders as a white slab on an otherwise fully-PBR building. These are
-    // roof overhangs / window arcs, so they get the kit's own weathered timber
-    // and stone constants rather than a "temporary" tint on the whole asset.
-    // NAMES ARE MEASURED (tools/town_assets.py --report lists the untextured
-    // material of every prefab); if the kit is re-baked, re-run it.
-    m_art.setMaterialOverride({
-        { "roofoverhang",   true, { 0.21f, 0.16f, 0.12f, 1.0f }, true, 0.0f, true, 0.88f, false, {} },
-        { "roofend",        true, { 0.21f, 0.16f, 0.12f, 1.0f }, true, 0.0f, true, 0.88f, false, {} },
-        { "window_r_arc",   true, { 0.26f, 0.22f, 0.19f, 1.0f }, true, 0.0f, true, 0.80f, false, {} },
-        { "foodstorage_02a",true, { 0.30f, 0.24f, 0.17f, 1.0f }, true, 0.0f, true, 0.85f, false, {} },
-        { "woodcage",       true, { 0.24f, 0.18f, 0.12f, 1.0f }, true, 0.0f, true, 0.90f, false, {} },
-        { "foodstand",      true, { 0.32f, 0.26f, 0.18f, 1.0f }, true, 0.0f, true, 0.85f, false, {} },
-        { "foodbagpack",    true, { 0.38f, 0.33f, 0.24f, 1.0f }, true, 0.0f, true, 0.85f, false, {} },
-        { "seeddebris",     true, { 0.27f, 0.22f, 0.15f, 1.0f }, true, 0.0f, true, 0.90f, false, {} },
-        { "woodsupport",    true, { 0.22f, 0.17f, 0.12f, 1.0f }, true, 0.0f, true, 0.90f, false, {} },
-        { "woodplatform",   true, { 0.24f, 0.19f, 0.13f, 1.0f }, true, 0.0f, true, 0.90f, false, {} },
-        { "primitive_wall", true, { 0.29f, 0.25f, 0.20f, 1.0f }, true, 0.0f, true, 0.88f, false, {} },
-    });
-    // The kit's ORM masks bake metallic high on some stone; the engine's
-    // black-prop fix (drawMeshPBR) is the documented cure.
+    // NO MATERIAL OVERRIDES ARE NEEDED FOR THIS KIT, and that is the point.
+    // Round one carried eleven of them here, one per HouseForge sub-material
+    // that shipped at the glTF default 0.8 grey with no texture — a white slab
+    // under a bright sun + ACES. The swap removed the need rather than the
+    // symptom: tools/town_assets.py paints EVERY material of every asset from
+    // the pack's own photographs and its `verify` subcommand fails the build if
+    // any bound image is a placeholder, so there is no gap left to patch.
+    // If a future kit reintroduces one, patch it HERE (env_art's
+    // MaterialOverride exists for exactly this) rather than tinting a whole
+    // asset, and add it to `verify` so it cannot come back silently.
+    //
+    // The metallic clamp stays: X3_WORLD_RULES rule 5 — an untextured
+    // near-metal renders BLACK, and the clamp is the documented net. This kit's
+    // own metal trim is authored at 0.55, so the clamp only ever catches a
+    // regression.
     m_art.setMetallicClamp(0.35f);
 
     // Shared 1x1 white for the window panes: X3_WORLD_RULES rule 5 — a valid
@@ -428,12 +500,18 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
 
         if (light) {
-            // The torch head sits at the top of its bbox; the flame is the
-            // light, not the post.
+            // The lamp HEAD sits at the top of its bbox; the lantern is the
+            // light, not the pole. Light_2 is a 7.16 m standard, so this hangs
+            // the source a full storey above the street and the pool it throws
+            // reaches the pavement on both sides — which a 2.3 m torch never
+            // did. Range scales off the measured height rather than a constant
+            // so a different lamp cannot silently under-light the street.
             x3::rhi::PointLight pl;
             pl.pos[0] = wx; pl.pos[1] = baseY + A.hiY - 0.25f; pl.pos[2] = wz;
-            pl.range = 22.0f;
-            pl.color[0] = 2.6f; pl.color[1] = 1.45f; pl.color[2] = 0.55f;  // warm flame
+            pl.range = std::max(22.0f, (A.hiY - A.loY) * 3.6f);
+            // Warm sodium-white, not a flame: this is a highway town, and the
+            // paired window practicals below already carry the warm end.
+            pl.color[0] = 2.35f; pl.color[1] = 1.95f; pl.color[2] = 1.35f;
             m_lightAuthored.insert(m_lightAuthored.end(),
                                    { pl.color[0], pl.color[1], pl.color[2] });
             pl.color[0] *= m_night; pl.color[1] *= m_night; pl.color[2] *= m_night;
@@ -447,25 +525,44 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
             // ahead of a wall or hide inside one by more than a few cm.
             const float fx = -std::sin(A.frontDeg * kDeg);
             const float fz = -std::cos(A.frontDeg * kDeg);
-            const float support = std::fabs(fx) * A.hx + std::fabs(fz) * A.hz;
-            for (int w = 0; w < 2; ++w) {
-                const float along = (w == 0) ? -2.4f : 2.6f;
-                // Storey heights are measured from the GROUND, not from the
-                // asset origin: the origin is the ground-FLOOR plane and the
-                // building now stands on its plinth, so the two differ by loY.
-                const float paneY = (groundY - baseY) + ((w == 0) ? 2.35f : 5.20f);
-                if (paneY > A.hiY - 0.8f) continue;
-                // Local point: bbox centre + front * (support - a hair), so the
-                // pane is set INTO the facade. Proud of the wall, a pane that
-                // misses floats in mid-air; recessed, a miss is invisible.
-                const float lx = A.cx + fx * (support - 0.06f) - fz * along;
-                const float lz = A.cz + fz * (support - 0.06f) + fx * along;
+            const float support = frontSupport(A);
+            for (int w = 0; w < 3; ++w) {
+                // WHERE THE WINDOWS ACTUALLY ARE. Round one used two fixed
+                // storey heights (2.35 m / 5.20 m) because the ruined kit
+                // modelled no glazing to measure. This kit models its windows
+                // as a separate `Glass` material, so tools/town_assets.py
+                // measures the centroids of the FRONT elevation's glass and
+                // kAssets carries the result. It has to be per-asset: the kit's
+                // houses run 9 m to 25.7 m tall, and one fixed pair would have
+                // put House_2's upper pane inside its roof.
+                const AssetDef::Pane& P = A.win[w];
+                if (P.y <= 0.01f || P.hw <= 0.01f) continue;
+                const float along = P.along;
+                // The measured height is above the bbox BOTTOM; the pane is
+                // positioned relative to the asset ORIGIN, and the two differ
+                // by loY (X3_WORLD_RULES rule 4 — the contact surface is the
+                // bbox bottom, which is what the placer grounds).
+                const float paneY = A.loY + P.y;
+                if (paneY > A.hiY - 0.4f) continue;
+                // Local point: bbox centre + front * the MEASURED glass depth,
+                // pulled 6 cm in so the pane is set INTO the facade. It used to
+                // use the bbox SUPPORT — i.e. it assumed the front face of the
+                // bounding box is the front wall. It is not: these houses have
+                // deep eaves, and on House_1 the wall sits 6.9 m inside the
+                // bbox front, so the panes hung in mid-air well proud of the
+                // clapboard. Proud of the wall a pane floats; recessed, a miss
+                // is simply invisible.
+                const float lx = A.cx + fx * (P.depth - 0.06f) - fz * along;
+                const float lz = A.cz + fz * (P.depth - 0.06f) + fx * along;
                 float ox, oz; yawXZ(a, lx, lz, ox, oz);
                 Entity e;
-                // A pane, not a slab: 1.5 x 1.1 m, 6 cm deep so it reads as a
-                // recessed opening rather than a decal.
+                // The pane is cut to the MEASURED opening (its own half width
+                // and height), 6 cm deep so it reads as a recessed light rather
+                // than a decal. A fixed 1.5 x 1.1 m quad was the other half of
+                // the card-on-the-wall defect: sized to the window, an unlit
+                // pane is invisible against the dark glass behind it.
                 const x3::prims::PrimMesh pm =
-                    x3::prims::makeBox(0.75f, 0.55f, 0.03f, 0, 0, 0);
+                    x3::prims::makeBox(P.hw, P.hh, 0.03f, 0, 0, 0);
                 e.mesh = device.createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
                                            pm.index.data(), (uint32_t)pm.index.size());
                 if (!e.mesh.valid()) continue;
@@ -497,11 +594,8 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
             }
             // The eye gate aims here: the point ON the facade, the direction it
             // faces, and how far back a camera must stand to frame it.
-            const float support2 = std::fabs(std::sin(A.frontDeg * kDeg)) * A.hx
-                                 + std::fabs(std::cos(A.frontDeg * kDeg)) * A.hz;
             float sfx, sfz;
-            yawXZ(a, A.cx - std::sin(A.frontDeg * kDeg) * support2,
-                     A.cz - std::cos(A.frontDeg * kDeg) * support2, sfx, sfz);
+            yawXZ(a, A.cx + fx * support, A.cz + fz * support, sfx, sfz);
             m_shopFronts.push_back({ wx - ocx + sfx, wz - ocz + sfz, groundY,
                                      faceYaw, std::max(A.hx, A.hz) });
         }
@@ -512,10 +606,13 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
     uint32_t rejected = 0;
     for (uint32_t i = 0; i < kLotCount; ++i) {
         const Lot& L = kLots[i];
-        const float u = u0 + (L.u - kLots[0].u) * ((u1 - u0) / 620.0f);
+        const float u = u0 + (L.u - kAuthoredU0) * ((u1 - u0) / kAuthoredSpan);
         Station st;
         if (!stationAt(u, st)) continue;
-        const float lat = std::max(L.lat, kStreetKeepOutM + 1.0f);
+        // `L.lat` is the FRONT-FACE setback; add the asset's own measured
+        // front support to get the bbox-centre offset the placer wants. The
+        // keep-out is therefore enforced where it matters — on the facade.
+        const float lat = std::max(L.lat, kStreetKeepOutM) + frontSupport(kAssets[L.asset]);
         // left normal of the tangent (AXES LAW): rotate t by +90 deg about +Y.
         const float nx = st.tz, nz = -st.tx;
         const float wx = st.x + (float)L.side * lat * nx;
@@ -524,13 +621,14 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // centreline, plus the plot's own jitter so no two facades are square.
         const float faceYaw = yawOf(-(float)L.side * nx, -(float)L.side * nz)
                             + L.jitterDeg * kDeg;
-        const bool isBuilding = (L.asset <= A_WOOD3);
+        const bool isBuilding = (L.asset <= A_LAST_BLDG);
         if (place(L.asset, wx, wz, faceYaw, st.y, true, false, isBuilding)) {
             if (isBuilding) ++m_buildings; else ++m_props;
-            // The square's hero is where the shop-front gate points: a real
-            // facade with real windows, not whichever prefab happens to have
-            // the widest bbox (the first round aimed at a thatch roof).
-            if (L.asset == A_STONE1D && !m_shopFronts.empty())
+            // The square's hero is where the shop-front gate points. Keyed on
+            // the LOT INDEX, not on an asset id: with eight facades drawn from
+            // four shells every asset repeats, and an id match would silently
+            // aim at whichever plot came last.
+            if (i == kHeroLot && !m_shopFronts.empty())
                 m_heroFront = (uint32_t)m_shopFronts.size() - 1;
         } else {
             ++rejected;
@@ -540,24 +638,24 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ---- street furniture ---------------------------------------------------
     for (uint32_t i = 0; i < kPropCount; ++i) {
         const Lot& L = kProps[i];
-        const float u = u0 + (L.u - kLots[0].u) * ((u1 - u0) / 620.0f);
+        const float u = u0 + (L.u - kAuthoredU0) * ((u1 - u0) / kAuthoredSpan);
         Station st;
         if (!stationAt(u, st)) continue;
-        const float lat = std::max(L.lat, kStreetKeepOutM);
+        const float lat = std::max(L.lat, kStreetKeepOutM) + frontSupport(kAssets[L.asset]);
         const float nx = st.tz, nz = -st.tx;
         const float wx = st.x + (float)L.side * lat * nx;
         const float wz = st.z + (float)L.side * lat * nz;
         const float faceYaw = yawOf(-(float)L.side * nx, -(float)L.side * nz)
                             + L.jitterDeg * kDeg;
-        const bool torch = (L.asset == A_TORCH_A || L.asset == A_TORCH_B);
-        if (place(L.asset, wx, wz, faceYaw, st.y, false, torch, false)) ++m_props;
+        const bool lamp = (L.asset == A_LAMP);
+        if (place(L.asset, wx, wz, faceYaw, st.y, false, lamp, false)) ++m_props;
     }
 
     // ---- parked cars --------------------------------------------------------
     if (m_carArt.beginFromDir(device, convertedGlbRoot())) {
         for (uint32_t i = 0; i < kParkCount; ++i) {
             const ParkLot& P = kParks[i];
-            const float u = u0 + (P.u - kLots[0].u) * ((u1 - u0) / 620.0f);
+            const float u = u0 + (P.u - kAuthoredU0) * ((u1 - u0) / kAuthoredSpan);
             Station st;
             if (!stationAt(u, st)) continue;
             const float nx = st.tz, nz = -st.tx;
@@ -605,7 +703,7 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // Town centre = the square, for the map POI and for the report.
     {
         Station st{};
-        m_uCentre = u0 + (306.0f - kLots[0].u) * ((u1 - u0) / 620.0f);
+        m_uCentre = u0 + (kLots[kHeroLot].u - kAuthoredU0) * ((u1 - u0) / kAuthoredSpan);
         stationAt(m_uCentre, st);
         m_cx = st.x; m_cz = st.z; m_cy = st.y;
         m_dirX = st.tx; m_dirZ = st.tz;
@@ -627,10 +725,34 @@ bool Town::build(Scene& scene, x3::rhi::IRenderDevice& device,
 uint32_t Town::spawnPedestrians(x3::rhi::IRenderDevice& device,
                                 x3::phys::IPhysicsWorld& phys) {
     if (m_loopX.size() < 4) return 0;
-    // The crowd_skin roster (app/crowd_skin.cpp:35) — the three rigs that
-    // actually carry Idle+Walk+Run. Cycled so the street is not six clones.
+    // THE TOWNSPEOPLE — and why this is not the crowd_skin roster.
+    //
+    // It used to be `CrowdSkin::defaultRigs()`: AnnaCasual_anim,
+    // marcus_webb_anim, chief_martinez_anim. Rendering that roster
+    // (tools/glb_contact_sheet.py over assets/rigged_glb) shows what it is —
+    // a civilian woman, A CLAWED GREEN-VEINED MUTANT, and a black-clad SWAT
+    // operator. Two of the three people strolling Main Street were a monster
+    // and a special-forces officer, because crowd_skin.cpp:35 picks on "has
+    // Idle/Walk/Run" and was cast for the CLUB scene, not for a mountain town.
+    // It stayed invisible until the pedestrian eye gate finally framed a walker
+    // close enough to see (NO_SLOP rule 2: eyes on, at full res).
+    //
+    // crowd_skin's roster is left ALONE — other worlds want those rigs. The
+    // town casts its own, built by tools/town_people.py from the licensed
+    // `City People FREE Samples` pack, which the 914-package index
+    // (tools/unitypackage_index.py) turned up among the ~700 packs that had
+    // never been extracted. Six ordinary people who live somewhere: two
+    // casuals, two in outerwear, an elder and a kid — cycled so the street is
+    // not six clones.
+    //
+    // Each carries Idle/Walk/Run under those EXACT names, which is what
+    // townPedClipTable() below asks for and what AnimatedCharacter resolves by;
+    // `python tools/town_people.py verify` asserts it, because the failure mode
+    // is a silent sliding bind-pose statue rather than an error.
     static const char* const kRigs[] = {
-        "AnnaCasual_anim.glb", "marcus_webb_anim.glb", "chief_martinez_anim.glb",
+        "CityPerson_ManCasual.glb",   "CityPerson_WomanCasual.glb",
+        "CityPerson_ManJacket.glb",   "CityPerson_WomanCoat.glb",
+        "CityPerson_Elder.glb",       "CityPerson_Boy.glb",
     };
     const CharacterClipTable table = townPedClipTable();
     const std::string dir = riggedGlbRoot();
@@ -729,6 +851,18 @@ void Town::setNight(float k) {
     }
 }
 
+void Town::setNightFromSun(float sunDirY) {
+    // Sun elevation and the night dial are ONE VALUE (NO_SLOP rule 4). Full day
+    // above 0.25, full night at or below 0.05, linear between — so the world's
+    // standing noon sun (sunDir.y 0.92) gives 0 and the dusk gate's horizon sun
+    // (0.055) gives ~0.97. Before this existed the dial defaulted to 1 and
+    // nothing drove it, so the windows burned through every daylight capture.
+    constexpr float kDayY   = 0.25f;
+    constexpr float kNightY = 0.05f;
+    const float t = (kDayY - sunDirY) / (kDayY - kNightY);
+    setNight(std::min(std::max(t, 0.0f), 1.0f));
+}
+
 bool Town::showcaseCamera(int which, float out[5]) const {
     if (!m_built || m_st.size() < 2) return false;
     // Device camera convention: fwd = (cos yaw, ., sin yaw) — NOT the AXES-LAW
@@ -760,34 +894,120 @@ bool Town::showcaseCamera(int which, float out[5]) const {
         // The facade faces engine-yaw a.faceYaw, i.e. direction
         // (-sin, -cos); stand out along it and look back.
         const float fx = -std::sin(a.faceYaw), fz = -std::cos(a.faceYaw);
-        const float d = a.reach * 0.95f + 7.0f;
-        out[0] = a.x + fx * d; out[1] = a.y + 2.6f; out[2] = a.z + fz * d;
+        // Stand back far enough to hold the facade, high enough to look at the
+        // BUILDING. At 2.6 m with a -0.06 pitch the first cut of this shot gave
+        // 45% of the frame to blurred tarmac; the subject is the texture on the
+        // wall, so the camera looks slightly UP at it from a standing height.
+        const float d = a.reach * 0.80f + 6.0f;
+        out[0] = a.x + fx * d; out[1] = a.y + 3.1f; out[2] = a.z + fz * d;
         out[3] = camYawTo(-fx, -fz);
-        out[4] = -0.06f;
+        out[4] = 0.035f;
         return true;
     }
-    case 2: {   // THE PEDESTRIANS. Eye height on the sidewalk itself, looking
-                // along it, so a walker crosses the frame rather than dotting it.
-        if (m_loopX.size() < 6) return false;
-        const size_t i = m_loopX.size() / 6;
-        const size_t j = i + 3;
-        const float dx = m_loopX[j] - m_loopX[i], dz = m_loopZ[j] - m_loopZ[i];
-        const float L = std::max(std::sqrt(dx * dx + dz * dz), 1e-3f);
-        out[0] = m_loopX[i] - dx / L * 9.0f;
-        out[2] = m_loopZ[i] - dz / L * 9.0f;
-        out[1] = terrainHeightAtWorld(out[0], out[2]) + 1.65f;
-        out[3] = camYawTo(dx / L, dz / L);
-        out[4] = -0.03f;
+    case 2: {   // THE PEDESTRIANS. Derived from AN ACTUAL WALKER, not from the
+                // loop polyline.
+                //
+                // The polyline version stepped 9 m back along the loop tangent
+                // and grounded itself on raw terrain, and it put the camera on
+                // a grass bank with the nearest walker a speck 60 m away — the
+                // gate is supposed to prove the town is ALIVE and it proved a
+                // field. A pedestrian's own position is the one place in this
+                // town guaranteed to be standable ground, because THE CONTACT
+                // LAW put it there and re-checks it every frame. So: stand a
+                // few metres in front of the walker nearest the square, at its
+                // own foot height, and look back at it.
+        if (m_peds.empty()) return false;
+        size_t best = 0; float bestD = 1e18f;
+        for (size_t i = 0; i < m_peds.size(); ++i) {
+            if (!m_peds[i].body) continue;
+            const x3::phys::Vec3 f = m_peds[i].body->feet();
+            const float dx = f.x - m_cx, dz = f.z - m_cz;
+            const float d = dx * dx + dz * dz;
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        if (!m_peds[best].body) return false;
+        const x3::phys::Vec3 f = m_peds[best].body->feet();
+        // STAND WHERE THE WALKER IS GOING, not where it is.
+        //
+        // ENGINE_GOTCHAS 4.4: a still cannot prove motion. But the settle loop
+        // runs the town for tens of frames BEFORE the grab, and this camera is
+        // derived BEFORE the settle — so a walker framed at its spawn position
+        // has walked out of shot by the time the shutter opens. That is why the
+        // first two versions of this gate photographed an empty pavement with a
+        // speck on the horizon. Take the pedestrian's OWN heading (bearing to
+        // its next waypoint, not the street tangent — half the loop runs the
+        // other way), stand a short distance down it and look back: the settle
+        // then walks the subject INTO the frame instead of out of it.
+        const Ped& pd = m_peds[best];
+        float hx = 0.0f, hz = 0.0f;
+        if (!pd.wpX.empty()) {
+            const uint32_t w = pd.next % (uint32_t)pd.wpX.size();
+            hx = pd.wpX[w] - f.x; hz = pd.wpZ[w] - f.z;
+        }
+        float hL = std::sqrt(hx * hx + hz * hz);
+        if (hL < 1e-3f) { hx = m_dirX; hz = m_dirZ; hL = std::max(std::sqrt(hx * hx + hz * hz), 1e-3f); }
+        hx /= hL; hz /= hL;
+        // HOW FAR AHEAD: 20 m, and the number is MEASURED, not chosen.
+        // The settle loop runs 60 frames before the grab and the authored gait
+        // is 1.35 m/s, and the walker covers about 8.5 m in that time — which
+        // the previous attempt found the hard way by standing exactly 8.5 m
+        // ahead, so the subject walked into the camera and out of the frame
+        // (the log line below is what proved it: the camera was dead-on and
+        // 8.5 m away, and the pavement photographed empty). 20 m leaves the
+        // walker ~11 m out when the shutter opens — filling a useful part of a
+        // 720p frame — and the 2.6 m side-step turns it three-quarter-on
+        // instead of a head-on silhouette.
+        const float sx = -hz, sz = hx;     // sidestep, perpendicular to the path
+        out[0] = f.x + hx * 20.0f + sx * 2.6f;
+        out[2] = f.z + hz * 20.0f + sz * 2.6f;
+        out[1] = f.y + 1.62f;              // the walker's own ground + eye height
+        const float bx = f.x - out[0], bz = f.z - out[2];
+        out[3] = camYawTo(bx, bz);         // look back along its path
+        out[4] = -0.02f;
+        {   char b[224];
+            std::snprintf(b, sizeof(b),
+                "town shot 3: walker %u feet=(%.1f, %.1f, %.1f) heading=(%.2f, %.2f); "
+                "camera 20 m ahead on its path (it closes ~8.5 m during the settle)",
+                (unsigned)best, (double)f.x, (double)f.y, (double)f.z,
+                (double)hx, (double)hz);
+            x3::logInfo(b); }
         return true;
     }
-    case 3: {   // THE LIT WINDOWS. Three-quarter onto the square's facades from
-                // the far verge, low, so the panes and the pavement they throw
-                // light on are both in frame.
-        if (!stationAt(m_uCentre + 26.0f, st)) return false;
+    case 3: {   // THE LIT WINDOWS. Three-quarter onto the square's facades,
+                // FROM THE ROADWAY.
+                //
+                // This camera used to stand 30 m off the centreline on the
+                // +side normal — and the +side lots sit at a bbox centre of
+                // 26.9 m, so it stood INSIDE House_2_White and the whole frame
+                // was the underside of somebody's roof. That is ENGINE_GOTCHAS
+                // 4.1 happening to a camera that WAS derived from town data:
+                // deriving is not enough, it has to be derived from geometry
+                // that is guaranteed EMPTY. The roadway is the only such place
+                // in this town — kStreetKeepOutM exists precisely to keep it
+                // clear — so the shot is taken from the pavement, looking back
+                // and across at the hero's facade the way a driver would see it.
+        if (!stationAt(m_uCentre + 34.0f, st)) return false;
         const float nx = st.tz, nz = -st.tx;      // left normal
-        out[0] = st.x + nx * 30.0f; out[2] = st.z + nz * 30.0f;
-        out[1] = st.y + 3.0f;
-        out[3] = camYawTo(-nx * 0.55f - st.tx * 0.84f, -nz * 0.55f - st.tz * 0.84f);
+        // A third of the way to the kerb on the hero's side: still inside the
+        // keep-out, so still guaranteed clear of every plot.
+        // Stand on the FAR side of the centreline from the hero. Sitting on
+        // the hero's own side put the camera on top of the road's jersey-wall
+        // /guardrail furniture, which filled the left third of the frame with a
+        // pale slab a couple of metres from the lens. Across the street is also
+        // simply the right place to photograph a facade from.
+        const float lat = kStreetKeepOutM * 0.42f;
+        out[0] = st.x + nx * lat; out[2] = st.z + nz * lat;
+        out[1] = st.y + 2.3f;
+        // Look back down the street and across to the hero front, so the lit
+        // panes, the lamps and the pavement they light are all in frame.
+        float tx = -st.tx, tz = -st.tz;
+        if (m_heroFront < m_shopFronts.size()) {
+            const Anchor& a = m_shopFronts[m_heroFront];
+            tx = a.x - out[0]; tz = a.z - out[2];
+            const float L = std::max(std::sqrt(tx * tx + tz * tz), 1e-3f);
+            tx /= L; tz /= L;
+        }
+        out[3] = camYawTo(tx, tz);
         out[4] = 0.01f;
         return true;
     }

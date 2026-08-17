@@ -5,6 +5,7 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include "engine/core/x3_log.h"
+#include "engine/core/x3_log_region.h"   // pinned terminal region: typed-command queue (x3::conregion::popInput)
 #include "engine/core/x3_boot.h"   // [boot] timeline (boot-to-interactive instrumentation + --test-boottime)
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
@@ -58,6 +59,8 @@
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
 #include "facility_exterior.h"               // SEAM 2: the glass facility exterior wrapped around the REAL canon tower
+#include "apron_landing.h"                   // ONE WORLD landing: intro -> canon apron spawn + ship set-down (feat/canon-apron-landing)
+#include "glb_cpu_read.h"                    // CPU AABB measurement for the landed ship (placement-datum law)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "intro_orchestrator.h"              // Phase 3/4: runInteractiveIntro + IntroOutcome (branches the game start)
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
@@ -987,9 +990,25 @@ int runDefaultHost(HostContext& hc) {
     // (runIntro is also a no-op when `window` is null, a second safety net). The intro renders on
     // the public 2D path only — it spawns NO meshes/lights/physics, so there is nothing to leak
     // and the cell build that follows is byte-for-byte unchanged.
+    //
+    // ---- ONE WORLD LANDING (feat/canon-apron-landing). Owner, live play
+    // 2026-08-16: "Why are we even landing in a different world than we play
+    // in?" The flyable outcomes (Escaped / CapitalKilled) no longer hand off to
+    // the separate `--world surface` slice: on the canon worlds they FALL
+    // THROUGH into THIS host's canonlevel build with spawnAtKey="apron" — the
+    // player lands on the canon facility's apron ring, his ship set down beside
+    // the walk, and enters through the SEAM-2 breach on foot. No world switch.
+    // `--world surface` (and its [E] breach handoff) survives as a dev shortcut
+    // per docs/design/WORLDS.md — the legacy route below still serves the
+    // level1/elevator dev worlds, whose build has no exterior to land at. ----
+    bool introApronLanding = false;                      // land on the canon apron this boot
+    x3::intro::IntroOutcome introLandingOutcome = x3::intro::IntroOutcome::ShotDown;
     {
         const bool introCellWorld = (worldMode == "level1") || (worldMode == "elevator") ||
                                     (worldMode == "canonlevel") || (worldMode == "intro");
+        // The worlds whose build stands up the SEAM-2 exterior + apron — the
+        // ones the ONE WORLD landing can put you down in (== canonWorld below).
+        const bool canonCapableWorld = (worldMode == "canonlevel") || (worldMode == "intro");
         // --test-boottime skips the cold-open: the intro is CONTENT the player watches
         // (a skippable cinematic), not boot work — the gate measures the machine.
         if (window && introCellWorld && !testBootTime && !skipIntro) {
@@ -1017,51 +1036,71 @@ int runDefaultHost(HostContext& hc) {
                 return 0;
             }
 
-            if (outcome == x3::intro::IntroOutcome::CapitalKilled) {
-                // KILL PATH (owner canon 2026-07-27: "kill big ship.. it crashes...
-                // i land.. recover tech and prisoners from it.. break IN to Lab
-                // zero"). Earned, never rolled. The dreadnought is down on the
-                // surface and StoryFlags["intro.wreck"] is set beside
-                // ["intro.landed"], so Act-1 starts at the CRASH SITE: salvage the
-                // wreck's tech, free the prisoners in its hold, then breach Lab
-                // Zero from outside. It shares the surface world host with the
-                // escape path (same "land outside the facility, free and armed"
-                // shape) — the wreck flag is what makes the start differ. Same
-                // teardown contract as the escape branch below.
-                x3::logInfo("[intro] CAPITAL_KILLED -> crash-site Act-1 "
-                            "(host_surface_start + intro.wreck: salvage -> prisoners "
-                            "-> breach Lab Zero)");
-                loading.shutdown(*device);
-                physics->shutdown();
-                hc.worldMode = "surface";
-                return x3::apphost::dispatchWorldHost(hc);
-            }
-
-            if (outcome == x3::intro::IntroOutcome::Escaped) {
-                // ESCAPE PATH (Phase 7): the REAL surface-landing Act-1. The ion-pulse
-                // descent (Phase 6) set StoryFlags["intro.landed"]; instead of waking
-                // Jake a prisoner in the canon cell, hand off to the surface-start host
-                // (app/world_hosts/host_surface_start.cpp) — Jake lands OUTSIDE the huge
-                // glass facility where Sarah is held, FREE + ARMED, a rescuer (the exact
-                // inverse of the cell start). The host owns its own scene/physics and the
-                // FULL host teardown (device + window + glfw) per the world-host contract,
-                // so we shut down THIS default host's physics first (the device/window are
-                // torn down by the host) and return its exit code directly — we do NOT
-                // fall through into the cell build below.
-                x3::logInfo("[intro] ESCAPED -> surface-landing Act-1 (host_surface_start)");
-                loading.shutdown(*device);
-                physics->shutdown();
-                hc.worldMode = "surface";
-                return x3::apphost::dispatchWorldHost(hc);
+            if (outcome == x3::intro::IntroOutcome::CapitalKilled ||
+                outcome == x3::intro::IntroOutcome::Escaped) {
+                // THE FLYABLE OUTCOMES. Escaped (Phase 7): the ion-pulse descent
+                // set StoryFlags["intro.landed"] — Jake lands OUTSIDE the glass
+                // facility where Sarah is held, FREE + ARMED, a rescuer (the exact
+                // inverse of the cell start). CapitalKilled (owner canon
+                // 2026-07-27): the dreadnought is down, ["intro.wreck"] set beside
+                // ["intro.landed"] — same "land outside, free and armed" shape;
+                // the wreck flag is what makes the start differ.
+                //
+                // ONE WORLD (owner 2026-08-16): on the canon worlds these land IN
+                // canonlevel — fall through into the build below with
+                // spawnAtKey="apron" (app/apron_landing.h; the main loop's
+                // load-and-place block stands him on the apron, the arrival block
+                // arms him, the build sets his ship down by the walk). No world
+                // switch, no [E] handoff.
+                if (canonCapableWorld) {
+                    introApronLanding   = true;
+                    introLandingOutcome = outcome;
+                    hc.spawnAtKey = x3::game::introLandingSpawnKey(outcome);
+                    x3::logInfo(std::string("[intro] ") +
+                                (outcome == x3::intro::IntroOutcome::Escaped
+                                     ? "ESCAPED" : "CAPITAL_KILLED") +
+                                " -> ONE WORLD landing: canon apron (spawnAtKey='" +
+                                hc.spawnAtKey + "', ship set down on the apron)");
+                } else {
+                    // Legacy route (level1/elevator dev worlds only — their build
+                    // has no exterior/apron to land at): the surface-start host.
+                    // The host owns its own scene/physics and the FULL teardown
+                    // per the world-host contract, so shut down THIS host's
+                    // physics first and return its exit code directly.
+                    x3::logInfo(std::string("[intro] ") +
+                                (outcome == x3::intro::IntroOutcome::Escaped
+                                     ? "ESCAPED" : "CAPITAL_KILLED") +
+                                " -> surface-landing Act-1 (host_surface_start; "
+                                "legacy dev-world route)");
+                    loading.shutdown(*device);
+                    physics->shutdown();
+                    hc.worldMode = "surface";
+                    return x3::apphost::dispatchWorldHost(hc);
+                }
             }
 
             // SEAMLESS WAKE (canon cell): the intro ends on black ("SIX MONTHS LATER").
             // Flip the loading screen to BLACKOUT so the cell build stays black, then
             // the hand-off fade is the slow first-person wake in the cell — control is
-            // live underneath it, exactly like a normal spawn. (The stub escape path
-            // also lands in the cell, so this applies to both for now.)
-            loading.setBlackout(true);
+            // live underneath it, exactly like a normal spawn. The APRON LANDING is a
+            // daylight touchdown, not the black wake — it keeps the normal loading fade.
+            if (!introApronLanding) loading.setBlackout(true);
             x3::boot::mark("intro cold-open (content)");
+        }
+        // STAGING HOOK (screenshot/QA — the X3_DESCMECH_SABOTAGE pattern):
+        // X3_APRON_LANDING=1 boots the canon worlds in the landed state (apron
+        // spawn + ship set down + armed arrival) WITHOUT playing the intro, so
+        // the landed view is capturable on the headless screenshot path (which
+        // never runs the windowed cold-open). =2 stages the CapitalKilled
+        // (wreck) variant.
+        if (const char* ap = std::getenv("X3_APRON_LANDING");
+            ap && (ap[0] == '1' || ap[0] == '2') && canonCapableWorld && !introApronLanding) {
+            introApronLanding   = true;
+            introLandingOutcome = (ap[0] == '2') ? x3::intro::IntroOutcome::CapitalKilled
+                                                 : x3::intro::IntroOutcome::Escaped;
+            hc.spawnAtKey = x3::game::introLandingSpawnKey(introLandingOutcome);
+            x3::logInfo("[apron] X3_APRON_LANDING staging — booting in the landed state "
+                        "(spawnAtKey='apron', ship on the apron)");
         }
     }
 
@@ -1120,6 +1159,16 @@ int runDefaultHost(HostContext& hc) {
     x3::game::CellDressing canonDressing;      // opening-space set-dressing + motivated lights (canonWorld only)
     x3::game::RoomDressing canonRooms;         // WAVE-3 recipe dressing for the other 52 rooms (canonWorld only)
     x3::game::FacilityExterior facilityExterior; // SEAM 2: the glass exterior wrapping the REAL tower (canonWorld only)
+    // ---- ONE WORLD landing: Jake's LANDED SHIP on the canon apron (built only
+    // when the intro landed here — introApronLanding). The loader + Model live
+    // at host scope so the GPU handles stay valid for the world's lifetime;
+    // unloaded in the teardown chain below. Drawables become STATIC scene
+    // entities (kNoRoom => always drawn under the PVS cull, the R-9 skirt
+    // contract), so every render path — windowed, screenshot, smoketest —
+    // draws the ship with zero per-frame wiring. ----
+    std::unique_ptr<x3::asset::IAssetSource>  apronShipSrc;
+    std::unique_ptr<x3::asset::IModelLoader>  apronShipLoader;
+    x3::asset::Model                          apronShipModel{};
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
     // ---- Keycard / keypad door gating (canonWorld). keycardMask = bitmask of held
     // keycard ids; the Security keycard is a glowing pickup in the Research Lab. ----
@@ -1709,6 +1758,17 @@ int runDefaultHost(HostContext& hc) {
             if (er == x3::game::kNoRoom) return no("the loaded tower data has no Entrance room");
             const x3::game::CanonRoom& rm = canonFloor.rooms[er];
             out = { rm.cx, rm.y0() + 1.0f, rm.cz };
+            return true;
+        }
+        // --- [ONE WORLD landing] The APRON — the ring outside the breach where
+        //     the intro sets the player down (and a plain destination). Derived
+        //     from the exterior this world ACTUALLY built (app/apron_landing.h).
+        if (k == x3::game::kApronDestKey) {
+            if (!facilityExterior.built()) return no("this world has no facility apron");
+            const x3::game::ApronLanding al =
+                x3::game::computeApronLanding(facilityExterior.builtDesc());
+            if (!al.ok) return no("the apron landing could not be computed");
+            out = { al.spawn[0], al.spawn[1] + 1.0f, al.spawn[2] };
             return true;
         }
         // --- Back home: the facility, ANY floor. F1 = the detention lobby (the rift is
@@ -2651,13 +2711,14 @@ int runDefaultHost(HostContext& hc) {
                     device->setSkyParams(sp);
                     x3::logInfo("--day: bright-midday sky override active (underwater staging)");
                 }
-                // The sky's baked irradiance at full strength shifted the
-                // calibrated interior reads (the FP viewmodel washed pink-white
-                // vs the pre-merge baseline): scale the IBL ambient so interiors
-                // match the baseline (eye-compared) while the facade's shadow
-                // side keeps enough sky fill to read its banding. Sun, sky
-                // background and the glass pass's reflections are unscaled.
-                device->setIblIntensity(0.5f);
+                // FULL sky irradiance (fix/exterior-atmosphere). The historic
+                // 0.5 cut kept the FP viewmodel from washing pink-white INDOORS,
+                // but RoomDressing::applyZoneAtmosphere now owns interior IBL
+                // per-zone and re-asserts it on every zone change, so interiors
+                // never see this global. Matches kExteriorIbl (room_dressing) —
+                // and since m_iblSpecular is unset (-1 falls back to this), it
+                // also restores full env-specular to outdoor glass/metal.
+                device->setIblIntensity(1.0f);
                 // STREET LIGHT (host-owned): the facility-apron lamps by the
                 // breach + the Spire-approach road rows. kNoRoom entities;
                 // the city grid's lamps build with the region (hook below).
@@ -2667,6 +2728,97 @@ int runDefaultHost(HostContext& hc) {
                     const float bx = zFace ? fd.breachCenter : (fd.x0 + fd.x1) * 0.5f;
                     const float bz = zFace ? fd.z1 + 2.0f : fd.z1 + 2.0f;
                     streetLights.buildHostLamps(scene, *device, fd.baseY + 0.02f, bx, bz);
+                }
+                // ---- ONE WORLD LANDING: Jake's SHIP set down on the apron. Only
+                // when the intro actually landed here (introApronLanding — the
+                // flyable outcomes or the X3_APRON_LANDING staging hook); the
+                // shot_down canon boot has no ship outside (Jake was captured).
+                // Placement rides app/apron_landing.h (the SAME maths the spawn
+                // + the --test-apronlanding gate use); the set-down Y obeys the
+                // PLACEMENT-DATUM LAW — the hull's CPU-measured AABB minY sits
+                // ON the apron top, never the model origin (the 0.6 m-proud
+                // boat bug class). Static v1 prop: scene entities + one static
+                // collision box. ----
+                if (introApronLanding) {
+                    const x3::game::ApronLanding al = x3::game::computeApronLanding(fd);
+                    const char* kShipCandidates[] = { "JakeFighterShip_textured.glb",
+                                                      "JakeFighterShip.glb",
+                                                      "SpaceShip4.glb", "SpaceShip.glb" };
+                    apronShipSrc.reset(x3::asset::createAssetSource());
+                    apronShipSrc->mountDir(x3::game::riggedGlbRoot(), 0);
+                    apronShipLoader.reset(x3::asset::createModelLoader(device, apronShipSrc.get()));
+                    std::string shipFile;
+                    for (const char* c : kShipCandidates) {
+                        apronShipModel = apronShipLoader->load(c);
+                        if (apronShipModel.ok) { shipFile = c; break; }
+                    }
+                    if (al.ok && apronShipModel.ok) {
+                        // MEASURE, never assume: CPU-read the GLB with the full
+                        // node hierarchy applied (the traffic-system pattern).
+                        float mn[3] = { 0, 0, 0 }, mx[3] = { 0, 0, 0 };
+                        bool measured = false;
+                        const x3::game::GlbModel cpu = x3::game::readGlbForLod(
+                            x3::game::riggedGlbRoot() + "/" + shipFile, /*minTriangles=*/16);
+                        if (cpu.ok) {
+                            mn[0] = mn[1] = mn[2] = 1e18f; mx[0] = mx[1] = mx[2] = -1e18f;
+                            for (const x3::game::GlbPrimitive& pr : cpu.prims)
+                                for (const auto& v : pr.verts)
+                                    for (int k = 0; k < 3; ++k) {
+                                        mn[k] = std::min(mn[k], v.pos[k]);
+                                        mx[k] = std::max(mx[k], v.pos[k]);
+                                    }
+                            measured = mx[0] > mn[0];
+                        }
+                        const float S = 2.2f;   // the surface world's landed-ship scale
+                        const float shipY = measured
+                            ? x3::game::shipYForApron(al.apronY, mn[1], S)
+                            : al.apronY;        // unmeasured: trust the art's origin datum
+                        const float cy = std::cos(al.shipYaw), sy = std::sin(al.shipYaw);
+                        const float place[16] = { cy * S, 0, -sy * S, 0,
+                                                  0,      S,  0,      0,
+                                                  sy * S, 0,  cy * S, 0,
+                                                  al.ship[0], shipY, al.ship[2], 1 };
+                        for (const auto& dr : x3::asset::makeDrawables(apronShipModel)) {
+                            x3::game::Entity e{};
+                            e.mesh = x3::rhi::MeshHandle{ dr.meshId };
+                            e.tex  = x3::rhi::TextureHandle{ dr.baseColorTexId };
+                            // The surface world's exact landed-ship tint (golden-
+                            // hour lift on the dark gunmetal plating).
+                            e.baseColor[0] = dr.baseColorFactor[0] * 1.2f + 0.15f;
+                            e.baseColor[1] = dr.baseColorFactor[1] * 1.2f + 0.16f;
+                            e.baseColor[2] = dr.baseColorFactor[2] * 1.2f + 0.18f;
+                            e.baseColor[3] = dr.baseColorFactor[3];
+                            x3::asset::mulMat4(place, dr.nodeTransform, e.transform);
+                            e.tag    = (uint32_t)x3::game::Tag::Static;
+                            e.roomId = x3::game::kNoRoom;   // outdoors: always drawn
+                            scene.add(e);
+                        }
+                        // One static collision box over the measured hull (axis
+                        // swap for the near-cardinal yaw; v1 approximation).
+                        if (measured) {
+                            float hx = (mx[0] - mn[0]) * 0.5f * S;
+                            float hz = (mx[2] - mn[2]) * 0.5f * S;
+                            const float hy = (mx[1] - mn[1]) * 0.5f * S;
+                            if (std::fabs(sy) > 0.7071f) std::swap(hx, hz);
+                            physics->addBox(x3::phys::Vec3{ hx, hy, hz },
+                                            x3::phys::Vec3{ al.ship[0],
+                                                            shipY + (mn[1] + (mx[1] - mn[1]) * 0.5f) * S,
+                                                            al.ship[2] },
+                                            0.0f, x3::phys::Layer::Static);
+                        }
+                        char sb[240];
+                        std::snprintf(sb, sizeof(sb),
+                            "[apron] landed ship %s set down at (%.1f, %.2f, %.1f) yaw %.2f "
+                            "(hull minY %+.3f x%.1f -> ON the apron at y=%.2f; datum=AABB%s)",
+                            shipFile.c_str(), al.ship[0], shipY, al.ship[2], al.shipYaw,
+                            measured ? mn[1] : 0.0f, S, al.apronY,
+                            measured ? "" : " UNMEASURED — origin datum");
+                        x3::logInfo(sb);
+                    } else {
+                        x3::logWarn(std::string("[apron] landed ship NOT placed (") +
+                                    (al.ok ? "no ship GLB loaded" : "no apron landing computed") +
+                                    ") — the landing stands without the prop");
+                    }
                 }
                 x3::boot::mark("SEAM 2 exterior (facade wraps the tower)");
             } else {
@@ -3209,6 +3361,10 @@ int runDefaultHost(HostContext& hc) {
     // Live projectile bolts (plasma): host-owned; advanced + impact-resolved each
     // frame. Bounded by gameplay (a handful in flight); a plain vector is fine.
     struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range;
+                            // Phase B1: per-weapon ballistic arc, stamped from
+                            // ProjectileSpawn::gravity (m/s^2 down). 0 = the flat
+                            // path every legacy bolt flies (bit-identical).
+                            float gravity = 0.0f;
                             x3::game::WeaponFxKind impactKind = x3::game::WeaponFxKind::Default;
                             // canon-aliens Adaptive Hide: carry the firing WeaponDef's DamageType
                             // (Kinetic / Energy / Explosive / ...) along the bolt so the on-impact
@@ -4213,6 +4369,31 @@ int runDefaultHost(HostContext& hc) {
         x3::logInfo("[handoff] ESCAPED rescuer arrival: intro flags imported "
                     "(intro.outcome=escaped), player ARMED, objective -> REACH SARAH; "
                     "spawning at 'entrance'");
+    }
+
+    // ---- ONE WORLD LANDING — ARRIVAL SIDE (feat/canon-apron-landing). The
+    // intro's flyable outcomes fell through into THIS build (no world switch),
+    // so the outcome is IN HAND — no persisted-flags round trip needed. Same
+    // arrival contract as the entrance handoff above: the live flags world gets
+    // the outcome (+landed, +wreck on the kill path) via the orchestrator's own
+    // writeOutcomeFlag; the rescuer lands ARMED (cheatArm — the same
+    // WeaponSystem the cell pickup flips); the objective is the walk-in. The
+    // PLACEMENT itself rides the generic load-and-place path (pendingSpawnKey ->
+    // riftDestination("apron") in the main loop). Gated on introApronLanding so
+    // the shot_down cell start, menu travel and every dev world are
+    // byte-identical. ----
+    if (canonWorld && canonPlay.built() && introApronLanding) {
+        x3::intro::writeOutcomeFlag(chatTrees.flags(), introLandingOutcome);
+        chatTrees.flags().set(x3::intro::kIntroLandedFlag);
+        if (introLandingOutcome == x3::intro::IntroOutcome::CapitalKilled)
+            chatTrees.flags().set(x3::intro::kIntroWreckFlag);
+        canonPlay.cheatArm(scene);
+        game.objectives().setText("ENTER THE FACILITY - REACH SARAH");
+        x3::logInfo(std::string("[apron] landed arrival: intro.outcome=") +
+                    (introLandingOutcome == x3::intro::IntroOutcome::CapitalKilled
+                         ? "capital_killed (+intro.wreck)" : "escaped") +
+                    " +intro.landed written to the live flags, player ARMED, "
+                    "objective -> ENTER THE FACILITY; spawning at 'apron'");
     }
 
     // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the
@@ -7324,7 +7505,7 @@ int runDefaultHost(HostContext& hc) {
     x3::audio::LoopHandle fireLoop{};
     x3::audio::SoundHandle fireLoopSnd{};   // the sound the current loop voice was started with
     // WEAPONS: rising-edge tracking for the number keys 1..N (weapon switch) + R (reload).
-    bool prevWeaponKey[9] = {};
+    bool prevWeaponKey[x3::game::kCanonKeyCount] = {};   // Phase B3: 12 canon keys (1..9 0 - =)
     bool prevReload = false;
 
     // ---- Door-code keypad host state (§6.4 keypad gate). When the player presses
@@ -7995,6 +8176,13 @@ int runDefaultHost(HostContext& hc) {
             std::string    why;
             if (riftDestination(want, to, &why)) {
                 player.setFeetPosition(*physics, x3::phys::Vec3{ to.x, to.y - 1.6f + 0.3f, to.z });
+                // ONE WORLD landing: the apron arrival FACES the breach (he just
+                // set his ship down; the facility is the first thing he sees).
+                if (want == x3::game::kApronDestKey && facilityExterior.built()) {
+                    const x3::game::ApronLanding al =
+                        x3::game::computeApronLanding(facilityExterior.builtDesc());
+                    if (al.ok) player.setLook(al.spawnYaw, -0.02f);
+                }
                 const x3::game::Destination* d = x3::game::findDestination(want);
                 riftHudMsg   = std::string("ARRIVED -> ") + (d ? d->name : want.c_str());
                 riftHudTimer = 4.0f;
@@ -8148,6 +8336,15 @@ int runDefaultHost(HostContext& hc) {
         bool gNow = keyDown(GLFW_KEY_G);
         if (gNow && !prevG && !worldCars.driving()) player.setNoclip(!player.noclip());
         prevG = gNow;
+        // TERMINAL COMMAND LINE (pinned console region, engine/core/x3_log.cpp):
+        // lines typed into the OS terminal's bottom input row feed the SAME
+        // dispatcher as the in-game dev-shell console. Drained HERE, on the main
+        // thread, because IConsole::exec is not thread-safe; results echo back to
+        // the terminal via Console::print -> logInfo("[con] ...").
+        {
+            std::string termCmd;
+            while (x3::conregion::popInput(termCmd)) console->exec(termCmd);
+        }
         // U = IDKFA hotkey (playtest aid): runs the console command of the same name
         // (god + full health + all weapons + unlimited ammo) so the cheat is one key
         // instead of opening the console. Gated on !consoleOpen so typing a 'u' into
@@ -8367,10 +8564,21 @@ int runDefaultHost(HostContext& hc) {
         // keys are being typed as a code, not used to switch weapons), and while a
         // chat-tree conversation is capturing 1-4 as dialog choices.
         if (!codeMode && !termMode && !terrainWorld && !chatTrees.active()) {
-            const int n = arsenal.count() < 9 ? arsenal.count() : 9;
-            for (int wi = 0; wi < n; ++wi) {
-                bool down = keyDown(GLFW_KEY_1 + wi);
-                if (down && !prevWeaponKey[wi]) arsenal.select(wi);
+            // Phase B3: the CANON 12-weapon key row. 1..9 then 0 - = select the
+            // canonical twelve BY NAME in canon order (weapon.cpp
+            // canonKeyWeaponName) — the old `GLFW_KEY_1 + wi` slot mapping capped
+            // at 9 and left five canon weapons keyless. The two X3Native-only
+            // weapons (smg / plasma_rifle) stay on the scroll-wheel cycle below.
+            static const int kWeaponKeyCodes[x3::game::kCanonKeyCount] = {
+                GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3, GLFW_KEY_4, GLFW_KEY_5,
+                GLFW_KEY_6, GLFW_KEY_7, GLFW_KEY_8, GLFW_KEY_9, GLFW_KEY_0,
+                GLFW_KEY_MINUS, GLFW_KEY_EQUAL };
+            for (int wi = 0; wi < x3::game::kCanonKeyCount; ++wi) {
+                bool down = keyDown(kWeaponKeyCodes[wi]);
+                if (down && !prevWeaponKey[wi]) {
+                    const int slot = arsenal.indexOf(x3::game::canonKeyWeaponName(wi));
+                    if (slot >= 0) arsenal.select(slot);
+                }
                 prevWeaponKey[wi] = down;
             }
             bool rNow = keyDown(GLFW_KEY_R);
@@ -10649,11 +10857,18 @@ int runDefaultHost(HostContext& hc) {
             // one-shot — so suppress the per-shot fire SFX here for those weapons.
             const bool usesFireLoop = arsenal.current().fireSfxLoop;
             if (!shot.projectiles.empty()) {
-                // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
-                const auto& pj = shot.projectiles[0];
-                // [W9-3 RPG] skill/mod damage layer on the bolt (base def untouched).
-                const int pjDmg = x3::game::rpgScaleDamage(pj.damage, rpgMods, rpgCritRng);
-                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, impactKind, pj.type, currentImpactSfx() });
+                // ---- Projectile weapon: spawn EVERY travelling bolt this trigger
+                // pull produced (Phase B2; shape copied from the smoketest consumer,
+                // which already loops). Stream weapons (flamethrower / freezeray)
+                // emit several jittered short-lived particles per pull — bounded by
+                // kMaxStreamSpawns on the producer — every other weapon exactly one.
+                // Was a hard read of projectiles[0], which dropped the extras.
+                const x3::audio::SoundHandle pjImpactSnd = currentImpactSfx();
+                for (const auto& pj : shot.projectiles) {
+                    // [W9-3 RPG] skill/mod damage layer on the bolt (base def untouched).
+                    const int pjDmg = x3::game::rpgScaleDamage(pj.damage, rpgMods, rpgCritRng);
+                    projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, pj.gravity, impactKind, pj.type, pjImpactSnd });
+                }
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
                 if (!usesFireLoop)
                     audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
@@ -10795,6 +11010,12 @@ int runDefaultHost(HostContext& hc) {
         if (!simFrozen && !terrainWorld && !projectiles.empty()) {
             for (size_t pi = 0; pi < projectiles.size(); ) {
                 LiveProjectile& b = projectiles[pi];
+                // Phase B1: ballistic arc. Apply the spawn's per-weapon gravity to
+                // the velocity BEFORE the step so the raycast segment below matches
+                // this frame's actual travel (v.y -= g*dt; pos += v*dt). dt-SCALED,
+                // never per-frame — house rule; a per-frame term changes with the
+                // refresh rate. gravity == 0 keeps every legacy bolt exactly flat.
+                if (b.gravity != 0.0f) b.vel.y -= b.gravity * dt;
                 float speed = std::sqrt(b.vel.x*b.vel.x + b.vel.y*b.vel.y + b.vel.z*b.vel.z);
                 float stepLen = speed * dt;
                 if (stepLen < 1e-5f) stepLen = 1e-5f;
@@ -12241,6 +12462,7 @@ int runDefaultHost(HostContext& hc) {
     shutdownGameSystems();   // every enemy group + Martinez + barrels + Nexus/canon ragdolls
     if (spacePlanetMesh.valid())     { device->destroyMesh(spacePlanetMesh); spacePlanetMesh = {}; }
     if (spacePlanetRingMesh.valid()) { device->destroyMesh(spacePlanetRingMesh); spacePlanetRingMesh = {}; }
+    if (apronShipModel.ok && apronShipLoader) apronShipLoader->unload(apronShipModel);   // ONE WORLD landing ship
     docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
     worldMap.shutdown(*device);                    // baked map-tile textures
     x3::club_listen::shutdown();                    // close the WASAPI loopback device (idempotent)
