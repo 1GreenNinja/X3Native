@@ -146,6 +146,20 @@ struct TestFlags {
     std::string demoDialogPath;
 };
 
+// ---------------------------------------------------------------------------
+// --test-grounding — THE CHARACTER-GROUNDING GATE (app/grounding.h).
+//
+// The 0cbe3f89 wiring: parseCli() sets this inline global directly and
+// dispatchTests() reads it first (it predates the EXE split's TestFlags copy
+// and stayed additive/zero-conflict for that reason). Merge 58eb79b3
+// (inspx/la-exe -> integration/playtest-0814) dropped the cli.cpp + this block
+// in its KEEP-BOTH resolution, leaving runGroundingSelfTest() with NO caller —
+// the gate existed but could not be run. Restored 2026-08-16
+// (audit/rifthub-portals). Folds into TestFlags in one line whenever a lane
+// that owns main.cpp wants it.
+// ---------------------------------------------------------------------------
+inline bool g_testGrounding = false;
+
 // Run the headless test ladder. Returns 0/1 (the program exit code) if a test
 // flag matched, or -1 if none matched (main() should continue normal boot).
 int dispatchTests(const TestFlags& tf);
