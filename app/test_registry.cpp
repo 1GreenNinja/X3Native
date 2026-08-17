@@ -111,6 +111,8 @@
 #include "world_map.h"
 #include "city.h"
 #include "tunnel_corridor.h"   // x3::game::runTunnelDriveSelfTest (--test-tunneldrive)
+#include "summit_lot.h"        // x3::game::runSummitLotSelfTest (--test-summitlot)
+#include "ridge_road.h"        // x3::game::runRidgeRoadSelfTest (--test-ridgeroad)
 #include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
 #include "traffic.h"           // x3::game::runTrafficSelfTest (--test-traffic)
@@ -770,9 +772,19 @@ int dispatchTests(const TestFlags& tf) {
                     "barrier planner leaves them open, and the fuel stub arms)...");
         return x3::game::runGasStationSelfTest() ? 0 : 1;
     }
+    if (tf.testRidgeRoad) {
+        x3::logInfo("running SUMMIT RIDGE ROAD self-test (4-ish miles of dirt along the "
+                    "tops, lot -> the bore's massif; A/B'd against the straight line)...");
+        return x3::game::runRidgeRoadSelfTest() ? 0 : 1;
+    }
+    if (tf.testSummitLot) {
+        x3::logInfo("running SUMMIT PARKING LOT self-test (the pad at the top of the "
+                    "summit spur: carved, level, on the peak, drivable into)...");
+        return x3::game::runSummitLotSelfTest() ? 0 : 1;
+    }
     if (tf.testTunnelDrive) {
         x3::logInfo("running TUNNEL DRIVE-THROUGH self-test (real rig through the demo "
-                    "bore; earth-ramp NEGATIVE CONTROL with X3_TUNNEL_PORTAL_CUT=0)...");
+                    "bore; field-level NEGATIVE CONTROL: the natural hill must bury the road)...");
         return x3::game::runTunnelDriveSelfTest() ? 0 : 1;
     }
     if (tf.testTunnelMouth) {

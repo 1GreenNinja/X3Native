@@ -485,14 +485,11 @@ int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 // the whole 640 m. A fifth of a metre buys the whole route out of it.
 constexpr float kFloorClear = 0.22f;
 
-// CAP THE PLUG'S CARVE — the torn-mountain guard, referenced by the
-// drive-through gate's BOUNDED CARVE check. Node depths are authored as
-// (natural surface at the probe) - road, i.e. "cut the ground down to road
-// level". Under the rock-relief massif that difference reaches ~100 m, which
-// would gouge the ridge open; 24 m is deep enough to clear the portal and
-// shallow enough to leave a mountain standing over it. Unclamped, B2 measures
-// 44.6 m of carve against an 18.2 m need.
-constexpr float kTcPlugMaxCut = 24.0f;
+// (kTcPlugMaxCut, the 24 m plug-carve cap, lived here until 2026-08-16. The
+// portal PLUG died with the two-regime build; the constant's one remaining
+// reader was the drive gate's old B2, which allowed the plug's cap on top of
+// the open-cut need. D2 now bounds the carve by the open-cut need alone —
+// the receipt lives in that gate's comment.)
 
 void deriveRoute(const RouteSeed& seed, TunnelRoute& route, TerrainCorridor& c) {
     route = TunnelRoute{};
@@ -1250,10 +1247,45 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // metres below the road datum. Reach the skirt down to the actual ground
         // at each edge and the ribbon reads as an embankment instead of a slab
         // hovering over a gap.
-        auto edgeBottom = [&](const Frame& f, float latOff) {
-            const float ex = f.p[0] + right[0]*latOff, ez = f.p[2] + right[2]*latOff;
-            const float g = terrainHeightAtWorld(ex, ez);
-            return clampf(std::min(f.p[1] - 1.2f, g - 0.6f), f.p[1] - 16.0f, f.p[1] - 1.2f);
+        // (edgeBottom() lived here: `clamp(min(roadY - 1.2, ground - 0.6), ...)`,
+        // the single vertical drop the prism below replaces.)
+        // THE PRISM SKIRT — road_network.cpp's road-prism numbers, not a second
+        // set invented here. The demo ribbon used to close its outer edge with
+        // ONE VERTICAL QUAD from the apron lip down to edgeBottom(), which the
+        // clamp above forces at least 1.2 m below the road: a car in the
+        // corridor floor beside the road faced a 1.2-16 m concrete cliff. That
+        // is the D5b road-mount defect the drive gate measures (1.64 m at
+        // s=10, lat 9.5, run of 2026-08-17), and it is the SAME defect Lane 7
+        // reported on the network routes and fixed with this prism — the demo
+        // road simply never got the fix. A short vertical face, then a batter
+        // whose outward run scales with the drop, so no 0.4 m step up the face
+        // exceeds the rig's ~0.43 m chassis clearance.
+        //
+        // THE FACE IS SHORTER THAN road_network's 0.62 m, on purpose, and the
+        // gate is why. D5b samples the lateral walk every 0.4 m, so what a car
+        // actually climbs at the edge is the face PLUS the first 0.4 m of
+        // batter — 0.62 + 0.16 = 0.78 m would fail a 0.45 m clearance check
+        // that a 0.62 m face alone appears to survive. More to the point, the
+        // approach cut is a RECOVERY AREA: it is the one place on this route
+        // where a car that has left the pavement is meant to be able to get
+        // back onto it, which is a different design problem from a network
+        // route running on fill through open country. 0.20 + 0.13 = 0.33 m,
+        // inside the rig's ~0.43 m clearance with margin to spare.
+        constexpr float kSkirtFace    = 0.20f;   // visible vertical lip (m)
+        constexpr float kSkirtOut     = 0.9f;    // minimum batter run outward (m)
+        constexpr float kSkirtLap     = 0.6f;    // toe buried under the carved ground
+        constexpr float kSkirtMaxDrop = 14.0f;   // no curtain wall off a cliff
+        // Run/rise. 3.0 is an 18.4 deg batter: a 0.4 m lateral sample climbs
+        // 0.13 m of it. (road_network reads its slope from the barrier plan;
+        // the demo road has no plan, so the constant is stated here and D5b
+        // proves it against the real collision every run.)
+        constexpr float kSkirtSlope   = 3.0f;
+        // Outward run of the batter at this edge, from the drop it must cover.
+        auto skirtRun = [&](const Frame& f, float latOff, float topY) {
+            const float px = f.p[0] + right[0] * (latOff + (latOff > 0 ? 2.0f : -2.0f));
+            const float pz = f.p[2] + right[2] * (latOff + (latOff > 0 ? 2.0f : -2.0f));
+            const float drop = clampf(topY - terrainHeightAtWorld(px, pz), 0.0f, kSkirtMaxDrop);
+            return clampf(drop * kSkirtSlope, kSkirtOut, 24.0f);
         };
         auto PA = [&](const Frame& f, float r, float absY, float out[3]) {
             out[0] = f.p[0] + right[0]*r;
@@ -1264,18 +1296,35 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // CONCRETE APRONS (Tim, reading 01_approach: "There is no concrete
         // apron in that shot"). The demo road was the ONLY route without
         // them — every road_network route carries kApronFt of cement each
-        // side. Width here is budgeted by the CARVE, not the spec: the
-        // corridor's flat floor is kTcCorridorHalfW (10.1 m) and the
-        // pavement takes kTcRoadHalfWidth (7.32), leaving 2.78 m of floor
-        // before the smoothstep shoulder rises — a wider apron would bury
-        // its outer edge in the cut bank. PAIRED with kTcCorridorHalfW
-        // (tunnel_corridor.h): widen the carve and this can grow toward
-        // road_network's 20 ft.
-        constexpr float kApronW    = 2.6f;   // ~8.5 ft of cement each side
+        // side. It now carries the SAME 20 ft: the 2026-08-17 widening took
+        // kTcCorridorHalfW to 14.0 m, and 14.0 - kTcRoadHalfWidth (7.62)
+        // leaves 6.38 m of flat floor, which finally fits road_network's
+        // kApronFt = 20 ft = 6.096 m with 0.28 m of floor to spare before the
+        // smoothstep shoulder rises. (At the old 10.1 m carve only 2.78 m fit,
+        // and this constant was 2.6 with a note saying exactly that.)
+        // PAIRED with kTcCorridorHalfW in tunnel_corridor.h — that constant's
+        // comment names this one, and its 13.72 m binding constraint IS
+        // kTcRoadHalfWidth + kApronW. Move either and re-derive both.
+        constexpr float kApronW    = 6.096f; // 20.0 ft of cement each side (= road_network kApronFt)
         constexpr float kApronDrop = 0.01f;  // apron 1 cm under the slab lip
-        const float hwA = hw + kApronW;
+        // INSIDE THE ROOFED SPAN the apron is not 20 ft — it is the bore's own
+        // CONCRETE SHOULDER (kTcShoulderW, 6 ft), because the sidewalk kerb
+        // stands at hw + kTcShoulderW and beyond that is the raised deck. Run
+        // the full 20 ft in there and the cement would punch out through the
+        // shell into the backfill (the old 2.6 m apron already poked 1.7 m into
+        // the wall, invisibly; at 6.1 m it would come out the other side).
+        // Tapered, not stepped: real portals flare their approach pavement in
+        // over a run rather than losing 14 ft of cement at a joint.
+        const float apronTaper = kTcPortalTaper;       // 15 m, the portal's own taper
+        auto apronWAt = [&](float s) {
+            if (!route.boreValid) return kApronW;
+            // 0 at the portal face, 1 a taper-run outside it.
+            const float d = std::max(route.boreS0 - s, s - route.boreS1);
+            const float t = sstep(0.0f, apronTaper, d);   // inside bore -> d<0 -> 0
+            return kTcShoulderW + (kApronW - kTcShoulderW) * t;
+        };
         const float apY = kSlabProud - kApronDrop;
-        MeshBuf mbA;                          // cement: aprons + outer skirts
+        MeshBuf mbA;                          // cement: aprons/shoulders + outer skirts
         for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
             const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
             const float nU[3] = { 0, 1, 0 };
@@ -1293,18 +1342,48 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             P(b, -hw, apY, bLl); P(b, hw, apY, bRl);
             mb.quad(aR, aRl, bRl, bR, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
             mb.quad(aL, aLl, bLl, bL, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
-            // ---- cement apron tops, hw -> hwA each side.
+            // ---- cement apron / bore shoulder tops, hw -> hwA each side.
+            const float hwAa = hw + apronWAt(a.s), hwAb = hw + apronWAt(b.s);
             float aRo[3], bRo[3], aLo[3], bLo[3];
-            P(a,  hwA, apY, aRo); P(b,  hwA, apY, bRo);
-            P(a, -hwA, apY, aLo); P(b, -hwA, apY, bLo);
+            P(a,  hwAa, apY, aRo); P(b,  hwAb, apY, bRo);
+            P(a, -hwAa, apY, aLo); P(b, -hwAb, apY, bLo);
             mbA.quad(aRl, aRo, bRo, bRl, nU, 0.0f, 1.0f, a.s * 0.06f, b.s * 0.06f);
             mbA.quad(aLo, aLl, bLl, bLo, nU, 0.0f, 1.0f, a.s * 0.06f, b.s * 0.06f);
-            // ---- outer skirts + slab bottom now hang from the APRON edge.
-            float aLd[3], aRd[3], bLd[3], bRd[3];
-            PA(a, -hwA, edgeBottom(a, -hwA), aLd); PA(a, hwA, edgeBottom(a, hwA), aRd);
-            PA(b, -hwA, edgeBottom(b, -hwA), bLd); PA(b, hwA, edgeBottom(b, hwA), bRd);
-            mbA.quad(aRo, aRd, bRd, bRo, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
-            mbA.quad(aLo, aLd, bLd, bLo, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            // Inside the roofed span the shoulder's outer edge is the SIDEWALK
+            // KERB, not a drop — the walkway block below owns that face. No
+            // prism there; it would be a batter buried in a wall.
+            if (route.boreValid && a.s >= route.boreS0 - 0.01f &&
+                b.s <= route.boreS1 + 0.01f) continue;
+            // ---- THE PRISM SKIRT at each apron edge: a short vertical face,
+            // then a batter out to a toe buried in the carved floor. Both
+            // edges, then the underside spanning between the two toes.
+            float aRk[3], bRk[3], aLk[3], bLk[3];   // kerb line (foot of the face)
+            PA(a,  hwAa, a.p[1] + apY - kSkirtFace, aRk);
+            PA(b,  hwAb, b.p[1] + apY - kSkirtFace, bRk);
+            PA(a, -hwAa, a.p[1] + apY - kSkirtFace, aLk);
+            PA(b, -hwAb, b.p[1] + apY - kSkirtFace, bLk);
+            mbA.quad(aRo, aRk, bRk, bRo, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            mbA.quad(aLo, aLk, bLk, bLo, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            // Toe: out by the batter run, down to (carved ground - lap), never
+            // deeper than the max drop. edgeBottom's -1.2 m floor is gone —
+            // that clamp is exactly what made the old face a cliff.
+            const float aRr = skirtRun(a,  hwAa, a.p[1] + apY);
+            const float bRr = skirtRun(b,  hwAb, b.p[1] + apY);
+            const float aLr = skirtRun(a, -hwAa, a.p[1] + apY);
+            const float bLr = skirtRun(b, -hwAb, b.p[1] + apY);
+            auto toeY = [&](const Frame& f, float latOff, float topY) {
+                const float gx = f.p[0] + right[0]*latOff, gz = f.p[2] + right[2]*latOff;
+                const float y = std::min(topY - kSkirtFace,
+                                         terrainHeightAtWorld(gx, gz)) - kSkirtLap;
+                return std::max(y, topY - kSkirtMaxDrop);
+            };
+            float aRd[3], bRd[3], aLd[3], bLd[3];
+            PA(a,  hwAa + aRr, toeY(a,  hwAa + aRr, a.p[1] + apY), aRd);
+            PA(b,  hwAb + bRr, toeY(b,  hwAb + bRr, b.p[1] + apY), bRd);
+            PA(a, -hwAa - aLr, toeY(a, -hwAa - aLr, a.p[1] + apY), aLd);
+            PA(b, -hwAb - bLr, toeY(b, -hwAb - bLr, b.p[1] + apY), bLd);
+            mbA.quad(aRk, aRd, bRd, bRk, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            mbA.quad(aLk, aLd, bLd, bLk, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
             mbA.quad(aLd, aRd, bRd, bLd, nD, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
         }
         // REAL ASPHALT when the library has it, the procedural checker when it
@@ -1324,27 +1403,37 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         mA.tint[0] = 0.86f; mA.tint[1] = 0.85f; mA.tint[2] = 0.82f;
         upload(mbA, mA, /*collide*/true);
 
-        // ---- Lane markings. BL §3.4 as DATA: solid white edge lines at
-        // +/-(w/2 - 0.5) every segment, dashed centre on a 5 m grid (dash 60 %).
+        // ---- Lane markings. BL §3.4 as DATA. REDRAWN for the divided section
+        // 2026-08-17: the old paint was a 2-lane scheme surviving on a 4-lane
+        // slab — two solid edge lines and ONE dashed line down the middle, i.e.
+        // it told the driver the centre of a 4-lane road was a lane boundary,
+        // and after the divider went in it would have painted a dashed line
+        // straight up a concrete wall. The scheme now matches the geometry:
+        //   * solid white EDGE line just inside each pavement edge,
+        //   * solid white line against the divider on each carriageway,
+        //   * one DASHED lane line per carriageway, between its two 12 ft lanes.
+        // White only, no double yellow — opposing traffic is behind the wall.
         MeshBuf paint;
+        constexpr float kStripeHalf = 0.09f;         // 7 in line, the network's width
+        // Lane boundary inside each carriageway: divider face + one lane.
+        const float kLaneW    = kTcLaneW;
+        const float kInnerEdge = kTcDividerHalfW;    // paint hugs the divider toe
+        auto stripe = [&](const Frame& a, const Frame& b, float lat) {
+            const float nU[3] = { 0, 1, 0 };
+            float p0[3], p1[3], p2[3], p3[3];
+            P(a, lat - kStripeHalf, kSlabProud + 0.02f, p0);
+            P(a, lat + kStripeHalf, kSlabProud + 0.02f, p1);
+            P(b, lat + kStripeHalf, kSlabProud + 0.02f, p2);
+            P(b, lat - kStripeHalf, kSlabProud + 0.02f, p3);
+            paint.quad(p0, p1, p2, p3, nU, 0, 1, 0, 1);
+        };
         for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
             const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
-            const float nU[3] = { 0, 1, 0 };
+            const bool dash = ((int)(a.s / 5.0f) & 1) == 0;   // 5 m grid, 60 % duty
             for (int sgn = -1; sgn <= 1; sgn += 2) {
-                const float e0 = (float)sgn * (hw - 0.5f) - 0.09f;
-                const float e1 = (float)sgn * (hw - 0.5f) + 0.09f;
-                float p0[3], p1[3], p2[3], p3[3];
-                P(a, e0, kSlabProud + 0.02f, p0); P(a, e1, kSlabProud + 0.02f, p1);
-                P(b, e1, kSlabProud + 0.02f, p2); P(b, e0, kSlabProud + 0.02f, p3);
-                paint.quad(p0, p1, p2, p3, nU, 0, 1, 0, 1);
-            }
-            const int cell = (int)(a.s / 5.0f);
-            if ((cell & 1) == 0) {
-                float p0[3], p1[3], p2[3], p3[3];
-                P(a, -0.09f, kSlabProud + 0.02f, p0); P(a, 0.09f, kSlabProud + 0.02f, p1);
-                P(b,  0.09f, kSlabProud + 0.02f, p2); P(b, -0.09f, kSlabProud + 0.02f, p3);
-                const float nU2[3] = { 0, 1, 0 };
-                paint.quad(p0, p1, p2, p3, nU2, 0, 1, 0, 1);
+                stripe(a, b, (float)sgn * (hw - 0.5f));                   // edge line
+                stripe(a, b, (float)sgn * (kInnerEdge + 0.20f));          // divider line
+                if (dash) stripe(a, b, (float)sgn * (kInnerEdge + kLaneW)); // lane line
             }
         }
         Material pm; pm.alb = paintTex; pm.mr = roughMR;
@@ -1366,12 +1455,21 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             FitoutConfig fcfg;
             fit.build(route.boreS0, route.boreS1, fcfg, kTunnelFitoutSeed);
 
-            MeshBuf walk, rail, band, panel, glow;
+            MeshBuf walk, rail, band, panel, glow, divider;
             const float deckY = kTcWalkKerbH;              // deck top, above the road datum
             const float hw    = kTcRoadHalfWidth;
             const float deckW = kTcWalkDeckW;
+            // THE KERB LINE. Not at the lane edge any more: the 2026-08-17
+            // section puts a 6 ft CONCRETE SHOULDER between the outer lane and
+            // the sidewalk ("sidewalk off a concrete shoulder on each side").
+            // The shoulder surface is drawn by the ribbon block above as the
+            // in-bore taper of the apron; this is where it ends and the raised
+            // deck begins. kerbLat + deckW == kTcTubeHalfWidth by construction
+            // (25 + 6 + 6 = 37 ft): the deck lands exactly on the springing, so
+            // there is no sliver of floor between the walk and the wall.
+            const float kerbLat = hw + kTcShoulderW;
 
-            // ---- WALKWAY: kerb face + deck top, both sides ----------------
+            // ---- SIDEWALK: kerb face + deck top, both sides ----------------
             // Broken at a lay-by on that side, which is what makes a bay
             // reachable from a stopped car instead of a kerb you climb.
             for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
@@ -1379,8 +1477,8 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 if (a.s < route.boreS0 || b.s > route.boreS1) continue;
                 for (int sgn = -1; sgn <= 1; sgn += 2) {
                     if (fit.walkwayBrokenAt(a.s, sgn)) continue;
-                    const float i0 = (float)sgn * hw;            // inner (road) edge
-                    const float o0 = (float)sgn * (hw + deckW);  // outer (wall) edge
+                    const float i0 = (float)sgn * kerbLat;            // inner (shoulder) edge
+                    const float o0 = (float)sgn * (kerbLat + deckW);  // outer (wall) edge
                     float a0[3], a1[3], b0[3], b1[3], a0d[3], b0d[3];
                     // Kerb face, road level -> deck level.
                     P(a, i0, 0.0f,   a0d); P(b, i0, 0.0f,   b0d);
@@ -1396,6 +1494,74 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 }
             }
 
+            // ---- THE LOW CENTRE DIVIDER -----------------------------------
+            // Tim: "they are 4 lanes with low divider". Extruded from the SAME
+            // F-shape jersey profile road_network.cpp uses for every barrier
+            // and for the freeway median — the world has one wall profile, and
+            // a tunnel that invented a second one would read as a different
+            // contractor's job. Runs the roofed span only: outside the portals
+            // the demo road is undivided, like the route feeding it.
+            //
+            // It COLLIDES. A divider you can drive through is scenery, and the
+            // whole reason a low wall is the right answer here (rather than
+            // paint) is that at bore speeds a head-on is the failure mode.
+            {
+                // {half-width, height} — road_network.cpp's `jp`, verbatim.
+                static const float jp[4][2] = {
+                    { kTcDividerHalfW, 0.000f },   // base edge
+                    { kTcDividerHalfW, 0.075f },   // top of the vertical toe
+                    { 0.170f,          0.330f },   // top of the 55-deg haunch
+                    { 0.115f,          kTcDividerH },
+                };
+                // Seated 5 cm into the pavement so no daylight shows at the
+                // joint, exactly as jerseyRun() seats it on the network routes.
+                const float seat = kSlabProud - 0.05f;
+                auto dp = [&](const Frame& f, float off, float h, float o[3]) {
+                    P(f, off, seat + h, o);
+                };
+                for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
+                    const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
+                    if (a.s < route.boreS0 || b.s > route.boreS1) continue;
+                    for (int face = -1; face <= 1; face += 2) {
+                        const float nF[3] = { (float)face * right[0], 0.0f,
+                                              (float)face * right[2] };
+                        for (int k = 0; k + 1 < 4; ++k) {
+                            float aB[3], bB[3], aT[3], bT[3];
+                            dp(a, jp[k][0]     * (float)face, jp[k][1],     aB);
+                            dp(b, jp[k][0]     * (float)face, jp[k][1],     bB);
+                            dp(a, jp[k+1][0]   * (float)face, jp[k+1][1],   aT);
+                            dp(b, jp[k+1][0]   * (float)face, jp[k+1][1],   bT);
+                            if (face > 0) divider.quad(aB, aT, bT, bB, nF, 0, 1,
+                                                       a.s * 0.35f, b.s * 0.35f);
+                            else          divider.quad(aT, aB, bB, bT, nF, 0, 1,
+                                                       a.s * 0.35f, b.s * 0.35f);
+                        }
+                    }
+                    // Crown cap.
+                    float aL[3], aR[3], bL[3], bR[3];
+                    dp(a, -jp[3][0], jp[3][1], aL); dp(a, jp[3][0], jp[3][1], aR);
+                    dp(b, -jp[3][0], jp[3][1], bL); dp(b, jp[3][0], jp[3][1], bR);
+                    const float nU[3] = { 0, 1, 0 };
+                    divider.quad(aL, aR, bR, bL, nU, 0, 1, a.s * 0.35f, b.s * 0.35f);
+                }
+                // NOSES at both ends: a wall that just stops mid-air shows its
+                // hollow section to anyone driving at it. Close the profile.
+                for (int e = 0; e < 2; ++e) {
+                    const Frame fr = frameAt(e == 0 ? route.boreS0 : route.boreS1);
+                    const float nA[3] = { (e == 0 ? -route.dirX : route.dirX), 0.0f,
+                                          (e == 0 ? -route.dirZ : route.dirZ) };
+                    for (int k = 0; k + 1 < 4; ++k) {
+                        float p0[3], p1[3], p2[3], p3[3];
+                        dp(fr, -jp[k][0],   jp[k][1],   p0);
+                        dp(fr,  jp[k][0],   jp[k][1],   p1);
+                        dp(fr,  jp[k+1][0], jp[k+1][1], p2);
+                        dp(fr, -jp[k+1][0], jp[k+1][1], p3);
+                        if (e == 0) divider.quad(p0, p1, p2, p3, nA, 0, 1, 0, 1);
+                        else        divider.quad(p3, p2, p1, p0, nA, 0, 1, 0, 1);
+                    }
+                }
+            }
+
             // ---- RAILING. Tim: "Not decorative: this is what makes a tunnel
             // read as infrastructure rather than a tube." Posts on a 2.5 m
             // pitch with a top rail. Drawn as thin boxes rather than cylinders
@@ -1404,7 +1570,7 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             {
                 const float postPitch = 2.5f;
                 const float railH = 1.05f;          // 3.4 ft, a real handrail height
-                const float lat = hw + deckW - 0.12f;
+                const float lat = kerbLat + deckW - 0.12f;   // 12 cm in from the wall
                 for (float sPos = route.boreS0 + 1.0f; sPos < route.boreS1 - 1.0f; sPos += postPitch) {
                     for (int sgn = -1; sgn <= 1; sgn += 2) {
                         if (fit.walkwayBrokenAt(sPos, sgn)) continue;
@@ -1519,6 +1685,12 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             Material wm; if (portalSet.ok) { wm.alb = portalSet.albedo; wm.mr = portalSet.mr; wm.nrm = portalSet.normal; }
                          else { wm.alb = concreteTex; wm.mr = roughMR; }
             upload(walk, wm, /*collide*/true);
+            // The divider is the same poured concrete as the walk, a shade
+            // lighter (it is washed by headlights, not soot-streaked like the
+            // deck under the wall), and it COLLIDES.
+            Material dvm = wm;
+            dvm.tint[0] = 0.90f; dvm.tint[1] = 0.89f; dvm.tint[2] = 0.86f;
+            upload(divider, dvm, /*collide*/true);
 
             Material rm; rm.alb = paintTex; rm.mr = solid1(0, 90, 210, false);   // metal: smooth, metallic
             for (int c = 0; c < 3; ++c) rm.tint[c] = 0.42f;
@@ -3469,26 +3641,47 @@ bool runTunnelMouthSelfTest() {
 // The whole point is that a SCREENSHOT cannot prove traversability: the bore
 // looked finished in every capture while an earth ramp walled it off. This
 // drives the real Jolt wheeled rig through the real streamed-terrain collision
-// (the very tile mesher the game uses, portal holes and all) and the real
-// road/shell collision, twice: once with X3_TUNNEL_PORTAL_CUT=0 as the
-// NEGATIVE CONTROL (the ramp must STOP the car — a control that cannot fail
-// is not a control) and once enabled (the car must come out the far portal).
+// (the very tile mesher the game uses) and the real road/shell collision.
+//
+// REWRITTEN 2026-08-16 (W-TUNNEL). The gate used to run TWO phases against an
+// env var, X3_TUNNEL_PORTAL_CUT: phase A with the portal cut disabled (the
+// earth ramp had to STOP the car) and phase B with it enabled. The cut-and-
+// cover redesign DELETED the portal-cut branch — grep the tree: nothing reads
+// that env var; the only writer was this test's own setPortalCutEnv() — so
+// both phases built the IDENTICAL world and four assertions went stale:
+//   A2 demanded the old mouth defect (field residual > 8 m) that cut-and-cover
+//      removes BY CONSTRUCTION (deriveRoute step 3 cuts to road level
+//      everywhere);
+//   A3 demanded the earth ramp stop the car — there is no ramp to stop it;
+//   B1 demanded 2 registered portal holes — corridor registration registers
+//      NONE any more (mouth holes died with the two-regime build; the hole
+//      registry's one remaining writer is host_tunnel's rooms-air-rights
+//      pass, which is host-level and not part of this registration);
+//   A1's `holeCount == 0` "when disabled" passed vacuously for the same reason.
+// (ROAD_NETWORK_PLAN.md filed this as separate debt; SEVEN_LANE_PLAN lane 1
+// owns it.)
+//
+// The NEGATIVE CONTROL is kept — a control that cannot fail is not a control —
+// but honestly: it is now FIELD-level. driveTheDemoRoute() measures how much
+// of the roadway the NATURAL (pre-corridor) hillside would bury; N1 asserts
+// that number is large. That proves the same thing the ramp phase proved (the
+// hill is real, the carve is doing real work, and the drive-through cannot
+// pass by accident of flat ground) without pretending a deleted code path
+// still exists.
 // ===========================================================================
 namespace {
-
-void setPortalCutEnv(bool on) {
-#ifdef _WIN32
-    _putenv_s("X3_TUNNEL_PORTAL_CUT", on ? "1" : "0");
-#else
-    setenv("X3_TUNNEL_PORTAL_CUT", on ? "1" : "0", 1);
-#endif
-}
 
 struct TunnelDriveResult {
     bool  built = false;
     float maxS = 0.0f;          // furthest arc-length progress along the spine
     float worstBoreDy = 0.0f;   // max |carY - roadY| while inside the bore span
     float residual = 0.0f;      // route.buriedRoadLen (the FIELD-level number)
+    // THE NEGATIVE CONTROL (N1): metres of roadway the NATURAL hillside stands
+    // above, i.e. what the burial would be if the carve were not there. Under
+    // any real hill this is large; if it ever reads ~0 the route has stopped
+    // going through a hill and the drive-through proves nothing.
+    float naturalBuriedLen = 0.0f;
+    float naturalMaxBury   = 0.0f;   // worst natural ground-above-road (m)
     float boreS0 = 0.0f, boreS1 = 0.0f, coverS0 = 0.0f, coverS1 = 0.0f, totalLen = 0.0f;
     uint32_t holeCount = 0;
     // MOUNTAIN-INTACT survey (the torn-mountain regression guard): the deepest
@@ -3511,14 +3704,27 @@ struct TunnelDriveResult {
     // up as its full height; the ~19 deg fillet shows as ~0.14 m per 0.4 m.
     float maxMountStep = 0.0f;
     float maxMountStepS = 0.0f;
+    float maxMountStepLat = 0.0f;   // WHERE laterally — batter cliff vs slab edge
+    // The same step metric restricted to the corridor's FLAT FLOOR band
+    // (|lat| <= kTcCorridorHalfW) — the only band where "drive up onto the
+    // road" is a designed affordance. THIS is what D5b gates. On the
+    // W-MOUNTAIN massif the full-range walk measures the smoothstep cut
+    // batter itself (4.20 m per 0.4 m at lat 11.5 over a 222 m cut — that is
+    // the mountainside, not a defect); the original road-mount defect (Lane
+    // 7's vertical skirt faces at the slab edge, 0.45..6.81 m) lives entirely
+    // inside the floor band and is still caught there.
+    float maxMountStepFloor = 0.0f;
+    float maxMountStepFloorS = 0.0f, maxMountStepFloorLat = 0.0f;
+    // WHERE the drive ended, however it ended. NO_SLOP rule 9: when D3 fails,
+    // the first question is "where is the car and what is it doing", and the
+    // 2026-08-16 stall at s=148 had to be re-instrumented to answer it.
+    float endS = 0.0f, endLat = 0.0f, endDy = 0.0f, endSpeed = 0.0f;
 };
 
-TunnelDriveResult driveTheDemoRoute(bool cutOn) {
+TunnelDriveResult driveTheDemoRoute() {
     TunnelDriveResult res;
-    setPortalCutEnv(cutOn);
     // The test owns both boot registries for its duration (the same contract
-    // --test-terraincorridor uses); each phase re-registers the SAME route
-    // against its own field.
+    // --test-terraincorridor uses).
     clearTerrainCorridors();
     clearTerrainPortalHoles();
     const TunnelRoute* route = registerTunnelCorridorFor(demoTunnelSpec());
@@ -3528,6 +3734,22 @@ TunnelDriveResult driveTheDemoRoute(bool cutOn) {
     res.coverS0 = route->coverS0; res.coverS1 = route->coverS1;
     res.totalLen = route->totalLen;
     res.holeCount = terrainPortalHoleCount();
+    // N1's number: walk the roadway against the NATURAL (pre-corridor) surface
+    // exactly the way deriveRoute step 6 walks it against the FINAL one, so the
+    // two figures differ only by the carve. tunnelNaturalHeightAt subtracts the
+    // registered corridor's own delta, so this is correct after registration.
+    for (float s = 0.0f; s <= route->totalLen + 0.01f; s += 0.5f) {
+        const float ry = route->roadYAt(s);
+        float worst = -1e9f;
+        for (int k = -6; k <= 6; ++k) {
+            const float lat = (float)k * kTcRoadHalfWidth / 6.0f;
+            float qx = 0.0f, qz = 0.0f;
+            route->worldAt(s, lat, qx, qz);
+            worst = std::max(worst, tunnelNaturalHeightAt(qx, qz) - ry);
+        }
+        if (worst > 0.0f) res.naturalBuriedLen += 0.5f;
+        res.naturalMaxBury = std::max(res.naturalMaxBury, worst);
+    }
     // MOUNTAIN-INTACT survey. terrainCorridorDelta IS the excavation, so no
     // "natural" re-derivation is needed: walk the spine at 2 m across the full
     // influence band and record the deepest cut anywhere; compare against the
@@ -3621,8 +3843,21 @@ TunnelDriveResult driveTheDemoRoute(bool cutOn) {
     std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
     if (!phys->init()) return res;
 
+    // SPAWN AND DRIVE IN A LANE, NOT ON THE CENTRELINE. Since the 2026-08-17
+    // widening the centreline is occupied by the low jersey DIVIDER, so a
+    // centreline follower drives into a wall — which is exactly what happened
+    // on the first run after the spawn-yaw fix: the car held lat 0.00 perfectly
+    // for 86 m at 10 m/s and stopped dead against the divider's nose at the
+    // portal (boreS0 = 88), D3 red for the most encouraging reason a gate has
+    // ever gone red. Right-hand traffic, median on the driver's left, so the
+    // target is the RIGHT carriageway — the same rule host_tunnel.cpp follows
+    // when it puts the player "IN THE LANES of the right carriageway".
+    // Inner lane rather than outer: it is the lane a driver entering a bore
+    // takes, and it keeps the follower's excursions off the shoulder kerb.
+    const float kDriveLat = kTcDividerHalfW + kTcLaneW * 0.5f;   // 2.13 m
     float start[3];
     route->posAt(std::max(8.0f, route->boreS0 - 60.0f), start);
+    route->worldAt(std::max(8.0f, route->boreS0 - 60.0f), kDriveLat, start[0], start[2]);
     TerrainStreamer streamer;
     // jobs == nullptr => fully synchronous generation (the documented headless
     // path), so collision under the car is never still in flight.
@@ -3634,8 +3869,19 @@ TunnelDriveResult driveTheDemoRoute(bool cutOn) {
     DriveDemo car;
     res.built = car.buildPhysics(*phys, start[0], start[1] + 1.4f, start[2]);
     if (res.built) {
-        // Point it down the corridor (host_tunnel's exact quaternion).
-        const float yaw = std::atan2(route->dirZ, route->dirX);
+        // SPAWN YAW — host_tunnel.cpp's formula, and this time actually the
+        // same one. Engine forward at rest is -Z, so rotating (0,0,-1) about +Y
+        // by theta gives (-sin theta, -cos theta): facing (dirX, dirZ) needs
+        // theta = atan2(-dirX, -dirZ). This test kept the OLD atan2(dirZ, dirX),
+        // which measures from +X instead of -Z and drops the car on the road
+        // 90 DEGREES OFF — the identical bug Tim reported in the played world on
+        // 2026-08-14 ("The car is PLACED facing the wrong way"), fixed in the
+        // host that day and left standing here. Receipt, run of 2026-08-17: the
+        // trace shows the car making 2 m of arc-length while making 4 m of
+        // LATERAL offset in the same two seconds — driving across the road, not
+        // along it — then falling off the flank at s=87 with D3 red. It was
+        // never a follower-gain problem.
+        const float yaw = -std::atan2(-route->dirX, -route->dirZ);
         const float q[4] = { 0.0f, std::sin(-yaw * 0.5f), 0.0f, std::cos(-yaw * 0.5f) };
         phys->setBodyRotation(car.chassis(), q);
     }
@@ -3682,7 +3928,19 @@ TunnelDriveResult driveTheDemoRoute(bool cutOn) {
                     // to reach the road.
                     if (have && prevH < route->roadYAt(s) + 0.5f) {
                         const float step = rh.point.y - prevH;   // + = up toward road
-                        if (step > res.maxMountStep) { res.maxMountStep = step; res.maxMountStepS = s; }
+                        if (step > res.maxMountStep) {
+                            res.maxMountStep = step; res.maxMountStepS = s;
+                            res.maxMountStepLat = lat * (float)side;
+                        }
+                        // The gated band: prev sample (the step's FOOT) inside
+                        // the corridor's flat floor. `lat` here is the current
+                        // (inner) sample; the foot sits 0.4 m further out.
+                        if (lat + 0.4f <= kTcCorridorHalfW &&
+                            step > res.maxMountStepFloor) {
+                            res.maxMountStepFloor = step;
+                            res.maxMountStepFloorS = s;
+                            res.maxMountStepFloorLat = lat * (float)side;
+                        }
                     }
                     prevH = rh.point.y; have = true;
                 }
@@ -3710,20 +3968,50 @@ TunnelDriveResult driveTheDemoRoute(bool cutOn) {
         const float latVel = havePrev ? (lat - prevLat) / dt : 0.0f;
         prevLat = lat; havePrev = true;
         res.maxS = std::max(res.maxS, s);
+        res.endS = s; res.endLat = lat;
+        res.endDy = p[1] - route->roadYAt(s);
+        res.endSpeed = car.forwardSpeed();
         if (s > route->boreS0 + 5.0f && s < route->boreS1 - 5.0f)
             res.worstBoreDy = std::max(res.worstBoreDy,
                                        std::fabs(p[1] - route->roadYAt(s)));
         if (s > route->boreS1 + 25.0f) break;     // through and out — done
-        // Stall detection: the negative control's expected exit (the ramp).
+        // Stall detection (a wall, a wreck, or a grade the rig cannot climb).
         if (s > stallRef + 0.5f) { stallRef = s; stallTicks = 0; }
         else if (++stallTicks > 60 * 6) break;
+        // TRAJECTORY TRACE, once a second. ~40 lines for a clean run; the
+        // whole point is that when the drive fails the log already contains
+        // where the car was and what it was doing — the 2026-08-16 stall
+        // needed a rebuild just to learn the end position.
+        if ((i % 60) == 0) {
+            char tb[160];
+            std::snprintf(tb, sizeof(tb),
+                "[tunneldrive]     t=%3ds s=%.0f lat=%+.2f dY=%+.2f v=%.1f m/s",
+                i / 60, s, lat, p[1] - route->roadYAt(s), car.forwardSpeed());
+            x3::logInfo(tb);
+        }
 
         x3::phys::VehicleInput in{};
-        in.throttle = car.forwardSpeed() < 18.0f ? 1.0f : 0.1f;
-        // Centreline follower: lat is the signed offset toward the car's OWN
-        // right (route right == chassis right when pointed down the spine), so
-        // drifting right (lat rising) steers left. Damped by the lateral rate.
-        in.steer = clampf(-(0.10f * lat + 0.45f * latVel), -0.6f, 0.6f);
+        // GAINS RETUNED 2026-08-17, with the trace as the receipt. The old
+        // follower (throttle to 18 m/s, steer -(0.10*lat + 0.45*latVel),
+        // clamp 0.6) was tuned against the pre-turbo rig; under the current
+        // vehicle (grip 1.6 -> peaks 1.92, the 35 psi power) full throttle to
+        // 18 m/s fishtails out of the first second — the trace shows a
+        // wall-to-wall slalom (lat -6.8..+6.7, kerb-climbing dY spikes to
+        // 1.79 m) that beached the car at s=147. This gate proves the bore is
+        // TRAVERSABLE, not fast: 10 m/s, half pedal, brake above 12, and a
+        // steer clamp that tightens with speed keeps the follower far inside
+        // stability on the same rig.
+        const float v = car.forwardSpeed();
+        in.throttle = v < 10.0f ? 0.5f : 0.05f;
+        in.brake    = v > 12.0f ? 0.5f : 0.0f;
+        // LANE follower: lat is the signed offset toward the car's OWN right
+        // (route right == chassis right when pointed down the spine), so
+        // drifting right of the lane centre steers left. Damped by the lateral
+        // rate. The error is measured against kDriveLat, not 0 — see its
+        // comment; against 0 this steers the car into the divider.
+        const float steerCap = clampf(0.6f - 0.03f * v, 0.25f, 0.6f);
+        in.steer = clampf(-(0.08f * (lat - kDriveLat) + 0.35f * latVel),
+                          -steerCap, steerCap);
         car.setInput(in); car.preStep(dt);
         streamer.update(scene, dev, *phys, p[0], p[2]);
         phys->step(dt); car.postStep(dt);
@@ -3745,64 +4033,75 @@ bool runTunnelDriveSelfTest() {
         else    { ++failN; x3::logError(std::string("[tunneldrive] FAIL ") + name); }
     };
     auto report = [&](const char* tag, const TunnelDriveResult& r) {
-        char b[380];
+        char b[460];
         std::snprintf(b, sizeof(b),
             "[tunneldrive]   %s: maxS=%.0f m (shell %.0f..%.0f, route %.0f m) | "
-            "field residual %.0f m | portal holes %u | worst bore |dY| %.2f m | "
-            "worst mount step %.2f m at s=%.0f | max carve %.1f m (open-cut need %.1f)",
+            "residual %.0f m (natural %.0f m, worst %.1f m) | holes %u | "
+            "worst bore |dY| %.2f m | mount step full-range %.2f m (s=%.0f lat=%.1f) "
+            "floor-band %.2f m (s=%.0f lat=%.1f) | "
+            "max carve %.1f m (open-cut need %.1f) | "
+            "END at s=%.0f lat=%.1f dY=%.2f v=%.1f m/s",
             tag, r.maxS, r.boreS0, r.boreS1, r.totalLen,
-            r.residual, r.holeCount, r.worstBoreDy,
-            r.maxMountStep, r.maxMountStepS, r.maxCarve, r.maxOpenNeed);
+            r.residual, r.naturalBuriedLen, r.naturalMaxBury, r.holeCount,
+            r.worstBoreDy, r.maxMountStep, r.maxMountStepS, r.maxMountStepLat,
+            r.maxMountStepFloor, r.maxMountStepFloorS, r.maxMountStepFloorLat,
+            r.maxCarve, r.maxOpenNeed,
+            r.endS, r.endLat, r.endDy, r.endSpeed);
         x3::logInfo(b);
     };
 
-    x3::logInfo("[tunneldrive] PHASE A — portal cut DISABLED (the negative control)...");
-    const TunnelDriveResult a = driveTheDemoRoute(false);
-    report("A(cut off)", a);
-    check(a.built, "A0 rig + world built");
-    check(a.holeCount == 0, "A1 disabled => zero portal holes (the fallback is exact)");
-    check(a.residual > 8.0f, "A2 the defect is real: field residual > 8 m without the cut");
-    check(a.maxS < a.coverS0,
-          "A3 NEGATIVE CONTROL: the earth ramp stops the car before full cover");
-
-    x3::logInfo("[tunneldrive] PHASE B — portal cut ENABLED...");
-    const TunnelDriveResult b = driveTheDemoRoute(true);
-    report("B(cut on)", b);
-    check(b.built, "B0 rig + world built");
-    check(b.holeCount == 2, "B1 one portal hole per mouth registered");
-    // B2 — THE TORN-MOUNTAIN GUARD. This check used to demand the PLUG collapse
-    // the FIELD residual to <= 6 m. That contract is impossible over a massif:
-    // the natural rise at these mouths is ~1.2 m/m, so a field floor can only
-    // cross the 0.3..7.6 m drivable band in <= ~3 m per mouth if it is pinned
-    // at road level right up to a sharp face past the main corridor's 18.8 m
-    // end-cap reach — which means carving latMax - roadY ~22.8 m in: 44.6 m of
-    // mountain, the very tear this branch exists to fix (a road-width canyon
-    // above the portal, sky through the peak, shard triangles on the rim). The
-    // capped plug leaves that last sweep to the PORTAL HOLES, which clear it
-    // from the MESH — drivability is proven by B3/B4 against real collision.
-    // What the FIELD must now guarantee instead, and what this asserts:
-    //   (i)  the carver never digs deeper anywhere than the open cut's own
-    //        deepest need (+ the plug cap, + slack) — a bounded, mountain-
-    //        preserving carve. Unclamped plugs fail this at 44.6 vs 18.2 m.
-    //   (ii) each mouth's sweep (bore..full-cover) fits the portal holes' 30 m
-    //        reach, so every buried metre the field keeps is inside a hole.
-    check(b.maxCarve <= std::max(b.maxOpenNeed, kTcPlugMaxCut) + 0.5f &&
-          (b.coverS0 - b.boreS0) <= 30.0f && (b.boreS1 - b.coverS1) <= 30.0f,
-          "B2 BOUNDED CARVE: no deeper than the open cut needs, mouth sweeps inside the holes' reach");
+    // ONE phase. The old A/B split keyed on X3_TUNNEL_PORTAL_CUT, which
+    // cut-and-cover deleted — both phases built the identical world (measured
+    // 2026-08-16: A and B reports byte-equal in every field). See the header
+    // comment above driveTheDemoRoute for which gates died with it.
+    const TunnelDriveResult b = driveTheDemoRoute();
+    report("drive", b);
+    check(b.built, "D0 rig + world built");
+    // N1 — THE NEGATIVE CONTROL, field-level. The hill is real: without the
+    // carve the natural surface buries a long reach of the roadway. If this
+    // ever fails, the demo route no longer goes through a hill and every PASS
+    // below it is vacuous. (Replaces A2/A3, which asserted the earth ramp of
+    // the deleted two-regime build; measured natural burial on the current
+    // massif field is ~hundreds of metres.)
+    check(b.naturalBuriedLen > 8.0f,
+          "N1 NEGATIVE CONTROL: natural hillside buries > 8 m of roadway (the carve has real work)");
+    // D1 — CUT-AND-COVER HOLDS: the FINAL field never stands on the roadway.
+    // deriveRoute step 3 makes this true by construction; step 6 measures it;
+    // --test-tunnelmouth M1/M2 assert it at 0.5 m. Asserted here too because
+    // this is the gate that runs the real collision the car drives on.
+    check(b.residual <= 0.0f,
+          "D1 CUT-AND-COVER: zero metres of road under the final field");
+    // D2 — THE TORN-MOUNTAIN GUARD. The carver never digs deeper anywhere than
+    // the open cut's own deepest need (+ slack) — a bounded, mountain-
+    // preserving carve. The old form also allowed kTcPlugMaxCut (24 m) because
+    // the portal PLUG could out-dig the open cut at the mouths; the plug died
+    // with the two-regime build, so the open-cut need is the whole bound now.
+    // (Unclamped plugs failed this at 44.6 vs 18.2 m — the torn mountain.)
+    check(b.maxCarve <= b.maxOpenNeed + 0.5f,
+          "D2 BOUNDED CARVE: no deeper than the open cut needs");
+    // D2h — HOLE HYGIENE (replaces A1/B1). Corridor registration itself must
+    // register NO portal holes: under cut-and-cover the mouth needs no
+    // mesh-level exclusion (nothing stands above the road to drop), and the
+    // hole registry's one legitimate writer is host_tunnel's rooms-air-rights
+    // pass, which is host-level. A hole appearing HERE means a second writer
+    // grew back — the registry is only 16 deep and the rooms pass needs it.
+    check(b.holeCount == 0,
+          "D2h corridor registration registers zero portal holes");
     check(b.maxS > b.boreS1 + 20.0f,
-          "B3 DRIVE-THROUGH: the car exits past the far portal");
+          "D3 DRIVE-THROUGH: the car exits past the far portal");
     check(b.worstBoreDy < 5.0f,
-          "B4 through the bore at road level (not over the hill)");
+          "D4 through the bore at road level (not over the hill)");
     // Lane 7's ditch-to-road defect, kept dead: their survey measured skirt
     // faces of 0.45..6.81 m against ~0.43 m chassis clearance. With the ~19 deg
     // fillet, no adjacent-sample step on the approach may exceed clearance.
-    // (Surveyed on BOTH phases' geometry — the fillet is not part of the portal
-    // cut and has no env gate, so this is a threshold check, not A/B.)
+    // Gated on the FLOOR BAND only (see maxMountStepFloor's comment): the
+    // full-range walk on the massif measures the cut batter itself, which no
+    // car mounts the road across.
     check(b.maxMountStep > 0.01f,
-          "B5a mount survey saw real geometry (a zero survey would be a broken probe)");
-    check(b.maxMountStep <= 0.45f,
-          "B5b ROAD-MOUNT: worst ditch-to-road step within chassis clearance (0.45 m)");
-    // B6 — THE DRIVABLE ROCK WALL, kept dead. Skirts at tile borders over the
+          "D5a mount survey saw real geometry (a zero survey would be a broken probe)");
+    check(b.maxMountStepFloor <= 0.45f,
+          "D5b ROAD-MOUNT: worst floor-band ditch-to-road step within chassis clearance (0.45 m)");
+    // D6 — THE DRIVABLE ROCK WALL, kept dead. Skirts at tile borders over the
     // BORE used to hang ~55 m from the lid straight through the tube (delta is
     // 0 on a bored reach, so the old delta-gated skirt clamp never fired):
     // measured 74 full-LOD skirt triangles inside the demo tube, down to 0.3 m
@@ -3814,12 +4113,11 @@ bool runTunnelDriveSelfTest() {
     // ~192 m) are reported by the survey but not gated here.
     check(b.intrSurf[0] == 0 && b.intrSkirt[0] == 0 &&
           b.intrSkirt[1] == 0 && b.intrSkirt[2] == 0,
-          "B6 NOTHING IN THE TUBE: full-LOD mesh clean + no skirt intrusion at any LOD");
+          "D6 NOTHING IN THE TUBE: full-LOD mesh clean + no skirt intrusion at any LOD");
 
-    // Registry + env hygiene: leave the process at defaults.
+    // Registry hygiene: leave the process at defaults.
     clearTerrainCorridors();
     clearTerrainPortalHoles();
-    setPortalCutEnv(true);
     x3::logInfo("[tunneldrive] " + std::to_string(passN) + " passed, " +
                 std::to_string(failN) + " failed");
     return failN == 0;

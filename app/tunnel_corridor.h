@@ -99,38 +99,103 @@ namespace x3::game {
 // owns the other's numbers. It is the same class of defect as the built-but-
 // unwired features: each half correct, the SEAM never measured.
 //
+// WIDENED AGAIN 2026-08-17 (W-TUNNEL v2, SEVEN_LANE_PLAN lane 1). Tim: "Tunnels
+// got the widening treatment too.. they are 4 lanes with low divider.. sidewalk
+// off a concrete shoulder on each side." The 2026-08-15 pass fixed the SEAM (the
+// bore now carried the road's 4 lanes) but kept the 2-lane FURNITURE: a 3 ft
+// maintenance catwalk hard against the traffic lane and nothing between the two
+// directions. That is a bore you drive through, not one you can stand in.
+//
 // Sized from the road outward, in feet, because that is the unit the road is
 // specified in and the conversion belongs at one end or the other, not both:
 //
-//   running surface   4 lanes x 12.0 ft   = 48.0 ft   (half 24.0 ft = 7.32 m)
-//   walkway deck      3.0 ft each side               (spec W1: >= 2.8 ft)
-//   interior          48 + 2x3            = 54.0 ft   (half 27.0 ft = 8.23 m)
-//   shell             0.9 m                          (unchanged)
-//   corridor floor    must clear the OUTER shell (9.13 m) with the same ~0.9 m
-//                     margin the 2-lane section had -> 10.1 m = 33.1 ft
+//   centre divider    jersey F-shape, base half 1.0 ft   (half  1.0 ft)
+//   running surface   4 lanes x 12.0 ft = 48.0 ft        (half 24.0 ft)
+//   concrete shoulder 6.0 ft each side                   (half  6.0 ft)
+//   raised sidewalk   6.0 ft each side                   (half  6.0 ft)
+//   interior          1 + 24 + 6 + 6    = 37.0 ft half = 11.28 m (74.0 ft span)
+//   shell             0.9 m                              (unchanged)
+//   corridor floor    must clear BOTH the OUTER shell (12.18 m) and, outside
+//                     the bore, the demo road's now-full-spec 20 ft apron
+//                     (edge at 13.72 m) -> 14.0 m = 45.9 ft
+//
+// THE DIVIDER COSTS A FOOT PER SIDE. Four 12 ft lanes plus a 2 ft divider is a
+// 50 ft running surface, not 48: kTcRoadHalfWidth goes 24.0 -> 25.0 ft. The
+// feeding road_network route is 48 ft (kRunningHalfM), so the pavement flares
+// 1 ft each side across the portal — absorbed by the shoulder/apron, which is
+// 6 ft and 20 ft wide respectively. Stealing the foot from the two inner lanes
+// instead would have made them 11 ft, and "4 lanes" would have been a lie in
+// the one place a driver can measure it.
 //
 // The arch RISE keeps its old proportion (0.571 of the half-span) rather than
-// its old absolute height: holding the crown at 7.6 m over a span 18 % wider
-// would have flattened the vault into a culvert. Rise 4.70 m over a 3.8 m wall
-// puts the crown at 8.5 m = 27.9 ft, and costs only 0.9 m more soil cover.
-constexpr float kTcRoadHalfWidth  = 7.32f;  // drivable half-width: 24.0 ft (4 x 12 ft lanes)
-constexpr float kTcTubeHalfWidth  = 8.23f;  // interior half-width at the springing: 27.0 ft
+// its old absolute height: holding the crown over a span 37 % wider would have
+// flattened the vault into a culvert. Rise 6.44 m over a 3.8 m wall puts the
+// crown at 10.24 m = 33.6 ft. (Same rule, same reason, as the 2026-08-15 pass:
+// 4.70 m of rise over 8.23 m of half-span was also 0.571.)
+constexpr float kTcLaneW          = 3.658f; // ONE lane: 12.0 ft. The single source
+                                            // for lane width; the paint reads it.
+constexpr float kTcRoadHalfWidth  = 7.62f;  // pavement half-width: 25.0 ft (divider half + 4 x 12 ft)
+constexpr float kTcTubeHalfWidth  = 11.28f; // interior half-width at the springing: 37.0 ft
 constexpr float kTcTubeWallH      = 3.80f;  // vertical wall height before the arch: 12.5 ft
-constexpr float kTcTubeCrownH     = 8.50f;  // interior crown above the road datum: 27.9 ft
+constexpr float kTcTubeCrownH     = 10.24f; // interior crown above the road datum: 33.6 ft
 constexpr float kTcShellThick     = 0.9f;   // wall/crown thickness
 
-// ---- WALKWAYS (TUNNEL_INTERIOR_PLAN.md W1) --------------------------------
-// The raised maintenance walk each side, which is WHAT THE EXTRA WIDTH IS FOR.
-// A bore with a bare wall at the lane edge reads as a pipe; a kerb, a deck and
-// the shadow line under it read as infrastructure someone maintains. It is also
-// the element every later fitting hangs off -- railings, SOS niches, door
+// ---- THE LOW CENTRE DIVIDER -----------------------------------------------
+// The SAME F-shape jersey profile road_network extrudes for its offside
+// barriers and its freeway median (road_network.cpp `jp[4][2]`), at the same
+// dimensions — one wall profile in the world, not a second one invented for
+// the tunnel. Base half 0.30 m, crown half 0.115 m, height 0.81 m: low enough
+// to see over (it is a sight-line, not a wall), tall enough to stop a
+// crossover. It runs the ROOFED span only; outside the portals the demo road
+// is undivided, the way the feeding route is.
+constexpr float kTcDividerHalfW   = 0.305f; // base half-width: 1.0 ft
+constexpr float kTcDividerH       = 0.81f;  // crown height (road_network jp[3][1])
+
+// ---- THE CONCRETE SHOULDER -------------------------------------------------
+// Between the outer lane's edge line and the sidewalk kerb. This is the
+// "sidewalk OFF a concrete shoulder" of the brief: a broken-down car pulls onto
+// it clear of the running lane, and the kerb beyond it is what the walk stands
+// on. 6 ft is the tunnel refuge width; the demo road's apron outside the portal
+// is the same surface at 20 ft (see kApronW in the .cpp — PAIRED).
+constexpr float kTcShoulderW      = 1.829f; // 6.0 ft
+
+// ---- RAISED SIDEWALKS (TUNNEL_INTERIOR_PLAN.md W1) ------------------------
+// The raised walk each side, which is WHAT THE EXTRA WIDTH IS FOR. A bore with
+// a bare wall at the lane edge reads as a pipe; a kerb, a deck and the shadow
+// line under it read as infrastructure someone maintains. It is also the
+// element every later fitting hangs off -- railings, SOS niches, door
 // thresholds and the lay-by kerb all sit at deck level.
-constexpr float kTcWalkKerbH      = 0.305f; // kerb height: 1.0 ft
-constexpr float kTcWalkDeckW      = 0.914f; // deck width:  3.0 ft
+//
+// WIDENED 3.0 -> 6.0 ft 2026-08-17: at 3 ft it was a maintenance catwalk you
+// edge along, and the brief asks for a SIDEWALK. Six feet is two people
+// abreast, and it is the width the door alcoves in tunnel_rooms.* open onto —
+// a 2.1 m door discharging onto a 0.91 m ledge was the mismatch. The deck
+// COLLIDES (see the walk upload in the .cpp): CONTACT LAW, you stand on it.
+constexpr float kTcWalkKerbH      = 0.305f; // kerb height: 1.0 ft (a step, not a climb)
+constexpr float kTcWalkDeckW      = 1.829f; // deck width:  6.0 ft
 constexpr float kTcMinSoilCover   = 3.5f;   // ground kept above the tube's outer crown
 // Corridor footprint. The flat floor must be wider than the tube's outer shell
-// so the tube sits INSIDE the depression, never straddling its shoulder.
-constexpr float kTcCorridorHalfW  = 10.1f;  // 33.1 ft -- clears the 9.13 m outer shell
+// so the tube sits INSIDE the depression, never straddling its shoulder --
+// AND, on the open approaches, wider than the demo road's paved edge so the
+// apron never lands on uncut ground (road_network's halfWidth obeys the same
+// rule). Binding constraint is now the apron: 7.62 + 6.10 = 13.72 m.
+constexpr float kTcCorridorHalfW  = 14.0f;  // 45.9 ft -- clears shell 12.18 and apron 13.72
+
+// THE SECTION ADDS UP, checked by the compiler rather than by a comment. This
+// is the exact class of defect the 2026-08-15 pass shipped by hand (48 ft of
+// road fed into a 39 ft bore, found days later): arithmetic in a block comment
+// is a claim, a static_assert is a receipt. Anyone editing one number above now
+// has to edit the others or the build stops.
+static_assert(kTcRoadHalfWidth > kTcDividerHalfW + 2.0f * kTcLaneW - 0.005f &&
+              kTcRoadHalfWidth < kTcDividerHalfW + 2.0f * kTcLaneW + 0.005f,
+              "pavement half-width must be the divider half plus two 12 ft lanes");
+static_assert(kTcTubeHalfWidth > kTcRoadHalfWidth + kTcShoulderW + kTcWalkDeckW - 0.005f &&
+              kTcTubeHalfWidth < kTcRoadHalfWidth + kTcShoulderW + kTcWalkDeckW + 0.005f,
+              "interior half-width must be pavement + shoulder + sidewalk exactly: "
+              "the sidewalk deck lands ON the springing, with no sliver between");
+static_assert(kTcCorridorHalfW > kTcTubeHalfWidth + kTcShellThick + 0.5f,
+              "the corridor's flat floor must clear the tube's OUTER shell, or the "
+              "tube straddles the cut's shoulder instead of sitting in it");
 // The shoulder run. Under the old two-regime build this had to be kept tight
 // because every metre of it was a metre of earth ramp inside the mouth. With
 // cut-and-cover the depth profile no longer steps at the portal at all, so the
@@ -157,7 +222,12 @@ constexpr float kTcLidApron       = 5.0f;   // lid runs this far PAST the zero-d
 constexpr float kTcLidStep        = 3.0f;   // longitudinal sample spacing (m)
 constexpr int   kTcLidLateral     = 45;     // lateral samples across the lid
 // ---- PORTAL STRUCTURE ------------------------------------------------------
-constexpr float kTcPortalHalfW    = 11.0f;  // headwall half-width (bore is 7.9 outer)
+// 11.0 -> 14.1 with the 2026-08-17 widening: the headwall must still stand
+// proud of the bore it frames. Outer shell is 12.18 m, so this keeps the same
+// ~1.9 m of masonry each side the 8.23 m section had (11.0 over 9.13).
+constexpr float kTcPortalHalfW    = 14.1f;  // headwall half-width (bore is 12.18 outer)
+static_assert(kTcPortalHalfW > kTcTubeHalfWidth + kTcShellThick + 1.0f,
+              "the headwall must stand proud of the arch it frames");
 constexpr float kTcPortalThick    = 1.7f;   // headwall slab thickness along the road
 constexpr float kTcPortalProud    = 0.75f;  // headwall parapet above the backfill
 constexpr float kTcPortalSplay    = 6.5f;   // headwall -> wingwall taper run (m)
@@ -318,19 +388,21 @@ const TunnelRoute* tunnelRouteAt(uint32_t i);
 const TunnelRoute& registerTunnelCorridor();
 
 // The demo route's spec (the authored hill at (-592,-352), heading 157.5 deg).
-// Exposed so the drive-through self-test can register the SAME route more than
-// once against different portal-cut settings — the cached entry point above
-// can't, by design.
+// Exposed so the drive-through self-test registers its route through the SAME
+// door the city's freeway bores use — the cached entry point above can't, by
+// design.
 TunnelSpec demoTunnelSpec();
 
 // DRIVE-THROUGH self-test (--test-tunneldrive). The acceptance for this module
 // is not a screenshot — it is that a vehicle can drive in one portal and out
-// the other. Registers the demo route TWICE: once with the portal cut disabled
-// (X3_TUNNEL_PORTAL_CUT=0 — the NEGATIVE CONTROL, where the earth ramp at the
-// mouth must STOP the car) and once enabled (the car must reach the far
-// portal, staying at road level through the bore — through it, not over it).
-// Streams the real terrain (headless device), builds the real road/shell
-// collision, drives the real Jolt wheeled rig. No window/Vulkan.
+// the other: the car must reach the far portal, staying at road level through
+// the bore — through it, not over it. Streams the real terrain (headless
+// device), builds the real road/shell collision, drives the real Jolt wheeled
+// rig. No window/Vulkan. The NEGATIVE CONTROL is field-level (N1): the natural
+// hillside must bury a long reach of the roadway, or the drive-through proves
+// nothing. (The old two-phase X3_TUNNEL_PORTAL_CUT control asserted a code
+// path the cut-and-cover redesign deleted — see the note above
+// driveTheDemoRoute in the .cpp for which gates died and why.)
 bool runTunnelDriveSelfTest();
 
 // --test-routeframe — P1's gate: TunnelRoute's frame follows its station

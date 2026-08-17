@@ -143,6 +143,27 @@ struct RoadSpec {
     // each carriageway's own offside. Routes with bore/deck gaps must keep
     // this false — a tunnel is a 4-lane tube and cannot swallow a freeway.
     bool  dualCarriageway  = false;
+    // THE SURFACE. Every route in the world was asphalt because the ribbon
+    // hardcoded one surface-library set; a dirt mountain track is the same
+    // ribbon — same prism, same batter, same apron-skirt fix, same barrier
+    // planning — laid in a different material with no paint on it. Both
+    // defaults reproduce the previous behaviour exactly (NO_SLOP rule 6), so
+    // no existing route changes by a pixel.
+    //   paved dirt tracks want "terrain_bluff_clay"; the shoulders follow the
+    //   running surface rather than staying cement, because a dirt road has no
+    //   poured shoulder.
+    std::string surfaceSet   = "rd_asphalt_01";
+    bool        laneMarkings = true;    // false = unpaved: no stripes at all
+    // CROSS-SECTION SCALE. The profile above is a freeway's: 48 ft running +
+    // 4 ft shoulders + 20 ft aprons = 96 ft of pavement. A dirt track over a
+    // ridge at 96 ft wide is a freeway with a dirt texture on it, which is the
+    // wrong answer wearing the right material. This scales the whole
+    // cross-section — running surface, shoulders, aprons, prism skirt and the
+    // barrier drop-test's own edge, so they cannot disagree about where the
+    // pavement stops. Carve halfWidth is NOT scaled here: it is set per route
+    // and must still cover whatever this produces.
+    // 1.0 == every existing route, unchanged to the pixel.
+    float widthScale = 1.0f;
     std::vector<float> x, z;     // centreline nodes, world (same length, >= 2)
 
     // THE SPAN GAP (bores + bridges). A gap is a run of nodes [i0..i1] whose

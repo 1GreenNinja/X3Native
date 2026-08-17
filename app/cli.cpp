@@ -180,6 +180,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-terrainplace") o.testTerrainPlace = true;
         else if (a == "--test-terraincorridor") o.testTerrainCorridor = true;
         else if (a == "--test-tunneldrive") o.testTunnelDrive = true;
+        else if (a == "--test-summitlot") o.testSummitLot = true;
+        else if (a == "--test-ridgeroad") o.testRidgeRoad = true;
         else if (a == "--test-tunnelmouth") o.testTunnelMouth = true;
         else if (a == "--test-streaming") o.testStreaming = true;
         else if (a == "--test-ai") o.testAi = true;

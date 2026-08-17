@@ -28,6 +28,8 @@
 #include <array>
 #include <memory>
 #include "../road_network.h"
+#include "../summit_lot.h"       // the pad the summit spur climbs to
+#include "../ridge_road.h"       // the dirt road along the tops, lot -> the bore's massif
 #include "../river_bridge.h"
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
 #include "../traffic.h"          // W-TRAFFIC — AI traffic on the 16-lane freeway
@@ -344,6 +346,8 @@ int hostTunnel(HostContext& hc) {
     // mountain") — skipped honestly if no peak within reach earns a road.
     x3::game::SpawnConnectorResult connector;
     x3::game::SummitSpurResult summitSpur;
+    x3::game::SummitLotResult  summitLot;
+    x3::game::RidgeRoadResult  ridgeRoad;
     x3::game::RangeCircuitResult rangeCircuit;
     bool connOn = false, circuitOn = false;
     {
@@ -389,6 +393,47 @@ int hostTunnel(HostContext& hc) {
                 if (!summitSpur.built)
                     summitSpur = x3::game::registerSummitSpur(ringSpec, ringRoadY,
                                                               &route, &avoid);
+                // THE PLACE THE SPUR GOES TO. Without this the spur is 1.4
+                // miles of switchback that ends on a bare hillside — the sketch
+                // (ROAD_NETWORK_SKETCH_V2.png) labels that high ground "Parking
+                // Lot on Top of Mountain". Registered HERE, at boot, because
+                // the pad is a TerrainCorridor carve and the registry closes at
+                // the first TerrainStreamer::init() (terrain.h contract); and
+                // AFTER the spur because its datum is the spur's last node.
+                if (summitSpur.built) {
+                    summitLot = x3::game::registerSummitLot(summitSpur);
+                    // THE LONG LEG OF THE LOOP — Tim's dirt road over the tops,
+                    // lot -> the bore's portal shoulder. Registered here for the
+                    // same reason the lot is: the carve registry closes at the
+                    // first TerrainStreamer::init(), and this needs the lot (one
+                    // end) and the bore (the other) to already exist.
+                    // DEFAULT OFF, and that is a statement about the road, not
+                    // about the knob. NO_SLOP rule 6 says features ship on; this
+                    // one is NOT FINISHED and shipping it on would put a 773 ft
+                    // trench across the map. In the live world (more routes
+                    // registered than the gate's, so a different line) the
+                    // deepest cut lands at mile 4.72 at (-520, 7) — see
+                    // ridge_road.h's tuning log and the switchback fix it points
+                    // at. Turn it on with X3_RIDGE_ROAD=1 to work on it; turn it
+                    // on by default the day --test-ridgeroad is 7/7.
+                    const char* rre = std::getenv("X3_RIDGE_ROAD");
+                    if (summitLot.built && rre && rre[0] == '1') {
+                        std::vector<const x3::game::RoadSpec*> rrAvoid = avoid;
+                        rrAvoid.push_back(&ringSpec);
+                        rrAvoid.push_back(&summitSpur.spec);
+                        ridgeRoad = x3::game::registerRidgeRoad(summitLot, route, &rrAvoid);
+                        if (!ridgeRoad.built)
+                            x3::logWarn(std::string("--world tunnel: ridge road NOT built — ") +
+                                        ridgeRoad.whyNot);
+                    }
+                    if (!summitLot.built) {
+                        char lb[192];
+                        std::snprintf(lb, sizeof(lb),
+                                      "--world tunnel: summit lot NOT built — %s",
+                                      summitLot.whyNot);
+                        x3::logWarn(lb);
+                    }
+                }
             }
         }
     }
@@ -831,22 +876,87 @@ int hostTunnel(HostContext& hc) {
         }
         startPos[1] = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]) + 1.0f;
     }
+    // X3_SPAWN=lot|spur|bore — START somewhere other than the ring. THE REVIEW
+    // KNOB. The summit lot is 7.5 km from the default spawn, so in practice
+    // nobody had ever seen it: not the owner (twenty minutes of driving), not
+    // an agent (the --screenshot harness is headless and does not go there).
+    // A destination nobody can get to is not finished, and "I did not look at
+    // it" is the honest reading of every review that skipped it.
+    // DEFAULT OFF and unset spawns exactly as before (NO_SLOP rule 6).
+    if (const char* sp = std::getenv("X3_SPAWN")) {
+        const std::string w(sp);
+        bool moved = false;
+        if (w == "lot" && summitLot.built) {
+            // On the pad's entry mouth, facing in along the aisle.
+            startPos[0] = summitLot.mouthX; startPos[2] = summitLot.mouthZ; moved = true;
+        } else if (w == "spur" && summitSpur.built) {
+            startPos[0] = summitSpur.spec.x.back();
+            startPos[2] = summitSpur.spec.z.back(); moved = true;
+        } else if (w == "bore") {
+            float p[3]; route.posAt(std::max(8.0f, route.boreS0 - 40.0f), p);
+            startPos[0] = p[0]; startPos[2] = p[2]; moved = true;
+        }
+        if (moved) {
+            startPos[1] = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]) + 1.0f;
+            char sb[160];
+            std::snprintf(sb, sizeof(sb), "--world tunnel: X3_SPAWN=%s — spawning at (%.0f, %.0f, %.0f)",
+                          w.c_str(), (double)startPos[0], (double)startPos[1], (double)startPos[2]);
+            x3::logInfo(sb);
+        } else {
+            x3::logWarn(std::string("--world tunnel: X3_SPAWN=") + w +
+                        " not available (want lot|spur|bore) — default spawn");
+        }
+    }
 
     x3::game::TerrainStreamer streamer;
     const x3::game::TerrainConfig& cfg = x3::game::worldTerrainConfig();
     streamer.setUploadBudget(96);
     streamer.setMaxInFlight(48);
+    // PAIRED with the horizon ring's rInner below (NO_SLOP rule 4) — the ring
+    // must start INSIDE what the streamer covers or there is a hole between
+    // them. Named once so the two can never drift apart again.
+    const int kStreamRadiusTiles = headless ? 14 : 9;
     streamer.init(scene, *device, *phys, jobs.get(), cfg,
-                  startPos[0], startPos[2], /*radius=*/headless ? 14 : 9);
+                  startPos[0], startPos[2], kStreamRadiusTiles);
 
     // Far country so the hill sits in a landscape and not on a void horizon.
+    //
+    // THE VOID ANNULUS (found by W-PERF, fixed 2026-08-17). rInner was 470 m
+    // flat, and the centre was the ROUTE MIDPOINT while the streamer centres on
+    // startPos and follows the player. Streamed coverage is
+    // kStreamRadiusTiles * cfg.tileSize — 288 m interactively (radius 9), 448 m
+    // headless (radius 14) — so the ground ran out at 288 m and the far country
+    // did not begin until 470 m: a 182 m ring of NOTHING all the way round the
+    // player, every interactive frame. Headless it was 22 m, which is why no
+    // capture ever showed it: --screenshot runs at radius 14 and the harness
+    // structurally cannot see the interactive case. Verified by eye in an
+    // interactive run, not a capture.
+    //
+    // Both values now derive from the one radius. The margin is one tile: a
+    // tile-aligned streamer guarantees coverage to radius*tileSize from the
+    // player only when the player sits at their tile's centre, so back the ring
+    // rim a full tile inside it and let the streamed tiles overlap the seam
+    // (yBias keeps the ring recessed under them). Same rule host_streamed.cpp
+    // keeps at 240 m against its radius-8 / 256 m disc.
     {
-        float mid[3]; route.posAt(route.totalLen * 0.5f, mid);
+        const float streamedR = (float)kStreamRadiusTiles * cfg.tileSize;
         x3::game::HorizonRingDesc hr{};
-        hr.centerX = mid[0]; hr.centerZ = mid[2];
-        hr.rInner = 470.0f; hr.rOuter = 9000.0f;
+        // Centre on the STREAMER's centre, not the route midpoint: the hole in
+        // the middle of the ring is exactly the disc the streamer fills, so the
+        // two must be concentric. (Known limit, shared with every other host:
+        // the ring is baked once and does not re-centre on long travel —
+        // host_streamed.cpp documents the same follow-up.)
+        hr.centerX = startPos[0]; hr.centerZ = startPos[2];
+        hr.rInner = streamedR - cfg.tileSize; hr.rOuter = 9000.0f;
         hr.rings = 96; hr.segments = 128; hr.yBias = -3.0f;
         x3::game::addTerrainHorizonRing(scene, *device, streamer.groundTexture(), hr);
+        char hb[192];
+        std::snprintf(hb, sizeof(hb),
+                      "--world tunnel: horizon ring rInner %.0f m inside a %.0f m "
+                      "streamed disc (radius %d tiles x %.0f m), concentric at (%.0f, %.0f)",
+                      hr.rInner, streamedR, kStreamRadiusTiles, cfg.tileSize,
+                      hr.centerX, hr.centerZ);
+        x3::logInfo(hb);
     }
 
     // ==== STEP 3 — the road, the shell, the portals ==========================
@@ -884,6 +994,13 @@ int hostTunnel(HostContext& hc) {
             x3::game::buildRoadRibbon(summitSpur.spec, scene, *device, *phys,
                                       &summitSpur.roadY);
             x3::game::buildJunctionMouth(summitSpur.jct, scene, *device, *phys);
+            // ...and the lot it climbs to. Slab and kerb COLLIDE (NO_SLOP rule
+            // 11): you drive onto it, you get out, you walk on it.
+            if (summitLot.built)
+                x3::game::buildSummitLot(summitLot, scene, *device, *phys);
+            // ...and the dirt road that leaves it for the mountains.
+            if (ridgeRoad.built)
+                x3::game::buildRidgeRoad(ridgeRoad, scene, *device, *phys);
         }
     }
     // The outer tour's pavement + its five dressed bores. The ribbon rides the
@@ -3322,6 +3439,63 @@ int hostTunnel(HostContext& hc) {
             car.turbo() = x3::game::DriveDemo::TurboParams{};
             con->print("car back to the shipped 992 Turbo S numbers (800 Nm, stock grip, 5.2 final, stock spoiler)");
         }, "restore the stock vehicle tune");
+        // tp — put the car somewhere. THE REVIEW TOOL: this world is 46 miles of
+        // road and the interesting places (the summit lot at 7.5 km, the far
+        // bore) are twenty minutes of driving from spawn, so nobody — human or
+        // agent — ever looked at them in an INTERACTIVE run. The --screenshot-*
+        // harness is not a substitute: it runs headless, and headless takes
+        // different code paths (this host streams at radius 14 headless vs 9
+        // interactive — the horizon-ring void annulus lived in exactly that
+        // gap and no capture could see it).
+        //
+        //   tp                -> print where you are
+        //   tp <x> <z>        -> world metres, dropped onto the surface
+        //   tp lot | bore | spur | ring   -> the named destinations
+        con->registerCommand("tp", [&, con](const std::vector<std::string>& args) {
+            float tx = 0.0f, tz = 0.0f;
+            const x3::phys::BodyId cb = car.controller() ? car.controller()->body()
+                                                         : x3::phys::BodyId{};
+            if (args.size() == 1) {
+                x3::phys::Vec3 p{ 0.0f, 0.0f, 0.0f };
+                if (car.controller()) p = phys->getBodyPosition(cb);
+                char b[160];
+                std::snprintf(b, sizeof(b), "at (%.0f, %.0f, %.0f) — ground %.0f m",
+                              (double)p.x, (double)p.y, (double)p.z,
+                              (double)x3::game::terrainHeightAtWorld(p.x, p.z));
+                con->print(b);
+                return;
+            }
+            if (args.size() == 2) {
+                const std::string& w = args[1];
+                if (w == "lot" && summitLot.built)        { tx = summitLot.cx;  tz = summitLot.cz; }
+                else if (w == "spur" && summitSpur.built) { tx = summitSpur.spec.x.back();
+                                                            tz = summitSpur.spec.z.back(); }
+                else if (w == "bore") { float p[3]; route.posAt(std::max(8.0f, route.boreS0 - 40.0f), p);
+                                        tx = p[0]; tz = p[2]; }
+                else if (w == "ring" && ringSpec.x.size() > 2) { tx = ringSpec.x[0]; tz = ringSpec.z[0]; }
+                else { con->print("tp <x> <z> | tp lot|spur|bore|ring"); return; }
+            } else if (args.size() >= 3) {
+                tx = (float)std::atof(args[1].c_str());
+                tz = (float)std::atof(args[2].c_str());
+            }
+            if (!car.controller()) { con->print("no car to move"); return; }
+            // Stream the destination in BEFORE dropping the car on it, or it
+            // lands on tiles that do not exist yet and falls through the world.
+            streamer.update(scene, *device, *phys, tx, tz);
+            const float gy = x3::game::terrainHeightAtWorld(tx, tz);
+            const x3::phys::Vec3 dst{ tx, gy + 2.0f, tz };
+            phys->setBodyPosition(cb, dst);
+            const float zero[3] = { 0.0f, 0.0f, 0.0f };
+            phys->setBodyLinearVelocity(cb, zero);
+            char b[160];
+            std::snprintf(b, sizeof(b), "teleported to (%.0f, %.0f, %.0f)",
+                          (double)tx, (double)(gy + 2.0f), (double)tz);
+            con->print(b);
+            // ALSO to the log, not just the console pane: a screenshot of the
+            // console does not survive being cropped, and a capture without
+            // coordinates cannot prove WHERE it was taken. Receipts.
+            x3::logInfo(std::string("tp: ") + b);
+        }, "tp [x z | lot|spur|bore|ring] — move the car (review tool)");
         con->registerCommand("car", [&](const std::vector<std::string>&) {
             char b[256];
             std::snprintf(b, sizeof(b),
