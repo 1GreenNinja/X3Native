@@ -2046,7 +2046,11 @@ int hostTunnel(HostContext& hc) {
             }
             // Composed power product: vampire (timing) x nitrous (SHIFT). The
             // turbo's own multiplier stacks inside DriveDemo::updateTurbo.
-            car.setTorqueBoost((vampireOn ? 1.07f : 1.0f) * (nosActive ? 1.50f : 1.0f));
+            // NOS = A 200 SHOT (Tim: "NOS adds 200HP"). Against this tune's
+            // ~1,050 hp peak (800 Nm x 1.70 turbo across the curve), +200 hp
+            // is x1.19 on torque — a proper bottle, not a cartoon. If the
+            // shop later sells bigger shots, the number scales the same way.
+            car.setTorqueBoost((vampireOn ? 1.07f : 1.0f) * (nosActive ? 1.19f : 1.0f));
             car.setInput(in);
             car.preStep(fdt);
         }
