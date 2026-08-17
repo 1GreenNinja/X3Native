@@ -1577,9 +1577,10 @@ int hostTunnel(HostContext& hc) {
             char b[256];
             std::snprintf(b, sizeof(b),
                 "feet(%.1f, %.2f, %.1f) | terrain %.2f | topmost-static %s%.2f | "
-                "driving=%d spawned=%d",
+                "driving=%d spawned=%d | rigRestY=%.4f jake_y=%.2f",
                 jf.x, jf.y, jf.z, gy, rh.hit ? "" : "(miss) ",
-                rh.hit ? rh.point.y : 0.0f, (int)driving, (int)footSpawned);
+                rh.hit ? rh.point.y : 0.0f, (int)driving, (int)footSpawned,
+                (double)jakeSkin.rootYLockRestY(), (double)console->getFloat("jake_y"));
             con->print(b);
         }, "print Jake's feet vs terrain vs topmost surface — the burial confession");
         con->registerCommand("wx_debug", [&, con](const std::vector<std::string>&) {
@@ -2783,7 +2784,13 @@ int hostTunnel(HostContext& hc) {
                 // literally half in the ground". Using the measured value
                 // instead of a constant makes the rule rig-agnostic: a clean
                 // skeleton measures ~0 and is untouched. jake_y trims live.
-                const float yFix = (jakeAnimated ? -jakeSkin.rootYLockRestY() : 0.0f)
+                // SIGN FLIPPED after the head-periscope screenshot: the
+                // capsule (physics feet) stands CORRECTLY — the buried body
+                // was this compensation applied the wrong way, drawing the
+                // mesh a full armature-offset BELOW the capsule. jake_debug
+                // now prints the raw rest-Y so the sign is never guessed
+                // again; jake_y remains the live trim.
+                const float yFix = (jakeAnimated ? +jakeSkin.rootYLockRestY() : 0.0f)
                                  + console->getFloat("jake_y");
                 const float ca = std::cos(a), sa = std::sin(a);
                 // Column-major 4x4: rotation about +Y, translation at the feet.
