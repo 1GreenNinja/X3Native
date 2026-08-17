@@ -46,6 +46,7 @@ struct TestFlags {
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testPropClip = false;    // --test-propclip (GATE A ext: dressing prop AABB vs room bounds)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
+    bool testGrounding = false;   // --test-grounding (character feet vs support surface, app/grounding.h)
     bool testStairNav = false;   // feat/stair-nav: enemy stairwell pathing (S1-S5)
     bool testFilmic = false;      // --test-filmic (composite filmic block: CPU-mirror identity probe)
     bool testGoldenPath = false;
@@ -73,6 +74,7 @@ struct TestFlags {
     bool testWingDressing = false;// --test-wingdressing (F2-F7 wing recipe dressing, headless)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
     bool testSurfaceHandoff = false;// --test-surfacehandoff ([P0-1] surface -> facility handoff)
+    bool testApronLanding = false;// --test-apronlanding (ONE WORLD landing: intro -> canon apron)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;
     bool testTerrain = false, testTerrainPlace = false, testStreaming = false;
@@ -83,6 +85,7 @@ struct TestFlags {
     bool testTraffic = false;         // --test-traffic (freeway AI traffic)
     bool testGasStation = false;      // --test-gasstation (W-STATIONS forecourts + fuel stub)
     bool testFactory     = false;     // --test-factory (the works siting + the tickets)
+    bool testInterchange = false;     // --test-interchange (the diamond grade split)
     bool testTunnelDrive = false;      // --test-tunneldrive (drive-through the demo bore, negative-controlled)
     bool testSummitLot   = false;      // --test-summitlot (the pad at the top of the summit spur)
     bool testRidgeRoad   = false;      // --test-ridgeroad (the dirt road along the tops)
@@ -94,6 +97,7 @@ struct TestFlags {
     bool testPackSpiders = false;    // --test-packspiders (pack-harvest arachnids: Lab Skitterer / Venom Brood)
     bool testClone = false;          // --test-clone (THE CLONE: Act-1 finale 3-phase boss + neural collar)
     bool testGallery = false;        // --test-gallery (character-gallery cast + clip cycle)
+    bool testCutaway = false;        // --test-cutaway (Level Architect cutaway model)
     bool testSpireTop = false, testTimeline = false, testDroneHack = false, testSubLevels = false;
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;

@@ -1,6 +1,14 @@
 // ============================================================================
 // --world surface  (a.k.a. the ESCAPED-branch Act-1 surface-landing start)
 //
+// >>> DEV SHORTCUT since feat/canon-apron-landing (owner, 2026-08-16: "Why are
+// >>> we even landing in a different world than we play in?"). The GAME's
+// >>> flyable intro outcomes now land IN canonlevel — apron spawn + ship
+// >>> set-down via app/apron_landing.h, walk in through the SEAM-2 breach; no
+// >>> world switch. app_run routes here only from the level1/elevator dev
+// >>> worlds (whose build has no exterior). This slice, its [E] breach handoff
+// >>> and both its self-test suites stay supported per docs/design/WORLDS.md.
+//
 // Phase 7 of the interactive branching cold-open (docs/design/
 // INTERACTIVE_INTRO_DESIGN.md §6, INTERACTIVE_INTRO_PLAN.md Phase 7).
 //

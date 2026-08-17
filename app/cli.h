@@ -69,6 +69,7 @@ struct CliOptions {
          testVigil = false,      // --test-vigil: VIGIL bark system (trigger/cooldown/no-repeat/gate/idle)
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
+         testGrounding = false,   // --test-grounding: character feet vs support surface (app/grounding.h GATE)
          testStairNav = false,
          testPropClip = false,    // --test-propclip: dressing-layer prop AABB vs room bounds (GATE A ext)
          testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
@@ -304,6 +305,17 @@ struct CliOptions {
     // from across the valley. Implies --world tunnel + headless.
     bool        townShot = false;
     std::string townShotDir = "docs/screenshots/town";
+    // --screenshot-cutaway <dir>: the LEVEL ARCHITECT CUTAWAY proof set
+    // (`--world cutaway`, headless). Three eyes-on gates against
+    // docs/design/LEVEL_ARCHITECT_CUTAWAY_REF.png: the whole stack in X-ray, the
+    // same stack with the upper floors hidden, and a hover card up over the
+    // Neural Interface Lab. Implies --world cutaway + headless.
+    bool        cutawayShot = false;
+    std::string cutawayShotDir = "docs/screenshots/cutaway";
+    // --test-cutaway: the cutaway model's headless self-test (canonical project
+    // loads; 7 floors / 124 rooms / 160 doors; bands, groups, descriptions,
+    // legend coverage and the hover ray-pick). No window, no Vulkan.
+    bool        testCutaway = false;
 
     // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
     // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp
@@ -479,6 +491,13 @@ struct CliOptions {
     // handoff contract (breach trigger + canonlevel@entrance request + Entrance
     // spawn vs the live tower data + armed arrival + escaped-flags import, with
     // shot_down/absent negative controls). No window/Vulkan.
+    // NOTE: the GAME no longer routes through the surface world (ONE WORLD
+    // landing, feat/canon-apron-landing) — both suites now gate the `--world
+    // surface` DEV SHORTCUT's contract, which stays supported per WORLDS.md.
+    // --test-apronlanding (ONE WORLD landing): the intro's flyable outcomes land
+    // IN canonlevel — apron spawn/facing/ship set-down maths + the walk-to-breach
+    // nav probe + the placement-datum (AABB) law. No window/Vulkan.
+    bool        testApronLanding = false;
     bool        testSurfaceHandoff = false;
     // --test-starsystems (x3.starsys/1): the named-star-system registry integrity
     // gate — every system has a valid star + bodies, lookup by id/name round-trips,
@@ -523,6 +542,7 @@ struct CliOptions {
     bool        testTraffic = false;       // --test-traffic (freeway AI traffic)
     bool        testGasStation = false;    // --test-gasstation (W-STATIONS forecourts + fuel stub)
     bool        testFactory     = false;   // --test-factory (the works siting + the tickets)
+    bool        testInterchange = false;   // --test-interchange (the diamond grade split)
     // Headless editor proof (--screenshot-editor [path.png]): init ImGui in a headless
     // device, render ONE frame with the dockspace + demo window, and capture a PNG that
     // shows the ImGui window — proves the Phase-0 integration actually rasterizes.

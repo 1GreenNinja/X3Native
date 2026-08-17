@@ -158,6 +158,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
         else if (a == "--test-propclip") o.testPropClip = true;     // GATE A ext: dressing prop clip audit
         else if (a == "--test-canonplay") o.testCanonPlay = true;
+        else if (a == "--test-grounding") o.testGrounding = true;   // character grounding GATE (app/grounding.h)
         else if (a == "--test-worldswitch") {   // headless canonlevel->flag world-load repro/regression
             if (i + 1 < argc && argv[i + 1][0] != '-') o.worldSwitchTest = argv[++i];
             else o.worldSwitchTest = "streamed";
@@ -334,6 +335,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.townShot = true; o.worldMode = "tunnel"; o.screenshot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.townShotDir = argv[++i];
         }
+        else if (a == "--screenshot-cutaway") {                                   // LEVEL ARCHITECT cutaway proof set
+            o.cutawayShot = true; o.worldMode = "cutaway"; o.screenshot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.cutawayShotDir = argv[++i];
+        }
+        else if (a == "--test-cutaway") o.testCutaway = true;
         else if (a == "--test-clubnpcs") o.testClubNpcs = true;
         else if (a == "--test-jukebox") o.testJukebox = true;
         else if (a == "--test-listen") o.testListen = true;
@@ -384,6 +390,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-traffic") o.testTraffic = true;
         else if (a == "--test-gasstation") o.testGasStation = true;
         else if (a == "--test-factory") o.testFactory = true;
+        else if (a == "--test-interchange") o.testInterchange = true;
         else if (a == "--screenshot-editor") {
             o.editorShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.editorShotPath = argv[++i];
@@ -651,6 +658,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-wingdressing") o.testWingDressing = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;
         else if (a == "--test-surfacestart") o.testSurfaceStart = true;
+        else if (a == "--test-apronlanding") o.testApronLanding = true;
         // [P0-1] both spellings accepted (the plan doc names --test-surface-handoff).
         else if (a == "--test-surfacehandoff" || a == "--test-surface-handoff")
             o.testSurfaceHandoff = true;
