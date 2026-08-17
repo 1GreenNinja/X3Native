@@ -920,6 +920,11 @@ int hostTunnel(HostContext& hc) {
     // where a wheel would actually land. Terrain height stays as the fallback
     // if the physics tiles under the spawn have not streamed in yet.
     float spawnGroundY = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]);
+    {   char sb[128];
+        std::snprintf(sb, sizeof(sb), "[tunnel] SPAWN at (%.1f, %.1f, %.1f)",
+                      startPos[0], spawnGroundY, startPos[2]);
+        x3::logInfo(sb);
+    }
     {
         const x3::phys::RayHit hit = phys->rayCast(
             x3::phys::Vec3{ startPos[0], spawnGroundY + 60.0f, startPos[2] },
