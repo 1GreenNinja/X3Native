@@ -43,6 +43,10 @@ struct CliOptions {
          // of the summit spur is carved, level, on the peak, and drivable
          // into. See app/summit_lot.h.
          testSummitLot = false,
+         // --test-ridgeroad: the SUMMIT RIDGE ROAD gate — the dirt road
+         // runs the tops between the lot and the bore's massif, A/B'd
+         // against the straight line. See app/ridge_road.h.
+         testRidgeRoad = false,
          // --test-tunnelmouth: the TUNNEL-MOUTH gate. Asserts no ground ever
          // stands on the roadway (the defect fix/tunnel-mouth closed), that
          // the backfill lid clears the shell and meets the untouched terrain

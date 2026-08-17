@@ -2842,7 +2842,7 @@ BarrierPlan planRoadBarriers(const RoadSpec& spec, const std::vector<float>* roa
         if (tl > 1e-4f) { tx /= tl; tz /= tl; }
         const float edge = (!medianPlan.empty())
             ? medianPlan[i] + 2.0f * kFwyPavedHalfM
-            : kPavedHalfM;
+            : kPavedHalfM * spec.widthScale;   // PAIRED with the ribbon's pavHalf
         const float lat = (edge + 6.0f) * (float)side;
         const float qx = spec.x[i] + (-tz) * lat;
         const float qz = spec.z[i] + ( tx) * lat;
@@ -2895,7 +2895,7 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
 
     SurfaceLibrary& surf = roadSurfaces();
     surf.mount(assetRoot() + "/surface_library");
-    const SurfaceSet& asphalt = surf.get(device, "rd_asphalt_01");
+    const SurfaceSet& asphalt = surf.get(device, spec.surfaceSet.c_str());
     const SurfaceSet& cement  = surf.get(device, "mw_concrete_panels_a");
     if (!asphalt.ok || !cement.ok)
         x3::logWarn("road ribbon: surface set(s) unavailable - flat colour fallback");
@@ -3014,9 +3014,13 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
     // Per-carriageway cross-section: the freeway runs 8 lanes a side, the base
     // profile keeps its 4. Everything else (shoulder, apron, prism) is shared.
     const int   lanes   = dual ? kFwyLaneCount     : kLaneCount;
-    const float runHalf = dual ? kFwyRunningHalfM  : kRunningHalfM;
-    const float shoHalf = dual ? kFwyShoulderHalfM : kShoulderHalfM;
-    const float pavHalf = dual ? kFwyPavedHalfM    : kPavedHalfM;
+    // spec.widthScale narrows the whole section together (see RoadSpec) — a
+    // dirt track is this same profile at a fraction of the width, not a
+    // different one. 1.0 for every paved route in the world.
+    const float wS      = spec.widthScale;
+    const float runHalf = (dual ? kFwyRunningHalfM  : kRunningHalfM)  * wS;
+    const float shoHalf = (dual ? kFwyShoulderHalfM : kShoulderHalfM) * wS;
+    const float pavHalf = (dual ? kFwyPavedHalfM    : kPavedHalfM)    * wS;
     const float laneM   = kLaneFt * kFtToM;
     const float halfPaint = 0.06f;              // ~5 in stripe
 
@@ -3110,7 +3114,7 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
             // traffic is on the other carriageway, so there is NO double
             // yellow anywhere. Solid edges, dashed interior lines (40 ft
             // cycle, 60% duty, cut as true duty windows in u).
-            for (int lane = 0; lane <= lanes; ++lane) {
+            for (int lane = 0; lane <= lanes && spec.laneMarkings; ++lane) {
                 const float latLA = cA - runHalf + (float)lane * laneM;
                 const float latLB = cB - runHalf + (float)lane * laneM;
                 const bool edge = (lane == 0 || lane == lanes);
@@ -3152,7 +3156,7 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
         // median wall's job below.
         auto barLat = [&](const RoadRenderStation& st, int side, float inset) {
             const float edge = dual ? (st.medianHalf + 2.0f * kFwyPavedHalfM)
-                                    : kPavedHalfM;
+                                    : pavHalf;   // scaled with the section
             return (edge - inset) * (float)side;
         };
         if (k < barriers.mask.size() && (barriers.mask[k] & 3)) {
@@ -3530,8 +3534,12 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
             "%u guardrail segments (min drop railed %.1f m) | %u jersey-wall segments "
             "(ditch band, min drop %.1f m)",
             spec.name.c_str(), out.lengthM / 1609.34f, out.meshCount, out.quadCount,
-            out.fineStations, lanes, kLaneFt, kShoulderFt, kApronFt,
-            kPavedHalfM * 2.0f / kFtToM,
+            // SCALED, like the geometry above it. This line read a flat 96 ft
+            // off the constants and reported that for a 28.8 ft dirt track —
+            // a receipt that describes something other than what was built is
+            // worse than no receipt, because it gets believed.
+            out.fineStations, lanes, kLaneFt * wS, kShoulderFt * wS, kApronFt * wS,
+            pavHalf * 2.0f / kFtToM,
             out.railSegments, out.railMinDropM,
             out.jerseySegments, out.jerseyMinDropM);
     }

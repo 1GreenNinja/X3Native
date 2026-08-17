@@ -112,6 +112,7 @@
 #include "city.h"
 #include "tunnel_corridor.h"   // x3::game::runTunnelDriveSelfTest (--test-tunneldrive)
 #include "summit_lot.h"        // x3::game::runSummitLotSelfTest (--test-summitlot)
+#include "ridge_road.h"        // x3::game::runRidgeRoadSelfTest (--test-ridgeroad)
 #include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
 #include "ocean_base.h"
@@ -757,6 +758,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running RIVER BRIDGE self-test (the valley road meets the river "
                     "square, the span gap leaves it untouched, the at-grade control drowns)...");
         return x3::game::runRiverBridgeSelfTest() ? 0 : 1;
+    }
+    if (tf.testRidgeRoad) {
+        x3::logInfo("running SUMMIT RIDGE ROAD self-test (4-ish miles of dirt along the "
+                    "tops, lot -> the bore's massif; A/B'd against the straight line)...");
+        return x3::game::runRidgeRoadSelfTest() ? 0 : 1;
     }
     if (tf.testSummitLot) {
         x3::logInfo("running SUMMIT PARKING LOT self-test (the pad at the top of the "

@@ -15,57 +15,74 @@ weapons, handling). Nothing pushed.*
 | summit parking lot exists **in the game**, not only in a test | **DONE** (ce6c6deb) — 32 stalls at (397, 6774), datum 350 ft; eyes-on `04_summit_lot_32_stalls.png` |
 | horizon-ring void annulus (W-PERF's handover) | **DONE** (ce6c6deb) — see below |
 | doors → stairways → halls | **PRE-EXISTING, survives the widening** — tunnelrooms 16/16 incl. R4n negative control. NOT re-photographed this wave. |
-| **THE LOOP** (tunnel → ramp → garage → summit lot → other tunnel) | **NOT BUILT.** Read the next section before attempting it. |
+| **THE LOOP**'s long leg — the dirt ridge road, lot → the bore's massif | **BUILT, gate 5/7, default OFF** (`X3_RIDGE_ROAD=1`). Read the next section. |
+| the loop's two short legs (garage → ridge road, lot → second bore) | **NOT BUILT** |
 
 Gates, all green on the merged tree: tunnelmouth 8/8, terraincorridor 16/16,
 tunnelfitout 14/14, tunnelrooms 16/16, routeframe 4/4, tunneldrive 10/10,
 roadnetwork 58/58, summitlot 9/9. Boot zero `[ERROR]`, 163–168 fps / 6.0–6.1 ms.
 
-## THE LOOP — the missing leg is a DIRT RIDGE ROAD
+## THE LOOP — the dirt ridge road is BUILT, and its gate is 5/7
 
-**I got this wrong the first time and Tim corrected it.** I measured the gap
-between the bore and the lot, called 7 km "too far", and filed the loop as a
-geometry blocker needing the lot moved onto the bore's own massif. Tim:
+**I got the framing wrong twice and Tim corrected both.** First I measured the
+bore-to-lot gap, called it "7.1 km, too far", and filed the loop as a geometry
+blocker needing the lot moved. Then, building it, I added a penalty that stopped
+the road climbing at all. Tim:
 
 > *"7KM.. use miles.. its not far.. and you can have a road that is dirt, on top
 > of the mountains, that is that long, that is what I planned.. curving over
 > mountain features"*
+> *"well we WANT the road to CLIMB up the mountain, as mountain roads do"*
+> *"up around the back or side"*  *"through wild territory"*
 
-**4.4 miles is the design, not the problem.** For scale it is shorter than the
-inner tour (31 miles) and three times the summit spur (1.44 miles) — this world
-is measured in miles and I was reading a metric number as if it were a walk.
-Distances in this lane belong in **miles and feet**, like every other number in
-road_network.
+4.4 miles is a medium road here — the inner tour is 31. **Use miles.** Reading a
+metric number as if it were a walk is what produced the first wrong conclusion,
+and half of the second.
 
-So the missing leg is a **long unpaved mountain-top road** running the ridge
-line between the two, curving over the mountain features rather than cutting
-through them. The endpoints, measured:
+### What exists now
+`app/ridge_road.{h,cpp}` + `--test-ridgeroad`. A ridge-seeking router lays a
+**4.83-mile dirt track** from the summit lot's entry mouth to the bore's portal
+shoulder — narrow (28.8 ft formation), unpaved (`terrain_bluff_clay`), no lane
+paint, 14% cap, guardrails where the drop test fires. It rides `buildRoadRibbon`
+via two new `RoadSpec` fields (`surfaceSet`, `laneMarkings`) and a `widthScale`,
+all defaulting to today's behaviour — **roadnetwork 58/58, riverbridge 9/9,
+summitlot 9/9, tunnelmouth 8/8, tunneldrive 10/10 all unchanged.**
 
-* the bore / garage end: demo bore at **(-592, -352)**, and the massif it goes
-  through peaks at **948 ft at (-744, -850)**.
-* the lot end: **(397, 6774)**, datum **350 ft**, on the peak the summit spur
-  climbs to.
-* between them: **~4.4 miles** of high ground.
+### Its gate is 5/7 and that is deliberate
+G4 (runs the tops) and G5 (cut ≤ 40 ft) are RED. **Do not relax them.** Red is
+the accurate report: this road hugs lower ground than "up around the back or
+side, through wild territory" describes.
 
-Design constraints that follow from "dirt, on top of the mountains, curving over
-mountain features":
+`ridge_road.h` carries the full tuning log — six configurations with their
+measured (elevation gain / deepest cut) pairs. The short version: the route is
+bimodal. It either stays low and clean (+13 ft / 52 ft cut) or climbs the massif
+and trenches (+106 ft / 774 ft). Shipped is the clean one.
 
-* it must **follow the ridge**, not bee-line. A straight line between the
-  endpoints would trench every saddle it crosses; the route wants to seek high
-  ground and take the curves the terrain gives it. That is a router that steps
-  toward the goal while biasing to locally-higher ground, not a polyline.
-* **narrow and unpaved** — a dirt track's half-width, no lane paint, no jersey
-  barriers. `buildRoadRibbon` hardcodes `rd_asphalt_01`; a surface field on
-  `RoadSpec` (defaulting to today's asphalt) reuses the whole ribbon — prism,
-  batter, the D5b apron-skirt fix, barrier planning — instead of writing a
-  second, worse ribbon.
-* grades: the spur already runs a **14 %** cap with switchbacks. A ridge road
-  should not need it — following the ridge is what keeps grade down.
-* it costs terrain-corridor slots: the registry is at **87 of 192** after
-  everything else, so there is room, but a 4.4-mile road chains several.
+### The thing to read before touching the weights
+I tuned five times against a cut DEPTH without ever asking WHERE the cut was.
+That was the mistake. The receipt now prints the position, and the answer was
+not where any of the tuning was aimed:
 
-Then lot → second bore closes the loop; the outer tour's five bores are the
-candidates (`North Flank`, `North Massif`, `Crystal North/Saddle/Descent`).
+* gate world: `deepest cut is at mile 0.14 of 4.83, at (354, 6536)` — the first
+  750 ft, coming **down off the summit lot's own knoll**.
+* live world (more routes registered, so a different line): `mile 4.72 of 4.94,
+  at (-520, 7)` — the far end, 773 ft.
+
+Both are ENDS, not the middle. The mechanism missing is **switchbacks**: this
+router cannot reverse direction, so wherever the terrain demands more height
+change than 14% over the straight run, the grader answers with a cut.
+`registerSummitSpur` (road_network.cpp:1934) already builds sawtooth switchback
+legs and climbs 247 ft in 1.44 miles with them. Reuse that at both ends before
+touching a single weight — configurations 2 and 6 already put the road on the
+tops, and if their cuts are also at the ends then the bimodality is not real.
+
+### It is DEFAULT OFF: `X3_RIDGE_ROAD=1`
+NO_SLOP rule 6 says ship features on. This one is not finished, and on-by-default
+would put a 773 ft trench across the map. Turn it on by default the day
+`--test-ridgeroad` is 7/7.
+
+### Still missing from the loop
+garage → this road's portal-shoulder end, and lot → the second bore. Both short.
 
 ## THE VOID ANNULUS — fixed, and how to check it
 
@@ -92,14 +109,17 @@ Three tools now exist for looking at the real thing:
 * `tools/send_keys.ps1` — hold keys / type. Sends real scancodes; GLFW resolves
   keys from the scancode, so `keybd_event` with `bScan = 0` produces
   `GLFW_KEY_UNKNOWN`.
-* `tp lot|spur|bore|ring` console command — **written and wired, but I could not
-  make the `~` console open under injected input** (VK_OEM_3 / scan 0x29 both
-  verified correct; letters reach gameplay, the toggle never fires). Untested.
-  `X3_SPAWN` is the route that works. Someone with a keyboard should try `tp`.
+* **The `~` console DOES work** — it opens under injected keys when the window
+  genuinely has focus; my earlier failures were focus, not the key. The HUD also
+  advertises **`noclip freefly`**, which would have saved most of the review
+  effort in this lane. Use it.
+* `tp lot|spur|bore|ring` console command — wired, never confirmed end to end.
+  `X3_SPAWN` is the route that is known to work.
 
 ## OPEN, in priority order
 
-1. **The loop** — above. This is the lane's headline item and the real work left.
+1. **The ridge road's two red gates**, then the loop's two short legs — above.
+   Switchbacks at the ends, not more weight-tuning.
 2. **`rd_asphalt_01` is INCOMPLETE in this worktree** — every road and the lot
    slab fall back to flat colour (`[surface-lib] set 'rd_asphalt_01' incomplete`).
    Not a code defect: run `python tools/asset_store.py fetch --all` (there are

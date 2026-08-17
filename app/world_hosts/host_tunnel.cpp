@@ -28,6 +28,7 @@
 #include <memory>
 #include "../road_network.h"
 #include "../summit_lot.h"       // the pad the summit spur climbs to
+#include "../ridge_road.h"       // the dirt road along the tops, lot -> the bore's massif
 #include "../river_bridge.h"
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
 #include "../vehicle.h"
@@ -265,6 +266,7 @@ int hostTunnel(HostContext& hc) {
     x3::game::SpawnConnectorResult connector;
     x3::game::SummitSpurResult summitSpur;
     x3::game::SummitLotResult  summitLot;
+    x3::game::RidgeRoadResult  ridgeRoad;
     x3::game::RangeCircuitResult rangeCircuit;
     bool connOn = false, circuitOn = false;
     {
@@ -319,6 +321,30 @@ int hostTunnel(HostContext& hc) {
                 // AFTER the spur because its datum is the spur's last node.
                 if (summitSpur.built) {
                     summitLot = x3::game::registerSummitLot(summitSpur);
+                    // THE LONG LEG OF THE LOOP — Tim's dirt road over the tops,
+                    // lot -> the bore's portal shoulder. Registered here for the
+                    // same reason the lot is: the carve registry closes at the
+                    // first TerrainStreamer::init(), and this needs the lot (one
+                    // end) and the bore (the other) to already exist.
+                    // DEFAULT OFF, and that is a statement about the road, not
+                    // about the knob. NO_SLOP rule 6 says features ship on; this
+                    // one is NOT FINISHED and shipping it on would put a 773 ft
+                    // trench across the map. In the live world (more routes
+                    // registered than the gate's, so a different line) the
+                    // deepest cut lands at mile 4.72 at (-520, 7) — see
+                    // ridge_road.h's tuning log and the switchback fix it points
+                    // at. Turn it on with X3_RIDGE_ROAD=1 to work on it; turn it
+                    // on by default the day --test-ridgeroad is 7/7.
+                    const char* rre = std::getenv("X3_RIDGE_ROAD");
+                    if (summitLot.built && rre && rre[0] == '1') {
+                        std::vector<const x3::game::RoadSpec*> rrAvoid = avoid;
+                        rrAvoid.push_back(&ringSpec);
+                        rrAvoid.push_back(&summitSpur.spec);
+                        ridgeRoad = x3::game::registerRidgeRoad(summitLot, route, &rrAvoid);
+                        if (!ridgeRoad.built)
+                            x3::logWarn(std::string("--world tunnel: ridge road NOT built — ") +
+                                        ridgeRoad.whyNot);
+                    }
                     if (!summitLot.built) {
                         char lb[192];
                         std::snprintf(lb, sizeof(lb),
@@ -862,6 +888,9 @@ int hostTunnel(HostContext& hc) {
             // 11): you drive onto it, you get out, you walk on it.
             if (summitLot.built)
                 x3::game::buildSummitLot(summitLot, scene, *device, *phys);
+            // ...and the dirt road that leaves it for the mountains.
+            if (ridgeRoad.built)
+                x3::game::buildRidgeRoad(ridgeRoad, scene, *device, *phys);
         }
     }
     // The outer tour's pavement + its five dressed bores. The ribbon rides the

@@ -81,6 +81,7 @@ struct TestFlags {
     bool testRiverBridge = false;     // --test-riverbridge (valley road + Bridge No.1)
     bool testTunnelDrive = false;      // --test-tunneldrive (drive-through the demo bore, negative-controlled)
     bool testSummitLot   = false;      // --test-summitlot (the pad at the top of the summit spur)
+    bool testRidgeRoad   = false;      // --test-ridgeroad (the dirt road along the tops)
     bool testTunnelMouth = false;     // --test-tunnelmouth (THE tunnel-mouth defect gate)
     bool testWorldStream = false, testWorldMap = false, testAi = false, testBestiary = false;
     bool testBosses = false, testAct2Bosses = false, testSpireMid = false, testNexus = false;
