@@ -195,6 +195,10 @@ struct CliOptions {
     bool        ddgiForce = false;         // --ddgi: force r_ddgi 1 (screenshot/showroom A/B)
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
+    // --test-enemy-scale (fix/spawn-anomalies): THE BODY-SIZE SWEEP — every live
+    // enemy row across every roster BUILDS and renders inside the sane body-size
+    // band, plus the two guard controls. Closes the ~30 cm-doll defect class.
+    bool        testEnemyScale = false;
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
     // machine + the scripted pre-fight hook + the Martinez regression guard. Additive.
     bool        testBosses = false;

@@ -38,6 +38,22 @@ struct MeshPrimitive {
     // these vectors are empty and the primitive is drawn untouched. The bind-pose
     // positions/normals are kept (skinning is computed relative to them every
     // frame, never accumulated). vertexCount == basePos.size()/3. ----
+    // ---- LOCAL BOUNDS. Axis-aligned min/max of this primitive's POSITIONS in
+    // mesh-local space, populated for EVERY primitive (skinned or not) at load.
+    // It costs one min/max per vertex in a loop that already touches them all,
+    // and it is the ONLY CPU-side record of an UNSKINNED model's size: basePos
+    // is retained for skinned primitives alone, so before this every size/height
+    // check in the game (monster.cpp's fit guards, grounding.h's
+    // artLowestBelowOrigin, env_art's namedBounds) was structurally blind to
+    // static art and silently measured nothing. Combine with the referencing
+    // node's world transform for model-space bounds.
+    // NOTE for skinned primitives this is the BIND-pose box, which the joint
+    // matrices may rescale wholesale — measure those through the skinning
+    // palette, not this. ----
+    bool                 hasBBox = false;
+    float                bboxMin[3] = { 0, 0, 0 };
+    float                bboxMax[3] = { 0, 0, 0 };
+
     bool                 skinned = false;
     std::vector<float>   basePos;    // bind-pose positions (vertexCount * 3)
     std::vector<float>   baseNrm;    // bind-pose normals    (vertexCount * 3)

@@ -867,6 +867,17 @@ private:
                 }
 
                 MeshPrimitive mp;
+                // LOCAL BOUNDS for every primitive (see IModelLoader.h) — the only
+                // CPU record of an unskinned mesh's size once the verts go to the GPU.
+                if (!mv.empty()) {
+                    mp.hasBBox = true;
+                    for (int k = 0; k < 3; ++k) { mp.bboxMin[k] = mv[0].pos[k]; mp.bboxMax[k] = mv[0].pos[k]; }
+                    for (const rhi::MeshVertex& v : mv)
+                        for (int k = 0; k < 3; ++k) {
+                            if (v.pos[k] < mp.bboxMin[k]) mp.bboxMin[k] = v.pos[k];
+                            if (v.pos[k] > mp.bboxMax[k]) mp.bboxMax[k] = v.pos[k];
+                        }
+                }
                 up.uploadMesh(mv.data(), static_cast<uint32_t>(mv.size()),
                               indices.data(), static_cast<uint32_t>(indices.size()),
                               mp.vertexBuffer, mp.indexBuffer);

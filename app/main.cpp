@@ -373,6 +373,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testWorldMap = o.testWorldMap;
         _tf.testAi = o.testAi;
         _tf.testBestiary = o.testBestiary;
+        _tf.testEnemyScale = o.testEnemyScale;
         _tf.testBosses = o.testBosses;
         _tf.testAdaptiveHide = o.testAdaptiveHide;
         _tf.testAct2Bosses = o.testAct2Bosses;
