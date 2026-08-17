@@ -599,6 +599,13 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
 
     // ---- measure the natural surface across the full carve width ----------
     std::vector<float> natural(n, 0.0f), segLen(n, 0.0f);
+    // The SAME sweep against the PRE-corridor hillside. `natural` is sampled
+    // through terrainHeightAtWorld(), i.e. after every registered corridor has
+    // carved, which is right for the GRADER (it must grade onto the floor that
+    // is really there) and wrong for the FLOAT measurement (see O6b below).
+    // Two arrays, one loop, one lateral sweep: the readings differ only by the
+    // excavation, never by the sampling.
+    std::vector<float> preNatural(n, 0.0f);
     const float reach = spec.halfWidth + 0.8f;
     for (size_t i = 0; i < n; ++i) {
         // local tangent, for the lateral sweep
@@ -609,14 +616,16 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
         if (tl > 1e-4f) { tx /= tl; tz /= tl; }
         // MAX across the width: the carve must clear the highest ground the
         // roadway will occupy, not the centreline's ground.
-        float hi = -1e9f;
+        float hi = -1e9f, preHi = -1e9f;
         for (int k = -kLatSamples; k <= kLatSamples; ++k) {
             const float off = (float)k * reach / (float)kLatSamples;
             const float qx = spec.x[i] + (-tz) * off;
             const float qz = spec.z[i] + ( tx) * off;
             hi = std::max(hi, terrainHeightAtWorld(qx, qz));
+            preHi = std::max(preHi, tunnelNaturalHeightAt(qx, qz));
         }
         natural[i] = hi;
+        preNatural[i] = preHi;
         if (i + 1 < n) {
             const float dx = spec.x[i + 1] - spec.x[i], dz = spec.z[i + 1] - spec.z[i];
             segLen[i] = std::sqrt(dx * dx + dz * dz);
@@ -745,12 +754,31 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
         // road registers after its bores), so datum-minus-natural there is the
         // groove depth, not an embankment. Measured: a phantom 129 ft "float"
         // at the massif west portal that was really the bore's over-excavation.
+        //
+        // MEASURE AGAINST THE PRE-CORRIDOR HILLSIDE, 2026-08-17 (W-TUNNEL).
+        // The exclusion above treats a symptom: `natural[]` is not natural at
+        // all, it is terrainHeightAtWorld() AFTER every corridor has carved,
+        // so "float" was partly a measurement of our own excavation and the
+        // node-range exclusion was a guess at how far that reached. It reached
+        // further as soon as lane 1 widened the bores (corridor half-width
+        // 10.1 -> 14.0 m): O6b went 83 -> 193 ft with no new embankment
+        // anywhere, purely because one more node had fallen into the groove.
+        // tunnelNaturalHeightAt() subtracts terrainCorridorDelta and hands back
+        // the untouched hillside, which is what the word float means. Corridors
+        // only ever LOWER the field, so this reading is <= the old one at every
+        // node — SAME lateral sweep, so the two readings differ only by the
+        // excavation — and the gate cannot be newly passed by a real embankment
+        // it used to catch. natural[] itself is deliberately left alone: the
+        // GRADER must keep seeing the carved floor it grades onto. (First cut
+        // of this fix sampled the centreline only and read 88 ft where the
+        // sweep reads less, which is the same class of error one layer down.)
         for (size_t i = 0; i < n; ++i) {
             bool gapNode = false;
             for (const RoadSpec::Gap& g : spec.gaps)
                 if (i >= g.i0 && i <= g.i1) { gapNode = true; break; }
-            if (!gapNode && roadY[i] - natural[i] > r.maxFloatM) {
-                r.maxFloatM = roadY[i] - natural[i];
+            if (gapNode) continue;
+            if (roadY[i] - preNatural[i] > r.maxFloatM) {
+                r.maxFloatM = roadY[i] - preNatural[i];
                 floatAt = i;
             }
         }
