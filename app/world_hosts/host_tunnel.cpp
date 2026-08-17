@@ -1726,16 +1726,35 @@ int hostTunnel(HostContext& hc) {
                 onFoot.setFeetPosition(*phys,
                     x3::phys::Vec3{ jx, groundAt(jx, jz) + 0.2f + lift, jz });
             };
+            // camMode 0/1/2 are the real F1 camera modes (characterCameraEye).
+            // kCamGunRig is a CAPTURE-ONLY rig — see its use below.
+            constexpr int kCamGunRig = 3;
             // One proof sequence: `frames` sim steps of (moveFwd, moveStrafe,
             // sprint) at a fixed look yaw; jumpAt >= 0 presses Space on that
-            // frame; fixedCam (x,y,z,yaw,pitch) or camMode (F1 modes) frames
-            // the shot; the LAST frame is captured.
+            // frame; fixedCam (x,y,z,yaw,pitch) or camMode (F1 modes, or
+            // kCamGunRig) frames the shot; the LAST frame is captured.
+            //
+            // `groundedTail` > 0 instead picks the capture frame BY MEASUREMENT
+            // (NO_SLOP rule 9) over the last `groundedTail` frames: a locomotion
+            // still shot on an arbitrary frame lands in the stride's FLIGHT
+            // phase about half the time, and a runner hanging 0.15 m over the
+            // tarmac is exactly the read THE CONTACT LAW exists to prevent —
+            // the first cut of 21_rifle_run had both boots off the road. First
+            // half of the window (longer than the 0.71 s Riflerun cycle, so a
+            // foot-strike is guaranteed inside it) only MEASURES the lower toe
+            // bone's clearance over the capsule's feet plane; the second half
+            // arms on the first frame that returns to within 1.5 cm of the
+            // measured minimum, then stops. No magic frame numbers.
             auto jakeSeq = [&](const char* name, int frames, float mf, float ms,
                               bool sprint, int jumpAt, float lookYaw,
                               const float* fixedCam, int camMode,
-                              const std::function<void(int)>& act = {}) -> bool {
+                              const std::function<void(int)>& act = {},
+                              int groundedTail = 0) -> bool {
                 char out[512];
                 std::snprintf(out, sizeof(out), "%s/%s.png", jdir.c_str(), name);
+                const int gWinLo = (groundedTail > 0) ? frames - groundedTail : frames;
+                const int gWinMid = gWinLo + groundedTail / 2;
+                float gMinClear = 1e9f;
                 for (int i = 0; i < frames; ++i) {
                     glfwPollEvents();
                     const x3::phys::Vec3 f0 = onFoot.feet();
@@ -1759,10 +1778,59 @@ int hostTunnel(HostContext& hc) {
                     jake.update(onFoot, ji, lookYaw, dt, *phys, *device);
                     float cam[5];
                     if (fixedCam) { for (int k = 0; k < 5; ++k) cam[k] = fixedCam[k]; }
+                    else if (camMode == kCamGunRig) {
+                        // THE WEAPON-PROOF RIG (camMode 3 — not an F1 mode).
+                        // MEASURED defect it exists to kill: at camFront's 12 m
+                        // a 0.62 m held rifle is ~20 px wide, and F1 mode 1/2
+                        // sit BEHIND the back where Jake's own torso occludes
+                        // the gun — the first weapons proof set could not show
+                        // whether he was holding a rifle or a brick. This rides
+                        // 3.4 m off his FRONT-RIGHT (the rifle hand is +X of a
+                        // -Z facing) at chest height, FOLLOWING the capsule so
+                        // it works for moving shots too. Framed so the feet
+                        // stay in frame: at 3.4 m the 74 deg lens shows 2.88 m
+                        // of height, aimed at feet+1.30 -> covers -0.14..2.74.
+                        // THE CONTACT LAW must be readable in a weapon shot.
+                        const x3::phys::Vec3 fz = onFoot.feet();
+                        const float px = fz.x + 2.3f, py = fz.y + 1.55f,
+                                    pz = fz.z - 2.5f;
+                        const float ddx = fz.x - px, ddy = (fz.y + 1.30f) - py,
+                                    ddz = fz.z - pz;
+                        cam[0] = px; cam[1] = py; cam[2] = pz;
+                        cam[3] = std::atan2(ddz, ddx);
+                        cam[4] = std::atan2(ddy, std::sqrt(ddx * ddx + ddz * ddz));
+                    }
                     else x3::game::characterCameraEye(onFoot, camMode, cam[0],
                                                       cam[1], cam[2], cam[3], cam[4]);
                     device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 74.0f);
-                    if (i == frames - 1) device->armCapture(out);
+                    // THE CONTACT-FRAME PICKER (see groundedTail above). The
+                    // rig is already posed for THIS frame (jake.update ran), so
+                    // the toe reading and the capture arm the same image.
+                    bool armNow = (i == frames - 1);
+                    if (groundedTail > 0 && i >= gWinLo && i < frames - 1) {
+                        float lm[16], rm[16];
+                        const bool okL = jake.boneWorld("mixamorigLeftToeBase",
+                                                        onFoot, 0.0f, 0.0f, lm);
+                        const bool okR = jake.boneWorld("mixamorigRightToeBase",
+                                                        onFoot, 0.0f, 0.0f, rm);
+                        if (okL || okR) {
+                            const float fy = onFoot.feet().y;
+                            float clear = 1e9f;
+                            if (okL) clear = std::min(clear, lm[13] - fy);
+                            if (okR) clear = std::min(clear, rm[13] - fy);
+                            if (i < gWinMid) gMinClear = std::min(gMinClear, clear);
+                            else if (clear <= gMinClear + 0.015f) armNow = true;
+                        }
+                    }
+                    if (armNow) {
+                        device->armCapture(out);
+                        if (groundedTail > 0)
+                            x3::logInfo("--screenshot-jake: " + std::string(name) +
+                                        " armed on a FOOT-CONTACT frame (" +
+                                        std::to_string(i) + "/" + std::to_string(frames) +
+                                        ", min toe clearance " +
+                                        std::to_string(gMinClear) + " m)");
+                    }
                     auto fr = device->beginFrame();
                     if (fr.valid) {
                         scene.render(*device, fr);
@@ -1799,6 +1867,7 @@ int hostTunnel(HostContext& hc) {
                         }
                     }
                     device->endFrame(fr);
+                    if (armNow) break;   // the armed frame is the shot; stop here
                 }
                 const bool wrote = device->captureFrame(out);
                 if (wrote) x3::logInfo(std::string("--screenshot-jake: wrote ") + out);
@@ -1845,12 +1914,20 @@ int hostTunnel(HostContext& hc) {
             // the capsule; the module clamps every frame).
             setRifleArmed(true);
             if (rifleArmed) {
-                // 20: rifle IN HAND, at the ready (Rifleaimingidle), front.
+                // 20: rifle IN HAND, at the ready (Rifleaimingidle). GUN RIG —
+                // this is THE shot that answers "does he have his weapons?",
+                // so the gun has to be legible: model, texture and which way
+                // the barrel points, with the boots still on the road.
                 placeJake(0.0f);
-                ok = jakeSeq("20_rifle_idle", 120, 0, 0, false, -1, kFace, camFront, -1) && ok;
-                // 21: armed run (Riflerun swapped into the blend), toward camera.
+                ok = jakeSeq("20_rifle_idle", 120, 0, 0, false, -1, kFace, nullptr, kCamGunRig) && ok;
+                // 21: armed run (Riflerun swapped into the blend). Gun rig
+                // FOLLOWS him, so the carry pose reads while he is moving, and
+                // groundedTail puts the shutter on a FOOT-STRIKE frame — the
+                // 70-frame cut landed in the flight phase with both boots
+                // 0.15 m over the tarmac (measured off the capture).
                 placeJake(0.0f);
-                ok = jakeSeq("21_rifle_run",   70, 1, 0, false, -1, kFace, camFront, -1) && ok;
+                ok = jakeSeq("21_rifle_run",  160, 1, 0, false, -1, kFace, nullptr, kCamGunRig,
+                             {}, 100) && ok;
                 // 22: RMB aim — over-the-near-shoulder frame + HUD crosshair.
                 placeJake(0.0f);
                 rifleAiming = true; jake.setAiming(true);
@@ -1860,37 +1937,50 @@ int hostTunnel(HostContext& hc) {
                 // the capture.
                 ok = jakeSeq("23_fire_muzzle", 90, 0, 0, false, -1, kFace, nullptr, 1,
                              [&](int i) { if (i >= 60) fireRifleOnce(); }) && ok;
+                // 23b: the SAME burst from the gun rig. Shot 23 proves the
+                // tracer runs to the crosshair; from behind the back it cannot
+                // prove the flash leaves the BARREL TIP. This one can — the
+                // muzzle FX ride heldRifleMuzzle(), the MEASURED vmMuzzle under
+                // the same matrix the gun draws with.
+                placeJake(0.0f);
+                ok = jakeSeq("23b_fire_close", 90, 0, 0, false, -1, kFace, nullptr, kCamGunRig,
+                             [&](int i) { if (i >= 60) fireRifleOnce(); }) && ok;
                 rifleAiming = false; jake.setAiming(false);
                 // 24: reload mid-clip (Reloading is 3.29 s; begin at frame 10,
-                // capture ~1.6 s in — hands at the receiver, "RELOADING..." HUD).
+                // capture ~1.6 s in — hands at the receiver, "RELOADING..."
+                // HUD). GUN RIG: the front cam was too far and the over-the-
+                // shoulder cam puts his own back between lens and receiver.
                 placeJake(0.0f);
-                ok = jakeSeq("24_reload_mid", 106, 0, 0, false, -1, kFace, camFront, -1,
+                ok = jakeSeq("24_reload_mid", 106, 0, 0, false, -1, kFace, nullptr, kCamGunRig,
                              [&](int i) {
                                  if (i == 10 && rifle.reload()) jake.reloadOneShot();
                              }) && ok;
                 // 25: grenade ARC — toss at 5, ball leaves at the arm swing
-                // (69 frames ≈ 1.15 s), captured ~0.75 s into flight from the
-                // side camera (glowing core + smoke trail against the sky).
+                // (69 frames ≈ 1.15 s), captured ~0.75 s into flight. FOLLOW
+                // camera (far): the fixed side cam proved the throw exits the
+                // frame in under a second — behind Jake the arc flies AHEAD
+                // and stays centered (glowing core + smoke trail).
                 placeJake(0.0f);
-                ok = jakeSeq("25_grenade_arc", 119, 0, 0, false, -1, kFace, camSide, -1,
+                ok = jakeSeq("25_grenade_arc", 119, 0, 0, false, -1, kFace, nullptr, 2,
                              [&](int i) {
                                  if (i == 5)  jake.grenadeOneShot();
                                  if (i == 74) releaseGrenade();
                              }) && ok;
                 // 26: DETONATION — same staging, run through the 2.2 s fuse
                 // (boom at frame ~206), captured 6 frames after the fireball
-                // ignites.
+                // ignites, ~20 m ahead on the roadway.
                 placeJake(0.0f);
-                ok = jakeSeq("26_grenade_boom", 212, 0, 0, false, -1, kFace, camSide, -1,
+                ok = jakeSeq("26_grenade_boom", 212, 0, 0, false, -1, kFace, nullptr, 2,
                              [&](int i) {
                                  if (i == 5)  jake.grenadeOneShot();
                                  if (i == 74) releaseGrenade();
                              }) && ok;
                 // 27: HOLSTERED — back to the unarmed melee layer (hooks combo
-                // mid-swing, no rifle in hand).
+                // mid-swing, no rifle in hand). Gun rig: same lens as 20, so
+                // "gun there / gun gone" is an A/B a reader can actually make.
                 setRifleArmed(false);
                 placeJake(0.0f);
-                ok = jakeSeq("27_holster_punch", 30, 0, 0, false, -1, kFace, camFront, -1,
+                ok = jakeSeq("27_holster_punch", 30, 0, 0, false, -1, kFace, nullptr, kCamGunRig,
                              [&](int i) {
                                  if (i == 6) jake.playOneShot("Backflip_and_Hooks");
                              }) && ok;

@@ -374,7 +374,9 @@ inline constexpr TpGrip kTpGripTable[] = {
     { "smg",         0.11f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.00f },
     // The tunnel world's rifle (host_tunnel tunnelRifleRoster: the Railgun
     // longarm on the Jake_44 rig) — seeded from the smg row (same model).
-    { "rifle",       0.11f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.00f },
+    // scaleMul 1.35: at vmScale 0.24 the Railgun reads 0.46 m — an SMG; the
+    // proof captures wanted a RIFLE read (~0.62 m held). Eyes-on'd 2026-08-17.
+    { "rifle",       0.11f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.35f },
     { "shotgun",     0.16f,  0.00f,  0.05f,   0.0f,  -4.0f,  0.0f,  1.05f },
     { "plasma",      0.10f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.00f },
     { "chaingun",    0.18f,  0.00f,  0.06f,   0.0f,  -3.0f,  0.0f,  1.10f },
