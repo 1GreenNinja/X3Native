@@ -1128,6 +1128,11 @@ int runDefaultHost(HostContext& hc) {
     // (the trapdoor hatch is the secret exit — never locked by sleeping). ----
     x3::game::BedRestSystem bedRest;
     std::vector<uint32_t>   bedCellDoors;
+    // CELL DOOR RELEASE (cell-shell finding): the detention door boots LOCKED
+    // (captive premise); the terminal's 1278 override releases it — latched off
+    // the floor hatch's unlock edge (the single choke point every accept path
+    // crosses: terminal sink, Lua script race, VIGIL).
+    bool cellDoorReleased = false;
     // ---- Keycard / keypad door gating (canonWorld). keycardMask = bitmask of held
     // keycard ids; the Security keycard is a glowing pickup in the Research Lab. ----
     uint32_t keycardMask       = 0;
@@ -2164,6 +2169,19 @@ int runDefaultHost(HostContext& hc) {
                                           hatchCx, hatchCz, jc.y1() - 0.16f);
                 for (uint32_t ei = nBefore; ei < scene.size(); ++ei)
                     scene.get(ei).roomId = cbt.jakeCell;
+                // ---- NEVER SEAL A PLAYER IN. The cell doors boot LOCKED (the
+                // captive premise) and the ONE authored release is the terminal's
+                // 1278 override, which rides the floor hatch. If that hatch failed
+                // to build on this machine, there is no override edge to release
+                // them — so drop the seal now. A cell that reads slightly less
+                // secure beats a player hard-stuck in a room with no exit.
+                if (!game.secret().hatchBuilt() && !bedCellDoors.empty()) {
+                    for (uint32_t di : bedCellDoors)
+                        if (di < canonDoors.count()) canonDoors.unlock(canonDoors.at(di));
+                    cellDoorReleased = true;   // don't re-run the release latch
+                    x3::logWarn("--world canonlevel: cell trapdoor absent — detention seal "
+                                "DROPPED so the cell always has a way out");
+                }
             }
             // ---- W4-2: --screenshot-vigil — seed a live VIGIL conversation ON
             // the cell glass at BUILD time (the upload batch is open, so the
@@ -8602,6 +8620,12 @@ int runDefaultHost(HostContext& hc) {
                                    : (std::string("LOCKED — enter code ") + std::to_string(d->code));
                                npcBarkTimer = 4.0f; return true;
                            }
+                           if (!needCard) {
+                               // Plain lock, no credential (the DETENTION cell door /
+                               // any lock() consumer): name the seal, spoil nothing.
+                               npcBarkText = "LOCKED - DETENTION SEAL - OVERRIDE REQUIRED";
+                               npcBarkTimer = 3.0f; return true;
+                           }
                            npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                            npcBarkTimer = 3.0f; return true;
                        }()) {
@@ -10180,6 +10204,24 @@ int runDefaultHost(HostContext& hc) {
                     for (uint32_t di : bedCellDoors) canonDoors.closeAndLock(canonDoors.at(di));
                 if (bedRest.tookRiseEdge())
                     for (uint32_t di : bedCellDoors) canonDoors.unlock(canonDoors.at(di));
+                // CELL DOOR RELEASE: the frame the 1278 override unlocks the floor
+                // hatch, the detention door releases too — unlocked AND opened (the
+                // seal drops, both ways out present themselves). One-way latch; the
+                // bed can still re-lock the door for the night afterwards.
+                if (!cellDoorReleased && !bedCellDoors.empty() && game.secret().hatchBuilt()) {
+                    const uint32_t hi = game.secret().hatchDoorIndex();
+                    if (hi < canonDoors.count()) {
+                        const x3::game::Door& h = canonDoors.at(hi);
+                        if (!h.locked || h.state != x3::game::DoorState::Closed) {
+                            for (uint32_t di : bedCellDoors)
+                                canonDoors.unlockAndOpen(canonDoors.at(di));
+                            cellDoorReleased = true;
+                            npcBarkText = "DETENTION SEAL RELEASED";
+                            npcBarkTimer = 3.5f;
+                            x3::logInfo("--world canonlevel: cell door RELEASED (override accepted)");
+                        }
+                    }
+                }
                 // Bed prompt on the shared bark line ("[E] Lie down" in reach /
                 // "[E] Get up" while down) — the descMech prompt pattern.
                 {

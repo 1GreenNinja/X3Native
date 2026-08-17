@@ -103,6 +103,12 @@ struct CanonDoorway {
     // queries this door's DoorState: a CLOSED door is opaque and stops the flood; an
     // Open/Opening/Closing door lets visibility flow to the room behind it.
     uint32_t doorIndex = kNoLink;
+    // PVS-TRANSPARENT door (doors-pass): the doorway carries a slab but the flood
+    // ALWAYS passes (as if doorless). Set on Jake's cell throat — the cell's
+    // observation WINDOW looks into the Main Hall, so a closed cell door must not
+    // cull the hall (the void-through-glass defect class). Purely a visibility
+    // property; the slab still blocks, locks and draws normally.
+    bool pvsTransparent = false;
 };
 
 // ---- Camera frustum (for the frustum-directional portal flood-fill). 6 world-space
