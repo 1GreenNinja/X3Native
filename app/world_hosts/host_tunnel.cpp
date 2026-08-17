@@ -2123,12 +2123,16 @@ int hostTunnel(HostContext& hc) {
                     in.brake = 0.08f;         // light drag, reads as engine braking
                 }
             }
+        }
+        // OUTSIDE the driving/parked split — W-HANDLING's find: setInput lived
+        // inside the DRIVING branch only, so every parked-car input this loop
+        // so carefully assembled (auto-hold, exit braking, the push's brake
+        // release) was dead code; the controller just held its last driving
+        // input. The send now covers both branches, every frame.
+        if (carBuilt) {
             // Composed power product: vampire (timing) x nitrous (SHIFT). The
             // turbo's own multiplier stacks inside DriveDemo::updateTurbo.
-            // NOS = A 200 SHOT (Tim: "NOS adds 200HP"). Against this tune's
-            // ~1,050 hp peak (800 Nm x 1.70 turbo across the curve), +200 hp
-            // is x1.19 on torque — a proper bottle, not a cartoon. If the
-            // shop later sells bigger shots, the number scales the same way.
+            // NOS = A 200 SHOT: against this tune's peak, +200 hp = x1.19.
             car.setTorqueBoost((vampireOn ? 1.07f : 1.0f) * (nosActive ? 1.19f : 1.0f));
             car.setInput(in);
             car.preStep(fdt);
