@@ -1879,15 +1879,24 @@ int hostTunnel(HostContext& hc) {
             // worldWaterLevelAt tests (terrain.cpp worldOceanShoreTable),
             // lazily here so every road corridor is already registered.
             // RB11 (river_bridge.cpp) gates drawn-vs-model coverage map-wide.
+            // Default ON; X3_WATER_SHORE=0 is the door for turning it OFF
+            // (NO_SLOP rule 6) — it exists so the underground-sea defect can
+            // be reproduced for an A/B receipt from the same binary.
             {
+                static const bool kShoreOn = [] {
+                    const char* e = std::getenv("X3_WATER_SHORE");
+                    return !(e && e[0] == '0');
+                }();
                 static const std::vector<float> kShore = [] {
                     std::vector<float> r(WP::kShoreSectors, 0.0f);
                     x3::game::worldOceanShoreTable(r.data(), WP::kShoreSectors);
                     return r;
                 }();
-                wpr.shoreSectorCount = WP::kShoreSectors;
-                std::memcpy(wpr.shoreRadii, kShore.data(),
-                            sizeof(float) * WP::kShoreSectors);
+                if (kShoreOn) {
+                    wpr.shoreSectorCount = WP::kShoreSectors;
+                    std::memcpy(wpr.shoreRadii, kShore.data(),
+                                sizeof(float) * WP::kShoreSectors);
+                }
             }
             // FOAM (the owner: "alive.. pulsing... writhing.. foaming if
             // needed"): contact foam hugs the banks, rocks and anything

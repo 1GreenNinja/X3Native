@@ -200,12 +200,14 @@ void main() {
     float foamAmt = 0.0;
     if (u.p4.y > 0.0) {
         float contactF = 1.0 - smoothstep(0.04, 1.05, waterDepth);
-        float crestF   = smoothstep(0.62, 1.0, vCrest / max(u.p0.z * 1.35, 1e-3));
+        // 0.70 threshold: at 0.62 a calm river's every second swell whipped
+        // white and the near field read semi-stormy (eyes-on 17_waterline).
+        float crestF   = smoothstep(0.70, 1.0, vCrest / max(u.p0.z * 1.35, 1e-3));
         float n1 = sin(rp.x * 0.83 + time * 1.9) * cos(rp.y * 1.07 - time * 1.6);
         float n2 = sin((rp.x - rp.y) * 2.61 + time * 2.7)
                  * sin((rp.x + rp.y * 0.7) * 1.31 - time * 1.2);
-        float writhe = clamp(0.58 + 0.30 * n1 + 0.24 * n2, 0.0, 1.0);
-        foamAmt = clamp((contactF + crestF * 0.8) * writhe * u.p4.y, 0.0, 1.0);
+        float writhe = clamp(0.50 + 0.30 * n1 + 0.24 * n2, 0.0, 1.0);
+        foamAmt = clamp((contactF + crestF * 0.6) * writhe * u.p4.y, 0.0, 1.0);
         vec3 foamCol = vec3(0.82, 0.87, 0.90) * (0.30 + 0.70 * max(sunDir.y, 0.0));
         color = mix(color, foamCol, foamAmt);
     }
