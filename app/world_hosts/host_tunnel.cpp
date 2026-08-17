@@ -15,6 +15,7 @@
 #include "../terrain.h"
 #include "../tunnel_corridor.h"
 #include "../road_trees.h"
+#include "../forest.h"                   // W-FOREST — the sketch's brown regions
 #include "../tunnel_fitout.h"
 #include "../tunnel_rooms.h"
 #include "../player.h"
@@ -770,6 +771,25 @@ int hostTunnel(HostContext& hc) {
         trees.build(*device, route, camKeepOut, benchDryY);
     }
 
+    // THE FORESTS — the owner's brown map regions (ROAD_NETWORK_SKETCH_V2.png:
+    // "This Color is All Forest"): north belt, centre-north patch, NE corner,
+    // the southern countryside belt walling the tour ("Tthick woods on much of
+    // the road!!!!"), both mountain skirts, the river-bank strips. Built HERE —
+    // after every registerRoad/registerTunnelCorridor and after RoadTrees — so
+    // the keep-outs (corridor footprints, junctions, road_trees' own roadside
+    // band) read the final registries. X3_FOREST=0 to disable (the flag is for
+    // turning it OFF — NO_SLOP rule 6). See app/forest.h.
+    x3::game::WorldForests forests;
+    {
+        const char* e = std::getenv("X3_FOREST");
+        if (!(e && e[0] == '0')) {
+            x3::game::WorldForests::Inputs fin;
+            fin.demoRoute = &route;
+            fin.innerTour = ringOn ? &ringSpec : nullptr;
+            forests.build(*device, fin);
+        }
+    }
+
     // ---- THE INTERIOR PROGRAM, decided and COUNTED at boot -----------------
     // This is the whole hook the rooms lane needs from the host: the fitout says
     // where the service doors are, the room program says what is behind them,
@@ -1304,6 +1324,12 @@ int hostTunnel(HostContext& hc) {
             // The streamer only enqueues the full ring on a focus-tile crossing
             // (host_cliffs.cpp's trick): nudge the focus on frame 1, then hold.
             const int kFrames = 200;
+            // PERF RECEIPT (W-FOREST gate): average the settled window's GPU
+            // frame time + submitted geometry, logged per capture — the
+            // before/after fps evidence is measured, not asserted (same
+            // mechanism as geolod_shot.cpp's measured window).
+            double perfMsSum = 0.0; int perfN = 0;
+            uint64_t perfTris = 0; uint32_t perfDraws = 0, perfObjs = 0;
             for (int i = 0; i < kFrames; ++i) {
                 glfwPollEvents();
                 const float fx = (i == 1) ? cam[0] + 40.0f : cam[0];
@@ -1357,6 +1383,9 @@ int hostTunnel(HostContext& hc) {
                 if (frame.valid) {
                     scene.render(*device, frame);
                     trees.draw(*device, frame);
+                    // forests: camera fwd = (cos yaw, 0, sin yaw) — gotcha 4.1
+                    forests.draw(*device, frame, cam,
+                                 std::cos(cam[3]), std::sin(cam[3]));
                     if (carBuilt) car.render(frame);
                     riverLife.render(*device, frame, scene);
                     if (shotDraw) shotDraw(frame);   // the staged swimmer
@@ -1364,6 +1393,33 @@ int hostTunnel(HostContext& hc) {
                 }
 
                 device->endFrame(frame);
+                if (i >= kFrames - 60) {   // the settled window only
+                    const x3::rhi::RenderStats st = device->stats();
+                    perfMsSum += st.gpuFrameMs; ++perfN;
+                    // convergence trend: is the window actually settled, or is
+                    // the streamer still uploading tiles through it?
+                    if (i == kFrames - 60 || i == kFrames - 40 || i == kFrames - 20 ||
+                        i == kFrames - 1) {
+                        char tb[96];
+                        std::snprintf(tb, sizeof(tb), "[tunnel-perf]   f%03d gpu %.3f ms",
+                                      i, st.gpuFrameMs);
+                        x3::logInfo(tb);
+                    }
+                    if (i == kFrames - 1) {
+                        perfTris = st.triangles; perfDraws = st.drawCalls;
+                        perfObjs = st.objectsDrawn;
+                    }
+                }
+            }
+            {
+                char pb[256];
+                std::snprintf(pb, sizeof(pb),
+                              "[tunnel-perf] %s: gpu %.3f ms avg (settled 60f) "
+                              "= %.0f fps | tris %llu draws %u objs %u",
+                              out.c_str(), perfN ? perfMsSum / perfN : 0.0,
+                              perfN && perfMsSum > 0.0 ? 1000.0 / (perfMsSum / perfN) : 0.0,
+                              (unsigned long long)perfTris, perfDraws, perfObjs);
+                x3::logInfo(pb);
             }
             const bool wrote = device->captureFrame(out.c_str());
             if (wrote) x3::logInfo("--world tunnel: wrote " + out);
@@ -1827,6 +1883,7 @@ int hostTunnel(HostContext& hc) {
 
         if (carBuilt) car.shutdown();
         trees.shutdown(*device);
+        forests.shutdown(*device);
         riverLife.shutdown(audioOn ? audio.get() : nullptr);
         tunnel.shutdown(*device, *phys);
         for (auto& w : tourBores) w->shutdown(*device, *phys);
@@ -2994,6 +3051,11 @@ int hostTunnel(HostContext& hc) {
         if (frame.valid) {
             scene.render(*device, frame);
             trees.draw(*device, frame);
+            {   // forests: prune by the live camera (fwd = cos/sin yaw, 4.1)
+                const float fcam[3] = { cx, cy, cz };
+                forests.draw(*device, frame, fcam,
+                             std::cos(camYaw), std::sin(camYaw));
+            }
             if (carBuilt) car.render(frame);
             riverLife.render(*device, frame, scene);   // boats + drivers + wakes
         }
@@ -3494,6 +3556,7 @@ int hostTunnel(HostContext& hc) {
     riverLife.shutdown(audioOn ? audio.get() : nullptr);   // outboard loops + hulls
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     trees.shutdown(*device);
+    forests.shutdown(*device);
     tunnel.shutdown(*device, *phys);
     for (auto& w : tourBores) w->shutdown(*device, *phys);
     x3::game::shutdownTunnelSurfaces(*device);   // shared sets, released once

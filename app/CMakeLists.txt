@@ -65,6 +65,8 @@ add_library(x3app SHARED
     tunnel_corridor.cpp
     # W-TREES — tall broadleaf groves along the tunnel road (--world tunnel)
     road_trees.cpp
+    # W-FOREST — the sketch's brown regions: area forests, two-tier draw
+    forest.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
