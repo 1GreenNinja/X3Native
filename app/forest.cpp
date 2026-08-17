@@ -36,7 +36,10 @@ constexpr float kDemoBandKeep = 26.0f;  // road_trees owns |lat| 14-24 on the de
 // --- Draw tiers -------------------------------------------------------------
 constexpr float kNearIn   = 85.0f;   // enter LOD0 inside this
 constexpr float kNearOut  = 100.0f;  // leave LOD0 outside this (hysteresis band)
-constexpr float kFarMax   = 3600.0f; // beyond this a tree is not drawn at all
+constexpr float kFarMax   = 5200.0f; // beyond this a tree is not drawn at all
+                                     // (3600 left the north belt visibly
+                                     // truncated in wide shots; cards are 4
+                                     // tris — distance is the cheap dial)
 constexpr float kChunkM   = 160.0f;  // chunk edge (pruning granularity)
 
 // --- Deterministic order-independent hashing --------------------------------
@@ -185,25 +188,29 @@ bool WorldForests::build(x3::rhi::IRenderDevice& device, const Inputs& in) {
     };
 
     // ---- one candidate through the full accept pipeline -------------------
+    // Reject counters PER REASON (NO_SLOP rule 9: diagnose with measurements —
+    // the southern belt starved twice and the reason was a number both times).
     uint32_t rejected = 0;
+    uint32_t rjPad = 0, rjWater = 0, rjCorr = 0, rjJct = 0, rjDemo = 0,
+             rjClose = 0, rjSlope = 0, rjSea = 0;
     auto tryPlant = [&](float x, float z, uint32_t h, float oakBias) {
         // cheap authored keep-outs first
-        if (inPadKeep(x, z)) { ++rejected; return; }
-        if (worldWaterLevelAt(x, z) != kWorldWaterDry) { ++rejected; return; }
+        if (inPadKeep(x, z)) { ++rejected; ++rjPad; return; }
+        if (worldWaterLevelAt(x, z) != kWorldWaterDry) { ++rejected; ++rjWater; return; }
         // every registered corridor footprint: pavement + aprons + falloff of
         // every road, and every bore's tube footprint (junction throats too —
         // they register 2-node corridors).
-        if (terrainCorridorContains(x, z)) { ++rejected; return; }
-        if (distToNearestRoadJunction(x, z) < kJunctionKeep) { ++rejected; return; }
-        if (nearDemoSpine(x, z)) { ++rejected; return; }
-        if (tooClose(x, z)) { ++rejected; return; }
+        if (terrainCorridorContains(x, z)) { ++rejected; ++rjCorr; return; }
+        if (distToNearestRoadJunction(x, z) < kJunctionKeep) { ++rejected; ++rjJct; return; }
+        if (nearDemoSpine(x, z)) { ++rejected; ++rjDemo; return; }
+        if (tooClose(x, z)) { ++rejected; ++rjClose; return; }
 
         // contact law: base on the FINAL carved field, believable ground only
         const float y  = terrainHeightAtWorld(x, z);
         const float hX = terrainHeightAtWorld(x + 2.0f, z);
         const float hZ = terrainHeightAtWorld(x, z + 2.0f);
-        if (std::fabs(hX - y) > kMaxLocalDrop || std::fabs(hZ - y) > kMaxLocalDrop) { ++rejected; return; }
-        if (y < kWorldSeaLevel + 0.5f) { ++rejected; return; }
+        if (std::fabs(hX - y) > kMaxLocalDrop || std::fabs(hZ - y) > kMaxLocalDrop) { ++rejected; ++rjSlope; return; }
+        if (y < kWorldSeaLevel + 0.5f) { ++rejected; ++rjSea; return; }
 
         const bool oak = standIsOak(x, z, oakBias);
         const Species& sp = m_species[oak ? 0 : 1];
@@ -229,6 +236,59 @@ bool WorldForests::build(x3::rhi::IRenderDevice& device, const Inputs& in) {
         if (oak) ++m_oaks; else ++m_poplars;
     };
 
+    // POLYLINE BAND sampler — one grid sweep over the union bbox, each cell
+    // tested against the WHOLE polyline (min distance over segments, bbox
+    // early-out per segment). The first version swept per-segment bboxes with
+    // a consumed-cell dedupe set; measured on the southern belt that LOST
+    // ~2/3 of the band: after curve subdivision segments are ~15-60 m long
+    // while the bbox pad is dMax (165 m), so a cell is claimed by a segment
+    // far BEHIND it, fails that segment's along-axis distance, and is dead
+    // before the segment it actually flanks ever sweeps it (belt=558, then
+    // 1261, of an expected ~4-5k — the reject counters told the story).
+    // `side`: 0 = both sides, -1 / +1 = only that sign of
+    // cross(seg dir, p - a) against the NEAREST segment.
+    struct Seg { float ax, az, bx, bz, minX, minZ, maxX, maxZ; };
+    auto plantPolylineBand = [&](const std::vector<Seg>& segs, float dMin, float dMax,
+                                 float sp, uint32_t seed, float oakBias, int side) {
+        if (segs.empty()) return;
+        float x0 = 1e9f, z0 = 1e9f, x1 = -1e9f, z1 = -1e9f;
+        for (const Seg& s : segs) {
+            x0 = std::min(x0, s.minX); z0 = std::min(z0, s.minZ);
+            x1 = std::max(x1, s.maxX); z1 = std::max(z1, s.maxZ);
+        }
+        x0 -= dMax; z0 -= dMax; x1 += dMax; z1 += dMax;
+        const float dMin2 = dMin * dMin, dMax2 = dMax * dMax;
+        const int32_t ix0 = (int32_t)std::floor(x0 / sp), ix1 = (int32_t)std::ceil(x1 / sp);
+        const int32_t iz0 = (int32_t)std::floor(z0 / sp), iz1 = (int32_t)std::ceil(z1 / sp);
+        for (int32_t iz = iz0; iz <= iz1; ++iz)
+            for (int32_t ix = ix0; ix <= ix1; ++ix) {
+                const uint32_t h = hashCell(ix, iz, seed);
+                const float x = ((float)ix + 0.07f + h01(h, 3u) * 0.86f) * sp;
+                const float z = ((float)iz + 0.07f + h01(h, 4u) * 0.86f) * sp;
+                float best2 = 1e18f;
+                const Seg* bestSeg = nullptr;
+                for (const Seg& s : segs) {
+                    if (x < s.minX - dMax || x > s.maxX + dMax ||
+                        z < s.minZ - dMax || z > s.maxZ + dMax) continue;
+                    const float d2 = segDist2(x, z, s.ax, s.az, s.bx, s.bz);
+                    if (d2 < best2) { best2 = d2; bestSeg = &s; }
+                }
+                if (!bestSeg || best2 < dMin2 || best2 > dMax2) continue;
+                if (side != 0) {
+                    const float cr = (bestSeg->bx - bestSeg->ax) * (z - bestSeg->az) -
+                                     (bestSeg->bz - bestSeg->az) * (x - bestSeg->ax);
+                    if (side < 0 ? (cr > 0.0f) : (cr < 0.0f)) continue;
+                }
+                tryPlant(x, z, h, oakBias);
+            }
+    };
+    auto makeSeg = [](float ax, float az, float bx, float bz) {
+        Seg s{ ax, az, bx, bz,
+               std::min(ax, bx), std::min(az, bz),
+               std::max(ax, bx), std::max(az, bz) };
+        return s;
+    };
+
     // jittered-grid sampler over a bbox with an arbitrary shape test
     auto plantGrid = [&](float x0, float z0, float x1, float z1, float sp,
                          uint32_t seed, float oakBias, auto&& inShape) {
@@ -245,10 +305,13 @@ bool WorldForests::build(x3::rhi::IRenderDevice& device, const Inputs& in) {
             }
     };
 
-    struct RegionLog { const char* name; uint32_t count; };
+    struct RegionLog { const char* name; uint32_t count, corr, slope, jct; };
     std::vector<RegionLog> rlog;
+    uint32_t lastCorr = 0, lastSlope = 0, lastJct = 0;
     auto logRegion = [&](const char* name, uint32_t before) {
-        rlog.push_back({ name, (uint32_t)m_trees.size() - before });
+        rlog.push_back({ name, (uint32_t)m_trees.size() - before,
+                         rjCorr - lastCorr, rjSlope - lastSlope, rjJct - lastJct });
+        lastCorr = rjCorr; lastSlope = rjSlope; lastJct = rjJct;
     };
 
     // =======================================================================
@@ -290,27 +353,18 @@ bool WorldForests::build(x3::rhi::IRenderDevice& device, const Inputs& in) {
         mark = (uint32_t)m_trees.size();
         const RoadSpec& rs = *in.innerTour;
         const float zCut = -352.0f - 2000.0f;   // tour centre (-592,-352) — ROAD_NETWORK_PLAN
-        std::unordered_set<uint64_t> seen;      // cell dedupe across segment sweeps
-        constexpr float kBeltIn = 28.0f, kBeltOut = 115.0f, kBeltSp = 16.0f;
-        for (size_t i = 1; i < rs.x.size(); ++i) {
-            const float ax = rs.x[i - 1], az = rs.z[i - 1];
-            const float bx = rs.x[i],     bz = rs.z[i];
-            if (az > zCut && bz > zCut) continue;
-            const float x0 = std::min(ax, bx) - kBeltOut, x1 = std::max(ax, bx) + kBeltOut;
-            const float z0 = std::min(az, bz) - kBeltOut, z1 = std::max(az, bz) + kBeltOut;
-            const int32_t ix0 = (int32_t)std::floor(x0 / kBeltSp), ix1 = (int32_t)std::ceil(x1 / kBeltSp);
-            const int32_t iz0 = (int32_t)std::floor(z0 / kBeltSp), iz1 = (int32_t)std::ceil(z1 / kBeltSp);
-            for (int32_t iz = iz0; iz <= iz1; ++iz)
-                for (int32_t ix = ix0; ix <= ix1; ++ix) {
-                    if (!seen.insert(((uint64_t)(uint32_t)ix << 32) | (uint32_t)iz).second) continue;
-                    const uint32_t h = hashCell(ix, iz, 0x50D7BE17u);
-                    const float x = ((float)ix + 0.07f + h01(h, 3u) * 0.86f) * kBeltSp;
-                    const float z = ((float)iz + 0.07f + h01(h, 4u) * 0.86f) * kBeltSp;
-                    const float d2 = segDist2(x, z, ax, az, bx, bz);
-                    if (d2 < kBeltIn * kBeltIn || d2 > kBeltOut * kBeltOut) continue;
-                    tryPlant(x, z, h, 0.5f);
-                }
-        }
+        // The inner tour is a DUAL freeway: its carve footprint
+        // (kFwyDualMaxHalfM ~57 m + 18 m falloff ~= 75 m) already rejects
+        // everything inside it via terrainCorridorContains — measured: an
+        // inner band of 28 m starved the belt to 558 trees. So the authored
+        // band opens at 30 m and the FOOTPRINT trims the real inner edge:
+        // the front row lands right at the falloff lip, which is exactly
+        // "woods walling the drive".
+        std::vector<Seg> segs;
+        for (size_t i = 1; i < rs.x.size(); ++i)
+            if (rs.z[i - 1] <= zCut || rs.z[i] <= zCut)
+                segs.push_back(makeSeg(rs.x[i - 1], rs.z[i - 1], rs.x[i], rs.z[i]));
+        plantPolylineBand(segs, 30.0f, 165.0f, 16.0f, 0x50D7BE17u, 0.5f, 0);
         logRegion("southern belt", mark);
     }
 
@@ -350,36 +404,17 @@ bool WorldForests::build(x3::rhi::IRenderDevice& device, const Inputs& in) {
         uint32_t rc = 0;
         const WorldRiverNode* rn = worldRiverNodes(rc);
         if (rn && rc >= 2) {
-            auto plantBank = [&](bool west, float dMin, float dMax, float spGrid,
-                                 uint32_t seed, float oakBias, const char* nm) {
-                mark = (uint32_t)m_trees.size();
-                std::unordered_set<uint64_t> seen;
-                for (uint32_t i = 1; i < rc; ++i) {
-                    const float ax = rn[i - 1].x, az = rn[i - 1].z;
-                    const float bx = rn[i].x,     bz = rn[i].z;
-                    const float x0 = std::min(ax, bx) - dMax, x1 = std::max(ax, bx) + dMax;
-                    const float z0 = std::min(az, bz) - dMax, z1 = std::max(az, bz) + dMax;
-                    const int32_t ix0 = (int32_t)std::floor(x0 / spGrid), ix1 = (int32_t)std::ceil(x1 / spGrid);
-                    const int32_t iz0 = (int32_t)std::floor(z0 / spGrid), iz1 = (int32_t)std::ceil(z1 / spGrid);
-                    for (int32_t iz = iz0; iz <= iz1; ++iz)
-                        for (int32_t ix = ix0; ix <= ix1; ++ix) {
-                            if (!seen.insert(((uint64_t)(uint32_t)ix << 32) | (uint32_t)iz).second) continue;
-                            const uint32_t h = hashCell(ix, iz, seed);
-                            const float x = ((float)ix + 0.07f + h01(h, 3u) * 0.86f) * spGrid;
-                            const float z = ((float)iz + 0.07f + h01(h, 4u) * 0.86f) * spGrid;
-                            const float d2 = segDist2(x, z, ax, az, bx, bz);
-                            if (d2 < dMin * dMin || d2 > dMax * dMax) continue;
-                            // side of the channel: cross(seg dir, p - a).y —
-                            // positive = east of a north->south flow.
-                            const float side = (bx - ax) * (z - az) - (bz - az) * (x - ax);
-                            if (west ? (side > 0.0f) : (side < 0.0f)) continue;
-                            tryPlant(x, z, h, oakBias);
-                        }
-                }
-                logRegion(nm, mark);
-            };
-            plantBank(true,  46.0f, 105.0f, 12.0f, 0x81BE21u, 0.35f, "river west strip");
-            plantBank(false, 46.0f,  90.0f, 20.0f, 0x81BE22u, 0.35f, "river east scatter");
+            std::vector<Seg> segs;
+            for (uint32_t i = 1; i < rc; ++i)
+                segs.push_back(makeSeg(rn[i - 1].x, rn[i - 1].z, rn[i].x, rn[i].z));
+            // side of the channel: cross(seg dir, p - a).y — the flow runs
+            // north->south, so negative = WEST bank (the cliffside strip).
+            mark = (uint32_t)m_trees.size();
+            plantPolylineBand(segs, 46.0f, 105.0f, 12.0f, 0x81BE21u, 0.35f, -1);
+            logRegion("river west strip", mark);
+            mark = (uint32_t)m_trees.size();
+            plantPolylineBand(segs, 46.0f, 90.0f, 20.0f, 0x81BE22u, 0.35f, +1);
+            logRegion("river east scatter", mark);
         }
     }
 
@@ -418,8 +453,18 @@ bool WorldForests::build(x3::rhi::IRenderDevice& device, const Inputs& in) {
                       " poplar) in " + std::to_string(m_chunks.size()) + " chunks (" +
                       std::to_string(rejected) + " rejected):";
     for (const RegionLog& r : rlog)
-        msg += std::string(" ") + r.name + "=" + std::to_string(r.count);
+        msg += std::string(" ") + r.name + "=" + std::to_string(r.count) +
+               "(rj c" + std::to_string(r.corr) + "/s" + std::to_string(r.slope) +
+               "/j" + std::to_string(r.jct) + ")";
     x3::logInfo(msg);
+    x3::logInfo("forest: rejects — pad=" + std::to_string(rjPad) +
+                " water=" + std::to_string(rjWater) +
+                " corridor=" + std::to_string(rjCorr) +
+                " junction=" + std::to_string(rjJct) +
+                " demoband=" + std::to_string(rjDemo) +
+                " spacing=" + std::to_string(rjClose) +
+                " slope=" + std::to_string(rjSlope) +
+                " sea=" + std::to_string(rjSea));
     if (m_trees.empty())
         x3::logWarn("forest: NOTHING PLANTED — GLBs missing or keep-outs ate the map?");
     return !m_trees.empty();
@@ -462,6 +507,12 @@ uint32_t WorldForests::draw(x3::rhi::IRenderDevice& device,
                             const x3::rhi::FrameContext& frame,
                             const float cam[3], float fwdX, float fwdZ) {
     if (m_destroyed || m_trees.empty()) return 0;
+    // A/B instruments (perf isolation only — never ship set): X3_FOREST_NEAR=0
+    // skips the LOD0 tier, X3_FOREST_FAR=0 skips the billboard tier.
+    static const bool kSkipNear = [] {
+        const char* e = std::getenv("X3_FOREST_NEAR"); return e && e[0] == '0'; }();
+    static const bool kSkipFar = [] {
+        const char* e = std::getenv("X3_FOREST_FAR"); return e && e[0] == '0'; }();
     // normalize the forward (callers pass cos/sin of yaw or a raw dir)
     const float fl = std::sqrt(fwdX * fwdX + fwdZ * fwdZ);
     if (fl > 1e-5f) { fwdX /= fl; fwdZ /= fl; }
@@ -488,6 +539,7 @@ uint32_t WorldForests::draw(x3::rhi::IRenderDevice& device,
             if (nearTier) { if (td2 > kNearOut * kNearOut) nearTier = false; }
             else          { if (td2 < kNearIn  * kNearIn)  nearTier = true;  }
             tr.nearTier = nearTier ? 1 : 0;
+            if (nearTier ? kSkipNear : kSkipFar) continue;
             submitTree(device, frame, tr, nearTier, drawn);
         }
     }

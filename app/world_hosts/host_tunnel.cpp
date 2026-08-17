@@ -1404,6 +1404,15 @@ int hostTunnel(HostContext& hc) {
                 if (i >= kFrames - 60) {   // the settled window only
                     const x3::rhi::RenderStats st = device->stats();
                     perfMsSum += st.gpuFrameMs; ++perfN;
+                    // convergence trend: is the window actually settled, or is
+                    // the streamer still uploading tiles through it?
+                    if (i == kFrames - 60 || i == kFrames - 40 || i == kFrames - 20 ||
+                        i == kFrames - 1) {
+                        char tb[96];
+                        std::snprintf(tb, sizeof(tb), "[tunnel-perf]   f%03d gpu %.3f ms",
+                                      i, st.gpuFrameMs);
+                        x3::logInfo(tb);
+                    }
                     if (i == kFrames - 1) {
                         perfTris = st.triangles; perfDraws = st.drawCalls;
                         perfObjs = st.objectsDrawn;
