@@ -91,10 +91,10 @@ bool RiverLife::build(Scene& scene, x3::rhi::IRenderDevice& device,
         if (d2 < best) { best = d2; nearest = i; }
     }
 
-    // ==== DEPTH GATE (owner: "TWICE or THREE TIMES AS DEEP") =================
+    // ==== DEPTH GATE (owner: "the water is 18 feet deep") ====================
     // Mid-channel depth (waterY - carved bed) at three stations around the
     // crossing. The shelf carve alone gave 3.2 m everywhere; the deep-channel
-    // cut (terrain.cpp kWorldRiverMidDrop) must read 4-8 m here.
+    // cut (terrain.cpp kWorldRiverMidDrop) must read ~5.5 m (18 ft) here.
     for (int s = -1; s <= 1; ++s) {
         const int idx = std::clamp((int)nearest + s * 2, 0, (int)rn - 1);
         const float depth = nodes[idx].waterY -
@@ -156,9 +156,9 @@ bool RiverLife::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const int step = side == 0 ? -1 : +1;        // 0 = upstream, 1 = downstream
         Boat b;
         // Level bound 1.5 m: the reach descends ~1.2 m per chain node here, and
-        // the 8 m deep channel leaves a ~6 m draft margin under the flat plane
-        // even at the lane's far end — the bound is about the HULL sitting
-        // visibly ON the drawn surface, not about grounding.
+        // the 5.5 m (18 ft) channel leaves a ~3.4 m draft margin under the flat
+        // plane even at the lane's far end — the bound is about the HULL
+        // sitting visibly ON the drawn surface, not about grounding.
         pointAlongReach(nodes, rn, nearest, step,  45.0f, m_waterY, 1.5f, b.ax, b.az);
         pointAlongReach(nodes, rn, nearest, step, 190.0f, m_waterY, 1.5f, b.bx, b.bz);
         const float laneLen = std::sqrt((b.bx - b.ax) * (b.bx - b.ax) +

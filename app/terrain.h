@@ -130,11 +130,11 @@ uint32_t worldRiverCarveCount();                          // leading nodes that 
 constexpr float kWorldRiverHalfWidth = 34.0f;             // water ribbon half-width (m)
 // Bank-shelf bed depth below waterY (m) — the shallows a wader stands on.
 constexpr float kWorldRiverBedDrop   = 3.2f;
-// MID-CHANNEL bed depth below waterY (m) — the deep cut down the spine (owner:
-// "TWICE or THREE TIMES AS DEEP"; 2.5x the shelf). Feathers back to the shelf
-// by ~26 m out; waterline, levee and crests unchanged. See terrain.cpp's river
-// carve.
-constexpr float kWorldRiverMidDrop   = 8.0f;
+// MID-CHANNEL bed depth below waterY (m) — the deep cut down the spine. The
+// owner's exact number: "the water is 18 feet deep" — 5.5 m, mid-channel.
+// Feathers back to the shelf by ~26 m out; waterline, levee and crests
+// unchanged. See terrain.cpp's river carve.
+constexpr float kWorldRiverMidDrop   = 5.5f;
 
 // ---------------------------------------------------------------------------
 // W10 (SWIMMING) — the world WATER SURFACE query. Pure, like the placement API

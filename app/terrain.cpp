@@ -865,16 +865,16 @@ float authoredLandforms(float h, float x, float z) {
                 // Channel: 24 m bed, banks over 26 m (gentler than the canyon).
                 const float target = bed + (h - bed) * sstep(12.0f, 38.0f, d);
                 if (target < h) h += (target - h) * g;
-                // DEEP CHANNEL (owner, 2026-08: "The water needs to be TWICE or
-                // THREE TIMES AS DEEP"). The waterline STAYS where it is — the
-                // bounded-water law forbids raising waterY — so the BED is
-                // carved deeper instead: a second, narrower cut down the spine
-                // to kWorldRiverMidDrop below the surface (8 m mid-channel,
-                // 2.5x the 3.2 m shelf), feathering back to the original bed
-                // by 26 m out so the bank shallows, levee and crests are
-                // byte-identical. The bridge plan's piers sample this carved
-                // bed at boot (planRiverBridge reads terrain), so the pier
-                // collars land on the NEW bed with no bridge change.
+                // DEEP CHANNEL (owner, 2026-08: "the water is 18 feet deep").
+                // The waterline STAYS where it is — the bounded-water law
+                // forbids raising waterY — so the BED is carved deeper
+                // instead: a second, narrower cut down the spine to
+                // kWorldRiverMidDrop (5.5 m = 18 ft) below the surface,
+                // feathering back to the original 3.2 m shelf by 26 m out so
+                // the bank shallows, levee and crests are byte-identical. The
+                // bridge plan's piers sample this carved bed at boot
+                // (planRiverBridge reads terrain), so the pier collars land
+                // on the NEW bed with no bridge change.
                 const float deepBed = w - kWorldRiverMidDrop;
                 const float deepTarget = deepBed + (h - deepBed) * sstep(4.0f, 26.0f, d);
                 if (deepTarget < h) h += (deepTarget - h) * g;
