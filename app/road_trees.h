@@ -73,12 +73,14 @@ public:
 
     uint32_t treeCount()  const { return m_trees; }
     uint32_t groveCount() const { return m_groves; }
+    uint32_t benchCount() const { return m_benches; }
 
 private:
     EnvArtSystem m_art;
-    uint32_t m_trees  = 0;
-    uint32_t m_groves = 0;
-    bool     m_built  = false;
+    uint32_t m_trees   = 0;
+    uint32_t m_groves  = 0;
+    uint32_t m_benches = 0;   // armory bench models seated under the groves
+    bool     m_built   = false;
 };
 
 } // namespace x3::game

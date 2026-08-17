@@ -31,6 +31,16 @@ namespace {
 // PAIRED with the sc rolls in build() below.
 constexpr const char* kOakGlb    = "nature/OakBigTree01.glb";
 constexpr const char* kPoplarGlb = "nature/PoplarTree001.glb";
+// BENCHES UNDER THE TREES (Tim: "benches under them", "Not procedural. we
+// have nice bench models in armory"). Both are armory GLBs (localhost:8787
+// gallery), textures embedded, metre-scale, origin at the feet (verified
+// from accessor bounds: base y=0, ~0.5 m tall, ~1.8-2.2 m long in Z).
+constexpr const char* kBenchGlbA = "nature/SM_WoodBench_01a.glb";
+constexpr const char* kBenchGlbB = "nature/SM_Bench.glb";
+constexpr float kBenchLat      = 12.9f;  // on the verge: apron edge ~9.9 m, front tree row 14 m
+constexpr float kBenchFrac     = 0.55f;  // fraction of groves that get one
+constexpr float kBenchMaxTilt  = 0.35f;  // reject ground steeper than this per 1.5 m
+constexpr float kBenchSink     = 0.03f;  // legs settled in, never floating
 
 // --- Placement constants (metres) ------------------------------------------
 constexpr float kLatMin       = 14.0f;  // innermost trunk: outside pavement+apron+wall
@@ -188,7 +198,13 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
                 if (std::fabs(hX - y) > kMaxLocalDrop ||
                     std::fabs(hZ - y) > kMaxLocalDrop) { ++rejected; continue; }
                 if (y < worldWaterLevelAt(x, z) + 0.5f) { ++rejected; continue; }
-                if (y < route.roadYAt(ts) - 1.0f)       { ++rejected; continue; }
+                // -1.0 -> -8.0: the old cutoff rejected the entire FILL side
+                // of the graded route (embankment verges sit metres below the
+                // datum), which starved the thick-woods pass down to 10 trees
+                // / 190 rejects on the demo route. A 70-100 ft tree on the
+                // batter still towers over the road; only a real ravine is
+                // out of bounds.
+                if (y < route.roadYAt(ts) - 8.0f)       { ++rejected; continue; }
 
                 bool inKeepOut = false;
                 for (const KeepOut& k : keepOut) {
@@ -220,7 +236,46 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
                     if (oak) ++oaks; else ++poplars;
                 }
             }
-            if (planted > 0) ++m_groves;
+            if (planted > 0) {
+                ++m_groves;
+                // ---- A BENCH UNDER THE GROVE (owner ask). Sits on the verge
+                // between the apron and the front tree row, long axis along
+                // the road, facing the pavement. Same ground rules as trunks:
+                // flat-enough, dry, outside keep-outs, CONTACT LAW base.
+                if (rng.next() < kBenchFrac) {
+                    const float bs   = sC + (rng.next() * 2.0f - 1.0f) * gl * 0.25f;
+                    const float side = -1.0f;   // sun side, with the front row
+                    float bx = 0.0f, bz = 0.0f;
+                    route.worldAt(bs, side * kBenchLat, bx, bz);
+                    // Road tangent at bs — the bench aligns to it.
+                    float tx0, tz0, tx1, tz1;
+                    route.worldAt(std::max(bs - 2.0f, 0.0f), 0.0f, tx0, tz0);
+                    route.worldAt(std::min(bs + 2.0f, route.totalLen), 0.0f, tx1, tz1);
+                    const float ty = terrainHeightAtWorld(bx, bz);
+                    const float thX = terrainHeightAtWorld(bx + 1.5f, bz);
+                    const float thZ = terrainHeightAtWorld(bx, bz + 1.5f);
+                    bool ok = std::fabs(thX - ty) <= kBenchMaxTilt &&
+                              std::fabs(thZ - ty) <= kBenchMaxTilt &&
+                              ty >= worldWaterLevelAt(bx, bz) + 0.5f &&
+                              ty >= route.roadYAt(bs) - 1.0f &&
+                              !(bs > keep0 && bs < keep1);
+                    for (const KeepOut& k : keepOut) {
+                        const float dx = k.x - bx, dz = k.z - bz;
+                        if (dx * dx + dz * dz < k.r * k.r) { ok = false; break; }
+                    }
+                    if (ok) {
+                        // Model long axis is +Z; yaw maps it onto the tangent.
+                        const float yaw = std::atan2(tx1 - tx0, tz1 - tz0);
+                        const float c = std::cos(yaw), sn = std::sin(yaw);
+                        const float T[16] = { c, 0, -sn, 0,
+                                              0, 1, 0,   0,
+                                              sn, 0, c,  0,
+                                              bx, ty - kBenchSink, bz, 1 };
+                        const char* glb = (rng.next() < 0.5f) ? kBenchGlbA : kBenchGlbB;
+                        if (m_art.addGlbInstance(glb, T)) ++m_benches;
+                    }
+                }
+            }
         }
     }
 
@@ -229,7 +284,8 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
 
     x3::logInfo("road_trees: " + std::to_string(m_trees) + " trees (" +
                 std::to_string(oaks) + " oak, " + std::to_string(poplars) +
-                " poplar) in " + std::to_string(m_groves) + " groves along " +
+                " poplar) in " + std::to_string(m_groves) + " groves, " +
+                std::to_string(m_benches) + " benches, along " +
                 std::to_string((int)route.totalLen) + " m of road (" +
                 std::to_string(rejected) + " positions rejected)");
     if (m_trees == 0)
