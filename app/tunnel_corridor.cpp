@@ -1244,21 +1244,51 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
             out[2] = f.p[2] + right[2]*r;
         };
         const float hw = kTcRoadHalfWidth;
+        // CONCRETE APRONS (Tim, reading 01_approach: "There is no concrete
+        // apron in that shot"). The demo road was the ONLY route without
+        // them — every road_network route carries kApronFt of cement each
+        // side. Width here is budgeted by the CARVE, not the spec: the
+        // corridor's flat floor is kTcCorridorHalfW (10.1 m) and the
+        // pavement takes kTcRoadHalfWidth (7.32), leaving 2.78 m of floor
+        // before the smoothstep shoulder rises — a wider apron would bury
+        // its outer edge in the cut bank. PAIRED with kTcCorridorHalfW
+        // (tunnel_corridor.h): widen the carve and this can grow toward
+        // road_network's 20 ft.
+        constexpr float kApronW    = 2.6f;   // ~8.5 ft of cement each side
+        constexpr float kApronDrop = 0.01f;  // apron 1 cm under the slab lip
+        const float hwA = hw + kApronW;
+        const float apY = kSlabProud - kApronDrop;
+        MeshBuf mbA;                          // cement: aprons + outer skirts
         for (size_t j = 0; j + 1 < roadFrames.size(); ++j) {
             const Frame& a = roadFrames[j]; const Frame& b = roadFrames[j+1];
-            float aL[3], aR[3], bL[3], bR[3], aLd[3], aRd[3], bLd[3], bRd[3];
-            P(a, -hw, kSlabProud, aL); P(a, hw, kSlabProud, aR);
-            P(b, -hw, kSlabProud, bL); P(b, hw, kSlabProud, bR);
-            PA(a, -hw, edgeBottom(a, -hw), aLd); PA(a, hw, edgeBottom(a, hw), aRd);
-            PA(b, -hw, edgeBottom(b, -hw), bLd); PA(b, hw, edgeBottom(b, hw), bRd);
             const float nU[3] = { 0, 1, 0 };
-            mb.quad(aL, aR, bR, bL, nU, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
             const float nR[3] = {  right[0], 0.0f,  right[2] };
             const float nL[3] = { -right[0], 0.0f, -right[2] };
-            mb.quad(aR, aRd, bRd, bR, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
-            mb.quad(aL, aLd, bLd, bL, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
             const float nD[3] = { 0, -1, 0 };
-            mb.quad(aLd, aRd, bRd, bLd, nD, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
+            // ---- pavement top at +/-hw, with a 1 cm lip face down to the
+            // apron so there is no sliver of daylight at the joint.
+            float aL[3], aR[3], bL[3], bR[3];
+            P(a, -hw, kSlabProud, aL); P(a, hw, kSlabProud, aR);
+            P(b, -hw, kSlabProud, bL); P(b, hw, kSlabProud, bR);
+            mb.quad(aL, aR, bR, bL, nU, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
+            float aLl[3], aRl[3], bLl[3], bRl[3];
+            P(a, -hw, apY, aLl); P(a, hw, apY, aRl);
+            P(b, -hw, apY, bLl); P(b, hw, apY, bRl);
+            mb.quad(aR, aRl, bRl, bR, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            mb.quad(aL, aLl, bLl, bL, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            // ---- cement apron tops, hw -> hwA each side.
+            float aRo[3], bRo[3], aLo[3], bLo[3];
+            P(a,  hwA, apY, aRo); P(b,  hwA, apY, bRo);
+            P(a, -hwA, apY, aLo); P(b, -hwA, apY, bLo);
+            mbA.quad(aRl, aRo, bRo, bRl, nU, 0.0f, 1.0f, a.s * 0.06f, b.s * 0.06f);
+            mbA.quad(aLo, aLl, bLl, bLo, nU, 0.0f, 1.0f, a.s * 0.06f, b.s * 0.06f);
+            // ---- outer skirts + slab bottom now hang from the APRON edge.
+            float aLd[3], aRd[3], bLd[3], bRd[3];
+            PA(a, -hwA, edgeBottom(a, -hwA), aLd); PA(a, hwA, edgeBottom(a, hwA), aRd);
+            PA(b, -hwA, edgeBottom(b, -hwA), bLd); PA(b, hwA, edgeBottom(b, hwA), bRd);
+            mbA.quad(aRo, aRd, bRd, bRo, nR, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            mbA.quad(aLo, aLd, bLd, bLo, nL, 0.0f, 1.0f, a.s * 0.15f, b.s * 0.15f);
+            mbA.quad(aLd, aRd, bRd, bLd, nD, 0.0f, 1.0f, a.s * 0.08f, b.s * 0.08f);
         }
         // REAL ASPHALT when the library has it, the procedural checker when it
         // does not — same shape as the bore/portal sets above. The road is the
@@ -1268,6 +1298,14 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         if (roadSet.ok) { m.alb = roadSet.albedo; m.mr = roadSet.mr; m.nrm = roadSet.normal; }
         else            { m.alb = asphaltTex;     m.mr = roughMR; }
         upload(mb, m, /*collide*/true);
+        // Aprons in the SAME cement as road_network's (mw_concrete_panels_a,
+        // already loaded as portalSet) with the same warm tint, so the demo
+        // road and the network routes read as one build standard.
+        Material mA;
+        if (portalSet.ok) { mA.alb = portalSet.albedo; mA.mr = portalSet.mr; mA.nrm = portalSet.normal; }
+        else              { mA.alb = concreteTex;      mA.mr = wallMR; }
+        mA.tint[0] = 0.86f; mA.tint[1] = 0.85f; mA.tint[2] = 0.82f;
+        upload(mbA, mA, /*collide*/true);
 
         // ---- Lane markings. BL §3.4 as DATA: solid white edge lines at
         // +/-(w/2 - 0.5) every segment, dashed centre on a 5 m grid (dash 60 %).

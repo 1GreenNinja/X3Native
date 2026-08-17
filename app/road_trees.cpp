@@ -20,15 +20,25 @@ namespace {
 // The two published broadleaf species (assets/manifest.json, 53a2b560),
 // relative to convertedGlbRoot(). Native sizes (Y-up, base at y=0, verified
 // from the GLB accessor bounds through the root 0.01/X+90 transform):
-//   oak    36.8 m tall, crown radius ~18 m  -> scaled 0.50-0.75 (18-28 m)
-//   poplar 22.6 m tall, crown radius  ~4 m  -> scaled 0.90-1.25 (20-28 m)
+//   oak    36.8 m tall, crown radius ~18 m  -> scaled 0.580-0.829 (21.3-30.5 m)
+//   poplar 22.6 m tall, crown radius  ~4 m  -> scaled 0.945-1.350 (21.4-30.5 m)
+// THE OWNER'S NUMBER IS SPEC (NO_SLOP rule 8). Tim, reading the
+// spawn-approach capture: "there are some trees but wayy tooo small and
+// short!" then, exactly: "70-90 feet high", then "they can be taller..
+// 100 feet" = 21.3-30.5 m. The old rolls (0.50-0.75 oak) bottomed out at
+// 18 m — a 60 ft shrub next to a 29 m-wide paved road. Both species now
+// land inside 70-100 ft, no short rolls.
+// PAIRED with the sc rolls in build() below.
 constexpr const char* kOakGlb    = "nature/OakBigTree01.glb";
 constexpr const char* kPoplarGlb = "nature/PoplarTree001.glb";
 
 // --- Placement constants (metres) ------------------------------------------
 constexpr float kLatMin       = 14.0f;  // innermost trunk: outside pavement+apron+wall
 constexpr float kLatMax       = 24.0f;  // outermost trunk: still reads as roadSIDE
-constexpr float kOakLatMin    = 15.5f;  // the oak crown is huge — stand it back a little
+// 15.5 -> 14.5 (Tim: "reaching over the freeway") — at the 70-90 ft scales
+// the oak crown is 10.4-13.4 m of radius, so a trunk at 14.5 m arches its
+// canopy out over the near lanes instead of stopping at the apron.
+constexpr float kOakLatMin    = 14.5f;
 constexpr float kEndPad       = 25.0f;  // no trees hard against the route's ends
 // Portal keep-out past each bore end: headwall (1.7) + canopy (3) + wingwall
 // splay (6.5) + backfill taper (15) is ~26 m of built structure; 30 keeps a
@@ -43,13 +53,17 @@ constexpr float kMinSpacing   = 4.5f;   // trunks never closer than this inside 
 // + portal margins), NOT the whole route — on this route the tunnel swallows
 // half the length, and stratifying over all of it starved the daylight
 // stretches down to a single grove (first build: 10 trees).
-constexpr float kSlotLen        = 40.0f; // one grove slot per this much open road
-constexpr int   kSlotsMaxPerSpan= 6;
-constexpr float kGroveKeep      = 0.85f; // fraction of slots that actually get a grove
-constexpr int   kTreesMin       = 8;     // per grove
-constexpr int   kTreesMax       = 25;
-constexpr float kGroveLenMin    = 25.0f;
-constexpr float kGroveLenMax    = 60.0f;
+// THICK WOODS (Tim: "A whole grove.. not just 2", "Tthick woods on much of
+// the road!!!!") — slots halved in length, every slot keeps its grove, and
+// each grove is a stand of 16-40 trunks over up to 90 m. kMinSpacing still
+// bounds trunk density, so "thick" comes from coverage, not clipping crowns.
+constexpr float kSlotLen        = 25.0f; // one grove slot per this much open road
+constexpr int   kSlotsMaxPerSpan= 12;
+constexpr float kGroveKeep      = 1.0f;  // fraction of slots that actually get a grove
+constexpr int   kTreesMin       = 16;    // per grove
+constexpr int   kTreesMax       = 40;
+constexpr float kGroveLenMin    = 30.0f;
+constexpr float kGroveLenMax    = 90.0f;
 constexpr float kOffSideFrac    = 0.30f; // chance a double-sided grove's tree crosses over
 constexpr uint32_t kSeed        = 0x5EEDA11u;
 
@@ -190,8 +204,8 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
                 }
                 if (tooClose) { ++rejected; continue; }
 
-                const float sc  = oak ? (0.50f + sclRoll * 0.25f)    // 18-28 m oak
-                                      : (0.90f + sclRoll * 0.45f);   // 20-30 m poplar
+                const float sc  = oak ? (0.580f + sclRoll * 0.249f)  // 70-100 ft oak
+                                      : (0.945f + sclRoll * 0.405f); // 70-100 ft poplar
                 const float yaw = yawRoll * 6.2831853f;
                 const float c = std::cos(yaw), sn = std::sin(yaw);
                 // Column-major yaw*uniform-scale + translation, base sunk kSink
