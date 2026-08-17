@@ -1793,6 +1793,138 @@ int hostTunnel(HostContext& hc) {
             shotDraw = nullptr;
         }
 
+        // ==== SUB PROOF (X3_SHOT_SUB=1) — the patrol submarine, framed off its
+        // LIVE hull, twice: from the BRIDGE DECK (the owner's "visible from the
+        // bridge") and from IN THE WATER beside it (the swimmer's view). Every
+        // shot logs where the hull actually was and how far its top sat under
+        // the local surface, because "it's a submarine" is a claim about a
+        // NUMBER (submergence > 0) and not about vibes (NO_SLOP rule 9).
+        if (const char* be = std::getenv("X3_SHOT_SUB");
+            be && be[0] == '1' && riverOn && riverRoad.plan.ok && riverLife.subBuilt()) {
+            const auto& plan = riverRoad.plan;
+            const float rdx = plan.dirZ, rdz = -plan.dirX;   // downstream unit
+            auto subLog = [&](const char* tag) {
+                float sp[3]; riverLife.subPos(sp);
+                char sb[224];
+                std::snprintf(sb, sizeof(sb),
+                    "[sub-shot] %s hull=(%.1f, %.2f, %.1f) submergence=%.2f m "
+                    "surface=%.2f bed=%.2f",
+                    tag, sp[0], sp[1], sp[2], riverLife.subSubmergence(),
+                    x3::game::worldWaterLevelAt(sp[0], sp[2]),
+                    x3::game::terrainHeightAtWorld(sp[0], sp[2]));
+                x3::logInfo(sb);
+            };
+            subLog("pre-shot");
+
+            // PRE-ROLL to a FRAMEABLE moment. The lane straddles the crossing,
+            // so at an arbitrary frame the sub can be directly under the deck —
+            // the first cut caught it at 4.4 m range and pitch -83°, a
+            // top-down blob. Tick physics (no rendering needed) until the hull
+            // is well out on the reach, then frame that. Deterministic: the
+            // patrol is a fixed lane at a fixed speed.
+            auto advanceSub = [&](float wantDist, int maxSteps) {
+                for (int i = 0; i < maxSteps; ++i) {
+                    float sp[3]; riverLife.subPos(sp);
+                    const float ddx = sp[0] - plan.cx, ddz = sp[2] - plan.cz;
+                    if (std::sqrt(ddx * ddx + ddz * ddz) >= wantDist) return;
+                    riverLife.prePhysics(dt);
+                    phys->step(dt);
+                    riverLife.postPhysics(dt, scene, *device, *phys,
+                                          audioOn ? audio.get() : nullptr,
+                                          x3::phys::Vec3{ sp[0], sp[1], sp[2] });
+                }
+            };
+            // The sub's own travel direction, sampled over 30 steps, so the
+            // framing can LEAD it through settleAndGrab's 200-frame settle.
+            auto subDir = [&](float& dx, float& dz) {
+                float a[3]; riverLife.subPos(a);
+                for (int i = 0; i < 30; ++i) {
+                    riverLife.prePhysics(dt); phys->step(dt);
+                    riverLife.postPhysics(dt, scene, *device, *phys,
+                                          audioOn ? audio.get() : nullptr,
+                                          x3::phys::Vec3{ a[0], a[1], a[2] });
+                }
+                float b[3]; riverLife.subPos(b);
+                dx = b[0] - a[0]; dz = b[2] - a[2];
+                const float l = std::sqrt(dx * dx + dz * dz);
+                if (l > 1e-3f) { dx /= l; dz /= l; } else { dx = rdx; dz = rdz; }
+            };
+
+            // SHOT E — FROM THE BRIDGE. Standing on the deck at the crossing,
+            // looking down the reach at the hull. The camera is on the DECK's
+            // own Y (plan.deckY, eye height above it), not a staged crane, so
+            // this is the view a player who stops on the bridge actually gets.
+            {
+                advanceSub(24.0f, 6000);
+                float dirX = 0.0f, dirZ = 0.0f; subDir(dirX, dirZ);
+                float sp[3]; riverLife.subPos(sp);
+                // Lead the hull through the 200-frame settle (~3.3 s at ~1.2
+                // m/s). Without this the sub walks a hull-length out of frame.
+                sp[0] += dirX * 4.0f; sp[2] += dirZ * 4.0f;
+                // Stand at the DOWNSTREAM PARAPET, not mid-deck: the first cut
+                // put the eye on the centreline and the deck slab filled the
+                // bottom half of the frame (43 ft out-to-out, and the reach
+                // runs across the deck's narrow axis). deckHalfWidth + 0.8 m
+                // puts the eye at the rail, where a player who stops on the
+                // bridge to look at the river actually stands.
+                // ...on the sub's OWN side of the deck (the lane straddles the
+                // crossing, so the hull is upstream half the time).
+                const float sideSgn = ((sp[0] - plan.cx) * rdx +
+                                       (sp[2] - plan.cz) * rdz) >= 0.0f ? 1.0f : -1.0f;
+                const float edge = (plan.deckHalfWidth + 0.8f) * sideSgn;
+                const float ex = plan.cx + rdx * edge, ez = plan.cz + rdz * edge;
+                const float ey = plan.deckY + 1.7f;
+                const float ddx = sp[0] - ex, ddz = sp[2] - ez;
+                const float hdist = std::sqrt(ddx * ddx + ddz * ddz);
+                const float yawE = std::atan2(ddz, ddx);
+                const float pitchE = std::atan2(sp[1] - ey, std::max(1.0f, hdist));
+                const float camE[5] = { ex, ey, ez, yawE, pitchE };
+                char cb[192];
+                std::snprintf(cb, sizeof(cb),
+                    "[sub-shot] bridge cam=(%.1f, %.2f, %.1f) yaw=%.3f pitch=%.3f "
+                    "range=%.1f m", ex, ey, ez, yawE, pitchE, hdist);
+                x3::logInfo(cb);
+                ok = settleAndGrab(camE, dir + "/14_sub_from_bridge.png") && ok;
+                subLog("after bridge shot");
+            }
+
+            // SHOT F — FROM IN THE WATER. Camera under the surface, abeam of
+            // the hull, with the same green column fog the swim shots use (the
+            // interactive camera owns that edge; the staged path sets it).
+            {
+                x3::rhi::IRenderDevice::FogParams fp{};
+                fp.enabled  = true;
+                fp.color[0] = 0.010f; fp.color[1] = 0.045f; fp.color[2] = 0.055f;
+                fp.density  = 0.055f; fp.start = 0.15f; fp.maxOpacity = 0.96f;
+                device->setFog(fp);
+                // ABEAM OF THE HULL'S OWN HEADING, not of the reach axis: the
+                // lane reverses, so half the time "13 m off the reach normal"
+                // is dead ahead of the bow and the shot is a nose-on blob.
+                // Perpendicular of the travel direction is (-dz, dx).
+                float dirX = 0.0f, dirZ = 0.0f; subDir(dirX, dirZ);
+                float sp[3]; riverLife.subPos(sp);
+                // Lead the hull: the settle runs 200 more frames of physics and
+                // a patrolling sub does not wait for the shutter.
+                const float lead = 4.0f;
+                const float tx = sp[0] + dirX * lead, tz = sp[2] + dirZ * lead;
+                const float px = tx - dirZ * 13.0f, pz = tz + dirX * 13.0f;
+                const float surf = x3::game::worldWaterLevelAt(px, pz);
+                const float camFY = surf - 1.2f;
+                const float yawF = std::atan2(tz - pz, tx - px);
+                const float pitchF = std::atan2(sp[1] - camFY, 13.0f);
+                const float camF[5] = { px, camFY, pz, yawF, pitchF };
+                char cb[192];
+                std::snprintf(cb, sizeof(cb),
+                    "[sub-shot] underwater cam=(%.1f, %.2f, %.1f) yaw=%.3f pitch=%.3f "
+                    "surface=%.2f", px, camFY, pz, yawF, pitchF, surf);
+                x3::logInfo(cb);
+                ok = settleAndGrab(camF, dir + "/15_sub_underwater.png") && ok;
+                subLog("after underwater shot");
+                x3::rhi::IRenderDevice::FogParams off{};
+                device->setFog(off);
+            }
+        }
+
         // ==== MAP/HUD PROOF SET (map/HUD wiring) — overview / drive-zoom /
         // waypoint / driving-HUD chevron. Uses the engine's OWN
         // armCapture/captureFrame GPU-swapchain readback — the SAME mechanism

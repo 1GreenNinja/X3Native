@@ -290,34 +290,76 @@ bool RiverLife::build(Scene& scene, x3::rhi::IRenderDevice& device,
     }
 
     // ==== THE PATROL SUB (owner: "a sub or 2") ==============================
-    // Deep water only. The lane runs 210..430 m along the spine — well past the
-    // speedboats' 45..190 m lanes, so the sub never shares water with a planing
-    // hull — on whichever side of the crossing keeps the most water under the
-    // keel. A lane that cannot clear kSubMinDepth simply does not get a sub
-    // (a submarine dragging its belly is worse than no submarine).
+    // It patrols THE CROSSING: a lane straddling the bridge, kLaneHalf metres
+    // of spine each way, passing under the span between the piers.
+    //
+    // WHY HERE, and not out in the empty downstream reach (the first cut ran
+    // 210..430 m and was MEASURED wrong): the owner's requirement is a
+    // submerged silhouette VISIBLE FROM THE BRIDGE, and the proof shot at
+    // 244 m range showed exactly nothing — a 6.6 m hull under 1.3 m of green
+    // water is ~50 px at that range and the surface is near-total reflection
+    // at a grazing angle. Depth was never what pushed the lane out there: the
+    // carved channel is a UNIFORM 5.5 m mid-channel over the whole reach
+    // ([river-life] depth station 1/3..3/3 all log 5.500), so the only real
+    // constraint was the speedboats — and their lanes start 45 m out on BOTH
+    // sides, which leaves the ±45 m window around the crossing as the one
+    // piece of deep water that is close to the bridge, close to where the
+    // swimmer goes in (32 m along the reach), and boat-free.
+    //
+    // CLEAR OF THE SPEEDBOAT LANES, twice over: in plan the lane ends 38 m out
+    // and theirs begin at 45 m; and in DEPTH a sub holding 1.9 m down has its
+    // deck 1.05 m under a planing hull's keel, so the two can never share
+    // water even if a boat overshoots its waypoint inward.
+    //
+    // CLEAR OF THE PIERS: the piers stand at ±18.29 m LATERALLY from the
+    // channel centre (RiverBridgePlan::pierS) and the lane runs the spine, so
+    // the hull passes between them with ~16.8 m either side — and both turns
+    // happen 38 m from the bridge, nowhere near them.
     {
         constexpr float kSubMinDepth = 4.2f;    // hull is 1.2 m tall + clearance
-        constexpr float kLaneNear = 210.0f, kLaneFar = 430.0f;
+        constexpr float kLaneHalf = 38.0f;      // 45 m boat lanes start; stay under
         float bestX0 = 0, bestZ0 = 0, bestX1 = 0, bestZ1 = 0;
         float bestDepth = -1e9f;
-        for (int side = 0; side < 2; ++side) {
-            const int step = side == 0 ? -1 : +1;
-            float x0, z0, x1, z1;
-            pointAlongReach(nodes, rn, nearest, step, kLaneNear, x0, z0);
-            pointAlongReach(nodes, rn, nearest, step, kLaneFar,  x1, z1);
-            const float len = std::sqrt((x1-x0)*(x1-x0) + (z1-z0)*(z1-z0));
-            if (len < 40.0f) continue;          // the river ran out that way
-            // Shallowest point along the candidate lane decides it.
-            float minDepth = 1e9f;
-            for (float t = 0.0f; t <= 1.0f; t += 0.05f) {
-                const float px = x0 + (x1-x0)*t, pz = z0 + (z1-z0)*t;
-                const float wy = worldWaterLevelAt(px, pz);
-                if (wy <= kWorldWaterDry + 1.0f) { minDepth = -1e9f; break; }
-                minDepth = std::min(minDepth, wy - terrainHeightAtWorld(px, pz));
+        {
+            // MEASURE THE LANE FROM THE CROSSING, NOT FROM `nearest`. The river
+            // spline's nodes are ~145 m apart (the three depth stations above
+            // are 2 nodes apart and 290 m apart), so "the crossing's nearest
+            // node" can be 70 m from the bridge — and it is: the first cut of
+            // this lane centred on the node and put the sub 65 m from the deck
+            // when it was supposed to be under it. So project the crossing onto
+            // the reach and offset every arc-length by that.
+            //   arcOfCrossing = dot(crossing - node, downstream unit)
+            // Node index INCREASES downstream (the water table descends that
+            // way — see the depth stations and worldWaterLevelAt).
+            float xoff = 0.0f;
+            if (nearest + 1 < rn) {
+                const float ux = nodes[nearest + 1].x - nodes[nearest].x;
+                const float uz = nodes[nearest + 1].z - nodes[nearest].z;
+                const float ul = std::sqrt(ux * ux + uz * uz);
+                if (ul > 1e-3f)
+                    xoff = ((plan.cx - nodes[nearest].x) * ux +
+                            (plan.cz - nodes[nearest].z) * uz) / ul;
             }
-            if (minDepth > bestDepth) {
+            auto atArc = [&](float arc, float& ox, float& oz) {
+                pointAlongReach(nodes, rn, nearest, arc >= 0.0f ? +1 : -1,
+                                std::fabs(arc), ox, oz);
+            };
+            atArc(xoff - kLaneHalf, bestX0, bestZ0);   // upstream end
+            atArc(xoff + kLaneHalf, bestX1, bestZ1);   // downstream end
+            const float len = std::sqrt((bestX1-bestX0)*(bestX1-bestX0) +
+                                        (bestZ1-bestZ0)*(bestZ1-bestZ0));
+            if (len >= 40.0f) {
+                // Shallowest point along the lane decides whether it gets a sub
+                // at all (a submarine dragging its belly is worse than none).
+                float minDepth = 1e9f;
+                for (float t = 0.0f; t <= 1.0f; t += 0.05f) {
+                    const float px = bestX0 + (bestX1-bestX0)*t;
+                    const float pz = bestZ0 + (bestZ1-bestZ0)*t;
+                    const float wy = worldWaterLevelAt(px, pz);
+                    if (wy <= kWorldWaterDry + 1.0f) { minDepth = -1e9f; break; }
+                    minDepth = std::min(minDepth, wy - terrainHeightAtWorld(px, pz));
+                }
                 bestDepth = minDepth;
-                bestX0 = x0; bestZ0 = z0; bestX1 = x1; bestZ1 = z1;
             }
         }
         if (bestDepth >= kSubMinDepth) {
@@ -337,7 +379,11 @@ bool RiverLife::build(Scene& scene, x3::rhi::IRenderDevice& device,
                             std::to_string(bestX0) + ", " + std::to_string(bestZ0) +
                             ") -> (" + std::to_string(bestX1) + ", " + std::to_string(bestZ1) +
                             "), shallowest water on the lane " + std::to_string(bestDepth) +
-                            " m, holding " + std::to_string(m_sub.depth) + " m down");
+                            " m, holding " + std::to_string(m_sub.depth) +
+                            " m down; lane midpoint is " +
+                            std::to_string(std::sqrt((sx - plan.cx) * (sx - plan.cx) +
+                                                     (sz - plan.cz) * (sz - plan.cz))) +
+                            " m from the crossing (want ~0 — it patrols the bridge)");
             } else {
                 x3::logWarn("[river-life] SUB: buoyancy hull build failed");
             }
@@ -446,7 +492,10 @@ void RiverLife::prePhysics(float dt) {
         const float tz = s.target == 0 ? s.az : s.bz;
         const float dx = tx - hp[0], dz = tz - hp[2];
         const float dist = std::sqrt(dx * dx + dz * dz);
-        if (dist < 16.0f) s.target ^= 1;
+        // 10 m, not the boats' 16: the patrol lane is 76 m of spine straddling
+        // the bridge, so a wide turn radius would walk the hull off the deep
+        // centreline toward a pier.
+        if (dist < 10.0f) s.target ^= 1;
 
         const float bearing = std::atan2(dz, dx);
         const float heading = s.haveHeading ? s.heading : bearing;
@@ -457,9 +506,14 @@ void RiverLife::prePhysics(float dt) {
 
         x3::phys::VehicleInput in;
         // A submarine turns like a submarine: lazier gains than the speedboats,
-        // and a patrol crawl rather than their full send.
+        // and a patrol crawl rather than their full send. The throttle number is
+        // MEASURED, not picked: BoatDemo's propThrust is mass*4 and its linear
+        // drag mass*2.5 per m/s, so terminal speed = 1.6 * throttle m/s. 0.75
+        // is ~1.2 m/s (2.3 kn) — a midget sub's patrol speed, and slow enough
+        // that the depth hold and the turns stay settled. (The first cut ran
+        // 0.30 = 0.48 m/s, which read as a parked hull.)
         in.steer = std::clamp(0.9f * err - 0.35f * yawRate, -1.0f, 1.0f);
-        in.throttle = 0.30f * (0.4f + 0.6f * std::max(0.0f, std::cos(err)));
+        in.throttle = 0.75f * (0.4f + 0.6f * std::max(0.0f, std::cos(err)));
         // DEPTH HOLD: a PD on depth error driving `dive`. Fully submerged the
         // hull is ~2.1x buoyant (BoatDemo masses it to float half out), so the
         // equilibrium command is a firm, steady push DOWN — the bias term —
