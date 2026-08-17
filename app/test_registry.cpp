@@ -61,6 +61,7 @@
 #include "sarah.h"   // Sarah companion-combat self-test (--test-companion-combat)
 #include "level1_game.h"
 #include "canon_play.h"
+#include "grounding.h"        // x3::game::runGroundingSelfTest (--test-grounding)
 #include "desc_mechanics.h"   // W9-1: runDescMechSelfTest (--test-descmech)
 #include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
 #include "pack_spiders.h"                    // PACK-HARVEST arachnids (Lab Skitterer / Venom Brood) — --test-packspiders
@@ -502,6 +503,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
         return x3::game::runCanonPlaySelfTest() ? 0 : 1;
+    }
+    if (tf.testGrounding) {
+        x3::logInfo("running the character-grounding GATE (feet vs support surface, app/grounding.h)...");
+        return x3::game::runGroundingSelfTest() ? 0 : 1;
     }
     if (tf.testStairNav) {
         x3::logInfo("running the STAIR-NAV self-test (S1-S5: chain vs geometry, 4.5 seal, F1->F3 climb)...");

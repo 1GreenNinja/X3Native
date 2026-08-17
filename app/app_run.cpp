@@ -5,6 +5,7 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include "engine/core/x3_log.h"
+#include "engine/core/x3_log_region.h"   // pinned terminal region: typed-command queue (x3::conregion::popInput)
 #include "engine/core/x3_boot.h"   // [boot] timeline (boot-to-interactive instrumentation + --test-boottime)
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
@@ -8148,6 +8149,15 @@ int runDefaultHost(HostContext& hc) {
         bool gNow = keyDown(GLFW_KEY_G);
         if (gNow && !prevG && !worldCars.driving()) player.setNoclip(!player.noclip());
         prevG = gNow;
+        // TERMINAL COMMAND LINE (pinned console region, engine/core/x3_log.cpp):
+        // lines typed into the OS terminal's bottom input row feed the SAME
+        // dispatcher as the in-game dev-shell console. Drained HERE, on the main
+        // thread, because IConsole::exec is not thread-safe; results echo back to
+        // the terminal via Console::print -> logInfo("[con] ...").
+        {
+            std::string termCmd;
+            while (x3::conregion::popInput(termCmd)) console->exec(termCmd);
+        }
         // U = IDKFA hotkey (playtest aid): runs the console command of the same name
         // (god + full health + all weapons + unlimited ammo) so the cheat is one key
         // instead of opening the console. Gated on !consoleOpen so typing a 'u' into
