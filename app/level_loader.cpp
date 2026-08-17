@@ -1718,6 +1718,62 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                         " plinth band(s) closing under-slab slots at overlap junctions");
     }
 
+    // ---- UNDERGROUND EARTH BACKING (owner rule 2026-08-16: the cell block is BELOW
+    // GRADE — "you can see out into the void (which needs to be solid earth, as this
+    // is underground)"). Defense in depth for Jake's Cell: any face with NO doorway
+    // and NO neighboring room beyond it gets a coarse dark-earth occluder slab behind
+    // the shell, so any future gap, clip or camera glitch shows ground instead of
+    // void. Fail closed, show earth. Scoped to the cell this lane sealed; the general
+    // below-grade rule (every F1 exterior face, minus the glass facade + breach cuts)
+    // is filed with the lane report.
+    {
+        const uint32_t jr = canonBeats(floor).jakeCell;
+        if (jr != kNoRoom && jr < nRooms) {
+            const CanonRoom& r = floor.rooms[jr];
+            const float earth[4] = { 0.20f, 0.15f, 0.11f, 1.0f };   // dark packed soil
+            auto faceHasDoor = [&](int f) {
+                const std::vector<Gap>* g[4] = { &gapXneg[jr], &gapXpos[jr], &gapZneg[jr], &gapZpos[jr] };
+                return !g[f]->empty();
+            };
+            auto neighborBeyond = [&](int f) {
+                for (uint32_t i = 0; i < nRooms; ++i) {
+                    if (i == jr) continue;
+                    const CanonRoom& n = floor.rooms[i];
+                    if (n.y0() > r.y1() || n.y1() < r.y0()) continue;   // different story
+                    switch (f) {
+                        case 0:  if (n.x1() >= r.x0() - 1.5f && n.x0() < r.x0() &&
+                                     n.z0() < r.z1() && n.z1() > r.z0()) return true; break;
+                        case 1:  if (n.x0() <= r.x1() + 1.5f && n.x1() > r.x1() &&
+                                     n.z0() < r.z1() && n.z1() > r.z0()) return true; break;
+                        case 2:  if (n.z1() >= r.z0() - 1.5f && n.z0() < r.z0() &&
+                                     n.x0() < r.x1() && n.x1() > r.x0()) return true; break;
+                        default: if (n.z0() <= r.z1() + 1.5f && n.z1() > r.z1() &&
+                                     n.x0() < r.x1() && n.x1() > r.x0()) return true; break;
+                    }
+                }
+                return false;
+            };
+            int backed = 0;
+            const float m = 1.5f, off = 0.25f + 0.30f;   // margin past the face; slab offset behind it
+            const float yH = r.h * 0.5f + 1.0f;          // over-tall: covers wall top + slab bands
+            for (int f = 0; f < 4; ++f) {
+                if (faceHasDoor(f) || neighborBeyond(f)) continue;
+                if (f == 0)      addBox(scene, device, physics, 0.30f, yH, r.d * 0.5f + m,
+                                        r.x0() - off, r.cy, r.cz, floorTex, earth, jr, false, true);
+                else if (f == 1) addBox(scene, device, physics, 0.30f, yH, r.d * 0.5f + m,
+                                        r.x1() + off, r.cy, r.cz, floorTex, earth, jr, false, true);
+                else if (f == 2) addBox(scene, device, physics, r.w * 0.5f + m, yH, 0.30f,
+                                        r.cx, r.cy, r.z0() - off, floorTex, earth, jr, false, true);
+                else             addBox(scene, device, physics, r.w * 0.5f + m, yH, 0.30f,
+                                        r.cx, r.cy, r.z1() + off, floorTex, earth, jr, false, true);
+                ++backed;
+            }
+            if (backed)
+                x3::logInfo("buildCanonFloor: EARTH BACKING — " + std::to_string(backed) +
+                            " below-grade occluder slab(s) behind Jake's Cell exterior face(s)");
+        }
+    }
+
     // ---- THRESHOLD RAMPS at doored/adjacent/overlap openings with a FLOOR-HEIGHT
     // STEP. Adjacent canon rooms frequently sit at different floor elevations (the
     // opening is cut at the HIGHER floor, dw.cy); a character approaching from the
