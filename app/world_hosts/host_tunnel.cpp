@@ -965,18 +965,39 @@ int hostTunnel(HostContext& hc) {
         // Tim, 2026-08-14: "The car is PLACED facing the wrong way. I have to TURN
         // it to drive it forward. Controls make the car behave as it should." —
         // the second sentence proves the rig and skin are fine; only spawn was wrong.
-        // LOCAL tangent, not the route's global chord: the smoothing passes
-        // curl the road, and the chord-based yaw parked the car skewed across
-        // the lanes (Tim's overhead screenshot). Sample the polyline 4 m apart
-        // around the spawn station and face down THAT.
-        float tp0[3], tp1[3];
-        const float spawnS = std::max(8.0f, route.boreS0 - 55.0f);
-        route.posAt(spawnS - 2.0f, tp0);
-        route.posAt(spawnS + 2.0f, tp1);
-        float tdx = tp1[0] - tp0[0], tdz = tp1[2] - tp0[2];
-        const float tlen = std::sqrt(tdx * tdx + tdz * tdz);
-        if (tlen > 1e-3f) { tdx /= tlen; tdz /= tlen; }
-        else { tdx = route.dirX; tdz = route.dirZ; }
+        // AIM ALONG THE ROAD THAT IS ACTUALLY PAINTED THERE. Two wrong
+        // attempts taught the lesson: the global chord skewed the car, and the
+        // tunnel spine's local tangent STILL skewed it — because the pavement
+        // at spawn is the roads-machinery ribbon (smoothed spec polylines),
+        // not the spine. So: find the nearest segment across every registered
+        // spec polyline within 60 m and face down IT; the spine tangent is
+        // only the last-resort fallback.
+        float tdx = route.dirX, tdz = route.dirZ;
+        {
+            float bestD2 = 60.0f * 60.0f;
+            auto scanSpec = [&](const x3::game::RoadSpec& sp) {
+                const size_t n = std::min(sp.x.size(), sp.z.size());
+                for (size_t i = 0; i + 1 < n; ++i) {
+                    const float mx2 = 0.5f * (sp.x[i] + sp.x[i + 1]);
+                    const float mz2 = 0.5f * (sp.z[i] + sp.z[i + 1]);
+                    const float ddx2 = mx2 - startPos[0], ddz2 = mz2 - startPos[2];
+                    const float d2 = ddx2 * ddx2 + ddz2 * ddz2;
+                    if (d2 < bestD2) {
+                        float sx2 = sp.x[i + 1] - sp.x[i], sz2 = sp.z[i + 1] - sp.z[i];
+                        const float sl = std::sqrt(sx2 * sx2 + sz2 * sz2);
+                        if (sl > 1e-3f) {
+                            bestD2 = d2; tdx = sx2 / sl; tdz = sz2 / sl;
+                        }
+                    }
+                }
+            };
+            if (connOn) scanSpec(connector.spec);
+            if (ringOn) scanSpec(ringSpec);
+            if (circuitOn) scanSpec(rangeCircuit.accessSpec);
+            // Face INTO the corridor, not out of it: if the nearest segment
+            // runs against the route direction, flip it.
+            if (tdx * route.dirX + tdz * route.dirZ < 0.0f) { tdx = -tdx; tdz = -tdz; }
+        }
         const float yaw = -std::atan2(-tdx, -tdz);
         const float q[4] = { 0.0f, std::sin(-yaw * 0.5f), 0.0f, std::cos(-yaw * 0.5f) };
         phys->setBodyRotation(car.chassis(), q);
