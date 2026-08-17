@@ -245,6 +245,11 @@ void main() {
     // ---- CLOUDS: composited over the sky, under the sun disk. ---------------
     // Placed BEFORE the sun disk so the disk still burns through in front of a
     // thin edge, and AFTER the stars so a night sky keeps its clouds dark.
+    // cloudOcc is this pixel's deck opacity: the sun disk/glow below multiply
+    // by (1 - cloudOcc), so a thin edge lets the disk burn through while a
+    // storm deck CRUSHES it — a 4x-intensity disk punching a clean hole
+    // through a near-black overcast was the tell that the deck was a sticker.
+    float cloudOcc = 0.0;
     {
         float cover = clamp(sky.params.w, 0.0, 1.0);
         // haze < 0.5 shades toward deep space; no clouds out there.
@@ -296,7 +301,8 @@ void main() {
                 // inc/sky_clouds.glsl. Fade into the haze band at the horizon.
                 float alphaOpt    = 1.0 - exp(-d * 5.0);
                 float horizonFade = smoothstep(0.02, 0.16, up);
-                col = mix(col, cloudCol, clamp(alphaOpt * horizonFade * atmo, 0.0, 1.0));
+                cloudOcc = clamp(alphaOpt * horizonFade * atmo, 0.0, 1.0);
+                col = mix(col, cloudCol, cloudOcc);
             }
         }
     }
@@ -308,13 +314,13 @@ void main() {
     // toward the horizon (more aerosol path) for a believable late-day flare.
     float glow = pow(max(cosAngle, 0.0), 8.0)  * 0.20
                + pow(max(cosAngle, 0.0), 256.0) * 0.55;
-    col += sunRGB * glow * sunI;
+    col += sunRGB * glow * sunI * (1.0 - cloudOcc);
     // Sharp disk: a small angular cap (~0.5 deg) with a soft antialiased edge.
     // cos(0.5deg) ~ 0.99996; widen slightly so it reads on a 720p capture.
     float diskInner = 0.99986;   // ~0.95 deg
     float diskOuter = 0.99965;   // soft outer falloff
     float disk = smoothstep(diskOuter, diskInner, cosAngle);
-    col += sunRGB * disk * (4.0 * sunI);
+    col += sunRGB * disk * (4.0 * sunI) * (1.0 - cloudOcc);
 
     // ---- Below-horizon: ease into a muted ground tint so down-views aren't black.
     // The earth tone follows the AEROSOL HAZE: hazy daylight keeps the original
