@@ -30,6 +30,26 @@
 # still fused no matter how good the clips look in isolation, and the failure
 # only shows up once something makes the legs separate.
 #
+# PELVIS REFINEMENT — TRIED 2026-08-16, NONE OF IT HELPED. Sarah's pelvis reads
+# slightly broad in the WALK pose (it is fine at Idle). Three changes were made
+# and measured against the same grounded render; all are REVERTED, recorded here
+# so the next person does not pay for them again:
+#   * Sampling the UpLeg joint partway down toward the knee (0.35), on the theory
+#     that the hip-height cross-section includes pelvis mass and drags the joint
+#     outward. It goes the WRONG WAY — at thigh height the cross-section IS the
+#     thigh, whose centroid sits FURTHER out than the crotch-inclusive slice at
+#     hip height. Separation 0.257 -> 0.311 and a visibly broader pelvis.
+#   * Adding Hips/Spine to the candidate bone set so sub-hip pelvis vertices can
+#     bind to the root instead of being forced onto a thigh. Principled, and it
+#     does change the weights — but produced NO visible difference.
+#   * Narrowing the hip crossfade band 0.10 -> 0.05 of body height. No visible
+#     difference either.
+# Conclusion: what remains is not a localized weighting error. It is her body
+# shape plus pelvis rotation in the walk clip, and it would want a proper weight
+# paint or a corrective shape, not another parameter. Do not re-run this file
+# expecting a different asset than the committed Sarah_anim.glb — the two are in
+# sync deliberately.
+#
 # Clean-room: public Blender Python API + glTF 2.0 spec only.
 # =============================================================================
 import bpy, sys, os
