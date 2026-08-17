@@ -1207,7 +1207,13 @@ bool TunnelCorridorWorld::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // which is far more than depth precision needs at this range. Dropping
         // it to a hair leaves the markings proud of the slab and takes the step
         // down to ~0.74 ft — a kerb, which is what a road edge should look like.
-        constexpr float kSlabProud = 0.02f;
+        // 0.02 -> 0.07 (Tim's seam screenshot): adjacent terrain tiles can
+        // disagree about the carve by a few cm at their border, and at 0.02
+        // proud the loser knifes grass up through the pavement in a diagonal
+        // line. 7 cm is invisible at driving height and above any measured
+        // border disagreement. The REAL fix is border-consistent carving in
+        // the streamer (tile-seam class, docs/ENGINE_GOTCHAS.md).
+        constexpr float kSlabProud = 0.07f;
         MeshBuf mb;
         const float up[3] = { 0.0f, 1.0f, 0.0f };
         auto P = [&](const Frame& f, float r, float u, float out[3]) {
