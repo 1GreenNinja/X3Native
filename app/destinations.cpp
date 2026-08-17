@@ -94,7 +94,7 @@ const Destination kDest[] = {
 { "obsidian",     "The Descent - Obsidian",   "Strata offshoot pocket at -125 m.",                                     "strata",            DestGroup::Underworld, true  },
 { "crystal",      "The Crystal Veins",        "The glowing crystal offshoot at -155 m.",                               "strata",            DestGroup::Underworld, true  },
 { "magma",        "The Magma Zone",           "The molten offshoot at -180 m.",                                        "strata",            DestGroup::Underworld, true  },
-{ "club",         "Club 1127",                "The disco at The Deep, Y=-200. Code 1127 in the cab is the long way.",  "club",              DestGroup::Underworld, true  },
+{ "club",         "Club 1127",                "The disco at The Deep, Y=-800. Code 1127 in the cab is the long way.",  "club",              DestGroup::Underworld, true  },
 
 { "crash",        "The Crash Site",           "Where the ship came down, off the +Z breach face.",                     "",                  DestGroup::Planet,     true  },
 { "city",         "The City",                 "The streamed metropolis region, out past the apron.",                   "",                  DestGroup::Planet,     true  },
