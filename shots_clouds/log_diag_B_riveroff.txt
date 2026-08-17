@@ -1,0 +1,235 @@
+[INFO]  X3Engine starting...
+[INFO]  [boot] static init + args                     +     2.2 ms  (t=     2.2 ms)
+[INFO]  headless mode: rendering offscreen (no window / no swapchain) at 1280x720
+[INFO]  [boot] glfw init + window                     +     8.4 ms  (t=    10.6 ms)
+[INFO]  [rhi] VALIDATION: layers=OFF sync-validation=OFF  <-- NO VUID CHECKING: a '0 VUID' result from this run is MEANINGLESS  <-- NO SYNC CHECKING: missing barriers will NOT be reported
+[INFO]  [boot] rhi: vk instance                       +   167.2 ms  (t=   177.8 ms)
+[INFO]  [rhi] RT: ray-query SUPPORTED (+ position fetch) — RT AO/reflections/DDGI available
+[INFO]  [boot] rhi: phys-device select                +     1.7 ms  (t=   179.5 ms)
+[INFO]  [cull] dedicated compute queue available (family 2) — Tier 1 eligible
+[INFO]  [rhi] device ready: NVIDIA GeForce RTX 5090 (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing) [HEADLESS: offscreen target, no surface/swapchain]
+[INFO]  [boot] rhi: instance+device                   +   144.8 ms  (t=   324.2 ms)
+[INFO]  [rhi] pipeline cache: WARM — loaded 2644541 bytes from D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\build\bin\Release\x3pipeline.cache
+[INFO]  [rhi] GPU timestamp queries enabled (timestampPeriod=1.000000 ns/tick)
+[INFO]  [boot] rhi: swapchain+frames+shadow           +     3.2 ms  (t=   327.4 ms)
+[INFO]  [rhi] RT soft-shadow mesh pipelines ready (mesh_rt.frag: inline ray-query sun + point shadows)
+[INFO]  [rhi] GPU-driven mesh pipeline ready (bindless textures + per-object SSBO + multidraw-indirect)
+[INFO]  [rhi] planet body pipeline ready (push-constant model + bindless triplanar PBR)
+[INFO]  [rhi] translucent glass pipeline ready (transparent pass)
+[INFO]  [rhi] directional shadow pipeline ready (2048^2 depth, depth-only, PCF compare sampler)
+[INFO]  [cull] tier 1 [mesh-shader capable]
+[INFO]  [cull] Tier 1 async-compute path READY (timeline semaphore + compute pools)
+[INFO]  [cull] D15 GPU cull ready (caps tier 1, r_cullpath gates the path)
+[INFO]  [cull] HZB pyramid ready: 640x360 mips=10
+[INFO]  [boot] rhi: core pipelines (createGraphics)   +    39.5 ms  (t=   367.0 ms)
+[INFO]  [rhi] HUD font role Console/HudMono -> Consolas (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Consolas.ttf) [monospace]
+[INFO]  [rhi] HUD font role Title -> Orbitron-Bold (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Orbitron\static\Orbitron-Bold.ttf) [proportional]
+[INFO]  [rhi] HUD font role Menu -> SpaceGrotesk-Medium (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Space_Grotesk\static\SpaceGrotesk-Medium.ttf) [proportional]
+[INFO]  [rhi] HUD font role Enemy -> Tektur_Condensed-Bold (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Tektur\static\Tektur_Condensed-Bold.ttf) [proportional]
+[INFO]  [rhi] HUD font role News -> SpaceMono-Bold (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Space_Mono\SpaceMono-Bold.ttf) [monospace]
+[INFO]  [rhi] HUD fonts: 5/5 role atlases baked from TTF
+[INFO]  [rhi] HUD 2D pipeline ready (NDC quads + TTF/bitmap glyph atlas, alpha-blended, no depth)
+[INFO]  [boot] rhi: hud (font atlas + pipelines)      +    16.4 ms  (t=   383.4 ms)
+[INFO]  [rhi] analytic sky pipeline ready (full-screen tri, far-depth, depth-test no-write)
+[INFO]  [rhi] IBL ready (env 256 + irradiance 32 + prefilter 128/5mip + BRDF LUT 256, split-sum)
+[INFO]  [boot] rhi: sky+ibl objects                   +     1.7 ms  (t=   385.1 ms)
+[INFO]  [rhi] volumetric light scattering pipeline ready (sun shafts + point-light haze)
+[INFO]  [rhi] HDR post pipeline ready (R16G16B16A16_SFLOAT scene + 5-mip bloom + TAA resolve + ACES composite)
+[INFO]  [rhi] velocity pre-pass ready (RG16F per-object motion vectors -> TAA)
+[INFO]  [rhi] SSAO ready (half-res 32-tap hemisphere + depth-aware blur, depth-reconstruction)
+[INFO]  [rhi] water pipeline ready (Gerstner grid, sky-reflection + depth-refraction + sun glint)
+[INFO]  [rhi] particle + decal pipelines ready (instanced billboards, additive/alpha, soft vs scene depth)
+[INFO]  [rhi] GPU-compute debris world ready (compute integrate + instanced cube draw, capacity 65536)
+[INFO]  [rhi] GPU compute skinning ready (compute LBS pre-pass into per-frame skinned vbo)
+[INFO]  [boot] rhi: post/ssao/gi/fx pipelines         +     7.9 ms  (t=   393.0 ms)
+[INFO]  [rt] acceleration-structure module ready (ray-query inline RT)
+[INFO]  [rhi] boot precompile: 59 pipelines total (8 RT-chain) in 6.8 ms (warm cache) — rtao=1 refl=1 ddgi=1; no pipeline may be created after frame 1
+[INFO]  [boot] rhi: RT precompile                     +     4.1 ms  (t=   397.1 ms)
+[INFO]  --world tunnel: terrain-corridor bore demo
+[INFO]  tunnel corridor: 'demo ridge' registered — 640 m spine, roofed YES
+[INFO]  tunnel corridor: CUT-AND-COVER — 1 corridor, 32 nodes, 640 m, floor 10.1/14.0 | road 15.4..16.7 m | max cut 152.2 m | ROOFED s=89..542 (453 m), of which the natural hillside alone covers s=100..532 (432 m) and the rest is the cut-and-cover extension | road under earth: 0.0 m (worst ground-above-road -0.10 m — negative is the trench floor sitting under the slab, which is correct)
+[INFO]  road 'inner tour': horizontal flow — 436 -> 642 nodes, max deflection 8.9 -> 3.0 deg/node (cap 3.0), tightest bend 264 m (floor 250 m), 0 nodes eased
+[INFO]  road 'inner tour': 16.14 miles, 642 nodes -> 21 chained corridors | max grade 7.0% | deepest cut 48 ft | road elevation 15..126 ft
+[INFO]  road 'inner tour': vertical flow — max grade-rate 0.01045/m (K 1.0) before, 0.00050/m (K 20.0) after smoothing (spec cap 0.00050/m, K 20.0)
+[INFO]  road 'inner tour': DUAL CARRIAGEWAY — 2 x 8 lanes, median half 1.1..12.0 m (10.4 miles open median, rest jersey-walled), carve span up to 373 ft, STILL 21 corridors (one chain — the dual profile costs no registry)
+[INFO]  road 'outer tour': horizontal flow — 803 -> 998 nodes, max deflection 20.8 -> 4.9 deg/node (cap 3.0), tightest bend 85 m (floor 150 m), 20 nodes eased
+[INFO]  tunnel corridor: 'North Flank Tunnel' registered — 1780 m spine, roofed YES
+[INFO]  tunnel corridor: 'North Massif Tunnel' registered — 3134 m spine, roofed YES
+[INFO]  tunnel corridor: 'Crystal North Tunnel' registered — 1469 m spine, roofed YES
+[INFO]  tunnel corridor: 'Crystal Saddle Tunnel' registered — 747 m spine, roofed YES
+[INFO]  tunnel corridor: 'Crystal Descent Tunnel' registered — 2781 m spine, roofed YES
+[INFO]  road 'outer tour': 30.75 miles, 998 nodes -> 30 chained corridors | max grade 7.0% | deepest cut 144 ft | road elevation 16..663 ft (+ gaps)
+[INFO]  road 'outer tour': vertical flow — max grade-rate 0.02083/m (K 0.5) before, 0.01561/m (K 0.6) after smoothing (spec cap 0.00050/m, K 20.0)
+[INFO]  outer tour: 30.75 miles (24.59 driven in daylight, 6.16 in 5 bores) | worst open cut 144 ft
+[INFO]  road 'spawn connector': horizontal flow — 58 -> 62 nodes, max deflection 3.9 -> 2.9 deg/node (cap 3.0), tightest bend 641 m (floor 250 m), 0 nodes eased
+[INFO]  road 'spawn connector': 2.16 miles, 62 nodes -> 2 chained corridors | max grade 7.0% | deepest cut 31 ft | road elevation 13..85 ft
+[INFO]  road 'spawn connector': vertical flow — max grade-rate 0.00225/m (K 4.4) before, 0.00050/m (K 20.0) after smoothing (spec cap 0.00050/m, K 20.0)
+[INFO]  spawn connector: closes a 3224 m (10579 ft) gap — exit (-888, -230, y 16.7) -> ring node 295 (-4131, 1145, y 19.8) | 2.16 miles, pin deficit 0.00 ft, end datums 0.00/0.00 ft off their pins
+[INFO]  road 'range circuit': horizontal flow — 110 -> 239 nodes, max deflection 37.1 -> 6.9 deg/node (cap 7.0), tightest bend 61 m (floor 60 m), 23 nodes eased
+[INFO]  road 'range circuit': 3.58 miles, 239 nodes -> 8 chained corridors | max grade 7.0% | deepest cut 74 ft | road elevation 23..112 ft
+[INFO]  road 'range circuit': vertical flow — max grade-rate 0.02042/m (K 0.5) before, 0.00052/m (K 19.3) after smoothing (spec cap 0.00050/m, K 20.0)
+[INFO]  road 'circuit access': 0.18 miles, 7 nodes -> 1 chained corridors | max grade 2.6% | deepest cut 43 ft | road elevation 74..79 ft
+[INFO]  road 'circuit access': vertical flow — max grade-rate 0.00270/m (K 3.7) before, 0.00050/m (K 20.0) after smoothing (spec cap 0.00050/m, K 20.0)
+[INFO]  range circuit: 3.58 miles lap off connector node 20 (side -1) | longest straight 839 m, hairpin 152 deg, climb 89 ft | access 291 m, pin deficits 0.00 / 0.00 ft | junctions: connector (-1936, 73) -> circuit (-1776, 440)
+[WARN]  summit spur: SKIPPED — no local peak with >= 115 ft prominence within reach of the connector
+[INFO]  road 'summit spur': horizontal flow — 54 -> 54 nodes, max deflection 0.2 -> 0.2 deg/node (cap 14.0), tightest bend 99999 m (floor 25 m), 0 nodes eased
+[INFO]  road 'summit spur': horizontal flow — 53 -> 53 nodes, max deflection 0.7 -> 0.7 deg/node (cap 14.0), tightest bend 3134 m (floor 25 m), 0 nodes eased
+[INFO]  road 'summit spur': horizontal flow — 53 -> 53 nodes, max deflection 1.3 -> 1.3 deg/node (cap 14.0), tightest bend 1812 m (floor 25 m), 0 nodes eased
+[INFO]  road 'summit spur': horizontal flow — 54 -> 54 nodes, max deflection 0.4 -> 0.4 deg/node (cap 14.0), tightest bend 6348 m (floor 25 m), 0 nodes eased
+[INFO]  road 'summit spur': horizontal flow — 53 -> 53 nodes, max deflection 0.4 -> 0.4 deg/node (cap 14.0), tightest bend 5346 m (floor 25 m), 0 nodes eased
+[INFO]  road 'summit spur': horizontal flow — 44 -> 44 nodes, max deflection 1.2 -> 1.2 deg/node (cap 14.0), tightest bend 1994 m (floor 25 m), 0 nodes eased
+[INFO]  road 'summit spur': horizontal flow — 53 -> 53 nodes, max deflection 0.6 -> 0.6 deg/node (cap 14.0), tightest bend 3117 m (floor 25 m), 0 nodes eased
+[INFO]  road 'summit spur': 1.44 miles, 53 nodes -> 2 chained corridors | max grade 14.0% | deepest cut 35 ft | road elevation 27..349 ft
+[INFO]  road 'summit spur': vertical flow — max grade-rate 0.00423/m (K 2.4) before, 0.00160/m (K 6.2) after smoothing (spec cap 0.00160/m, K 6.2)
+[INFO]  summit spur: 1.44 miles UP — climbs 246 ft to a 347 ft peak at (393, 6752), tops out -1.4 ft under the true summit | max grade 14.0% (cap 14%) | switchback angle 0 deg, 53 nodes, 2 corridors | junction at (-101, 4439)
+[INFO]  road 'outer connector': horizontal flow — 53 -> 57 nodes, max deflection 3.3 -> 2.4 deg/node (cap 3.0), tightest bend 754 m (floor 250 m), 0 nodes eased
+[INFO]  road 'outer connector': 1.96 miles, 57 nodes -> 2 chained corridors | max grade 6.7% | deepest cut 23 ft | road elevation 15..70 ft
+[INFO]  road 'outer connector': vertical flow — max grade-rate 0.00222/m (K 4.5) before, 0.00050/m (K 20.0) after smoothing (spec cap 0.00050/m, K 20.0)
+[INFO]  outer connector: the tour is no longer an island (narrowest gap anywhere was 2545 m / 8349 ft) — inner node 121 (1012, 3888, y 7.9) -> tour node 188 (3422, 6100, y 15.1), a 3272 m crossing taking 1.96 miles of road. Chosen for FIT, not shortness: worst cut-or-fill 27 ft against the natural hillside. Max grade 6.7%, pin deficit 0.00 ft, end datums 0.00/0.00 ft off their pins.
+[INFO]  --world tunnel: corridor registry 78 of 192 used
+[INFO]  [tunnel] map: 19 road overlay polyline(s) staged
+[INFO]  tunnel rooms: carved ground enters the entry stub 8.5 ft above its floor -> terrain hole registered (prism 7 ft long, half-width 14.8 ft, ceiling 8.0 ft)
+[INFO]  tunnel rooms: carved ground enters the hall 8.5 ft above its floor -> terrain hole registered (prism 39 ft long, half-width 13.1 ft, ceiling 8.0 ft)
+[INFO]  tunnel rooms: carved ground enters the plant room 11.4 ft above its floor -> terrain hole registered (prism 30 ft long, half-width 19.7 ft, ceiling 10.5 ft)
+[INFO]  tunnel rooms: carved ground enters the hall 5.6 ft above its floor -> terrain hole registered (prism 39 ft long, half-width 13.1 ft, ceiling 8.0 ft)
+[INFO]  tunnel rooms: carved ground enters the signal equipment room 8.9 ft above its floor -> terrain hole registered (prism 23 ft long, half-width 17.2 ft, ceiling 8.0 ft)
+[INFO]  tunnel rooms: carved ground enters the ramp 14.7 ft above its floor -> terrain hole registered (prism 87 ft long, half-width 19.7 ft, ceiling 16.4 ft)
+[INFO]  tunnel rooms: carved ground enters the garage 23.0 ft above its floor -> terrain hole registered (prism 100 ft long, half-width 31.3 ft, ceiling 24.0 ft)
+[INFO]  [csm] --world tunnel: cascades ON over 400 m of view depth
+[INFO]  [rhi] terrain material: albedo idx 1/2/3/4 (+high 5)  normal idx 6/7/8/9 (grass/rock/snow/sand; 0 = none)
+[INFO]  [stream] init at tile (103,-9) radius=14 (max resident 841 tiles); jobs=async
+[INFO]  [surface-lib] 'cc_cement_white' albedo 0.732983 linear is OUT OF BAND -> value tint x0.545715 (VALUE, NOT LUMENS)
+[WARN]  [surface-lib] set 'rd_asphalt_01' incomplete under D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets/surface_library
+[WARN]  tunnel corridor: surface_library set(s) unavailable — falling back to the procedural checker concrete/asphalt
+[INFO]  tunnel garage: dressed as LATE NIGHT SPEED — CMU walls, glossy checker floor, industrial ceiling, neon (219 letter cells; kit: app/lns_shop.h)
+[INFO]  tunnel rooms: 15 spaces behind 4 of 4 doors | worst cover 110 ft
+[INFO]  tunnel fitout: 1 lay-bys, 5 signs, 2 screens, 4 doors, 1 SOS | walkway 3.0 ft deck, kerb 1.0 ft, band to 8.7 ft
+[INFO]  tunnel corridor: backfill lid 453 m x 58.2 m, 6644 quads, splat=TERRAIN MARKER
+[INFO]  tunnel corridor: approach cuttings retained — 0 wall stations (splaying 10.1 -> 11.0 m off centre at the portals)
+[INFO]  tunnel corridor: bore 459 m | 30 emissive strips @15 m | 12 REAL point lights (BL's every-3rd-strip ratio would want 11 — see BL_WORLD_PORT.md 4.4)
+[INFO]  tunnel corridor: backfill cover over the shell = 1.20 m worst at s=89 (negative == lid inside the bore) | GROUND ON THE ROADWAY = 0.0 m of road, worst -0.10 m at s=396 (negative == clear, which is the fix)
+[INFO]  tunnel corridor AABB 'demo ridge': x[-890.8..-292.9] y[-32.0..175.8] z[-483.0..-222.0] | extent 597.9 x 207.8 x 261.0 m | chord centre (-592.0, -352.0) halfLen 320.0
+[WARN]  [surface-lib] set 'rd_asphalt_01' incomplete under D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets/surface_library
+[WARN]  road ribbon: surface set(s) unavailable - flat colour fallback
+[INFO]  road 'inner tour': work zone at u 6493 m — 13 cones tapering the outside lane over 150 m, 3 drums at the head
+[INFO]  road ribbon 'inner tour': 16.14 miles DUAL | 12 meshes, 157332 quads, 2211 fine stations | 2 x (8 x 12 ft lanes + 4 ft shoulders + 20 ft aprons) = 2 x 144 ft paved, median 2.2..24.0 m | 46 median wall runs, 17 turnarounds | 915 rail + 317 jersey offside segments | 13 cones, 3 drums
+[WARN]  road ribbon: surface set(s) unavailable - flat colour fallback
+[INFO]  road ribbon 'spawn connector': 2.16 miles | 7 meshes, 9007 quads, 237 fine stations | 4 x 12 ft lanes + 4 ft shoulders + 20 ft aprons = 96 ft paved | 63 guardrail segments (min drop railed 2.1 m) | 42 jersey-wall segments (ditch band, min drop 0.6 m)
+[WARN]  road ribbon: surface set(s) unavailable - flat colour fallback
+[INFO]  road ribbon 'range circuit': 3.58 miles | 7 meshes, 20637 quads, 693 fine stations | 4 x 12 ft lanes + 4 ft shoulders + 20 ft aprons = 96 ft paved | 158 guardrail segments (min drop railed 2.0 m) | 149 jersey-wall segments (ditch band, min drop 0.6 m)
+[WARN]  road ribbon: surface set(s) unavailable - flat colour fallback
+[INFO]  road ribbon 'circuit access': 0.18 miles | 7 meshes, 627 quads, 19 fine stations | 4 x 12 ft lanes + 4 ft shoulders + 20 ft aprons = 96 ft paved | 1 guardrail segments (min drop railed 2.9 m) | 7 jersey-wall segments (ditch band, min drop 0.8 m)
+[WARN]  road ribbon: surface set(s) unavailable - flat colour fallback
+[INFO]  road ribbon 'summit spur': 1.44 miles | 7 meshes, 5935 quads, 156 fine stations | 4 x 12 ft lanes + 4 ft shoulders + 20 ft aprons = 96 ft paved | 54 guardrail segments (min drop railed 2.8 m) | 37 jersey-wall segments (ditch band, min drop 0.6 m)
+[WARN]  road ribbon: surface set(s) unavailable - flat colour fallback
+[INFO]  road ribbon 'outer tour': 24.58 miles | 7 meshes, 102934 quads, 3534 fine stations | 4 x 12 ft lanes + 4 ft shoulders + 20 ft aprons = 96 ft paved | 889 guardrail segments (min drop railed 2.0 m) | 384 jersey-wall segments (ditch band, min drop 0.6 m)
+[WARN]  tunnel corridor: surface_library set(s) unavailable — falling back to the procedural checker concrete/asphalt
+[INFO]  tunnel garage: dressed as LATE NIGHT SPEED — CMU walls, glossy checker floor, industrial ceiling, neon (219 letter cells; kit: app/lns_shop.h)
+[INFO]  tunnel rooms: 15 spaces behind 4 of 7 doors | worst cover 46 ft
+[INFO]  tunnel fitout: 3 lay-bys, 11 signs, 4 screens, 7 doors, 3 SOS | walkway 3.0 ft deck, kerb 1.0 ft, band to 8.7 ft
+[INFO]  tunnel corridor: backfill lid 850 m x 58.2 m, 12496 quads, splat=TERRAIN MARKER
+[INFO]  tunnel corridor: approach cuttings retained — 0 wall stations (splaying 10.1 -> 11.0 m off centre at the portals)
+[INFO]  tunnel corridor: bore 856 m | 57 emissive strips @15 m | 12 REAL point lights (BL's every-3rd-strip ratio would want 20 — see BL_WORLD_PORT.md 4.4)
+[INFO]  tunnel corridor: backfill cover over the shell = 1.20 m worst at s=132 (negative == lid inside the bore) | GROUND ON THE ROADWAY = 0.0 m of road, worst -0.31 m at s=638 (negative == clear, which is the fix)
+[INFO]  tunnel corridor AABB 'North Flank Tunnel': x[-28.8..1724.3] y[94.3..239.3] z[6858.9..7246.7] | extent 1753.1 x 145.1 x 387.9 m | chord centre (844.9, 7057.7) halfLen 890.0
+[WARN]  tunnel corridor: surface_library set(s) unavailable — falling back to the procedural checker concrete/asphalt
+[INFO]  tunnel garage: dressed as LATE NIGHT SPEED — CMU walls, glossy checker floor, industrial ceiling, neon (219 letter cells; kit: app/lns_shop.h)
+[INFO]  tunnel rooms: 15 spaces behind 4 of 19 doors | worst cover 54 ft
+[INFO]  tunnel fitout: 7 lay-bys, 30 signs, 10 screens, 19 doors, 7 SOS | walkway 3.0 ft deck, kerb 1.0 ft, band to 8.7 ft
+[INFO]  tunnel corridor: backfill lid 2310 m x 58.2 m, 33880 quads, splat=TERRAIN MARKER
+[INFO]  tunnel corridor: approach cuttings retained — 12 wall stations (splaying 10.1 -> 11.0 m off centre at the portals)
+[INFO]  tunnel corridor: bore 2316 m | 154 emissive strips @15 m | 12 REAL point lights (BL's every-3rd-strip ratio would want 52 — see BL_WORLD_PORT.md 4.4)
+[INFO]  tunnel corridor: backfill cover over the shell = 1.20 m worst at s=2318 (negative == lid inside the bore) | GROUND ON THE ROADWAY = 0.0 m of road, worst -0.07 m at s=156 (negative == clear, which is the fix)
+[INFO]  tunnel corridor AABB 'North Massif Tunnel': x[-3380.3..-283.8] y[38.0..330.6] z[6689.3..7266.6] | extent 3096.4 x 292.6 x 577.2 m | chord centre (-1832.2, 6980.5) halfLen 1567.2
+[WARN]  tunnel corridor: surface_library set(s) unavailable — falling back to the procedural checker concrete/asphalt
+[INFO]  tunnel garage: dressed as LATE NIGHT SPEED — CMU walls, glossy checker floor, industrial ceiling, neon (219 letter cells; kit: app/lns_shop.h)
+[INFO]  tunnel rooms: 15 spaces behind 4 of 11 doors | worst cover 58 ft
+[INFO]  tunnel fitout: 4 lay-bys, 17 signs, 6 screens, 11 doors, 4 SOS | walkway 3.0 ft deck, kerb 1.0 ft, band to 8.7 ft
+[INFO]  tunnel corridor: backfill lid 1335 m x 58.2 m, 19580 quads, splat=TERRAIN MARKER
+[INFO]  tunnel corridor: approach cuttings retained — 0 wall stations (splaying 10.1 -> 11.0 m off centre at the portals)
+[INFO]  tunnel corridor: bore 1341 m | 89 emissive strips @15 m | 12 REAL point lights (BL's every-3rd-strip ratio would want 30 — see BL_WORLD_PORT.md 4.4)
+[INFO]  tunnel corridor: backfill cover over the shell = 1.20 m worst at s=110 (negative == lid inside the bore) | GROUND ON THE ROADWAY = 0.0 m of road, worst -0.47 m at s=445 (negative == clear, which is the fix)
+[INFO]  tunnel corridor AABB 'Crystal North Tunnel': x[-7255.9..-6746.7] y[47.5..191.2] z[1091.9..2497.2] | extent 509.1 x 143.7 x 1405.3 m | chord centre (-7002.9, 1793.1) halfLen 734.4
+[WARN]  tunnel corridor: surface_library set(s) unavailable — falling back to the procedural checker concrete/asphalt
+[INFO]  tunnel garage: dressed as LATE NIGHT SPEED — CMU walls, glossy checker floor, industrial ceiling, neon (219 letter cells; kit: app/lns_shop.h)
+[INFO]  tunnel rooms: 15 spaces behind 4 of 5 doors | worst cover 34 ft
+[INFO]  tunnel fitout: 2 lay-bys, 7 signs, 2 screens, 5 doors, 2 SOS | walkway 3.0 ft deck, kerb 1.0 ft, band to 8.7 ft
+[INFO]  tunnel corridor: backfill lid 580 m x 58.2 m, 8536 quads, splat=TERRAIN MARKER
+[INFO]  tunnel corridor: approach cuttings retained — 0 wall stations (splaying 10.1 -> 11.0 m off centre at the portals)
+[INFO]  tunnel corridor: bore 586 m | 39 emissive strips @15 m | 12 REAL point lights (BL's every-3rd-strip ratio would want 14 — see BL_WORLD_PORT.md 4.4)
+[INFO]  tunnel corridor: backfill cover over the shell = 1.20 m worst at s=65 (negative == lid inside the bore) | GROUND ON THE ROADWAY = 0.0 m of road, worst -0.68 m at s=493 (negative == clear, which is the fix)
+[INFO]  tunnel corridor AABB 'Crystal Saddle Tunnel': x[-7407.0..-7296.0] y[125.4..241.4] z[-101.3..642.7] | extent 111.0 x 116.0 x 743.9 m | chord centre (-7353.2, 269.3) halfLen 373.7
+[WARN]  tunnel corridor: surface_library set(s) unavailable — falling back to the procedural checker concrete/asphalt
+[INFO]  tunnel garage: dressed as LATE NIGHT SPEED — CMU walls, glossy checker floor, industrial ceiling, neon (219 letter cells; kit: app/lns_shop.h)
+[INFO]  tunnel rooms: 15 spaces behind 4 of 10 doors | worst cover 40 ft
+[INFO]  tunnel fitout: 4 lay-bys, 16 signs, 6 screens, 10 doors, 4 SOS | walkway 3.0 ft deck, kerb 1.0 ft, band to 8.7 ft
+[INFO]  tunnel corridor: backfill lid 1258 m x 58.2 m, 18480 quads, splat=TERRAIN MARKER
+[INFO]  tunnel corridor: approach cuttings retained — 77 wall stations (splaying 10.1 -> 11.0 m off centre at the portals)
+[INFO]  tunnel corridor: bore 1264 m | 84 emissive strips @15 m | 12 REAL point lights (BL's every-3rd-strip ratio would want 29 — see BL_WORLD_PORT.md 4.4)
+[INFO]  tunnel corridor: backfill cover over the shell = 1.20 m worst at s=1356 (negative == lid inside the bore) | GROUND ON THE ROADWAY = 0.0 m of road, worst -0.89 m at s=1870 (negative == clear, which is the fix)
+[INFO]  tunnel corridor AABB 'Crystal Descent Tunnel': x[-7422.0..-6802.9] y[21.3..238.0] z[-3057.7..-322.1] | extent 619.1 x 216.8 x 2735.6 m | chord centre (-7112.3, -1690.4) halfLen 1390.6
+[WARN]  road ribbon: surface set(s) unavailable - flat colour fallback
+[INFO]  road ribbon 'outer connector': 1.96 miles | 7 meshes, 8226 quads, 217 fine stations | 4 x 12 ft lanes + 4 ft shoulders + 20 ft aprons = 96 ft paved | 59 guardrail segments (min drop railed 2.0 m) | 38 jersey-wall segments (ditch band, min drop 0.7 m)
+[INFO]  [gltf] loaded nature/PoplarTree001.glb in 346.5 ms (prims=3 mats=3 anims=0)
+[INFO]  [env-art] node/material skip on nature/PoplarTree001.glb: 3 -> 2 primitives
+[INFO]  [env-art] loaded nature/PoplarTree001.glb — 2 drawables; baseColorTex=2 mr=0 normal=2; materials=3 mat0.baseColor.r=1.000000
+[INFO]  road_trees: 10 trees (0 oak, 10 poplar) in 2 groves along 640 m of road (65 positions rejected)
+[INFO]  tunnel interior: 4 service doors, 4 opening onto a program (15 spaces, 20 entities of the Tier-A budget of 40); least rock over any room ceiling 110 ft
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded Vehicles/CTR.glb in 27.0 ms (prims=52 mats=19 anims=0)
+[INFO]  [gltf] orphaned COLLISION PROXY mesh 'Collider' not rendered (parent it in the asset to use it as a hull)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded Vehicles/M3_E36.glb in 9.9 ms (prims=26 mats=26 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded Vehicles/E30.glb in 11.2 ms (prims=42 mats=42 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded Vehicles/Coupe.glb in 7.9 ms (prims=19 mats=19 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded Vehicles/Muscle.glb in 16.3 ms (prims=34 mats=18 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded Vehicles/Skyline_by_BUMSTRUM.glb in 3.9 ms (prims=6 mats=2 anims=0)
+[INFO]  garage: 6 vehicle(s) parked in the bay
+[INFO]  [tunnel] SPAWN at (3300.8, 4.2, -276.3)
+[INFO]  [vehicle] grip 1.600000 -> long peak 1.920000, lat peak 1.920000 / plateau 1.600000
+[INFO]  [vehicle] gearbox: 6 gears [3.154000, 2.150000, 1.560000, 1.242000, 1.024000, 0.821000]  final 4.600000  shift up 7050.000000 / down 2475.000000  switchTime 0.280000 latency 0.550000  redline 7500.000000  inertia 0.350000
+[INFO]  [gltf] loaded Vehicles/CTR.glb in 12.0 ms (CACHED: prims=52 mats=19 anims=0)
+[INFO]  [gltf] orphaned COLLISION PROXY mesh 'Collider' not rendered
+[INFO]  [audio] miniaudio up: 48000 Hz, 6 ch
+[INFO]  [engine_note] bank online: 6 RPM points x on-load/overrun + noise bed
+[INFO]  [audio] RT-acoustics reverb chain up (Schroeder 4-comb/2-allpass insert)
+[INFO]  [tunnel] engine note online
+[INFO]  [tunnel] 1 plant-room hum(s) running
+[INFO]  --world tunnel: shot cam=(-301.9, 280.0, -472.2) yaw=2.749 pitch=-0.720
+[INFO]  [boot] FIRST FRAME (world build complete)     +  3688.1 ms  (t=  4085.2 ms)
+[INFO]  [rhi] reflection DENOISE stage ON (edge-aware a-trous)
+[INFO]  [csm] ON -> 4 cascades, lambda 0.75, distance 400 m, splits 27.1/60.7/131.4/400.0 m, half-extents 37.3/83.6/181.0/550.9 m
+[INFO]  [boot] ibl first bake: 2.8 ms (incl. pending upload retire)
+[INFO]  [tlas-db] TLAS double-buffer: builds=64 deviceWaits=1 (waits/1000builds=15; boot=1, steady=0) lastBuildCpu=0.024ms ring=3-slot
+[INFO]  [cloud-perf] shots_clouds/diag_B_riveroff.png: gpu=0.756 ms (avg of last 60 settle frames)
+[INFO]  [rhi] captureFrame: wrote shots_clouds/diag_B_riveroff.png (1280x720)
+[INFO]  --world tunnel: wrote shots_clouds/diag_B_riveroff.png
+[WARN]  [worldmap] : cannot open
+[INFO]  [worldmap] 0 POIs from ``
+[INFO]  [worldmap] terrain underlay baked 512x512 (covers 15235 x 16017 m) in 91.10 ms
+[INFO]  [pacing] SPIKE frame=201 cpu=253.83ms (median 0.94) gpu=0.75ms | pso+0 mod+0 pools+0 allocs+2 asbuild+1
+[INFO]  [rhi] captureFrame: wrote shots_wmap/01_overview.png (1280x720)
+[INFO]  [tunnel] map/HUD proof: wrote shots_wmap/01_overview.png
+[INFO]  [pacing] SPIKE frame=204 cpu=169.54ms (median 0.94) gpu=0.71ms | pso+0 mod+0 pools+0 allocs+0 asbuild+0
+[INFO]  [rhi] captureFrame: wrote shots_wmap/02_drive.png (1280x720)
+[INFO]  [tunnel] map/HUD proof: wrote shots_wmap/02_drive.png
+[INFO]  [pacing] SPIKE frame=207 cpu=131.90ms (median 0.94) gpu=0.71ms | pso+0 mod+0 pools+0 allocs+0 asbuild+0
+[INFO]  [rhi] captureFrame: wrote shots_wmap/03_waypoint.png (1280x720)
+[INFO]  [tunnel] map/HUD proof: wrote shots_wmap/03_waypoint.png
+[INFO]  [pacing] SPIKE frame=210 cpu=132.57ms (median 0.94) gpu=0.71ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [rhi] captureFrame: wrote shots_wmap/04_chevron.png (1280x720)
+[INFO]  [tunnel] map/HUD proof: wrote shots_wmap/04_chevron.png
+[INFO]  [pacing] SPIKE frame=213 cpu=209.62ms (median 0.94) gpu=0.76ms | pso+0 mod+0 pools+0 allocs+0 asbuild+0
+[INFO]  [rhi] captureFrame: wrote shots_wmap/04b_chevron_behind.png (1280x720)
+[INFO]  [tunnel] map/HUD proof: wrote shots_wmap/04b_chevron_behind.png
+[INFO]  [pacing] SPIKE frame=216 cpu=208.59ms (median 0.94) gpu=0.89ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [rhi] captureFrame: wrote shots_wmap/05_dashed_bore.png (1280x720)
+[INFO]  [tunnel] map/HUD proof: wrote shots_wmap/05_dashed_bore.png
+[INFO]  [env-art] destroy(): GPU resources released
+[INFO]  [stream] shutdown: created=88 destroyed=88 (no leak)
+[INFO]  [rhi] pipeline cache: saved 2644541 bytes (this boot compiled 59 pipelines in 6.8 ms; loaded 2644541 bytes)
+[INFO]  [rhi] VMA shutdown leak check: live allocationCount=0 (expect 0)
