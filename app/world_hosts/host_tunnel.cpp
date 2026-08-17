@@ -1503,6 +1503,8 @@ int hostTunnel(HostContext& hc) {
         // Live trims for Jake's placement, so a wrong-facing or sunk rig is a
         // console line to diagnose instead of a rebuild: degrees added to his
         // travel yaw, metres added to his measured ground compensation.
+        con->registerCVar("wx_precip_mult", "1.6",
+            "precipitation density multiplier (raises how much of the particle pool a given rain/snow state uses)");
         con->registerCVar("jake_yaw", "0", "Jake facing trim, degrees (rig-forward correction)");
         con->registerCVar("jake_y",   "0", "Jake height trim, metres (on top of the measured armature offset)");
         // ENGINE NOTE A/B: 1 = the multi-RPM bank (default), 0 = the legacy
@@ -1695,7 +1697,7 @@ int hostTunnel(HostContext& hc) {
             precipKind = ws.snowfall ? x3::game::PrecipKind::Snow
                                      : (ws.precipitation > 0.0f ? x3::game::PrecipKind::Rain
                                                                 : x3::game::PrecipKind::None);
-            precipAmt  = ws.precipitation;
+            precipAmt  = std::min(1.0f, ws.precipitation * console->getFloat("wx_precip_mult"));
 
         }
         double mx, my; glfwGetCursorPos(window, &mx, &my);

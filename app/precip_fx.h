@@ -54,8 +54,8 @@ struct PrecipConfig {
     float heightM       = 34.0f;
     // Particle budget at full intensity. Snow needs fewer than rain because
     // each flake is bigger and lingers.
-    uint32_t maxSnow    = 900;
-    uint32_t maxRain    = 1600;
+    uint32_t maxSnow    = 2400;   // 'Rain hardly drops a drip' — was 900; a storm needs a SKY of it
+    uint32_t maxRain    = 5200;   // was 1600 — a few hundred live drops read as almost nothing
     // Fall speeds, m/s. Snow terminal velocity is genuinely about 1.2 m/s and
     // rain about 9 -- the gap is most of why they read as different weather.
     float snowFallMps   = 1.25f;
@@ -66,7 +66,7 @@ struct PrecipConfig {
     // Billboard half-extent at the NEAR face and at the FAR face, metres.
     float snowNearSize  = 0.075f;
     float snowFarSize   = 0.022f;
-    float rainNearSize  = 0.030f;
+    float rainNearSize  = 0.042f;
     float rainFarSize   = 0.010f;
 };
 
