@@ -105,6 +105,16 @@ constexpr float kFwyMedianWallHalfM = 3.0f;   // below this half-width the media
 constexpr float kFwyDualMaxHalfM  = kFwyMedianMaxHalfM + 2.0f * kFwyPavedHalfM + 1.0f;
 constexpr float kFwyTurnaroundSpacingM = 1700.0f;  // ~1.5-2 km, Tim's turnarounds
 constexpr float kFwyTurnaroundLenM     = 42.0f;    // paved crossover length along the route
+// THE MAP'S TRUE FREEWAY WIDTH (W-MAP residual, W-FREEWAY handoff): the full
+// dual cross-section (both 8-lane carriageways + the widest graded median),
+// for staging MapRouteOverlay::widthM on a `dualCarriageway` route. Without
+// this the map fell back to MapRouteOverlay's generic single-carriageway
+// default (26.8 m / 88 ft) for the INNER TOUR too — a freeway drawn at HALF
+// its real footprint (and missing the median entirely). The median narrows
+// in cuts/fills at runtime, so this is the WIDEST the road ever gets, not a
+// per-node truth — same "err toward the visible extent" call the carve
+// half-width already makes for the same reason.
+constexpr float kFwyDualWidthM = 2.0f * kFwyDualMaxHalfM;   // ~114 m widest, vs. the old 26.8 m
 
 // One authored route: a centreline in world XZ. Y is derived from the terrain.
 struct RoadSpec {
@@ -266,6 +276,22 @@ void     noteRoadJunction(float x, float z);
 void     clearRoadJunctions();
 uint32_t roadJunctionCount();
 float    distToNearestRoadJunction(float x, float z);   // 1e9 if none noted
+
+// ---------------------------------------------------------------------------
+// INTERCHANGE ZONES — a GRADE-SEPARATED junction is the opposite of an
+// at-grade one: crossing traffic goes OVER on a deck and joins by RAMP, so
+// the freeway must NOT get a median crossover there. planTurnarounds() drops
+// a crossover at every noted junction landing (right for a side road meeting
+// the freeway at grade — crossing traffic needs its gap) and every ~1.7 km of
+// rhythm; both would put a median U-turn beside an off-ramp. A zone noted
+// here suppresses BOTH kinds of crossover within its radius. Registered by
+// registerInterchange(); cleared by clearRoadJunctions() — the two registries
+// have the same lifecycle (a zone without its ramps' junction notes is
+// meaningless), so one clear call clears both (NO_SLOP rule 4).
+// ---------------------------------------------------------------------------
+void  noteInterchangeZone(float x, float z, float radiusM);
+bool  inInterchangeZone(float x, float z);
+uint32_t interchangeZoneCount();
 
 // How far back from a main road's centreline a branch's terminal node sits;
 // the junction mouth (ruled twist + the swooping merge fillets) owns this

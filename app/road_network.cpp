@@ -277,10 +277,25 @@ void gradeRoad(const std::vector<float>& natural, const std::vector<float>& segL
 namespace {
 struct JctPoint { float x, z; };
 std::vector<JctPoint>& jctPoints() { static std::vector<JctPoint> v; return v; }
+struct IcZone { float x, z, r; };
+std::vector<IcZone>& icZones() { static std::vector<IcZone> v; return v; }
 } // namespace
 
 void noteRoadJunction(float x, float z) { jctPoints().push_back({ x, z }); }
-void clearRoadJunctions() { jctPoints().clear(); }
+// Clears BOTH registries — an interchange zone without its ramps' junction
+// notes is meaningless, so the lifecycles are one (see road_network.h).
+void clearRoadJunctions() { jctPoints().clear(); icZones().clear(); }
+void noteInterchangeZone(float x, float z, float radiusM) {
+    icZones().push_back({ x, z, radiusM });
+}
+bool inInterchangeZone(float x, float z) {
+    for (const IcZone& zn : icZones()) {
+        const float dx = x - zn.x, dz = z - zn.z;
+        if (dx * dx + dz * dz < zn.r * zn.r) return true;
+    }
+    return false;
+}
+uint32_t interchangeZoneCount() { return (uint32_t)icZones().size(); }
 uint32_t roadJunctionCount() { return (uint32_t)jctPoints().size(); }
 float distToNearestRoadJunction(float x, float z) {
     float best = 1e9f;
@@ -2649,12 +2664,31 @@ std::vector<RoadTurnaround> planTurnarounds(const RoadSpec& spec) {
             if (a < iv.b + 60.0f && b > iv.a - 60.0f) return true;
         return false;
     };
+    // INTERCHANGE SUPPRESSION (see noteInterchangeZone): position on the
+    // route at arc length u, for the zone test. A median U-turn beside an
+    // off-ramp is a defect, not a feature — the ramp junction notes on a
+    // grade-separated crossing must NOT earn the crossover an at-grade side
+    // road's landing earns, and the rhythm must skip the zone too.
+    auto posAtU = [&](float u, float& px, float& pz) {
+        size_t i = 0;
+        while (i + 2 < n && U[i + 1] < u) ++i;
+        const float span = std::max(1e-4f, U[i + 1] - U[i]);
+        const float t = std::max(0.0f, std::min(1.0f, (u - U[i]) / span));
+        px = spec.x[i] + (spec.x[i + 1] - spec.x[i]) * t;
+        pz = spec.z[i] + (spec.z[i + 1] - spec.z[i]) * t;
+    };
+    auto inZoneAtU = [&](float u) {
+        if (interchangeZoneCount() == 0) return false;
+        float px, pz; posAtU(u, px, pz);
+        return inInterchangeZone(px, pz);
+    };
     const float half = kFwyTurnaroundLenM * 0.5f;
     auto addAt = [&](float c) {
         float a = c - half, b = c + half;
         if (a < 0.0f)   { a = 0.0f; b = kFwyTurnaroundLenM; }
         if (b > total)  { b = total; a = total - kFwyTurnaroundLenM; }
         if (blocked(a, b)) return;
+        if (inZoneAtU(0.5f * (a + b))) return;   // no crossover inside a ramp pair
         for (const RoadTurnaround& t : out)
             if (a < t.u1 + 120.0f && b > t.u0 - 120.0f) return;
         out.push_back({ a, b });
@@ -2748,7 +2782,14 @@ void buildRoadRenderPath(const RoadSpec& spec, const std::vector<float>* roadY,
             // base), and the promise is "up to ~20 m on true straights".
             const float dm = std::max(defl[k], defl[k + 1]);
             nSub = std::max((int)std::ceil(len / 18.0f), (int)std::ceil(dm / 0.75f));
-            nSub = std::min(nSub, std::max(1, (int)std::ceil(len / 6.0f)));
+            // Station floor 1.5 m, not 6: the interchange ramps ride 48 m
+            // loops whose polyline bottoms out at the 4 m subdivision floor —
+            // 4 m chords on a 49 m radius facet at 5.2 deg (measured, gate
+            // I5), and a 6 m station floor cannot fix what the node spacing
+            // already lost. 1.5 m chords on the same radius read 1.8 deg.
+            // Routes without tight bends emit exactly what they always did
+            // (the deflection term only exceeds len/6 where dm > len * 0.125).
+            nSub = std::min(nSub, std::max(1, (int)std::ceil(len / 1.5f)));
             nSub = std::max(1, nSub);
         }
         const size_t i0 = ctrl((long)k - 1), i3 = ctrl((long)k + 2);
@@ -3107,10 +3148,16 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
             // traffic is on the other carriageway, so there is NO double
             // yellow anywhere. Solid edges, dashed interior lines (40 ft
             // cycle, 60% duty, cut as true duty windows in u).
-            for (int lane = 0; lane <= lanes && spec.laneMarkings; ++lane) {
+            // PAIRED with widthScale (NO_SLOP rule 4): the geometry above
+            // scales by wS but a LANE is still 12 ft — a half-width ramp is
+            // TWO 12 ft lanes, not four 6 ft ones. Painted lane count derives
+            // from the scaled running width so the last edge line lands ON
+            // the pavement edge; wS == 1 reproduces every existing route.
+            const int paintLanes = std::max(1, (int)std::round((float)lanes * wS));
+            for (int lane = 0; lane <= paintLanes && spec.laneMarkings; ++lane) {
                 const float latLA = cA - runHalf + (float)lane * laneM;
                 const float latLB = cB - runHalf + (float)lane * laneM;
-                const bool edge = (lane == 0 || lane == lanes);
+                const bool edge = (lane == 0 || lane == paintLanes);
                 if (!edge) {
                     const float cycle = 12.19f;         // 40 ft
                     const float duty  = 0.6f;
@@ -3314,6 +3361,8 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
                 const RoadRenderStation st = stAtU(std::max(0.0f, std::min(total, uu)));
                 if (st.gap) ok = false;
                 if (distToNearestRoadJunction(st.x, st.z) < 90.0f) ok = false;
+                // not under an overpass deck / beside a ramp gore either
+                if (inInterchangeZone(st.x, st.z)) ok = false;
             }
             if (ok) { uWz = cand; break; }
         }
@@ -3577,7 +3626,15 @@ RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
     // the kJctSetbackM run exists for.
     // ... complete by the MAIN pavement's edge — which on a divided freeway is
     // the NEAR CARRIAGEWAY's outer apron edge, not the centreline profile.
-    const float twistRun = std::max(2.0f, setb - j.mainPavedEdgeM);
+    // OBLIQUE BRANCHES (the interchange ramps, ~50 deg to the freeway): the
+    // patch runs along the BRANCH axis, so it reaches the main pavement at
+    // v = setb - pavedEdge/sin(angle), not setb - pavedEdge — on a 50 deg
+    // ramp that is ~13 m earlier, and a twist still in progress there laps
+    // the pavement COPLANAR (z-fight) and half-twisted. Divide by the sine.
+    // A perpendicular branch has sin ~= 1 and is unchanged.
+    const float sinA = std::max(0.35f,
+        std::fabs(dx * j.mainTZ - dz * j.mainTX));
+    const float twistRun = std::max(2.0f, setb - j.mainPavedEdgeM / sinA);
     auto heightAt = [&](float u, float v) {
         // world point of (u,v)
         const float wx = j.endX + dx * v + pxd * u;

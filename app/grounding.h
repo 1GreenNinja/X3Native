@@ -718,6 +718,39 @@ inline bool runGroundingSelfTest() {
         physics->optimizeBroadphase();
     }
 
+    // ---- G12: THE APRON SPAWN (ONE WORLD landing, feat/canon-apron-landing) --
+    // The intro's flyable outcomes now land the player ON the canon apron ring:
+    // a static concrete slab whose collision TOP is flush with the walk datum
+    // (FacilityExterior ring apron; the canon grade is baseY = -2 m, terrain.cpp
+    // kPads[0]). A landing authored AT the datum must be LEFT ALONE; one
+    // authored at the legacy surface-world grade (a metre high) must be dropped
+    // ONTO the apron; and the apron is CONCRETE — feet may not enter it.
+    {
+        const float apronY = -2.0f;                       // the canon walk datum
+        physics->addBox(x3::phys::Vec3{ 12.0f, 0.25f, 12.0f },
+                        x3::phys::Vec3{ 80.0f, apronY - 0.25f, 0.0f },
+                        0.0f, x3::phys::Layer::Static);   // ring slab, top flush
+        physics->optimizeBroadphase();
+        GroundProbe g;
+        const x3::phys::Vec3 onDatum = groundCharacter(*physics,
+            x3::phys::Vec3{ 80.0f, apronY, 0.0f }, 0.0f, "G12/apron-spawn",
+            "grounding.h:G12", SurfaceType::Concrete, false, &g);
+        gcheck(g.found && approx(g.surfaceY, apronY),
+               "G12 APRON: the ring top probes at the canon grade (-2.000)");
+        gcheck(approx(onDatum.y, apronY),
+               "G12 APRON SPAWN: a landing authored ON the datum is LEFT ALONE");
+        const x3::phys::Vec3 dropped = groundCharacter(*physics,
+            x3::phys::Vec3{ 80.0f, apronY + 1.0f, 0.0f }, 0.0f, "G12/legacy-grade",
+            "grounding.h:G12", SurfaceType::Concrete);
+        gcheck(approx(dropped.y, apronY),
+               "G12 a spawn authored a metre high (the legacy surface grade) is "
+               "dropped ONTO the apron");
+        gcheck(!surfaceIsPenetrable(SurfaceType::Concrete) &&
+               assertFeetNotInFloor("G12", apronY, g, "grounding.h:G12") &&
+               !assertFeetNotInFloor("G12", apronY - 0.05f, g, "grounding.h:G12"),
+               "G12 the apron is CONCRETE: on it holds, 5 cm into it FIRES");
+    }
+
     physics->shutdown();
     x3::logInfo("[grounding-test] " + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
