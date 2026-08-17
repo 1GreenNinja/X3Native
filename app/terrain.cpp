@@ -219,20 +219,25 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
 
     // Corridor influence near this tile — gathered up front because BOTH the
     // corridor x tile-LOD refinement below AND the ridge filter in the grid
-    // loop consult it. X3_NO_CORRIDOR_LOD_REFINE=1 is the A/B instrument
-    // (mirroring X3_NO_VCURVE): it reproduces the pre-fix mesh so the wedge
-    // can be MEASURED from one build. Nothing else should ever set it.
+    // loop consult it.
     // Gather pad = one coarse cell + 0.5 m: the far-field clamp below also
     // tests the RING of cells just outside the tile (a border vertex's clamp
     // must see the same hot cells from both sides of a seam), so segments
     // reaching only that ring must be in the list too. Harmless for the exact
     // path — cellHot() still measures true distance.
-    static const bool kRefineDisabled = [] {
-        const char* e = std::getenv("X3_NO_CORRIDOR_LOD_REFINE");
-        return e && e[0] == '1';
-    }();
+    //
+    // THE GATHER IS UNCONDITIONAL, and that is deliberate. The list feeds two
+    // consumers with different natures: the refine (a PERF/quality choice, and
+    // so legitimately A/B-able) and the ridge filter's corridor exclusion (a
+    // SAFETY invariant — never raise a vertex over a carved road, the M7/C7/W1b
+    // green-strip gates). This used to be gathered only when the refine was
+    // enabled, which quietly tied the safety property to a debug env var:
+    // X3_NO_CORRIDOR_LOD_REFINE=1 emptied the list, un-scoped the ridge filter,
+    // and let it raise terrain over the roadway — so the one instrument meant to
+    // MEASURE the wedge could manufacture one. The env var now gates only
+    // `refineOn` below; the exclusion always sees the real corridors.
     std::vector<TerrainCorridorSegRef> hotSegs;
-    if (!kRefineDisabled && lod != TerrainLod::Full && terrainCorridorCount() > 0)
+    if (lod != TerrainLod::Full && terrainCorridorCount() > 0)
         terrainCorridorSegmentsNearRect(ox - cell - 0.5f, oz - cell - 0.5f,
                                         ox + tileSize + cell + 0.5f,
                                         oz + tileSize + cell + 0.5f,
