@@ -2110,12 +2110,23 @@ void TerrainStreamer::generate(const TerrainConfig& cfg, int32_t gx, int32_t gz,
     out.centerX = out.originX + cfg.tileSize * 0.5f;
     out.centerZ = out.originZ + cfg.tileSize * 0.5f;
 
+    // A/B instrument, third of the set (X3_NO_CORRIDOR_LOD_REFINE=1 drops the
+    // refine entirely, X3_NO_CORRIDOR_PIN=1 drops the Full-LOD pin): with
+    // X3_NO_REFINE_SCOPE=1 the streamer passes NO focus, so every tile builds
+    // the EXACT refine at any range — the pre-task-#33 mesher, reproduced from
+    // this same build so the far-field clamp's triangle/fps saving can be
+    // MEASURED rather than argued (NO_SLOP rule 9). Nothing else sets it.
+    static const bool kNoRefineScope = [] {
+        const char* e = std::getenv("X3_NO_REFINE_SCOPE");
+        return e && e[0] == '1';
+    }();
     const float focusXZ[2] = { focusX, focusZ };   // corridor-refine scope
+    const float* focusPtr = kNoRefineScope ? nullptr : focusXZ;
     uint32_t surfIdx = 0;   // LOD0 surface index count (holes may shrink it)
     for (int l = 0; l < (int)TerrainLod::Count; ++l) {
         buildTileMeshAbs(cfg, out.originX, out.originZ, (TerrainLod)l,
                          out.lodVerts[l], out.lodIdx[l],
-                         l == 0 ? &surfIdx : nullptr, focusXZ);
+                         l == 0 ? &surfIdx : nullptr, focusPtr);
     }
 
     // Collision: LOD0 top surface only (first vpe*vpe verts / surfIdx indices).
