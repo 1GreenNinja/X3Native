@@ -46,11 +46,17 @@ public:
     // CAR GLB (CTR: 1.81 x 1.3 x 4.3 m, wheel stations from the model); 4 wheels
     // (front steered, rear powered + handbrake). Returns false if the controller
     // failed. build() = buildPhysics() + the graybox render meshes.
+    // `spec` (app/carspec.h) supplies the PER-CAR variables — mass, centre of
+    // mass, torque, redline, flywheel, gearing, curve, grip, brakes, springs.
+    // nullptr keeps the shipped hero-car figures EXACTLY, so every existing
+    // call site is unchanged and the CTR spec applying as a no-op is a
+    // testable property rather than a hope (--test-carspec C12).
     bool build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-               float x, float y, float z);
+               float x, float y, float z, const struct CarSpec* spec = nullptr);
 
     // Physics-only build (no render device) — the headless self-test path.
-    bool buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y, float z);
+    bool buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y, float z,
+                      const struct CarSpec* spec = nullptr);
 
     // HERO-CAR SKIN: load the converted vehicle GLB (clearcoat paint + emissive
     // lights) and render IT instead of the graybox box+cylinders. The GLB's

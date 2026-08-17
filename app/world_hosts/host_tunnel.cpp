@@ -23,6 +23,7 @@
 #include "../road_network.h"
 #include "../river_bridge.h"
 #include "../vehicle.h"
+#include "../carspec.h"                  // the PER-CAR table (mass/torque/curve/voice)
 #include "../mesh_prims.h"
 #include "../asset_root.h"
 #include "engine/audio/IAudioSystem.h"   // ENGINE NOTE: RPM-driven loop
@@ -585,8 +586,23 @@ int hostTunnel(HostContext& hc) {
     float parkedAt[3]  = { 0, 0, 0 };   // where the car was left, for the re-entry prompt
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
+    // THE CAR IS NOW BUILT FROM ITS SPEC (app/carspec.h). The fleet entry
+    // selects the GLB, and the SAME entry now selects the mass, centre of
+    // mass, torque, redline, flywheel, gearing, curve, grip, brakes and
+    // springs -- so switching cars changes how it DRIVES and how it SOUNDS,
+    // not just what it looks like. Tim: "Every car gets the method, with its
+    // own variables."
     x3::game::DriveDemo car;
-    const bool carBuilt = car.build(*device, *phys, startPos[0], startPos[1] + 1.4f, startPos[2]);
+    const x3::game::CarCatalog& carCat = x3::game::CarCatalog::game();
+    const x3::game::CarSpec* carSpec = carCat.forGlb(kFleet[fleetSel].file);
+    if (!carSpec) {
+        // A GLB with no spec would silently inherit the hero car's figures --
+        // today's bug, just moved. Say so rather than driving a lie.
+        x3::logWarn(std::string("[tunnel] no CarSpec for ") + kFleet[fleetSel].file +
+                    " — falling back to the shipped hero-car figures");
+    }
+    const bool carBuilt = car.build(*device, *phys, startPos[0], startPos[1] + 1.4f,
+                                    startPos[2], carSpec);
     if (carBuilt) {
         // E46_New, not CTR. Tim asked for a seat, a passenger seat, a dash and a
         // steering wheel; CTR is an exterior shell -- 34 nodes, none of them
@@ -599,7 +615,10 @@ int hostTunnel(HostContext& hc) {
         //
         // Checking the pack BEFORE modelling anything is the whole lesson of
         // today: the interior did not need building, it needed finding.
-        car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/E46_New.glb");
+        // Driven off fleetSel rather than a literal, so the skin and the spec
+        // can never disagree about which car this is. fleetSel starts at 0 ==
+        // E46_New, so this is the same car it has always been.
+        car.skin(*device, x3::game::convertedGlbRoot(), kFleet[fleetSel].file);
         // E46_New is the INTERIOR car: Seats, Dashboard, SteeringWheel,
         // Interior, GearHandle and a pair of emissive Needle_KM / Needle_RPM
         // gauges. Same Wheel_FL/FR/RL/RR names and the same misspelled `Buttom`
@@ -947,6 +966,38 @@ int hostTunnel(HostContext& hc) {
             car.applyTuning(t);
             con->print("car back to the shipped 993 Turbo numbers");
         }, "restore the stock vehicle tune");
+        // ---- THE PER-CAR TABLE, on the console ---------------------------
+        // `cars` lists the roster in Tim's units; `car_load <id>` retunes the
+        // running rig to another car's variables. This is the proof the table
+        // is WIRED and not merely authored — the failure mode this codebase
+        // hits over and over is a correct module nothing ever reads.
+        con->registerCommand("cars", [&](const std::vector<std::string>&) {
+            char l[224];
+            for (const x3::game::CarSpec& c : carCat.all()) {
+                if (c.glb.empty()) continue;      // handling target, no art yet
+                std::snprintf(l, sizeof(l),
+                    "  %-8s %-9s %5.0f ft-lb @ %5.0f rpm  %5.0f lb  CoM %4.1f in  grip %.2f%s",
+                    c.id.c_str(), c.name.c_str(),
+                    (double)(c.torqueNm * 0.737562f), (double)c.maxRpm,
+                    (double)(c.massKg * 2.20462f), (double)(c.comHeight * 39.3701f),
+                    (double)c.gripScale, (c.id == (carSpec ? carSpec->id : "")) ? "  <- driving" : "");
+                con->print(l);
+            }
+        }, "list the per-car table (ft-lb / rpm / lb / CoM inches)");
+        con->registerCommand("car_load", [&](const std::vector<std::string>& a) {
+            if (a.size() < 2) { con->print("usage: car_load <id>   (see `cars`)"); return; }
+            const x3::game::CarSpec* s = carCat.find(a[1]);
+            if (!s) { con->print("no such car: " + a[1] + " — try `cars`"); return; }
+            car.applyTuning(s->asTuning());
+            carSpec = s;                       // the VOICE follows too
+            char l[192];
+            std::snprintf(l, sizeof(l),
+                "%s: %.0f ft-lb @ %.0f rpm, %.0f lb, grip %.2f "
+                "(body/track/CoM need a rebuild — that is the garage's job)",
+                s->name.c_str(), (double)(s->torqueNm * 0.737562f), (double)s->maxRpm,
+                (double)(s->massKg * 2.20462f), (double)s->gripScale);
+            con->print(l);
+        }, "retune the running car to another entry in the per-car table");
         con->registerCommand("car", [&](const std::vector<std::string>&) {
             char b[256];
             std::snprintf(b, sizeof(b),
@@ -1292,7 +1343,14 @@ int hostTunnel(HostContext& hc) {
         // seamless through gearchanges.
         if (audioOn && engineLoop.valid() && carBuilt) {
             const float rpm    = car.audioRPM();
-            const float redline = 7500.0f;                       // matches vd.maxEngineRPM
+            // PER-CAR VOICE. These three constants used to be literals tuned to
+            // the flat-six (redline 7500, rpm/1071, idle 0.75), which is the
+            // whole reason Tim heard "an E46 making Porsche noises": the engine
+            // note was hardcoded, so changing the GLB changed nothing audible.
+            // They now come from the driven car's spec. For the CTR they
+            // resolve to exactly the old numbers (7500 / 1071.4 / 0.75), so the
+            // hero car's voice is unchanged to the sample.
+            const float redline = carSpec ? carSpec->maxRpm : 7500.0f;
             const float frac   = std::min(1.0f, std::max(0.0f, rpm / redline));
             // PITCH tracks RPM PROPORTIONALLY — real engine-note frequency scales
             // linearly with crank speed, so the playback rate must too. The old
@@ -1303,7 +1361,7 @@ int hostTunnel(HostContext& hc) {
             // (~800) therefore sits at ~0.75x — a genuinely low idle note. If
             // that reads "rattly", the real fix is a second higher-RPM loop
             // crossfaded in, not compressing the range again.
-            const float rawPitch = rpm / 1071.0f;
+            const float rawPitch = rpm / (carSpec ? carSpec->pitchUnityRpm() : 1071.0f);
             // IDLE HOLD. A flat-six idles at a steady ~800 rpm, but the physics
             // engine has no idle governor and hunts around zero throttle — so the
             // note must NOT wobble with it. Parked + off-throttle -> fixed idle
@@ -1311,7 +1369,7 @@ int hostTunnel(HostContext& hc) {
             // tracks rpm again (overrun still follows rpm, as it should).
             const bool idling = (car.throttleInput() < 0.01f &&
                                  std::fabs(car.forwardSpeed()) < 1.0f);
-            const float pitch = idling ? 0.75f : rawPitch;
+            const float pitch = idling ? (carSpec ? carSpec->idlePitch : 0.75f) : rawPitch;
 
             // VOLUME follows LOAD, not speed. Tim, 2026-08-15: "In a real car..
             // engine tone shifts with load.. and load changes with torque, and

@@ -424,6 +424,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testWetness  = o.testWetness;
         _tf.testStorm    = o.testStorm;
         _tf.testPrecip   = o.testPrecip;
+        _tf.testCarSpec  = o.testCarSpec;
         _tf.testTunnelFitout = o.testTunnelFitout;
         _tf.testTunnelRooms = o.testTunnelRooms;
         _tf.testEcology = o.testEcology;

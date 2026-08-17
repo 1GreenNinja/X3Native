@@ -108,6 +108,7 @@ struct TestFlags {
     bool testWetness = false;// wetness lane: rain soak/dry asymmetry, ice hysteresis, tire grip
     bool testStorm   = false;// storm lane: lightning flash shape + thunder travel delay
     bool testPrecip  = false;// precip lane: falling snow/rain, camera-local volume
+    bool testCarSpec = false;// vehicle lane: the PER-CAR character table (one method, eleven variable sets)
     bool testTunnelFitout = false;// tunnel lane: bore interior program placement
     bool testTunnelRooms = false;// tunnel lane: rooms/halls/stairs behind the service doors
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)

@@ -156,6 +156,7 @@
 #include "wetness.h"
 #include "storm.h"
 #include "precip_fx.h"
+#include "carspec.h"             // x3::game::runCarSpecSelfTest (--test-carspec)
 #include "tunnel_fitout.h"
 #include "tunnel_rooms.h"        // x3::game::runTunnelRoomsSelfTest (--test-tunnelrooms)
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
@@ -1111,6 +1112,14 @@ int dispatchTests(const TestFlags& tf) {
                     "(EoS arch-glow bake varies + fixture census + light complement + "
                     "deep-core brightest + teardown)...");
         return x3::game::runMineFxSelfTest() ? 0 : 1;
+    }
+    if (tf.testCarSpec) {
+        x3::logInfo("running PER-CAR CHARACTER TABLE self-test "
+                    "(eleven cars fully specified + curves ascend + the roster genuinely "
+                    "DISAGREES with itself + Tim's rollover thesis + the truck inverts the "
+                    "sports car + voices differ + applyTo/asTuning actually wire + every "
+                    "fleet GLB resolves + a malformed cars.json degrades to the built-in)...");
+        return x3::game::runCarSpecSelfTest() ? 0 : 1;
     }
     if (tf.testTunnelFitout) {
         x3::logInfo("running TUNNEL INTERIOR FITOUT self-test "

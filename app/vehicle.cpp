@@ -4,6 +4,7 @@
 // IVehicleController). Clean-room.
 
 #include "vehicle.h"
+#include "carspec.h"        // CarSpec — the per-car variables this build applies
 
 #include "engine/core/x3_log.h"
 
@@ -98,17 +99,57 @@ constexpr float kBodyWiden = 1.18f;
 // ===========================================================================
 // DriveDemo
 // ===========================================================================
-bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y, float z) {
+bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y, float z,
+                             const CarSpec* spec) {
     m_physics = &physics;
+
+    // ---- PER-CAR VARIABLES (app/carspec.h). ----------------------------
+    // Everything below defaults to the shipped hero-car figures; a non-null
+    // `spec` replaces them. The CTR row of the table is deliberately set to
+    // these exact values, so passing the CTR spec changes nothing at all —
+    // which is what keeps two days of tuning-by-ear safe from this feature.
+    float hx = m_hx, hy = m_hy, hz = m_hz;
+    float massKg   = 1083.2f;
+    float comOffY  = -0.30f;
+    float gripPow  = 10.0f, gripFree = 8.0f;
+    float brakeNm  = 2200.0f;
+    float suspFreq = 2.2f, suspDamp = 0.7f;
+    if (spec) {
+        // halfExtents[0] is the car's TRUE body half-width; kBodyWiden is the
+        // STANCE widening applied to the render body, and the collision box has
+        // to follow it or the bodywork hangs outside its own collision. That is
+        // already why the shipped m_hx is 1.07 and not the GLB's 0.907 — taking
+        // the spec figure literally would have narrowed the hero car's box by
+        // 21%, and nothing short of a close screenshot would have shown it.
+        hx = spec->halfExtents[0] * kBodyWiden;
+        hy = spec->halfExtents[1]; hz = spec->halfExtents[2];
+        massKg = spec->massKg;
+        // The box CENTRE sits ~0.76 m up on the hero car (half-height 0.50 plus
+        // its ride height), and the shipped -0.30 offset is what puts the CoM
+        // at the 0.46 m Tim settled on. Referencing the offset to that known-
+        // good pair — and letting it track a taller or shorter body — makes
+        // this reduce EXACTLY to -0.30 for the CTR while still honouring
+        // cars.json's comHeight for a lorry or a single-seater.
+        const float boxCentreH = 0.76f + (hy - 0.50f);
+        comOffY = spec->comHeight - boxCentreH;
+        // The wheel gripScale baseline is a MULTIPLE of the spec's tyre figure,
+        // not the figure itself: the shipped car runs 10.0/8.0 against a
+        // cars.json gripScale of 1.7, and that ratio is the sports-compound
+        // baseline the whole lane was tuned against.
+        const float g = spec->gripScale / 1.7f;
+        gripPow = 10.0f * g; gripFree = 8.0f * g;
+        brakeNm = spec->brakeTorque;
+        suspFreq = spec->suspFreq; suspDamp = spec->suspDamp;
+    }
 
     // --- Chassis dynamic body (a box). Layer Dynamic. ---
     // CENTER OF MASS dropped 0.30 m below the box center (new addBox param).
     // CoM height above ground goes 0.76 -> 0.46 m against a 0.677 m half-track,
     // lifting the rollover threshold from ~42 deg to ~56 — a real sports-car
     // number. This is what stops "the car still rolls" without touching grip.
-    m_chassis = physics.addBox(x3::phys::Vec3{m_hx, m_hy, m_hz},
-                               x3::phys::Vec3{x, y, z}, 1083.2f, x3::phys::Layer::Dynamic,
-                               x3::phys::Vec3{0.0f, -0.30f, 0.0f});
+    m_chassis = physics.addBox(x3::phys::Vec3{hx, hy, hz},
+                               x3::phys::Vec3{x, y, z}, massKg, x3::phys::Layer::Dynamic,
+                               x3::phys::Vec3{0.0f, comOffY, 0.0f});
     if (!m_chassis.valid()) return false;
 
     // --- 4 wheels at the HERO-CAR GLB stations (CTR, after the nose flip to the
@@ -122,11 +163,18 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // of the arches. Width belongs to the BODY (kBodyWiden below), not the track.
     // x stations are the GLB's own (+-0.677 / +-0.723) SCALED BY kBodyWiden, so
     // the wheels stay centered under the widened arches instead of poking out.
+    // PER-CAR TRACK AND WHEELBASE. The stations above are the CTR's, in metres.
+    // A lorry on a sports car's track would make cars.json's comHeight thesis a
+    // lie — the rollover threshold is atan(halfTrack / comHeight), so the track
+    // has to move with the spec or half the table does nothing. Both scales are
+    // 1.0 for the hero car by construction (1.354 / 1.95 are its own figures).
+    const float trackScale = spec ? (spec->trackM / 1.354f) : 1.0f;
+    const float baseScale  = spec ? (hz / 1.95f) : 1.0f;
     P p[4] = {
-        { -0.677f * kBodyWiden, -1.186f, true,  false, true  },   // front-left  (AWD drive)
-        {  0.677f * kBodyWiden, -1.186f, true,  false, true  },   // front-right
-        { -0.723f * kBodyWiden,  1.088f, false, true,  true  },   // rear-left  (drive)
-        {  0.723f * kBodyWiden,  1.088f, false, true,  true  },   // rear-right (drive)
+        { -0.677f * kBodyWiden * trackScale, -1.186f * baseScale, true,  false, true  },   // front-left  (AWD drive)
+        {  0.677f * kBodyWiden * trackScale, -1.186f * baseScale, true,  false, true  },   // front-right
+        { -0.723f * kBodyWiden * trackScale,  1.088f * baseScale, false, true,  true  },   // rear-left  (drive)
+        {  0.723f * kBodyWiden * trackScale,  1.088f * baseScale, false, true,  true  },   // rear-right (drive)
     };
     for (int i = 0; i < 4; ++i) {
         x3::phys::WheelDesc w;
@@ -135,10 +183,10 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
         w.position[0] = p[i].wx; w.position[1] = -0.15f; w.position[2] = p[i].wz;
         w.radius = 0.33f; w.width = 0.24f;
         w.suspensionMin = 0.15f; w.suspensionMax = 0.42f;
-        w.suspensionFreq = 2.2f; w.suspensionDamp = 0.7f;
+        w.suspensionFreq = suspFreq; w.suspensionDamp = suspDamp;
         w.steered = p[i].steer; w.handBraked = p[i].hb; w.powered = p[i].powered;
         w.maxSteerAngle = 0.5236f; // ~30deg
-        w.maxBrakeTorque = 2200.0f;
+        w.maxBrakeTorque = brakeNm;
         // Sports-car compound baseline (Jolt's default curve is a generic economy
         // tire — a 700 Nm RWD on it lives in a permanent torque-independent
         // burnout; see WheelDesc::gripScale). Shop tire tiers multiply this.
@@ -150,7 +198,7 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
         // Grip high enough that 800 Nm AWD hooks up at full throttle, so the
         // launch control has nothing to trim and the car accelerates HARD.
         // Rears carry more of a rear-engined car's weight. Live-tune: `car_grip`.
-        w.gripScale = p[i].powered ? 10.0f : 8.0f;
+        w.gripScale = p[i].powered ? gripPow : gripFree;
         m_wheels.push_back(w);
     }
     x3::phys::WheeledVehicleDesc vd;
@@ -229,6 +277,13 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     vd.curveRpm[6]=1.00f; vd.curveTq[6]=0.78f;   // sign-off
     vd.curveCount = 7;
     vd.finalDrive = 4.2f;
+    // ---- THE PER-CAR ENGINE, applied LAST so it wins. -------------------
+    // Deliberately additive rather than a rewrite of the block above: the
+    // hero car's tuning history (and every comment recording WHY each number
+    // is what it is) stays exactly where it was, and this lane does not
+    // collide with the vehicle-feel work landing on the same lines from the
+    // 14900k. No spec -> not one byte of the above changes.
+    if (spec) spec->applyTo(vd);
     // Wheel rays filter on Dynamic (the chassis layer): Jolt's vehicle object filter
     // is the COLLISION MATRIX, and Dynamic-vs-Static collides, so a Dynamic-masked
     // ray hits the Static ground. (Static-vs-Static does NOT collide — a Static mask
@@ -240,9 +295,9 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
 }
 
 bool DriveDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-                      float x, float y, float z) {
+                      float x, float y, float z, const CarSpec* spec) {
     m_device = &device;
-    if (!buildPhysics(physics, x, y, z)) return false;
+    if (!buildPhysics(physics, x, y, z, spec)) return false;
 
     // --- Render meshes ---
     std::vector<x3::rhi::MeshVertex> cv; std::vector<uint32_t> ci;

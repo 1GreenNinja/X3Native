@@ -50,6 +50,7 @@ struct CliOptions {
          testWetness = false,   // --test-wetness: rain soak/dry, ice hysteresis, tire grip
          testStorm   = false,   // --test-storm: lightning flash shape + thunder travel delay
          testPrecip  = false,   // --test-precip: falling snow/rain, camera-local volume
+         testCarSpec = false,      // --test-carspec: the PER-CAR character table (11 cars, one method)
          testTunnelFitout = false, // --test-tunnelfitout: bore interior program placement
          testTunnelRooms = false,  // --test-tunnelrooms: what is BEHIND the service doors
          testFootIk = false,
