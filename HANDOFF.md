@@ -21,37 +21,51 @@ Gates, all green on the merged tree: tunnelmouth 8/8, terraincorridor 16/16,
 tunnelfitout 14/14, tunnelrooms 16/16, routeframe 4/4, tunneldrive 10/10,
 roadnetwork 58/58, summitlot 9/9. Boot zero `[ERROR]`, 163–168 fps / 6.0–6.1 ms.
 
-## THE LOOP — why it is not built, stated plainly
+## THE LOOP — the missing leg is a DIRT RIDGE ROAD
 
-It is not a coding task yet, it is a **geometry** problem, and the previous two
-agents both filed it as an open question without measuring it. Measured now:
+**I got this wrong the first time and Tim corrected it.** I measured the gap
+between the bore and the lot, called 7 km "too far", and filed the loop as a
+geometry blocker needing the lot moved onto the bore's own massif. Tim:
 
-* the demo bore is at **(-592, -352)**; the garage hangs off it.
-* `registerSummitSpur` hill-climbs from the connector and lands its peak at
-  **(393, 6752)** — a **349 ft** knoll. The lot sits on it.
-* those two points are **~7.1 km apart**.
-* meanwhile the massif the demo bore actually goes *through* peaks at
-  **288.9 m / 948 ft at (-744, -850)** (tunnelmouth's own M6 diagnostic prints
-  it every run) — 200 m below the bore's own mouth, and 7 km from the lot.
+> *"7KM.. use miles.. its not far.. and you can have a road that is dirt, on top
+> of the mountains, that is that long, that is what I planned.. curving over
+> mountain features"*
 
-So "exit from garage to mountain top parking lot" cannot be a ramp: as placed,
-it is a 7 km cross-country road between two unrelated hills. **The lot is on the
-wrong mountain.** Tim's picture is obviously the mountain the tunnel bores
-through — you drive in, park on top of the thing you just drove under, and come
-down the far side into the second bore. That reading also makes the last leg
-trivial, because the far side of that massif is where the other bores are.
+**4.4 miles is the design, not the problem.** For scale it is shorter than the
+inner tour (31 miles) and three times the summit spur (1.44 miles) — this world
+is measured in miles and I was reading a metric number as if it were a walk.
+Distances in this lane belong in **miles and feet**, like every other number in
+road_network.
 
-**The fix is to bias the peak search, not to lay 7 km of road.** `registerSummitSpur`
-(road_network.cpp:1934) already takes the bore as an argument — today only to
-*avoid* it. Give it an optional attractor (the bore's own massif summit) and the
-spur climbs the right hill; then garage→lot and lot→second-bore are both short
-legs inside one mountain, at grades the 14 % switchback cap already handles.
-Cost: `registerSummitSpur` is gated by roadnetwork **K5/K6**, so re-green those,
-and re-check `--test-summitlot` L6 (it asserts the pad is within 25 ft of the
-peak the spur found, which stays true by construction).
+So the missing leg is a **long unpaved mountain-top road** running the ridge
+line between the two, curving over the mountain features rather than cutting
+through them. The endpoints, measured:
 
-Do NOT close the loop by extending a road 7 km between the current endpoints.
-That is the shape of the answer that passes a gate and reads as slop.
+* the bore / garage end: demo bore at **(-592, -352)**, and the massif it goes
+  through peaks at **948 ft at (-744, -850)**.
+* the lot end: **(397, 6774)**, datum **350 ft**, on the peak the summit spur
+  climbs to.
+* between them: **~4.4 miles** of high ground.
+
+Design constraints that follow from "dirt, on top of the mountains, curving over
+mountain features":
+
+* it must **follow the ridge**, not bee-line. A straight line between the
+  endpoints would trench every saddle it crosses; the route wants to seek high
+  ground and take the curves the terrain gives it. That is a router that steps
+  toward the goal while biasing to locally-higher ground, not a polyline.
+* **narrow and unpaved** — a dirt track's half-width, no lane paint, no jersey
+  barriers. `buildRoadRibbon` hardcodes `rd_asphalt_01`; a surface field on
+  `RoadSpec` (defaulting to today's asphalt) reuses the whole ribbon — prism,
+  batter, the D5b apron-skirt fix, barrier planning — instead of writing a
+  second, worse ribbon.
+* grades: the spur already runs a **14 %** cap with switchbacks. A ridge road
+  should not need it — following the ridge is what keeps grade down.
+* it costs terrain-corridor slots: the registry is at **87 of 192** after
+  everything else, so there is room, but a 4.4-mile road chains several.
+
+Then lot → second bore closes the loop; the outer tour's five bores are the
+candidates (`North Flank`, `North Massif`, `Crystal North/Saddle/Descent`).
 
 ## THE VOID ANNULUS — fixed, and how to check it
 
