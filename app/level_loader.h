@@ -277,11 +277,17 @@ std::vector<CanonLight> buildCanonLights(const CanonFloor& floor);
 // headroom for the flashlight's 2 lights). The closest lights to `eye` win when over the
 // cap. Appends into `out` (NOT cleared — the host inserts the flashlight first). Returns
 // the number of room lights appended.
+//
+// `excludeRoom` (doors-pass, bed rest): a ROOM whose lights are switched OFF this
+// frame (the cell while the player sleeps). Applies to room-TAGGED lights only —
+// passing kNoRoom (the default) excludes nothing, and un-roomed range-fed lights
+// (which carry kNoRoom as their tag) are never affected.
 uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
                                    const std::vector<uint32_t>& visibleRooms,
                                    float eyeX, float eyeY, float eyeZ,
                                    std::vector<x3::rhi::PointLight>& out,
-                                   uint32_t maxLights = 16);
+                                   uint32_t maxLights = 16,
+                                   uint32_t excludeRoom = kNoRoom);
 
 // The canonical source path baked into the repo's environment (the owner's project).
 // Override via the --world canonlevel arg if needed.

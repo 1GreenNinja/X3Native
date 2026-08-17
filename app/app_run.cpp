@@ -56,6 +56,7 @@
 #include "canon_45.h"                       // W5-1: LEVEL 4.5 — the Nexus Chamber (The Chorus)
 #include "stairwell.h"                      // fix/spire-hollow-core: the facility stairwell (open switchback, F1..F7)
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
+#include "bed_rest.h"                        // doors-pass: the cell-cot lie-down loop (lock + lights-out)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
 #include "facility_exterior.h"               // SEAM 2: the glass facility exterior wrapped around the REAL canon tower
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
@@ -1121,6 +1122,12 @@ int runDefaultHost(HostContext& hc) {
     x3::game::RoomDressing canonRooms;         // WAVE-3 recipe dressing for the other 52 rooms (canonWorld only)
     x3::game::FacilityExterior facilityExterior; // SEAM 2: the glass exterior wrapping the REAL tower (canonWorld only)
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
+    // ---- BED REST (doors-pass): [E] at the cell cot -> lie down, the cell door
+    // LOCKS (first consumer of the Door lock API) and the cell lights go out;
+    // E/move rises + restores. bedCellDoors = the cell's VERTICAL door slabs
+    // (the trapdoor hatch is the secret exit — never locked by sleeping). ----
+    x3::game::BedRestSystem bedRest;
+    std::vector<uint32_t>   bedCellDoors;
     // ---- Keycard / keypad door gating (canonWorld). keycardMask = bitmask of held
     // keycard ids; the Security keycard is a glowing pickup in the Research Lab. ----
     uint32_t keycardMask       = 0;
@@ -1908,6 +1915,36 @@ int runDefaultHost(HostContext& hc) {
                     return false;
                 });
             x3::boot::mark("canon floor geometry+doors");
+            // W2-A2 (doors-pass): data-driven model->sound wiring for every door
+            // model family (today all rows reference the one shipped family, so
+            // this is behaviour-identical — the mapping is the point).
+            canonDoors.wireModelSounds(audio.get(),
+                [](std::string_view p) { return x3::game::resolveAudio(std::string(p)); });
+            // ---- BED REST (doors-pass part 2): the cot in Jake's Cell. The lying
+            // eye sits over the pillow of the CellDressing hospital bed (bedX =
+            // x0+0.76, bedZ = z0+1.95, head at the -Z end — the footlocker owns
+            // +Z), staring at the ceiling along the bed toward the foot (+Z).
+            // Also collect the cell's VERTICAL doors for the lock loop — never
+            // the floor-hatch trapdoor (the secret exit stays a secret).
+            if (cbt.jakeCell != x3::game::kNoRoom) {
+                const x3::game::CanonRoom& jc = canonFloor.rooms[cbt.jakeCell];
+                const float bedX = jc.x0() + 0.76f;
+                const float bedZ = jc.z0() + 1.95f;
+                const float fY   = jc.y0();
+                bedRest.build(x3::phys::Vec3{ bedX, fY + 1.25f, bedZ - 0.65f },
+                              /*lieYaw (feet-ward, +Z)*/ 1.5707963f,
+                              /*liePitch (at the ceiling)*/ 1.25f,
+                              cbt.jakeCell, /*reach*/ 1.9f);
+                for (const x3::game::CanonDoorway& dw : canonFloor.doorways) {
+                    if (dw.a != cbt.jakeCell && dw.b != cbt.jakeCell) continue;
+                    if (dw.doorIndex == x3::game::kNoLink) continue;
+                    if (dw.doorIndex >= canonDoors.count()) continue;
+                    if (canonDoors.at(dw.doorIndex).floorHatch) continue;
+                    bedCellDoors.push_back(dw.doorIndex);
+                }
+                x3::logInfo("--world canonlevel: bed rest wired (" +
+                            std::to_string(bedCellDoors.size()) + " lockable cell door(s))");
+            }
             // Per-room ceiling lights: the data-driven floor skips the env_art Light_A
             // fixtures the legacy level registers, so without these the rooms only get
             // ambient + the flashlight (the DARK bug). We feed only the player's VISIBLE
@@ -8437,7 +8474,11 @@ int runDefaultHost(HostContext& hc) {
             const bool chatInRange =
                 chatTalkTarget(eye, x3::game::kTalkReach, chatWho, chatPos, chatCaptive);
             const bool chatHandled = chatTrees.active() || chatInRange;
-            if (chatHandled) {
+            if (canonWorld && bedRest.active()) {
+                // BED REST: while down (or on the way down), E means GET UP —
+                // nothing else may consume it. Unlock/lights ride the rise edge.
+                bedRest.interact(eye);
+            } else if (chatHandled) {
                 if (chatTrees.active()) {
                     if (chatTrees.choices().empty()) {
                         const bool still = chatTrees.advance();
@@ -8565,6 +8606,12 @@ int runDefaultHost(HostContext& hc) {
                            npcBarkTimer = 3.0f; return true;
                        }()) {
                 // canon door interaction handled inside the lambda (toggle / unlock / keypad / message)
+            } else if (canonWorld && !noclip && bedRest.built() &&
+                       !bedRest.active() && bedRest.interact(eye)) {
+                // BED REST: lie down on the cell cot. The tick block applies the
+                // lock + lights-out on the latched lie edge (aiming at the cell
+                // DOOR still wins — the door branch above consumed that E).
+                x3::logInfo("use: lying down on the cot");
             } else if (canonWorld && canonFloor.valid() && !elevator.built() &&
                        [&]() -> bool {
                            // ---- W3-2 ELEVATOR TRAVEL — FALLBACK ONLY: the REAL cab
@@ -9139,9 +9186,15 @@ int runDefaultHost(HostContext& hc) {
                     in.lookDX += arrowYaw * 1000.0f * (float)dt;   // keyboard turn rate
                 }
 
+                // BED REST: any move/jump input while down = get up (the natural
+                // exit), then swallow the movement below so the capsule never
+                // walks while the camera is on the pillow.
+                if (canonWorld && bedRest.resting() &&
+                    (in.moveFwd != 0.0f || in.moveStrafe != 0.0f || in.jumpPressed))
+                    bedRest.requestRise();
                 // Cell terminal / keypad open for typing: swallow movement + jump so the
                 // keys (WASD/Space) type into the terminal instead of walking the player.
-                if (termMode || codeMode) { in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false; in.jumpHeld = false; in.diveHeld = false; }
+                if (termMode || codeMode || (canonWorld && bedRest.active())) { in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false; in.jumpHeld = false; in.diveHeld = false; }
                 // CROUCH (hold C) / CRAWL (hold Left-Ctrl): lower the eye + slow the move.
                 // Ctrl (prone) wins over C (crouch); release both to stand. Suppressed
                 // while a console / terminal is open so typing doesn't duck the player,
@@ -9313,6 +9366,11 @@ int runDefaultHost(HostContext& hc) {
         } else {
             camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
         }
+        // BED REST (doors-pass): blend the camera toward/away from the lying pose
+        // on the dt-integrated smoothstep cursor. Identity at cursor 0, so the
+        // hand-back is seamless; no-op unless the bed loop is active.
+        if (!noclip && canonWorld && bedRest.active())
+            bedRest.camera(camX, camY, camZ, camYaw, camPitch);
         // WORLD CARS: at the wheel the camera is the drive host's chase framing
         // around the live car (yaw/pitch stay the player's look angles, so the
         // view orbits with the mouse and is continuous on exit).
@@ -9554,7 +9612,14 @@ int runDefaultHost(HostContext& hc) {
                 // OPENING-SPACE motivated lights (flickering cell tube / red alarm / cyan
                 // terminal) for the visible dressed rooms — inserted at the FRONT so the cap
                 // never drops these key lights, then the room ceiling lights fill in.
+                // BED REST (doors-pass): while the player sleeps, the cell's
+                // fixtures are OFF — both the dressing's motivated lights (the
+                // flickering cell tube) and the room's minted ceiling lights are
+                // excluded for that ONE room. bedDarkRoom is kNoRoom unless
+                // resting, so this is inert the rest of the time.
+                const uint32_t bedDarkRoom = bedRest.darkRoom();
                 for (const auto& dl : canonDressing.lights()) {
+                    if (bedDarkRoom != x3::game::kNoRoom && dl.room == bedDarkRoom) continue;
                     bool vis = false;
                     for (uint32_t v : canonVisRooms) if (v == dl.room) { vis = true; break; }
                     if (vis) fl.insert(fl.begin(), dl.light);
@@ -9562,7 +9627,7 @@ int runDefaultHost(HostContext& hc) {
                 // Cap lights at 16 closest-to-eye over the SAME visible-room set.
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    camX, camY, camZ, fl,
-                                                   canonLightBudget);
+                                                   canonLightBudget, bedDarkRoom);
                 // SEAM 2: the amber breach spill (the way-in read from the apron).
                 if (facilityExterior.built()) fl.push_back(facilityExterior.spillLight());
             }
@@ -10104,6 +10169,26 @@ int runDefaultHost(HostContext& hc) {
             // open-the-door beat entirely. Removed so E is the sole driver.)
             if (canonWorld && canonFloor.valid()) {
                 canonDoors.update(dt, scene, *physics);
+                // ---- BED REST (doors-pass): advance the lie/rise blend and apply
+                // the effect edges — lie: every vertical cell door CLOSES + LOCKS
+                // (DoorSystem::closeAndLock — the lock API's first consumer) and
+                // the cell room goes dark (light-feed exclusion below); rise:
+                // unlock (doors stay closed) + lights return. The trapdoor hatch
+                // is deliberately NOT in bedCellDoors. ----
+                bedRest.tick(dt);
+                if (bedRest.tookLieEdge())
+                    for (uint32_t di : bedCellDoors) canonDoors.closeAndLock(canonDoors.at(di));
+                if (bedRest.tookRiseEdge())
+                    for (uint32_t di : bedCellDoors) canonDoors.unlock(canonDoors.at(di));
+                // Bed prompt on the shared bark line ("[E] Lie down" in reach /
+                // "[E] Get up" while down) — the descMech prompt pattern.
+                {
+                    const std::string bedPrompt = bedRest.prompt(camPos);
+                    if (!bedPrompt.empty() &&
+                        (npcBarkTimer <= 0.0f || npcBarkText == bedPrompt)) {
+                        npcBarkText = bedPrompt; npcBarkTimer = 1.0f;
+                    }
+                }
                 // Stairwell keypad flash sequencing + the master door's
                 // auto-close/re-lock (4.5 never sits propped open).
                 if (stairwell.built())

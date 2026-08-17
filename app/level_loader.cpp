@@ -1146,7 +1146,7 @@ uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
                                   const std::vector<uint32_t>& visibleRooms,
                                   float eyeX, float eyeY, float eyeZ,
                                   std::vector<x3::rhi::PointLight>& out,
-                                  uint32_t maxLights) {
+                                  uint32_t maxLights, uint32_t excludeRoom) {
     if (all.empty() || visibleRooms.empty() || maxLights == 0) return 0;
     // Fast membership test for the (small) visible-room set.
     auto visible = [&](uint32_t room) {
@@ -1171,6 +1171,8 @@ uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
             // nearest-to-eye cap below still holds the budget.
             const float reach = cl.light.range * 2.0f;
             if (d2 > reach * reach) continue;
+        } else if (cl.room == excludeRoom) {
+            continue;   // doors-pass: the room's fixtures are switched OFF (bed rest)
         } else if (!visible(cl.room)) {
             continue;
         }
