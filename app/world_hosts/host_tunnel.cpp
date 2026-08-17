@@ -24,6 +24,7 @@
 #include "../river_bridge.h"
 #include "../vehicle.h"
 #include "../carspec.h"                  // the PER-CAR table (mass/torque/curve/voice)
+#include "../car_tune_ui.h"              // F7: sliders on the driven car's own variables
 #include "../mesh_prims.h"
 #include "../asset_root.h"
 #include "engine/audio/IAudioSystem.h"   // ENGINE NOTE: RPM-driven loop
@@ -603,6 +604,19 @@ int hostTunnel(HostContext& hc) {
     }
     const bool carBuilt = car.build(*device, *phys, startPos[0], startPos[1] + 1.4f,
                                     startPos[2], carSpec);
+
+    // F7 — THE TUNING PANEL. Tim: "We need sliders in car settings for each
+    // car to change its attributes!" It edits the DRIVEN car's own CarSpec, so
+    // the truck's numbers stay the truck's; changes apply while you drive.
+    x3::game::CarTunePanel tunePanel;
+    if (carSpec) tunePanel.bind(carCat, carSpec->id);
+    bool f7Was = false;
+    // X3_TUNE_PANEL=1 opens it at boot so the panel is REVIEWABLE from a
+    // screenshot. Without this the only way to see it is to be sitting at the
+    // machine with a hand on F7, which is how a UI ships with its text
+    // overlapping and nobody notices until the owner does.
+    if (const char* tp = std::getenv("X3_TUNE_PANEL"))
+        if (tp[0] && tp[0] != '0') tunePanel.setOpen(true);
     if (carBuilt) {
         // E46_New, not CTR. Tim asked for a seat, a passenger seat, a dash and a
         // steering wheel; CTR is an exterior shell -- 34 nodes, none of them
@@ -826,6 +840,21 @@ int hostTunnel(HostContext& hc) {
                     scene.render(*device, frame);
                     if (carBuilt) car.render(frame);
                     if (weatherOn) precip.submit(*device, frame);
+                    // THE INSTRUMENTS, IN THE CAPTURE. This path drew scene +
+                    // car + precip and no HUD at all, so every gauge in this
+                    // world was unverifiable except by driving it -- the same
+                    // "wired into only the interactive path" mistake the
+                    // comment above records for weather, one layer up. A gauge
+                    // you cannot screenshot is a gauge nobody reviews.
+                    if (weatherOn) {
+                        x3::game::drawThermometer(
+                            *device, frame, weather.sample().tempF(),
+                            x3::game::surfaceConditionName(wetness.condition()),
+                            wetness.snowDepthIn(),
+                            wetness.condition() == x3::game::SurfaceCondition::Ice);
+                    }
+                    if (tunePanel.open())
+                        tunePanel.draw(*device, frame, nullptr, nullptr);
                 }
 
                 device->endFrame(frame);
@@ -1187,6 +1216,14 @@ int hostTunnel(HostContext& hc) {
         // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
         // to the car. Without that gate E teleports you into a car you left half
         // a mile behind, which is not a vehicle so much as a summoning.
+        // F7 toggles the tuning panel. Edge-triggered like E, and gated on the
+        // console being shut so typing does not open panels behind the caret.
+        if (!shell.consoleOpen()) {
+            const bool f7 = glfwGetKey(window, GLFW_KEY_F7) == GLFW_PRESS;
+            if (f7 && !f7Was) tunePanel.toggle();
+            f7Was = f7;
+        }
+
         {
             static bool eWasDown = false;
             const bool eDown = glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
@@ -1719,6 +1756,15 @@ int hostTunnel(HostContext& hc) {
                         x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
                         d.clearcoat, d.clearcoatRough);
                 }
+            }
+
+            // THE TUNING PANEL (F7). Drawn before the gauges so the sliders sit
+            // under nothing, and serviced here rather than inside the panel
+            // because the SAVE has to write the WHOLE roster, which the host
+            // owns and the panel does not.
+            if (tunePanel.open()) {
+                tunePanel.draw(*device, frame, window, carBuilt ? &car : nullptr);
+                if (tunePanel.takeSaveRequest()) tunePanel.save(carCat);
             }
 
             // THE THERMOMETER, beside the speedo. Only when weather is running:

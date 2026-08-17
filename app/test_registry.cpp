@@ -157,6 +157,7 @@
 #include "storm.h"
 #include "precip_fx.h"
 #include "carspec.h"             // x3::game::runCarSpecSelfTest (--test-carspec)
+#include "car_tune_ui.h"         // x3::game::runCarTuneSelfTest (--test-cartune)
 #include "tunnel_fitout.h"
 #include "tunnel_rooms.h"        // x3::game::runTunnelRoomsSelfTest (--test-tunnelrooms)
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
@@ -1120,6 +1121,13 @@ int dispatchTests(const TestFlags& tf) {
                     "sports car + voices differ + applyTo/asTuning actually wire + every "
                     "fleet GLB resolves + a malformed cars.json degrades to the built-in)...");
         return x3::game::runCarSpecSelfTest() ? 0 : 1;
+    }
+    if (tf.testCarTune) {
+        x3::logInfo("running CAR TUNING PANEL self-test "
+                    "(every shipped value inside its slider range + set/get round-trip + "
+                    "an edit survives the real loader while no other car moves + the panel "
+                    "edits a COPY + units convert for display only)...");
+        return x3::game::runCarTuneSelfTest() ? 0 : 1;
     }
     if (tf.testTunnelFitout) {
         x3::logInfo("running TUNNEL INTERIOR FITOUT self-test "

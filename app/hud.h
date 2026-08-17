@@ -137,5 +137,20 @@ void drawThermometer(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
                      float tempF, const char* condition,
                      float snowInches, bool iceWarn);
 
+// ---------------------------------------------------------------------------
+// ROUND HUD PRIMITIVES — curves built from the one primitive the render API
+// actually has (drawHudQuad), as 1-pixel scanline strips.
+//
+// The HUD had no way to draw anything that was not an axis-aligned rectangle,
+// which is why Tim called the thermometer "very 1998 basic blocky": its bulb
+// was a rectangle because a rectangle was the only option. Any gauge, dial,
+// rounded panel or badge wants these — use them instead of adding another
+// square-cornered box.
+// ---------------------------------------------------------------------------
+void hudDisc(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+             float cx, float cy, float r, const float rgba[4]);
+void hudRoundRect(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                  float x, float y, float w, float h, float r, const float rgba[4]);
+
 
 } // namespace x3::game

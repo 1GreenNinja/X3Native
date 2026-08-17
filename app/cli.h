@@ -51,6 +51,7 @@ struct CliOptions {
          testStorm   = false,   // --test-storm: lightning flash shape + thunder travel delay
          testPrecip  = false,   // --test-precip: falling snow/rain, camera-local volume
          testCarSpec = false,      // --test-carspec: the PER-CAR character table (11 cars, one method)
+         testCarTune = false,      // --test-cartune: per-car tuning sliders (ranges, round-trip, save)
          testTunnelFitout = false, // --test-tunnelfitout: bore interior program placement
          testTunnelRooms = false,  // --test-tunnelrooms: what is BEHIND the service doors
          testFootIk = false,

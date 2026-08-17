@@ -358,6 +358,56 @@ void Hud::drawDamageFlash(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCo
 // (snowfield pre-dawn to desert mid-afternoon) with a little headroom, so the
 // column never pins to an end and stops meaning anything.
 // ===========================================================================
+// ---------------------------------------------------------------------------
+// ROUND HUD PRIMITIVES.
+//
+// Tim, 2026-08-16: "Your thermometer looks very 1998 basic blocky."
+//
+// He was right, and the cause was structural rather than a styling choice:
+// IRenderDevice exposes exactly ONE 2D primitive, drawHudQuad, so every gauge
+// in the game is necessarily made of axis-aligned rectangles — including the
+// thermometer's BULB, which is the one part of a thermometer everybody knows
+// is round. No amount of colour work fixes a square bulb.
+//
+// Rather than reach for a texture (which needs authoring, an upload path, and
+// a descriptor slot for what is ultimately a circle), these compose curves out
+// of the primitive that already exists: a disc is a stack of 1-pixel scanline
+// strips whose half-width is sqrt(r^2 - y^2). At HUD scale that is visually a
+// clean circle, costs a few dozen quads, needs no new render API, and works on
+// every host that can already draw a HUD.
+// ---------------------------------------------------------------------------
+void hudDisc(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+             float cx, float cy, float r, const float rgba[4]) {
+    if (r < 0.5f) return;
+    const int n = (int)std::ceil(r);
+    for (int i = -n; i <= n; ++i) {
+        const float dy = (float)i;
+        const float k  = r * r - dy * dy;
+        if (k <= 0.0f) continue;
+        const float halfW = std::sqrt(k);
+        device.drawHudQuad(frame, cx - halfW, cy + dy, halfW * 2.0f, 1.0f, rgba);
+    }
+}
+
+void hudRoundRect(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                  float x, float y, float w, float h, float r, const float rgba[4]) {
+    if (w <= 0.0f || h <= 0.0f) return;
+    r = std::min(r, std::min(w, h) * 0.5f);
+    if (r < 0.5f) { device.drawHudQuad(frame, x, y, w, h, rgba); return; }
+    // Straight middle band, then the rounded caps as scanlines so the corners
+    // curve instead of stepping.
+    device.drawHudQuad(frame, x, y + r, w, h - r * 2.0f, rgba);
+    const int n = (int)std::ceil(r);
+    for (int i = 0; i < n; ++i) {
+        const float dy = r - (float)i;                  // distance above the cap centre
+        const float k  = r * r - dy * dy;
+        const float inset = r - (k > 0.0f ? std::sqrt(k) : 0.0f);
+        device.drawHudQuad(frame, x + inset, y + (float)i, w - inset * 2.0f, 1.0f, rgba);
+        device.drawHudQuad(frame, x + inset, y + h - 1.0f - (float)i,
+                           w - inset * 2.0f, 1.0f, rgba);
+    }
+}
+
 void drawThermometer(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                      float tempF, const char* condition,
                      float snowInches, bool iceWarn) {
@@ -376,22 +426,36 @@ void drawThermometer(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     const float tubeW  = 12.0f;
     const float tubeH  = 150.0f;
     const float bulbR  = 11.0f;
-    const float x      = (float)w - 54.0f;
+    // Inset far enough that the SCALE LABELS clear the framebuffer edge. At the
+    // original 54 px the tube fitted but its numbers ran off the right of the
+    // screen — the gauge was legible only in the half nobody needed.
+    const float x      = (float)w - 92.0f;
     const float yTop   = (float)h * 0.5f - tubeH * 0.5f - 40.0f;
     const float yBot   = yTop + tubeH;
 
     const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.75f };
     const float plate [4] = { 0.02f, 0.02f, 0.03f, 0.62f };
+    const float bezel [4] = { 0.42f, 0.45f, 0.52f, 0.55f };
     const float glass [4] = { 0.16f, 0.17f, 0.20f, 0.90f };
     const float white [4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 
-    // Backing plate, sized to cover tube + bulb + the scale labels.
-    device.drawHudQuad(frame, x - 34.0f, yTop - 12.0f,
-                       tubeW + 58.0f, tubeH + bulbR * 2.0f + 30.0f, plate);
-    // Glass: the empty tube, and the bulb as a squat block beneath it.
-    device.drawHudQuad(frame, x, yTop, tubeW, tubeH, glass);
-    device.drawHudQuad(frame, x - (bulbR - tubeW * 0.5f), yBot,
-                       bulbR * 2.0f, bulbR * 1.7f, glass);
+    // Backing plate: rounded, with a hairline bezel a shade lighter along its
+    // edge. The bezel is what stops a dark panel reading as a hole in the HUD.
+    const float px0 = x - 34.0f, py0 = yTop - 14.0f;
+    // Wide enough for the tick labels on the right and the FRZ callout on the
+    // left; tall enough that the readout lines sit ON the plate, not under it.
+    const float pw  = tubeW + 92.0f, ph = tubeH + bulbR * 2.6f + 74.0f;
+    hudRoundRect(device, frame, px0 - 1.0f, py0 - 1.0f, pw + 2.0f, ph + 2.0f, 9.0f, bezel);
+    hudRoundRect(device, frame, px0, py0, pw, ph, 8.0f, plate);
+
+    // GLASS. The tube is a capsule (rounded at BOTH ends) and the bulb is a
+    // real circle that the tube runs into — the silhouette everyone recognises.
+    // The bulb centre sits below the tube foot so the two overlap into one
+    // vessel rather than reading as a lollipop.
+    const float bulbCx = x + tubeW * 0.5f;
+    const float bulbCy = yBot + bulbR * 0.55f;
+    hudRoundRect(device, frame, x, yTop, tubeW, tubeH + bulbR * 0.4f, tubeW * 0.5f, glass);
+    hudDisc(device, frame, bulbCx, bulbCy, bulbR, glass);
 
     // COLUMN COLOUR by temperature, and it is not a rainbow: cold reads as a
     // cold blue, warm as mercury red, and the crossover sits AT freezing so the
@@ -408,17 +472,38 @@ void drawThermometer(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     }
 
     // The column itself, rising from the bulb. The bulb is always FULL -- that
-    // is where the fluid lives -- so it takes the column colour too.
+    // is where the fluid lives -- so it takes the column colour too, and it is
+    // drawn as a disc inset by a pixel so a rim of glass still reads round.
     const float colH = tubeH * t01;
-    device.drawHudQuad(frame, x + 1.0f, yBot - colH, tubeW - 2.0f, colH, col);
-    device.drawHudQuad(frame, x - (bulbR - tubeW * 0.5f) + 1.0f, yBot,
-                       bulbR * 2.0f - 2.0f, bulbR * 1.7f - 1.0f, col);
+    const float colW = tubeW - 3.0f;
+    const float colX = x + 1.5f;
+    device.drawHudQuad(frame, colX, yBot - colH, colW, colH + bulbR * 0.4f, col);
+    hudDisc(device, frame, bulbCx, bulbCy, bulbR - 1.5f, col);
+    // MENISCUS: the fluid's top is a dome, not a sawn-off edge. One disc, and
+    // it is the difference between a thermometer and a progress bar.
+    if (colH > 1.0f) hudDisc(device, frame, bulbCx, yBot - colH, colW * 0.5f, col);
+
+    // GLASS SPECULAR. A narrow highlight down the left of the tube and a small
+    // catchlight on the bulb: two strokes that say "cylindrical glass" and do
+    // the work a gradient would if this layer had one.
+    const float spec[4] = { 1.0f, 1.0f, 1.0f, 0.16f };
+    device.drawHudQuad(frame, x + 2.0f, yTop + 3.0f, 2.0f, tubeH - 6.0f, spec);
+    hudDisc(device, frame, bulbCx - bulbR * 0.34f, bulbCy - bulbR * 0.34f,
+            bulbR * 0.26f, spec);
 
     // ---- the scale ------------------------------------------------------
     // Ticks every 20 F, and the FREEZE mark called out in full width and
     // labelled. It is the only number on this gauge that changes what you do.
     char lb[24];
     const float tickC[4] = { 0.62f, 0.64f, 0.70f, 0.85f };
+    // MINOR ticks every 10 F, unlabelled and short. A scale with only labelled
+    // marks reads as a chart axis; the fine ticks between them are what make it
+    // read as something machined.
+    const float minorC[4] = { 0.45f, 0.47f, 0.53f, 0.60f };
+    for (int fdeg = -10; fdeg < 110; fdeg += 20) {
+        const float p = ((float)fdeg - kMinF) / (kMaxF - kMinF);
+        device.drawHudQuad(frame, x + tubeW + 2.0f, yBot - tubeH * p, 3.0f, 1.0f, minorC);
+    }
     for (int fdeg = -20; fdeg <= 110; fdeg += 20) {
         const float p = ((float)fdeg - kMinF) / (kMaxF - kMinF);
         const float ty = yBot - tubeH * p;
@@ -436,11 +521,16 @@ void drawThermometer(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     // ---- the readout ----------------------------------------------------
     // Below the bulb: the figure, then what the ROAD is doing about it, which
     // is the consequence the number exists to predict.
-    float ty = yBot + bulbR * 1.7f + 6.0f;
+    // Anchored to the PLATE, not to the tube, so the block cannot drift off the
+    // panel; and the line advance is the glyph height plus real leading, which
+    // is what the first cut got wrong -- "snow" and "3.0 in" were overprinting
+    // each other by a couple of pixels.
+    const float rx = px0 + 9.0f;
+    float ty = bulbCy + bulbR + 9.0f;
     std::snprintf(lb, sizeof(lb), "%.0f F", tempF);
-    device.drawHudText(frame, lb, x - 26.0f + 1.0f, ty + 1.0f, kGlyphPx, shadow);
-    device.drawHudText(frame, lb, x - 26.0f, ty, kGlyphPx, white);
-    ty += kGlyphPx + 3.0f;
+    device.drawHudText(frame, lb, rx + 1.0f, ty + 1.0f, kGlyphPx, shadow);
+    device.drawHudText(frame, lb, rx, ty, kGlyphPx, white);
+    ty += kGlyphPx + 5.0f;
 
     if (condition && condition[0]) {
         // ICE is the one condition that gets its own colour, because it is the
@@ -448,16 +538,16 @@ void drawThermometer(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
         const float amber[4] = { 1.0f, 0.78f, 0.25f, 1.0f };
         const float calm [4] = { 0.72f, 0.76f, 0.82f, 1.0f };
         const float* cc = iceWarn ? amber : calm;
-        device.drawHudText(frame, condition, x - 26.0f + 1.0f, ty + 1.0f, kGlyphPx * 0.8f, shadow);
-        device.drawHudText(frame, condition, x - 26.0f, ty, kGlyphPx * 0.8f, cc);
-        ty += kGlyphPx * 0.8f + 3.0f;
+        device.drawHudText(frame, condition, rx + 1.0f, ty + 1.0f, kGlyphPx * 0.8f, shadow);
+        device.drawHudText(frame, condition, rx, ty, kGlyphPx * 0.8f, cc);
+        ty += kGlyphPx * 0.8f + 5.0f;
     }
     if (snowInches > 0.05f) {
         // Depth in INCHES, which is the only unit anyone quotes snow in.
         std::snprintf(lb, sizeof(lb), "%.1f in", snowInches);
         const float snowC[4] = { 0.88f, 0.94f, 1.0f, 1.0f };
-        device.drawHudText(frame, lb, x - 26.0f + 1.0f, ty + 1.0f, kGlyphPx * 0.8f, shadow);
-        device.drawHudText(frame, lb, x - 26.0f, ty, kGlyphPx * 0.8f, snowC);
+        device.drawHudText(frame, lb, rx + 1.0f, ty + 1.0f, kGlyphPx * 0.8f, shadow);
+        device.drawHudText(frame, lb, rx, ty, kGlyphPx * 0.8f, snowC);
     }
 }
 

@@ -200,6 +200,7 @@ add_library(x3app SHARED
     mine_fx.cpp        # the mine-entrance family (Armory rock + glowing mouth)
     vehparts.cpp
     carspec.cpp         # the PER-CAR character table (one method, eleven sets of variables)
+    car_tune_ui.cpp     # sliders bound to the selected car's own variables + save to cars.json
     csm_test.cpp
     mesh_lod.cpp        # Lane 5: screen-space-error discrete LOD selection
     mesh_decimate.cpp   # Lane 5: QEM edge-collapse decimation (builds LOD chains)
