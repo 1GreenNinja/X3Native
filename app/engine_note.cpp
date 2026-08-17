@@ -150,9 +150,13 @@ void EngineNote::update(float rpm, float load, float dt, float x, float y, float
     // NOISE BED: the broadband half of the engine (SND-OPUS). Gain rides load
     // hard (turbulence is air moving = the engine actually working), with a
     // small floor so idle isn't sterile; pitch tilts the spectrum up with rpm.
+    // Cut to a WHISPER (was 0.55 peak — Tim: "Sound is still awful staticy";
+    // the bank points already carry their own turbulence, gated >25% broadband,
+    // so this voice only needs to fill the last few percent). Pitch held LOW so
+    // what remains is room-rumble, never treble hiss.
     m_audio->setLoopParams(m_noise,
-        mute * m_sVol * (0.18f + 0.82f * m_sOn) * 0.55f,
-        0.70f + 0.80f * frac);
+        mute * m_sVol * (0.10f + 0.90f * m_sOn) * 0.16f,
+        0.55f + 0.35f * frac);
 
     // Glue every voice to the car.
     for (auto& fam : m_pair)

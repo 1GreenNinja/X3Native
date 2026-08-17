@@ -912,7 +912,8 @@ int hostTunnel(HostContext& hc) {
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
     x3::game::DriveDemo car;
-    const bool carBuilt = car.build(*device, *phys, startPos[0], startPos[1] + 1.4f, startPos[2]);
+    const float spawnGroundY = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]);
+    const bool carBuilt = car.build(*device, *phys, startPos[0], spawnGroundY + 1.4f, startPos[2]);
     if (carBuilt) {
         // E46_New, not CTR. Tim asked for a seat, a passenger seat, a dash and a
         // steering wheel; CTR is an exterior shell -- 34 nodes, none of them
@@ -1639,6 +1640,21 @@ int hostTunnel(HostContext& hc) {
         // compressed to ten real minutes, because the diurnal temperature swing
         // is the most interesting thing the model does and nobody is going to
         // sit through twenty-four hours to watch the desert cool off.
+        // ---- THE RIVER HAS WATER (Tim: "Can we pour the water in now").
+        if (riverOn && riverRoad.plan.ok) {
+            static float waterClock = 0.0f;
+            waterClock += fdt;
+            x3::rhi::IRenderDevice::WaterParams wpr{};
+            wpr.enabled   = true;
+            wpr.seaLevel  = riverRoad.plan.waterY;
+            wpr.time      = waterClock;
+            wpr.amplitude = 0.28f;          // a river swell, not an ocean
+            wpr.steepness = 0.35f;
+            wpr.waveLength= 9.0f;
+            wpr.speed     = 0.8f;
+            wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
+            device->setWaterParams(wpr);
+        }
         if (weatherOn) {
             weather.tick(fdt);
             // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
@@ -1992,6 +2008,14 @@ int hostTunnel(HostContext& hc) {
             {
                 const bool wantNos = kd(GLFW_KEY_LEFT_SHIFT) && in.throttle > 0.1f;
                 nosActive = wantNos && nosTank > 0.02f;
+                if (nosActive) {
+                    float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                    float fwd[3], up[3];
+                    x3::game::vehcam::hullAxes(cq, fwd, up);
+                    phys->applyImpulse(car.chassis(),
+                        x3::phys::Vec3{ fwd[0] * 5200.0f * fdt, 0.0f,
+                                        fwd[2] * 5200.0f * fdt });
+                }
                 nosTank += nosActive ? -fdt / 15.0f : fdt / 20.0f;   // 15 s bottle (Tim), ~20 s recharge
                 nosTank = std::min(1.0f, std::max(0.0f, nosTank));
             }
