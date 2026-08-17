@@ -338,21 +338,114 @@ int hostTunnel(HostContext& hc) {
             }
             emit(at, n - 1, false);
         };
-        addTunnelRoute(route, "spawn corridor");
-        if (ringOn)  addSpec(ringSpec, "inner tour");
-        if (outerOn) addSpec(outerRing.spec, "outer tour");
-        if (riverOn) addSpec(riverRoad.spec, "river road");
-        if (connOn)  addSpec(connector.spec, "spawn connector");
+        // MERGE UNION (map2 x roads2): the CAPS names are the map's labels —
+        // WorldMapSystem::drawRouteLabels draws them verbatim in condensed
+        // white caps along the polyline. "SPAWN ROAD" covers BOTH the demo
+        // bore's spine AND the paved connector out to the ring (the connector
+        // was drivable but never handed to the map until map2 caught it).
+        // roads2's circuit + access + outer connector are labeled here too —
+        // routes born after map2's snapshot, named in its convention.
+        addTunnelRoute(route, "SPAWN ROAD");
+        if (connOn) addSpec(connector.spec, "SPAWN ROAD");
+        if (connOn && summitSpur.built) addSpec(summitSpur.spec, "SUMMIT SPUR");
+        if (ringOn)  addSpec(ringSpec, "INNER TOUR");
+        if (outerOn) addSpec(outerRing.spec, "OUTER TOUR");
+        if (riverOn) addSpec(riverRoad.spec, "RIVER ROAD");
         if (circuitOn) {
-            addSpec(rangeCircuit.spec, "range circuit");
-            addSpec(rangeCircuit.accessSpec, "circuit access");
+            addSpec(rangeCircuit.spec, "RANGE CIRCUIT");
+            addSpec(rangeCircuit.accessSpec, "RANGE CIRCUIT");
         }
-        if (summitSpur.built) addSpec(summitSpur.spec, "summit spur");
         char mb[128];
         std::snprintf(mb, sizeof(mb), "[tunnel] map: %u road overlay polyline(s) staged",
                       (uint32_t)mapRoutes.size());
         x3::logInfo(mb);
     }
+
+    // ---- DRIVING-HUD WAYPOINT CHEVRON (map/HUD wiring) ---------------------
+    // The map's one waypoint (app/world_map.h) used to be visible only ON the
+    // map screen — set it, close the map, and it vanished until you reopened
+    // it. worldToScreen the waypoint into the CURRENT frame; when it lands
+    // outside a safe screen rect (off-screen, or the projection gives up
+    // because it is behind the camera) clamp a small magenta chevron to the
+    // screen edge along the bearing to it, with a distance readout. Clears
+    // itself inside 30 m — the point where "point me there" becomes "you're
+    // here". Defined here (BEFORE both call sites: the interactive per-frame
+    // HUD, and the headless map/HUD proof set below) so they render through
+    // the exact same code — a screenshot proof of the interactive path, not a
+    // parallel copy that can silently drift from it.
+    auto drawWaypointChevron = [device](const x3::rhi::FrameContext& fr,
+                                        float wpX, float wpY, float wpZ,
+                                        float playerX, float playerY, float playerZ,
+                                        float camYawNow) {
+        (void)wpY; (void)playerY;
+        uint32_t hw3 = 0, hh3 = 0; device->hudSize(hw3, hh3);
+        if (!hw3 || !hh3) return;
+        const float wpDx = wpX - playerX, wpDz = wpZ - playerZ;
+        const float distM = std::sqrt(wpDx * wpDx + wpDz * wpDz);
+        if (distM <= 30.0f) return;
+        const float fw3 = (float)hw3, fh3 = (float)hh3;
+        const float cxp = fw3 * 0.5f, cyp = fh3 * 0.46f;
+        const float cmargin = 46.0f;
+        float sx = 0.0f, sy = 0.0f, ex, ey, ang;
+        const bool proj = device->worldToScreen(wpX, playerY, wpZ, sx, sy);
+        if (proj) {
+            // worldToScreen allows a 1.3x-NDC overscan window before it gives
+            // up, so a point just past the edge still lands here — clamp
+            // into the safe rect and point outward from it.
+            ex = std::min(std::max(sx, cmargin), fw3 - cmargin);
+            ey = std::min(std::max(sy, cmargin), fh3 - cmargin);
+            ang = std::atan2(ey - cyp, ex - cxp);
+        } else {
+            // BEHIND the camera: the projection is undefined there, so fall
+            // back to the horizontal bearing off the chase-cam yaw (the same
+            // forward angle the map's own player arrow reads) mapped onto a
+            // compass ring around center.
+            const float toWp = std::atan2(wpDz, wpDx);
+            float rel = toWp - camYawNow;
+            while (rel >  3.14159265f) rel -= 6.28318531f;
+            while (rel < -3.14159265f) rel += 6.28318531f;
+            const float ringR = std::min(fw3, fh3) * 0.5f - cmargin;
+            ex = cxp + std::sin(rel) * ringR;
+            ey = cyp - std::cos(rel) * ringR;
+            ang = std::atan2(ey - cyp, ex - cxp);
+        }
+        // The chevron: two short stamped legs forming a ">" pointing outward
+        // (the map's own route-line technique — the HUD layer only has
+        // axis-aligned quads). Dark halo pass first, then the magenta core —
+        // same blip color as the map's waypoint marker. Sized to read at a
+        // glance against a busy driving scene (GTA-legibility pass: the first
+        // cut's 15 px legs read as a stray mark, not an arrow).
+        const float halo[4] = { 0.02f, 0.03f, 0.06f, 0.60f };
+        const float mag[4]  = { 1.00f, 0.30f, 0.95f, 1.0f };
+        const float legLen = 30.0f;
+        for (int passi = 0; passi < 2; ++passi) {
+            const float* col = passi == 0 ? halo : mag;
+            const float sz  = passi == 0 ? 7.0f : 4.6f;
+            for (int leg = -1; leg <= 1; leg += 2) {
+                const float la = ang + 2.55f * (float)leg;
+                for (int s = 0; s < 11; ++s) {
+                    const float t = (float)s / 10.0f;
+                    const float qx = ex + std::cos(la) * legLen * t;
+                    const float qy = ey + std::sin(la) * legLen * t;
+                    device->drawHudQuad(fr, qx - sz * 0.5f, qy - sz * 0.5f, sz, sz, col);
+                }
+            }
+            // A filled dot AT the point — the vertex reads as a single mark
+            // even before the eye resolves the two legs (the map's own
+            // waypoint blip does the same: a core plus a wider surround).
+            const float dotSz = passi == 0 ? 10.0f : 6.0f;
+            device->drawHudQuad(fr, ex - dotSz * 0.5f, ey - dotSz * 0.5f, dotSz, dotSz, col);
+        }
+        char db[24];
+        if (distM >= 1000.0f) std::snprintf(db, sizeof(db), "%.1f km", distM / 1000.0f);
+        else                  std::snprintf(db, sizeof(db), "%.0f m", distM);
+        const float dpx = 17.0f;
+        const float dtw = (float)std::strlen(db) * dpx;
+        const float sh4[4] = { 0.0f, 0.0f, 0.0f, 0.8f };
+        const float wc4[4] = { 1.0f, 0.55f, 0.95f, 1.0f };
+        device->drawHudText(fr, db, ex - dtw * 0.5f + 1.5f, ey + 22.0f + 1.5f, dpx, sh4);
+        device->drawHudText(fr, db, ex - dtw * 0.5f,        ey + 22.0f,        dpx, wc4);
+    };
 
     // ==== STEP 1.5 — THE ROOMS' AIR RIGHTS ==================================
     // Found by the FIRST interior capture (09_garage_lnss): the corridor CARVE
@@ -1131,6 +1224,158 @@ int hostTunnel(HostContext& hc) {
             ok = settleAndGrab(cam, out);
         }
 
+        // ==== MAP/HUD PROOF SET (map/HUD wiring) — overview / drive-zoom /
+        // waypoint / driving-HUD chevron. Uses the engine's OWN
+        // armCapture/captureFrame GPU-swapchain readback — the SAME mechanism
+        // every --screenshot-* proof in this codebase uses — NOT an OS-level
+        // desktop screenshot, so it cannot pick up anything else on the
+        // desktop and needs no window-focus/input automation at all. A LOCAL
+        // WorldMapSystem (the interactive section's `wmap` doesn't exist on
+        // this early-return path) is built from the SAME `mapRoutes` staged
+        // at boot, and drives the exact drawScreen()/drawWaypointChevron()
+        // the interactive session calls — a proof of the real path, not a
+        // parallel render.
+        {
+            const std::string mapDir = "shots_wmap";
+            std::error_code mapEc; fs::create_directories(mapDir, mapEc);
+
+            x3::game::WorldMapSystem mapShotWm;
+            mapShotWm.init("", "");
+            mapShotWm.setRouteOverlays(mapRoutes);   // copy: mapRoutes isn't read again below
+
+            // Portal + garage markers — same lookup the interactive wiring uses.
+            {
+                std::vector<x3::game::MapMarker> mk;
+                if (route.boreValid) {
+                    float pIn[3], pOut[3];
+                    route.posAt(route.boreS0, pIn); route.posAt(route.boreS1, pOut);
+                    mk.push_back({ "TUNNEL ENTRANCE", "portal", pIn[0], pIn[2] });
+                    mk.push_back({ "TUNNEL EXIT",      "portal", pOut[0], pOut[2] });
+                }
+                {
+                    x3::game::FitoutConfig fcfg;
+                    x3::game::TunnelFitout fitout;
+                    fitout.build(route.boreS0, route.boreS1, fcfg, x3::game::kTunnelFitoutSeed);
+                    x3::game::TunnelRoomProgram rooms;
+                    rooms.build(route, fitout, x3::game::TunnelTier::A);
+                    for (const x3::game::TunnelSpace& sp : rooms.spaces()) {
+                        if (sp.kind != x3::game::SpaceKind::Garage) continue;
+                        const float sMid = (sp.s0 + sp.s1) * 0.5f;
+                        const float latMid = (float)sp.side * (sp.latIn + sp.latOut) * 0.5f;
+                        float wx = 0.0f, wz = 0.0f;
+                        route.worldAt(sMid, latMid, wx, wz);
+                        mk.push_back({ "LNSS GARAGE", "garage", wx, wz });
+                        break;
+                    }
+                }
+                mapShotWm.setMapMarkers(std::move(mk));
+            }
+
+            x3::game::StoryFlags mapShotFlags;
+            x3::ui::UiContext mapShotUi;
+            const int fbw2 = (int)W, fbh2 = (int)H;
+            const float anchorX = startPos[0], anchorY = startPos[1], anchorZ = startPos[2];
+
+            auto mapShot2 = [&](const char* png, float mcx, float mcz, float mscale,
+                                bool setWp, float wpx, float wpz) -> bool {
+                mapShotWm.open(anchorX, anchorY, anchorZ, (float)fbw2, (float)fbh2);
+                mapShotWm.camera().jumpTo(mcx, mcz, mscale);
+                if (setWp) mapShotWm.setWaypoint(wpx, wpz, 0); else mapShotWm.clearWaypoint();
+                const std::string path = mapDir + "/" + png;
+                for (int i = 0; i < 3; ++i) {   // a couple frames so tile uploads land
+                    glfwPollEvents();
+                    device->setCamera(anchorX, anchorY + 60.0f, anchorZ, 0.0f, -0.5f, 60.0f);
+                    if (i == 2) device->armCapture(path.c_str());
+                    auto f = device->beginFrame();
+                    if (f.valid) {
+                        scene.render(*device, f);
+                        // Opaque underlay: the map's own backdrop is 0.97 alpha
+                        // (invisible over an interior, but lets ~3% of THIS
+                        // world's HDR sky through — the same wash the
+                        // interactive wiring's underlay slab fixes).
+                        const float mapBg[4] = { 0.014f, 0.025f, 0.045f, 1.0f };
+                        device->drawHudQuad(f, 0.0f, 0.0f, (float)fbw2, (float)fbh2, mapBg);
+                        x3::ui::UiInput ui0{};
+                        ui0.mouseX = fbw2 * 0.5f; ui0.mouseY = fbh2 * 0.5f;
+                        mapShotUi.begin(*device, f, ui0);
+                        x3::game::WorldMapSystem::ScreenInput msi{};
+                        msi.mouseX = ui0.mouseX; msi.mouseY = ui0.mouseY;
+                        msi.playerX = anchorX; msi.playerY = anchorY; msi.playerZ = anchorZ;
+                        msi.playerYaw = std::atan2(route.dirZ, route.dirX);
+                        msi.locationName = "TUNNEL RIDGE - ROAD NETWORK";
+                        mapShotWm.drawScreen(mapShotUi, *device, f, msi, mapShotFlags, 0.0f);
+                        mapShotUi.end();
+                    }
+                    device->endFrame(f);
+                }
+                const bool wrote = device->captureFrame(path.c_str());
+                if (wrote) x3::logInfo("[tunnel] map/HUD proof: wrote " + path);
+                else       x3::logError("[tunnel] map/HUD proof: capture FAILED " + path);
+                return wrote;
+            };
+
+            bool mapOk = true;
+            // 01: world overview — zoomed all the way out; both tours + the
+            // dashed bores should read against the terrain underlay.
+            mapOk = mapShot2("01_overview.png", anchorX, anchorZ, 0.06f, false, 0, 0) && mapOk;
+            // 02: drive zoom — the same scale the M key opens at in play.
+            mapOk = mapShot2("02_drive.png", anchorX, anchorZ, 0.32f, false, 0, 0) && mapOk;
+            // 03: waypoint set, at drive zoom — a magenta blip a couple hundred
+            // metres off the anchor, same scale as 02.
+            mapOk = mapShot2("03_waypoint.png", anchorX, anchorZ, 0.32f,
+                             true, anchorX + 30.0f, anchorZ + 220.0f) && mapOk;
+
+            // 04: the driving HUD chevron, rendered through the exact
+            // drawWaypointChevron() the interactive loop calls. Map CLOSED.
+            // Two variants, both proof of the SAME code, different branches:
+            //   04_chevron.png        — waypoint ahead-right, off-screen: the
+            //                           common case (worldToScreen succeeds,
+            //                           clamps into the safe rect).
+            //   04b_chevron_behind.png — waypoint behind the shot camera: the
+            //                           harder case (worldToScreen gives up;
+            //                           the compass-bearing fallback).
+            auto chevronShot = [&](const char* png, float wpX, float wpZ, float camYawShot) -> bool {
+                mapShotWm.close();
+                const std::string path = mapDir + "/" + png;
+                for (int i = 0; i < 3; ++i) {
+                    glfwPollEvents();
+                    device->setCamera(anchorX, anchorY + 1.6f, anchorZ, camYawShot, -0.05f, 68.0f);
+                    if (i == 2) device->armCapture(path.c_str());
+                    auto f = device->beginFrame();
+                    if (f.valid) {
+                        scene.render(*device, f);
+                        if (carBuilt) car.render(f);
+                        drawWaypointChevron(f, wpX, anchorY, wpZ, anchorX, anchorY, anchorZ, camYawShot);
+                    }
+                    device->endFrame(f);
+                }
+                const bool wrote = device->captureFrame(path.c_str());
+                if (wrote) x3::logInfo("[tunnel] map/HUD proof: wrote " + path);
+                else       x3::logError("[tunnel] map/HUD proof: capture FAILED " + path);
+                return wrote;
+            };
+            {
+                const float baseYaw = std::atan2(route.dirZ, route.dirX);
+                // Ahead-right: rotate the waypoint bearing ~50 deg off the shot
+                // camera's forward so it is off-screen to the right, in front.
+                const float aheadX = anchorX + 900.0f * std::cos(baseYaw + 0.9f);
+                const float aheadZ = anchorZ + 900.0f * std::sin(baseYaw + 0.9f);
+                mapOk = chevronShot("04_chevron.png", aheadX, aheadZ, baseYaw) && mapOk;
+                const float behindX = anchorX - 1400.0f, behindZ = anchorZ + 900.0f;
+                mapOk = chevronShot("04b_chevron_behind.png", behindX, behindZ, baseYaw + 2.2f) && mapOk;
+            }
+            // 05 (diagnostic, not one of the 4 required views): centered on
+            // the spawn corridor's bore midpoint at a zoom that reads the
+            // dashed casing clearly — GTA marks underpasses as a broken line
+            // straight through the terrain; this confirms the new bold/dark
+            // casing pair still dashes correctly over a bored reach.
+            if (route.boreValid) {
+                float bp[3]; route.posAt((route.boreS0 + route.boreS1) * 0.5f, bp);
+                mapOk = mapShot2("05_dashed_bore.png", bp[0], bp[2], 0.55f, false, 0, 0) && mapOk;
+            }
+            ok = ok && mapOk;
+        }
+
         if (carBuilt) car.shutdown();
         tunnel.shutdown(*device, *phys);
         for (auto& w : tourBores) w->shutdown(*device, *phys);
@@ -1183,6 +1428,45 @@ int hostTunnel(HostContext& hc) {
     x3::game::WorldMapSystem wmap;
     wmap.init("", "");                       // empty POI/floor set, logged, not fatal
     wmap.setRouteOverlays(std::move(mapRoutes));
+    // ---- MAP MARKERS: the tunnel mouths + the LNSS garage ------------------
+    // Not a POI-table entry (no discovery gating — a road world has no
+    // StoryFlags fog to lift), just a point label the map always draws. The
+    // garage's world position is a pure-data lookup: FitoutConfig/
+    // TunnelFitout/TunnelRoomProgram are the same cheap, deterministic build
+    // this host already runs twice (the STEP 1.5 terrain-hole pass and the
+    // STEP 3b fleet spawn) — a third read-only build here is the SAME pattern,
+    // not new machinery, and keeps this block additive-only (no touching the
+    // fleet/room code that already exists further down).
+    {
+        std::vector<x3::game::MapMarker> markers;
+        if (route.boreValid) {
+            float pIn[3], pOut[3];
+            route.posAt(route.boreS0, pIn);
+            route.posAt(route.boreS1, pOut);
+            markers.push_back({ "TUNNEL ENTRANCE", "portal", pIn[0], pIn[2] });
+            markers.push_back({ "TUNNEL EXIT",      "portal", pOut[0], pOut[2] });
+        }
+        {
+            x3::game::FitoutConfig fcfg;
+            x3::game::TunnelFitout fitout;
+            fitout.build(route.boreS0, route.boreS1, fcfg, x3::game::kTunnelFitoutSeed);
+            x3::game::TunnelRoomProgram rooms;
+            rooms.build(route, fitout, x3::game::TunnelTier::A);
+            for (const x3::game::TunnelSpace& sp : rooms.spaces()) {
+                if (sp.kind != x3::game::SpaceKind::Garage) continue;
+                const float sMid = (sp.s0 + sp.s1) * 0.5f;
+                const float latMid = (float)sp.side * (sp.latIn + sp.latOut) * 0.5f;
+                float wx = 0.0f, wz = 0.0f;
+                route.worldAt(sMid, latMid, wx, wz);
+                markers.push_back({ "LNSS GARAGE", "garage", wx, wz });
+                break;
+            }
+        }
+        char mkb[96];
+        std::snprintf(mkb, sizeof(mkb), "[tunnel] map: %u marker(s) staged", (uint32_t)markers.size());
+        x3::logInfo(mkb);
+        wmap.setMapMarkers(std::move(markers));
+    }
     x3::game::StoryFlags mapFlags;           // no POIs yet: nothing to discover/persist
     x3::ui::UiContext wmapUi;
     bool mapOpen = false;
@@ -2326,6 +2610,19 @@ int hostTunnel(HostContext& hc) {
                 device->drawHudText(frame, t, gcx - (float)std::strlen(t) * px * 0.5f,
                                     gcy - R * 1.30f, px, c4);
             }
+        }
+        // ---- DRIVING-HUD WAYPOINT CHEVRON (map/HUD wiring; M CLOSED) -------
+        // drawWaypointChevron (defined near the map's road layer, above) is
+        // the SAME function the headless map/HUD proof set calls -- one
+        // implementation, not a parallel copy that can drift.
+        if (frame.valid && !mapOpen && wmap.waypoint().active) {
+            const x3::game::Waypoint& wpv = wmap.waypoint();
+            float pPos[3] = { vp[0], vp[1], vp[2] };
+            if (!driving && footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                pPos[0] = ft.x; pPos[1] = ft.y; pPos[2] = ft.z;
+            }
+            drawWaypointChevron(frame, wpv.x, pPos[1], wpv.z, pPos[0], pPos[1], pPos[2], camYaw);
         }
         // ---- THE MAP SCREEN (M). Drawn over the world and the cluster, under
         // the shell (the console stays reachable over the map). Input assembly
