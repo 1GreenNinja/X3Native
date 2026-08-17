@@ -1721,6 +1721,13 @@ int hostTunnel(HostContext& hc) {
             wpr.steepness = 0.35f;
             wpr.waveLength= 9.0f;
             wpr.speed     = 0.8f;
+            // DEEP DARK BLUE (Tim: "MORE DEEPER DARKER BLUE WATER") — linear
+            // river tones: near-black navy deep, restrained slate shallow,
+            // glint dialed down so the surface reads water, not white sheet.
+            wpr.deepColor[0] = 0.004f; wpr.deepColor[1] = 0.016f; wpr.deepColor[2] = 0.045f;
+            wpr.shallowColor[0] = 0.03f; wpr.shallowColor[1] = 0.09f; wpr.shallowColor[2] = 0.13f;
+            wpr.specular = 6.0f;
+            wpr.fresnel  = 0.015f;
             wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
             device->setWaterParams(wpr);
         }

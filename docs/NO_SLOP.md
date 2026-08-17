@@ -84,3 +84,18 @@ A defect fixed without a comment naming the symptom, the cause and the receipt
 grows back. Every rule above exists because the same class shipped at least
 twice. When you fix something real, the commit message and the code comment
 carry the story — that is why this file could be written at all.
+
+## 11. THE CONTACT LAW — no tires, no boots, no feet, EVER underground.
+Owner-decreed after the third buried-entity strike in one weekend ("You KEEP
+violating it. Over, and Over"). This is not a placement guideline (rule 5
+covers authoring); it is a RUNTIME INVARIANT, enforced every frame/step,
+that makes the underground state unrepresentable:
+  * WHEELS: DriveDemo::postStep lifts the car onto the carved terrain field
+    whenever any wheel's contact point is beyond-suspension-deep below it
+    (app/vehicle.cpp — guards every world that drives the car).
+  * FEET: the on-foot block clamps the character's feet onto the field every
+    frame (host_tunnel.cpp; any host that walks a character MUST wire the
+    same clamp until the shared player stack lands).
+Corridors carve the height field itself, so inside bores and cuts the field
+IS the road floor — the law never fights tunnels and only ever pushes UP.
+A new vehicle or character type is not DONE until it is under this law.
