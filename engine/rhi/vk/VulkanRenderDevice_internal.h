@@ -2268,7 +2268,8 @@ private:
     bool             m_rtShadowsWantThisFrame   = false; // decided in prepareFrameData (UBO gate)
     bool             m_rtShadowsActiveThisFrame = false; // decided in endFrame (TLAS ready + descriptor written)
     bool             m_meshTlasWritten = false;          // mesh set3 binding5 points at a real TLAS
-    uint32_t         m_rtshFrameSeed = 0;                // per-frame jitter rotation counter
+    // (fix/interior-shadows) the old per-frame RT-shadow jitter counter is GONE:
+    // rtsh1.x is pinned 0 — the shader's stratified sampler owns the dither.
     VkPipelineLayout m_meshLayout = VK_NULL_HANDLE;
     // Translucent GLASS pipeline (transparent pass). Shares mesh.vert + sets 0-3
     // with the opaque mesh path, but uses its OWN pipeline layout m_glassLayout

@@ -3,20 +3,20 @@
 #ifdef RT_SHADOWS
 // ===========================================================================
 // RAY-TRACED SOFT SHADOWS (r_rtshadows) — per-pixel inline ray queries.
-//   * SUN (tier >= 1): ONE shadow ray per pixel toward the sun, cone-jittered
-//     by the sun's angular radius (rtsh0.y = tan(radius); ~0.5 deg default) —
-//     contact-hardening penumbra. Combined min() with the CSM term so DYNAMIC
-//     (skinned) casters — absent from the static TLAS — keep their raster
-//     shadows.
+//   * SUN (tier >= 1): stratified shadow rays toward the sun (2-ray consensus
+//     probe, up to kRtshSpp in penumbra), cone-jittered by the sun's angular radius
+//     (rtsh0.y = tan(radius); ~0.5 deg default) — contact-hardening penumbra.
+//     Combined min() with the CSM term so DYNAMIC (skinned) casters — absent
+//     from the static TLAS — keep their raster shadows.
 //   * POINT LIGHTS (tier >= 2): in the light loop, the first K lights with a
-//     non-negligible contribution at this pixel each get ONE shadow ray toward
-//     a jittered point on the light's spherical source (radius rtsh0.w);
+//     non-negligible contribution at this pixel each get the same stratified
+//     multi-ray estimate toward the light's spherical source (radius rtsh0.w);
 //     penumbra widens with occluder->receiver distance by construction.
 //     Beyond K (rtsh0.z) or below the contribution floor: unshadowed (the
 //     existing behavior).
-// Per-frame jitter rotation (rtsh1.x seed) turns the 1-spp penumbra noise into
-// temporal samples TAA accumulates away; with TAA off the host pins the seed
-// so the dither is STATIC (no sizzle).
+// The jitter seed is PURELY SPATIAL (rtsh1.x is pinned 0 by the host — see the
+// stability note above rtshSunVisibility): the dither pattern is STATIC and the
+// per-light estimate is multi-sample, not 1-spp.
 // DOCUMENTED v1 LIMITS (shared with RT-AO/reflections/DDGI — same TLAS):
 //   * opaque-only rays: alpha-cutout surfaces (foliage/billboards) occlude as
 //     their full quad; * skinned characters don't cast (CSM keeps the sun's).
@@ -51,37 +51,89 @@ float rtshVisibility(vec3 origin, vec3 dir, float tMax) {
         ? 1.0 : 0.0;
 }
 
-// Sun visibility: one cone-jittered ray toward the sun. tanRadius = tan of the
-// sun's angular radius; the jitter disk is perpendicular to the sun direction.
-float rtshSunVisibility(vec3 P, vec3 Ng, vec3 sunDir, inout uint seed) {
-    vec3 T, B; rtshBasis(sunDir, T, B);
-    float r   = sqrt(rtshRnd(seed)) * ssao.rtsh0.y;     // uniform disk * tan(radius)
-    float phi = 6.2831853 * rtshRnd(seed);
-    vec3 dir = normalize(sunDir + (T * cos(phi) + B * sin(phi)) * r);
-    return rtshVisibility(P + Ng * 0.03, dir, 500.0);
+// ---------------------------------------------------------------------------
+// INTERIOR-SHADOW STABILITY (fix/interior-shadows, 2026-08-17). The 1-spp
+// design above this line was the CELL FLASHING: a binary 0/1 visibility whose
+// jitter re-rolled EVERY frame (rtsh1.x was a frame counter while TAA ran).
+// TAA cannot converge a full-contrast 0/1 flip — its neighborhood clamp keeps
+// re-admitting both extremes — and the cell's key light is a DELIBERATELY
+// flickering fluorescent, which re-scales the noise field on top. Live result:
+// giant black stipple sprays (the bed/pole penumbra on the wall) sizzling at
+// frame rate. Screenshot settle averaged some of it away, which is why stills
+// under-reported the live pain.
+// The fix has two halves, and both are needed:
+//   * SPATIAL seed only — the host now pins rtsh1.x to 0 ALWAYS (TAA on or
+//     off), so the sample pattern holds still frame-over-frame and stills show
+//     exactly what live play shows.
+//   * VOGEL-DISK + IGN multi-sample visibility with a consensus probe: the
+//     sample set is a FIXED Vogel spiral over the source disk (stratum j at
+//     radius sqrt((j+0.5)/N), golden-angle apart), rotated per pixel by
+//     Interleaved Gradient Noise. Neighbouring pixels trace ROTATED copies of
+//     the same well-spread set, so the estimation error varies smoothly at
+//     high frequency — a soft gradient, not white-noise salt-and-pepper (the
+//     first cut of this fix used a white-noise hash per sample and the sprays
+//     stayed speckly; the noise SPECTRUM was the remaining problem).
+//     Consensus: probe 2 spread strata first; agreement = fully lit / umbra,
+//     done at 2 rays (the common case). Disagreement = penumbra: complete all
+//     N strata (visited in permuted order).
+// ---------------------------------------------------------------------------
+const int   kRtshSpp    = 16;             // full penumbra sample count
+const float kRtshInvSpp = 1.0 / 16.0;
+
+// Interleaved Gradient Noise (Jimenez) — the per-pixel rotation angle source.
+// Purely spatial (no frame term): stable frame-over-frame by construction.
+float rtshIgn(vec2 px) {
+    return fract(52.9829189 * fract(0.06711056 * px.x + 0.00583715 * px.y));
 }
 
-// Point-light visibility: one ray toward a jittered point on the light's
-// spherical source. tMax stops SHORT of the source (clearance = max(lightR,
-// 0.12 m)) so a light parked inside its own fixture mesh doesn't self-occlude.
-float rtshPointVisibility(vec3 P, vec3 Ng, vec3 toL, float dist, inout uint seed) {
+// Sun visibility: cone-stratified rays toward the sun. tanRadius = tan of the
+// sun's angular radius; the jitter disk is perpendicular to the sun direction.
+float rtshSunVisibility(vec3 P, vec3 Ng, vec3 sunDir, float ignRot, inout uint seed) {
+    vec3 T, B; rtshBasis(sunDir, T, B);
+    float tanR = ssao.rtsh0.y;
+    vec3  origin = P + Ng * 0.03;
+    float sum = 0.0, n = 0.0;
+    for (int j = 0; j < kRtshSpp; ++j) {
+        int   st  = (j * 7) & 15;                         // stratum permutation (7 coprime 16)
+        float r   = sqrt((float(st) + 0.5) * kRtshInvSpp) * tanR;   // Vogel radius
+        float phi = ignRot + float(st) * 2.3999632;       // golden-angle spiral
+        vec3 dir = normalize(sunDir + (T * cos(phi) + B * sin(phi)) * r);
+        sum += rtshVisibility(origin, dir, 500.0);
+        n += 1.0;
+        if (j == 1 && (sum == 0.0 || sum == 2.0)) break;  // consensus: lit/umbra
+    }
+    return sum / n;
+}
+
+// Point-light visibility: stratified rays toward the light's spherical source.
+// Each ray's tMax stops SHORT of the source (clearance = max(lightR, 0.12 m))
+// so a light parked inside its own fixture mesh doesn't self-occlude.
+float rtshPointVisibility(vec3 P, vec3 Ng, vec3 toL, float dist, float ignRot, inout uint seed) {
     float lr = ssao.rtsh0.w;
     vec3 L = toL / max(dist, 1e-4);
     vec3 T, B; rtshBasis(L, T, B);
-    float r   = sqrt(rtshRnd(seed)) * lr;
-    float phi = 6.2831853 * rtshRnd(seed);
-    vec3 origin = P + Ng * 0.03;
-    vec3 seg = (P + toL + (T * cos(phi) + B * sin(phi)) * r) - origin;
-    float len = length(seg);
-    float tMax = len - max(lr, 0.12);
-    if (tMax <= 0.02) return 1.0;                        // too close to the source
+    vec3  origin    = P + Ng * 0.03;
+    float clearance = max(lr, 0.12);
     // W6-1: near-source early-out. The 0.12 m clearance is smaller than typical
     // FIXTURE geometry around a light, so surfaces near the lamp traced rays that
     // clipped the fixture's own corners -> the black speckle RING around emitters
     // (AD-2 survey, lamp_rtshadows_on). Within half a metre of a point light the
     // surface counts lit — a light's own housing must not shadow its surroundings.
-    if (len < max(lr, 0.12) + 0.45) return 1.0;
-    return rtshVisibility(origin, seg / max(len, 1e-4), tMax);
+    if (length(P + toL - origin) < clearance + 0.45) return 1.0;
+    float sum = 0.0, n = 0.0;
+    for (int j = 0; j < kRtshSpp; ++j) {
+        int   st  = (j * 7) & 15;                         // stratum permutation (7 coprime 16)
+        float r   = sqrt((float(st) + 0.5) * kRtshInvSpp) * lr;     // Vogel radius
+        float phi = ignRot + float(st) * 2.3999632;       // golden-angle spiral
+        vec3 seg = (P + toL + (T * cos(phi) + B * sin(phi)) * r) - origin;
+        float len = length(seg);
+        float tMax = len - clearance;
+        sum += (tMax <= 0.02) ? 1.0                       // too close to the source
+             : rtshVisibility(origin, seg / max(len, 1e-4), tMax);
+        n += 1.0;
+        if (j == 1 && (sum == 0.0 || sum == 2.0)) break;  // consensus: lit/umbra
+    }
+    return sum / n;
 }
 #endif
 
