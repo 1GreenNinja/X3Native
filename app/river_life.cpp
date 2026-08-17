@@ -65,6 +65,41 @@ void pointAlongReach(const WorldRiverNode* rn, uint32_t n, uint32_t start,
     outX = x; outZ = z;
 }
 
+// ---- COMPOSED-SKIN TRANSFORM (shared by the speedboat and the submarine) ---
+// A composed skin draws tinted primitives on the LIVE physics transform. Each
+// part is placed in hull-local space (lx,ly,lz), scaled (sx,sy,sz), optionally
+// pitched about its local X (a raked bow, or pitch = pi/2 to stand a Y-aligned
+// cylinder along the hull's Z axis), then carried by the hull's own rotation:
+//   world = T(hullPos) * R(hullQuat) * T(local) * Rx(pitch) * S
+void quatToBasis(const float q[4], float R[9]) {
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    R[0] = 1 - 2*(y*y + z*z); R[1] = 2*(x*y + z*w);     R[2] = 2*(x*z - y*w);
+    R[3] = 2*(x*y - z*w);     R[4] = 1 - 2*(x*x + z*z); R[5] = 2*(y*z + x*w);
+    R[6] = 2*(x*z + y*w);     R[7] = 2*(y*z - x*w);     R[8] = 1 - 2*(x*x + y*y);
+}
+
+void partWorld(const float R[9], const float hp[3],
+               float lx, float ly, float lz,
+               float sx, float sy, float sz, float pitch, float out[16]) {
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    const float bx[3] = { sx, 0.0f, 0.0f };
+    const float by[3] = { 0.0f, sy * cp, sy * sp };
+    const float bz[3] = { 0.0f, -sz * sp, sz * cp };
+    auto rot = [&](const float v[3], float o[3]) {
+        o[0] = R[0]*v[0] + R[3]*v[1] + R[6]*v[2];
+        o[1] = R[1]*v[0] + R[4]*v[1] + R[7]*v[2];
+        o[2] = R[2]*v[0] + R[5]*v[1] + R[8]*v[2];
+    };
+    float cX[3], cY[3], cZ[3], off[3];
+    rot(bx, cX); rot(by, cY); rot(bz, cZ);
+    const float l[3] = { lx, ly, lz };
+    rot(l, off);
+    out[0]=cX[0]; out[1]=cX[1]; out[2]=cX[2];  out[3]=0.0f;
+    out[4]=cY[0]; out[5]=cY[1]; out[6]=cY[2];  out[7]=0.0f;
+    out[8]=cZ[0]; out[9]=cZ[1]; out[10]=cZ[2]; out[11]=0.0f;
+    out[12]=hp[0]+off[0]; out[13]=hp[1]+off[1]; out[14]=hp[2]+off[2]; out[15]=1.0f;
+}
+
 // The river surface at (x,z) — the ONE truth the water shader draws — with a
 // fallback for the sentinel worldWaterLevelAt returns off the water table (a
 // hull nosing past the ribbon edge must not be handed -3e38).
@@ -254,10 +289,106 @@ bool RiverLife::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_texMotor = device.createTexture(tMotor.data(), 8, 8, true);
     }
 
+    // ==== THE PATROL SUB (owner: "a sub or 2") ==============================
+    // Deep water only. The lane runs 210..430 m along the spine — well past the
+    // speedboats' 45..190 m lanes, so the sub never shares water with a planing
+    // hull — on whichever side of the crossing keeps the most water under the
+    // keel. A lane that cannot clear kSubMinDepth simply does not get a sub
+    // (a submarine dragging its belly is worse than no submarine).
+    {
+        constexpr float kSubMinDepth = 4.2f;    // hull is 1.2 m tall + clearance
+        constexpr float kLaneNear = 210.0f, kLaneFar = 430.0f;
+        float bestX0 = 0, bestZ0 = 0, bestX1 = 0, bestZ1 = 0;
+        float bestDepth = -1e9f;
+        for (int side = 0; side < 2; ++side) {
+            const int step = side == 0 ? -1 : +1;
+            float x0, z0, x1, z1;
+            pointAlongReach(nodes, rn, nearest, step, kLaneNear, x0, z0);
+            pointAlongReach(nodes, rn, nearest, step, kLaneFar,  x1, z1);
+            const float len = std::sqrt((x1-x0)*(x1-x0) + (z1-z0)*(z1-z0));
+            if (len < 40.0f) continue;          // the river ran out that way
+            // Shallowest point along the candidate lane decides it.
+            float minDepth = 1e9f;
+            for (float t = 0.0f; t <= 1.0f; t += 0.05f) {
+                const float px = x0 + (x1-x0)*t, pz = z0 + (z1-z0)*t;
+                const float wy = worldWaterLevelAt(px, pz);
+                if (wy <= kWorldWaterDry + 1.0f) { minDepth = -1e9f; break; }
+                minDepth = std::min(minDepth, wy - terrainHeightAtWorld(px, pz));
+            }
+            if (minDepth > bestDepth) {
+                bestDepth = minDepth;
+                bestX0 = x0; bestZ0 = z0; bestX1 = x1; bestZ1 = z1;
+            }
+        }
+        if (bestDepth >= kSubMinDepth) {
+            m_sub.ax = bestX0; m_sub.az = bestZ0;
+            m_sub.bx = bestX1; m_sub.bz = bestZ1;
+            const float sx = (bestX0 + bestX1) * 0.5f, sz = (bestZ0 + bestZ1) * 0.5f;
+            m_sub.waterY = worldWaterLevelAt(sx, sz);
+            // Hold the hull's TOP ~1.3 m under: deep enough to read as
+            // SUBMERGED from the bridge deck, shallow enough that the
+            // silhouette and the caustic light on its back still carry.
+            m_sub.depth  = std::min(1.9f, bestDepth - 2.0f);
+            m_sub.ok = m_sub.demo.build(device, phys, sx, m_sub.waterY - m_sub.depth, sz,
+                                        m_sub.waterY, /*isSub=*/true);
+            if (m_sub.ok) {
+                m_sub.target = 1;
+                x3::logInfo("[river-life] SUB: patrol lane (" +
+                            std::to_string(bestX0) + ", " + std::to_string(bestZ0) +
+                            ") -> (" + std::to_string(bestX1) + ", " + std::to_string(bestZ1) +
+                            "), shallowest water on the lane " + std::to_string(bestDepth) +
+                            " m, holding " + std::to_string(m_sub.depth) + " m down");
+            } else {
+                x3::logWarn("[river-life] SUB: buoyancy hull build failed");
+            }
+        } else {
+            x3::logWarn("[river-life] SUB: no lane with " +
+                        std::to_string(kSubMinDepth) + " m of water (best " +
+                        std::to_string(bestDepth) + " m) — no sub");
+        }
+    }
+
+    // The SUB skin's shared art (see drawSubSkin): a round pressure hull, a
+    // near-black wet-steel tint, and one amber lamp on the sail.
+    if (m_sub.ok) {
+        if (!m_boatCube.valid()) {          // boats may have been skipped
+            std::vector<x3::rhi::MeshVertex> cv; std::vector<uint32_t> ci;
+            x3::prims::makeCube(0.5f, cv, ci);
+            m_boatCube = device.createMesh(cv.data(), (uint32_t)cv.size(),
+                                           ci.data(), (uint32_t)ci.size());
+        }
+        // Unit cylinder (r 1, half-height 1) and unit sphere — drawSubSkin's
+        // scales are therefore metres.
+        x3::prims::PrimMesh tube = x3::prims::makeCylinder(1.0f, 1.0f, 1.0f, 20u);
+        m_subTube = device.createMesh(tube.verts.data(), (uint32_t)tube.verts.size(),
+                                      tube.index.data(), (uint32_t)tube.index.size());
+        x3::prims::PrimMesh ball = x3::prims::makeUVSphere(12u, 20u);
+        m_subBall = device.createMesh(ball.verts.data(), (uint32_t)ball.verts.size(),
+                                      ball.index.data(), (uint32_t)ball.index.size());
+        auto tSub  = x3::prims::makeSolidRGBA(8, 44, 52, 54);   // wet steel, not black
+        auto tDark = x3::prims::makeSolidRGBA(8, 26, 31, 33);   // sail / planes
+        auto tLamp = x3::prims::makeSolidRGBA(8, 232, 148, 42); // amber running light
+        m_texSubHull = device.createTexture(tSub.data(),  8, 8, true);
+        m_texSubDark = device.createTexture(tDark.data(), 8, 8, true);
+        m_texSubLamp = device.createTexture(tLamp.data(), 8, 8, true);
+    }
+
     m_built = true;
     x3::logInfo("[river-life] built: " + std::to_string(m_boats.size()) +
-                " speedboat(s) on the reach, water Y " + std::to_string(m_waterY));
+                " speedboat(s) + " + std::to_string(m_sub.ok ? 1 : 0) +
+                " sub on the reach, water Y " + std::to_string(m_waterY));
     return true;
+}
+
+void RiverLife::subPos(float out[3]) const {
+    out[0] = out[1] = out[2] = 0.0f;
+    if (m_sub.ok) const_cast<BoatDemo&>(m_sub.demo).hullPos(out);
+}
+
+float RiverLife::subSubmergence() const {
+    if (!m_sub.ok) return 0.0f;
+    float hp[3]; const_cast<BoatDemo&>(m_sub.demo).hullPos(hp);
+    return m_sub.waterY - (hp[1] + 0.6f);      // surface minus the hull's top
 }
 
 void RiverLife::prePhysics(float dt) {
@@ -298,6 +429,48 @@ void RiverLife::prePhysics(float dt) {
         b.throttle = in.throttle;
         b.demo.setInput(in);
         b.demo.preStep(dt);
+    }
+
+    // ---- THE SUB: same lane autopilot, plus a depth hold. ------------------
+    if (m_sub.ok && m_sub.demo.controller()) {
+        Sub& s = m_sub;
+        float hp[3]; s.demo.hullPos(hp);
+        // The surface over the hull — the ONE truth again, and the reason a
+        // depth hold works at all on this river: the level DESCENDS downstream,
+        // so "1.9 m down" is a moving target, and against the old flat plane
+        // the sub would have dug into the bed at the far end of its lane.
+        s.waterY = riverSurfaceAt(hp[0], hp[2], s.waterY);
+        s.demo.setSeaLevel(s.waterY);
+
+        const float tx = s.target == 0 ? s.ax : s.bx;
+        const float tz = s.target == 0 ? s.az : s.bz;
+        const float dx = tx - hp[0], dz = tz - hp[2];
+        const float dist = std::sqrt(dx * dx + dz * dz);
+        if (dist < 16.0f) s.target ^= 1;
+
+        const float bearing = std::atan2(dz, dx);
+        const float heading = s.haveHeading ? s.heading : bearing;
+        const float err = wrapPi(bearing - heading);
+        float yawRate = 0.0f;
+        if (s.haveHeading && dt > 1e-4f)
+            yawRate = wrapPi(s.heading - s.headingPrev) / dt;
+
+        x3::phys::VehicleInput in;
+        // A submarine turns like a submarine: lazier gains than the speedboats,
+        // and a patrol crawl rather than their full send.
+        in.steer = std::clamp(0.9f * err - 0.35f * yawRate, -1.0f, 1.0f);
+        in.throttle = 0.30f * (0.4f + 0.6f * std::max(0.0f, std::cos(err)));
+        // DEPTH HOLD: a PD on depth error driving `dive`. Fully submerged the
+        // hull is ~2.1x buoyant (BoatDemo masses it to float half out), so the
+        // equilibrium command is a firm, steady push DOWN — the bias term —
+        // and the PD only trims around it. Without the bias the controller
+        // would fight its way to the surface every time it centred.
+        const float wantY = s.waterY - s.depth;
+        const float eY    = hp[1] - wantY;                       // + = too high
+        const float vY    = m_phys ? m_phys->getBodyVelocity(s.demo.hull()).y : 0.0f;
+        in.dive = std::clamp(-0.90f - 0.55f * eY - 0.30f * vY, -1.0f, 0.25f);
+        s.demo.setInput(in);
+        s.demo.preStep(dt);
     }
 }
 
@@ -427,38 +600,12 @@ void RiverLife::postPhysics(float dt, Scene& scene, x3::rhi::IRenderDevice& devi
 void RiverLife::drawBoatSkin(x3::rhi::IRenderDevice& device,
                              const x3::rhi::FrameContext& frame,
                              const float hp[3], const float q[4]) {
-    // Quaternion (x,y,z,w) -> rotation columns.
-    const float x = q[0], y = q[1], z = q[2], w = q[3];
-    const float R[9] = {
-        1 - 2*(y*y + z*z), 2*(x*y + z*w),     2*(x*z - y*w),
-        2*(x*y - z*w),     1 - 2*(x*x + z*z), 2*(y*z + x*w),
-        2*(x*z + y*w),     2*(y*z - x*w),     1 - 2*(x*x + y*y)
-    };
+    float R[9]; quatToBasis(q, R);
     const float white[4] = { 1, 1, 1, 1 };
     auto part = [&](float lx, float ly, float lz, float sx, float sy, float sz,
                     float pitch, x3::rhi::TextureHandle tex) {
-        // Local pitch about X (raked bow / windscreen), then scale, then the
-        // hull rotation, then translate: world = T * Rq * (T_local * Rx * S).
-        const float cp = std::cos(pitch), sp = std::sin(pitch);
-        // Basis columns of Rx*S in local space.
-        const float bx[3] = { sx, 0, 0 };
-        const float by[3] = { 0, sy * cp, sy * sp };
-        const float bz[3] = { 0, -sz * sp, sz * cp };
-        auto rot = [&](const float v[3], float out[3]) {
-            out[0] = R[0]*v[0] + R[3]*v[1] + R[6]*v[2];
-            out[1] = R[1]*v[0] + R[4]*v[1] + R[7]*v[2];
-            out[2] = R[2]*v[0] + R[5]*v[1] + R[8]*v[2];
-        };
-        float cX[3], cY[3], cZ[3], off[3];
-        rot(bx, cX); rot(by, cY); rot(bz, cZ);
-        const float l[3] = { lx, ly, lz };
-        rot(l, off);
-        const float world[16] = {
-            cX[0], cX[1], cX[2], 0.0f,
-            cY[0], cY[1], cY[2], 0.0f,
-            cZ[0], cZ[1], cZ[2], 0.0f,
-            hp[0] + off[0], hp[1] + off[1], hp[2] + off[2], 1.0f
-        };
+        float world[16];
+        partWorld(R, hp, lx, ly, lz, sx, sy, sz, pitch, world);
         device.drawMesh(frame, m_boatCube, tex, white, world);
     };
     part(0.0f, 0.05f,  0.45f, 2.70f, 1.00f, 4.90f, 0.0f,  m_texHull);   // main hull
@@ -467,6 +614,50 @@ void RiverLife::drawBoatSkin(x3::rhi::IRenderDevice& device,
     part( 1.32f, 0.48f, 0.30f, 0.14f, 0.22f, 4.60f, 0.0f, m_texTrim);   // stbd stripe
     part(0.0f, 0.92f, -0.70f, 1.90f, 0.60f, 0.14f, 0.38f, m_texGlass);  // windscreen
     part(0.0f, 0.70f,  3.10f, 0.50f, 0.90f, 0.55f, 0.0f,  m_texMotor);  // outboard
+}
+
+// ---------------------------------------------------------------------------
+// THE PATROL SUB's composed skin. Same doctrine as the speedboat above (no
+// submarine GLB exists that fits this world — the armory's only one is a rigged
+// Victorian steampunk character with walk/shoot clips), one step further: a
+// round pressure hull instead of boxes, because a sub read through green river
+// water is almost entirely SILHOUETTE and a boxy silhouette reads as a crate.
+//
+// Hull forward is -Z (CONVENTIONS.md), so the Y-aligned cylinder primitives are
+// stood along Z with pitch = pi/2. Overall ~6.6 m long, 1.2 m diameter — a
+// MIDGET patrol boat, the only kind that fits an 18-foot river; a fleet sub
+// would be aground bow and stern.
+// ---------------------------------------------------------------------------
+void RiverLife::drawSubSkin(x3::rhi::IRenderDevice& device,
+                            const x3::rhi::FrameContext& frame,
+                            const float hp[3], const float q[4]) {
+    float R[9]; quatToBasis(q, R);
+    const float white[4] = { 1, 1, 1, 1 };
+    const float kHalfPi = 1.57079633f;
+    auto part = [&](x3::rhi::MeshHandle mesh, x3::rhi::TextureHandle tex,
+                    float lx, float ly, float lz, float sx, float sy, float sz,
+                    float pitch) {
+        float world[16];
+        partWorld(R, hp, lx, ly, lz, sx, sy, sz, pitch, world);
+        device.drawMesh(frame, mesh, tex, white, world);
+    };
+    // Pressure hull + rounded nose and tail (the cylinder is unit-radius/unit
+    // half-height, the sphere unit-radius, so the scales below ARE the metres).
+    part(m_subTube, m_texSubHull,  0.0f, 0.0f,  0.0f,  0.58f, 2.90f, 0.58f, kHalfPi);
+    part(m_subBall, m_texSubHull,  0.0f, 0.0f, -2.90f, 0.58f, 0.58f, 0.85f, 0.0f);
+    part(m_subBall, m_texSubHull,  0.0f, 0.0f,  2.90f, 0.52f, 0.52f, 0.75f, 0.0f);
+    // Conning tower (sail) + its dive planes.
+    part(m_boatCube, m_texSubDark, 0.0f, 0.62f, -0.30f, 0.46f, 0.68f, 1.45f, 0.0f);
+    part(m_boatCube, m_texSubDark, 0.0f, 1.05f, -0.30f, 1.55f, 0.09f, 0.42f, 0.0f);
+    // Stern planes + rudder, just forward of the screw.
+    part(m_boatCube, m_texSubDark, 0.0f, 0.0f,  2.55f, 2.05f, 0.09f, 0.52f, 0.0f);
+    part(m_boatCube, m_texSubDark, 0.0f, 0.0f,  2.55f, 0.09f, 1.35f, 0.52f, 0.0f);
+    // The screw: a short shrouded disc on the tail cone.
+    part(m_subTube, m_texSubDark,  0.0f, 0.0f,  3.62f, 0.34f, 0.07f, 0.34f, kHalfPi);
+    // ONE amber running light on the sail — a dark hull under dark water needs
+    // a single point the eye can find (rule 5: texture-gated emissive over a
+    // near-black body, never a flat bright quad).
+    part(m_boatCube, m_texSubLamp, 0.0f, 1.16f, -0.30f, 0.14f, 0.09f, 0.14f, 0.0f);
 }
 
 void RiverLife::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,

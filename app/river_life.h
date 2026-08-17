@@ -85,6 +85,13 @@ public:
     // Live fish state (proof-shot rigs aim at the DRIFTED school centers).
     const FishSystem& fish() const { return m_fish; }
     uint32_t boatCount() const { return (uint32_t)m_boats.size(); }
+    // ---- The patrol sub (proof shots + self-checks) ----
+    bool  subBuilt() const { return m_sub.ok; }
+    void  subPos(float out[3]) const;
+    // How far the hull's TOP is below the local river surface (m). Positive =
+    // submerged, which is the whole point: the silhouette must read as under
+    // the water from the bridge, not as a boat.
+    float subSubmergence() const;
     // Hull world position of boat `i` (bounds/eye-gate checks).
     void     boatPos(uint32_t i, float out[3]) const;
     float    boatSpeed(uint32_t i) const;
@@ -143,6 +150,32 @@ private:
     void drawBoatSkin(x3::rhi::IRenderDevice& device,
                       const x3::rhi::FrameContext& frame,
                       const float hullPos[3], const float hullQ[4]);
+
+    // ---- THE PATROL SUB (owner: "a sub or 2") ------------------------------
+    // One midget submarine holding depth in the deep 18-ft channel, patrolling
+    // the spine well clear of the speedboat lanes. Same BoatDemo buoyancy hull
+    // the boats use, built with isSub (dive thrust), and — the part that only
+    // became possible with ONE water truth — its depth is held below the LOCAL
+    // river surface, which descends downstream: on the old flat plane a sub
+    // holding "2 m down" would have driven itself into the bed.
+    struct Sub {
+        BoatDemo demo;
+        bool  ok = false;
+        float ax = 0, az = 0, bx = 0, bz = 0;   // patrol lane ends
+        int   target = 1;
+        float heading = 0.0f, headingPrev = 0.0f;
+        bool  haveHeading = false;
+        float waterY = 0.0f;   // local surface over the hull (re-fed each step)
+        float depth  = 1.9f;   // hull centre below the surface (m)
+    };
+    Sub m_sub;
+    // Composed sub skin: a round pressure hull reads as a submarine in
+    // silhouette where a box reads as a crate. Shared unit primitives.
+    x3::rhi::MeshHandle    m_subTube{}, m_subBall{};
+    x3::rhi::TextureHandle m_texSubHull{}, m_texSubDark{}, m_texSubLamp{};
+    void drawSubSkin(x3::rhi::IRenderDevice& device,
+                     const x3::rhi::FrameContext& frame,
+                     const float hullPos[3], const float hullQ[4]);
     x3::audio::SoundHandle m_outboardSnd{};
     // The bridge crossing's own water level — the reach ANCHOR (logging, and
     // the fallback when a query lands off the water table). NOT "the rendered
