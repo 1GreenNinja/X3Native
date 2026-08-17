@@ -42,11 +42,46 @@ inline std::filesystem::path exeDirPath() {
 #endif
 }
 
+// Why the resolved root won — filled by resolveAssetRoot, reported by
+// assetRootSource() so "which tree am I reading?" is answerable from a log
+// instead of from a debugger. The header comment has asked for this since the
+// D:\Assets incident; without it a mis-resolved root is completely silent.
+inline std::string& assetRootSourceSlot() {
+    static std::string s = "unresolved";
+    return s;
+}
+
 // Resolve the asset root once. See header comment for the candidate order.
 inline std::string resolveAssetRoot() {
     namespace fs = std::filesystem;
     std::error_code ec;
     const fs::path exe = exeDirPath();
+
+    // ---- 0. THE EXPLICIT OVERRIDE, ahead of every heuristic. -------------
+    // X3_ASSET_ROOT=<dir> points the game at another tree DELIBERATELY and
+    // LOUDLY. This exists so that "run against the asset store / another
+    // checkout / a deployed tree" never has to be done by widening the
+    // candidate list below — which is how D:\Assets silently captured every
+    // asset once already. It is still marker-checked: an override that is not
+    // an asset root is refused and reported rather than believed, because a
+    // typo'd env var that half-works is worse than one that fails.
+    if (const char* env = std::getenv("X3_ASSET_ROOT")) {
+        if (env[0]) {
+            const fs::path p(env);
+            const bool dir = fs::is_directory(p, ec);
+            const bool marked = dir && (fs::is_directory(p / "surface_library", ec)
+                                     || fs::is_directory(p / "converted_glb", ec));
+            if (marked) {
+                assetRootSourceSlot() = std::string("X3_ASSET_ROOT=") + env;
+                fs::path norm = fs::weakly_canonical(p, ec);
+                return (ec ? p : norm).string();
+            }
+            assetRootSourceSlot() = std::string("X3_ASSET_ROOT=") + env
+                                  + (dir ? " REFUSED (no surface_library/converted_glb inside)"
+                                         : " REFUSED (not a directory)")
+                                  + " — fell through to the normal search";
+        }
+    }
 
     const fs::path candidates[] = {
         exe / ".." / ".." / "assets",         // build-ninja/bin    -> repo/assets
@@ -86,14 +121,27 @@ inline std::string resolveAssetRoot() {
         return fs::is_directory(p / "surface_library", ec)
             || fs::is_directory(p / "converted_glb", ec);
     };
-    for (const fs::path& c : candidates) {
+    static const char* kWhy[] = {
+        "exe/../../assets (ninja build tree)",
+        "exe/../../../assets (multi-config build tree)",
+        "exe/assets (shipped layout)",
+        "./assets (run from the repo root)",
+        "assets (relative)",
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        const fs::path& c = candidates[i];
         if (fs::is_directory(c, ec) && looksLikeAssetRoot(c)) {
             // Normalize (collapse the ../ segments) so logs read cleanly.
             fs::path norm = fs::weakly_canonical(c, ec);
+            if (assetRootSourceSlot() == "unresolved") assetRootSourceSlot() = kWhy[i];
+            else assetRootSourceSlot() += std::string("; then ") + kWhy[i];
             return (ec ? c : norm).string();
         }
     }
     // Transition fallback: the external library on machines that still have G:.
+    // Reaching here means NOTHING looked like an asset root, which is nearly
+    // always a wrong working directory rather than a machine that still has G:.
+    assetRootSourceSlot() += "; NOTHING MATCHED — G:/GameModels transition fallback";
     return std::string("G:/GameModels");
 }
 
@@ -105,6 +153,16 @@ inline std::string resolveAssetRoot() {
 inline const std::string& assetRoot() {
     static const std::string root = detail::resolveAssetRoot();
     return root;
+}
+
+// WHICH candidate won, in words. Log this at boot: a mis-resolved asset root
+// is otherwise completely silent — art simply goes missing and gets written
+// off as "not on this machine" while it sits in the tree the whole time. That
+// is not hypothetical; it is what happened, and it cost a day.
+// Only meaningful after the first assetRoot() call.
+inline const std::string& assetRootSource() {
+    (void)assetRoot();                       // force resolution
+    return detail::assetRootSourceSlot();
 }
 
 // Convenience: the two roots every loader uses.

@@ -466,6 +466,14 @@ int x3AppMain(int argc, char** argv) {
     }
 
     x3::logInfo("X3Engine starting...");
+    // WHICH ASSET TREE AM I READING? Logged at boot because a mis-resolved
+    // asset root is otherwise completely silent — the art simply goes missing
+    // and gets written off as "only on the authoring box" while it sits in the
+    // repo. That is exactly what D:\Assets did once (see app/asset_root.h), and
+    // one line here makes it answerable from any play log.
+    // Override deliberately with X3_ASSET_ROOT=<dir>.
+    x3::logInfo("assets: " + x3::game::assetRoot()
+                + "   [" + x3::game::assetRootSource() + "]");
     x3::boot::mark("static init + args");
 
     // --test-boottime gates the CANONICAL world (canonlevel — the data-driven
