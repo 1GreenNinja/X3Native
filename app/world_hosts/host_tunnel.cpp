@@ -656,6 +656,29 @@ int hostTunnel(HostContext& hc) {
         // Stand on the ring itself: its first node, lifted to the graded datum.
         startPos[0] = ringSpec.x[0];
         startPos[2] = ringSpec.z[0];
+        // IN THE LANES, not on the crossover (Tim, driving the freeway:
+        // "Starting point should be moved to the lanes on the right"). The
+        // dual route's node 0 is the median centerline — and a turnaround
+        // slab sits exactly there. Offset to the RIGHT carriageway's lane 4
+        // (right-hand traffic: median on the driver's left), using the same
+        // median plan the ribbon was built from.
+        if (ringSpec.dualCarriageway && ringRoadY.size() == ringSpec.x.size()) {
+            const std::vector<float> mp =
+                x3::game::computeMedianPlan(ringSpec, ringRoadY);
+            if (!mp.empty()) {
+                // Node 0 tangent -> right vector (RH Y-up: right = (-fz, fx)).
+                const float fx0 = ringSpec.x[1] - ringSpec.x[0];
+                const float fz0 = ringSpec.z[1] - ringSpec.z[0];
+                const float fl  = std::sqrt(fx0 * fx0 + fz0 * fz0);
+                if (fl > 0.01f) {
+                    const float rx = -fz0 / fl, rz = fx0 / fl;
+                    const float lat = mp[0] + x3::game::kFwyPavedHalfM
+                                    - 0.5f * x3::game::kLaneFt * x3::game::kFtToM;
+                    startPos[0] += rx * lat;
+                    startPos[2] += rz * lat;
+                }
+            }
+        }
         startPos[1] = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]) + 1.0f;
     }
 
