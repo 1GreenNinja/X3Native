@@ -287,6 +287,13 @@ struct CliOptions {
     // unmirrored, backpedal, jump mid-flight, and each F1 camera mode.
     bool        jakeShot = false;
     std::string jakeShotDir = "docs/screenshots/jake";
+    // --screenshot-town <dir>: the SMALL MOUNTAIN TOWN proof set (`--world
+    // tunnel`, headless). Five eyes-on gates for W-TOWN: main street from the
+    // road, a shop front close enough to judge the textures, the pedestrians
+    // mid-stride on the sidewalk, the lit windows at dusk, and the town read
+    // from across the valley. Implies --world tunnel + headless.
+    bool        townShot = false;
+    std::string townShotDir = "docs/screenshots/town";
 
     // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
     // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp
