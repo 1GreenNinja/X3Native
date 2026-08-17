@@ -10,6 +10,34 @@ top of the substrate we already have.
 > `WORLD_AND_EDITOR_PLAN.md` (E1/E2/E3 phases), `X3_WORLD_BLUEPRINT.md`,
 > `SPIRE_LEVELARCHITECT_DIMS.md`.
 
+> ## ⚠️ CORRECTION 2026-08-17 — §1's blocker table is STALE. Read this first.
+>
+> The table below still says "Dear ImGui is NOT integrated" and "no live editor mode".
+> **Both shipped.** Verified in the tree, not from memory:
+>
+> | Claimed blocker | Actually |
+> |---|---|
+> | "Dear ImGui is NOT integrated (no source, no `imgui_impl_vulkan/glfw`, no CMake ref)" | **Integrated.** `vcpkg.json:20` (docking + glfw + vulkan bindings), `CMakeLists.txt:51`, `engine/CMakeLists.txt:133` (`imgui::imgui` PRIVATE), `app/CMakeLists.txt:274`. The device owns the frame lifecycle (`initEditorUI`/`begin`/`endEditorUI`), called from `app/main.cpp` under `--editor`. |
+> | "No editor mode hosting edit input over the live viewport" | **Shipped.** `app/editor/editor_host.{h,cpp}` (2,089 lines): dockspace + menubar, Orbit/Fly/FPS-walk cameras, TRS gizmo + ray-pick, undo/redo, Outliner/Details, the Armory browser, the AI Architect panel, Doom-Builder keyboard nudge editing (Phase 5), portal authoring. `--test-editor` = **23 + 19 armory + 17 canon checks, all green.** |
+> | "Two divergent JSON formats" | **Still true.** This is the one real blocker left of the original three. `app/editor/canon_import.{h,cpp}` reads canonical floors into brushes; nothing writes the canonical schema back, and `entities[]`/`triggers[]` are still empty and still not instantiated by the loader. |
+>
+> The pattern this file keeps hitting is the one `docs/X3NATIVE_ROADMAP.md` §10 names:
+> subsystems get built faster than the plan gets updated, so the plan understates
+> the tool and misdirects the next session. **Phases 0-5 of
+> `LEVEL_ARCHITECT_BUILD_PLAN.md` are done except Phase 5's write path.**
+>
+> ### Also shipped since: the CUTAWAY VIEW (2026-08-17, lane W-CUTAWAY)
+> The owner's Babylon Level Architect X-ray, ported native:
+> `--world cutaway` / `--screenshot-cutaway <dir>` / `--test-cutaway`
+> (`app/cutaway.{h,cpp}`, `app/world_hosts/host_cutaway.cpp`). Reads the canonical
+> project through `loadCanonTower` and draws the whole 7-floor, 124-room,
+> 160-door facility as accumulating translucent shells with per-floor and
+> per-structure visibility, an opacity dial, a colour legend, a measured stats
+> panel, a live POS/DEPTH readout and hover cards. It is a VIEW, not an editor —
+> no Scene, no Jolt, no gameplay. Spec: the three
+> `LEVEL_ARCHITECT_CUTAWAY_REF*.png` captures in this directory. Proof set:
+> `docs/screenshots/cutaway/`.
+
 ---
 
 ## 1. Vision Recap — tied to what already exists

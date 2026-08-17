@@ -168,3 +168,14 @@ foreach(vsrc velocity.vert velocity.frag)
 endforeach()
 add_custom_target(x3velocityshaders DEPENDS ${X3_VELOCITY_SPV})
 add_dependencies(x3core x3velocityshaders)
+
+# ---- Pinned console-region probe (console-perf-region lane) ----------------
+# Headless gate for engine/core/x3_log_region.h: asserts the VT escape
+# sequences of the pinned telemetry block + framed input row (an agent cannot
+# eyeball a live console), plus the inert/headless personality of the sink.
+# Deliberately tiny: just the sink and the pure protocol, no engine deps.
+add_executable(x3_conregion_probe
+    core/x3_log_region_probe.cpp
+    core/x3_log.cpp)
+target_include_directories(x3_conregion_probe PRIVATE ${CMAKE_SOURCE_DIR})
+target_compile_features(x3_conregion_probe PRIVATE cxx_std_20)

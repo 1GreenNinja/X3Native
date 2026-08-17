@@ -51,6 +51,11 @@ add_library(x3app SHARED
     world_hosts/host_valley.cpp
     world_hosts/host_cliffs.cpp
     world_hosts/host_mines.cpp   # mine-entrance showcase (inspx/mines)
+    # W-CUTAWAY — the Level Architect CUTAWAY VIEW: the whole canonical facility
+    # in X-ray (--world cutaway / --screenshot-cutaway / --test-cutaway).
+    # docs/design/LEVEL_ARCHITECT_CUTAWAY_REF{,2,3}.png is the spec.
+    world_hosts/host_cutaway.cpp
+    cutaway.cpp
     world_hosts/host_streamed.cpp
     # Phase 2 — space-combat stack folded from feat/cockpit-vattalus
     world_hosts/host_space.cpp
@@ -72,6 +77,7 @@ add_library(x3app SHARED
     # W-FOREST — the sketch's brown regions: area forests, two-tier draw
     forest.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
+    interchange.cpp     # the diamond interchange — the first structural grade split
     traffic.cpp         # W-TRAFFIC — AI traffic on the 16-lane freeway
     summit_lot.cpp      # the parking lot at the top of the summit spur
     ridge_road.cpp      # the dirt road along the tops, lot -> the bore's massif
@@ -189,6 +195,7 @@ add_library(x3app SHARED
     world_regions.cpp
     world_stream.cpp
     world_map.cpp
+    map_poi.cpp         # W-MAP: shared MapPoi contract for lanes 4-6 (town/stations/factory)
     city.cpp
     ocean_base.cpp
     save.cpp

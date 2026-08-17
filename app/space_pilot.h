@@ -374,6 +374,48 @@ private:
     float m_laserCd = 0;          // seconds remaining on the laser cooldown
 };
 
+// ---- AIM SOVEREIGNTY --------------------------------------------------------
+// (owner, live 2026-08-16: "The aim always returns to the overlord ship!!! it
+// should NOT..") Policy gate the host runs in FRONT of steerNoseToward() so the
+// 6DOF target hold can only ever HOLD the aim the player already has — it never
+// re-acquires a target he has deliberately aimed away from. The old gate was
+// "no mouse THIS frame", so the instant the mouse stopped the hold slewed the
+// nose back onto the locked capital from ANY angle. Three rules, in order:
+//  1. INPUT IS SOVEREIGN. Any look input this frame -> rate 0, plus kGraceSec
+//     after the LAST input, so the hold can never snatch the nose the moment
+//     the mouse pauses.
+//  2. AIM-AWAY SUSPENDS. Once the nose is more than kBreakRad off the target
+//     the hold SUSPENDS and stays suspended until the player HIMSELF brings the
+//     nose back inside kEngageRad (hysteresis — it cannot flap on the border).
+//     A fresh lock starts suspended unless it is already inside the engage
+//     cone: the assist helps hold what YOU aim at; it never aims for you.
+//  3. Otherwise the hold runs at the host's rate and keeps the nose on the
+//     contact while the ship strafes in 6DOF (the 2026-08-14 "strafe and keep
+//     on a target the whole time" behaviour, unchanged).
+// All timing is dt-integrated (house rule: no per-frame factors; 165 Hz safe).
+// Headless-testable; covered by --test-space T19-T21.
+struct AimSovereignty {
+    static constexpr float kGraceSec  = 0.40f; // assist lockout after last look input (s)
+    static constexpr float kBreakRad  = 0.45f; // ~26 deg off target -> hold suspends
+    static constexpr float kEngageRad = 0.15f; // ~8.6 deg: player re-aimed -> hold resumes
+
+    // Call when the locked target CHANGES (or a lock first appears): the hold
+    // starts suspended unless the new contact is already inside the engage cone.
+    void onNewTarget(float errRad) { suspended_ = (errRad > kEngageRad); }
+
+    // Per-frame policy. errRad = current nose->target angle (steerNoseToward
+    // with maxRateRad 0 reports it without steering). Returns the rate to feed
+    // steerNoseToward this frame (0 = assist fully off).
+    float gate(bool lookingNow, float errRad, float assistRate, float dt);
+
+    bool  suspended() const { return suspended_; }
+    float graceLeft() const { return grace_; }
+
+private:
+    float grace_     = 0.0f;
+    bool  suspended_ = false;
+};
+
 // ---- --test-space self-test (≥7 sub-checks, no window/Vulkan) ---------------
 // Builds a minimal IPhysicsWorld + drives the controller with synthetic input;
 // asserts (1) spawn, (2) W/S accelerates along forward, (3) mouse-Y rotates

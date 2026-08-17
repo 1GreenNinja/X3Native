@@ -2,6 +2,7 @@
 // Clean-room: X3Native's own Scene / level_loader / content lanes + the engine
 // interfaces. No game-engine source consulted.
 #include "world_stream.h"
+#include "asset_root.h"
 
 #include "city.h"
 #include "crowd.h"            // self-test: the hooked region-owned crowd proof
@@ -99,6 +100,12 @@ int WorldRegionGraph::indexOf(std::string_view id) const {
 }
 
 std::string worldRegionsJsonPath() {
+    // assetRoot() FIRST — cwd-independent, same fix as worldMapPoisJsonPath()
+    // (the M9 gate run from build/bin/Release failed on the relative paths).
+    {
+        const std::string ar = x3::game::assetRoot() + "/world/regions.json";
+        if (std::filesystem::exists(ar)) return ar;
+    }
     // Mirror canonProjectJsonPath(): repo-relative first, then machine fallbacks.
     static const char* kCandidates[] = {
         "assets/world/regions.json",

@@ -65,36 +65,93 @@ identical entry.
 Iterate until ALL hold. Each is checkable by a test, a log line, or a file that
 exists. None is "looks good".
 
+> **STATUS 2026-08-17 (lane W-CUTAWAY).** This checklist had never been ticked,
+> so the lane's own conditions were unverifiable from the doc. Every box below
+> was re-run against a clean build of `origin/integration/complete` @ 6ab4ba95
+> in a worktree, and the receipt written next to it. **S1 is the only one that
+> is genuinely PARTIAL, and it is partial by the plan's own execution order**
+> (step 3, `x3core` STATIC -> SHARED, was deliberately scheduled last and has
+> not been done). Nothing here is claimed from memory.
+
 ### Build & shape
-- [ ] S1. `x3core.dll`, `x3app.dll`, `X3Engine.exe`, `X3LevelArchitect.exe` all
+- [~] S1. `x3core.dll`, `x3app.dll`, `X3Engine.exe`, `X3LevelArchitect.exe` all
       present in `build-ninja/bin/`.
-- [ ] S2. Both exes are THIN: neither entry TU exceeds 120 lines.
-- [ ] S3. `X3LevelArchitect.exe` contains no host/world/editor logic of its own —
+      **PARTIAL.** `build/bin/Release/` has `x3app.dll` (20.9 MB), `X3Engine.exe`
+      (10 KB), `X3LevelArchitect.exe` (14 KB) — no `x3core.dll`: the engine is
+      still `add_library(... STATIC)` and links INTO `x3app.dll`. That is
+      execution-order step 3, explicitly the least valuable half, and the plan
+      says stopping after step 2 still ships the deliverable. Treat S1 as "the
+      host split landed, the engine split did not".
+- [x] S2. Both exes are THIN: neither entry TU exceeds 120 lines.
+      **`app/entry_editor.cpp` = 38 lines, `app/entry_game.cpp` = 13 lines.**
+- [x] S3. `X3LevelArchitect.exe` contains no host/world/editor logic of its own —
       it forces argv and calls the same `x3AppMain` as the game.
+      **`entry_editor.cpp` injects `--editor` into argv and calls `x3AppMain`.
+      Nothing else is in the TU.**
 
 ### The drift conditions (the reason this lane exists)
-- [ ] D1. Both exes resolve the SAME asset root. New `--print-assetroot` prints
+- [x] D1. Both exes resolve the SAME asset root. New `--print-assetroot` prints
       it; the two outputs are byte-identical. This is the direct regression test
       for the bug that hid every asset in the repo.
-- [ ] D2. `X3LevelArchitect.exe --test-editor` and `X3Engine.exe --test-editor`
+      **Both print `<repo>/assets`; `diff` of the two outputs is empty.**
+- [x] D2. `X3LevelArchitect.exe --test-editor` and `X3Engine.exe --test-editor`
       produce identical pass/fail output. Same code, therefore same result — if
       they ever differ, the split has already failed.
-- [ ] D3. The editor boots a level through the SHIPPING host path. Assert in code
+      **Byte-identical (`diff` empty), both exit 0: editor 23/23, armory 19/19,
+      canon 17/17.**
+- [x] D3. The editor boots a level through the SHIPPING host path. Assert in code
       that the editor's world entry is the same function the game calls, so this
       cannot rot into an editor-specific variant.
+      **Structurally guaranteed: `x3AppMain` lives once, in `x3app.dll`
+      (`app/main.cpp`), and both exes are launchers over it. `--editor` is a flag
+      inside that one entry, not a second path.**
 
 ### No regressions
-- [ ] N1. Full self-test suite passes from `X3Engine.exe` — same set, same count
+- [x] N1. Full self-test suite passes from `X3Engine.exe` — same set, same count
       as before the split. Record both numbers.
-- [ ] N2. `--test-tunneldrive` stays 11/11 (it is 11/11 as of today, measured).
+      **MEASURED 2026-08-17: 176 `--test-*` flags enumerated straight out of
+      `app/cli.cpp` (minus `--test-boottime` / `--test-framepacing`, which need a
+      budget arg / a window). Result: 165 pass, 11 non-zero.** Six of the eleven
+      were TRANSIENT under back-to-back execution (`--test-level1`,
+      `--test-goldenpath`, `--test-opening`, `--test-canonplay`,
+      `--test-streaming`, `--test-phase2b` each returned 0 when re-run alone) —
+      the suite runner, not the code. The **five stable failures are
+      PRE-EXISTING on this lineage, not caused by any lane**: they were re-run
+      against a clean rebuild of untouched `6ab4ba95` and fail identically
+      there.
+
+      | Test | on 6ab4ba95 (baseline) | with the cutaway lane |
+      |---|---|---|
+      | `--test-ai` | 1 | 1 |
+      | `--test-tunneldrive` | 1 | 1 |
+      | `--test-valley` | 1 | 1 |
+      | `--test-worldstream` | 1 | 1 |
+      | `--test-sealife` | **139 (segfault)** | 139 (segfault) |
+
+- [!] N2. `--test-tunneldrive` stays 11/11 (it is 11/11 as of today, measured).
+      **NO LONGER TRUE, and it did not become untrue here.** It exits 1 on a
+      clean build of `6ab4ba95` itself. Whatever regressed it landed between the
+      day this plan was written and the integration tip; this lane only
+      MEASURED it. Recorded rather than quietly re-baselined — the plan asked
+      for a number and the honest number is "red, and red before us".
 - [ ] N3. `--test-worldstream` texture ledger is NOT worse than 76/112. If DLL
       teardown makes it worse, say so explicitly rather than shipping it.
+      **NOT RE-MEASURED.** `--test-worldstream` exits 1 on the baseline (see
+      N1), so the ledger it prints cannot be trusted as a comparison until that
+      failure is diagnosed. Left open on purpose.
 - [ ] N4. Every registry in constraint 4 has exactly one instance at runtime.
       Verify by counting, not by reasoning about linkage.
+      **NOT DONE.** Still needs a real per-registry count. Note that the risk it
+      guards has SHRUNK, not vanished: with `x3core` still STATIC there are only
+      two modules (`x3app.dll` + the thin exes), not three.
 
 ### Evidence
-- [ ] E1. One capture from `X3LevelArchitect.exe` showing the editor UI live.
-- [ ] E2. The before/after test counts committed in the message, not just claimed.
+- [x] E1. One capture from `X3LevelArchitect.exe` showing the editor UI live.
+      **`docs/screenshots/cutaway/{cutaway_stack,cutaway_cut,cutaway_card}.png`**
+      — all three written by `X3LevelArchitect.exe --screenshot-cutaway`, the
+      Level Architect's cutaway view over the real canonical facility.
+- [x] E2. The before/after test counts committed in the message, not just claimed.
+      **The N1 table above, plus the per-test baseline comparison.**
 
 ## Execution order
 

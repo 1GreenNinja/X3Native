@@ -152,7 +152,13 @@ const ZoneAir& airFor(uint8_t z) {
 // The engine defaults (VulkanRenderDevice m_ambient / m_iblIntensity), re-asserted the
 // moment the eye leaves the room graph so the exterior/sky path is untouched.
 constexpr float kExteriorAmbient[3] = { 0.42f, 0.44f, 0.50f };
-constexpr float kExteriorIbl        = 0.50f;   // app_run sets this for the SEAM-2 facade
+// FULL sky irradiance outdoors (fix/exterior-atmosphere). The historic 0.5 cut
+// existed to keep the FP viewmodel from washing pink-white INDOORS — but
+// applyZoneAtmosphere now owns interior IBL per-zone (airFor) and re-asserts it
+// on every zone change, so interiors no longer see this value at all. At 0.5 the
+// exterior lost half its sky fill AND (m_iblSpecular = -1 falls back to this)
+// half its env-specular — the chalky facade / dead glass read.
+constexpr float kExteriorIbl        = 1.0f;
 
 // Indexed by Zone. Texture sets are AD-3's curated survivors (matlib-verified).
 const Recipe& recipeFor(uint8_t z) {
@@ -1849,9 +1855,24 @@ void RoomDressing::applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t 
     const bool interior = (eyeRoom < m_roomZone.size());
     const int key = interior ? zone : -2;    // -2 = "exterior" (distinct from -1 = unset)
     if (key == m_lastZone) return;
+    const bool wasExterior = (m_lastZone == -2);
     m_lastZone = key;
-    device.setFog(m_zoneFog[(size_t)zone]);
     if (interior) {
+        device.setFog(m_zoneFog[(size_t)zone]);
+        if (wasExterior) {
+            // Coming back INSIDE: re-assert the canon interior grade (the exact
+            // cell_dressing build-time values — set once, and the exterior branch
+            // below now overwrites it outdoors). Gated on the exterior->interior
+            // transition only, so worlds that never leave the room graph (wing
+            // dressing) never see a grade they did not opt into.
+            x3::rhi::IRenderDevice::GradeParams gr;
+            gr.strength = 0.85f;
+            gr.shadowTint[0] = 0.94f; gr.shadowTint[1] = 1.00f; gr.shadowTint[2] = 1.03f;
+            gr.highlightTint[0] = 1.04f; gr.highlightTint[1] = 1.00f; gr.highlightTint[2] = 0.95f;
+            gr.saturation = 0.96f;
+            gr.vignette   = 0.10f;
+            device.setGrade(gr);
+        }
         const ZoneAir& air = airFor((uint8_t)zone);
         device.setAmbient(air.amb[0], air.amb[1], air.amb[2]);
         device.setIblIntensity(air.ibl);
@@ -1859,8 +1880,34 @@ void RoomDressing::applyZoneAtmosphere(x3::rhi::IRenderDevice& device, uint32_t 
                     std::to_string(zone) + " -> ambient " + std::to_string(air.amb[0]) +
                     " ibl " + std::to_string(air.ibl));
     } else {
+        // THE washed-out-outdoors bug (fix/exterior-atmosphere): setFog used to sit
+        // ABOVE this branch, so the ZWard default (amber, 0.0042/m, cap 0.62 — 47%
+        // opaque at 150 m) wore the ENTIRE exterior: the 13 km horizon ring was
+        // pinned to the amber cap by ~215 m. The ambient/IBL half of this exact
+        // bug was already fixed (this else branch); fog was left one statement
+        // too high. Outdoors gets THIN sky-matched air instead of zero — color =
+        // the golden-hour horizon band (applyGoldenHourSky) — so distance still
+        // reads as aerial perspective rather than pasting flat on the sky.
+        // TUNED DOWN from the prescribed 0.0004/0.35: fog.frag fogs the SKY DOME
+        // too (far depth takes the full cap), so a 0.35 cap painted the whole
+        // zenith 35% peach — the frames showed a new pink veil replacing the
+        // amber one. 0.0001/m + cap 0.12 keeps a gentle 0-1.3 km gradient on
+        // terrain while the sky keeps its authored gradient (12% warm shift).
+        device.setFog(fogOf(0.55f, 0.34f, 0.20f, 0.0001f, 1.2f, 0.12f));
         device.setAmbient(kExteriorAmbient[0], kExteriorAmbient[1], kExteriorAmbient[2]);
         device.setIblIntensity(kExteriorIbl);
+        // Release the detention grade (cell_dressing sets it once at build —
+        // strength 0.85, teal shadows/warm highlights — and nothing ever undid it
+        // outdoors). MILD outdoor grade: a whisper of the same split-tone so the
+        // golden-hour key stays warm, shadows stay honest, no vignette.
+        x3::rhi::IRenderDevice::GradeParams gr;
+        gr.strength = 0.30f;
+        gr.shadowTint[0] = 0.98f; gr.shadowTint[1] = 1.00f; gr.shadowTint[2] = 1.02f;
+        gr.highlightTint[0] = 1.03f; gr.highlightTint[1] = 1.00f; gr.highlightTint[2] = 0.96f;
+        gr.saturation = 1.0f;
+        gr.vignette   = 0.0f;
+        device.setGrade(gr);
+        x3::logInfo("[zone-air] exterior -> thin sky fog + full IBL + outdoor grade");
     }
 }
 

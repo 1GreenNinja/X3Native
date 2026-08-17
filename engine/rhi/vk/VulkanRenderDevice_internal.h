@@ -475,6 +475,9 @@ public:
     // Textured HUD rectangle sampling an app-created texture (world-map tiles).
     // Same vertex ring / deferred-record path as drawHudQuad; the record carries
     // the texture id so recordHudDraws binds it instead of the white texel.
+    // Arbitrary-corner variant (rotated map tiles — see IRenderDevice.h).
+    void drawHudImageQuad(const FrameContext& fc, TextureHandle tex,
+                          const float xyPx[8], const float rgba[4]) override;
     void drawHudImage(const FrameContext& fc, TextureHandle tex,
                       float xPx, float yPx, float wPx, float hPx,
                       const float rgba[4],
