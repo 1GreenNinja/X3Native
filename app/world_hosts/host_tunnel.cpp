@@ -5512,7 +5512,9 @@ int hostTunnel(HostContext& hc) {
             drawWaypointChevron(frame, wpv.x, pPos[1], wpv.z, pPos[0], pPos[1], pPos[2], camYaw);
         }
         // ---- TICKETS n/5, the [E] prompt and the pickup toast --------------
-        if (frame.valid && !mapOpen) {
+        // (kMmFull: the factory lane predates the 3-state map; the full map
+        // owns the screen, the mini does not.)
+        if (frame.valid && mapMode != kMmFull) {
             float pPos2[3] = { vp[0], vp[1], vp[2] };
             if (!driving && footSpawned) {
                 const x3::phys::Vec3 ft = onFoot.feet();
