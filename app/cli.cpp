@@ -157,6 +157,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
         else if (a == "--test-propclip") o.testPropClip = true;     // GATE A ext: dressing prop clip audit
         else if (a == "--test-canonplay") o.testCanonPlay = true;
+        else if (a == "--test-grounding") o.testGrounding = true;   // character grounding GATE (app/grounding.h)
         else if (a == "--test-worldswitch") {   // headless canonlevel->flag world-load repro/regression
             if (i + 1 < argc && argv[i + 1][0] != '-') o.worldSwitchTest = argv[++i];
             else o.worldSwitchTest = "streamed";

@@ -68,6 +68,7 @@ struct CliOptions {
          testVigil = false,      // --test-vigil: VIGIL bark system (trigger/cooldown/no-repeat/gate/idle)
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
+         testGrounding = false,   // --test-grounding: character feet vs support surface (app/grounding.h GATE)
          testStairNav = false,
          testPropClip = false,    // --test-propclip: dressing-layer prop AABB vs room bounds (GATE A ext)
          testKeypad = false,      // --test-keypad: realistic high-poly access keypad geometry (KP1-KP6)
