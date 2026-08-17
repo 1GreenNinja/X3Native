@@ -39,36 +39,61 @@ inline float wrap01(float t) {
 }
 
 // A "sky look": the color/intensity/haze/exposure + ambient at a phase anchor.
+// W-NIGHT growth: each look now also carries the sky DOME palette (zenith +
+// horizon — the lane the analytic sky's whole brightness actually lives in;
+// without it "night" was a dimmer sun under the same daylight-blue dome and
+// the stars could never gate on) and the directional KEY scale (sunLight, the
+// mesh.frag kSunColor multiplier — the half of darkness the ground obeys).
 struct SkyLook {
     float sunColor[3];
     float sunIntensity;
     float haze;
     float exposure;
     float ambient[3];
+    float zenith[3];
+    float horizon[3];
+    float sunLight;
 };
 
 // Keyframes anchored at each phase (and a wrap anchor == dawn). Tuned so DAY
 // reproduces the engine's existing warm-white sun look. Linear RGB. Dawn/dusk
 // are warm + low; day is bright neutral; night is dim + cool/blue.
+// Zenith/horizon day values == SkyParams' own defaults, so a midday sample is
+// the old global sky exactly. Night values are NEAR-BLACK with a whisper of
+// blue: the sky shader's star gate keys on rendered sky luminance, so THIS is
+// what actually switches the stars on; the phantom-daylight IBL ground fix in
+// ibl_env.frag keys on the same palette.
 constexpr SkyLook kLookDawn = {
     { 1.00f, 0.62f, 0.40f },  // warm orange sunrise
     0.55f, 0.70f, 1.05f,
     { 0.10f, 0.07f, 0.09f },
+    { 0.050f, 0.095f, 0.280f }, { 0.940f, 0.520f, 0.300f },
+    0.55f,
 };
 constexpr SkyLook kLookDay = {
     { 1.00f, 0.97f, 0.92f },  // engine default warm white
     1.00f, 0.40f, 1.00f,
     { 0.16f, 0.17f, 0.20f },
+    { 0.10f, 0.28f, 0.66f }, { 0.62f, 0.74f, 0.92f },   // == SkyParams defaults
+    1.00f,
 };
 constexpr SkyLook kLookDusk = {
     { 1.00f, 0.55f, 0.34f },  // deeper orange/red sunset
     0.55f, 0.72f, 1.05f,
     { 0.10f, 0.07f, 0.08f },
+    { 0.042f, 0.070f, 0.210f }, { 1.000f, 0.440f, 0.190f },
+    0.55f,
 };
 constexpr SkyLook kLookNight = {
-    { 0.30f, 0.38f, 0.62f },  // cool blue moonlight
-    0.18f, 0.30f, 1.15f,
-    { 0.045f, 0.05f, 0.075f },
+    { 0.62f, 0.70f, 0.88f },  // the MOON's pale disc color (sunDir is the moon at night)
+    0.30f,                    // disc/halo intensity — a moon, not a floodlight
+    // haze 0.52, not the old 0.30: the sky shader treats haze < 0.5 as "shading
+    // toward deep space" and starts drawing stars BELOW the horizon; a ground
+    // world's night keeps its aerosol so the starfield stays celestial.
+    0.52f, 1.12f,
+    { 0.024f, 0.028f, 0.046f },
+    { 0.0016f, 0.0024f, 0.0060f }, { 0.0070f, 0.0100f, 0.0200f },
+    0.05f,                    // moonlight key: see the road faintly, nothing more
 };
 
 void lerpLook(const SkyLook& a, const SkyLook& b, float u, SkyLook& out) {
@@ -77,6 +102,9 @@ void lerpLook(const SkyLook& a, const SkyLook& b, float u, SkyLook& out) {
     out.haze         = lerp(a.haze, b.haze, u);
     out.exposure     = lerp(a.exposure, b.exposure, u);
     lerp3(a.ambient, b.ambient, u, out.ambient);
+    lerp3(a.zenith,  b.zenith,  u, out.zenith);
+    lerp3(a.horizon, b.horizon, u, out.horizon);
+    out.sunLight = lerp(a.sunLight, b.sunLight, u);
 }
 
 } // namespace
@@ -152,6 +180,13 @@ TodSample TimeOfDay::sampleAt(float t) const {
     s.sky.sunIntensity = look.sunIntensity;
     s.sky.haze         = look.haze;
     s.sky.exposure     = look.exposure;
+    s.sky.zenith[0]    = look.zenith[0];
+    s.sky.zenith[1]    = look.zenith[1];
+    s.sky.zenith[2]    = look.zenith[2];
+    s.sky.horizon[0]   = look.horizon[0];
+    s.sky.horizon[1]   = look.horizon[1];
+    s.sky.horizon[2]   = look.horizon[2];
+    s.sky.sunLight     = look.sunLight;
     s.ambient[0]       = look.ambient[0];
     s.ambient[1]       = look.ambient[1];
     s.ambient[2]       = look.ambient[2];
@@ -198,6 +233,38 @@ TodSample TimeOfDay::sampleAt(float t) const {
         if (elev > 0.30f)
             s.sky.haze *= clamp01(1.0f - (elev - 0.30f) / 0.42f * 0.65f);
 
+        // ---- W-NIGHT: the horizon crossing, done honestly. ----------------
+        // 1. The directional KEY dies WITH the sun, not with the phase table:
+        //    full above elev 0.10, gone by -0.02 (civil-twilight fade). The
+        //    look table's sunLight then only shapes the daytime curve.
+        {
+            float ku = clamp01((elev + 0.02f) / 0.12f);        // -0.02 .. 0.10
+            s.sky.sunLight = look.sunLight * smooth(ku);
+        }
+        // 2. Once the sun is genuinely down, the MOON takes the luminary seat:
+        //    sky.sunDir swings to the anti-solar point (above the horizon all
+        //    night, riding the same arc), sky.moon tells the sky shader to draw
+        //    a pale mottled disc + cool halo there instead of a sun, and a dim
+        //    cool key (kLookNight.sunLight via the ramp) lights the world —
+        //    lighting, shadows and the backdrop all agree the moon is the lamp.
+        //    The swap happens inside the band where the key above is already
+        //    ZERO from both sides, so the direction snap is invisible.
+        if (elev < -0.03f) {
+            float moonRamp = smooth(clamp01((-elev - 0.03f) / 0.10f));
+            s.sky.sunDir[0] = -s.sky.sunDir[0];
+            s.sky.sunDir[1] = -s.sky.sunDir[1];
+            s.sky.sunDir[2] = -s.sky.sunDir[2];
+            s.sky.moon      = moonRamp;
+            s.sky.sunLight  = 0.05f * moonRamp;                // moonlight key
+            // Disc color/intensity ease in with the ramp (the look table is
+            // already the moon by deep night; early dusk holds its warm color
+            // until the moon actually owns the sky).
+            s.sky.sunIntensity = lerp(0.0f, look.sunIntensity > 0.30f ? look.sunIntensity : 0.30f, moonRamp);
+        }
+        // 3. The smooth lamp dial for towns/headlights/windows: 0 in daylight,
+        //    1 once the sun is well down. (cityLightsOn keeps its legacy bool.)
+        s.night = smooth(clamp01((0.06f - elev) / 0.14f));
+
         // City lights: on whenever the sun is below (or barely above) the horizon.
         s.cityLightsOn = m_cfg.enableCityLights && (elev < 0.08f);
 
@@ -213,6 +280,10 @@ TodSample TimeOfDay::sampleAt(float t) const {
     }
 
     return s;
+}
+
+TodSample TimeOfDay::sampleAtHours(float hours) const {
+    return sampleAt(wrap01((hours - m_cfg.sunriseHour) / 24.0f));
 }
 
 // ===========================================================================

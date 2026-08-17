@@ -2405,6 +2405,13 @@ private:
     VkDescriptorSetLayout m_skySetLayout = VK_NULL_HANDLE;
     VkDescriptorPool      m_skyPool      = VK_NULL_HANDLE;
     SkyParams             m_sky{};   // cached params (enabled=false by default)
+    // The sky snapshot the LAST IBL dirty-mark was issued for. setSkyParams()
+    // compares against THIS (with per-field significance thresholds), not
+    // bytewise against m_sky: a live time-of-day sun moves a fraction of a
+    // degree every frame, and the IBL rebake is a BLOCKING oneTimeSubmit —
+    // per-frame memcmp dirtying would stall the whole loop on it. See
+    // setSkyParams for the thresholds.
+    SkyParams             m_skyIblMark{};
     float                 m_skyTime = 0.0f;  // sky-animation time (seconds), -> sky UBO params.z
 
     // ---- Image-based lighting (IBL) — split-sum environment reflections ----

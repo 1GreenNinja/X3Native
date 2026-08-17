@@ -65,6 +65,8 @@ add_library(x3app SHARED
     tunnel_corridor.cpp
     # W-TREES — tall broadleaf groves along the tunnel road (--world tunnel)
     road_trees.cpp
+    # W-NIGHT — roadside campfires at the grove benches (people roast hot dogs)
+    campfire.cpp
     # W-TOWN — the sketch's Small Mountain Town on the summit spur
     town.cpp
     # W-FOREST — the sketch's brown regions: area forests, two-tier draw

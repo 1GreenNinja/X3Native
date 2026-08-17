@@ -284,17 +284,34 @@ void main() {
                 // the column the darker the base. baseDark is that thickness.
                 float baseDark = smoothstep(0.06, 0.80, d);
                 float sunI = clamp(sky.sunColor.a, 0.0, 1.5);
+                // NIGHT (W-NIGHT): a cloud's body light is SKYLIGHT — when the
+                // sky itself goes near-black the deck must go dark with it, or
+                // the night sky wears daylight-white cauliflower. dayK follows
+                // the per-scene zenith/horizon luminance: the day palette
+                // (avg lum ~0.50) lands at exactly 1.0 so every existing scene
+                // is unchanged; the night palette (~0.005) crushes the body to
+                // a 3.5% floor. The moonlit read then comes from the RIM terms
+                // below, which key off sunRGB — the moon, at night.
+                float dayK = clamp((dot(sky.zenith.rgb,  vec3(0.299, 0.587, 0.114)) +
+                                    dot(sky.horizon.rgb, vec3(0.299, 0.587, 0.114))) * (0.5 / 0.30),
+                                   0.035, 1.0);
                 vec3 lit   = mix(vec3(0.88, 0.90, 0.95), sunRGB, 0.30)
-                           * mix(1.0, 0.42, gloom) * (0.55 + 0.45 * sunI);
+                           * mix(1.0, 0.42, gloom) * (0.55 + 0.45 * sunI) * dayK;
                 vec3 shade = mix(vec3(0.44, 0.48, 0.56),   // fair cumulus base
                                  vec3(0.105, 0.11, 0.135), // storm base: near-black
-                                 gloom);
+                                 gloom) * dayK;
                 vec3 cloudCol = mix(lit, shade, baseDark);
-                // Silver rim + forward scatter around the sun — daylight only
-                // (a storm deck has no silver to give).
-                cloudCol += sunRGB * rim * 0.40 * (1.0 - gloom) * (1.0 - 0.6 * baseDark);
+                // Silver rim + forward scatter around the luminary — daylight
+                // sun or night moon alike (a storm deck has no silver to give).
+                // rimK: by day (moon lane 0) exactly the old constant — no
+                // calibrated capture moves; at night the rim additionally
+                // scales by the moon's own intensity so the edges read as
+                // MOONLIT silver over the dark body, not daylight silver.
+                float moonK = clamp(sky.zenith.w, 0.0, 1.0);
+                float rimK  = mix(1.0, clamp(sunI, 0.0, 1.0), moonK);
+                cloudCol += sunRGB * rimK * rim * 0.40 * (1.0 - gloom) * (1.0 - 0.6 * baseDark);
                 float sunAlign = pow(max(dot(dir, sunDir), 0.0), 6.0);
-                cloudCol += sunRGB * sunAlign * 0.35 * (1.0 - gloom) * (1.0 - baseDark);
+                cloudCol += sunRGB * rimK * sunAlign * 0.35 * (1.0 - gloom) * (1.0 - baseDark);
 
                 // OPTICAL alpha (1 - exp(-tau)): thin edges feather out instead
                 // of clipping — this curve is PAIRED with cloudShadowFactor's in
@@ -307,20 +324,58 @@ void main() {
         }
     }
 
-    // ---- Sun disk + glow, placed at the directional sun. ----
+    // ---- Luminary disk + glow, placed at the directional sunDir. -----------
+    // moonK (sky.zenith.w = SkyParams::moon) picks WHICH luminary this is:
+    // 0 = the sun (every existing scene, byte-identical), 1 = the MOON — the
+    // host swings sunDir onto the moon for the night half of its day cycle.
     float cosAngle = clamp(dot(dir, sunDir), -1.0, 1.0);
     float sunI  = max(sky.sunColor.a, 0.0);
+    float moonW = clamp(sky.zenith.w, 0.0, 1.0);
     // Wide Mie-like forward glow: a high-power cosine lobe around the sun. Grows
     // toward the horizon (more aerosol path) for a believable late-day flare.
+    // The moon gets no warm aerosol flare — its halo below is tight and cool.
     float glow = pow(max(cosAngle, 0.0), 8.0)  * 0.20
                + pow(max(cosAngle, 0.0), 256.0) * 0.55;
-    col += sunRGB * glow * sunI * (1.0 - cloudOcc);
-    // Sharp disk: a small angular cap (~0.5 deg) with a soft antialiased edge.
-    // cos(0.5deg) ~ 0.99996; widen slightly so it reads on a 720p capture.
-    float diskInner = 0.99986;   // ~0.95 deg
-    float diskOuter = 0.99965;   // soft outer falloff
-    float disk = smoothstep(diskOuter, diskInner, cosAngle);
-    col += sunRGB * disk * (4.0 * sunI) * (1.0 - cloudOcc);
+    col += sunRGB * glow * sunI * (1.0 - cloudOcc) * (1.0 - moonW);
+    if (moonW < 0.001) {
+        // Sharp disk: a small angular cap (~0.5 deg) with a soft antialiased edge.
+        // cos(0.5deg) ~ 0.99996; widen slightly so it reads on a 720p capture.
+        float diskInner = 0.99986;   // ~0.95 deg
+        float diskOuter = 0.99965;   // soft outer falloff
+        float disk = smoothstep(diskOuter, diskInner, cosAngle);
+        col += sunRGB * disk * (4.0 * sunI) * (1.0 - cloudOcc);
+    } else {
+        // ---- THE MOON (W-NIGHT). A pale disc ~1.1 deg across (oversized vs the
+        // real 0.53 deg for the same readability reason the sun disk is) with
+        // hash-noise maria mottling — the same sin-free cloudNoise the deck
+        // uses (inc/sky_clouds.glsl), so no texture and no shard risk — plus a
+        // tight cool halo. Drawn behind the cloud deck (x (1-cloudOcc)), so a
+        // passing edge dims it and a storm deck erases it.
+        float diskInner = 0.99981;   // ~1.1 deg full width
+        float diskOuter = 0.99954;   // soft limb
+        float disk = smoothstep(diskOuter, diskInner, cosAngle);
+        if (disk > 0.0005) {
+            // Project the ray into the disc's local frame for a stable 2D
+            // surface parameterisation (hash of DIRECTION, never of screen).
+            vec3 mu = normalize(abs(sunDir.y) < 0.94 ? cross(sunDir, vec3(0, 1, 0))
+                                                     : cross(sunDir, vec3(1, 0, 0)));
+            vec3 mv = cross(sunDir, mu);
+            vec2 mp = vec2(dot(dir, mu), dot(dir, mv)) / 0.0195;  // disc radius -> ~unit
+            // Two octaves of value noise = maria blotches + a little grain.
+            float maria = cloudNoise(mp * 2.6 + 7.3) * 0.65
+                        + cloudNoise(mp * 6.1 + 21.9) * 0.35;
+            float surf  = mix(0.55, 1.0, smoothstep(0.15, 0.85, maria));
+            // Limb darkening: the edge of the disc falls off gently.
+            float limb  = mix(1.0, smoothstep(diskOuter, mix(diskOuter, diskInner, 0.85), cosAngle), 0.35);
+            vec3 moonSurf = mix(vec3(0.93, 0.95, 1.00), sunRGB, 0.25);
+            col += moonSurf * disk * surf * limb * (2.6 * sunI) * (1.0 - cloudOcc) * moonW;
+        }
+        // Tight cool halo — moonlight scattered by the air, an order tighter
+        // than the sun's flare and gated to the moon's own intensity.
+        float halo = pow(max(cosAngle, 0.0), 900.0) * 0.9
+                   + pow(max(cosAngle, 0.0), 64.0)  * 0.06;
+        col += mix(vec3(0.75, 0.82, 1.0), sunRGB, 0.4) * halo * sunI * (1.0 - cloudOcc) * moonW;
+    }
 
     // ---- Below-horizon: ease into a muted ground tint so down-views aren't black.
     // The earth tone follows the AEROSOL HAZE: hazy daylight keeps the original
@@ -329,9 +384,15 @@ void main() {
     // space scenes don't render a grey dirt plane under the stars.
     if (up < 0.0) {
         float groundW = clamp(haze * 2.0, 0.0, 1.0);   // 0 in deep space -> NO ground blend
-        vec3 ground = vec3(0.16, 0.15, 0.13);
+        // W-NIGHT: the tint is EARTH SEEN BY SKYLIGHT, so it follows the sky's
+        // own brightness — the day palette (horizon lum ~0.72) reproduces the
+        // original constant exactly (factor clamps to 1); the night palette
+        // fades it to near-black instead of hanging a daylit dirt band under a
+        // starfield.
+        float hLum = dot(sky.horizon.rgb, vec3(0.299, 0.587, 0.114));
+        vec3 ground = vec3(0.16, 0.15, 0.13) * clamp(hLum / 0.30, 0.05, 1.0);
         float belowT = clamp(-up * 4.0, 0.0, 1.0);
-        col = mix(col, ground, belowT * groundW);      // haze>=0.5: original ground exactly
+        col = mix(col, ground, belowT * groundW);      // haze>=0.5 by day: original ground exactly
     }
 
     // Exposure applied here; LINEAR HDR output (tonemap moved to composite.frag,
