@@ -63,6 +63,8 @@ add_library(x3app SHARED
     world_hosts/host_gallery.cpp
     world_hosts/host_tunnel.cpp
     tunnel_corridor.cpp
+    # W-TREES — tall broadleaf groves along the tunnel road (--world tunnel)
+    road_trees.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
     rifthub.cpp

@@ -433,15 +433,15 @@
     },
     {
       "repo_path": "assets/converted_glb/nature/OakBigTree01.glb",
-      "sha256": "5e16dd9cadecb3b0982aeae3b23839b343fd28c8a0a5e9e2495645262a8db94a",
-      "size": 303648,
-      "source_note": "tall broadleaf trees (NOT evergreens) \u2014 Tim 2026-08-15: roadside + mountain scatter"
+      "sha256": "615db24c47a9c6a18bd3998f37cb826d9337963cec14fcd29998fa5c9a4cd0cf",
+      "size": 9692928,
+      "source_note": "W-TREES2 2026-08-16: real bark+leaf textures harvested from Big Oak Tree FREE / Big Poplar Tree FREE (fresh FBX2glTF geometry pass, LOD0 split into bark+leaf materials, leaf alpha MASK). Replaces the earlier textureless placeholders."
     },
     {
       "repo_path": "assets/converted_glb/nature/PoplarTree001.glb",
-      "sha256": "ba3fc47b9d49868e8422f3bc7b764828902df7ca3c2c2be87b84e255fff4e415",
-      "size": 9702336,
-      "source_note": "tall broadleaf trees (NOT evergreens) \u2014 Tim 2026-08-15: roadside + mountain scatter"
+      "sha256": "88a6800847003eb6824f062bac8ede5e8b9ee8b0aae478e302f6c9341de19762",
+      "size": 17726072,
+      "source_note": "W-TREES2 2026-08-16: real bark+leaf textures harvested from Big Oak Tree FREE / Big Poplar Tree FREE (fresh FBX2glTF geometry pass, LOD0 split into bark+leaf materials, leaf alpha MASK). Replaces the earlier textureless placeholders."
     },
     {
       "repo_path": "assets/rigged_glb/AnnaBodySuit.glb",
