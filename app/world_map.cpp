@@ -3,6 +3,7 @@
 // Clean-room, original work: X3Native's own Scene/level_loader/story_ops/ui +
 // the public IRenderDevice interface only.
 #include "world_map.h"
+#include "asset_root.h"
 
 #include "world_stream.h"     // self-test: the streaming-aware fast-travel path
 #include "headless_device.h"  // self-test device
@@ -223,6 +224,15 @@ int MapPoiTable::indexOf(std::string_view id) const {
 }
 
 std::string worldMapPoisJsonPath() {
+    // assetRoot() FIRST: it resolves the repo's assets dir regardless of the
+    // working directory, which is what every other loader in this tree uses.
+    // The relative candidates only ever worked when the cwd happened to be
+    // the repo root — the M1 gate run from build/bin/Release found 0 POIs
+    // while the same gate from the repo root found 22 (the receipt).
+    {
+        const std::string ar = x3::game::assetRoot() + "/world/map_pois.json";
+        if (std::filesystem::exists(ar)) return ar;
+    }
     static const char* kCandidates[] = {
         "assets/world/map_pois.json",
         "../assets/world/map_pois.json",
