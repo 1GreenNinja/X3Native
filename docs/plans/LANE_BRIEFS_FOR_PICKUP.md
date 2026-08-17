@@ -144,6 +144,19 @@ swooping curving ramps... high speed arcs." He drives the real thing.
   L3/L4 four DIRECTIONAL flyover ramps over both, on TALL piers.
 - **The one new mechanism:** ramp-over-ramp gap authoring — a ramp's spec
   declaring `Gap`s against multiple underlying routes. Everything else exists.
+- **THE TALL-PIER VOCABULARY ALREADY EXISTS — READ IT FIRST (rule 1).**
+  `app/world_hosts/echo_roads.{h,cpp}` builds an elevated curved banked
+  freeway in the Echotropolis world: a real BOX SECTION deck (side fascia +
+  soffit at a tuned depth) on piers with **footing / taper / hammerhead**
+  caps, pillar rows placed along the route, barriers and lane paint. Its
+  comments are a Stack post-mortem in advance — the "pier forest" saga (172 m
+  piers marching through a village until the route was moved), a max-pier
+  acceptance gate logged every build, a rim-edge inset that migrates deck
+  samples inboard rather than hanging over air, and the owner's own note:
+  *"CA viaducts run MUCH longer unsupported spans — half the pier count, each
+  pier a touch heavier so the longer span reads structural."* Lift the pier
+  and box-girder vocabulary from there instead of inventing one, and keep a
+  max-pier-height log as your own acceptance gate.
 - **High-speed arcs:** 150–300 m radius sweeps (55–65 mph), NOT the diamond's
   48 m loops. Drive-height captures must read as one continuous arc.
 - **High solid parapets** (~1.1–1.4 m) on every elevated edge, continuous,
