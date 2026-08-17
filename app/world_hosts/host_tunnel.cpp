@@ -2510,32 +2510,35 @@ int hostTunnel(HostContext& hc) {
                 }
 
                 if (std::strcmp(shotUi, "preset") == 0) {
-                    // THE BEFORE/AFTER PAIR — same camera, the ONLY delta is
-                    // what the SUGGESTED SETTINGS button toggles (DDGI on with
-                    // kSuggestedLighting's intensity/rays + RT AO in, SSAO
-                    // out). Exposure is identical in both halves by design
-                    // (kSuggested/kDefault agree), so the pair isolates GI.
-                    ok = settleAndGrab(cam, dir + "/ui_preset_before.png");
-                    {
+                    // THE BEFORE/AFTER PAIR — one camera, and the two halves
+                    // are literally the two BUTTONS. Both run the panel's own
+                    // applyLightingValues() (cvars written, receipts printed),
+                    // not a hand-rolled device push, because the pair only
+                    // proves the button is worth having if the button is what
+                    // took the picture. Delta = RESTORE DEFAULTS -> SUGGESTED
+                    // SETTINGS: DDGI on at 1.15/96 rays, RT AO in, SSAO out.
+                    // Exposure is equal in both sets by design, so nothing in
+                    // the pair is a brightness trick.
+                    //
+                    // The one thing a still has to add: DDGI's probe volume.
+                    // pushLiveHostCVarsToDevice sends size 0 = AUTO-FIT, which
+                    // covers wherever the fit landed; the interactive host
+                    // instead scrolls an explicit 420 m box with the car. A
+                    // still centres that same box on the camera, once.
+                    auto centreDdgiOnCam = [&] {
                         x3::rhi::IRenderDevice::DdgiParams dg{};
-                        dg.enabled      = kSuggestedLighting.ddgi;
-                        dg.intensity    = kSuggestedLighting.ddgiIntensity;
-                        dg.raysPerProbe = kSuggestedLighting.ddgiRays;
-                        // A still centres the volume once where the camera is
-                        // (the interactive host scrolls it with the car).
+                        dg.enabled      = true;
+                        dg.raysPerProbe = uiCon->getInt("r_ddgi_rays");
+                        dg.intensity    = uiCon->getFloat("r_ddgi_intensity");
                         dg.originX = cam[0] - 210.0f; dg.originY = cam[1] - 45.0f;
                         dg.originZ = cam[2] - 210.0f;
                         dg.sizeX = 420.0f; dg.sizeY = 150.0f; dg.sizeZ = 420.0f;
                         device->setDdgiParams(dg);
-                        x3::rhi::IRenderDevice::RtaoParams rp{};
-                        rp.enabled = kSuggestedLighting.rtao;
-                        device->setRtaoParams(rp);
-                        x3::rhi::IRenderDevice::SsaoParams sp2{};
-                        sp2.enabled = kSuggestedLighting.ssao;
-                        device->setSsaoParams(sp2);
-                        x3::logInfo("[tunnel] X3_SHOT_UI=preset: applied kSuggestedLighting "
-                                    "(DDGI on, RT AO in, SSAO out) for the AFTER half");
-                    }
+                    };
+                    uiMenu.applyDefaults();     // the RESTORE DEFAULTS button
+                    ok = settleAndGrab(cam, dir + "/ui_preset_before.png");
+                    uiMenu.applySuggested();    // the SUGGESTED SETTINGS button
+                    centreDdgiOnCam();
                     ok = settleAndGrab(cam, dir + "/ui_preset_after.png") && ok;
                 } else {
                     std::string out2 = dir + "/ui_menu.png";
