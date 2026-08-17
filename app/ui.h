@@ -147,6 +147,16 @@ public:
     // one focus slot (in call order). Generic — usable for any normalized scalar.
     bool slider(const char* label, float& value, float x, float y, float w, float h);
 
+    // General-range slider row: same widget contract as slider() but the value
+    // lives in [minV,maxV], mouse drags SNAP to `step` (so "rain 3.5" is a value
+    // you can actually land on, not 3.47), keyboard navLeft/navRight nudge by
+    // exactly one step, and the right-hand readout is the CALLER-FORMATTED
+    // `readout` string ("3.5  DOWNPOUR", "14:30", "0.88") instead of a percent —
+    // the on-screen number IS the console value, never a rescaled proxy. Built
+    // for the weather/lighting control panels (host_menu.h); generic on purpose.
+    bool sliderEx(const char* label, float& value, float minV, float maxV, float step,
+                  const char* readout, float x, float y, float w, float h);
+
     // =======================================================================
     // R8 — THE GLOWING CONTROL SURFACE (Tim: "the sliders glow").
     //
@@ -373,6 +383,17 @@ struct SettingsModel {
     bool  skipIntro    = false;    // "Skip Intro" -> host skips the intro sequence
                                    // (persisted; equivalent to --skipintro. F9
                                    // still skips a running intro at any time.)
+
+    // ---- Row visibility (all default TRUE = the campaign screen, unchanged).
+    // A --world host reusing this screen hides the rows it has no consumer for
+    // (NO_SLOP rule 6: a knob wired to nothing is a lie, so it must not draw).
+    // host_menu.h (the tunnel/world game menu) turns off audio (no music
+    // system), flight mode (no spaceflight), set-default (no settings file)
+    // and the dev Advanced group.
+    bool  showAudio      = true;   // Music toggle + Music/SFX volume sliders
+    bool  showFlightMode = true;   // the Flight Mode cycle row
+    bool  showAdvanced   = true;   // the collapsed ADVANCED (dev) group
+    bool  showSetDefault = true;   // the resolution row's SET DEFAULT button
 };
 
 // The main menu screen. Pure UI: returns an action via the state it requests.

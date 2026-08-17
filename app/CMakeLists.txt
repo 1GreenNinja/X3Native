@@ -61,6 +61,8 @@ add_library(x3app SHARED
     world_hosts/host_surface_start.cpp
     world_hosts/host_rifthub.cpp
     world_hosts/host_gallery.cpp
+    # W-MENU — the ESC game menu + F4 weather / F5 lighting panels (host_tunnel)
+    world_hosts/host_menu.cpp
     world_hosts/host_tunnel.cpp
     tunnel_corridor.cpp
     # W-TREES — tall broadleaf groves along the tunnel road (--world tunnel)

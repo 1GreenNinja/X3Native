@@ -256,6 +256,73 @@ bool UiContext::slider(const char* label, float& value, float x, float y, float 
     return changed;
 }
 
+bool UiContext::sliderEx(const char* label, float& value, float minV, float maxV,
+                         float step, const char* readout, float x, float y,
+                         float w, float h) {
+    const int idx = m_widgetIndex++;
+
+    const bool hovered = pointIn(x, y, w, h);
+    if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
+    const bool hot = (m_focus == idx);
+
+    if (maxV <= minV) maxV = minV + 1.0f;
+    if (step <= 0.0f) step = (maxV - minV) / 20.0f;
+    float v = value;
+    if (v < minV) v = minV; if (v > maxV) v = maxV;
+    const float t01 = (v - minV) / (maxV - minV);
+
+    // Row background (matches slider/toggle/button look).
+    quad(x, y, w, h, hot ? kColBtnHot : kColBtn);
+    if (hot) {
+        const float t = 2.0f;
+        quad(x, y, w, t, kColBtnEdge);
+        quad(x, y + h - t, w, t, kColBtnEdge);
+    }
+
+    // Left: the label.
+    const float px = h * 0.42f;
+    const float ty = y + (h - px) * 0.5f;
+    text(label, x + 14.0f, ty, px, hot ? kColText : kColTextDim);
+
+    // Right: the caller-formatted readout (mono, so digits don't dance while
+    // dragging). Wider than slider()'s percent cell — readouts carry words.
+    const float roW = 132.0f;
+    const float roPx = h * 0.38f;
+    if (readout)
+        textCentered(readout, x + w - roW * 0.5f - 10.0f, y + (h - roPx) * 0.5f,
+                     roPx, kColText, FontRole::HudMono);
+
+    // Track between the label and the readout.
+    const float labelW = 150.0f;
+    const float trackX = x + labelW;
+    const float trackR = x + w - roW - 16.0f;
+    const float trackW = std::max(8.0f, trackR - trackX);
+    const float trackH = std::max(4.0f, h * 0.16f);
+    const float trackY = y + (h - trackH) * 0.5f;
+
+    quad(trackX, trackY, trackW, trackH, kColTrack);
+    quad(trackX, trackY, trackW * t01, trackH, kColOn);
+    const float knobW = 10.0f, knobH = h * 0.55f;
+    const float knobX = trackX + trackW * t01 - knobW * 0.5f;
+    const float knobY = y + (h - knobH) * 0.5f;
+    quad(knobX, knobY, knobW, knobH, kColBtnEdge);
+
+    // ---- Interaction: drag snaps to `step`; keys nudge by one step ----------
+    float nv = v;
+    if (hovered && m_in.mouseDown) {
+        float t = (m_in.mouseX - trackX) / trackW;
+        if (t < 0.0f) t = 0.0f; if (t > 1.0f) t = 1.0f;
+        nv = minV + std::round(t * (maxV - minV) / step) * step;
+    }
+    if (hot) {
+        if (m_in.navLeft)  nv -= step;
+        if (m_in.navRight) nv += step;
+    }
+    if (nv < minV) nv = minV; if (nv > maxV) nv = maxV;
+    if (nv != v) { value = nv; return true; }
+    return false;
+}
+
 // ===========================================================================
 // R8 — THE GLOWING CONTROL SURFACE ("the sliders glow").
 //
@@ -721,14 +788,20 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
     // ---- Audio rows: Music on/off (toggle) + Music & SFX volume (0..1 sliders).
     // The host pushes these to the audio system live (setMusicEnabled / setMusicVolume
     // / setMasterSfxVolume) whenever outChanged fires. ----
-    if (ui.toggle("Music",        model.musicOn, rx, ry, rw, rh)) { model.musicOn = !model.musicOn; outChanged = true; } ry += rh + gap;
-    if (ui.slider("Music Volume", model.musicVol, rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
-    if (ui.slider("SFX Volume",   model.sfxVol,   rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
+    // Row-visibility gates (SettingsModel::show*): all default TRUE, so the
+    // campaign screen and --test-ui's row-index math are byte-identical; a
+    // world host without an audio system / spaceflight / settings file hides
+    // the rows that would otherwise be dead knobs (NO_SLOP rule 6).
+    if (model.showAudio) {
+        if (ui.toggle("Music",        model.musicOn, rx, ry, rw, rh)) { model.musicOn = !model.musicOn; outChanged = true; } ry += rh + gap;
+        if (ui.slider("Music Volume", model.musicVol, rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
+        if (ui.slider("SFX Volume",   model.sfxVol,   rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
+    }
 
     // Flight Mode row: label left + a CYCLE button right (Arcade -> Assist ->
     // Loose -> back). The host bridges model.flightMode to the space-pilot's
     // shared flight-mode latch and persists it (see UiController / app_run).
-    {
+    if (model.showFlightMode) {
         static const char* kFmNames[3] = { "ARCADE", "ASSIST", "LOOSE" };
         int fmIdx = model.flightMode; if (fmIdx < 0 || fmIdx > 2) fmIdx = 0;
         const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
@@ -738,14 +811,14 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
             model.flightMode = (fmIdx + 1) % 3;
             outChanged = true;
         }
+        ry += rh + gap;
     }
-    ry += rh + gap;
 
     // ---- ADVANCED (dev) group: a collapsed header row + its nested rows. The
     // header composes label-left / button-right like the Flight Mode row above.
     // Collapsed by default, so the shipping panel reads exactly as before; the
     // nested rows only consume focus slots + vertical space while open. ----
-    {
+    if (model.showAdvanced) {
         const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
         ui.label("Advanced", rx + 4.0f, ry + (rh - notePx) * 0.5f, notePx, kColText);
         const float abw = std::min(190.0f, rw * 0.46f);
@@ -779,7 +852,8 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
         const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
         ui.label(resBuf, rx + 4.0f, ry + (rh - notePx) * 0.5f, notePx, kColText);
         const float sdw = std::min(190.0f, rw * 0.46f);
-        if (ui.button("SET DEFAULT", rx + rw - sdw, ry, sdw, rh)) {
+        if (model.showSetDefault &&
+            ui.button("SET DEFAULT", rx + rw - sdw, ry, sdw, rh)) {
             model.width = dw; model.height = dh;   // capture the current window size
             model.saveDefault = true;              // host persists it as the new default
             outChanged = true;

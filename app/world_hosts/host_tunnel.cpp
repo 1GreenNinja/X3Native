@@ -9,6 +9,8 @@
 // See app/tunnel_corridor.h for the technique + the clean-room BL provenance.
 #include "world_host_common.h"
 #include "host_shell.h"                  // console (~), pause menu (ESC), FPS (F3)
+#include "host_menu.h"                   // W-MENU: ESC game menu + F4 weather / F5 lighting panels
+#include "../engine_console.h"           // registerEngineConsoleCVars — the X3_SHOT_UI staged console
 #include "engine/core/IJobSystem.h"
 #include "engine/physics/IVehicle.h"
 #include "../scene.h"
@@ -173,6 +175,24 @@ static void applySky(x3::rhi::IRenderDevice& dev,
     dev.setSkyParams(sp);
 }
 
+// The NO-WEATHER demo sky — ONE builder for its three consumers (the boot
+// push, the `wx off` transition, and the F4 panel's live cloud/time refresh).
+// Three hand copies of these constants is exactly the drift skyFromWeather's
+// header block documents (NO_SLOP rule 4). X3_CLOUD still overrides the cover
+// for the cloud-pass perf A/Bs.
+static x3::rhi::IRenderDevice::SkyParams tunnelDemoSky() {
+    x3::rhi::IRenderDevice::SkyParams sp{};
+    sp.enabled = true;
+    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
+    sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+    sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f;
+    // Scattered fair-weather cumulus. 0 would be the old clear sky exactly.
+    sp.cloud = 0.42f;
+    if (const char* cv = std::getenv("X3_CLOUD"))
+        sp.cloud = std::min(1.0f, std::max(0.0f, (float)std::atof(cv)));
+    return sp;
+}
+
 // Weather sample -> sky. `flash` is StormSystem::flash() (0 outside a strike).
 static x3::rhi::IRenderDevice::SkyParams skyFromWeather(
         const x3::game::WeatherSample& ws, float flash) {
@@ -200,6 +220,41 @@ static x3::rhi::IRenderDevice::SkyParams skyFromWeather(
         sp.exposure = ws.sky.exposure * 0.52f + flash * 1.35f;
     }
     return sp;
+}
+
+// ---------------------------------------------------------------------------
+// W-MENU: TIME OF DAY -> THE SUN. Applied ONLY once the player has touched
+// wx_hour (the F4 TIME slider or the cvar): the boot look stays byte-identical
+// to what every reference capture was tuned against, and the moment you ask
+// for 19:00 you actually get a horizon sun (same dusk vector family the
+// --screenshot-town dusk gate uses: sun low, warm, sky dimmed).
+//
+// Mapping: daylight runs 6:00 -> 18:00 (elevation = sin over that arc), the
+// sun's azimuth swings east -> south -> west across the day. Night clamps the
+// disk just above the horizon and takes the light away instead (intensity +
+// exposure), because the engine's sky has no moon to hand the frame to.
+// ---------------------------------------------------------------------------
+static void applyHourSun(x3::rhi::IRenderDevice::SkyParams& sp, float hour) {
+    while (hour < 0.0f)  hour += 24.0f;
+    while (hour >= 24.0f) hour -= 24.0f;
+    const float dayT = (hour - 6.0f) / 12.0f;            // 0 at 06:00, 1 at 18:00
+    const float elev = std::sin(dayT * 3.14159265f);     // <0 = night
+    // Azimuth: east at dawn (+X), south mid-day, west at dusk (-X); a gentle
+    // +Z lean keeps noon shadows from collapsing straight down.
+    const float az = 3.14159265f * (1.0f - std::min(1.0f, std::max(0.0f, dayT)));
+    const float horiz = std::cos(std::max(0.055f, elev));
+    sp.sunDir[0] = std::cos(az) * horiz;
+    sp.sunDir[1] = std::max(0.055f, elev);               // never below the horizon line
+    sp.sunDir[2] = 0.33f * horiz;
+    // Light follows elevation: full at noon, warm/dim at the horizon, mostly
+    // gone at night. Exposure carries the night half (no moon to switch to).
+    const float dayLight = std::min(1.0f, std::max(0.0f, elev * 2.2f));
+    sp.sunIntensity *= 0.06f + 0.94f * dayLight;
+    if (elev < 0.12f) {                                  // dusk/dawn warmth
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.72f; sp.sunColor[2] = 0.48f;
+    }
+    const float night = std::min(1.0f, std::max(0.0f, -elev * 2.0f));
+    sp.exposure *= 1.0f - 0.72f * night;
 }
 
 // ---------------------------------------------------------------------------
@@ -829,22 +884,11 @@ int hostTunnel(HostContext& hc) {
 
     {   // Bright, high sun: the point of the shot is READING THE GROUND, and a
         // low sun would fill the cutting with shadow and hide the very seams
-        // this demo exists to expose.
-        x3::rhi::IRenderDevice::SkyParams sp{};
-        sp.enabled = true;
-        sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
-        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
-        sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f;
-        // Scattered fair-weather cumulus. 0 would be the old clear sky exactly.
-        sp.cloud = 0.42f;
-        // X3_CLOUD: dev override for the NO-WEATHER sky's cover (0..1) — the
-        // A/B knob the cloud-pass perf receipts are measured with (0 = the
-        // clear-sky baseline, cloud pass + ground shade both gate out) and the
-        // way to shoot a specific deck without waiting on the scheduler. With
-        // X3_WEATHER on, the weather tick owns cover and this is ignored.
-        if (const char* cv = std::getenv("X3_CLOUD"))
-            sp.cloud = std::min(1.0f, std::max(0.0f, (float)std::atof(cv)));
-        applySky(*device, sp);   // sky + the fill its cover implies
+        // this demo exists to expose. X3_CLOUD: dev override for the NO-WEATHER
+        // sky's cover (0..1) — the A/B knob the cloud-pass perf receipts are
+        // measured with; with X3_WEATHER on, the weather tick owns cover and
+        // it is ignored. (Constants live in tunnelDemoSky — ONE builder.)
+        applySky(*device, tunnelDemoSky());   // sky + the fill its cover implies
     }
     device->setCameraFar(4000.0f);
 
@@ -2291,8 +2335,87 @@ int hostTunnel(HostContext& hc) {
                               cam[0], cam[1], cam[2], cam[3], cam[4]);
                 x3::logInfo(cb);
             }
-            const std::string out = screenshot ? screenshotPath : std::string("w_tunnel.png");
-            ok = settleAndGrab(cam, out);
+            // ---- W-MENU: staged UI proofs (X3_SHOT_UI=menu|wx|light|preset).
+            // The menu/panels draw only in the interactive loop, so a still
+            // has to STAGE them — through the REAL host_menu.h draw code with
+            // synthetic input (the X3_SHOT_PUMP pattern), never a mock-up.
+            // Opt-in and default-off: no existing reference capture moves.
+            const char* shotUi = std::getenv("X3_SHOT_UI");
+            if (shotUi && shotUi[0]) {
+                // A real console for the panels to read/write — the same two
+                // registration calls the interactive shell console makes.
+                std::unique_ptr<x3::con::IConsole> uiCon(x3::con::createConsole());
+                x3::game::registerEngineConsoleCVars(*uiCon);
+                registerWeatherConsole(*uiCon);
+                WorldGameMenu uiMenu;
+                uiMenu.init(uiCon.get(), device);
+                uint32_t shw = 0, shh = 0; device->hudSize(shw, shh);
+
+                if (std::strcmp(shotUi, "preset") == 0) {
+                    // THE BEFORE/AFTER PAIR — same camera, the ONLY delta is
+                    // what the SUGGESTED SETTINGS button toggles (DDGI on with
+                    // kSuggestedLighting's intensity/rays + RT AO in, SSAO
+                    // out). Exposure is identical in both halves by design
+                    // (kSuggested/kDefault agree), so the pair isolates GI.
+                    ok = settleAndGrab(cam, dir + "/ui_preset_before.png");
+                    {
+                        x3::rhi::IRenderDevice::DdgiParams dg{};
+                        dg.enabled      = kSuggestedLighting.ddgi;
+                        dg.intensity    = kSuggestedLighting.ddgiIntensity;
+                        dg.raysPerProbe = kSuggestedLighting.ddgiRays;
+                        // A still centres the volume once where the camera is
+                        // (the interactive host scrolls it with the car).
+                        dg.originX = cam[0] - 210.0f; dg.originY = cam[1] - 45.0f;
+                        dg.originZ = cam[2] - 210.0f;
+                        dg.sizeX = 420.0f; dg.sizeY = 150.0f; dg.sizeZ = 420.0f;
+                        device->setDdgiParams(dg);
+                        x3::rhi::IRenderDevice::RtaoParams rp{};
+                        rp.enabled = kSuggestedLighting.rtao;
+                        device->setRtaoParams(rp);
+                        x3::rhi::IRenderDevice::SsaoParams sp2{};
+                        sp2.enabled = kSuggestedLighting.ssao;
+                        device->setSsaoParams(sp2);
+                        x3::logInfo("[tunnel] X3_SHOT_UI=preset: applied kSuggestedLighting "
+                                    "(DDGI on, RT AO in, SSAO out) for the AFTER half");
+                    }
+                    ok = settleAndGrab(cam, dir + "/ui_preset_after.png") && ok;
+                } else {
+                    std::string out2 = dir + "/ui_menu.png";
+                    x3::ui::UiInput sIn{};
+                    if (std::strcmp(shotUi, "wx") == 0) {
+                        out2 = dir + "/ui_weather.png";
+                        uiMenu.togglePanel(WorldGameMenu::Screen::Weather);
+                        // MID-DRAG on the RAIN row: cursor held down on the
+                        // track at ~7 of 10 — the slider chases it through the
+                        // same applyRainScale the console `rain` command uses.
+                        float pxp = 0.0f, pyp = 0.0f;
+                        WorldGameMenu::weatherRowTrackPoint((float)shw, (float)shh,
+                                                            0, 0.70f, pxp, pyp);
+                        sIn.mouseX = pxp; sIn.mouseY = pyp; sIn.mouseDown = true;
+                    } else if (std::strcmp(shotUi, "light") == 0) {
+                        out2 = dir + "/ui_lighting.png";
+                        uiMenu.togglePanel(WorldGameMenu::Screen::Lighting);
+                        sIn.mouseX = (float)shw * 0.12f;   // hovering the panel
+                        sIn.mouseY = (float)shh * 0.5f;
+                    } else {
+                        uiMenu.toggleMenu();
+                        sIn.mouseX = (float)shw * 0.5f;    // hovering the rows
+                        sIn.mouseY = (float)shh * 0.47f;
+                    }
+                    bool sinFirst = true;
+                    shotDraw = [&](const x3::rhi::FrameContext& fr) {
+                        x3::ui::UiInput in2 = sIn;
+                        in2.mousePressed = sIn.mouseDown && sinFirst;
+                        sinFirst = false;
+                        uiMenu.draw(fr, in2, dt, 14.0f);
+                    };
+                    ok = settleAndGrab(cam, out2);
+                    shotDraw = nullptr;
+                }
+            } else {
+                const std::string out = screenshot ? screenshotPath : std::string("w_tunnel.png");
+                ok = settleAndGrab(cam, out);
+            }
         }
 
         // ==== --screenshot-jake: the ON-FOOT ANIMATED-CHARACTER proof set ====
@@ -3234,7 +3357,8 @@ int hostTunnel(HostContext& hc) {
     float camYaw = std::atan2(route.dirZ, route.dirX), camPitch = -0.10f;
     int lastW = (int)W, lastH = (int)H;
     x3::logInfo("--world tunnel: WASD drives, Space handbrake, mouse orbits the chase cam, "
-                "M map, ~ console, ESC menu, SHIFT+ESC quits");
+                "M map, ~ console, ESC game menu, F4 weather panel, F5 lighting panel, "
+                "SHIFT+ESC quits");
 
     // ---- DEV SHELL: console, pause menu, FPS -------------------------------
     // The reason the whole vehicle-feel pass was slow: every torque figure, grip
@@ -3257,6 +3381,24 @@ int hostTunnel(HostContext& hc) {
     shell.attach(hc);
     shell.setFreezesSim(true);          // this host really does stop the sim on ESC
     console = shell.console();
+    // ---- CONSOLE MIRRORS THE BOOT STATE (W-MENU find, NO_SLOP rule 4). The
+    // shell's live cvar->device push (applyLiveHostRenderCVars, frame 0) runs
+    // pushLiveHostCVarsToDevice from the REGISTERED DEFAULTS — r_csm "0",
+    // r_velocity "0" — which silently UNDID this host's own boot pushes
+    // (applyOutdoorCsm ON over 400 m; setPostFX velocity=true, the TAA ghost
+    // fix this world exists for). Seed the cvars to what the host actually
+    // booted, so the first live push re-states the boot instead of reverting
+    // it — and the SHADOWS toggle in the new settings screen reads true.
+    // `--set` on the command line still wins (attach() replayed it above).
+    {
+        auto cliHas = [&](const char* n) {
+            for (const auto& kv : hc.cliCVars) if (kv.first == n) return true;
+            return false;
+        };
+        if (!cliHas("r_csm"))      console->set("r_csm", "1");
+        if (!cliHas("r_csm_dist")) console->set("r_csm_dist", "400");  // == applyOutdoorCsm(hc,..,400,..)
+        if (!cliHas("r_velocity")) console->set("r_velocity", "1");    // == the boot setPostFX push
+    }
 
     // ---- WORLD MAP (M) ------------------------------------------------------
     // host_streamed's WorldMapSystem, reused whole: the open/close lifecycle,
@@ -3333,8 +3475,20 @@ int hostTunnel(HostContext& hc) {
     bool mapOpen = false;
     bool prevMapM = false, prevMapEnter = false, prevMapLmb = false;
     bool mapEsc = false;                     // ESC edge, delivered by the shell handler
-    // ESC FIRST-REFUSAL: close the map's confirm prompt, then the map itself,
-    // and only then let the shell open its pause menu (host_streamed's layering).
+
+    // ---- W-MENU: THE GAME MENU (ESC) + WEATHER (F4) / LIGHTING (F5) --------
+    // The main game's menu chrome + the REAL SettingsMenu screen, reused whole
+    // (app/world_hosts/host_menu.h), wired through the shell's ESC
+    // first-refusal so the console (~), F3 and SHIFT+ESC all keep working.
+    // The shell's own three-row fallback menu is superseded here: this handler
+    // always consumes ESC, so shell.paused() never goes true in this host.
+    // PAUSE CONTRACT: menu/settings FREEZE the sim (title says PAUSED, and it
+    // is true); the F4/F5 panels leave the world LIVE — watching the rain
+    // arrive or the GI light up is the whole point of on-screen sliders.
+    WorldGameMenu gameMenu;
+    gameMenu.init(shell.console(), device);
+    // ESC FIRST-REFUSAL, layered: the map's confirm prompt, then the map, then
+    // the game menu stack, then (nothing else open) OPEN the game menu.
     shell.setEscapeHandler([&]() -> bool {
         if (mapOpen && wmap.confirmOpen()) { mapEsc = true; return true; }
         if (mapOpen) {
@@ -3343,16 +3497,16 @@ int hostTunnel(HostContext& hc) {
             glfwGetCursorPos(window, &lastMX, &lastMY);
             return true;
         }
-        return false;                        // nothing open: shell menu
+        if (gameMenu.anyOpen()) { gameMenu.onEscape(); return true; }
+        gameMenu.toggleMenu();
+        return true;                         // ESC is the game menu now
     });
     if (auto* con = shell.console()) {
-        // ---- weather (moved from the old host-local console) ----
-        con->registerCVar("wx", "off",
-            "weather: off | clear | cloudy | rain | storm | fog | snow");
-        con->registerCVar("wx_snow_in", "0",
-            "lying snow depth to prime, INCHES (applied when wx changes)");
-        con->registerCVar("wx_hour", "14",
-            "time of day, 0-24, drives the diurnal temperature swing");
+        // ---- weather (ONE registration for the console commands AND the F4
+        // panel — app/world_hosts/host_menu.h owns the wx cvar catalog + the
+        // rain/snow 0-10 scale now, so the slider and the typed command can
+        // never drift apart). ----
+        registerWeatherConsole(*con);
         // Live trims for Jake's placement, so a wrong-facing or sunk rig is a
         // console line to diagnose instead of a rebuild: degrees added to his
         // travel yaw, metres added to his measured ground compensation.
@@ -3383,18 +3537,8 @@ int hostTunnel(HostContext& hc) {
                 (int)precipKind, (double)precipAmt, precip.liveCount());
             con->print(b);
         }, "print the whole rain chain: state -> sample -> fed amount -> live particles");
-        con->registerCommand("rain", [con](const std::vector<std::string>& args) {
-            if (args.empty()) { con->print("rain 0-10: 0 off | 1-3 sprinkle | 4-6 downpour | 7-8 heavy | 9-10 MONSOON"); return; }
-            const float v = std::min(10.0f, std::max(0.0f, (float)std::atof(args[0].c_str())));
-            if (v < 0.5f)      { con->set("wx", "off"); con->print("rain: off"); return; }
-            con->set("wx", v >= 8.5f ? "storm" : "rain");
-            char mb[32]; std::snprintf(mb, sizeof(mb), "%.2f", 0.4f + v * 0.42f);
-            con->set("wx_precip_mult", mb);
-            con->print(std::string("rain ") + args[0] + (v >= 8.5f ? "  (MONSOON - storm cell, lightning live)"
-                        : v >= 6.5f ? "  (heavy)" : v >= 3.5f ? "  (downpour)" : "  (sprinkle)"));
-        }, "rain 0-10 — Sprinkle to Downpour to MONSOON, with every in-between");
-        con->registerCVar("wx_precip_mult", "2.4",
-            "precipitation density multiplier (raises how much of the particle pool a given rain/snow state uses)");
+        // (`rain`/`snow` + wx_precip_mult/wx_cloud/wx_wind/wx_winddir live in
+        // registerWeatherConsole above — host_menu.h is the one mapping.)
         con->registerCVar("jake_yaw", "0", "Jake facing trim, degrees (asset owns the truth; default 0)");
         con->registerCVar("jake_y",   "0", "Jake height trim, metres (asset feet sit at origin; default 0)");
         con->registerCVar("jake_cam", "2", "on-foot camera: 0 first person, 1 third near, 2 third far (F1 cycles)");
@@ -3666,6 +3810,16 @@ int hostTunnel(HostContext& hc) {
     const bool perfLog = [] { const char* e = std::getenv("X3_PERF_LOG"); return e && e[0] == '1'; }();
     double perfT0 = glfwGetTime(); uint32_t perfFrames = 0;
 
+    // ---- W-MENU: THE IN-WORLD CLOCK, hoisted out of the weather branch -----
+    // The F4 TIME slider has to work over the demo sky too (weather OFF is the
+    // boot state), so the clock ticks in both modes now. wx_hour re-seeds it —
+    // and the first post-boot change LATCHES the sun onto it (applyHourSun):
+    // until you touch time, the boot sky is byte-identical to every reference
+    // capture; the moment you ask for 19:00 the sun actually goes there.
+    float todHours     = console ? console->getFloat("wx_hour") : 14.0f;
+    float lastHourCvar = todHours;
+    bool  todSunActive = false;
+
     while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         // RE-SUBMIT THE BORE LIGHTS EVERY FRAME. They were set exactly ONCE at boot
         // (setPointLights above), which is why the tunnel is lit in headless captures
@@ -3698,10 +3852,71 @@ int hostTunnel(HostContext& hc) {
         float fdt = (float)(now - prevTime); prevTime = now;
         if (fdt > 0.1f) fdt = 0.1f;
 
+        // ---- W-MENU: F4 weather / F5 lighting panel hotkeys. shell.key so
+        // typing F4-ish text in the console never toggles them; gated off
+        // while the fullscreen map owns the screen.
+        {
+            static bool f4Was = false, f5Was = false;
+            const bool f4Now = !mapOpen && shell.key(GLFW_KEY_F4);
+            const bool f5Now = !mapOpen && shell.key(GLFW_KEY_F5);
+            if (f4Now && !f4Was) gameMenu.togglePanel(WorldGameMenu::Screen::Weather);
+            if (f5Now && !f5Was) gameMenu.togglePanel(WorldGameMenu::Screen::Lighting);
+            f4Was = f4Now; f5Was = f5Now;
+        }
+
+        // ---- W-MENU: the menu/panel input snapshot (mouse + arrows/enter,
+        // with key repeat so holding an arrow walks a slider). Assembled every
+        // frame — the frozen branch below and the live panel draw both use it.
+        x3::ui::UiInput gmIn{};
+        {
+            double gmx = 0.0, gmy = 0.0; glfwGetCursorPos(window, &gmx, &gmy);
+            gmIn.mouseX = (float)gmx; gmIn.mouseY = (float)gmy;
+            const bool uiUp = gameMenu.anyOpen();
+            const bool lmbNow = uiUp &&
+                glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            static bool gmLmbWas = false;
+            gmIn.mouseDown = lmbNow; gmIn.mousePressed = lmbNow && !gmLmbWas;
+            gmLmbWas = lmbNow;
+            auto navRepeat = [&](bool down, double& nextAt) -> bool {
+                if (!down) { nextAt = 0.0; return false; }
+                if (nextAt == 0.0) { nextAt = now + 0.34; return true; }   // rising edge
+                if (now >= nextAt) { nextAt = now + 0.07; return true; }   // auto-repeat
+                return false;
+            };
+            auto keyIsDown = [&](int k) {
+                return uiUp && !shell.consoleOpen() && glfwGetKey(window, k) == GLFW_PRESS;
+            };
+            static double rU = 0.0, rD = 0.0, rL = 0.0, rR = 0.0, rE = 0.0;
+            gmIn.navUp       = navRepeat(keyIsDown(GLFW_KEY_UP), rU);
+            gmIn.navDown     = navRepeat(keyIsDown(GLFW_KEY_DOWN), rD);
+            gmIn.navLeft     = navRepeat(keyIsDown(GLFW_KEY_LEFT), rL);
+            gmIn.navRight    = navRepeat(keyIsDown(GLFW_KEY_RIGHT), rR);
+            // ENTER only — while an F4/F5 panel is open you are still DRIVING,
+            // and SPACE is the handbrake.
+            gmIn.navActivate = navRepeat(keyIsDown(GLFW_KEY_ENTER) ||
+                                         keyIsDown(GLFW_KEY_KP_ENTER), rE);
+        }
+        // ONE CURSOR RULE for every overlay: menu/panels/map/console show the
+        // pointer, gameplay hides it. Reconciled per frame (the shell frees it
+        // for the console, the map block frees it for the map — this keeps
+        // every combination honest) and the look deltas are re-anchored on any
+        // switch so the camera never inherits the pointer's travel.
+        {
+            const int want = (gameMenu.anyOpen() || mapOpen || shell.consoleOpen())
+                                 ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED;
+            if (glfwGetInputMode(window, GLFW_CURSOR) != want) {
+                glfwSetInputMode(window, GLFW_CURSOR, want);
+                glfwGetCursorPos(window, &lastMX, &lastMY);
+            }
+        }
+
         // MERGE NOTE (integration/complete): everything below keeps the roads
         // lane's weather/Jake/on-foot systems, driven through the vehicle lane's
         // HostShell — one console, edge-detected keys, and a real pause.
-        if (shell.paused()) {
+        // W-MENU: the game menu + its settings screen freeze the sim exactly
+        // like the shell pause did (blocksSim); the F4/F5 panels do NOT — they
+        // are live tuning surfaces and take the other path.
+        if (shell.paused() || gameMenu.blocksSim()) {
             // Present so the window stays live, but do not advance the sim.
             auto pf = device->beginFrame();
             if (pf.valid) {
@@ -3712,9 +3927,14 @@ int hostTunnel(HostContext& hc) {
                 if (carBuilt) car.chassisPos(pcam);
                 traffic.render(pf, pcam);               // traffic holds its pose paused
                 riverLife.render(*device, pf, scene);   // boats stay visible paused
-                shell.draw(pf, fdt);
+                gameMenu.draw(pf, gmIn, fdt, todHours); // the game menu, over the frozen world
+                shell.draw(pf, fdt);                    // console stays reachable over the menu
             }
             device->endFrame(pf);
+            // Menu-row requests (quit / console). The map row closes the menu
+            // and is consumed by the M block on the next, live, frame.
+            if (gameMenu.takeQuitRequest()) glfwSetWindowShouldClose(window, GLFW_TRUE);
+            if (gameMenu.takeConsoleRequest()) shell.hudForCallbacks().toggleConsole();
             continue;
         }
 
@@ -3741,16 +3961,19 @@ int hostTunnel(HostContext& hc) {
         // kCloudDrift * t in inc/sky_clouds.glsl). This world never set it, so
         // the deck hung frozen. Same clock the river uses, one line.
         device->setSkyTime(riverWaterClock);
-        if (weatherOn) {
-            weather.tick(fdt);
-            // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
+        {   // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
             // pre-dawn trough to see ice form instead of waiting out the cycle.
-            static float todHours = 14.0f;
-            static float lastHourCvar = -1.0f;
+            // (Hoisted out of the weather branch: see the todHours declaration.)
             const float hourCvar = console->getFloat("wx_hour");
-            if (hourCvar != lastHourCvar) { todHours = hourCvar; lastHourCvar = hourCvar; }
+            if (hourCvar != lastHourCvar) {
+                todHours = hourCvar; lastHourCvar = hourCvar;
+                todSunActive = true;         // the sun follows the clock from now on
+            }
             todHours += fdt * (24.0f / 600.0f);        // 10 real minutes per in-world day
             if (todHours >= 24.0f) todHours -= 24.0f;
+        }
+        if (weatherOn) {
+            weather.tick(fdt);
             weather.setTimeOfDay(todHours);
 
             const x3::game::WeatherSample& ws = weather.sample();
@@ -3773,7 +3996,16 @@ int hostTunnel(HostContext& hc) {
             // sunny"): the deck cuts the sky disk here, cloudShadowFactor cuts
             // the direct sun per-fragment (task #27), and applySky() drops the
             // skylight fill — all three off the one cover number.
-            applySky(*device, skyFromWeather(ws, storm.flash()));
+            // W-MENU layers on top: an explicit wx_cloud (the F4 CLOUD slider)
+            // WINS over the state's own deck — the slider is authority, even
+            // through a storm — and a touched clock moves the sun.
+            {
+                x3::rhi::IRenderDevice::SkyParams wsp = skyFromWeather(ws, storm.flash());
+                const float cov = console->getFloat("wx_cloud");
+                if (cov >= 0.0f) wsp.cloud = std::min(1.0f, cov);
+                if (todSunActive) applyHourSun(wsp, todHours);
+                applySky(*device, wsp);
+            }
 
             // Wet ground for the renderer. Lying SNOW suppresses the wet look
             // rather than adding to it -- snow is bright and near-matte where
@@ -3804,8 +4036,10 @@ int hostTunnel(HostContext& hc) {
         // Gate the LOOK, not just the camera apply: the deltas also feed the
         // on-foot Player below, and the cursor is released while typing — an
         // ungated delta would spin Jake's view across the screen on the way to
-        // the scrollback. Same rule while the MAP owns the cursor.
-        const float look = (shell.inputEnabled() && !mapOpen) ? 1.0f : 0.0f;
+        // the scrollback. Same rule while the MAP or an F4/F5 panel owns the
+        // cursor (dragging a slider must not orbit the camera).
+        const float look = (shell.inputEnabled() && !mapOpen && !gameMenu.panelOpen())
+                               ? 1.0f : 0.0f;
         const float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
         lastMX = mx; lastMY = my;
         camYaw += ddx * 0.0025f; camPitch -= ddy * 0.0025f;
@@ -3867,19 +4101,39 @@ int hostTunnel(HostContext& hc) {
                                   wxWant.c_str(), wetness.snowDepthIn());
                     console->print(wb);
                 } else {
-                    x3::rhi::IRenderDevice::SkyParams sp{};
-                    sp.enabled = true;
-                    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
-                    sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
-                    sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f; sp.cloud = 0.42f;
-                    // applySky, not setSkyParams: `wx off` after a storm has to
-                    // put the SKYLIGHT back too, or the demo sky returns over a
-                    // ground still lit for the overcast that just left.
-                    applySky(*device, sp);
+                    // The demo-sky PUSH lives in the live refresh block just
+                    // below (it owns cloud/time over the no-weather sky); this
+                    // edge only clears the ground state the storm left behind.
                     device->setSnowCover(0.0f);
                     device->setWetness(x3::rhi::IRenderDevice::WetnessParams{});
-                    console->print("weather: off (the demo's fixed bright sky)");
+                    console->print("weather: off (the demo sky — CLOUD/TIME sliders still live)");
                 }
+            }
+        }
+        // ---- W-MENU: LIVE DEMO SKY (weather off — which is the boot state).
+        // The F4 CLOUD and TIME sliders must work without turning the weather
+        // system on, so the no-weather sky is recomputed from the cvars and
+        // re-pushed WHEN ITS INPUTS CHANGE: cover at the slider's own 0.05
+        // steps, the sun only once the clock is latched and only in 0.1 h
+        // steps (~15 real seconds) — every push re-bakes the IBL fill, so the
+        // steps are the ration. `wx off` also forces one push (the skylight
+        // has to come back after a storm — the old edge push did this).
+        {
+            static float lastCov = -2.0f, lastQHour = -2.0f;
+            static bool  skyWasWeather = false;
+            if (!weatherOn) {
+                const float cov   = console->getFloat("wx_cloud");
+                const float qHour = todSunActive
+                                        ? std::floor(todHours * 10.0f) / 10.0f : -1.0f;
+                if (skyWasWeather || cov != lastCov || qHour != lastQHour) {
+                    lastCov = cov; lastQHour = qHour; skyWasWeather = false;
+                    x3::rhi::IRenderDevice::SkyParams sp = tunnelDemoSky();
+                    if (cov >= 0.0f)   sp.cloud = std::min(1.0f, cov);
+                    if (qHour >= 0.0f) applyHourSun(sp, qHour);
+                    applySky(*device, sp);   // sky + the fill its cover implies
+                }
+            } else {
+                skyWasWeather = true;        // force a re-push when wx goes off
             }
         }
 
@@ -3896,7 +4150,10 @@ int hostTunnel(HostContext& hc) {
         // whole 46-mile network from there.
         {
             const bool mNow = shell.key(GLFW_KEY_M);
-            if (mNow && !prevMapM) {
+            // The game menu's WORLD MAP row raises a one-frame request (the
+            // menu closed itself when it did) — same open path as the M key.
+            const bool gmMapReq = gameMenu.takeMapRequest();
+            if ((mNow && !prevMapM) || gmMapReq) {
                 if (mapOpen) { mapOpen = false; wmap.close(); }
                 else {
                     float pp[3] = { startPos[0], startPos[1], startPos[2] };
@@ -4081,7 +4338,9 @@ int hostTunnel(HostContext& hc) {
             {
                 static bool lmbWas = false, rmbWas = false, togWas = false;
                 static bool rWas = false, gWas = false;
-                if (shell.inputEnabled()) {
+                // !panelOpen: while an F4/F5 panel is up the mouse belongs to
+                // the sliders — dragging RAIN must not also fire the rifle.
+                if (shell.inputEnabled() && !gameMenu.panelOpen()) {
                     lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
                     rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
                 }
@@ -4648,8 +4907,14 @@ int hostTunnel(HostContext& hc) {
             // room-reverb estimate (SND-OPUS item: the tunnel bore should
             // ECHO). One probe, two consumers — zero new raycast kinds.
             const float skyVis = skyVisibleAt(*phys, cx, cy, cz, route.dirX, route.dirZ);
-            if (weatherOn)
-                precip.update(fdt, precipKind, precipAmt, cx, cy, cz, 0.0f, 0.0f, skyVis);
+            if (weatherOn) {
+                // W-MENU: the F4 WIND sliders lean the falling columns — the
+                // wind lane precip_fx always had, finally fed (rule 6).
+                const float wSpd = console->getFloat("wx_wind");
+                const float wDir = console->getFloat("wx_winddir") * 0.0174533f;
+                precip.update(fdt, precipKind, precipAmt, cx, cy, cz,
+                              std::cos(wDir) * wSpd, std::sin(wDir) * wSpd, skyVis);
+            }
             // Under open sky: short, nearly-dry (t60 0.3 s, wet 0.05). Deep in
             // the bore: a long concrete tail (t60 2.5 s, wet 0.45). Both are
             // smoothed on the audio thread, so driving through the portal is a
@@ -4658,6 +4923,50 @@ int hostTunnel(HostContext& hc) {
             if (audioOn)
                 audio->setReverbParams(0.3f + 2.2f * (1.0f - skyVis),
                                        0.05f + 0.40f * (1.0f - skyVis));
+        }
+        // ---- W-MENU: DDGI SCROLLING VOLUME --------------------------------
+        // The device's auto-fit covers ~240 m around wherever GI happened to
+        // be switched on; this world is 46 miles of road. While r_ddgi is
+        // live, keep an EXPLICIT probe volume centred on the player and
+        // re-centre it every 150 m of travel — setDdgiParams refits on an
+        // explicit origin change (the engine-side half of this feature) and
+        // the warm-up ramp reconverges in a handful of frames. 420 m across
+        // 24 probes ≈ 18 m spacing: coarse, and right for outdoor GI (the
+        // echotropolis grid ships at ~70 m).
+        {
+            static float ddgiCx = 0.0f, ddgiCz = 0.0f;
+            static bool  ddgiCentered = false;
+            const bool ddgiOn = console->getInt("r_ddgi") != 0;
+            if (ddgiOn) {
+                float fx2 = vp[0], fy2 = vp[1], fz2 = vp[2];
+                if (!driving && footSpawned) {
+                    const x3::phys::Vec3 ft = onFoot.feet();
+                    fx2 = ft.x; fy2 = ft.y; fz2 = ft.z;
+                }
+                const float dxd = fx2 - ddgiCx, dzd = fz2 - ddgiCz;
+                if (!ddgiCentered || dxd * dxd + dzd * dzd > 150.0f * 150.0f) {
+                    ddgiCentered = true; ddgiCx = fx2; ddgiCz = fz2;
+                    x3::rhi::IRenderDevice::DdgiParams dg{};
+                    dg.enabled      = true;
+                    dg.debug        = console->getInt("r_ddgi_debug");
+                    dg.raysPerProbe = console->getInt("r_ddgi_rays");
+                    dg.intensity    = console->getFloat("r_ddgi_intensity");
+                    dg.countX       = console->getInt("r_ddgi_nx");
+                    dg.countY       = console->getInt("r_ddgi_ny");
+                    dg.countZ       = console->getInt("r_ddgi_nz");
+                    dg.hysteresis   = console->getFloat("r_ddgi_hyst");
+                    dg.originX = fx2 - 210.0f; dg.originY = fy2 - 45.0f; dg.originZ = fz2 - 210.0f;
+                    dg.sizeX = 420.0f; dg.sizeY = 150.0f; dg.sizeZ = 420.0f;
+                    device->setDdgiParams(dg);
+                    char db[128];
+                    std::snprintf(db, sizeof(db),
+                                  "[tunnel] DDGI volume re-centred on (%.0f, %.0f) — 420x150x420 m",
+                                  fx2, fz2);
+                    x3::logInfo(db);
+                }
+            } else {
+                ddgiCentered = false;   // re-enable re-centres on the player
+            }
         }
         // The town's pedestrians walk their sidewalk loop. Gated on camera
         // distance INSIDE Town::update (kPedActiveM) — outside it the terrain
@@ -5123,6 +5432,8 @@ int hostTunnel(HostContext& hc) {
                 // the only mention of it went to a log file.
                 const float hp = R * 0.085f;
                 const float hcol[4] = { 0.52f, 0.57f, 0.66f, 1.0f };
+                device->drawHudText(frame, "F4 WEATHER  F5 LIGHTS", gcx - R * 0.95f,
+                                    gcy - R * 2.00f, hp, hcol);
                 device->drawHudText(frame, "~  CONSOLE",      gcx - R * 0.95f,
                                     gcy - R * 1.64f, hp, hcol);
                 device->drawHudText(frame, "SHIFT  NITROUS",  gcx - R * 0.95f,
@@ -5226,6 +5537,14 @@ int hostTunnel(HostContext& hc) {
             prevMapEnter = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
         }
         g_weaponScroll = 0.0;        // consumed (or discarded) every frame
+
+        // ---- W-MENU: the LIVE F4/F5 panels — over the HUD, under the map and
+        // the console. The world keeps simulating behind them (that is their
+        // whole point: you SEE the rain arrive / the GI light up as you drag).
+        if (frame.valid && !mapOpen && gameMenu.panelOpen())
+            gameMenu.draw(frame, gmIn, fdt, todHours);
+        if (gameMenu.takeQuitRequest()) glfwSetWindowShouldClose(window, GLFW_TRUE);
+        if (gameMenu.takeConsoleRequest()) shell.hudForCallbacks().toggleConsole();
 
         shell.draw(frame, fdt);      // console + FPS/stats, over everything
         device->endFrame(frame);
