@@ -475,11 +475,14 @@ bool runRiverBridgeSelfTest() {
         check(desc, "RB1 the river flows downhill its whole run", d);
     }
 
-    // RB0 — NEGATIVE CONTROL: the same road WITHOUT the span gap. The carve
-    // dives through the channel: the graded datum drowns (roadY below the
-    // water surface) and the corridor gouges the riverbed — the two failures
-    // that prove an at-grade crossing is impossible and the deck is not
-    // decoration. Registered first, cleared before the real thing.
+    // RB0 — NEGATIVE CONTROL: the same road WITHOUT the span gap. An at-grade
+    // crossing fails one of two ways, and both prove the deck is not
+    // decoration: the graded datum DROWNS (roadY below the water surface — the
+    // original symptom), or, since vertical-curve smoothing landed in the
+    // grader (W-ROADS2), the sag curve lifts the V's bottom and the datum
+    // STRANDS in mid-air over the gouged channel instead — corridors cannot
+    // fill, so there is still nothing to drive on. Either way the carve also
+    // gouges the riverbed. Registered first, cleared before the real thing.
     {
         clearTerrainCorridors();
         const RiverBridgePlan p = planRiverBridge();
@@ -498,11 +501,18 @@ bool runRiverBridgeSelfTest() {
         for (float s = -30.0f; s <= 30.0f; s += 2.0f)
             channelDelta = std::min(channelDelta,
                 terrainCorridorDelta(p.cx + p.dirX * s, p.cz + p.dirZ * s));
+        // Post-carve ground at the channel centre: what the datum would have
+        // to stand on. Above it by 3 m+ with no deck = stranded in the air.
+        const float chanGround = terrainHeightAtWorld(p.cx, p.cz);
+        const bool drowned  = minRoadY < p.waterY - 1.0f;
+        const bool stranded = minRoadY > chanGround + 3.0f;
         std::snprintf(d, sizeof(d),
-            "road sinks to %.1f ft BELOW the water surface and carves %.1f ft off the river",
-            (p.waterY - minRoadY) * kMToFt, -channelDelta * kMToFt);
-        check(nv.ok && minRoadY < p.waterY - 1.0f && channelDelta < -0.5f,
-              "RB0 NEGATIVE CONTROL: at-grade crossing drowns the road", d);
+            "road datum %.1f ft vs water, %.1f ft above the gouged bed (carved %.1f ft off the river) — %s",
+            (minRoadY - p.waterY) * kMToFt, (minRoadY - chanGround) * kMToFt,
+            -channelDelta * kMToFt,
+            drowned ? "drowned" : (stranded ? "stranded mid-air" : "NEITHER, which is the failure"));
+        check(nv.ok && channelDelta < -0.5f && (drowned || stranded),
+              "RB0 NEGATIVE CONTROL: at-grade crossing cannot work", d);
         clearTerrainCorridors();
     }
 

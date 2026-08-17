@@ -59,6 +59,125 @@ constexpr int kLatSamples = 9;
 // unrelated places, and coupling them clamps a climbing road's summit to its
 // base elevation. Found when the summit spur graded FLAT: the wrap clamp ran
 // unconditionally and held the top node within one segment-grade of node 0.
+// VERTICAL-CURVE SMOOTHING (the traction fix). The relaxation above bounds the
+// GRADE; nothing bounds how fast the grade CHANGES, so a crest is a kink — the
+// profile goes from +maxGrade to -maxGrade across one node and a car at speed
+// goes light or airborne ("the road changes angles sharply with respect to
+// elevation, making the car lose traction"). Real vertical alignment bounds
+// |d(grade)/ds| — the K-value, parabolic vertical curves at every grade break.
+//
+// Constraint per interior node i:  |g_i - g_{i-1}| <= rate * (L_{i-1}+L_i)/2.
+// Enforced by iterative projection, and the projection is chosen so it can
+// never break what already holds:
+//   * FREE node: move y[i] toward the violation's fix (crest: DOWN — cut more,
+//     always legal; sag: UP — the datum floats a couple of metres over the V's
+//     bottom, which is a small embankment; the ribbon + collision ride the
+//     datum, the carve just cuts nothing there, and the prism skirt grounds
+//     it visually). Moving only the CENTRE node drives the two adjacent
+//     grades TOWARD each other, so both stay inside the [g0, g1] envelope —
+//     the maxGrade cap survives smoothing by construction.
+//   * PINNED node (a portal datum, a junction landing): the pin is LAW. The
+//     curve is built AROUND it by moving its free neighbours — flattening the
+//     approach into a sag pin (down: legal cut) or easing it over a crest pin
+//     (up: bounded float) — with the neighbour's OTHER grade clamped to
+//     maxGrade so easing one side never steepens the far side past the cap.
+// Deterministic (fixed sweep order, fixed damping), monotone in the residual.
+float maxAbsGradeRate(const std::vector<float>& y, const std::vector<float>& segLen,
+                      bool closed) {
+    const size_t n = y.size();
+    if (n < 3) return 0.0f;
+    float worst = 0.0f;
+    auto rateAt = [&](size_t im, size_t i, size_t ip, size_t s0, size_t s1) {
+        const float L0 = std::max(1.0f, segLen[s0]), L1 = std::max(1.0f, segLen[s1]);
+        const float g0 = (y[i] - y[im]) / L0, g1 = (y[ip] - y[i]) / L1;
+        return std::fabs(g1 - g0) / (0.5f * (L0 + L1));
+    };
+    for (size_t i = 1; i + 1 < n; ++i)
+        worst = std::max(worst, rateAt(i - 1, i, i + 1, i - 1, i));
+    // A ring wraps: node 0 == node n-1, so the seam has curvature too,
+    // between the last real segment (n-2) and the first (0).
+    if (closed && n >= 4)
+        worst = std::max(worst, rateAt(n - 2, 0, 1, n - 2, 0));
+    return worst;
+}
+
+void smoothVerticalCurves(std::vector<float>& y, const std::vector<float>& segLen,
+                          float maxGrade, float rate, bool closed,
+                          const std::vector<float>* pin) {
+    const size_t n = y.size();
+    if (n < 3 || rate <= 0.0f) return;
+    auto pinned = [&](size_t i) {
+        return pin && i < pin->size() && std::isfinite((*pin)[i]);
+    };
+    const float kDamp = 0.7f;
+    // Apply a move and keep the ring seam welded (node 0 == node n-1 is the
+    // same place; moving one without the other would tear the closure).
+    auto bump = [&](size_t idx, float d) {
+        y[idx] += d;
+        if (closed && (idx == 0 || idx + 1 == n)) y[0] = y[n - 1] = y[idx];
+    };
+    // Defensive initial weld: the relaxation welds the dup pair too, but this
+    // pass must never be the thing that turns a stray spread into a kink.
+    if (closed && !pinned(0) && !pinned(n - 1))
+        y[0] = y[n - 1] = std::min(y[0], y[n - 1]);
+    for (int iter = 0; iter < 600; ++iter) {
+        float moved = 0.0f;
+        auto relaxNode = [&](size_t im, size_t i, size_t ip, size_t s0, size_t s1) {
+            const float L0 = std::max(1.0f, segLen[s0]), L1 = std::max(1.0f, segLen[s1]);
+            const float g0 = (y[i] - y[im]) / L0, g1 = (y[ip] - y[i]) / L1;
+            const float lim = rate * 0.5f * (L0 + L1);
+            const float dg  = g1 - g0;                   // >0 sag, <0 crest
+            if (std::fabs(dg) <= lim) return;
+            const float excess = dg - (dg > 0.0f ? lim : -lim);
+            if (!pinned(i)) {
+                // d(dg)/dy[i] = -(1/L0 + 1/L1): raising the centre reduces dg,
+                // so the fix is delta = +excess / (1/L0 + 1/L1) (sag raises,
+                // crest lowers). Moving only the centre pulls the two grades
+                // TOWARD each other, so both stay inside their old envelope
+                // and the maxGrade cap survives by construction.
+                const float delta = kDamp * excess / (1.0f / L0 + 1.0f / L1);
+                bump(i, delta);
+                moved += std::fabs(delta);
+                return;
+            }
+            // The pin is LAW — build the curve around it in the free
+            // neighbours. Reducing |dg| needs d(dg) = -excess:
+            //   d(dg)/dy[im] = +1/L0  ->  y[im] -= excess*L0/2 (sag: lower the
+            //     approach wall into the V; crest: raise it toward the peak)
+            //   d(dg)/dy[ip] = +1/L1  ->  y[ip] -= excess*L1/2
+            // Each move is clamped so the neighbour's FAR grade (the segment
+            // away from the pin) never exceeds maxGrade.
+            // NOTE: windows headers #define `far` to nothing — the obvious
+            // name for "the node beyond the neighbour" is a landmine here.
+            const float half = kDamp * 0.5f * excess;
+            auto moveNeighbour = [&](size_t nb, size_t beyond, size_t beyondSeg, float d) {
+                if (pinned(nb)) return;
+                if (beyond != nb) {
+                    const float Lb = std::max(1.0f, segLen[beyondSeg]);
+                    const float lo = y[beyond] - Lb * maxGrade;
+                    const float hi = y[beyond] + Lb * maxGrade;
+                    d = std::max(lo, std::min(hi, y[nb] + d)) - y[nb];
+                }
+                bump(nb, d);
+                moved += std::fabs(d);
+            };
+            {   // im's far side: node im-1 across segment im-1 (wrap on a ring)
+                const size_t beyond = (im > 0) ? im - 1 : (closed && n >= 4 ? n - 2 : im);
+                const size_t beyondSeg = (im > 0) ? im - 1 : n - 2;
+                moveNeighbour(im, beyond, beyondSeg, -half * L0);
+            }
+            {   // ip's far side: node ip+1 across segment ip (wrap on a ring)
+                const size_t beyond = (ip + 1 < n) ? ip + 1 : (closed && n >= 4 ? 1 : ip);
+                const size_t beyondSeg = (ip + 1 < n) ? ip : 0;
+                moveNeighbour(ip, beyond, beyondSeg, -half * L1);
+            }
+        };
+        for (size_t i = 1; i + 1 < n; ++i) relaxNode(i - 1, i, i + 1, i - 1, i);
+        if (closed && n >= 4) relaxNode(n - 2, 0, 1, n - 2, 0);
+        if (moved < 1e-4f) break;
+    }
+}
+
 void gradeRoad(const std::vector<float>& natural, const std::vector<float>& segLen,
                float maxGrade, std::vector<float>& roadY, bool closed,
                const std::vector<float>* pin = nullptr, float* pinErr = nullptr) {
@@ -108,13 +227,18 @@ void gradeRoad(const std::vector<float>& natural, const std::vector<float>& segL
             const float cap = roadY[i] + lim;
             if (roadY[i - 1] > cap) { moved += roadY[i - 1] - cap; roadY[i - 1] = cap; }
         }
-        // A ring wraps: the last node and the first are the same place, so the
-        // constraint has to travel across the seam too or the join stays steep.
+        // A ring wraps: the last node and the first are the SAME PLACE, so
+        // they must be the same HEIGHT — not merely within one grade-step of
+        // each other, which is what the first cut of this clamp enforced.
+        // That slack was invisible until vertical-curve smoothing arrived:
+        // the smoother welds the pair, and welding a 4 m spread teleports the
+        // dup node — measured an 11.2% kink at the outer tour's 0-degree seam.
+        // Weld to the LOWER of the two (lowering-only, so convergence holds);
+        // the sweeps then carry the constraint through the seam next pass.
         if (closed) {
-            const float lim = maxGrade * std::max(1.0f, segLen[n - 2]);
             const float a = std::min(roadY[0], roadY[n - 1]);
-            if (roadY[0] > a + lim)     { roadY[0] = a + lim; moved += 1.0f; }
-            if (roadY[n - 1] > a + lim) { roadY[n - 1] = a + lim; moved += 1.0f; }
+            moved += (roadY[0] - a) + (roadY[n - 1] - a);
+            roadY[0] = roadY[n - 1] = a;
         }
         // Re-assert the pins each sweep. Lowering-only relaxation with pins
         // re-raised is still monotone in the FREE nodes (each free node only
@@ -273,6 +397,31 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
         std::fabs(spec.z[0] - spec.z[n - 1]) < 0.01f;
     gradeRoad(ceiling, segLen, spec.maxGrade, roadY, closedRing,
               pins.empty() ? nullptr : &pins, &r.pinErrM);
+    // VERTICAL FLOW: measure the kinks the relaxation left, then smooth them
+    // into parabolic vertical curves (crest AND sag), pins held exactly.
+    // X3_NO_VCURVE=1 skips the pass — the A/B instrument for eyeballing what
+    // it does to a crest, and nothing else should ever set it.
+    r.maxGradeRatePre = maxAbsGradeRate(roadY, segLen, closedRing);
+    if (const char* dbg = std::getenv("X3_RING_DEBUG"); dbg && dbg[0]) {
+        // Where is the worst kink? The A/B capture instrument needs a place
+        // to point the camera, not just a number.
+        float worst = 0.0f; size_t at = 0;
+        for (size_t i = 1; i + 1 < n; ++i) {
+            const float L0 = std::max(1.0f, segLen[i - 1]), L1 = std::max(1.0f, segLen[i]);
+            const float g0 = (roadY[i] - roadY[i - 1]) / L0, g1 = (roadY[i + 1] - roadY[i]) / L1;
+            const float rt = std::fabs(g1 - g0) / (0.5f * (L0 + L1));
+            if (rt > worst) { worst = rt; at = i; }
+        }
+        std::printf("DBG road '%s' worst grade-rate %.5f/m at node %zu (%.0f, %.0f) y %.1f\n",
+                    spec.name.c_str(), worst, at, spec.x[at], spec.z[at], roadY[at]);
+    }
+    {
+        const char* off = std::getenv("X3_NO_VCURVE");
+        if (!(off && off[0] == '1'))
+            smoothVerticalCurves(roadY, segLen, spec.maxGrade, spec.maxGradeRate,
+                                 closedRing, pins.empty() ? nullptr : &pins);
+    }
+    r.maxGradeRatePost = maxAbsGradeRate(roadY, segLen, closedRing);
     // Float is only meaningful where the ROAD owns the reach: inside a gap the
     // datum is a bookkeeping lerp between the pins (the tunnel or the deck has
     // its own profile there), and measuring it against the natural mountain
@@ -419,6 +568,17 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
         r.maxGradePct, r.maxCutM * kMToFt, r.minRoadY * kMToFt, r.maxRoadY * kMToFt,
         spec.gaps.empty() ? "" : " (+ gaps)");
     x3::logInfo(b);
+    // The vertical-flow proof, in the boot log where it can be checked: rate is
+    // |d(grade)/ds| per metre; K is the highway engineer's number (metres of
+    // vertical curve per 1% of grade change, K = 0.01/rate — bigger is softer).
+    std::snprintf(b, sizeof(b),
+        "road '%s': vertical flow — max grade-rate %.5f/m (K %.1f) before, "
+        "%.5f/m (K %.1f) after smoothing (spec cap %.5f/m, K %.1f)",
+        spec.name.c_str(),
+        r.maxGradeRatePre,  r.maxGradeRatePre  > 1e-9f ? 0.01f / r.maxGradeRatePre  : 9999.0f,
+        r.maxGradeRatePost, r.maxGradeRatePost > 1e-9f ? 0.01f / r.maxGradeRatePost : 9999.0f,
+        spec.maxGradeRate,  spec.maxGradeRate  > 1e-9f ? 0.01f / spec.maxGradeRate  : 9999.0f);
+    x3::logInfo(b);
     if (r.pinErrM > 0.06f) {   // 0.2 ft — the same step budget the bridge deck gets
         std::snprintf(b, sizeof(b),
             "road '%s': a pinned datum could not be reached at grade — %.1f ft short. "
@@ -429,20 +589,163 @@ RoadBuildResult registerRoad(const RoadSpec& spec, std::vector<float>* outRoadY)
     return r;
 }
 
-RoadBuildResult registerInnerRing() {
-    // Centred on the tunnel ridge so the ring runs past the existing bore, and
-    // sized to Tim's call: "15 mile ring". 15 miles = 24,140 m => radius 3,842 m.
-    // 200 ft node spacing keeps chord sag at 0.4 ft — invisible at road scale —
-    // and lands on 396 nodes / 13 corridors.
-    constexpr float kInnerRadiusM = 3842.0f;
-    constexpr uint32_t kInnerNodes = 396;
-    RoadSpec s = makeRingRoad("inner tour", -592.0f, -352.0f, kInnerRadiusM, kInnerNodes);
+// ---------------------------------------------------------------------------
+// COURSE AUTHORING — nodes in, road out. See road_network.h.
+// ---------------------------------------------------------------------------
+RoadSpec makeRoadFromWaypoints(const char* name,
+                               const std::vector<CourseWaypoint>& pts,
+                               float spacingM, bool closed) {
+    RoadSpec s;
+    s.name = name ? name : "course";
+    const size_t N = pts.size();
+    if (N < (closed ? 3u : 2u)) return s;
+    if (spacingM < 5.0f) spacingM = 5.0f;
+
+    // Per-corner fillet: arc start/end on the two legs, tangent length
+    // t = r*tan(theta/2), clamped so two corners sharing a leg cannot overlap.
+    struct Corner {
+        float inX, inZ, outX, outZ;   // arc start / end (== waypoint if no arc)
+        float cx = 0, cz = 0, r = 0;  // arc centre + effective radius
+        float sweep = 0;              // signed sweep angle (+ = toward perp(d0))
+    };
+    std::vector<Corner> cn(N);
+    auto wpAt = [&](size_t i) { return pts[i % N]; };
+    const size_t c0 = closed ? 0 : 1, c1 = closed ? N : N - 1;
+    for (size_t i = 0; i < N; ++i) {           // default: pass-through
+        cn[i].inX = cn[i].outX = pts[i].x;
+        cn[i].inZ = cn[i].outZ = pts[i].z;
+    }
+    for (size_t i = c0; i < c1; ++i) {
+        const CourseWaypoint P = wpAt(i);
+        const CourseWaypoint A = wpAt(i + N - 1);
+        const CourseWaypoint B = wpAt(i + 1);
+        float d0x = P.x - A.x, d0z = P.z - A.z;
+        float d1x = B.x - P.x, d1z = B.z - P.z;
+        const float l0 = std::sqrt(d0x * d0x + d0z * d0z);
+        const float l1 = std::sqrt(d1x * d1x + d1z * d1z);
+        if (l0 < 1.0f || l1 < 1.0f) continue;
+        d0x /= l0; d0z /= l0; d1x /= l1; d1z /= l1;
+        const float dot = std::max(-1.0f, std::min(1.0f, d0x * d1x + d0z * d1z));
+        const float theta = std::acos(dot);
+        if (theta < 0.03f || P.fillet < 1.0f) continue;       // straight-through
+        const float tanH = std::tan(theta * 0.5f);
+        float t = P.fillet * tanH;
+        t = std::min(t, 0.5f * l0 - 1.0f);
+        t = std::min(t, 0.5f * l1 - 1.0f);
+        if (t < 1.0f) continue;                                // no room: kink stays
+        const float r = t / tanH;
+        const float side = (d0x * d1z - d0z * d1x) >= 0.0f ? 1.0f : -1.0f;
+        cn[i].inX  = P.x - d0x * t; cn[i].inZ  = P.z - d0z * t;
+        cn[i].outX = P.x + d1x * t; cn[i].outZ = P.z + d1z * t;
+        cn[i].cx = cn[i].inX + (-d0z) * r * side;
+        cn[i].cz = cn[i].inZ + ( d0x) * r * side;
+        cn[i].r = r;
+        cn[i].sweep = theta * side;
+    }
+
+    auto emitStraight = [&](float ax, float az, float bx, float bz) {
+        const float len = std::sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az));
+        const int steps = std::max(1, (int)std::round(len / spacingM));
+        for (int k = 0; k < steps; ++k) {                     // excludes endpoint
+            const float u = (float)k / (float)steps;
+            s.x.push_back(ax + (bx - ax) * u);
+            s.z.push_back(az + (bz - az) * u);
+        }
+    };
+    auto emitArc = [&](const Corner& c) {
+        if (c.r <= 0.0f) return;                              // pass-through
+        const float arcLen = c.r * std::fabs(c.sweep);
+        const int steps = std::max(1, (int)std::ceil(arcLen / spacingM));
+        const float vx = c.inX - c.cx, vz = c.inZ - c.cz;
+        for (int k = 0; k < steps; ++k) {                     // excludes endpoint
+            const float a = c.sweep * (float)k / (float)steps;
+            const float ca = std::cos(a), sa = std::sin(a);
+            s.x.push_back(c.cx + vx * ca - vz * sa);
+            s.z.push_back(c.cz + vx * sa + vz * ca);
+        }
+    };
+
+    if (closed) {
+        for (size_t i = 0; i < N; ++i) {
+            const size_t j = (i + 1) % N;
+            emitStraight(cn[i].outX, cn[i].outZ, cn[j].inX, cn[j].inZ);
+            emitArc(cn[j]);
+        }
+        s.x.push_back(s.x[0]);                                // exact closure
+        s.z.push_back(s.z[0]);
+    } else {
+        for (size_t i = 0; i + 1 < N; ++i) {
+            const size_t j = i + 1;
+            emitStraight(cn[i].outX, cn[i].outZ, cn[j].inX, cn[j].inZ);
+            if (j + 1 < N) emitArc(cn[j]);
+        }
+        s.x.push_back(pts[N - 1].x);
+        s.z.push_back(pts[N - 1].z);
+    }
+    return s;
+}
+
+RoadSpec makeInnerCourse() {
+    // THE LEG LIST. Polar about the old ring centre for authoring convenience
+    // (angles anticlockwise from +X, radii in metres), EXCEPT the junction
+    // straight, whose two waypoints are exact XZ: a 1.3 km straight through
+    // the OLD circle's node-173 position (-4135.7, 1132.2), square to the
+    // spawn corridor's exit ray, so the connector's landing stays put.
+    //
+    // The shape, read anticlockwise: an S-complex over the east quarter
+    // (radius weaving 3700-4100), a BULGE out to 5000 m toward the north
+    // foothills (the out-and-back toward interesting terrain), a fast sweep
+    // back in, the junction straight, then the south half: a tight 3350 m
+    // corner, two more S-weaves and a wide 800 m-radius sweeper home. Fillet
+    // radii run 300-900 m — every corner a different, genuine constant radius.
+    constexpr float cx = -592.0f, cz = -352.0f;
+    struct P { float ang, rad, fil; };
+    static const P tbl[] = {
+        {   0.0f, 3900.0f, 600.0f },
+        {  22.0f, 4050.0f, 420.0f },
+        {  38.0f, 3700.0f, 350.0f },   // S in...
+        {  52.0f, 4100.0f, 500.0f },   // ...S out
+        {  75.0f, 4800.0f, 900.0f },   // the bulge begins
+        {  95.0f, 5000.0f, 850.0f },   // bulge apex — north foothills
+        { 112.0f, 4300.0f, 600.0f },
+        { 128.0f, 3600.0f, 450.0f },
+        // the junction straight (exact XZ, see above): A -> B anticlockwise
+        { -1.0f, 0.0f, 400.0f },
+        { -2.0f, 0.0f, 400.0f },
+        { 185.0f, 3500.0f, 420.0f },
+        { 205.0f, 3900.0f, 700.0f },
+        { 228.0f, 3350.0f, 300.0f },   // the tight one
+        { 244.0f, 3800.0f, 450.0f },
+        { 262.0f, 4150.0f, 550.0f },
+        { 280.0f, 3550.0f, 350.0f },   // second S-complex
+        { 298.0f, 3950.0f, 500.0f },
+        { 320.0f, 4300.0f, 800.0f },   // wide fast sweeper
+        { 342.0f, 3900.0f, 500.0f },
+    };
+    std::vector<CourseWaypoint> wp;
+    wp.reserve(sizeof(tbl) / sizeof(tbl[0]));
+    for (const P& p : tbl) {
+        CourseWaypoint w;
+        if (p.ang == -1.0f)      { w.x = -3896.1f; w.z = 1704.1f; }
+        else if (p.ang == -2.0f) { w.x = -4398.4f; w.z =  505.0f; }
+        else {
+            w.x = cx + std::cos(p.ang * 0.017453293f) * p.rad;
+            w.z = cz + std::sin(p.ang * 0.017453293f) * p.rad;
+        }
+        w.fillet = p.fil;
+        wp.push_back(w);
+    }
+    RoadSpec s = makeRoadFromWaypoints("inner tour", wp, 61.0f, /*closed=*/true);
     // 88 ft of pavement: 4 x 12 ft lanes plus a 20 ft cement apron each side,
     // wide enough to pull a dead car fully clear of the running surface.
     s.halfWidth = kPavedHalfM + 1.0f;   // +1 m so the apron edge sits on cut ground
     s.falloff   = 18.0f;                // a wider road wants a longer batter
     s.maxGrade  = 0.07f;
-    return registerRoad(s);
+    return s;
+}
+
+RoadBuildResult registerInnerRing() {
+    return registerRoad(makeInnerCourse());
 }
 
 // ---------------------------------------------------------------------------
@@ -1108,7 +1411,8 @@ SummitSpurResult registerSummitSpur(const RoadSpec& fromSpec,
     }
 
     // ---- SCORE: prominence over the nearest road node, reachable, clear ----
-    size_t baseNode = 0; Peak pick{}; float bestScore = -1e18f; bool found = false;
+    struct Cand { Peak p; size_t j; float score; };
+    std::vector<Cand> cands;
     for (const Peak& p : peaks) {
         size_t j = 0; float D = 1e18f;
         for (size_t i = 4; i + 4 < n; ++i) {
@@ -1135,96 +1439,408 @@ SummitSpurResult registerSummitSpur(const RoadSpec& fromSpec,
             const float ux = (p.x - fromSpec.x[j]) / D, uz = (p.z - fromSpec.z[j]) / D;
             if (std::fabs(ux * ttx / ttl + uz * ttz / ttl) > 0.82f) continue;
         }
-        const float score = climb - 0.012f * D;
-        if (score > bestScore) { bestScore = score; pick = p; baseNode = j; found = true; }
+        cands.push_back({ p, j, climb - 0.012f * D });
     }
-    if (!found) {
+    if (cands.empty()) {
         out.whyNot = "no local peak with >= 115 ft prominence within reach of the connector";
         x3::logWarn(std::string("summit spur: SKIPPED — ") + out.whyNot);
         return out;
     }
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
+        if (a.score != b.score) return a.score > b.score;
+        if (a.p.x != b.p.x)     return a.p.x < b.p.x;     // deterministic tie-break
+        return a.p.z < b.p.z;
+    });
 
-    // ---- AUTHOR THE CLIMB: square launch, sawtooth legs, summit finish -----
-    const float baseX = fromSpec.x[baseNode], baseZ = fromSpec.z[baseNode];
-    const float baseY = fromRoadY[baseNode];
-    float ctx = fromSpec.x[baseNode + 1] - fromSpec.x[baseNode - 1];
-    float ctz = fromSpec.z[baseNode + 1] - fromSpec.z[baseNode - 1];
-    const float ctl = std::sqrt(ctx * ctx + ctz * ctz);
-    ctx /= ctl; ctz /= ctl;
-    const float connGrade = (fromRoadY[baseNode + 1] - fromRoadY[baseNode - 1]) / ctl;
-    // launch square off the connector, on the peak's side
-    float px = -ctz, pz = ctx;
-    if (px * (pick.x - baseX) + pz * (pick.z - baseZ) < 0.0f) { px = -px; pz = -pz; }
-    const float setback = kJctSetbackM;
-    const float startX = baseX + px * setback, startZ = baseZ + pz * setback;
+    // ---- AUTHOR THE CLIMB, per candidate, best score first ----------------
+    // A candidate must pass a REACHABILITY pre-check before anything touches
+    // the corridor registry: the grade relaxation can only put the summit
+    // datum where the terrain lets a <= maxGrade profile arrive, i.e. no
+    // higher than min over the route of (ground_j + maxGrade * dist(j->top)).
+    // The de-circled course's north bulge exposed exactly this: its nearest
+    // "peak" was a range foothill whose final face outruns 14% — the old
+    // single-pick code graded 292 ft short of it and shipped the deficit. A
+    // summit the road cannot reach is SKIPPED, and the next candidate tried.
+    out.whyNot = "no candidate peak is summitable at the road's grade";
+    for (const Cand& cand : cands) {
+        const Peak pick = cand.p;
+        const size_t baseNode = cand.j;
+        const float baseX = fromSpec.x[baseNode], baseZ = fromSpec.z[baseNode];
+        const float baseY = fromRoadY[baseNode];
+        float ctx = fromSpec.x[baseNode + 1] - fromSpec.x[baseNode - 1];
+        float ctz = fromSpec.z[baseNode + 1] - fromSpec.z[baseNode - 1];
+        const float ctl = std::sqrt(ctx * ctx + ctz * ctz);
+        ctx /= ctl; ctz /= ctl;
+        const float connGrade = (fromRoadY[baseNode + 1] - fromRoadY[baseNode - 1]) / ctl;
+        // launch square off the connector, on the peak's side
+        float px = -ctz, pz = ctx;
+        if (px * (pick.x - baseX) + pz * (pick.z - baseZ) < 0.0f) { px = -px; pz = -pz; }
+        const float setback = kJctSetbackM;
+        const float startX = baseX + px * setback, startZ = baseZ + pz * setback;
 
-    float ux = pick.x - startX, uz = pick.z - startZ;
-    const float D = std::sqrt(ux * ux + uz * uz);
-    ux /= D; uz /= D;
-    const float vx = -uz, vz = ux;                          // sawtooth lateral axis
-    const float climb = pick.h - baseY;
-    const float Lneed = std::max(D, climb / 0.115f);        // aim under the 14% cap
-    const float cosPhi = std::max(0.574f, D / Lneed);       // clamp switchback angle
-    if (climb / (D / cosPhi) > 0.135f) {
-        out.whyNot = "mountain face steeper than the switchback budget (needs > 13.5% average)";
-        x3::logWarn(std::string("summit spur: SKIPPED — ") + out.whyNot);
+        float ux = pick.x - startX, uz = pick.z - startZ;
+        const float D = std::sqrt(ux * ux + uz * uz);
+        ux /= D; uz /= D;
+        const float vx = -uz, vz = ux;                      // sawtooth lateral axis
+        const float climb = pick.h - baseY;
+        const float Lneed = std::max(D, climb / 0.115f);    // aim under the 14% cap
+        const float cosPhi = std::max(0.574f, D / Lneed);   // clamp switchback angle
+        if (climb / (D / cosPhi) > 0.135f) {
+            out.whyNot = "mountain face steeper than the switchback budget (needs > 13.5% average)";
+            continue;
+        }
+        const float sinPhi = std::sqrt(std::max(0.0f, 1.0f - cosPhi * cosPhi));
+        const float step = std::max(45.0f, (D / cosPhi) / 55.0f);
+        const float W = 120.0f;                             // sawtooth half-amplitude
+
+        RoadSpec s;
+        s.name      = "summit spur";
+        s.halfWidth = kPavedHalfM + 1.0f;
+        s.falloff   = 16.0f;
+        s.maxGrade  = 0.14f;
+        // A 14% switchback road's design speed is ~50 mph, not 100: K 6.25 m/%
+        // (1.6e-3/m) keeps the car loaded at that speed and lets the sawtooth
+        // actually reach its summit — freeway K would round the top off the climb.
+        s.maxGradeRate = 1.6e-3f;
+        s.x.push_back(startX);            s.z.push_back(startZ);
+        s.x.push_back(startX + px * step * 0.8f); s.z.push_back(startZ + pz * step * 0.8f);
+        float cx = s.x.back(), cz = s.z.back();
+        int sgn = (vx * px + vz * pz >= 0.0f) ? 1 : -1;     // start swinging outward
+        while (s.x.size() < 60) {
+            const float along = (cx - startX) * ux + (cz - startZ) * uz;
+            if (along >= D - step * 1.5f) break;
+            const float hx = ux * cosPhi + vx * sinPhi * (float)sgn;
+            const float hz = uz * cosPhi + vz * sinPhi * (float)sgn;
+            cx += hx * step; cz += hz * step;
+            s.x.push_back(cx); s.z.push_back(cz);
+            const float lat = (cx - startX) * vx + (cz - startZ) * vz;
+            if (sgn > 0 && lat > W) sgn = -1;
+            else if (sgn < 0 && lat < -W) sgn = 1;
+        }
+        s.x.push_back(pick.x); s.z.push_back(pick.z);       // the summit itself
+        const float kNaN = std::numeric_limits<float>::quiet_NaN();
+        s.pinY.assign(s.x.size(), kNaN);
+        s.pinY.front() = baseY;                             // leave the connector at grade
+
+        // THE REACHABILITY PRE-CHECK (pure — no registration yet). Walk the
+        // authored polyline backward accumulating distance-to-summit; the
+        // relaxation's ceiling law bounds the summit datum by every node's
+        // ground + maxGrade * remaining distance (sampled across the carve
+        // width like registerRoad's own sweep, so a ridge under the roadway
+        // raises the ceiling exactly as it will at registration).
+        {
+            float reach = baseY;                            // pinned base bound...
+            for (size_t i = 1; i < s.x.size(); ++i) {
+                const float dx = s.x[i] - s.x[i - 1], dz = s.z[i] - s.z[i - 1];
+                reach += s.maxGrade * std::sqrt(dx * dx + dz * dz);
+            }
+            float distLeft = 0.0f;                          // ...and every node's
+            for (size_t i = s.x.size() - 1; i > 0; --i) {
+                const size_t im = i - 1;
+                const float dx = s.x[i] - s.x[im], dz = s.z[i] - s.z[im];
+                const float len = std::sqrt(dx * dx + dz * dz);
+                float tx2 = dx / std::max(1e-4f, len), tz2 = dz / std::max(1e-4f, len);
+                float hi = -1e9f;
+                for (int k = -2; k <= 2; ++k) {
+                    const float off = (float)k * s.halfWidth * 0.5f;
+                    hi = std::max(hi, naturalAt(s.x[im] + (-tz2) * off,
+                                                s.z[im] + ( tx2) * off));
+                }
+                distLeft += len;
+                reach = std::min(reach, hi + s.maxGrade * distLeft);
+            }
+            if (pick.h - reach > 2.3f) {
+                if (dbg) std::printf("SPUR peak (%.0f, %.0f): unreachable, would top out %.1f m short\n",
+                                     pick.x, pick.z, pick.h - reach);
+                out.whyNot = "no candidate peak is summitable at the road's grade";
+                continue;
+            }
+        }
+
+        out.spec = s;
+        out.road = registerRoad(out.spec, &out.roadY);
+        if (!out.road.ok || out.roadY.empty()) {
+            out.whyNot = "registration failed";
+            return out;
+        }
+        registerJunctionBox(startX, startZ, baseX, baseZ, baseY);
+        out.built = true;
+        out.peakX = pick.x; out.peakZ = pick.z; out.peakNaturalY = pick.h;
+        out.climbM = out.roadY.back() - out.roadY.front();
+        out.summitCutM = pick.h - out.roadY.back();
+        out.jct.valid = true;
+        out.jct.jx = baseX; out.jct.jz = baseZ; out.jct.jy = baseY;
+        out.jct.mainTX = ctx; out.jct.mainTZ = ctz;
+        out.jct.mainGrade = connGrade;
+        out.jct.endX = startX; out.jct.endZ = startZ;
+        out.jct.endY = out.roadY.front();
+
+        char b[400];
+        std::snprintf(b, sizeof(b),
+            "summit spur: %.2f miles UP — climbs %.0f ft to a %.0f ft peak at (%.0f, %.0f), "
+            "tops out %.1f ft under the true summit | max grade %.1f%% (cap 14%%) | "
+            "switchback angle %.0f deg, %u nodes, %u corridors | junction at (%.0f, %.0f)",
+            out.road.lengthM / 1609.34f, out.climbM * kMToFt, pick.h * kMToFt,
+            pick.x, pick.z, out.summitCutM * kMToFt, out.road.maxGradePct,
+            std::acos(cosPhi) * 57.29578f, out.road.nodeCount, out.road.corridorCount,
+            baseX, baseZ);
+        x3::logInfo(b);
         return out;
     }
-    const float sinPhi = std::sqrt(std::max(0.0f, 1.0f - cosPhi * cosPhi));
-    const float step = std::max(45.0f, (D / cosPhi) / 55.0f);
-    const float W = 120.0f;                                 // sawtooth half-amplitude
+    x3::logWarn(std::string("summit spur: SKIPPED — ") + out.whyNot);
+    return out;
+}
 
-    RoadSpec s;
-    s.name      = "summit spur";
-    s.halfWidth = kPavedHalfM + 1.0f;
-    s.falloff   = 16.0f;
-    s.maxGrade  = 0.14f;
-    s.x.push_back(startX);            s.z.push_back(startZ);
-    s.x.push_back(startX + px * step * 0.8f); s.z.push_back(startZ + pz * step * 0.8f);
-    float cx = s.x.back(), cz = s.z.back();
-    int sgn = (vx * px + vz * pz >= 0.0f) ? 1 : -1;         // start swinging outward
-    while (s.x.size() < 60) {
-        const float along = (cx - startX) * ux + (cz - startZ) * uz;
-        if (along >= D - step * 1.5f) break;
-        const float hx = ux * cosPhi + vx * sinPhi * (float)sgn;
-        const float hz = uz * cosPhi + vz * sinPhi * (float)sgn;
-        cx += hx * step; cz += hz * step;
-        s.x.push_back(cx); s.z.push_back(cz);
-        const float lat = (cx - startX) * vx + (cz - startZ) * vz;
-        if (sgn > 0 && lat > W) sgn = -1;
-        else if (sgn < 0 && lat < -W) sgn = 1;
+// ---------------------------------------------------------------------------
+// THE RANGE CIRCUIT — see road_network.h.
+// ---------------------------------------------------------------------------
+RangeCircuitResult registerRangeCircuit(const RoadSpec& connSpec,
+                                        const std::vector<float>& connRoadY,
+                                        const TunnelRoute* keepClearOf,
+                                        const std::vector<const RoadSpec*>* avoid) {
+    RangeCircuitResult out;
+    const size_t n = connSpec.x.size();
+    if (n < 12 || connRoadY.size() != n) { out.whyNot = "connector too short"; return out; }
+
+    auto naturalAt = [](float x, float z) {
+        return terrainHeightAtWorld(x, z) - terrainCorridorDelta(x, z);
+    };
+    float sx0 = 0, sz0 = 0, sx1 = 0, sz1 = 0; bool haveSpine = false;
+    if (keepClearOf && !keepClearOf->st.empty()) {
+        sx0 = keepClearOf->st.front().x; sz0 = keepClearOf->st.front().z;
+        sx1 = keepClearOf->st.back().x;  sz1 = keepClearOf->st.back().z;
+        haveSpine = true;
     }
-    s.x.push_back(pick.x); s.z.push_back(pick.z);           // the summit itself
-    const float kNaN = std::numeric_limits<float>::quiet_NaN();
-    s.pinY.assign(s.x.size(), kNaN);
-    s.pinY.front() = baseY;                                 // leave the connector at grade
+    // Clearance from everything that already owns ground: the spawn spine,
+    // every avoided route's centreline, and the host connector itself.
+    auto clearOf = [&](float x, float z) {
+        float best = 1e9f;
+        if (haveSpine) best = std::min(best, segPointDist(x, z, sx0, sz0, sx1, sz1));
+        if (avoid)
+            for (const RoadSpec* a : *avoid) {
+                if (!a) continue;
+                for (size_t i = 0; i + 1 < a->x.size(); ++i)
+                    best = std::min(best, segPointDist(x, z, a->x[i], a->z[i],
+                                                       a->x[i + 1], a->z[i + 1]));
+            }
+        for (size_t i = 0; i + 1 < n; ++i)
+            best = std::min(best, segPointDist(x, z, connSpec.x[i], connSpec.z[i],
+                                               connSpec.x[i + 1], connSpec.z[i + 1]));
+        return best;
+    };
 
-    out.spec = s;
+    // THE TRACK PLAN, in the connector's frame at the anchor node: u along the
+    // connector's tangent, v square off it (side chosen below). Authored so the
+    // brief's features are geometry, not hope:
+    //   * start/finish straight: (-500,400)->(450,400), ~950 m, the access
+    //     road arrives square onto its midpoint
+    //   * a climbing leg out to the far corner
+    //   * a HAIRPIN: 148 deg turn filleted at 75 m (clamps to ~68 m radius)
+    //   * a 750 m back straight
+    //   * an S-COMPLEX home: right-left-right, radii 110-130 m
+    // Not a circle by construction.
+    struct LP { float u, v, fil; };
+    static const LP plan[] = {
+        {  -500.0f,  400.0f, 120.0f },
+        {   450.0f,  400.0f, 140.0f },
+        {   800.0f,  700.0f, 200.0f },
+        {   700.0f, 1120.0f, 130.0f },
+        {  1120.0f, 1520.0f,  75.0f },   // the hairpin
+        {   650.0f, 1420.0f, 120.0f },
+        {   100.0f, 1560.0f, 170.0f },
+        {  -650.0f, 1560.0f, 150.0f },
+        { -1050.0f, 1230.0f, 130.0f },   // S: right...
+        {  -850.0f,  940.0f, 110.0f },   // ...left...
+        { -1150.0f,  640.0f, 110.0f },   // ...right...
+        {  -900.0f,  420.0f, 120.0f },
+    };
+    const size_t NP = sizeof(plan) / sizeof(plan[0]);
+
+    // PLACE IT: candidate anchors along the connector, both sides; every plan
+    // waypoint must clear every existing route by 170 m. Among the clear
+    // placements, prefer the one with the most RELIEF under the loop — the
+    // climbing section should be real terrain doing real work.
+    size_t H = 0; int side = 0; float hx = 0, hz = 0, ux = 0, uz = 0;
+    {
+        float bestScore = -1e18f; bool found = false;
+        for (float frac : { 0.42f, 0.58f, 0.30f }) {
+            const size_t h = std::max((size_t)4, std::min(n - 5, (size_t)((float)n * frac)));
+            float tx = connSpec.x[h + 1] - connSpec.x[h - 1];
+            float tz = connSpec.z[h + 1] - connSpec.z[h - 1];
+            const float tl = std::sqrt(tx * tx + tz * tz);
+            if (tl < 1e-4f) continue;
+            tx /= tl; tz /= tl;
+            const float px = -tz, pz = tx;
+            for (int sgn = 1; sgn >= -1; sgn -= 2) {
+                bool ok = true;
+                float hMin = 1e9f, hMax = -1e9f;
+                for (size_t i = 0; i < NP && ok; ++i) {
+                    const float wx = connSpec.x[h] + tx * plan[i].u + px * plan[i].v * (float)sgn;
+                    const float wz = connSpec.z[h] + tz * plan[i].u + pz * plan[i].v * (float)sgn;
+                    if (clearOf(wx, wz) < 170.0f) { ok = false; break; }
+                    const float hN = naturalAt(wx, wz);
+                    hMin = std::min(hMin, hN); hMax = std::max(hMax, hN);
+                }
+                if (!ok) continue;
+                const float score = hMax - hMin;
+                if (score > bestScore) {
+                    bestScore = score; found = true;
+                    H = h; side = sgn;
+                    hx = connSpec.x[h]; hz = connSpec.z[h];
+                    ux = tx; uz = tz;
+                }
+            }
+        }
+        if (!found) {
+            out.whyNot = "no clear country beside the connector for a 4-mile circuit";
+            x3::logWarn(std::string("range circuit: SKIPPED — ") + out.whyNot);
+            return out;
+        }
+    }
+    const float px = -uz * (float)side, pz = ux * (float)side;   // v axis, world
+
+    // THE CIRCUIT (registered first — free grading; the access pins to it).
+    std::vector<CourseWaypoint> wp(NP);
+    for (size_t i = 0; i < NP; ++i) {
+        wp[i].x = hx + ux * plan[i].u + px * plan[i].v;
+        wp[i].z = hz + uz * plan[i].u + pz * plan[i].v;
+        wp[i].fillet = plan[i].fil;
+    }
+    RoadSpec cs = makeRoadFromWaypoints("range circuit", wp, 55.0f, /*closed=*/true);
+    cs.halfWidth = kPavedHalfM + 1.0f;
+    cs.falloff   = 16.0f;
+    cs.maxGrade  = 0.07f;
+    out.spec = cs;
     out.road = registerRoad(out.spec, &out.roadY);
-    if (!out.road.ok || out.roadY.empty()) {
-        out.whyNot = "registration failed";
+    if (!out.road.ok || out.roadY.empty()) { out.whyNot = "circuit registration failed"; return out; }
+
+    // THE LANDING on the circuit: the node nearest the access line's target
+    // (v = 400 on the start/finish straight), plus the main-road frame there.
+    const size_t cn2 = out.spec.x.size();
+    const float tgtX = hx + px * 400.0f, tgtZ = hz + pz * 400.0f;
+    size_t L = 0; float best = 1e18f;
+    for (size_t i = 0; i + 1 < cn2; ++i) {                 // [cn2-1] duplicates [0]
+        const float dx = out.spec.x[i] - tgtX, dz = out.spec.z[i] - tgtZ;
+        const float dd = dx * dx + dz * dz;
+        if (dd < best) { best = dd; L = i; }
+    }
+    const float lx = out.spec.x[L], lz = out.spec.z[L], ly = out.roadY[L];
+    const size_t lp = (L + 1 < cn2 - 1) ? L + 1 : 0;
+    const size_t lm = (L > 0) ? L - 1 : cn2 - 2;
+    float mtx = out.spec.x[lp] - out.spec.x[lm], mtz = out.spec.z[lp] - out.spec.z[lm];
+    const float mtl = std::sqrt(mtx * mtx + mtz * mtz);
+    float circGrade = 0.0f;
+    if (mtl > 1e-4f) { mtx /= mtl; mtz /= mtl; circGrade = (out.roadY[lp] - out.roadY[lm]) / mtl; }
+
+    // THE ACCESS ROAD: dead straight from the connector to the circuit, both
+    // terminal nodes set back kJctSetbackM from the centrelines they meet, both
+    // ends PINNED to the graded datums they must arrive at. The junction
+    // machinery (mouth patch + junction box) closes both throats.
+    RoadSpec as;
+    as.name      = "circuit access";
+    as.halfWidth = kPavedHalfM + 1.0f;
+    as.falloff   = 16.0f;
+    as.maxGrade  = 0.07f;
+    {
+        // access runs along +v from the connector toward the LANDING point
+        // (not the nominal target: the nearest node may sit a few metres off).
+        float avx = lx - hx, avz = lz - hz;
+        const float al = std::sqrt(avx * avx + avz * avz);
+        avx /= al; avz /= al;
+        const float s0 = kJctSetbackM, s1 = al - kJctSetbackM;
+        const int nseg = std::max(4, (int)std::ceil((s1 - s0) / 55.0f));
+        for (int k = 0; k <= nseg; ++k) {
+            const float t = s0 + (s1 - s0) * (float)k / (float)nseg;
+            as.x.push_back(hx + avx * t);
+            as.z.push_back(hz + avz * t);
+        }
+        const float kNaN = std::numeric_limits<float>::quiet_NaN();
+        as.pinY.assign(as.x.size(), kNaN);
+        as.pinY.front() = connRoadY[H];
+        as.pinY.back()  = ly;
+    }
+    out.accessSpec = as;
+    out.accessRoad = registerRoad(out.accessSpec, &out.accessRoadY);
+    if (!out.accessRoad.ok || out.accessRoadY.empty()) {
+        out.whyNot = "access road registration failed";
         return out;
     }
-    registerJunctionBox(startX, startZ, baseX, baseZ, baseY);
-    out.built = true;
-    out.peakX = pick.x; out.peakZ = pick.z; out.peakNaturalY = pick.h;
-    out.climbM = out.roadY.back() - out.roadY.front();
-    out.summitCutM = pick.h - out.roadY.back();
-    out.jct.valid = true;
-    out.jct.jx = baseX; out.jct.jz = baseZ; out.jct.jy = baseY;
-    out.jct.mainTX = ctx; out.jct.mainTZ = ctz;
-    out.jct.mainGrade = connGrade;
-    out.jct.endX = startX; out.jct.endZ = startZ;
-    out.jct.endY = out.roadY.front();
+    registerJunctionBox(as.x.front(), as.z.front(), hx, hz, connRoadY[H]);
+    registerJunctionBox(as.x.back(),  as.z.back(),  lx, lz, ly);
 
-    char b[360];
+    // Junction frames for the two mouth patches.
+    {
+        float ctx = connSpec.x[H + 1] - connSpec.x[H - 1];
+        float ctz = connSpec.z[H + 1] - connSpec.z[H - 1];
+        const float ctl = std::sqrt(ctx * ctx + ctz * ctz);
+        out.connJct.valid = true;
+        out.connJct.jx = hx; out.connJct.jz = hz; out.connJct.jy = connRoadY[H];
+        out.connJct.mainTX = ctx / ctl; out.connJct.mainTZ = ctz / ctl;
+        out.connJct.mainGrade = (connRoadY[H + 1] - connRoadY[H - 1]) / ctl;
+        out.connJct.endX = as.x.front(); out.connJct.endZ = as.z.front();
+        out.connJct.endY = out.accessRoadY.front();
+    }
+    {
+        out.circJct.valid = true;
+        out.circJct.jx = lx; out.circJct.jz = lz; out.circJct.jy = ly;
+        out.circJct.mainTX = mtx; out.circJct.mainTZ = mtz;
+        out.circJct.mainGrade = circGrade;
+        out.circJct.endX = as.x.back(); out.circJct.endZ = as.z.back();
+        out.circJct.endY = out.accessRoadY.back();
+    }
+    out.hostNode = (uint32_t)H;
+    out.built = true;
+
+    // MEASURE the features the brief demands — the self-test gates on these.
+    out.climbM = out.road.maxRoadY - out.road.minRoadY;
+    {
+        float run = 0.0f, longest = 0.0f;
+        for (size_t i = 1; i + 1 < cn2; ++i) {
+            float ax = out.spec.x[i] - out.spec.x[i - 1], az = out.spec.z[i] - out.spec.z[i - 1];
+            float bx = out.spec.x[i + 1] - out.spec.x[i], bz = out.spec.z[i + 1] - out.spec.z[i];
+            const float la = std::sqrt(ax * ax + az * az), lb = std::sqrt(bx * bx + bz * bz);
+            if (la < 1e-4f || lb < 1e-4f) continue;
+            const float dot = std::max(-1.0f, std::min(1.0f,
+                (ax * bx + az * bz) / (la * lb)));
+            if (std::acos(dot) < 0.0105f) {          // < 0.6 deg/node: straight
+                if (run == 0.0f) run = la;
+                run += lb;
+                longest = std::max(longest, run);
+            } else run = 0.0f;
+        }
+        out.longestStraightM = longest;
+        // sharpest cumulative heading change in any ~260 m window = the hairpin
+        std::vector<float> hd(cn2 - 1), sl(cn2 - 1);
+        for (size_t i = 0; i + 1 < cn2; ++i) {
+            const float dx = out.spec.x[i + 1] - out.spec.x[i];
+            const float dz = out.spec.z[i + 1] - out.spec.z[i];
+            hd[i] = std::atan2(dz, dx);
+            sl[i] = std::sqrt(dx * dx + dz * dz);
+        }
+        for (size_t i = 0; i + 1 < hd.size(); ++i) {
+            float turn = 0.0f, dist = 0.0f;
+            for (size_t j = i + 1; j < hd.size() && dist < 260.0f; ++j) {
+                float dh = hd[j] - hd[j - 1];
+                while (dh >  3.14159265f) dh -= 6.2831853f;
+                while (dh < -3.14159265f) dh += 6.2831853f;
+                turn += dh; dist += sl[j];
+                out.hairpinTurnDeg = std::max(out.hairpinTurnDeg,
+                                              std::fabs(turn) * 57.29578f);
+            }
+        }
+    }
+
+    char b[420];
     std::snprintf(b, sizeof(b),
-        "summit spur: %.2f miles UP — climbs %.0f ft to a %.0f ft peak at (%.0f, %.0f), "
-        "tops out %.1f ft under the true summit | max grade %.1f%% (cap 14%%) | "
-        "switchback angle %.0f deg, %u nodes, %u corridors",
-        out.road.lengthM / 1609.34f, out.climbM * kMToFt, pick.h * kMToFt,
-        pick.x, pick.z, out.summitCutM * kMToFt, out.road.maxGradePct,
-        std::acos(cosPhi) * 57.29578f, out.road.nodeCount, out.road.corridorCount);
+        "range circuit: %.2f miles lap off connector node %u (side %+d) | "
+        "longest straight %.0f m, hairpin %.0f deg, climb %.0f ft | "
+        "access %.0f m, pin deficits %.2f / %.2f ft | junctions: connector "
+        "(%.0f, %.0f) -> circuit (%.0f, %.0f)",
+        out.road.lengthM / 1609.34f, out.hostNode, side,
+        out.longestStraightM, out.hairpinTurnDeg, out.climbM * kMToFt,
+        out.accessRoad.lengthM, out.road.pinErrM * kMToFt,
+        out.accessRoad.pinErrM * kMToFt,
+        out.connJct.jx, out.connJct.jz, out.circJct.jx, out.circJct.jz);
     x3::logInfo(b);
     return out;
 }
@@ -1256,6 +1872,31 @@ struct RibbonMesh {
         i.push_back(base+0); i.push_back(base+1); i.push_back(base+2);
         i.push_back(base+0); i.push_back(base+2); i.push_back(base+3);
     }
+    // Same quad, but the normal comes from the winding — the skirt's faces are
+    // vertical/battered concrete, and lighting them as if they faced the sky
+    // (the flat quad() above) would flatten exactly the depth they exist to add.
+    void quadN(const float a[3], const float b[3], const float c[3], const float d[3],
+               float u0, float u1, float w0, float w1) {
+        float e0[3] = { b[0]-a[0], b[1]-a[1], b[2]-a[2] };
+        float e1[3] = { c[0]-b[0], c[1]-b[1], c[2]-b[2] };
+        float nrm[3] = { e0[1]*e1[2] - e0[2]*e1[1],
+                         e0[2]*e1[0] - e0[0]*e1[2],
+                         e0[0]*e1[1] - e0[1]*e1[0] };
+        const float nl = std::sqrt(nrm[0]*nrm[0] + nrm[1]*nrm[1] + nrm[2]*nrm[2]);
+        if (nl > 1e-6f) { nrm[0] /= nl; nrm[1] /= nl; nrm[2] /= nl; }
+        else            { nrm[0] = 0.0f; nrm[1] = 1.0f; nrm[2] = 0.0f; }
+        const uint32_t base = (uint32_t)v.size();
+        auto push = [&](const float p[3], float u, float w) {
+            x3::rhi::MeshVertex mv{};
+            mv.pos[0]=p[0]; mv.pos[1]=p[1]; mv.pos[2]=p[2];
+            mv.normal[0]=nrm[0]; mv.normal[1]=nrm[1]; mv.normal[2]=nrm[2];
+            mv.uv[0]=u; mv.uv[1]=w;
+            v.push_back(mv);
+        };
+        push(a,u0,w0); push(b,u1,w0); push(c,u1,w1); push(d,u0,w1);
+        i.push_back(base+0); i.push_back(base+1); i.push_back(base+2);
+        i.push_back(base+0); i.push_back(base+2); i.push_back(base+3);
+    }
     bool empty() const { return i.empty(); }
 };
 
@@ -1267,6 +1908,54 @@ struct RibbonMesh {
 constexpr float kPaveProud = 0.02f;
 
 } // namespace
+
+// PURE barrier planning — see road_network.h. The drop test: a segment's side
+// earns a rail when the carved ground ~6 m beyond the apron edge sits more
+// than 2 m below the road datum at either segment end. Gap segments never
+// rail (a bore's walls and a bridge's parapets are their own protection).
+BarrierPlan planRoadBarriers(const RoadSpec& spec, const std::vector<float>* roadY) {
+    BarrierPlan plan;
+    const size_t n = spec.x.size();
+    if (n < 2) return plan;
+    if (roadY && roadY->size() != n) roadY = nullptr;
+    plan.mask.assign(n - 1, 0);
+    plan.minDropM = 1e9f;
+
+    auto datumAt = [&](size_t i) {
+        if (roadY) return (*roadY)[i];
+        return terrainHeightAtWorld(spec.x[i], spec.z[i]) + kRoadFloorClear;
+    };
+    auto dropAt = [&](size_t i, int side) {
+        const size_t ip = (i + 1 < n) ? i + 1 : i;
+        const size_t im = (i > 0) ? i - 1 : i;
+        float tx = spec.x[ip] - spec.x[im], tz = spec.z[ip] - spec.z[im];
+        const float tl = std::sqrt(tx * tx + tz * tz);
+        if (tl > 1e-4f) { tx /= tl; tz /= tl; }
+        const float lat = (kPavedHalfM + 6.0f) * (float)side;
+        const float qx = spec.x[i] + (-tz) * lat;
+        const float qz = spec.z[i] + ( tx) * lat;
+        return datumAt(i) - terrainHeightAtWorld(qx, qz);
+    };
+    auto segInGap = [&](size_t k) {
+        for (const RoadSpec::Gap& g : spec.gaps)
+            if (k >= g.i0 && k < g.i1) return true;
+        return false;
+    };
+    for (size_t k = 0; k + 1 < n; ++k) {
+        if (segInGap(k)) continue;
+        for (int side = -1; side <= 1; side += 2) {
+            const float d0 = dropAt(k, side), d1 = dropAt(k + 1, side);
+            const float d = std::max(d0, d1);
+            if (d > 2.0f) {
+                plan.mask[k] |= (side < 0) ? 1 : 2;
+                ++plan.railSegments;
+                plan.minDropM = std::min(plan.minDropM, d);
+            }
+        }
+    }
+    if (plan.railSegments == 0) plan.minDropM = 0.0f;
+    return plan;
+}
 
 RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
                                  x3::rhi::IRenderDevice& device,
@@ -1288,9 +1977,35 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
         x3::logWarn("road ribbon: surface set(s) unavailable - flat colour fallback");
 
     const float run = kRunningHalfM;   // 24 ft: half of the 4-lane running width
-    const float pav = kPavedHalfM;     // 44 ft: running + a 20 ft apron each side
+    const float sho = kShoulderHalfM;  // 28 ft: + the 4 ft paved shoulder
+    const float pav = kPavedHalfM;     // 48 ft: + the 20 ft cement apron
 
-    RibbonMesh road, apronL, apronR, paint;
+    // THE ROAD PRISM. Tim: "it also needs to be THICK CONCRETE in the base and
+    // aprons.. not floating on top!!!" A bare ribbon is a zero-thickness sheet:
+    // anywhere the ground falls away from the apron's outer edge (side-slopes,
+    // hollows, the pinned portal-ramp floats) the pavement reads as paper. The
+    // fix is geometry: from each apron edge, a VERTICAL concrete face at least
+    // kSkirtFace deep, then a BATTERED face running out and down until its toe
+    // laps kSkirtLap UNDER the carved ground — buried where the road sits in a
+    // cutting (harmless, hidden), a real poured base wherever the terrain drops.
+    // Never coplanar with the terrain, so nothing z-fights.
+    constexpr float kSkirtFace    = 0.62f;   // minimum visible vertical face (m)
+    constexpr float kSkirtOut     = 0.9f;    // batter run outward (m)
+    constexpr float kSkirtLap     = 0.6f;    // toe depth under the carved ground
+    constexpr float kSkirtMaxDrop = 14.0f;   // don't build a curtain wall off a cliff
+
+    RibbonMesh road, shoulders, apronL, apronR, paint, skirt, rails;
+    // Guardrail COLLISION is a continuous thin wall per railed run — the car
+    // must be able to LEAN on it and be saved; per-post boxes would shred it.
+    std::vector<float>    railColV;
+    std::vector<uint32_t> railColI;
+    const BarrierPlan barriers = [&]() {
+        const char* e = std::getenv("X3_ROAD_BARRIERS");   // 0 = A/B capture off
+        if (e && e[0] == '0') return BarrierPlan{};
+        return planRoadBarriers(spec, roadY);
+    }();
+    out.railSegments = barriers.railSegments;
+    out.railMinDropM = barriers.minDropM;
     float uRun = 0.0f;
 
     auto at = [&](size_t idx, float lat, float o[3]) {
@@ -1331,11 +2046,101 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
         at(k, -run, aL); at(k, run, aR); at(k+1, -run, bL); at(k+1, run, bR);
         road.quad(aL, aR, bR, bL, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
 
+        // THE SHOULDER: 4 ft of asphalt outside the edge line, same surface,
+        // its own strip so it can weather a shade differently from the lanes.
+        float aLs[3], bLs[3], aRs[3], bRs[3];
+        at(k, -sho, aLs); at(k+1, -sho, bLs);
+        at(k,  sho, aRs); at(k+1,  sho, bRs);
+        shoulders.quad(aLs, aL, bL, bLs, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+        shoulders.quad(aR, aRs, bRs, bR, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+
         float aLo[3], bLo[3], aRo[3], bRo[3];
         at(k, -pav, aLo); at(k+1, -pav, bLo);
         at(k,  pav, aRo); at(k+1,  pav, bRo);
-        apronL.quad(aLo, aL, bL, bLo, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
-        apronR.quad(aR, aRo, bRo, bR, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+        apronL.quad(aLo, aLs, bLs, bLo, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+        apronR.quad(aRs, aRo, bRo, bRs, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+
+        // GUARDRAILS (Tim: "We really need BARRIERS.") where the drop test
+        // fired: two horizontal W-beam-read bands (0.26-0.36 m and 0.50-0.60 m
+        // up) on posts every ~4 m, just inside the apron's outer edge, both
+        // faces emitted (a rail is seen from the road AND from the drop).
+        // Collision is the continuous 1 m wall accumulated per railed run.
+        if (k < barriers.mask.size() && barriers.mask[k]) {
+            for (int side = -1; side <= 1; side += 2) {
+                const uint8_t bit = (side < 0) ? 1 : 2;
+                if (!(barriers.mask[k] & bit)) continue;
+                const float lat = (pav - 0.3f) * (float)side;
+                float a0[3], b0[3];
+                at(k, lat, a0); at(k+1, lat, b0);
+                auto band = [&](float y0, float y1) {
+                    float aB[3] = { a0[0], a0[1] + y0, a0[2] };
+                    float bB[3] = { b0[0], b0[1] + y0, b0[2] };
+                    float aT[3] = { a0[0], a0[1] + y1, a0[2] };
+                    float bT[3] = { b0[0], b0[1] + y1, b0[2] };
+                    rails.quadN(aB, aT, bT, bB, 0.0f, 0.15f, u0 * 0.25f, u1 * 0.25f);
+                    rails.quadN(aT, aB, bB, bT, 0.0f, 0.15f, u0 * 0.25f, u1 * 0.25f);
+                };
+                band(0.26f, 0.36f);
+                band(0.50f, 0.60f);
+                // posts on a global 4 m rhythm so runs stay in step across nodes
+                for (float su = std::ceil(u0 / 4.0f) * 4.0f; su < u1; su += 4.0f) {
+                    const float t = (su - u0) / (u1 - u0);
+                    float p0[3] = { a0[0] + (b0[0] - a0[0]) * t,
+                                    a0[1] + (b0[1] - a0[1]) * t,
+                                    a0[2] + (b0[2] - a0[2]) * t };
+                    const float dxs = (b0[0] - a0[0]) / (u1 - u0);
+                    const float dzs = (b0[2] - a0[2]) / (u1 - u0);
+                    float pA[3] = { p0[0] - dxs * 0.06f, p0[1],         p0[2] - dzs * 0.06f };
+                    float pB[3] = { p0[0] + dxs * 0.06f, p0[1],         p0[2] + dzs * 0.06f };
+                    float pC[3] = { pB[0],               p0[1] + 0.65f, pB[2] };
+                    float pD[3] = { pA[0],               p0[1] + 0.65f, pA[2] };
+                    rails.quadN(pA, pB, pC, pD, 0.0f, 0.12f, 0.0f, 0.65f);
+                    rails.quadN(pB, pA, pD, pC, 0.0f, 0.12f, 0.0f, 0.65f);
+                }
+                // the continuous collision wall for this railed segment
+                const uint32_t cb = (uint32_t)(railColV.size() / 3);
+                const float wall[4][3] = {
+                    { a0[0], a0[1],         a0[2] }, { b0[0], b0[1],         b0[2] },
+                    { b0[0], b0[1] + 1.0f,  b0[2] }, { a0[0], a0[1] + 1.0f,  a0[2] } };
+                for (const auto& w : wall) {
+                    railColV.push_back(w[0]); railColV.push_back(w[1]); railColV.push_back(w[2]);
+                }
+                const uint32_t wi[6] = { cb, cb + 1, cb + 2, cb, cb + 2, cb + 3 };
+                railColI.insert(railColI.end(), wi, wi + 6);
+            }
+        }
+
+        // THE PRISM SKIRT, both sides. The top edge reuses the apron edge
+        // verts' positions exactly (same at() call), so pavement and skirt
+        // share an edge — no hairline crack for the sky to leak through.
+        for (int side = -1; side <= 1; side += 2) {
+            const float lat = pav * (float)side;
+            float aT[3], bT[3];
+            at(k, lat, aT); at(k+1, lat, bT);
+            // knee: bottom of the vertical face
+            float aK[3] = { aT[0], aT[1] - kSkirtFace, aT[2] };
+            float bK[3] = { bT[0], bT[1] - kSkirtFace, bT[2] };
+            // toe: out kSkirtOut, down to kSkirtLap under the carved ground
+            float aO[3], bO[3];
+            at(k,   lat + kSkirtOut * (float)side, aO);
+            at(k+1, lat + kSkirtOut * (float)side, bO);
+            auto toeY = [&](const float top[3], const float o[3]) {
+                const float ground = terrainHeightAtWorld(o[0], o[2]);
+                float y = std::min(top[1] - kSkirtFace, ground) - kSkirtLap;
+                return std::max(y, top[1] - kSkirtMaxDrop);
+            };
+            aO[1] = toeY(aT, aO);
+            bO[1] = toeY(bT, bO);
+            const float faceV0 = 0.0f, faceV1 = kSkirtFace / 6.1f;
+            const float batV1  = faceV1 + (kSkirtFace + kSkirtLap) / 6.1f;
+            if (side > 0) {
+                skirt.quadN(aT, aK, bK, bT, faceV0, faceV1, u0 * 0.06f, u1 * 0.06f);
+                skirt.quadN(aK, aO, bO, bK, faceV1, batV1,  u0 * 0.06f, u1 * 0.06f);
+            } else {
+                skirt.quadN(aK, aT, bT, bK, faceV1, faceV0, u0 * 0.06f, u1 * 0.06f);
+                skirt.quadN(aO, aK, bK, bO, batV1,  faceV1, u0 * 0.06f, u1 * 0.06f);
+            }
+        }
 
         // LANE MARKINGS: solid at both edges of the running surface, DASHED on
         // the three interior lines. 40 ft cycle at 60% duty is the US
@@ -1387,16 +2192,37 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
     if (!cement.ok)  { apronTint[0] = 0.42f; apronTint[1] = 0.41f; apronTint[2] = 0.38f; }
     const float paintC[4] = { 1.8f, 1.8f, 1.7f, 1.0f };
     upload(road,   &asphalt, roadTint,  true);
+    // The shoulder weathers a shade differently from the lanes — that contrast
+    // is what tells you at speed you have left the running surface.
+    float shoulderTint[4] = { 0.78f, 0.78f, 0.79f, 1.0f };
+    if (!asphalt.ok) { shoulderTint[0] = 0.072f; shoulderTint[1] = 0.072f; shoulderTint[2] = 0.076f; }
+    upload(shoulders, &asphalt, shoulderTint, true);
     upload(apronL, &cement,  apronTint, true);
     upload(apronR, &cement,  apronTint, true);
+    // The prism skirt is CONCRETE STRUCTURE, slightly darker than the apron it
+    // holds up so the edge reads as a poured base, not more paving.
+    float skirtTint[4] = { 0.74f, 0.73f, 0.70f, 1.0f };
+    if (!cement.ok) { skirtTint[0] = 0.34f; skirtTint[1] = 0.33f; skirtTint[2] = 0.31f; }
+    upload(skirt,  &cement,  skirtTint, true);
+    // Galvanized-steel gray, dielectric — an untextured metallic-1 surface
+    // renders BLACK (X3_WORLD_RULES rule 5), so the rail is painted gray with
+    // its geometry (two bands + posts) doing the W-beam read.
+    const float railTint[4] = { 0.60f, 0.62f, 0.65f, 1.0f };
+    upload(rails,  nullptr,  railTint,  false);
+    if (!railColI.empty())
+        phys.addStaticMesh(railColV.data(), (uint32_t)(railColV.size() / 3),
+                           railColI.data(), (uint32_t)railColI.size());
     upload(paint,  nullptr,  paintC,    false);
 
     out.ok = out.meshCount > 0;
     char b[256];
     std::snprintf(b, sizeof(b),
-        "road ribbon: %.2f miles | %u meshes, %u quads | 4 lanes x %.0f ft + %.0f ft aprons = %.0f ft paved",
+        "road ribbon: %.2f miles | %u meshes, %u quads | 4 x %.0f ft lanes + %.0f ft "
+        "shoulders + %.0f ft aprons = %.0f ft paved | prism skirt %.2f m face | "
+        "%u guardrail segments (min drop railed %.1f m)",
         out.lengthM / 1609.34f, out.meshCount, out.quadCount,
-        kLaneFt, kApronFt, kPavedHalfM * 2.0f / kFtToM);
+        kLaneFt, kShoulderFt, kApronFt, kPavedHalfM * 2.0f / kFtToM, kSkirtFace,
+        out.railSegments, out.railMinDropM);
     x3::logInfo(b);
     return out;
 }
@@ -1426,7 +2252,10 @@ RoadRibbonResult buildJunctionMouth(const RoadJunction& j, Scene& scene,
     const float pxd = -dz, pzd = dx;                 // branch lateral axis
     const float V = setb + 2.5f;                     // overlap past the main centreline
     const int   nv = 10, nu = 8;
-    const float runW = kRunningHalfM, pavW = kPavedHalfM;
+    // The mouth's asphalt carries the running width PLUS the shoulder through
+    // the junction, so the branch's paved shoulder does not dead-end into
+    // cement at the terminal edge; the flare wings pick up from there.
+    const float runW = kShoulderHalfM, pavW = kPavedHalfM;
 
     // The TWIST — from the branch's laterally-flat edge onto the main road's
     // longitudinally-sloped surface — must be COMPLETE by the main pavement's
@@ -1564,8 +2393,49 @@ bool runRoadNetworkSelfTest() {
                   r.lengthM / 1609.34f, r.nodeCount, r.corridorCount);
     check(r.ok && r.corridorCount > 0, "N1 the inner ring registers", d);
 
-    std::snprintf(d, sizeof(d), "%.2f miles (asked for 15.0)", r.lengthM / 1609.34f);
-    check(std::fabs(r.lengthM / 1609.34f - 15.0f) < 0.2f, "N2 it is 15 miles long", d);
+    std::snprintf(d, sizeof(d), "%.2f miles (asked ~15, course-authored)", r.lengthM / 1609.34f);
+    check(r.lengthM / 1609.34f > 13.0f && r.lengthM / 1609.34f < 17.0f,
+          "N2 it is a ~15 mile course", d);
+
+    // NOT A CIRCLE. Tim, from the world map: "its a perfect circle. NO roads
+    // do that." Two measurements a circle cannot pass: the radial spread about
+    // the centroid (a circle's is ~0), and genuine straights (a circle has
+    // none). Both from the authored spec, not the log.
+    {
+        const RoadSpec s = makeInnerCourse();
+        const size_t sn = s.x.size();
+        double cxm = 0.0, czm = 0.0;
+        for (size_t i = 0; i + 1 < sn; ++i) { cxm += s.x[i]; czm += s.z[i]; }
+        cxm /= (double)(sn - 1); czm /= (double)(sn - 1);
+        float rMin = 1e9f, rMax = -1e9f;
+        for (size_t i = 0; i + 1 < sn; ++i) {
+            const float rr = std::sqrt((s.x[i] - (float)cxm) * (s.x[i] - (float)cxm) +
+                                       (s.z[i] - (float)czm) * (s.z[i] - (float)czm));
+            rMin = std::min(rMin, rr); rMax = std::max(rMax, rr);
+        }
+        float straight = 0.0f, longest = 0.0f; int straights500 = 0; bool inRun = false;
+        for (size_t i = 1; i + 1 < sn; ++i) {
+            float ax = s.x[i] - s.x[i-1], az = s.z[i] - s.z[i-1];
+            float bx = s.x[i+1] - s.x[i], bz = s.z[i+1] - s.z[i];
+            const float la = std::sqrt(ax*ax + az*az), lb = std::sqrt(bx*bx + bz*bz);
+            if (la < 1e-4f || lb < 1e-4f) continue;
+            const float dot = std::max(-1.0f, std::min(1.0f, (ax*bx + az*bz) / (la*lb)));
+            if (std::acos(dot) < 0.0105f) {
+                if (!inRun) { straight = la; inRun = true; }
+                straight += lb;
+                longest = std::max(longest, straight);
+            } else {
+                if (inRun && straight >= 500.0f) ++straights500;
+                inRun = false; straight = 0.0f;
+            }
+        }
+        if (inRun && straight >= 500.0f) ++straights500;
+        std::snprintf(d, sizeof(d),
+            "radial spread %.0f..%.0f m (delta %.0f), %d straights >= 500 m (longest %.0f m)",
+            rMin, rMax, rMax - rMin, straights500, longest);
+        check(rMax - rMin > 800.0f && straights500 >= 2,
+              "N2b the course is NOT a circle: real spread, real straights", d);
+    }
 
     // The chain must fit the cap WITH the city bores still to come.
     std::snprintf(d, sizeof(d), "%u corridors of a %u cap", r.corridorCount, kMaxTerrainCorridors);
@@ -1576,12 +2446,23 @@ bool runRoadNetworkSelfTest() {
     std::snprintf(d, sizeof(d), "steepest %.1f%% (limit 7%%)", r.maxGradePct);
     check(r.maxGradePct <= 7.5f, "N4 no segment exceeds the drivable grade", d);
 
+    // VERTICAL FLOW — the traction gate. Grade alone is not drivability: the
+    // RATE of grade change is what unloads a car at a crest. Assert the
+    // smoothed profile respects the spec's K-value, and that the smoothing is
+    // doing real work (the raw relaxation profile must have been worse or
+    // already-compliant country).
+    std::snprintf(d, sizeof(d),
+        "max |d(grade)/ds| %.5f/m raw -> %.5f/m smoothed (cap %.5f/m = K %.0f)",
+        r.maxGradeRatePre, r.maxGradeRatePost, 5.0e-4f, 0.01f / 5.0e-4f);
+    check(r.maxGradeRatePost <= 5.0e-4f * 1.10f,
+          "N4b vertical flow: no grade break exceeds the crest/sag K-value", d);
+
     // And the carve must actually put the ground at the road: sample the FINAL
     // field along the ring and assert nothing stands on the roadway. This is the
     // road's version of --test-tunnelmouth's M1, and the reason the lateral
     // sweep above measures the MAX across the width rather than the centreline.
     {
-        const RoadSpec s = makeRingRoad("probe", -592.0f, -352.0f, 3842.0f, 396);
+        const RoadSpec s = makeInnerCourse();
         float worst = -1e9f; float worstAt = 0.0f;
         for (size_t i = 0; i + 1 < s.x.size(); ++i) {
             const float h = terrainHeightAtWorld(s.x[i], s.z[i]);
@@ -1621,10 +2502,11 @@ bool runRoadNetworkSelfTest() {
             x3::logInfo(b);
             return ms;
         };
-        const double withRing = timeDelta("13 corridors (the ring)");
+        const double withRing = timeDelta("the ring's corridors");
         clearTerrainCorridors();
         const double empty = timeDelta("0 corridors (baseline)");
-        const double perCorridorNs = (withRing - empty) * 1e6 / (double)kProbes / 13.0;
+        const double perCorridorNs = (withRing - empty) * 1e6 / (double)kProbes
+                                   / std::max(1.0, (double)r.corridorCount);
         std::snprintf(d, sizeof(d),
             "%.1f ns per corridor per query; at the 192 cap that is %.0f ns/query, "
             "%.0f ms per million",
@@ -1846,13 +2728,10 @@ bool runRoadNetworkSelfTest() {
         const TunnelRoute* spawn = registerTunnelCorridorFor(demoTunnelSpec());
         check(spawn != nullptr, "K0 the spawn corridor registers for the connect gates");
         if (spawn) {
-            RoadSpec ringSpec = makeRingRoad("inner tour", -592.0f, -352.0f, 3842.0f, 396);
-            ringSpec.halfWidth = kPavedHalfM + 1.0f;
-            ringSpec.falloff   = 18.0f;
-            ringSpec.maxGrade  = 0.07f;
+            RoadSpec ringSpec = makeInnerCourse();
             std::vector<float> ringY;
             const RoadBuildResult ringR = registerRoad(ringSpec, &ringY);
-            check(ringR.ok, "K0b the ring registers under the connect gates");
+            check(ringR.ok, "K0b the course registers under the connect gates");
 
             const SpawnConnectorResult cx = registerSpawnConnector(*spawn, ringSpec, ringY);
             std::snprintf(d, sizeof(d),
@@ -1876,11 +2755,78 @@ bool runRoadNetworkSelfTest() {
             check(dEnd < 0.02f && dStart < 0.02f,
                   "K4 the connector datum MEETS both roads exactly", d);
 
+            // JUNCTION STABILITY: the course replaced the circle, and the one
+            // hard promise of the reshape was that the connector's landing
+            // stays where the old ring node 173 was — the junction straight
+            // was authored through that exact point.
+            {
+                const float lx = ringSpec.x[cx.ringNode], lz = ringSpec.z[cx.ringNode];
+                const float dd = std::sqrt((lx + 4135.7f) * (lx + 4135.7f) +
+                                           (lz - 1132.2f) * (lz - 1132.2f));
+                std::snprintf(d, sizeof(d),
+                    "landing (%.0f, %.0f), %.0f m from the old node-173 junction", lx, lz, dd);
+                check(dd < 250.0f, "K4b the de-circled course kept the junction in place", d);
+            }
+
+            // VERTICAL FLOW on the connected network: the ring, the connector
+            // and (below) the spur and circuit must all hold their K-values.
+            std::snprintf(d, sizeof(d),
+                "ring %.5f->%.5f, connector %.5f->%.5f (caps %.5f) /m",
+                ringR.maxGradeRatePre, ringR.maxGradeRatePost,
+                cx.road.maxGradeRatePre, cx.road.maxGradeRatePost, 5.0e-4f);
+            check(ringR.maxGradeRatePost <= 5.0e-4f * 1.10f &&
+                  cx.road.maxGradeRatePost <= 5.0e-4f * 1.10f,
+                  "K4c vertical flow holds through the connected network", d);
+
+            // THE RANGE CIRCUIT — registered before the spur so the spur's
+            // peak search must avoid it, same order as the host.
+            std::vector<const RoadSpec*> avoidC{ &ringSpec };
+            const RangeCircuitResult rc = registerRangeCircuit(cx.spec, cx.roadY,
+                                                               spawn, &avoidC);
+            std::snprintf(d, sizeof(d), "%s: %.2f miles, access %.0f m",
+                          rc.built ? "built" : rc.whyNot,
+                          rc.road.lengthM / 1609.34f, rc.accessRoad.lengthM);
+            check(rc.built, "C1 the range circuit registers off the connector", d);
+            if (rc.built) {
+                const size_t cnn = rc.spec.x.size();
+                const bool closed = cnn > 3 &&
+                    std::fabs(rc.spec.x[0] - rc.spec.x[cnn - 1]) < 0.01f &&
+                    std::fabs(rc.spec.z[0] - rc.spec.z[cnn - 1]) < 0.01f;
+                std::snprintf(d, sizeof(d), "%.2f miles, closed=%d",
+                              rc.road.lengthM / 1609.34f, closed ? 1 : 0);
+                check(closed &&
+                      rc.road.lengthM / 1609.34f >= 3.0f &&
+                      rc.road.lengthM / 1609.34f <= 5.0f,
+                      "C2 it is a lap-able 3-5 mile loop", d);
+
+                std::snprintf(d, sizeof(d),
+                    "longest straight %.0f m, hairpin %.0f deg, climb %.0f ft, grade %.1f%%",
+                    rc.longestStraightM, rc.hairpinTurnDeg,
+                    rc.climbM * kMToFt, rc.road.maxGradePct);
+                check(rc.longestStraightM >= 400.0f && rc.hairpinTurnDeg >= 120.0f &&
+                      rc.road.maxGradePct <= 7.5f,
+                      "C3 real straights, a real hairpin, drivable grade", d);
+
+                std::snprintf(d, sizeof(d),
+                    "access pins %.2f ft deficit; ends off datum %.2f / %.2f ft",
+                    rc.accessRoad.pinErrM * kMToFt,
+                    std::fabs(rc.accessRoadY.front() - cx.roadY[rc.hostNode]) * kMToFt,
+                    std::fabs(rc.accessRoadY.back() - rc.circJct.jy) * kMToFt);
+                check(rc.accessRoad.ok && rc.accessRoad.pinErrM <= 0.06f,
+                      "C4 the access road meets both datums at grade", d);
+
+                std::snprintf(d, sizeof(d), "circuit rate %.5f->%.5f /m (cap %.5f)",
+                              rc.road.maxGradeRatePre, rc.road.maxGradeRatePost, 5.0e-4f);
+                check(rc.road.maxGradeRatePost <= 5.0e-4f * 1.10f,
+                      "C5 the circuit's vertical flow holds", d);
+            }
+
             // The connector runs through rolling lowland (measured: no peak with
             // 115 ft of prominence within its reach), so the spur falls back to
             // the RING, which skirts the ranges — same order as the host.
             std::vector<const RoadSpec*> avoid{ &cx.spec };
-            SummitSpurResult sp = registerSummitSpur(cx.spec, cx.roadY, spawn);
+            if (rc.built) { avoid.push_back(&rc.spec); avoid.push_back(&rc.accessSpec); }
+            SummitSpurResult sp = registerSummitSpur(cx.spec, cx.roadY, spawn, &avoid);
             if (!sp.built) sp = registerSummitSpur(ringSpec, ringY, spawn, &avoid);
             std::snprintf(d, sizeof(d), "%s: climb %.0f ft, grade %.1f%%, summit cut %.1f ft",
                           sp.built ? "built" : sp.whyNot,
@@ -1891,11 +2837,27 @@ bool runRoadNetworkSelfTest() {
                 std::snprintf(d, sizeof(d), "tops out %.1f ft (%.1f m) under the true peak",
                               sp.summitCutM * kMToFt, sp.summitCutM);
                 check(sp.summitCutM < 8.0f, "K6 the road actually reaches the summit", d);
+
+                std::snprintf(d, sizeof(d), "spur rate %.5f->%.5f /m (cap %.5f)",
+                              sp.road.maxGradeRatePre, sp.road.maxGradeRatePost, 1.6e-3f);
+                check(sp.road.maxGradeRatePost <= 1.6e-3f * 1.10f,
+                      "K6b the spur's vertical flow holds at its own K", d);
+
+                // BARRIERS (Tim: "We really need BARRIERS."): a climbing
+                // switchback over real relief MUST earn rails on its drop
+                // side, and no rail may sit on flat ground.
+                const BarrierPlan bp = planRoadBarriers(sp.spec, &sp.roadY);
+                std::snprintf(d, sizeof(d),
+                    "%u railed segments on the spur, min railed drop %.1f m",
+                    bp.railSegments, bp.minDropM);
+                check(bp.railSegments > 0 && bp.minDropM >= 0.5f,
+                      "K6c the spur earns guardrails, and none sit on flat ground", d);
             }
 
             const uint32_t used = terrainCorridorCount();
-            std::snprintf(d, sizeof(d), "%u corridors of %u (bore + ring + connector + spur)",
-                          used, kMaxTerrainCorridors);
+            std::snprintf(d, sizeof(d),
+                "%u corridors of %u (bore + ring + connector + circuit + spur)",
+                used, kMaxTerrainCorridors);
             check(used <= kMaxTerrainCorridors - 40,
                   "K7 the connected spawn network leaves headroom", d);
         }

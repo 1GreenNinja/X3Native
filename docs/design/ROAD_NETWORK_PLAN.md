@@ -19,6 +19,77 @@ the boundary only. Where a CODE CONSTANT is quoted it is quoted in its own
 units (metres) with the feet alongside, so nobody mis-edits a source file from
 this doc.
 
+## THE SKETCH IS THE SPEC — 2026-08-16 (shape authority; supersedes the ring-first framing below)
+
+Tim drew the network: **`docs/design/ROAD_NETWORK_SKETCH.png`**. Route authoring
+fits ITS topology onto the terrain. Everything below this section remains the
+engineering record; where the sketch and older shape guidance disagree, the
+sketch wins. Read across, the sketch says: WEST city grid + small lake; NW
+**Large mountain** with TWO tunnels through it, a switchback road OVER it, and
+a parking lot on the summit; CENTER open countryside wrapped by one big varied
+touring loop; CENTER-EAST a second mountain with a switchback-ladder approach
+and a SPIRAL road to a summit loop; EAST a large N-S river with a CLIFFSIDE
+HIGHWAY on its west bank, two bridges (N + S) to farmland, and gray OUTER
+HIGHWAYS framing the map, tied in at both bridges.
+
+**Ruled by Tim (2026-08-16):**
+* *"The Shop is Under the mountain... between the tunnels"* — the existing
+  LNSS garage (off the spawn bore, down a ramp) is CANON as sitting inside the
+  Large Mountain BETWEEN its two tunnels. The second tunnel must be authored on
+  the FAR side of the garage volume from the existing bore.
+* *"There are four mountain ranges, essentially"* — the world's four ranges map
+  onto the sketch as: **Large Mountain** = the NW spawn massif (demo ridge,
+  bore #1 through it today); the **spiral/switchback Mountain** = the
+  centre-east range; the remaining two ranges carry the outer-highway and
+  cliffside country on the map's frame.
+
+### Sketch element → status (W-ROADS2 pass, 2026-08-16)
+
+| sketch element | status | world anchor |
+|---|---|---|
+| central countryside touring loop (varied, NOT a circle) | **BUILT** — the de-circled inner tour: 16.1 mi authored leg-list course (19 straights ≥ 500 m, arcs 300–900 m radius, S-weaves, north foothill bulge) | centre (-592, -352), radial spread 3.4–4.6 km |
+| city-adjacent SW loop segment | **BUILT** (stands in as the 3.58-mi RANGE CIRCUIT off the spawn connector: 895 m + 750 m straights, S-complex, 148° hairpin at ~68 m radius, 86 ft climb) | loop centre ≈ (-1680, 1100) |
+| Large mountain, tunnel #1 | **BUILT** — the spawn bore (demo ridge) | spine centre (-592, -352), dir 157.5° |
+| Large mountain, tunnel #2 | **PLANNED** — must pass on the far side of the LNSS garage so the shop sits between the bores | — |
+| LNSS garage ("the Shop") | **BUILT** — inside the massif, off bore #1's service side, down a ramp | on the spawn bore between its portals |
+| switchback over Large mountain + summit parking lot | **PLANNED** | — |
+| switchback ladder + spiral road + summit loop (centre-east Mountain) | **PLANNED** — the summit spur (built, 1.45 mi at ≤ 14%, guardrailed) is this family's first climb | spur base (-101, 4439), peak (393, 6752) |
+| LARGE RIVER, southern bridge | **SEED BUILT** — river road + Bridge No. 1 | span (480, -560) → (620, -830) |
+| cliffside highway (west bank) | **PLANNED** | — |
+| northern bridge | **PLANNED** | — |
+| gray outer highways (map frame) | **PLANNED** — the 30.8-mi outer tour exists but is default-OFF (bore-shell defect, no connector); whether it becomes the frame or a sibling is a future ruling | centre (-592, -352), r 6.8–8.8 km |
+| city grid ("City Blocks") + small lake | **PLANNED** | — |
+| farmland (east of the river) | **PLANNED** | — |
+
+### Junction / anchor table (world coordinates — successive lanes pin to THESE)
+
+| name | what meets what | world (x, z) | state |
+|---|---|---|---|
+| J-SPAWN-EXIT | spawn bore exit → spawn connector (continuation, datum-pinned) | (-888, -230) | built |
+| J-TOUR-LANDING | spawn connector → inner tour (mouth + junction box) | (-4131, 1145) | built — the old circle's node-173 site (-4136, 1132) preserved within 13 m; the course's junction straight runs through it, gate K4b holds it |
+| J-CIRCUIT-CONN | spawn connector → circuit access (T, mouth + box) | (-2249, 256) | built |
+| J-CIRCUIT-LAND | circuit access → range circuit start/finish straight (T, mouth + box) | (-2020, 583) | built |
+| J-SPUR-BASE | inner tour → summit spur (mouth + box) | (-101, 4439) | built |
+| GARAGE-ANCHOR | LNSS garage volume, inside the Large Mountain | off the spawn bore spine (centre (-592, -352), dir 157.5°), service side | built — tunnel #2 passes on the FAR side of this volume |
+
+### Network-wide standards landed with this pass (every route gets them)
+
+* **ONE cross-section** (road_network.h): 4 × 12 ft lanes, painted edge lines,
+  4 ft asphalt shoulders (weathered a shade apart), 20 ft cement aprons,
+  concrete PRISM SKIRT (0.62 m vertical face + battered toe lapped under the
+  carved field — "not floating on top"), guardrails wherever the ground 6 m
+  past the apron drops > 2 m (W-beam read, full-height collision wall), graded
+  verge. No route can opt out silently. KNOWN GAP: the tunnel bores' interior
+  road is tunnel_corridor.cpp's own narrower ribbon (no aprons) — that is the
+  "routes with missing aprons" sighting; aligning it is that lane's work.
+* **VERTICAL FLOW**: gradeRoad smooths every grade break into parabolic
+  vertical curves — |d(grade)/ds| ≤ 5e-4/m (K 20 m/%) on 7% routes, 1.6e-3/m
+  (K 6.25) on the 14% spur. At 100 mph the vertical acceleration over a K-20
+  crest is ~0.1 g: the car stays loaded. Pins (portals, junctions) are held
+  exactly; the curve is built around them. Measured on the inner tour:
+  0.00266/m raw → 0.00050/m smoothed. Gates N4b/K4c/K6b/C5.
+* Corridor budget after all of it: **33 of 192** used at boot.
+
 ## Sharpening pass 2 (2026-08-15) — what changed and why
 
 The new material (both rings, the retirement of the racing frame, towns, and

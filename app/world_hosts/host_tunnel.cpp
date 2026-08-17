@@ -150,10 +150,11 @@ int hostTunnel(HostContext& hc) {
         const char* e = std::getenv("X3_RING");
         ringOn = !(e && e[0] == '0');   // DEFAULT ON — X3_RING=0 to disable
         if (ringOn) {
-            ringSpec = x3::game::makeRingRoad("inner tour", -592.0f, -352.0f, 3842.0f, 396);
-            ringSpec.halfWidth = x3::game::kPavedHalfM + 1.0f;
-            ringSpec.falloff   = 18.0f;
-            ringSpec.maxGrade  = 0.07f;
+            // The COURSE, not a circle — Tim, from the world map: "its a
+            // perfect circle. NO roads do that." makeInnerCourse() is the
+            // authored leg list (straights, arcs, S-weaves, the foothill
+            // bulge), with its junction straight through the old landing.
+            ringSpec = x3::game::makeInnerCourse();
             const x3::game::RoadBuildResult rr = x3::game::registerRoad(ringSpec, &ringRoadY);
             if (!rr.ok) { x3::logError("--world tunnel: ring registration FAILED"); ringOn = false; }
         }
@@ -214,7 +215,8 @@ int hostTunnel(HostContext& hc) {
     // mountain") — skipped honestly if no peak within reach earns a road.
     x3::game::SpawnConnectorResult connector;
     x3::game::SummitSpurResult summitSpur;
-    bool connOn = false;
+    x3::game::RangeCircuitResult rangeCircuit;
+    bool connOn = false, circuitOn = false;
     {
         const char* e = std::getenv("X3_CONNECTOR");
         connOn = ringOn && !(e && e[0] == '0');   // needs a ring to land on
@@ -224,6 +226,23 @@ int hostTunnel(HostContext& hc) {
                 x3::logError("--world tunnel: spawn connector registration FAILED");
                 connOn = false;
             } else {
+                // THE RANGE CIRCUIT (X3_CIRCUIT=0 to disable) — Tim: "31 miles
+                // may be way too long. we need a 3-5 mile track around the
+                // range in addition." Registered BEFORE the spur so the spur's
+                // peak search has to stay off it.
+                const char* ce = std::getenv("X3_CIRCUIT");
+                circuitOn = !(ce && ce[0] == '0');   // DEFAULT ON
+                if (circuitOn) {
+                    std::vector<const x3::game::RoadSpec*> avoidC{ &ringSpec };
+                    if (outerOn) avoidC.push_back(&outerRing.spec);
+                    if (riverOn) avoidC.push_back(&riverRoad.spec);
+                    rangeCircuit = x3::game::registerRangeCircuit(connector.spec,
+                                                                  connector.roadY,
+                                                                  &route, &avoidC);
+                    circuitOn = rangeCircuit.built;
+                    if (!rangeCircuit.built)
+                        x3::logWarn("--world tunnel: range circuit not built");
+                }
                 // Spur off the connector if its country has a mountain; the
                 // measured answer is it does not (rolling lowland), so it falls
                 // back to the RING, which skirts the ranges. Either way it must
@@ -232,6 +251,10 @@ int hostTunnel(HostContext& hc) {
                 avoid.push_back(&connector.spec);
                 if (outerOn) avoid.push_back(&outerRing.spec);
                 if (riverOn) avoid.push_back(&riverRoad.spec);
+                if (circuitOn) {
+                    avoid.push_back(&rangeCircuit.spec);
+                    avoid.push_back(&rangeCircuit.accessSpec);
+                }
                 summitSpur = x3::game::registerSummitSpur(connector.spec,
                                                           connector.roadY, &route, &avoid);
                 if (!summitSpur.built)
@@ -319,6 +342,12 @@ int hostTunnel(HostContext& hc) {
         if (ringOn)  addSpec(ringSpec, "inner tour");
         if (outerOn) addSpec(outerRing.spec, "outer tour");
         if (riverOn) addSpec(riverRoad.spec, "river road");
+        if (connOn)  addSpec(connector.spec, "spawn connector");
+        if (circuitOn) {
+            addSpec(rangeCircuit.spec, "range circuit");
+            addSpec(rangeCircuit.accessSpec, "circuit access");
+        }
+        if (summitSpur.built) addSpec(summitSpur.spec, "summit spur");
         char mb[128];
         std::snprintf(mb, sizeof(mb), "[tunnel] map: %u road overlay polyline(s) staged",
                       (uint32_t)mapRoutes.size());
@@ -567,6 +596,16 @@ int hostTunnel(HostContext& hc) {
         x3::game::buildRoadRibbon(connector.spec, scene, *device, *phys,
                                   &connector.roadY);
         x3::game::buildJunctionMouth(connector.ringJct, scene, *device, *phys);
+        if (circuitOn) {
+            // The 3-5 mile lap and its access road, mouthed onto BOTH the
+            // connector and the circuit — two junctions, same machinery.
+            x3::game::buildRoadRibbon(rangeCircuit.spec, scene, *device, *phys,
+                                      &rangeCircuit.roadY);
+            x3::game::buildRoadRibbon(rangeCircuit.accessSpec, scene, *device, *phys,
+                                      &rangeCircuit.accessRoadY);
+            x3::game::buildJunctionMouth(rangeCircuit.connJct, scene, *device, *phys);
+            x3::game::buildJunctionMouth(rangeCircuit.circJct, scene, *device, *phys);
+        }
         if (summitSpur.built) {
             x3::game::buildRoadRibbon(summitSpur.spec, scene, *device, *phys,
                                       &summitSpur.roadY);
