@@ -467,8 +467,9 @@ void RiverLife::prePhysics(float dt) {
         // would fight its way to the surface every time it centred.
         const float wantY = s.waterY - s.depth;
         const float eY    = hp[1] - wantY;                       // + = too high
-        const float vY    = m_phys ? m_phys->getBodyVelocity(s.demo.hull()).y : 0.0f;
-        in.dive = std::clamp(-0.90f - 0.55f * eY - 0.30f * vY, -1.0f, 0.25f);
+        float vel[3] = { 0, 0, 0 };
+        if (m_phys) m_phys->getBodyLinearVelocity(s.demo.hull(), vel);
+        in.dive = std::clamp(-0.90f - 0.55f * eY - 0.30f * vel[1], -1.0f, 0.25f);
         s.demo.setInput(in);
         s.demo.preStep(dt);
     }
@@ -576,6 +577,55 @@ void RiverLife::postPhysics(float dt, Scene& scene, x3::rhi::IRenderDevice& devi
         }
     }
 
+    // ---- THE SUB: settle the step, track heading, enforce the CONTACT LAW. --
+    if (m_sub.ok) {
+        Sub& s = m_sub;
+        s.demo.postStep(dt);
+
+        float hp[3]; s.demo.hullPos(hp);
+        float q[4]; phys.getBodyRotation(s.demo.hull(), q);
+        float fwd[3], up[3];
+        vehcam::hullAxes(q, fwd, up);
+        float fx = fwd[0], fz = fwd[2];
+        const float fl = std::sqrt(fx * fx + fz * fz);
+        if (fl > 1e-4f) { fx /= fl; fz /= fl; }
+        s.headingPrev = s.haveHeading ? s.heading : std::atan2(fz, fx);
+        s.heading = std::atan2(fz, fx);
+        s.haveHeading = true;
+
+        // NO_SLOP rule 11 — THE CONTACT LAW, runtime invariant, extended to the
+        // one vehicle type that lives BELOW a surface instead of on one. A sub
+        // is the easy way to violate it: the depth hold pushes DOWN by design,
+        // and one shallow spot on the lane (or a rain surge that the bed does
+        // not follow) would bury the hull in the river bed exactly the way the
+        // buried-entity strikes did. So the bed is a floor, checked every step
+        // and never crossed: the hull's KEEL (centre - halfHeight - a margin)
+        // must stay above the carved terrain field, and if a step drove it
+        // under, lift it back and kill the downward velocity that put it there.
+        // It only ever pushes UP, so it can never fight the depth hold in the
+        // deep water the sub is supposed to be patrolling.
+        constexpr float kKeel = 0.6f, kBedClear = 0.35f;
+        const float bedY   = terrainHeightAtWorld(hp[0], hp[2]);
+        const float floorY = bedY + kKeel + kBedClear;
+        if (hp[1] < floorY) {
+            phys.setBodyPosition(s.demo.hull(),
+                                 x3::phys::Vec3{ hp[0], floorY, hp[2] });
+            float v[3]; phys.getBodyLinearVelocity(s.demo.hull(), v);
+            if (v[1] < 0.0f) { v[1] = 0.0f; phys.setBodyLinearVelocity(s.demo.hull(), v); }
+            hp[1] = floorY;
+        }
+        // ...and the mirror clamp on the other side: a sub that broaches reads
+        // as a boat, which is the whole failure this feature can have. The
+        // silhouette must stay UNDER the surface it is drawn against.
+        const float ceilY = s.waterY - (kKeel + 0.45f);
+        if (hp[1] > ceilY && ceilY > floorY) {
+            phys.setBodyPosition(s.demo.hull(),
+                                 x3::phys::Vec3{ hp[0], ceilY, hp[2] });
+            float v[3]; phys.getBodyLinearVelocity(s.demo.hull(), v);
+            if (v[1] > 0.0f) { v[1] = 0.0f; phys.setBodyLinearVelocity(s.demo.hull(), v); }
+        }
+    }
+
     // ---- Advance the wake pool (drag + buoyant settle + expiry). -----------
     for (Puff& p : m_puffs) {
         if (p.age >= p.life) continue;
@@ -674,6 +724,15 @@ void RiverLife::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameConte
         }
         if (b.driver) b.driver->drawMonster(device, frame, scene);
     }
+    // THE SUB. Composed skin on the live transform, same contract as the boats
+    // — and the same fallback rule: the stock BoatDemo hull is a flat YELLOW
+    // CUBE, so if the sub art failed to build we draw NOTHING rather than ship
+    // that (NO_SLOP rule 3: hold it, don't stand it in).
+    if (m_sub.ok && m_phys && m_subTube.valid() && m_subBall.valid()) {
+        float hp[3]; m_sub.demo.hullPos(hp);
+        float q[4];  m_phys->getBodyRotation(m_sub.demo.hull(), q);
+        drawSubSkin(device, frame, hp, q);
+    }
     // Wake particles: foam is ALPHA (translucent whitewater), spray ADDITIVE
     // (sunlit droplets feeding bloom) — the submitParticles blend contract.
     m_foamOut.clear(); m_sprayOut.clear();
@@ -717,6 +776,19 @@ void RiverLife::shutdown(x3::audio::IAudioSystem* audio) {
         b.demo.shutdown();
     }
     m_boats.clear();
+    // THE SUB's exit receipt: where it ended and — the number that matters —
+    // how deep the hull's top finished under the local surface. A run that
+    // ends with submergence <= 0 shipped a boat, not a submarine.
+    if (m_sub.ok) {
+        float hp[3]; m_sub.demo.hullPos(hp);
+        x3::logInfo("[river-life] sub final (" + std::to_string(hp[0]) + ", " +
+                    std::to_string(hp[1]) + ", " + std::to_string(hp[2]) +
+                    "), hull top " + std::to_string(subSubmergence()) +
+                    " m below the local surface " + std::to_string(m_sub.waterY) +
+                    ", bed " + std::to_string(terrainHeightAtWorld(hp[0], hp[2])));
+        m_sub.demo.shutdown();
+        m_sub.ok = false;
+    }
     m_built = false;
 }
 
