@@ -60,10 +60,22 @@ not fixed:
    - **P = PARACHUTE** (owner was explicit: not E, not SPACE). Jake ejects via
      the shared AnimatedCharacter module, canopy, steerable drift, CONTACT LAW
      landing; the car crashes on without him.
-4. **ALL OF THIS LIVES IN THE SHARED VEHICLE LAYER** (`app/vehicle.*`), not
+4. **THE WINGS MUST GLEAM.** Owner: "We want the wings to Gleam in the sun...
+   like" + `docs/design/GLEAM_REFERENCE.png` — a low sun throwing a sharp
+   specular glitter-track across a surface (that shot is terrain reading like
+   sunlit water). So the wings want a low-roughness, slightly anisotropic
+   metallic finish that catches a moving highlight as the car banks: the
+   gleam should SWEEP along the wing as its angle to the sun changes, which
+   means a real specular response, not an emissive cheat. Rule 5 applies —
+   a full-metal material with no mrTex renders BLACK; give it a proper
+   metallic-roughness map. Bloom already exists in the chain; a tight
+   highlight will bloom on its own. Prove it with a capture at a low sun
+   angle mid-bank, and a second at a different bank angle showing the
+   highlight has MOVED.
+5. **ALL OF THIS LIVES IN THE SHARED VEHICLE LAYER** (`app/vehicle.*`), not
    host_tunnel — the owner was explicit ("That's NOT going to be in host_tunnel
    lol"). Part of the job is MOVING the existing host-local NOS block down.
-5. Gate the wheel-lift CONTACT LAW in `DriveDemo::postStep` on wings-retracted
+6. Gate the wheel-lift CONTACT LAW in `DriveDemo::postStep` on wings-retracted
    (rule 4 comment pairing), and measure terrain streaming at 313 m/s.
 
 **Gates:** vehicle 37+, roadnetwork, terraincorridor, tunnelmouth, riverbridge,
