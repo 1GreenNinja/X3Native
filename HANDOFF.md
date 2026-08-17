@@ -1,62 +1,96 @@
-# W-CLOUDS v2 HANDOFF — session cap imminent (2026-08-16)
+# W-CLOUDS v4 HANDOFF (2026-08-17 morning)
 
-## STATE: code COMPLETE + committed. Eyes-on capture round NOT done (GPU contention all evening).
+Branch `worktree-agent-ac78e9cb58a88573a`. All local. **NEVER push.**
 
-Branch `worktree-agent-ac78e9cb58a88573a`, based on 7345a929. Commits (all local, do NOT push):
-- 576180df clouds: kill the shard sky at its hash + ground shadow (task #27)
-- c4c14f3b clouds: storm deck crushes the sun disk (occlude by cloud alpha)
-- cd93b5a8 clouds: normalize fBm by live weight sum + recalibrate threshold
-- (this commit) receipts + handoff
+## STATE
 
-## WHAT WAS BUILT (details in commit messages)
-- Root cause of the "AWWFUL" shard sky: `fract(sin(x)*43758.5)` hash — GPU sin
-  loses fractional precision at large |x| -> constant per cell -> flat
-  rectangles. Receipt: shots_clouds/repro_cloud.py (+ repro_*.png pairs),
-  before-shot shots_clouds/base_sky_042.png.
-- shaders/inc/sky_clouds.glsl: ONE shared density field (sin-free hash12,
-  rotated fBm NORMALIZED by weight sum, quadratic coverage threshold
-  lo = 0.66 - 0.20c - 0.29c^2, cloudShadowFactor()).
-- shaders/sky.frag: soft cumulus composite, gloom->near-black storm base at
-  cover 0.94, optical alpha, sun disk/glow attenuated by deck opacity.
-- CLOUD SHADOWS (task #27): mesh.frag multiplies the direct-sun `shadow` term
-  by cloudShadowFactor; new SsaoControl::cloudShadow lane (strength 0.85,
-  cover, skyTime) filled device-side from cached sky params in vk_passes.cpp.
-  No host API; gate shut when cover 0/sky off.
-- host_tunnel.cpp: setSkyTime(riverWaterClock) both loops (wind drift),
-  X3_CLOUD env override (no-weather cover; A/B knob), [cloud-perf] gpu-ms
-  receipt in settleAndGrab, resolved-cam log line.
+Code COMPLETE and merged with `origin/integration/complete` (ce48e2b3). Build
+green, all five gates green on the merged build, capture round re-shot on it,
+measured, and eyeballed at full res. DONE unless the lead wants changes.
 
-## GATES ALREADY GREEN
-- Build green (Release). SPVs fresh in build/bin/Release/shaders/.
-- Suites: roadnetwork 58/58, terraincorridor 11/11, tunnelmouth 8/8,
-  riverbridge 9/9 (headless CPU, safe under contention).
-- Boot `--world tunnel` zero [ERROR]: shots_clouds/log_perf_base.txt.
-- CPU receipts: shots_clouds/verify_new_field.py — sky-fraction ladder
-  0.37 @ cover 0.42 / 0.71 @ 0.66 / 0.98 @ 0.94 (±40 km window, time-stable);
-  3-oct shadow field == 5-oct sky field within 1%.
+    git log --oneline -7
 
-## CAPTURE ROUND — 0 of 9 clean (the only completed run was GPU-contended)
-Run when no foreign X3Engine.exe (script self-guards):
-    cd <worktree> && sh shots_clouds/run_captures.sh
-Produces + logs (grep each log for "[ERROR]" and "[cloud-perf]"):
-  perf_base_cloud0.png  (X3_CLOUD=0 baseline, spawn cam)   <- perf A
-  fair_01_spawn.png     (cover 0.42, same cam)             <- perf B; budget
-                        gate: (B-A)/B < 10% gpu ms, uncontended
-  fair_02_sky.png / fair_03_up.png (sky view + straight up; NO polygon edges)
-  shadows_01.png / shadows_02.png  (elevated; dapple on open ground)
-  overcast_01_sky.png   (X3_CLOUD=0.70 broken overcast)
-  storm_01_sky.png / storm_02_ground.png (X3_WEATHER=storm; near-black deck,
-                        sun crushed, dark ground)
-EYES-ON each PNG full-res before shipping (NO_SLOP 2). If fair sky reads too
-sparse, nudge only the lo fit in sky_clouds.glsl + verify_new_field.py (pair).
+    444c4a27   clouds: the merged-build capture round, eyes-on, numbers green
+    217f0045   clouds: measure_round.py + a correction to my own ladder diagnosis
+    3a7679da   clouds: capture script cams / one-build ladder / [tunnel-perf] grep
+    24c045fd   merge: origin/integration/complete (ce48e2b3)
+    e698ddce   clouds: white-plane artifact is NOT the cloud lane - two receipts
+    510ed561   clouds: capture round + one sky mapping across all three host sites
+    23fbcfe8   clouds: receipts + HANDOFF (v2's last commit)
 
-## PERF SO FAR
-Only contended garbage: perf_base gpu=358 ms avg while owner played (ignore).
-Redo both A/B numbers from a clean window via the script.
+## 1. THE WHITE-PLANE ARTIFACT — SETTLED, NOT OURS
 
-## HAZARDS
-- Owner + other lanes launch X3Engine.exe at random — NEVER capture alongside
-  (coordinator directive); script guard handles it.
-- Untracked leftovers in worktree NOT mine/committed: assets/converted_glb/
-  Vehicles/*.glb, modified shots_wmap/*.png, cc_porous_cement/normal.png —
-  predecessor-era; left untouched deliberately.
+v3 died flagging "a non-cloud white-plane artifact" on two elevated cams. It is
+TWO pre-existing artifacts, and A/B'd evidence is in commit e698ddce.
+
+* **Hard-edged white QUAD, camera-locked** = the river's Gerstner water patch.
+  A finite 480 m square centred on the camera (`kWaterPatchHalf = 240`,
+  VulkanRenderDevice_internal.h:3052) at `riverRoad.plan.waterY`, fading to the
+  ANALYTIC SKY at its rim because `applyRiverWater` never sets
+  `WaterParams::horizonColor` — the exact seam IRenderDevice.h:1213 documents.
+  Gone with `X3_RIVER_ROAD=0` (`diag_B_riveroff.png`). **W-RIVER's residual #2.**
+* **Large pale FIELD** = the horizon ring's static inner hole. `rInner = 470 m`
+  about ROUTE MID (host_tunnel.cpp) while the streamer gets ~90 tiles (~170 m)
+  resident in a settle loop. `diag_E_topdown_void.png` shows it from 1500 m as a
+  clean circle, 76,296 px of ONE flat colour (199,204,209), ~992 m across vs the
+  coded 470 m radius; `diag_F` proves it world-static. **W-PERF's finding.**
+* **Neither is cloud.** Same field with clouds fully off (`diag_C`, X3_CLOUD=0)
+  reads 168,174,181 vs `diag_A`'s (0.42) 166,172,180 — 2/255 of sky tint and
+  zero cloud structure. Under storm it goes 108,103,94: it tracks the sky
+  because it IS the sky.
+
+**DO NOT FIX EITHER.** Other lanes. The only cloud-lane consequence is cam
+choice, already fixed in run_captures.sh (see its cam-choice block).
+
+## 2. THE LADDER IS A STEP, AND THAT IS CORRECT
+
+Do not "fix" it. A ground camera stands under ONE deck cell (~1.8 km features
+vs ~100 m of visible ground): full sun at cover 0.00..0.75, then the cell
+closes at 1.00. v4 initially misdiagnosed this as a build-straddle and
+corrected it in the commit above. The real dimming curve is
+`verify_new_field.py`'s landscape average of `cloudShadowFactor`:
+
+    cover      0.00   0.25   0.50   0.75   1.00
+    sun kept  1.000  0.934  0.763  0.470  0.219
+    deck opac 0.000  0.061  0.266  0.645  0.942
+
+## 3. PERF — INSIDE BUDGET (clean GPU, merged build, 07:57)
+
+From the `[tunnel-perf]` line (W-FOREST's receipt; the cloud lane's duplicate
+`[cloud-perf]` was deleted in the merge). Identical tris/draws/objs on both
+sides, so the delta is shading only:
+
+    spawn cam     1.482 -> 1.494 ms   clouds = +0.80% of frame
+    sky cam       1.166 -> 1.220 ms   clouds = +4.43% of frame   <- worst
+    straight up   0.577 -> 0.588 ms   clouds = +1.87% of frame
+
+Worst case 4.43% against a 10% budget. `python shots_clouds/measure_round.py`
+re-reads all of it (plus the one-build check and the flat-cell scan).
+
+## 4. WHAT IS LEFT
+
+Nothing blocking. The round is shot, measured, and eyeballed; gates are green
+on the merged build (roadnetwork 58/58, terraincorridor 16/16, tunnelmouth
+8/8, riverbridge 9/9, terrain 4/4). Commits are LOCAL — the session lead
+reviews and pushes. NEVER push from this lane.
+
+## 5. OPEN, HONEST, UNRESOLVED
+
+* **The deck foreshortens into streaks toward the horizon.** Overhead
+  (fair_03_up) it is proper puffy cumulus. Near the horizon (fair_02_sky,
+  overcast_01_sky) a view ray crosses kilometres of the deck plane per pixel,
+  so the cells compress into soft horizontal bands that read more cirrostratus
+  than cumulus. It is SOFT — no edges, no shards — and it is inherent to a
+  single flat 2D deck at 1400 m. Fixing it properly means a second layer at a
+  different altitude, or a slab with thickness. Not attempted; flagged so the
+  next reader does not think it was missed.
+* **`X3_WEATHER=storm` renders SNOW, not rain.** `weather.cpp:298` turns
+  precipitation to snow whenever `tempC <= 1.0` and the temperate storm is
+  getting there (biome base 14 C). The owner asked for "rain 10", so
+  storm_02_ground is a snow shot. WEATHER LANE, not this one — the deck, the
+  crushed sun and the dark ground are all correct in it.
+* **Bright specks in the sky.** ~130 of them in the straight-up frame. NOT
+  ours: perf_base_up (X3_CLOUD=0) has 144 and fair_03_up (0.42) has 123 — more
+  with the clouds OFF. Some other lane's particles/TAA fireflies.
+* Coverage comment vs measurement drift is FIXED (sky_clouds.glsl now carries
+  both the top-down and the as-rendered numbers, and why they differ).
