@@ -2116,8 +2116,15 @@ int hostTunnel(HostContext& hc) {
                                     int idle = exactClip("Idle");
                                     int walk = exactClip("Walking");
                                     int run  = exactClip("Running");
-                                    jakeJumpClip = exactClip("Regular_Jump");
-                                    if (jakeJumpClip < 0) jakeJumpClip = exactClip("Jump");
+                                    // 'Jump' preferred over 'Regular_Jump':
+                                    // Regular_Jump carries ROOT MOTION — the
+                                    // mesh lunges relative to its capsule and
+                                    // travels INTO the chase camera (Tim:
+                                    // "jumping switches camera to INSIDE
+                                    // JAKE"). W-JAKE's measured-motion table
+                                    // will pick the truly in-place one.
+                                    jakeJumpClip = exactClip("Jump");
+                                    if (jakeJumpClip < 0) jakeJumpClip = exactClip("Regular_Jump");
                                     if (idle < 0) idle = jakeSkin.findClip({ "idle" });
                                     if (idle < 0) idle = 0;
                                     jakeSkin.setLocomotionClips(idle, walk, run, 0.2f, 2.0f);
