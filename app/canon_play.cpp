@@ -8,6 +8,7 @@
 #include "asset_root.h"
 #include "headless_device.h"
 #include "mesh_prims.h"   // R-5: x3::prims::makeBox for the upper-floor pickup props
+#include "room_dressing.h"  // wardCartAnchor: the F2 tableau's anchor prop
 #include "stairwell.h"    // feat/stair-nav: StairNavChain / stairNavRoute
 
 #include "engine/core/x3_log.h"
@@ -531,14 +532,70 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         if (f2Wards)
             x3::logInfo("[canonplay] rescue girls placed in their F2 wards (Keisha/Emily/Aria)");
 
-        auto wardPos = [&](uint32_t room, float dx, float dz) -> x3::phys::Vec3 {
-            if (room == kNoRoom) return x3::phys::Vec3{ 0, 0, 0 };
-            const CanonRoom& R = floor.rooms[room];
-            return x3::phys::Vec3{ R.cx + dx, roomFloorY(room, kEnemyFootUp), R.cz + dz };
+        // ---- THE TABLEAU IS ONE AUTHORED UNIT, ANCHORED TO THE CART ---------
+        // It used to be three loose numbers: the captive at a hand-picked offset
+        // from the room centre, her attackers at hand-picked offsets from HER. The
+        // ward's instrument cart was never part of that arithmetic, so the staging
+        // drifted into it — the playtest frame shows the captive standing bolt
+        // upright with the cart under her, reading as a pedestal, and her attacker
+        // nose to nose with her.
+        //
+        // Now the CART is the anchor and everyone is placed relative to it:
+        //
+        //     [attacker] --> [captive] --> [ cart ]      (all facing the same way)
+        //
+        // She stands on the FLOOR on the room-facing side of the cart, over it,
+        // facing ACROSS it and therefore AWAY from the man behind her; he stands
+        // behind her at a fixed contact distance, facing her back. Nobody is placed
+        // ON the cart, and no two faces are ever pointed at one another, so the
+        // nose-clip is structurally impossible rather than tuned away.
+        struct WardStage {
+            x3::phys::Vec3 captive{};      // her FEET, on the room floor
+            x3::phys::Vec3 attacker{};     // his FEET, behind her
+            x3::phys::Vec3 flank{};        // second attacker, off her shoulder
+            float cartX = 0.0f, cartZ = 0.0f, cartTopY = 0.0f;
+            bool  ok = false;
         };
-        const x3::phys::Vec3 wardA = wardPos(wRoomA, -2.0f,  0.0f);
-        const x3::phys::Vec3 wardB = wardPos(wRoomB,  0.0f,  1.5f);
-        const x3::phys::Vec3 wardC = wardPos(wRoomC,  2.0f, -0.5f);
+        // How far she stands back from the cart's CENTRE. The cart is 0.67 m deep,
+        // so half of it plus a boot's clearance puts her clear of the footprint —
+        // beside the prop, not on top of it.
+        constexpr float kCaptiveStandoff = 0.62f;
+        // Attacker contact distance. The struggle loop is a LOOM over her, so this
+        // is close — but it is also >= two humanoid radii (0.4 m each), so the
+        // spawn de-overlap pass leaves it alone instead of shoving him off.
+        constexpr float kAttackerContact = 1.05f;
+
+        auto stageWard = [&](uint32_t room) -> WardStage {
+            WardStage s;
+            if (room == kNoRoom) return s;
+            const CanonRoom& R = floor.rooms[room];
+            const float fY  = roomFloorY(room, kEnemyFootUp);
+            const WardCart wc = wardCartAnchor(R, roomFloorY(room, 0.0f));
+            s.cartX = wc.x; s.cartZ = wc.z; s.cartTopY = wc.topY;
+            // "Out of the corner, into the room": the pair stands on the side of
+            // the cart that faces the room's middle, so the player sees the tableau
+            // on entering instead of two backs jammed against a wall.
+            float ox = R.cx - wc.x, oz = R.cz - wc.z;
+            const float ol = std::sqrt(ox * ox + oz * oz);
+            if (ol < 1e-3f) { ox = 0.0f; oz = 1.0f; } else { ox /= ol; oz /= ol; }
+            s.captive  = x3::phys::Vec3{ wc.x + ox * kCaptiveStandoff, fY,
+                                         wc.z + oz * kCaptiveStandoff };
+            s.attacker = x3::phys::Vec3{ s.captive.x + ox * kAttackerContact, fY,
+                                         s.captive.z + oz * kAttackerContact };
+            // The flank man stands off her shoulder (perpendicular), not stacked
+            // behind the first — two attackers on one line read as a queue.
+            s.flank    = x3::phys::Vec3{ s.captive.x + ox * 0.75f - oz * 0.95f, fY,
+                                         s.captive.z + oz * 0.75f + ox * 0.95f };
+            s.ok = true;
+            return s;
+        };
+        const WardStage stageA = stageWard(wRoomA);   // Aria   (victim slot 0)
+        const WardStage stageB = stageWard(wRoomB);   // Keisha (victim slot 1)
+        const WardStage stageC = stageWard(wRoomC);   // Emily  (victim slot 2)
+        const WardStage* stageFor[3] = { &stageA, &stageB, &stageC };
+        const x3::phys::Vec3 wardA = stageA.captive;
+        const x3::phys::Vec3 wardB = stageB.captive;
+        const x3::phys::Vec3 wardC = stageC.captive;
 
         // The girls + their boss-on-expiry transforms (RescueSystem owns the lifecycle).
         m_rescue.build(scene, device, physics, m_modelDir, wardA, wardB, wardC);
@@ -619,29 +676,31 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         // Keisha 1 / Emily 2 — the wardA/B/C order build() was called in). It is
         // what makes the FACING below possible at all: an attacker has to know
         // WHO it is scripted to be attacking before it can be pointed at them.
-        struct A { uint32_t room; x3::phys::Vec3 ward; uint32_t victim;
-                   EnemyType t; float dx, dz; };
+        // AUTHORED-XZ HISTORY (2026-08): these offsets used to be typed in by hand
+        // relative to the captive, which is how one of them ended up 0.57 m from the
+        // instrument cart — inside its footprint, so that attacker read as standing
+        // in the crate. They are no longer typed at all: each attacker takes the
+        // position stageWard() computed for him against the cart, so the whole
+        // group moves as one authored unit and none of it can land on furniture.
+        // `behind` picks his slot: the man at her back, or the one off her shoulder.
+        struct A { uint32_t room; const WardStage* stage; uint32_t victim;
+                   EnemyType t; bool behind; };
         const A atk[] = {
-            { wRoomA, wardA, 0u, EnemyType::DominionTrooper, 1.2f,  0.6f },
-            { wRoomA, wardA, 0u, EnemyType::Verthani,        1.0f, -0.8f },
-            { wRoomB, wardB, 1u, EnemyType::DominionTrooper, 1.2f,  0.4f },
-            { wRoomC, wardC, 2u, EnemyType::Verthani,        1.2f,  0.6f },
-            // AUTHORED-XZ FIX (2026-08): this one used to sit at (+0.9,-0.7), which
-            // in a 10x8 ward lands 0.57 m from the instrument-cart crate the ward
-            // recipe drops at (cx + w*0.28, cz - d*0.22) — i.e. INSIDE its footprint,
-            // so the attacker read as standing in/on the crate. Mirrored to the far
-            // side of the captive: clear of the cart, and the pair now brackets her
-            // instead of both crowding one shoulder.
-            { wRoomC, wardC, 2u, EnemyType::DominionTrooper, -0.9f, -0.7f },
+            { wRoomA, &stageA, 0u, EnemyType::DominionTrooper, true  },
+            { wRoomA, &stageA, 0u, EnemyType::Verthani,        false },
+            { wRoomB, &stageB, 1u, EnemyType::DominionTrooper, true  },
+            { wRoomC, &stageC, 2u, EnemyType::Verthani,        true  },
+            { wRoomC, &stageC, 2u, EnemyType::DominionTrooper, false },
         };
         for (const A& a : atk) {
-            if (a.room == kNoRoom) continue;
+            if (a.room == kNoRoom || !a.stage->ok) continue;
             // MUTUAL EXCLUSION spawn guard (Tim 2026-07-26): the attackers pose right
             // NEXT TO their captive (the mid-assault tableau), so a spawn could land
             // merged into her. Nudge to the nearest spot clear of every already-placed
             // character (the captives are built above; the main-hall/cell squads too)
             // so no attacker spawns INSIDE a hostage. ~0.5 m humanoid radius.
-            const x3::phys::Vec3 desired{ a.ward.x + a.dx, a.ward.y, a.ward.z + a.dz };
+            const x3::phys::Vec3 desired = a.behind ? a.stage->attacker
+                                                    : a.stage->flank;
             const x3::phys::Vec3 clear = clearSpawnPos(desired, 0.5f);
             uint32_t i = m_attackers.spawn(scene, device, physics, m_modelDir,
                               clear, tuningFor(a.t));
@@ -662,29 +721,32 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
             }
             ++m_taggedHostiles;
         }
-        // ---- ...and turn each CAPTIVE to face her nearest attacker. A Captive
-        // never self-rotates (RescueVictim::tick re-bakes the set yaw each frame),
-        // so without this she also held yaw 0 and stood with her back to the man
-        // assaulting her. Done in a second pass so every attacker's final,
-        // clear-spawn-nudged position is already known.
-        for (uint32_t vi = 0; vi < m_rescue.victimCount(); ++vi) {
+        // ---- ...and turn each CAPTIVE to face ACROSS THE CART, away from him.
+        //
+        // A Captive never self-rotates (RescueVictim::tick re-bakes the set yaw
+        // every frame), so whatever is set here is what the player sees forever.
+        // The previous pass aimed her at her nearest attacker, which is the right
+        // general law for a scripted scene — a character in a confrontation looks
+        // at the other party — and it is exactly wrong for THIS one. Face-to-face
+        // at the struggle loop's contact distance put his head inside hers, and it
+        // is not the beat: she is bent over the cart, and the whole reason the shot
+        // reads as an assault the player interrupts rather than a conversation is
+        // that she is turned AWAY from the man behind her.
+        //
+        // So this scene overrides with its authored facing — toward the cart she is
+        // folded over. The general law is untouched for every other scripted scene
+        // (Sarah in her cell still faces the door via her own setFacing call).
+        for (uint32_t vi = 0; vi < m_rescue.victimCount() && vi < 3; ++vi) {
+            const WardStage& st = *stageFor[vi];
+            if (!st.ok) continue;
             const x3::phys::Vec3 vp = m_rescue.victim(vi).pos();
-            float bestD2 = 36.0f;            // only look for an attacker within 6 m
-            bool  found  = false;
-            x3::phys::Vec3 best{};
-            for (uint32_t ai = 0; ai < m_attackers.count(); ++ai) {
-                const x3::phys::Vec3 ap = m_attackers.at(ai).pos();
-                const float ddx = ap.x - vp.x, ddz = ap.z - vp.z;
-                const float d2 = ddx * ddx + ddz * ddz;
-                if (d2 > 1e-6f && d2 < bestD2) { bestD2 = d2; best = ap; found = true; }
-            }
-            if (found)
-                m_rescue.victim(vi).setFacing(
-                    canonHeadingToFace(best.x - vp.x, best.z - vp.z));
+            m_rescue.victim(vi).setFacing(
+                canonHeadingToFace(st.cartX - vp.x, st.cartZ - vp.z));
         }
         x3::logInfo("[canonplay] Medical Bay rescue: 3 girls + " +
                     std::to_string(m_attackers.count()) + " attackers (room-tagged, "
-                    "each attacker facing his captive + each captive facing her attacker)");
+                    "cart-anchored tableau: each captive on the FLOOR beside her "
+                    "instrument cart facing across it, each attacker behind her)");
     }
     profMark("rescue");
 

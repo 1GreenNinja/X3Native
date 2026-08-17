@@ -145,6 +145,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-pickup") o.testPickup = true;
         else if (a == "--test-combat") o.testCombat = true;
         else if (a == "--test-deathragdoll") o.testDeathRagdoll = true;
+        else if (a == "--test-grounding") o.testGrounding = true;
         else if (a == "--test-audio") o.testAudio = true;
         else if (a == "--test-acoustics") o.testAcoustics = true;
         else if (a == "--test-level1") o.testLevel1 = true;

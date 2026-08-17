@@ -311,6 +311,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testPickup = o.testPickup;
         _tf.testCombat = o.testCombat;
         _tf.testDeathRagdoll = o.testDeathRagdoll;
+        _tf.testGrounding = o.testGrounding;
         _tf.testAudio = o.testAudio;
         _tf.testAcoustics = o.testAcoustics;
         _tf.testLevel1 = o.testLevel1;
