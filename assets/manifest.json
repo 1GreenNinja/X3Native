@@ -9,19 +9,43 @@
       "repo_path": "assets/audio/weather/thunder_crack.wav",
       "sha256": "e48bd6f5f917989a09973638493e4e86fc060d46af63e50ab98813287c086f3d",
       "size": 561424,
-      "source_note": "UniStorm Weather System thunder (Unity Asset Store, licensed to Tim); Thunder 5 -> near crack (41 ms attack, brightest), Thunder 3 -> far roll (274 ms attack, darkest); both downmixed to mono for 3D spatialization"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/audio/weather/thunder_roll.wav",
       "sha256": "e6cf3f237a2ab38b6f0d8554aa5edb1104f1151efec42745b7a777559deefcaa",
       "size": 913132,
-      "source_note": "UniStorm Weather System thunder (Unity Asset Store, licensed to Tim); Thunder 5 -> near crack (41 ms attack, brightest), Thunder 3 -> far roll (274 ms attack, darkest); both downmixed to mono for 3D spatialization"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Characters/Drone.glb",
       "sha256": "9b3830ebfa8172485fb38ed8fee26ade67c60b43770088f756238f7f3ba1283c",
       "size": 15302204,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/Cockpit/fighter_cockpit.glb",
+      "sha256": "f47374739b660b9c06505f7e6a93440ee44b77bb60e140cf34ff403a334369dc",
+      "size": 10640616,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/Detention/Captive_Aria_Posed.glb",
+      "sha256": "9c922ea4355b19bed2ff39893069a01a6b86c6f7188dd123561de2753ce06f7d",
+      "size": 8422980,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/Detention/Captive_Emily_Posed.glb",
+      "sha256": "998926002b5fdb69668e4d06866f58ac0469be899c7ac0c5fdba9fa98196ee92",
+      "size": 9557156,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/Detention/Captive_Keisha_Posed.glb",
+      "sha256": "8dc399fbba10073f390633ad9cb9a9b6e5c394584463ef429b3d36f34cbc1e1a",
+      "size": 8072068,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Detention/SM_Hospital_Bed.glb",
@@ -90,286 +114,496 @@
       "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
+      "repo_path": "assets/converted_glb/SciFiKit3/Air_Grid_01.glb",
+      "sha256": "59db4eac1eb1043da527a528a3a4e969ca1e75714f5cf203dd6ba7142b1b929a",
+      "size": 13598456,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Articulated_TV_Screen_01.glb",
+      "sha256": "64735c728d7469caacc1630fa6d6e5f8482eacd09308e7593c70153f18a1ea68",
+      "size": 13421988,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Barrel_01.glb",
+      "sha256": "df8b5e55df36f618c4840b7e8ec21837a70e9c2f5398e977e74d22c84254f71e",
+      "size": 11338524,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Bed_Large_01.glb",
+      "sha256": "29bdee711fb0b767a05bb0091b8ac0b7120aad48fc72ee39b48ef13d7951d1ca",
+      "size": 19395912,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Big_Oxygen_Tank_01.glb",
+      "sha256": "4a65a44c5f4fec0e28293d86114148c416649da534486b03102d7c5975d3f46a",
+      "size": 11379736,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Button_Big_Circular_Green.glb",
+      "sha256": "9533bfd792ea7c583efc1c5ec049e4fcd2f7ba33a776c44d0008bccca1252fbd",
+      "size": 7650268,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Button_Big_Circular_Red.glb",
+      "sha256": "241e28c8a4f1dc8dea07663f14ffc3792d4c1ace79248f1891ea7bac25c4e7c2",
+      "size": 7650264,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Chair_01.glb",
+      "sha256": "1fb46e675d8f0b0838e8c18f9fedfc005925240fb74bbed275e4220f602c70d4",
+      "size": 10029360,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Console_Small_01.glb",
+      "sha256": "622794a069975d174340039c71571f11d7cfa8a7395890bdcc57a86d15402f23",
+      "size": 36150968,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Floor_01.glb",
+      "sha256": "f0f6b094d21efba91d3cff5056912138c73469b659fbd7b9918a5bc2b4bd6ffb",
+      "size": 14688184,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Floor_Border_Line_01.glb",
+      "sha256": "3302c8c7c8cdfe4ac3a0d1055bef4450a0e97bdcaef22565bd1a3ea4fadd6083",
+      "size": 13924724,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Floor_Tinny_01.glb",
+      "sha256": "99cd82edbe6ed9e4b09d39747d91ba62c953c1fe2739376af6c7addabf185daa",
+      "size": 23480660,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Holo_Screen_01.glb",
+      "sha256": "233cae5147100a420e8d55998f1ee623852f7a9f5c4566264db95b0000a832da",
+      "size": 984720,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Arch_01.glb",
+      "sha256": "b14966b34fc8d0547d97e03f43ae6884edb29e10fd4147f5e5456e92c675634e",
+      "size": 17022088,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Grid_01.glb",
+      "sha256": "f3c139ce1f23243f13e6353679f39c4861b2ab91fdcc39eab8df1de72140cc06",
+      "size": 14684744,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Kitchen_01.glb",
+      "sha256": "4e9750ab7719a9a7bd583b9ec6db74291aa7df90983b6ab396909fb60c9bc462",
+      "size": 25574224,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Module_01.glb",
+      "sha256": "6a94ccc2d6a4fed384bd6e8fa6aba3d57d39d016963cc5ef7863b3aad5bae6ee",
+      "size": 23184476,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Bed_01.glb",
+      "sha256": "1fd88ac422bab49e1d039445d095ee39f672f916543fa3a34fd78f7412540410",
+      "size": 25682116,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Case_01.glb",
+      "sha256": "76c9fdb820ef7df5f440f47e2679596167c891474577b8ed8ddf9e5225737f29",
+      "size": 20900172,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Computer_01.glb",
+      "sha256": "28ad38aa5d58ffd7a36c21b1db73d9ea9e43ffa815129a0190349a11f7247085",
+      "size": 24465164,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Pipes_01.glb",
+      "sha256": "8489a96a6526c30773bf35e4031818e6bb817c3e0425ae4691b93904530105e8",
+      "size": 28568356,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Simple_01.glb",
+      "sha256": "b3d7bdf80ab834525303d7718280c8cbea41a74f34b8012c7b82d92e9c3ac2cd",
+      "size": 14680372,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Simple_02.glb",
+      "sha256": "99072d3f6925692f706e466d32db6b8705524d4b38bc55c53536eae2be9d6906",
+      "size": 14681496,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Panel_Screen_01.glb",
+      "sha256": "f5ea94800fd46da2cdf7d4a5adcb07b51bcf80f403038c93e257c049f00f941d",
+      "size": 13639908,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Wall_Arch_01.glb",
+      "sha256": "9032e6555e58c96c52026205d429d7b1808bfed6fdb8d994106641eccff9aa95",
+      "size": 14707244,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Wall_Door_Simple_01.glb",
+      "sha256": "afce294a9513fed836c29d438b6962148b6679318a413bfa1e0cba3c5adfe403",
+      "size": 20953572,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
       "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Barrel.glb",
       "sha256": "2680e947d25b317a3b146936702b15c78a5473be2ebca55b3926bb7155ed22e5",
       "size": 4427080,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Crate Long.glb",
       "sha256": "3432c79b8151f1aac5268e8775dca01a1f0449c783299572de91ca3b80700d15",
       "size": 5281464,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Crate Short.glb",
       "sha256": "16805b87ff5f717beefdde326c8ee6bb36364aaa01822ddda11992208dce4edc",
       "size": 5272764,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Duct Straight.glb",
+      "sha256": "dc74de01f54ea230cd6012bba95467e8df939549565fde65801b66c533d7c11d",
+      "size": 4302348,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Duct Vent.glb",
+      "sha256": "d1a8327519233df6cad79f99cc9b3919038bc81d5aa237c1559cf3d83e4b7cc2",
+      "size": 4294276,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Exit Sign.glb",
+      "sha256": "6bfed0f91990a8e7bf71fdf43c6453f782ba2c41ad6e770de4ab6ba03647fd3f",
+      "size": 21273468,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Fire Extinguisher.glb",
+      "sha256": "4ac5389bbc75c11e33a4672482af0b8ffc0dc1e8692ec3d8aa4c53d5a92e7bed",
+      "size": 22476,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Fusebox 01.glb",
       "sha256": "a93e553f855bee80d5d4c64596281aa34aac0806a2d135f282be22cdaefd2743",
       "size": 21282320,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Garbage Bin.glb",
+      "sha256": "9b65d28555447ca548ada996f04fd8cb1f05460a62d37e6c3cbd1e5c384db072",
+      "size": 3414168,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Hanging Light.glb",
+      "sha256": "4aa4c52557340f3054283f9a5874b8072ab44bc243a491d84c3155138969efe2",
+      "size": 38132,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Pallet.glb",
       "sha256": "1c229663d4d3f3abc181bdd349ebe387c328300a565cf086da3e9d6801faa635",
       "size": 3953908,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Security Cam.glb",
+      "sha256": "0672deb639ce7849c3046c367d03d7df7a1740bd8b7e123e705d0e462803bb55",
+      "size": 18176,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Wall Light.glb",
+      "sha256": "65ffc47f08fd8c0cbad7c8910e665e0fdf3b9e42e47cb8af60787e90e68c5fd0",
+      "size": 8836,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Corridor_Coin_Big_01.glb",
       "sha256": "4cdcfb8d63a2afa3dd985cd939b5356c3ed629816b470d4c7520e3fdb6ff3d03",
       "size": 20704,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Corridor_Coin_Big_Bottom_01.glb",
       "sha256": "a64265ed5628149b3dd017272ab8f4739ffd3486fd0b0b47831d8e2a8077f91d",
       "size": 7192,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Plateform_Angle_05.glb",
       "sha256": "e2083bd654568528d425f52bf9c5892a3aa88b96e99ce71d886d94af0f030580",
       "size": 19200,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Plateform_Center_01.glb",
       "sha256": "883f1fdcf954fd7d1196348fcd6f2182a26685877ec2c576bb9a5922b84063f5",
       "size": 569280,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Plateform_Line_05.glb",
       "sha256": "3190735282fe6428ec4bc124f7848bee4e751a35535b7ca26cc46821a696e948",
       "size": 576996,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol2Decoded/Room_Fence_01.glb",
       "sha256": "8e9af9464d09eaae27cebde8150ad3cf21df17f2f752259797c932ba9a4d49ec",
       "size": 10376,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Air_Grid_01.glb",
       "sha256": "3e7bb926579a68ace8cfb832647f370e3f3f38a01a786ccd7c4a6f590d335dfe",
       "size": 32592,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Air_Grid_02.glb",
       "sha256": "673cb7426eadbf335fef9e132e4694b3c7b37c3ba1fdd42b98411798b0175800",
       "size": 32592,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Antena_03.glb",
       "sha256": "d39f5c1d7cbbf8808e60faf8e9d8751e87a6346539d41d1fec364ab611b87b07",
       "size": 104300,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Cruiser_Reactor_01.glb",
       "sha256": "3e219fa015e77cbf20204629c7cfef9c225eca4524b529a5b2fb5f067044601e",
       "size": 24404,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Ext_Wall_Addon_01.glb",
       "sha256": "2e7b057921db99f8fbf7c8ee3ad0d170279ca35a279c991ff5c2daad09a8e81b",
       "size": 18316,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Landing_Gear_01.glb",
       "sha256": "aad9ff3f1a10fd3ed61cdf2830914012239ec06b286ccd344deb9891ecc15a1f",
       "size": 507768,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Light_Exterior_01.glb",
       "sha256": "952009ae6a6db66ecc744eedade5bf0c59a2556ebe383fcd1efbff93439f602a",
       "size": 437564,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Light_Ring_01.glb",
       "sha256": "7f6be225a1173ca649c56f88aa499230a6d7fad297a11ea1997a666f756a1a1c",
       "size": 462688,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Pipe_Tube_02.glb",
       "sha256": "d3e0b97383d6c39d4de3a9ca72746c93bd6b100bdf5871d38bde02ad3aaea0e6",
       "size": 405668,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Platerform_Metal_02.glb",
       "sha256": "bbd4d9c3c1051e5e5b540efd44918c71ab9593d683011b96ba87946fff7153a1",
       "size": 1168812,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Radar_Base_01.glb",
       "sha256": "bf808a39158e969f2e6452a2ed3e46c721ef6f10ba4c1516d08a882bbb1d45b8",
       "size": 461576,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Radar_Part_02.glb",
       "sha256": "ca0b5b4d7ba18efd7d899f149366e70d546eaa452c8f4b27b49fde2f9e6bd284",
       "size": 548948,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Reactor_ColdFusion_01.glb",
       "sha256": "6c9450a01b7ed63636fa3a1cb1707ba9958f27cfaa1e6960d3ce2c7d3c08b36a",
       "size": 949160,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Reactor_Support_01.glb",
       "sha256": "1cedc29e3e27d33c5c30b6ca3dac159c401ba5ce3535e55e871dc29837f87e4e",
       "size": 421388,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Roof_01.glb",
       "sha256": "4738226543ccada3d06bada27645e85ac3fd92defb45b23c1001a32b9288dc08",
       "size": 387080,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Solar_Panel_01.glb",
       "sha256": "975c455761064083c7ad411b962aa68fae26e09b6d5314afd00f32eba5394cee",
       "size": 394864,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Solar_Panel_04.glb",
       "sha256": "80ef4aea183d2b237049b49ba1d5cd461433ac25d0e290e806f0cf1366156ed2",
       "size": 425672,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Space_Base_Module_01.glb",
       "sha256": "9c43b4d0cd3c969b46a1f3d9912123a08cf8df4ddc2289e50639852d27b2f7ba",
       "size": 1469420,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Stargate_Part_A.glb",
       "sha256": "123884429249acdd4273ae773a173e06cd360eb683438fd835d67b2544a2c232",
       "size": 525844,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Stargate_Part_B.glb",
       "sha256": "a8f3eacf2b740903b90f7562d345977911fae74ce20b8e41cdbb2c7a51120e61",
       "size": 429512,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Stargate_Part_C.glb",
       "sha256": "7e493e72b2b421fd4bb03771682378bbad2069af563f0b935debe3176e8a6eba",
       "size": 502492,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Stargate_Warp_01.glb",
       "sha256": "76f4b1c27cddca34359244c379ac2046932a929c2d8701ea168daa3ee39022ef",
       "size": 13340,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Wall_Big_Angle_01.glb",
       "sha256": "7730c631a4a303678b39f4b66476bcfeb760f31baf98796bef674a9a58b63173",
       "size": 241492,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ScifiKitVol3Decoded/Wall_Big_Simple_02.glb",
       "sha256": "daaff1748335a217e412c0992f2418b0c578d1532af5c8dc0c69effe4fd57fea",
       "size": 265536,
-      "source_note": "Draco-decoded Scifi Kit Vol2/Vol3 parts for the deep-space station scene"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/ShowRoom_Vol30/Example_01.glb",
       "sha256": "baf4773eea6c0750125a5928ec61624750332879199c56c3c11de007942f6c9d",
       "size": 84109696,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/Undersea/abyssal_station.glb",
+      "sha256": "5012d4e515962a3d610718faf0806ea542e13161c0380db379288b44d7e9bea2",
+      "size": 15515508,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/CTR.glb",
       "sha256": "68b2ed68ba6258f33c2bf760879ad740e22d6034fdd9cdaccaa820b6e563b1af",
       "size": 4722024,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Coupe.glb",
       "sha256": "249d54aa19f337ff793bf197edfe25b625707b07b0fb626791fb47d295e35801",
       "size": 1168244,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/E30.glb",
       "sha256": "c8381a46073404f7e671f9b4008e688e7e1833b6da970737825ddd7d99c89829",
       "size": 1281744,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/E46_New.glb",
       "sha256": "e04b701c3c67892beb5efa7f89730a62cd3e5f617b38ed2a38d8455e1fa23dab",
       "size": 1220816,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/F1.glb",
       "sha256": "0b85c508b1280a12e740d214ab483b7631dda2fc4888b3fc384f4e85d827a78a",
       "size": 465048,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Jeep.glb",
       "sha256": "282524ec8fac0793bbe7b36fdffa440051e9da3a3453675eeaad1f1ba0a505ce",
       "size": 1117180,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/M3_E36.glb",
       "sha256": "5e7c2c85cd3dca9670fcf4336fa13425c029f9f6ed2a214a66567a2931f3d5a4",
       "size": 1212352,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Muscle.glb",
       "sha256": "923e825e6db3c65814b073e22368372005217c5a2c59bc4e04e34590fa024d3e",
       "size": 2783312,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Pickup.glb",
       "sha256": "54fc42dc5ca1f13cb6ce6802260d2f875b7f8c878dd1ac422a1677a2b0185f96",
       "size": 540828,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Skyline_by_BUMSTRUM.glb",
       "sha256": "6fafa2b87ffb734ce7c310757bbf45179c94684a9fe54f09412f2e56b3699323",
       "size": 2102456,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Truck.glb",
       "sha256": "300f95611cda276fbbc7fddda914091213da7e5eea09a5171fd1540c07c7dc70",
       "size": 890564,
-      "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/converted_glb/mine/barrel.glb",
@@ -444,10 +678,22 @@
       "source_note": "tall broadleaf trees (NOT evergreens) \u2014 Tim 2026-08-15: roadside + mountain scatter"
     },
     {
+      "repo_path": "assets/converted_glb/rifthub/gate_ring.glb",
+      "sha256": "ea1170726cb533cfa235aa5270cbf7c6d8176e484ccdde7c3aca85f1b82e8e51",
+      "size": 132,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/converted_glb/rifthub/probe_cube.glb",
+      "sha256": "199890dbaedb2c0550a9810552bb205d877ffd27e0b9c2f87f98df155eea0d7a",
+      "size": 1840,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
       "repo_path": "assets/rigged_glb/AnnaBodySuit.glb",
       "sha256": "1dc934ab0161c7848b3e0abfed558f793da1852e2fd9ac0b15e15c872f4f3de2",
       "size": 16440740,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaBodySuit_anim.glb",
@@ -459,31 +705,31 @@
       "repo_path": "assets/rigged_glb/AnnaCasual.glb",
       "sha256": "04da619319a0c049b2ab7591a4fc2813d4923272159196cdb5d4fa56cfb6ecc4",
       "size": 12184604,
-      "source_note": "dance_bake.py: DanceGroove+DanceArms skeletal loops appended (club dancers)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaCasual_anim.glb",
       "sha256": "5d2d1615e414152beb98cd3046b567127381a098b149159496fbacb7cf6792e7",
       "size": 12284388,
-      "source_note": "anim-enrichment gestures + root-Y repair of Walk/Run (fix_root_y_glb.py; Jake armature -0.9488 loc_scale bug)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaTactical.glb",
       "sha256": "7a41161826efc30982ebf2620c53a3a94832a1938d4be17c5993b2c9d689ea88",
       "size": 14523712,
-      "source_note": "dance_bake.py: DanceGroove+DanceArms skeletal loops appended (club dancers)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/BartenderDanny.glb",
       "sha256": "0201e519be9ebea94316e15d7f4cc497c297e13e192841649654eb1ad6137c00",
       "size": 11112312,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/BossBreederQueen.glb",
       "sha256": "28652df4ff752336d165c89889d71c106ba7202b9a0aed19351d288bf1c622b6",
       "size": 41145412,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/BossBreederQueen_anim.glb",
@@ -495,19 +741,19 @@
       "repo_path": "assets/rigged_glb/BossTheSiren.glb",
       "sha256": "a04486e87f5400a1cbfaeb54a563a239b7728c9243e7232c2e0c8a86537d4d2d",
       "size": 22803612,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/DroneExportWMotion.glb",
       "sha256": "5b293a03bd50390392be5448130c00476c98906c6aa849e94fdbcc2a4b82f14c",
       "size": 21458424,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/DroneOscillating.glb",
       "sha256": "f08d9e7eea4d61e331c27a083b67f7385a5e1ee493f70f96bf33cff3cdf7d3c5",
       "size": 21343880,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/FPArms_Jake.glb",
@@ -543,19 +789,49 @@
       "repo_path": "assets/rigged_glb/GreatWhiteSharkGameReady.glb",
       "sha256": "a61fd79e16217937b55458cc28284c114142acbf72409703e2231ea24804369e",
       "size": 5323600,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/JakeClone_player.glb",
+      "sha256": "3f8feef49e30bbadc7d2fe3eb2ade8a86ad9b9713112808caa13035ae9454f69",
+      "size": 1517428,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/JakeFighterShip.glb",
+      "sha256": "b3cd981440b6ebb589d591e58ba74529dd1469b567c9ef01c363cfa04bc980d7",
+      "size": 18131832,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/JakeFighterShip_textured.glb",
+      "sha256": "fb6455cf236cc3e6859258bf3325bf3e11fb758ed678d03a99f278bc223928a1",
+      "size": 13888704,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/Jake_22_actions.glb",
       "sha256": "92a322f111de1706635b4dcafe0efd4f81acaf23a8b9dca6c4f47ecf009d0a83",
       "size": 26624592,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12; RE-BAKED 2026-07-12 with Swim + SwimIdle (tools/swim_bake.py) -> 24 clips"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Jake_44_actions.glb",
+      "sha256": "d35f90a6729743aee06e1904f9cde349c6cc6689621ff8c5edfbd6c796815602",
+      "size": 27610080,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/OH1.glb",
+      "sha256": "97d759b33227464ff5135d4be98e99cd24f24a4469bc690430b8bf287e2eb703",
+      "size": 25317032,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/Oracle.glb",
       "sha256": "366a8c3cd56a45f135d12dae134b47782d0aac89d97d1d334da8dd8a1a254e4a",
       "size": 12424380,
-      "source_note": "G:\\GameModels\\rigged_glb; round-trip fetch verified 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/Oracle_anim.glb",
@@ -567,13 +843,13 @@
       "repo_path": "assets/rigged_glb/OverLordEnforcer99.glb",
       "sha256": "c46f08a1d7fefdba63cbd04b93e73c281231d5df38ecf3fe58da63c0a358c1bb",
       "size": 12087160,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/RexBouncer.glb",
       "sha256": "9799311ca78d5d931950450ed38a28674d2af8cffda51e33143094db665f58b2",
       "size": 9231300,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/RexBouncer_anim.glb",
@@ -585,7 +861,7 @@
       "repo_path": "assets/rigged_glb/SalvariPrincess.glb",
       "sha256": "9e593ec6466f843822321a85b39a823106ab0c5e5c7ff1fa26a92154843b6c38",
       "size": 21431548,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/SalvariPrincess_anim.glb",
@@ -594,10 +870,34 @@
       "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
     },
     {
+      "repo_path": "assets/rigged_glb/Sarah.glb",
+      "sha256": "818920b2cc92c483c16207da929653c62b8353be19cfc7b608da02b5415a9317",
+      "size": 5247560,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
       "repo_path": "assets/rigged_glb/SpaceShip.glb",
       "sha256": "8285f34ec5864d74b97e330b6c77411f5e080034bf575a8f28e6a4ce59d8ac75",
       "size": 7545756,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/SpaceShip2.glb",
+      "sha256": "cb56a5419509bbdb7a32b83751a62ade18f327347dd895c7af45207b7cb0a0e0",
+      "size": 9125256,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/SpaceShip3.glb",
+      "sha256": "629ae571ee3176ca11a8bd196ffc141da7fdc1dc17525973f376d9e5212f1a91",
+      "size": 9613132,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/SpaceShip4.glb",
+      "sha256": "2377f346e01b370a19993254a901128a335b1eaefb9873a5408eff5a3d57f9e1",
+      "size": 12952676,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponBFG.glb",
@@ -609,7 +909,7 @@
       "repo_path": "assets/rigged_glb/WeaponEnergyPistol.glb",
       "sha256": "86a84cff5e6465a325c93661f5d2f15e93ba9027526f7d09b99f705627c5f7dc",
       "size": 6005976,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponEnergyPistol2.glb",
@@ -633,7 +933,7 @@
       "repo_path": "assets/rigged_glb/WeaponShotGun.glb",
       "sha256": "1553cb6af35c372a13261d932074e927ac165d89e7870acc976869f853b6ec22",
       "size": 701472,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponShotgun2.glb",
@@ -645,7 +945,7 @@
       "repo_path": "assets/rigged_glb/alien_crawler.glb",
       "sha256": "2fb0298988eb32daa30daad163e94b44a22baabaef61dcc4eae06d34436690c3",
       "size": 10573536,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/alien_crawler_anim.glb",
@@ -660,10 +960,22 @@
       "source_note": ""
     },
     {
+      "repo_path": "assets/rigged_glb/canon_grey.glb",
+      "sha256": "b424ecabe12c87a78f60286e651d4b4602f361b8fc58a89cf00e446e57f4075a",
+      "size": 132,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
       "repo_path": "assets/rigged_glb/canon_grey_anim.glb",
       "sha256": "5235cd41c55b22fb4d5a9230b2d27e495a73f5ab28c558dfafeb3a0821f750c7",
       "size": 1987376,
       "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/canon_mantis.glb",
+      "sha256": "8088964c859a326f912ae21803dd2c29522d555d97948cfda0003a1d5bc3a4f5",
+      "size": 132,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/canon_mantis_anim.glb",
@@ -672,16 +984,34 @@
       "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
     },
     {
+      "repo_path": "assets/rigged_glb/canon_nordic.glb",
+      "sha256": "a71d3e04563e6e570c1be2b38d119442638c7049e5d3a9a1c5e40ffed253e822",
+      "size": 132,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
       "repo_path": "assets/rigged_glb/canon_nordic_anim.glb",
       "sha256": "49bb6843a29c57a24fafaf443aafe2f26d64b7385464144c4295a54398b6ad01",
       "size": 2382596,
       "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
     },
     {
+      "repo_path": "assets/rigged_glb/canon_saurian.glb",
+      "sha256": "0c331beba65bfabe4c73630c24d8e21e7da8857e4335a36172523850191fbdf5",
+      "size": 132,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/canon_saurian_anim.glb",
+      "sha256": "6d79bb9fdce0efd83b18b3070205ba433ecc4e99e90fa37a7d56adccec78ff98",
+      "size": 4480616,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
       "repo_path": "assets/rigged_glb/chief_martinez.glb",
       "sha256": "b04828c7d977dacf3e809149db4afecaaad3e9a3124350bcf8853506cc32877e",
       "size": 56139872,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
@@ -693,7 +1023,7 @@
       "repo_path": "assets/rigged_glb/marcus_webb.glb",
       "sha256": "a069cad5607840504ac4887eace8b6e08b811b9055f8d1cc9ba312b358501fd3",
       "size": 43299432,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
@@ -702,16 +1032,28 @@
       "source_note": "guard-clips: REAL authored Death (backward shot-collapse, 40f) + Struggle (looming assault loop, 40f) via tools/guardanim/guard_clip_forge.py; old clips were 0.00-rad dead data; Idle/Walk/Run/Jump/Attack/Attack2/Hitreaction untouched"
     },
     {
+      "repo_path": "assets/rigged_glb/pack_spider_anim.glb",
+      "sha256": "9ed19666a58023ad06ab75462d6d541cffaa6afb18fb01fa3bc8b434100cd6f6",
+      "size": 1823516,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/rigged_glb/pack_spider_blue_anim.glb",
+      "sha256": "6462360ee948f44b6747926620bf9a1176f37b7df9d5d28596df0a38d38e1b06",
+      "size": 1743880,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
       "repo_path": "assets/rigged_glb/sea_hammerhead.glb",
       "sha256": "2b6ef9b930e84c9476c65b618f143d08f65ebb2d64c98f64bd7a1f25f0c88910",
       "size": 7740552,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/sea_manta_ray.glb",
       "sha256": "b95225123a2f007691aabeaaa70cf9e96f3cb60211e8cbd028944b3946612814",
       "size": 7059860,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/shark.glb",
@@ -747,19 +1089,19 @@
       "repo_path": "assets/surface_library/cc_exec_floor/albedo.png",
       "sha256": "d9225cfb40622acbdf040e71bae9c4dca5025796ac32aece9055343e81184f90",
       "size": 1308772,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cc_exec_floor/mr.png",
       "sha256": "1c7aca116ede06469c4a2940f593a5862b88321809ba9cf59f7308ab5444b2ba",
       "size": 77,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cc_exec_floor/normal.png",
       "sha256": "f009768b7329612dfee1e26f38ffe6da83992e3f91caddb6c48a2ac1da0de766",
       "size": 769877,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cc_porous_cement/albedo.png",
@@ -783,55 +1125,55 @@
       "repo_path": "assets/surface_library/cv_rock_flume/albedo.png",
       "sha256": "c72ab8ca535349c61feb623f4a6a312179d967ffb3afbe833bd8d2ab3ffc4828",
       "size": 2036400,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cv_rock_flume/mr.png",
       "sha256": "95ef26075b090c44ff065111ae4bc448a081a34dc2d3cfbef018530f075a732f",
       "size": 578137,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cv_rock_flume/normal.png",
       "sha256": "ec51ec34646b78107b775600cf82534115c8fa71cd98f8af9f5bbc305df3f9cc",
       "size": 1745787,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cv_rock_wet/albedo.png",
       "sha256": "52507d1e9a9bb434cfd6a161962b8015cae91563555020c963e281099b399091",
       "size": 2220683,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cv_rock_wet/mr.png",
       "sha256": "904b1fb442daa12ce42f797cc8fe74772e4907712553aa6a8acf859b96be9623",
       "size": 690018,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cv_rock_wet/normal.png",
       "sha256": "bf5eec167ddf0bc3b760c55b05fe4fb62ff848fdfab1ad0ce0f41f6868cc8246",
       "size": 1973451,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cv_shotcrete_break/albedo.png",
       "sha256": "ab846fb16a54b99c1da0cdf74daff12c7b8c2b48d71e3c6c465e333c1582f9fd",
       "size": 2420564,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cv_shotcrete_break/mr.png",
       "sha256": "dab91958693f16cbddaa8e97d551429a020a44655416bf8cd5f0d8a709689ece",
       "size": 588927,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/cv_shotcrete_break/normal.png",
       "sha256": "4ea71f498e4111d8f747262a18e26627f1ecdf07eb8824d0fd20627b9af06baa",
       "size": 2173300,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/fw_rock_cliff/albedo.png",
@@ -909,19 +1251,19 @@
       "repo_path": "assets/surface_library/hh_privacy_glass/albedo.png",
       "sha256": "705e788abcd326b5b994efdffb2f179d9f3a2e9f626a880420d3e1c6f173bb19",
       "size": 1245327,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/hh_privacy_glass/mr.png",
       "sha256": "a999a4001091bde1983906259f09c8f5b6892397e893bc872548c4ac4e05b62f",
       "size": 174401,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/hh_privacy_glass/normal.png",
       "sha256": "70e3be5ae32f14a6eb6ca54e0cce41250430a7efe9e198e924e9789292569f62",
       "size": 637179,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/hh_wall_01a/albedo.png",
@@ -945,19 +1287,19 @@
       "repo_path": "assets/surface_library/mw_cleanlab_white/albedo.png",
       "sha256": "2d4096ecbbf8f9fa9bd7206b272ce3ebc4af90b3af88154a116c875f1c158677",
       "size": 943296,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/mw_cleanlab_white/mr.png",
       "sha256": "f758363feec2bc8470077104ee4163b461299751306c8acb20c9a5c5c31a58da",
       "size": 110729,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/mw_cleanlab_white/normal.png",
       "sha256": "9640fe41b8ec9e7f58115a10e11e46166f3467dd59e25b6766d9050f61e7af82",
       "size": 534122,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/mw_concrete_panels_a/albedo.png",
@@ -999,19 +1341,19 @@
       "repo_path": "assets/surface_library/mw_concrete_scorched/albedo.png",
       "sha256": "1495b2d78a07adba1b953d86c52897dcb1588e2d72717330bb684f6ed5df828f",
       "size": 2385766,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/mw_concrete_scorched/mr.png",
       "sha256": "aafb2189d5b46eb06c8a7d1098ca077e04ac26c58d706520578c9d6f4d087eff",
       "size": 521221,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/mw_concrete_scorched/normal.png",
       "sha256": "9b22f253373fa6535e3858ee38a79942557aada4eddb16f8f1687f58f6cbc510",
       "size": 1994177,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/mw_floor_trim/albedo.png",
@@ -1158,22 +1500,40 @@
       "source_note": "AD-3 curated surface sets (20 sets x albedo/normal/mr)"
     },
     {
+      "repo_path": "assets/surface_library/rd_asphalt_01/albedo.png",
+      "sha256": "faca083677b386441717cf71c54c95dcb01bd2e3bafedef0a56f24477de511bb",
+      "size": 7941846,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/surface_library/rd_asphalt_01/mr.png",
+      "sha256": "2fa31994ac3b6cbe69c8a6ebba68e043fdc93bc42ad8db5a0c9401825648c148",
+      "size": 6966234,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
+      "repo_path": "assets/surface_library/rd_asphalt_01/normal.png",
+      "sha256": "d98473103cf55a1cb095b57c505efb0f7b8c756560b7e4d6156b8ae3fba48dcb",
+      "size": 9712142,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+    },
+    {
       "repo_path": "assets/surface_library/sl_chute_steel/albedo.png",
       "sha256": "212b786f1981bc290483a31cc04071cedd23754424add8da7d6802f6b5d903ec",
       "size": 1261025,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/sl_chute_steel/mr.png",
       "sha256": "128149271310233c010ca18c5c84ca77a908370e3a76f3ab9af075576dae6638",
       "size": 480074,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/sl_chute_steel/normal.png",
       "sha256": "6c313acc2ae4823c1413bb1fe8e2cb56e8720812eac0cd46f0f65208e1a44632",
       "size": 926658,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/sr_concrete_01/albedo.png",
@@ -1251,19 +1611,19 @@
       "repo_path": "assets/surface_library/sr_metal_cryo/albedo.png",
       "sha256": "27fa13ca18696bc272be939ae955fe4da00cc99abeedd35bb41fcf778bf2df78",
       "size": 2311013,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/sr_metal_cryo/mr.png",
       "sha256": "11bac702784d39b7d7b0acbb99d219070538528835ad29054eb3bb344745970b",
       "size": 497974,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/sr_metal_cryo/normal.png",
       "sha256": "d47b2c7640b36cec7109aea1406bb806ba51069829f6a4af50b672ce4ef6a1d9",
       "size": 1853386,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/sr_metal_lattice/albedo.png",
@@ -1287,19 +1647,19 @@
       "repo_path": "assets/surface_library/sr_metal_waste/albedo.png",
       "sha256": "475acb2ae0a08d16422dc8081630892d7598be9deb5d0489a5625b20596b8433",
       "size": 2157989,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/sr_metal_waste/mr.png",
       "sha256": "e60c0eb2657c67865e6af08daf8e69ade1265cff6797971bce9d63324616fd0e",
       "size": 526079,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/sr_metal_waste/normal.png",
       "sha256": "7744c5eb00920f40fdb96fa7e2a0291f05dfa1a9f84c870e164c42b5645c573d",
       "size": 1671815,
-      "source_note": "durability: LFS-only surface sets had NO store copy (LFS budget exhausted = undistributable); publishing so they survive this disk"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/sr_rubberfloor/albedo.png",
@@ -1359,7 +1719,7 @@
       "repo_path": "assets/surface_library/terrain_grass/albedo.png",
       "sha256": "70ec6975c9b87bd358fc6bb5254d331be8e593355a3683681b413b1864d3ee5f",
       "size": 9709509,
-      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/terrain_grass/mr.png",
@@ -1371,7 +1731,7 @@
       "repo_path": "assets/surface_library/terrain_grass/normal.png",
       "sha256": "63303a4464f68b48f73b1174583cb0770cefeb2998beb2328e50686f73e997e1",
       "size": 11903409,
-      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/terrain_rock/albedo.png",
@@ -1425,19 +1785,19 @@
       "repo_path": "assets/surface_library/terrain_sand/albedo.png",
       "sha256": "eb5e6ee2f27cef69c13ae28085a8655b23011bc1e5b0186d1ad2625d2ec83978",
       "size": 9669455,
-      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/terrain_sand/mr.png",
       "sha256": "840de65dc9e9bd3c80133f5fad6086894bdffa6b11286dd11cfb87cf54d58ade",
       "size": 16914,
-      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/terrain_sand/normal.png",
       "sha256": "afa1a1ebd27461af865e2bec6d635f68b20398cca2c1ec56e610fe20abbacdb1",
       "size": 10331297,
-      "source_note": "W6-3: terrain splat albedos (grass=RHEP GrassTileRHEP, sand=Landscape Ground Pack 3 T_ground_sand_01, snow=Ancient Desert Town MarbleWhite00 substitute - no true snow texture exists in tex_catalog.json)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/terrain_scree/albedo.png",
@@ -1461,19 +1821,19 @@
       "repo_path": "assets/surface_library/terrain_snow/albedo.png",
       "sha256": "e5d99404e9a9deb169bf72f060a1ae7d5146ea87dbf72497699bbaf04a87ce11",
       "size": 4329008,
-      "source_note": "NatureManufacture Landscape Ground Pack 3, T_Ground_32_Snow (BC_SM/N) - native uncompressed 2K, SAME vendor as the grass and sand layers; roughness from the authored smoothness alpha (mean 0.57, varying)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/terrain_snow/mr.png",
       "sha256": "52ecf196128f33b99a06c8cc10a881c8e9b9a28faa362d65c71082bc91d92f70",
       "size": 4249131,
-      "source_note": "NatureManufacture Landscape Ground Pack 3, T_Ground_32_Snow (BC_SM/N) - native uncompressed 2K, SAME vendor as the grass and sand layers; roughness from the authored smoothness alpha (mean 0.57, varying)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/surface_library/terrain_snow/normal.png",
       "sha256": "d0f7e025edb9fed5aef05804f04eec97db79a49b3062f799793f29b69eadfc02",
       "size": 6300889,
-      "source_note": "NatureManufacture Landscape Ground Pack 3, T_Ground_32_Snow (BC_SM/N) - native uncompressed 2K, SAME vendor as the grass and sand layers; roughness from the authored smoothness alpha (mean 0.57, varying)"
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     }
   ]
 }
