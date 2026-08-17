@@ -54,8 +54,22 @@ not fixed:
      mild rudder. Full aerobatics — rolls, loops, inverted must all work.
    - **700 mph full thrust, 277 mph hands-off coast** (owner's numbers are
      spec — make them fall out of thrust/drag, don't clamp).
-   - The **6DOF camera** an earlier session built for the space host is for the
-     CAMERA only (free-look decoupled from flight) — find and reuse it.
+   - **THE FLIGHT CONTROLLER ALREADY EXISTS — REUSE IT (rule 1).**
+     `app/space_pilot.{h,cpp}`: `SpacePilotController`, a complete 6DOF
+     controller with a Tuning struct (maxLinearAccel, maxStrafeAccel,
+     maxAngularAccel, linear/angular drag, boostMul, a hard maxSpeed cap,
+     `noseFollow` arcade velocity-chase steering, `flightAssist` +
+     `assistDelay` so a burst coasts before the brake engages), a 3P chase
+     camera, three live-swappable feel modes (Arcade/Assist/Loose), a
+     process-global `requestedFlightMode()` latch built precisely for "another
+     host wants this flight feel", AND its own selftest (space_pilot.cpp
+     ~:1031 — rolls, pitch, speed cap). Live consumers to read:
+     `host_space.cpp:2100` and `host_echotropolis.cpp:2702/4035/4772` (its fly
+     mode — Q/E roll with gentle self-righting when neither key is held — is
+     the HUD in the owner's own screenshot). Tune it for a WINGED CAR (700 mph
+     cap, atmospheric bank-to-turn, gravity + lift, `noseFollow` for the arcade
+     feel) instead of writing a second integrator. The 6DOF camera the owner
+     remembers is this module's chase camera.
    - **Crashing hurts**: violent tumble, damage state, overdrive lockout.
    - **P = PARACHUTE** (owner was explicit: not E, not SPACE). Jake ejects via
      the shared AnimatedCharacter module, canopy, steerable drift, CONTACT LAW
