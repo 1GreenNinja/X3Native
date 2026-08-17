@@ -503,6 +503,7 @@ struct CliOptions {
     bool        testRouteFrame = false;
     bool        testRoadNetwork = false;   // --test-roadnetwork
     bool        testRiverBridge = false;   // --test-riverbridge (valley road + Bridge No.1)
+    bool        testGasStation = false;    // --test-gasstation (W-STATIONS forecourts + fuel stub)
     // Headless editor proof (--screenshot-editor [path.png]): init ImGui in a headless
     // device, render ONE frame with the dockspace + demo window, and capture a PNG that
     // shows the ImGui window — proves the Phase-0 integration actually rasterizes.

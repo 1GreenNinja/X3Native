@@ -70,6 +70,7 @@ add_library(x3app SHARED
     road_network.cpp    # chained-corridor road routes (the ring tours)
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
+    gas_station.cpp     # W-STATIONS — forecourts off the network + the fuel stub
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp

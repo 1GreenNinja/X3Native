@@ -113,6 +113,7 @@
 #include "tunnel_corridor.h"   // x3::game::runTunnelDriveSelfTest (--test-tunneldrive)
 #include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
+#include "gas_station.h"       // x3::game::runGasStationSelfTest (--test-gasstation)
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
@@ -756,6 +757,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running RIVER BRIDGE self-test (the valley road meets the river "
                     "square, the span gap leaves it untouched, the at-grade control drowns)...");
         return x3::game::runRiverBridgeSelfTest() ? 0 : 1;
+    }
+    if (tf.testGasStation) {
+        x3::logInfo("running GAS STATION self-test (forecourts sited off the freeway "
+                    "turnarounds by measurement, pads carved flat, mouths noted so the "
+                    "barrier planner leaves them open, and the fuel stub arms)...");
+        return x3::game::runGasStationSelfTest() ? 0 : 1;
     }
     if (tf.testTunnelDrive) {
         x3::logInfo("running TUNNEL DRIVE-THROUGH self-test (real rig through the demo "
