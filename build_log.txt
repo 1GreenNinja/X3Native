@@ -1,0 +1,354 @@
+MSBuild version 18.7.1+024f5b037 for .NET Framework
+
+  Stamping build version (git hash + timestamp)
+  copy compiled SPIR-V -> bin/shaders
+  ggml-base.vcxproj -> D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\_deps\llama_cpp-build\ggml\src\Release\ggml-base.lib
+  ggml-cpu.vcxproj -> D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\_deps\llama_cpp-build\ggml\src\Release\ggml-cpu.lib
+  ggml.vcxproj -> D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\_deps\llama_cpp-build\ggml\src\Release\ggml.lib
+  llama.vcxproj -> D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\_deps\llama_cpp-build\src\Release\llama.lib
+  x3core.vcxproj -> D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\engine\Release\x3core.lib
+  main.cpp
+  ui.cpp
+  host_tunnel.cpp
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(252,53): warning C4100: 'b': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(252,44): warning C4100: 'g': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(252,35): warning C4100: 'r': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,70): warning C4100: 'halfExtent': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,60): warning C4100: 'cz': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,50): warning C4100: 'cy': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,40): warning C4100: 'cx': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(265,39): warning C4100: 'enable': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(297,35): warning C4100: 'enable': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(302,33): warning C4100: 'intensity': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(308,36): warning C4100: 'e': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(348,42): warning C4100: 'f': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(409,46): warning C4100: 'g': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(436,45): warning C4100: 'enabled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(444,34): warning C4100: 'path': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(446,37): warning C4100: 'enabled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(451,50): warning C4100: 'enabled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(458,62): warning C4100: 'pvsMs': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(458,43): warning C4100: 'roomsCulled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(484,38): warning C4100: 'on': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(489,40): warning C4100: 's': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(504,40): warning C4100: 'enable': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(513,40): warning C4100: 's': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(519,39): warning C4100: 's': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(773,35): warning C4100: 'uTime': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(772,85): warning C4100: 'mapCount': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(772,70): warning C4100: 'maps': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(772,38): warning C4100: 'typeIndex': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(771,82): warning C4100: 'model': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(771,64): warning C4100: 'mesh': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(771,49): warning C4100: 'fc': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/ui.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(252,53): warning C4100: 'b': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(252,44): warning C4100: 'g': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(252,35): warning C4100: 'r': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,70): warning C4100: 'halfExtent': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,60): warning C4100: 'cz': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,50): warning C4100: 'cy': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,40): warning C4100: 'cx': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(265,39): warning C4100: 'enable': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(297,35): warning C4100: 'enable': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(302,33): warning C4100: 'intensity': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(308,36): warning C4100: 'e': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(348,42): warning C4100: 'f': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(409,46): warning C4100: 'g': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(436,45): warning C4100: 'enabled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(444,34): warning C4100: 'path': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(446,37): warning C4100: 'enabled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(451,50): warning C4100: 'enabled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(458,62): warning C4100: 'pvsMs': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(458,43): warning C4100: 'roomsCulled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(484,38): warning C4100: 'on': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(489,40): warning C4100: 's': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(504,40): warning C4100: 'enable': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(513,40): warning C4100: 's': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(519,39): warning C4100: 's': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(773,35): warning C4100: 'uTime': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(772,85): warning C4100: 'mapCount': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(772,70): warning C4100: 'maps': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(772,38): warning C4100: 'typeIndex': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(771,82): warning C4100: 'model': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(771,64): warning C4100: 'mesh': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(771,49): warning C4100: 'fc': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(252,53): warning C4100: 'b': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(252,44): warning C4100: 'g': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(252,35): warning C4100: 'r': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,70): warning C4100: 'halfExtent': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,60): warning C4100: 'cz': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,50): warning C4100: 'cy': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(257,40): warning C4100: 'cx': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(265,39): warning C4100: 'enable': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(297,35): warning C4100: 'enable': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(302,33): warning C4100: 'intensity': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(308,36): warning C4100: 'e': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(348,42): warning C4100: 'f': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(409,46): warning C4100: 'g': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(436,45): warning C4100: 'enabled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(444,34): warning C4100: 'path': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(446,37): warning C4100: 'enabled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(451,50): warning C4100: 'enabled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(458,62): warning C4100: 'pvsMs': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(458,43): warning C4100: 'roomsCulled': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(484,38): warning C4100: 'on': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(489,40): warning C4100: 's': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(504,40): warning C4100: 'enable': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(513,40): warning C4100: 's': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(519,39): warning C4100: 's': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(773,35): warning C4100: 'uTime': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(772,85): warning C4100: 'mapCount': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(772,70): warning C4100: 'maps': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(772,38): warning C4100: 'typeIndex': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(771,82): warning C4100: 'model': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(771,64): warning C4100: 'mesh': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\engine\rhi\IRenderDevice.h(771,49): warning C4100: 'fc': unreferenced parameter [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/world_hosts/host_tunnel.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\holo_terminal.h(27,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(3698,52): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(4095,27): warning C4456: declaration of 'fx' hides previous local declaration [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+      D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(1530,12):
+      see declaration of 'fx'
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(4951,29): warning C4456: declaration of 'cy' hides previous local declaration [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+      D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(4651,39):
+      see declaration of 'cy'
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(277,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(296,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(327,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(355,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(367,39): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(420,44): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(448,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(469,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(490,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(782,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(810,43): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(845,35): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(913,31): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(1095,35): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(1159,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(1197,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(1892,30): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(2020,40): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(2610,35): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(2773,35): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(2907,35): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(2912,38): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(3440,34): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(3442,39): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(1240,10): warning C4189: 'garageCursor': local variable is initialized but not referenced [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(1241,10): warning C4189: 'garageOpen': local variable is initialized but not referenced [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(1239,10): warning C4189: 'fleetSel': local variable is initialized but not referenced [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\world_hosts\host_tunnel.cpp(5017,25): warning C4189: 'mar': local variable is initialized but not referenced [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\settings_io.h(18,29): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\settings_io.h(103,34): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\showroom_tod.h(60,35): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\showroom_tod.h(62,22): warning C4996: 'sscanf': This function or variable may be unsafe. Consider using sscanf_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\showroom_tod.h(64,35): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\app\showroom_tod.h(106,26): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\app\x3app.vcxproj]
+  (compiling source file '../../app/main.cpp')
+  
+  Auto build dll exports
+     Creating library D:/GameDev/X3Native/.claude/worktrees/agent-af1da97b0cf6e9a0c/build/app/Release/x3app.lib and object D:/GameDev/X3Native/.claude/worktrees/agent-af1da97b0cf6e9a0c/build/app/Release/x3app.exp
+  x3app.vcxproj -> D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\bin\Release\x3app.dll
+  X3Engine.vcxproj -> D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\bin\Release\X3Engine.exe
+  X3LevelArchitect.vcxproj -> D:\GameDev\X3Native\.claude\worktrees\agent-af1da97b0cf6e9a0c\build\bin\Release\X3LevelArchitect.exe

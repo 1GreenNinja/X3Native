@@ -564,7 +564,7 @@ void DriveDemo::updateTurbo(float dt) {
     if (!m_turboOn) {
         m_boostPsi = 0.0f;
         m_turboMult = 1.0f;
-        m_ctl->setTorqueBoost(m_userTorqueMult);
+        m_ctl->setTorqueBoost(m_userTorqueMult * m_nosTorqueMult);
         return;
     }
     const TurboParams& tp = m_turbo;
@@ -599,10 +599,26 @@ void DriveDemo::updateTurbo(float dt) {
     constexpr float kAtmPsi = 14.7f;
     constexpr float kRefBoostPsi = 14.5f;   // boost the torque curve is calibrated at
     m_turboMult = std::max(0.05f, (kAtmPsi + m_boostPsi) / (kAtmPsi + kRefBoostPsi));
-    m_ctl->setTorqueBoost(m_userTorqueMult * m_turboMult);
+    // m_nosTorqueMult is the vehicle-layer 200-shot (updateNitro) — the host's
+    // setTorqueBoost no longer carries the NOS factor (NO_SLOP rule 4 pair).
+    m_ctl->setTorqueBoost(m_userTorqueMult * m_nosTorqueMult * m_turboMult);
 }
 
-void DriveDemo::preStep(float dt)  { shapeSteering(dt); updateTurbo(dt); updateEngineModel(dt); if (m_ctl) m_ctl->preStep(dt); }
+void DriveDemo::preStep(float dt) {
+    updateNitro(dt);   // stages 0-2 of the three-stage secret + the wing trigger
+    if (m_wings) {
+        // WINGED: the flight controller owns propulsion/attitude; the wheeled
+        // constraint keeps stepping (neutral input, pushed at deploy) so the
+        // suspension is warm for touchdown. Turbo/steer shaping are ground
+        // systems and stay parked; the engine model keeps the audio alive.
+        updateWingFlight(dt);
+        if (m_flyCtl) m_flyCtl->preStep(dt);
+        updateEngineModel(dt);
+        if (m_ctl) m_ctl->preStep(dt);
+        return;
+    }
+    shapeSteering(dt); updateTurbo(dt); updateEngineModel(dt); if (m_ctl) m_ctl->preStep(dt);
+}
 
 // REAL ENGINE MODEL. The engine RPM is its own state, not Jolt's road-speed-
 // locked value. Idles ~800, is pulled toward the locked (wheel-speed) RPM when
@@ -619,6 +635,46 @@ void DriveDemo::updateEngineModel(float dt) {
 void DriveDemo::postStep(float dt) {
     if (m_ctl) m_ctl->postStep(dt);
     updateTireSquash(dt);
+    // ---- WINGED FLIGHT aftermath: crash detection + the landing rule -------
+    if (m_wings && m_physics && m_chassis.valid()) {
+        float lv[3]; m_physics->getBodyLinearVelocity(m_chassis, lv);
+        const float spd = std::sqrt(lv[0]*lv[0] + lv[1]*lv[1] + lv[2]*lv[2]);
+        // CRASH ("Crashing hurts, a lot"): only a collision can shed this much
+        // speed in one 60 Hz step — drag physically cannot. Wings torn, the
+        // tumble is handed to Jolt with an angular kick (the wings' inertia),
+        // and NOS/overdrive/wings lock out for crashLockSecs.
+        if (m_prevFlySpeed > m_wingT.crashMinSpeed &&
+            (m_prevFlySpeed - spd) > m_wingT.crashDeltaV) {
+            float q[4]; m_physics->getBodyRotation(m_chassis, q);
+            float f[3], u[3]; vehcam::hullAxes(q, f, u);
+            const float r[3] = { f[1]*u[2] - f[2]*u[1],
+                                 f[2]*u[0] - f[0]*u[2],
+                                 f[0]*u[1] - f[1]*u[0] };
+            float av[3]; m_physics->getBodyAngularVelocity(m_chassis, av);
+            // Violent, deterministic tumble: pitch-over + a yaw skew scaled by
+            // how hard the hit was (a 40 m/s wipe spins harder than a graze).
+            const float k = std::min(1.5f, (m_prevFlySpeed - spd) / 30.0f);
+            av[0] += r[0] * 6.0f * k + u[0] * 2.5f * k;
+            av[1] += r[1] * 6.0f * k + u[1] * 2.5f * k;
+            av[2] += r[2] * 6.0f * k + u[2] * 2.5f * k;
+            m_physics->setBodyAngularVelocity(m_chassis, av);
+            retractWings(/*torn=*/true);
+            m_crashLock = m_wingT.crashLockSecs;
+            m_evCrashed = true;
+            x3::logInfo("[vehicle] WINGED CRASH: dV=" +
+                        std::to_string(m_prevFlySpeed - spd) + " m/s at " +
+                        std::to_string(m_prevFlySpeed * 2.23694f) + " mph — wings torn, "
+                        "overdrive locked " + std::to_string(m_wingT.crashLockSecs) + " s");
+        } else if (grounded() && spd * 2.23694f < m_wingT.retractMph) {
+            // THE LANDING RULE: wheels down below ~60 mph = a car again. The
+            // wings fold (animated back through m_wingPose in updateNitro) and
+            // THE CONTACT LAW resumes below this very frame.
+            retractWings(/*torn=*/false);
+            x3::logInfo("[vehicle] wings retracted — wheels down at " +
+                        std::to_string(spd * 2.23694f) + " mph");
+        }
+        m_prevFlySpeed = spd;
+    }
     // ---- THE CONTACT LAW (NO_SLOP.md rule 11): "no tires, and no Boots and
     // no feet can EVER be underground." Enforced HERE, once, for every world
     // that drives this car. If any wheel's contact point sits beyond-
@@ -627,7 +683,12 @@ void DriveDemo::postStep(float dt) {
     // itself, so bores/underpasses are safe — the law only ever pushes UP.
     // m_contactLaw: ON in every world; OFF only in the headless slab tests,
     // whose ground is NOT the terrain field (see setTerrainContactLaw).
-    if (m_contactLaw && m_ctl && m_physics && m_chassis.valid()) {
+    // !m_wings: while the WINGS are deployed the car is airborne BY DESIGN
+    // (the beast dives below ridge lines and the lifter would yank it onto
+    // them) — the law is suspended for exactly as long as the wings are out
+    // and resumes the frame they retract (PAIRED with the landing rule above
+    // and with retractWings(), which re-arms it — NO_SLOP rule 4).
+    if (m_contactLaw && !m_wings && m_ctl && m_physics && m_chassis.valid()) {
         float worst = 0.0f;
         for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i) {
             x3::phys::WheelState ws;
@@ -645,6 +706,233 @@ void DriveDemo::postStep(float dt) {
             if (lv[1] < 0.0f) { lv[1] = 0.0f; m_physics->setBodyLinearVelocity(m_chassis, lv); }
         }
     }
+}
+
+// ===========================================================================
+// NITROUS + THE THREE-STAGE SECRET — see the vehicle.h block for the story.
+// Moved down from host_tunnel.cpp (which keeps only the SHIFT read + HUD/audio
+// hooks) so every world's car carries the same secret.
+// ===========================================================================
+bool DriveDemo::grounded() const {
+    if (!m_ctl) return false;
+    for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i) {
+        x3::phys::WheelState ws;
+        if (m_ctl->wheelState(i, ws) && ws.hasContact) return true;
+    }
+    return false;
+}
+
+void DriveDemo::updateNitro(float dt) {
+    m_nosTorqueMult = 1.0f;
+    if (dt <= 0.0f || !m_physics || !m_chassis.valid()) return;
+    if (m_crashLock > 0.0f) m_crashLock = std::max(0.0f, m_crashLock - dt);
+    const NitroTuning& nt = m_nitroT;
+
+    // Wing fold-back animation (clean retract eases; a torn wing already
+    // snapped to 0 in retractWings).
+    if (!m_wings && m_wingPose > 0.0f)
+        m_wingPose = std::max(0.0f, m_wingPose - dt / std::max(0.05f, m_wingT.deploySecs));
+
+    if (m_wings) {
+        // Winged: SHIFT is flight throttle (updateWingFlight); the bottle
+        // machinery idles. The tank refills only while SHIFT is up, same as
+        // the ground rule below.
+        m_nosSpraying = false; m_od01 = 0.0f; m_odHeld = 0.0f; m_odKickClock = 0.0f;
+        if (!m_wantNos) m_nosTank = std::min(1.0f, m_nosTank + dt / nt.rechargeSecs);
+        return;
+    }
+
+    const bool want = m_wantNos && m_crashLock <= 0.0f;
+    const bool canSpray = want && m_nosTank > 0.0f;
+    float fwd[3] = { 0, 0, -1 };
+    if (canSpray || (want && m_nosTank <= 0.0f)) {
+        float q[4]; m_physics->getBodyRotation(m_chassis, q);
+        float up[3]; vehcam::hullAxes(q, fwd, up);
+    }
+
+    // ---- STAGE 0: the NORMAL bottle (behavior unchanged — regression-gated
+    // by runWingedFlightSelfTest N1: 15 s bottle, ~20 s recharge, ONE kick
+    // per engagement, +1.1 g shove, x1.19 torque).
+    if (canSpray) {
+        if (!m_nosSpraying)   // THE HIT: one hard kick the instant the bottle lights
+            m_physics->applyImpulse(m_chassis,
+                x3::phys::Vec3{ fwd[0] * nt.kickImpulse, 0.0f, fwd[2] * nt.kickImpulse });
+        m_physics->applyImpulse(m_chassis,   // THE SHOVE: sustained while spraying
+            x3::phys::Vec3{ fwd[0] * nt.shoveForce * dt, 0.0f, fwd[2] * nt.shoveForce * dt });
+        m_nosTorqueMult = nt.sprayTorqueMult;
+        m_nosTank -= dt / nt.bottleSecs;
+        m_nosSpraying = true;
+        if (m_nosTank <= 0.0f) {
+            // ---- STAGE 1: DEPLETION. Fired exactly once per emptying — the
+            // host's "NITROUS DEPLETED" flash + PSSSHT hang off this edge.
+            m_nosTank = 0.0f;
+            m_evDepleted = true;
+        }
+    } else {
+        m_nosSpraying = false;
+    }
+
+    // ---- STAGE 2: OVERDRIVE — the accident made deliberate. The old block
+    // recharged the tank even while SHIFT was held, so at empty it re-crossed
+    // the 0.02 threshold every ~3rd frame and re-fired the ignition kick at
+    // ~20 Hz. Now it is an explicit state: the SAME 2600 N·s kick on a fixed
+    // 20 Hz metronome (dt-independent — a 30 fps frame fires two), tapering
+    // in over odTaperInSecs, plus the accident's time-averaged 1/3-duty shove.
+    if (want && m_nosTank <= 0.0f && !m_nosSpraying) {
+        m_odHeld += dt;
+        float t = std::min(1.0f, m_odHeld / std::max(0.05f, nt.odTaperInSecs));
+        m_od01 = t * t * (3.0f - 2.0f * t);            // smoothstep taper-in
+        m_odKickClock += dt;
+        const float period = 1.0f / std::max(1.0f, nt.odKickHz);
+        while (m_odKickClock >= period) {
+            m_odKickClock -= period;
+            m_physics->applyImpulse(m_chassis,          // THE MACHINE-GUN KICK
+                x3::phys::Vec3{ fwd[0] * nt.odKickImpulse * m_od01, 0.0f,
+                                fwd[2] * nt.odKickImpulse * m_od01 });
+            m_evOdKick = true;                          // host: rhythmic sputter/FX
+        }
+        m_physics->applyImpulse(m_chassis,
+            x3::phys::Vec3{ fwd[0] * nt.odShoveForce * m_od01 * dt, 0.0f,
+                            fwd[2] * nt.odShoveForce * m_od01 * dt });
+        m_nosTorqueMult = nt.sprayTorqueMult;           // the accident's flicker, held on
+        // ---- STAGE 3: five seconds of commitment -> THE WINGS.
+        if (m_odHeld >= nt.odWingsSecs) deployWings();
+    } else if (!m_wings) {
+        m_odHeld = 0.0f; m_od01 = 0.0f; m_odKickClock = 0.0f;
+    }
+
+    // RECHARGE — only while the button is UP. THE deliberate change vs the
+    // accident: the old block recharged unconditionally when not spraying,
+    // INCLUDING while SHIFT was held at empty — that recharge WAS the
+    // threshold oscillation. Overdrive above replaces it as an explicit
+    // state; normal use (button released) recharges exactly as before.
+    if (!want && !m_nosSpraying)
+        m_nosTank = std::min(1.0f, m_nosTank + dt / nt.rechargeSecs);
+}
+
+void DriveDemo::deployWings() {
+    if (m_wings || !m_physics || !m_chassis.valid()) return;
+    const WingTuning& wt = m_wingT;
+    x3::phys::FlightDesc fd;
+    fd.body            = m_chassis;
+    fd.maxThrust       = wt.maxThrust;
+    fd.liftCoefficient = wt.liftCoeff;
+    fd.linearDrag      = wt.drag;
+    fd.pitchTorque     = wt.pitchTorque;
+    fd.yawTorque       = wt.yawTorque;
+    fd.rollTorque      = wt.rollTorque;
+    fd.angularDamping  = wt.angDamping;
+    fd.gravity         = true;             // an atmospheric beast, not a spaceship
+    m_flyCtl.reset(x3::phys::createFlightController(*m_physics, fd));
+    if (!m_flyCtl) {
+        x3::logError("[vehicle] wing deploy: flight controller failed to build");
+        return;
+    }
+    m_wings = true;
+    m_wingPose = 0.0f;                     // pop-out animation runs in updateWingFlight
+    m_evWingsOut = true;                   // host: the THUNK
+    {   // seed the crash detector with the CURRENT speed so deploy-frame dV=0
+        float lv[3]; m_physics->getBodyLinearVelocity(m_chassis, lv);
+        m_prevFlySpeed = std::sqrt(lv[0]*lv[0] + lv[1]*lv[1] + lv[2]*lv[2]);
+    }
+    // Neutral the wheels so touchdown rolls free (no stale throttle/brake).
+    if (m_ctl) { x3::phys::VehicleInput n{}; m_ctl->setInput(n); m_effIn = n; m_effThrottle = 0.0f; }
+    x3::logInfo("[vehicle] WINGS DEPLOYED — the car is a flying beast "
+                "(bank to turn, SHIFT = thrust, hands-off cruise)");
+}
+
+void DriveDemo::retractWings(bool torn) {
+    if (!m_wings) return;
+    m_flyCtl.reset();                      // flight forces off THIS step
+    m_wings = false;
+    if (torn) m_wingPose = 0.0f;           // ripped away — no tidy fold
+    m_evWingsIn = true;
+    m_odHeld = 0.0f; m_od01 = 0.0f; m_odKickClock = 0.0f;
+    // THE CONTACT LAW re-arms in postStep the moment m_wings drops (see the
+    // paired comment at the lifter gate — NO_SLOP rule 4).
+}
+
+void DriveDemo::updateWingFlight(float dt) {
+    if (!m_wings || dt <= 0.0f) return;
+    const WingTuning& wt = m_wingT;
+    // Wing pop-out animation (render reads m_wingPose; the THUNK is the event).
+    m_wingPose = std::min(1.0f, m_wingPose + dt / std::max(0.05f, wt.deploySecs));
+    if (!m_flyCtl || !m_physics || !m_chassis.valid()) return;
+
+    float q[4]; m_physics->getBodyRotation(m_chassis, q);
+    float f[3], u[3]; vehcam::hullAxes(q, f, u);
+    float roll, pitch; vehcam::hullRollPitch(f, u, roll, pitch);
+
+    x3::phys::VehicleInput fin{};
+    // THROTTLE — the overdrive lineage: SHIFT = full thrust (700 mph falls out
+    // of thrust==drag), hands-off = idle thrust (the restful 277 mph cruise).
+    // Grounded: thrust cut so the wheels/brakes own the rollout. AIRBRAKE
+    // (brake/handbrake held): thrust to ZERO + doubled drag — the landing
+    // lever, because idle thrust would otherwise hold the 277 cruise forever
+    // and the beast could never slow below the 60 mph retract line.
+    const bool airbrake = (m_lastIn.brake > 0.3f) || (m_lastIn.handBrake > 0.3f);
+    const float idleFrac = wt.idleThrust / std::max(1.0f, wt.maxThrust);
+    fin.throttle = grounded() ? 0.0f
+                 : (m_wantNos ? 1.0f : (airbrake ? 0.0f : idleFrac));
+    // ATTITUDE — full authority, never fought: no auto-level anywhere, so a
+    // committed roll or loop is the player's to keep (arcade-plane, not sim).
+    fin.pitch = std::clamp(m_flyPitchIn, -1.0f, 1.0f);
+    fin.roll  = std::clamp(m_flyRollIn,  -1.0f, 1.0f);
+    // BANK-TO-TURN: yaw injected per sin(bank) carves the heading the way a
+    // banked wing does (zero when inverted — sin(180°)=0 — so aerobatics are
+    // untouched), plus a mild direct rudder. SIGN: FlightController's +steer
+    // torques the nose LEFT (RH about +up), and +roll here is a RIGHT bank,
+    // so both terms enter negated — verified by N4's carve-direction check.
+    fin.steer = std::clamp(-wt.carveGain * std::sin(roll) * std::cos(pitch)
+                           - wt.rudderGain * fin.roll, -1.0f, 1.0f);
+    m_flyCtl->setInput(fin);
+
+    // AIRBRAKE drag (see the throttle comment): an extra 2x quadratic drag
+    // while the brake is held airborne, applied as an impulse alongside the
+    // controller's own drag.
+    float lv[3]; m_physics->getBodyLinearVelocity(m_chassis, lv);
+    const float spd = std::sqrt(lv[0]*lv[0] + lv[1]*lv[1] + lv[2]*lv[2]);
+    if (airbrake && spd > 2.0f && !grounded()) {
+        const float fmag = 2.0f * wt.drag * spd;   // N per (m/s) -> quadratic overall
+        m_physics->applyImpulse(m_chassis,
+            x3::phys::Vec3{ -lv[0] * fmag * dt, -lv[1] * fmag * dt, -lv[2] * fmag * dt });
+    }
+    // ARCADE NOSE-FOLLOW: ease the velocity DIRECTION toward the nose
+    // (magnitude preserved) so the beast flies where it points — loops and
+    // rolls track true instead of ballistic-drifting (Crimson Skies, not a
+    // momentum brick). Skipped when slow or grounded.
+    if (spd > 8.0f && !grounded()) {
+        const float k = 1.0f - std::exp(-wt.noseFollow * dt);   // dt-scaled, HARD rule
+        float d[3] = { lv[0]/spd, lv[1]/spd, lv[2]/spd };
+        d[0] += (f[0] - d[0]) * k; d[1] += (f[1] - d[1]) * k; d[2] += (f[2] - d[2]) * k;
+        const float dl = std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+        if (dl > 1e-4f) {
+            const float s = spd / dl;
+            float nv[3] = { d[0]*s, d[1]*s, d[2]*s };
+            m_physics->setBodyLinearVelocity(m_chassis, nv);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WING SKIN — armory Sci-Fi Kit Vol 3 "Wing_02" (dark paneled fin, one embedded
+// texture; authored: thickness ±0.41 X, span 3.29 up +Y, chord 3.77 along Z).
+// Drawn twice: rotated Rz(-90°) span->+X for the RIGHT wing, Rz(+90°) span->-X
+// for the LEFT (rotations, not mirrors — winding/normals stay correct), swept
+// back ~22°, scaled to a 2.6 m half-span / 1.5 m chord / 0.25 m thickness.
+// Deploy animation: the pair pivots up out of the rocker line (fold angle
+// 80°->0) as wingDeploy01 runs 0->1.
+// ---------------------------------------------------------------------------
+bool DriveDemo::skinWings(x3::rhi::IRenderDevice& device, std::string_view glbDir,
+                          std::string_view relPath) {
+    m_wingSrc.reset(x3::asset::createAssetSource());
+    if (!m_wingSrc || !m_wingSrc->mountDir(glbDir, 0)) return false;
+    m_wingLoader.reset(x3::asset::createModelLoader(&device, m_wingSrc.get()));
+    m_wingModel = m_wingLoader->load(relPath);
+    if (!m_wingModel.ok) return false;
+    m_wingDrawL = x3::asset::makeDrawables(m_wingModel);
+    m_wingSkinned = !m_wingDrawL.empty();
+    return m_wingSkinned;
 }
 
 // ---------------------------------------------------------------------------
@@ -735,6 +1023,63 @@ void DriveDemo::squashFactors(int slot, float& outSquashY, float& outBulge) cons
     outBulge   = 0.02f + 0.01f * amt;
 }
 
+namespace {
+// Column-major 4x4 builders for the wing pose composition (kept local — the
+// rest of the file composes with composeTRS/mulMat4 and needs no more).
+inline void matIdentity(float m[16]) {
+    std::memset(m, 0, sizeof(float) * 16); m[0] = m[5] = m[10] = m[15] = 1.0f;
+}
+inline void matRotY(float a, float m[16]) {   // rotation about +Y (RH)
+    matIdentity(m);
+    const float c = std::cos(a), s = std::sin(a);
+    m[0] = c; m[2] = -s; m[8] = s; m[10] = c;
+}
+inline void matRotZ(float a, float m[16]) {   // rotation about +Z (RH)
+    matIdentity(m);
+    const float c = std::cos(a), s = std::sin(a);
+    m[0] = c; m[1] = s; m[4] = -s; m[5] = c;
+}
+inline void matScaleT(float sx, float sy, float sz,
+                      float tx, float ty, float tz, float m[16]) {
+    matIdentity(m);
+    m[0] = sx; m[5] = sy; m[10] = sz; m[12] = tx; m[13] = ty; m[14] = tz;
+}
+} // namespace
+
+// Draw the deployed wing pair (see skinWings for the asset story). Called from
+// both render() paths with the chassis pose; no-op until the pose animation
+// has actually started.
+void DriveDemo::drawWings(const x3::rhi::FrameContext& frame,
+                          const float chassisM[16]) const {
+    if (!m_wingSkinned || m_wingPose <= 0.01f || !m_device) return;
+    const float t = m_wingPose;
+    // Authored fin: thickness ±0.41 X, span 3.29 +Y, chord 3.77 Z. Scale to
+    // 0.25 m thick / 2.6 m half-span / 1.5 m chord BEFORE the axis swing.
+    const float kSx = 0.30f, kSy = 2.6f / 3.29f, kSz = 1.5f / 3.77f;
+    const float kSweep = 22.0f * 3.14159265f / 180.0f;   // tips trail backward
+    const float kFold  = 35.0f * 3.14159265f / 180.0f;   // emerge tips-up, settle level
+    for (int side = 0; side < 2; ++side) {
+        const float sgn = (side == 0) ? 1.0f : -1.0f;     // +1 right (+X), -1 left
+        float S[16]; matScaleT(kSx, kSy, kSz, 0, 0, 0, S);
+        float swing[16]; matRotZ(sgn * -1.5707963f, swing);        // span -> ±X
+        float sweep[16]; matRotY(-sgn * kSweep, sweep);
+        float fold[16];  matRotZ(sgn * kFold * (1.0f - t), fold);  // deploy animation
+        // Slide out of the rocker line as the pose runs: buried in the body at
+        // t=0, shoulder at ±0.95 at t=1. Pivot rides slightly rear of center.
+        float T[16]; matScaleT(1, 1, 1, sgn * (0.15f + 0.80f * t), 0.10f, 0.45f, T);
+        float a[16], b[16], local[16], world[16], fin[16];
+        x3::asset::mulMat4(swing, S, a);
+        x3::asset::mulMat4(sweep, a, b);
+        x3::asset::mulMat4(fold, b, a);
+        x3::asset::mulMat4(T, a, local);
+        x3::asset::mulMat4(chassisM, local, world);
+        for (const auto& d : m_wingDrawL) {
+            x3::asset::mulMat4(world, d.nodeTransform, fin);
+            drawDrawable(frame, d, fin);
+        }
+    }
+}
+
 void DriveDemo::chassisPos(float out[3]) const {
     x3::phys::Vec3 p = m_physics ? m_physics->getBodyPosition(m_chassis) : x3::phys::Vec3{};
     out[0] = p.x; out[1] = p.y; out[2] = p.z;
@@ -752,6 +1097,7 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
         // flip + ride-height drop baked in kBodySkin); the wheels ride the LIVE
         // physics wheel poses (steer + spin + suspension travel). ----
         float chassisM[16]; composeTRS(pos, q, 1.0f, 1.0f, 1.0f, chassisM);
+        drawWings(frame, chassisM);   // the three-stage secret's stage 3
         float carM[16];     x3::asset::mulMat4(chassisM, kBodySkin, carM);
         float fin[16];
         for (const auto& d : m_bodyDraw) {
@@ -796,6 +1142,7 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     const float wheelCol[4] = { 0.12f, 0.12f, 0.14f, 1.0f };
     float m[16]; composeTRS(pos, q, m_hx*2.0f, m_hy*2.0f, m_hz*2.0f, m);
     m_device->drawMesh(frame, m_chassisMesh, m_chassisTex, bodyCol, m);
+    { float cM[16]; composeTRS(pos, q, 1.0f, 1.0f, 1.0f, cM); drawWings(frame, cM); }
     const uint32_t n = m_ctl->wheelCount();
     for (uint32_t i = 0; i < n; ++i) {
         x3::phys::WheelState ws;
@@ -822,6 +1169,8 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
 }
 
 void DriveDemo::shutdown() {
+    m_flyCtl.reset();  // wing flight controller (if the secret was found)
+    m_wings = false; m_wingPose = 0.0f;
     m_ctl.reset();  // remove the constraint/step-listener BEFORE the body/world go
     if (m_physics && m_chassis.valid()) m_physics->removeBody(m_chassis);
     if (m_device) {
@@ -832,6 +1181,9 @@ void DriveDemo::shutdown() {
     }
     // GLB skin: the loader frees the model's GPU handles (meshes/textures).
     if (m_skinned && m_skinLoader) m_skinLoader->unload(m_skinModel);
+    if (m_wingSkinned && m_wingLoader) m_wingLoader->unload(m_wingModel);
+    m_wingDrawL.clear(); m_wingSkinned = false;
+    m_wingLoader.reset(); m_wingSrc.reset();
     m_bodyDraw.clear();
     for (int s = 0; s < 4; ++s) m_wheelDraw[s].clear();
     m_skinned = false;
@@ -1423,6 +1775,40 @@ bool runDriveEnterExitSelfTest() {
 }
 
 // ===========================================================================
+// ParachuteBailout — see vehicle.h. Kinematic drift-down: the canopy snap
+// bleeds the ejection velocity toward the steady descent over ~0.8 s, then
+// sink at kSinkRate with kDriftRate of steer authority. Landing is CONTACT
+// LAW by construction: the descent CANNOT pass the terrain field — the final
+// position is clamped ONTO it (NO_SLOP rule 11).
+// ===========================================================================
+void ParachuteBailout::deploy(const float pos[3], const float vel[3]) {
+    m_active = true; m_landed = false;
+    for (int i = 0; i < 3; ++i) { m_pos[i] = pos[i]; m_vel[i] = vel[i]; }
+    // The canopy kills most of the forward rush immediately (it is a giant
+    // airbrake); the rest bleeds in update().
+    m_vel[0] *= 0.35f; m_vel[2] *= 0.35f;
+    if (m_vel[1] < -8.0f) m_vel[1] = -8.0f;   // never a screaming drop under canopy
+}
+
+bool ParachuteBailout::update(float dt, float steerX, float steerZ) {
+    if (!m_active || m_landed || dt <= 0.0f) return false;
+    // Ease toward the steady state: steer * drift laterally, sink vertically.
+    const float tx = std::clamp(steerX, -1.0f, 1.0f) * kDriftRate;
+    const float tz = std::clamp(steerZ, -1.0f, 1.0f) * kDriftRate;
+    const float k = 1.0f - std::exp(-dt / 0.8f);   // the canopy-snap time constant
+    m_vel[0] += (tx        - m_vel[0]) * k;
+    m_vel[1] += (-kSinkRate - m_vel[1]) * k;
+    m_vel[2] += (tz        - m_vel[2]) * k;
+    m_pos[0] += m_vel[0] * dt; m_pos[1] += m_vel[1] * dt; m_pos[2] += m_vel[2] * dt;
+    const float gy = x3::game::terrainHeightAtWorld(m_pos[0], m_pos[2]);
+    if (m_pos[1] <= gy) {   // boots ON the field, never under it (rule 11)
+        m_pos[1] = gy;
+        m_landed = true;
+    }
+    return !m_landed;
+}
+
+// ===========================================================================
 // BoatDemo
 // ===========================================================================
 bool BoatDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
@@ -1559,6 +1945,397 @@ void FlyDemo::shutdown() {
         if (m_bodyTex.valid())  m_device->destroyTexture(m_bodyTex);
     }
     m_device = nullptr; m_physics = nullptr;
+}
+
+// ===========================================================================
+// runWingedFlightSelfTest (--test-vehicle) — THE THREE-STAGE SECRET, measured
+// (NO_SLOP rule 9). See vehicle.h for the section list. The overdrive A/B in
+// N3 runs a LINE-FOR-LINE REPLICA of the original host_tunnel accident
+// (threshold oscillation + recharge-while-held) on a twin car and compares
+// terminal speeds — the owner loves the FEEL of the bug, so the deliberate
+// version must measure the same, and the log tells it straight.
+// ===========================================================================
+bool runWingedFlightSelfTest() {
+    int passN = 0, failN = 0;
+    auto check = [&](bool ok, const char* name) {
+        if (ok) { ++passN; x3::logInfo(std::string("[wings-test] PASS ") + name); }
+        else    { ++failN; x3::logError(std::string("[wings-test] FAIL ") + name); }
+    };
+    const float dt = 1.0f / 60.0f;
+    auto buildWorld = [&](std::unique_ptr<x3::phys::IPhysicsWorld>& p, DriveDemo& c,
+                          float slabHalf) -> bool {
+        p.reset(x3::phys::createPhysicsWorld());
+        if (!p->init()) return false;
+        x3::prims::PrimMesh g = x3::prims::makeBox(slabHalf, 0.5f, slabHalf,
+                                                   0.0f, -0.5f, 0.0f, 0.02f);
+        p->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
+                         g.cindex.data(), (uint32_t)g.cindex.size());
+        if (!c.buildPhysics(*p, 0.0f, 1.2f, 0.0f)) return false;
+        c.setTerrainContactLaw(false);   // slab, not the terrain field (see drive test)
+        p->optimizeBroadphase();
+        for (int i = 0; i < 90; ++i) {   // settle
+            x3::phys::VehicleInput in{};
+            c.setInput(in); c.preStep(dt); p->step(dt); c.postStep(dt);
+        }
+        return true;
+    };
+    auto stepCar = [&](x3::phys::IPhysicsWorld& p, DriveDemo& c,
+                       const x3::phys::VehicleInput& in) {
+        c.setInput(in); c.preStep(dt); p.step(dt); c.postStep(dt);
+    };
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> ph;
+    DriveDemo car;
+    check(buildWorld(ph, car, 20000.0f), "world: slab + car build");   // 40 km: N3 covers ~6 km at overdrive speed
+    if (failN) return false;
+    car.nitroTuning().odWingsSecs = 1e9f;   // hold stage 2 open for the A/B (restored in N4)
+
+    // ---- N1: the NORMAL bottle, regression-gated. -------------------------
+    {
+        float tank0 = car.nosTank();
+        float v0 = car.forwardSpeed();
+        float firstDv = 0.0f, maxLaterDv = 0.0f;
+        for (int i = 0; i < 180; ++i) {   // 3 s of spray at full throttle
+            x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+            car.setNitroInput(true);
+            stepCar(*ph, car, in);
+            const float v1 = car.forwardSpeed();
+            const float dv = v1 - v0; v0 = v1;
+            if (i == 0) firstDv = dv;
+            else        maxLaterDv = std::max(maxLaterDv, dv);
+        }
+        x3::logInfo("[wings-test] N1: ignition kick dv=" + std::to_string(firstDv) +
+                    " m/s (expect ~2.4+launch), later per-step dv max=" +
+                    std::to_string(maxLaterDv) + ", tank after 3 s spray=" +
+                    std::to_string(car.nosTank()) + " (expect ~" +
+                    std::to_string(tank0 - 3.0f / 15.0f) + ")");
+        check(firstDv > 2.0f, "N1: THE HIT fires on ignition (+2.4 m/s in a frame)");
+        check(maxLaterDv < 1.5f, "N1: the kick fires ONCE per engagement (no repeat slam)");
+        check(std::fabs(car.nosTank() - (tank0 - 3.0f / 15.0f)) < 0.02f,
+              "N1: 15 s bottle (3 s spray drains 0.20)");
+        const float tankSpray = car.nosTank();
+        for (int i = 0; i < 240; ++i) {   // 4 s off the button
+            x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+            car.setNitroInput(false);
+            stepCar(*ph, car, in);
+        }
+        check(std::fabs(car.nosTank() - std::min(1.0f, tankSpray + 4.0f / 20.0f)) < 0.02f,
+              "N1: ~20 s recharge (4 s off the button restores 0.20)");
+    }
+
+    // ---- N2: DEPLETION fires once; the tank STAYS empty while held. -------
+    {
+        int depletedEdges = 0;
+        for (int i = 0; i < 60 * 16 && car.nosTank() > 0.0f; ++i) {
+            x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+            car.setNitroInput(true);
+            stepCar(*ph, car, in);
+            if (car.nitroJustDepleted()) ++depletedEdges;
+        }
+        for (int i = 0; i < 60; ++i) {    // one more second of holding at empty
+            x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+            car.setNitroInput(true);
+            stepCar(*ph, car, in);
+            if (car.nitroJustDepleted()) ++depletedEdges;
+        }
+        x3::logInfo("[wings-test] N2: depletion edges=" + std::to_string(depletedEdges) +
+                    ", tank while held=" + std::to_string(car.nosTank()) +
+                    ", overdrive held=" + std::to_string(car.overdriveHeldSecs()) + " s");
+        check(depletedEdges == 1, "N2: NITROUS DEPLETED fires exactly once per emptying");
+        check(car.nosTank() <= 0.0f, "N2: tank stays EMPTY while SHIFT is held (no oscillation)");
+        check(car.overdriveHeldSecs() > 0.5f, "N2: overdrive engages past empty");
+    }
+
+    // ---- N3: OVERDRIVE vs THE ACCIDENT — terminal speed A/B. ---------------
+    // The car is already in overdrive; run it to terminal (25 s).
+    {
+        for (int i = 0; i < 60 * 25; ++i) {
+            x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+            car.setNitroInput(true);
+            stepCar(*ph, car, in);
+        }
+        const float vNew = car.forwardSpeed();
+        // THE REPLICA: a twin car in its own world, driven by a line-for-line
+        // copy of the original host block (host_tunnel.cpp @4236, pre-move):
+        // no hysteresis, recharge even while held, threshold 0.02, kick on the
+        // rising edge — the oscillation that hit ~379 mph.
+        std::unique_ptr<x3::phys::IPhysicsWorld> ph2;
+        DriveDemo legacy;
+        bool okL = buildWorld(ph2, legacy, 20000.0f);
+        check(okL, "N3: legacy-replica world builds");
+        float vLegacy = 0.0f;
+        if (okL) {
+            float tank = 0.0f;            // start at empty — the oscillation regime
+            bool wasActive = false;
+            for (int i = 0; i < 60 * 40; ++i) {   // 40 s to terminal
+                const bool wantNos = true;         // SHIFT held, throttle > 0.1
+                const bool active = wantNos && tank > 0.02f;
+                if (active) {
+                    float cq[4]; ph2->getBodyRotation(legacy.chassis(), cq);
+                    float fwd[3], up[3]; vehcam::hullAxes(cq, fwd, up);
+                    if (!wasActive)
+                        ph2->applyImpulse(legacy.chassis(),
+                            x3::phys::Vec3{ fwd[0] * 2600.0f, 0.0f, fwd[2] * 2600.0f });
+                    ph2->applyImpulse(legacy.chassis(),
+                        x3::phys::Vec3{ fwd[0] * 12000.0f * dt, 0.0f, fwd[2] * 12000.0f * dt });
+                }
+                wasActive = active;
+                tank += active ? -dt / 15.0f : dt / 20.0f;   // THE BUG: recharges while held
+                tank = std::min(1.0f, std::max(0.0f, tank));
+                legacy.setTorqueBoost(active ? 1.19f : 1.0f);
+                x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+                stepCar(*ph2, legacy, in);
+            }
+            vLegacy = legacy.forwardSpeed();
+            legacy.shutdown(); ph2->shutdown();
+        }
+        x3::logInfo("[wings-test] N3 OVERDRIVE A/B: deliberate=" +
+                    std::to_string(vNew * 2.23694f) + " mph, accident-replica=" +
+                    std::to_string(vLegacy * 2.23694f) + " mph (story: ~379). "
+                    "The feel gate is +-12%.");
+        check(vNew * 2.23694f > 300.0f, "N3: overdrive is still a monster (> 300 mph)");
+        check(okL && std::fabs(vNew - vLegacy) / std::max(1.0f, vLegacy) < 0.12f,
+              "N3: deliberate overdrive matches the accident's terminal speed (+-12%)");
+    }
+
+    // ---- N4: THE WINGS + the flight model (owner numbers are spec). --------
+    {
+        car.nitroTuning().odWingsSecs = 5.0f;   // restore the real trigger
+        bool sawThunk = false;
+        for (int i = 0; i < 120 && !car.wingsDeployed(); ++i) {
+            x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+            car.setNitroInput(true);
+            stepCar(*ph, car, in);
+            if (car.wingsJustDeployed()) sawThunk = true;
+        }
+        check(car.wingsDeployed(), "N4: 5 s held past empty -> WINGS DEPLOY");
+        check(sawThunk, "N4: wingsJustDeployed edge fires (the THUNK)");
+        for (int i = 0; i < 60; ++i) {   // finish the pop-out animation
+            x3::phys::VehicleInput in{};
+            car.setNitroInput(true); car.setFlightInput(0.0f, 0.0f);
+            stepCar(*ph, car, in);
+        }
+        check(car.wingDeploy01() >= 1.0f, "N4: deploy animation completes");
+
+        // Climb out, then level full-throttle terminal = 700 mph.
+        float p0[3]; car.chassisPos(p0);
+        for (int i = 0; i < 90; ++i) {   // 1.5 s nose-up under full thrust
+            x3::phys::VehicleInput in{};
+            car.setNitroInput(true); car.setFlightInput(0.35f, 0.0f);
+            stepCar(*ph, car, in);
+        }
+        float p1[3]; car.chassisPos(p1);
+        check(p1[1] > p0[1] + 10.0f, "N4: pitch up under thrust CLIMBS");
+        for (int i = 0; i < 60 * 45; ++i) {   // 45 s to terminal
+            x3::phys::VehicleInput in{};
+            car.setNitroInput(true); car.setFlightInput(0.0f, 0.0f);
+            stepCar(*ph, car, in);
+        }
+        const float vFull = car.forwardSpeed();
+        x3::logInfo("[wings-test] N4 FULL THRUST terminal: " +
+                    std::to_string(vFull * 2.23694f) + " mph (owner spec 700)");
+        check(std::fabs(vFull * 2.23694f - 700.0f) < 70.0f,
+              "N4: 700 mph falls out of thrust==drag (+-10%)");
+
+        // Hands off: the restful 277 mph drag-equilibrium cruise, altitude held.
+        for (int i = 0; i < 60 * 45; ++i) {
+            x3::phys::VehicleInput in{};
+            car.setNitroInput(false); car.setFlightInput(0.0f, 0.0f);
+            stepCar(*ph, car, in);
+        }
+        float pc0[3]; car.chassisPos(pc0);
+        for (int i = 0; i < 60 * 10; ++i) {   // 10 more seconds for the altitude gate
+            x3::phys::VehicleInput in{};
+            car.setNitroInput(false); car.setFlightInput(0.0f, 0.0f);
+            stepCar(*ph, car, in);
+        }
+        float pc1[3]; car.chassisPos(pc1);
+        const float vCruise = car.forwardSpeed();
+        x3::logInfo("[wings-test] N4 HANDS-OFF cruise: " +
+                    std::to_string(vCruise * 2.23694f) + " mph (owner spec 277), "
+                    "altitude drift over 10 s = " + std::to_string(pc1[1] - pc0[1]) + " m");
+        check(std::fabs(vCruise * 2.23694f - 277.0f) < 28.0f,
+              "N4: hands-off settles at 277 mph (+-10%) — no stall, restful");
+        check(std::fabs(pc1[1] - pc0[1]) < 25.0f,
+              "N4: altitude HOLDS at coast (lift == g at cruise speed)");
+
+        // Bank to turn: roll right -> heading swings RIGHT (carve).
+        float q[4]; ph->getBodyRotation(car.chassis(), q);
+        float f0[3], u0[3]; vehcam::hullAxes(q, f0, u0);
+        const float head0 = std::atan2(f0[0], -f0[2]);
+        float maxRoll = 0.0f;
+        for (int i = 0; i < 60 * 3; ++i) {
+            x3::phys::VehicleInput in{};
+            car.setNitroInput(false);
+            car.setFlightInput(0.0f, (i < 45) ? 1.0f : 0.0f);   // 0.75 s roll, then hold
+            stepCar(*ph, car, in);
+            float qq[4]; ph->getBodyRotation(car.chassis(), qq);
+            float ff[3], uu[3], rr, pp; vehcam::hullAxes(qq, ff, uu);
+            vehcam::hullRollPitch(ff, uu, rr, pp);
+            maxRoll = std::max(maxRoll, rr);
+        }
+        float qh[4]; ph->getBodyRotation(car.chassis(), qh);
+        float fh[3], uh[3]; vehcam::hullAxes(qh, fh, uh);
+        float dHead = std::atan2(fh[0], -fh[2]) - head0;
+        while (dHead >  3.14159265f) dHead -= 6.2831853f;
+        while (dHead < -3.14159265f) dHead += 6.2831853f;
+        x3::logInfo("[wings-test] N4 BANK-TO-TURN: maxRoll=" +
+                    std::to_string(maxRoll * 57.2958f) + " deg, heading swing=" +
+                    std::to_string(dHead * 57.2958f) + " deg right");
+        check(maxRoll > 0.25f, "N4: steer input BANKS the car (roll right)");
+        check(dHead > 0.10f, "N4: the bank CARVES the heading (turns right)");
+
+        // Full aerobatics: a committed full-stick loop goes INVERTED and comes
+        // back upright — the model never fights it, speed never stalls.
+        car.setFlightInput(0.0f, 0.0f);
+        for (int i = 0; i < 120; ++i) {   // settle the bank first
+            x3::phys::VehicleInput in{}; car.setNitroInput(true);
+            car.setFlightInput(0.0f, -0.35f * std::min(1.0f, maxRoll * 2.0f));
+            stepCar(*ph, car, in);
+        }
+        bool wentInverted = false, cameBack = false;
+        float minLoopSpeed = 1e9f;
+        for (int i = 0; i < 60 * 14; ++i) {
+            x3::phys::VehicleInput in{};
+            car.setNitroInput(true); car.setFlightInput(1.0f, 0.0f);   // full stick back
+            stepCar(*ph, car, in);
+            float qq[4]; ph->getBodyRotation(car.chassis(), qq);
+            float ff[3], uu[3]; vehcam::hullAxes(qq, ff, uu);
+            if (uu[1] < -0.5f) wentInverted = true;
+            if (wentInverted && uu[1] > 0.5f) { cameBack = true; break; }
+            minLoopSpeed = std::min(minLoopSpeed, car.forwardSpeed());
+        }
+        x3::logInfo("[wings-test] N4 LOOP: inverted=" + std::string(wentInverted ? "YES" : "NO") +
+                    " recovered=" + std::string(cameBack ? "YES" : "NO") +
+                    " minSpeed=" + std::to_string(minLoopSpeed * 2.23694f) + " mph");
+        check(wentInverted, "N4: full-stick loop goes INVERTED (aerobatics never fought)");
+        check(cameBack, "N4: the loop completes back to upright");
+        check(minLoopSpeed > 20.0f, "N4: no stall through the loop");
+    }
+    car.shutdown(); ph->shutdown();
+
+    // ---- N5: LANDING RULE + CRASH LOCKOUT on fresh cars. -------------------
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> ph3;
+        DriveDemo c3;
+        bool ok3 = buildWorld(ph3, c3, 2000.0f);
+        check(ok3, "N5: landing-test world builds");
+        if (ok3) {
+            // Fast-track the secret: tiny bottle, instant wings.
+            c3.nitroTuning().bottleSecs = 0.20f;
+            c3.nitroTuning().odWingsSecs = 2.5f;   // overdrive builds ~120 m/s first, so
+            // the deploy lands ABOVE the 60 mph retract line (no same-frame fold)
+            for (int i = 0; i < 60 * 6 && !c3.wingsDeployed(); ++i) {
+                x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+                c3.setNitroInput(true);
+                stepCar(*ph3, c3, in);
+            }
+            check(c3.wingsDeployed(), "N5: fast-track wings deploy");
+            (void)c3.wingsJustDeployed();
+            // Grounded ABOVE 60 mph: wings stay out (rolling fast).
+            bool stayedOut = true;
+            for (int i = 0; i < 30; ++i) {
+                x3::phys::VehicleInput in{};
+                c3.setNitroInput(true);   // still thrusting down the runway
+                stepCar(*ph3, c3, in);
+                if (c3.forwardSpeed() * 2.23694f > 62.0f && !c3.wingsDeployed())
+                    stayedOut = false;
+            }
+            check(stayedOut, "N5: wheels down ABOVE 60 mph keeps the wings out");
+            // Brake below 60: the wings fold, the car is a car, CONTACT LAW back.
+            bool sawRetract = false;
+            for (int i = 0; i < 60 * 12 && c3.wingsDeployed(); ++i) {
+                x3::phys::VehicleInput in{}; in.brake = 1.0f;
+                c3.setNitroInput(false);
+                stepCar(*ph3, c3, in);
+                if (c3.wingsJustRetracted()) sawRetract = true;
+            }
+            check(!c3.wingsDeployed() && sawRetract,
+                  "N5: grounded below 60 mph RETRACTS the wings (a car again)");
+            c3.shutdown(); ph3->shutdown();
+        }
+
+        // CRASH: the detector, the tumble handoff and the lockout.
+        std::unique_ptr<x3::phys::IPhysicsWorld> ph4;
+        DriveDemo c4;
+        bool ok4 = buildWorld(ph4, c4, 2000.0f);
+        check(ok4, "N5: crash-test world builds");
+        if (ok4) {
+            c4.nitroTuning().bottleSecs = 0.20f;
+            c4.nitroTuning().odWingsSecs = 2.5f;
+            for (int i = 0; i < 60 * 6 && !c4.wingsDeployed(); ++i) {
+                x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+                c4.setNitroInput(true);
+                stepCar(*ph4, c4, in);
+            }
+            // Climb well clear of the slab, build speed.
+            for (int i = 0; i < 60 * 6; ++i) {
+                x3::phys::VehicleInput in{};
+                c4.setNitroInput(true);
+                c4.setFlightInput(i < 120 ? 0.5f : 0.0f, 0.0f);
+                stepCar(*ph4, c4, in);
+            }
+            const float vPre = c4.forwardSpeed();
+            // The wall: shed 30 m/s in one step (only a collision can do this —
+            // here it is synthesized so the test doesn't depend on streamed
+            // geometry; the live crash comes from real Jolt contacts).
+            float lv[3]; ph4->getBodyLinearVelocity(c4.chassis(), lv);
+            const float sp = std::sqrt(lv[0]*lv[0]+lv[1]*lv[1]+lv[2]*lv[2]);
+            if (sp > 1.0f) {
+                const float s = std::max(0.0f, (sp - 30.0f) / sp);
+                float nv[3] = { lv[0]*s, lv[1]*s, lv[2]*s };
+                ph4->setBodyLinearVelocity(c4.chassis(), nv);
+            }
+            bool sawCrash = false;
+            {
+                x3::phys::VehicleInput in{};
+                c4.setNitroInput(true); c4.setFlightInput(0.0f, 0.0f);
+                stepCar(*ph4, c4, in);
+                if (c4.justCrashed()) sawCrash = true;
+            }
+            x3::logInfo("[wings-test] N5 CRASH: vPre=" + std::to_string(vPre * 2.23694f) +
+                        " mph, event=" + (sawCrash ? "FIRED" : "missed") +
+                        ", lockout=" + std::to_string(c4.crashLockout()) + " s");
+            check(sawCrash, "N5: a >18 m/s single-step speed loss while winged = CRASH");
+            check(!c4.wingsDeployed(), "N5: the crash TEARS the wings off");
+            check(c4.crashLockout() > 4.0f, "N5: NOS/overdrive locked out after the crash");
+            bool odWhileLocked = false;
+            for (int i = 0; i < 60; ++i) {
+                x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+                c4.setNitroInput(true);
+                stepCar(*ph4, c4, in);
+                if (c4.overdriveHeldSecs() > 0.0f || c4.nosSpraying()) odWhileLocked = true;
+            }
+            check(!odWhileLocked, "N5: the lockout actually blocks spray/overdrive");
+            c4.shutdown(); ph4->shutdown();
+        }
+    }
+
+    // ---- N6: THE PARACHUTE — descends, steers, lands ON the field. ---------
+    {
+        ParachuteBailout chute;
+        const float gx = 1200.0f, gz = -800.0f;   // arbitrary spot on the world field
+        const float gy = x3::game::terrainHeightAtWorld(gx, gz);
+        float pos[3] = { gx, gy + 80.0f, gz };
+        float vel[3] = { 60.0f, -2.0f, 0.0f };    // ejected from a fast beast
+        chute.deploy(pos, vel);
+        int steps = 0;
+        while (chute.update(dt, 1.0f, 0.0f) && steps < 60 * 60) ++steps;
+        float lp[3]; chute.pos(lp);
+        const float gEnd = x3::game::terrainHeightAtWorld(lp[0], lp[2]);
+        x3::logInfo("[wings-test] N6 CHUTE: " + std::to_string(steps * dt) +
+                    " s down from 80 m, landed y=" + std::to_string(lp[1]) +
+                    " field=" + std::to_string(gEnd) + ", drift x=" +
+                    std::to_string(lp[0] - gx) + " m");
+        check(chute.landed(), "N6: the chute lands");
+        check(std::fabs(lp[1] - gEnd) < 0.01f, "N6: boots ON the field (CONTACT LAW)");
+        check(lp[0] - gx > 10.0f, "N6: the canopy steers (drift under A/D)");
+        check(steps * dt > 8.0f && steps * dt < 40.0f, "N6: a drift DOWN, not a drop");
+    }
+
+    x3::logInfo("[wings-test] " + std::to_string(passN) + " passed, " +
+                std::to_string(failN) + " failed");
+    return failN == 0;
 }
 
 // ===========================================================================

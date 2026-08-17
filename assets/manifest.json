@@ -138,18 +138,6 @@
       "source_note": "F3: hospital cot for the canon detention cell (textures injected)"
     },
     {
-      "repo_path": "assets/converted_glb/GasStation/gas_pump_miami.glb",
-      "sha256": "8ed7f9aaf3b39c125c624a7b90f9c07ea52e787b819696156a9e1444b680a43c",
-      "size": 4442444,
-      "source_note": "W-STATIONS Lane 5: Leartes Miami Vice City SM_Gaspump, LOD0 + BC/N/ORM via tools/w5_build_station_glb.py build_miami_pump (licensed pack, \\p13700\\G)"
-    },
-    {
-      "repo_path": "assets/converted_glb/GasStation/gas_station_mega.glb",
-      "sha256": "340b39b4a1d90dbeb72b3c837c1a1cd47111de8ac157db55460fbf37230c4a8b",
-      "size": 1700448,
-      "source_note": "W-STATIONS Lane 5: Mega Open World City Pack Fuel_Station_Model, textured via tools/w5_build_station_glb.py (licensed Unity pack, D:/Assets)"
-    },
-    {
       "repo_path": "assets/converted_glb/Factory/sm_Barrel_01_01.glb",
       "sha256": "58d6d8d2f70b91c3146ff9c949a42ac6c3b7f7de1f61799bccc9c71fcfcb72ff",
       "size": 6549212,
@@ -256,6 +244,18 @@
       "sha256": "21b6501cc202d327f024d5181adc86cda3ab6ba9c678efe718e713b35974a62e",
       "size": 5443616,
       "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/GasStation/gas_pump_miami.glb",
+      "sha256": "8ed7f9aaf3b39c125c624a7b90f9c07ea52e787b819696156a9e1444b680a43c",
+      "size": 4442444,
+      "source_note": "W-STATIONS Lane 5: Leartes Miami Vice City SM_Gaspump, LOD0 + BC/N/ORM via tools/w5_build_station_glb.py build_miami_pump (licensed pack, \\p13700\\G)"
+    },
+    {
+      "repo_path": "assets/converted_glb/GasStation/gas_station_mega.glb",
+      "sha256": "340b39b4a1d90dbeb72b3c837c1a1cd47111de8ac157db55460fbf37230c4a8b",
+      "size": 1700448,
+      "source_note": "W-STATIONS Lane 5: Mega Open World City Pack Fuel_Station_Model, textured via tools/w5_build_station_glb.py (licensed Unity pack, D:/Assets)"
     },
     {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Ceiling_A.glb",
@@ -748,6 +748,12 @@
       "sha256": "300f95611cda276fbbc7fddda914091213da7e5eea09a5171fd1540c07c7dc70",
       "size": 890564,
       "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Wing_02.glb",
+      "sha256": "301b4a911bd9ba132d831a1edcdbc9a78c568280c87215ba357d17ed236486d4",
+      "size": 383856,
+      "source_note": "stage-3 wing pair mesh (armory SciFi Kit Vol 3, textured)"
     },
     {
       "repo_path": "assets/converted_glb/mine/barrel.glb",
