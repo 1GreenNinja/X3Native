@@ -59,8 +59,14 @@ public:
     // heights this reads include the corridor cut, so call AFTER it). Returns
     // false if the tree GLBs failed to load (nothing draws; the road is
     // simply treeless — never fatal).
+    // minBenchY: benches never seat below this world Y. The host passes the
+    // DRAWN river plane's level (riverRoad.plan.waterY) — worldWaterLevelAt
+    // does not know the visual plane (task #32), and the first bench shipped
+    // submerged at a spot that PASSED the water-table check. PAIRED with the
+    // host's applyRiverWater seaLevel.
     bool build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
-               const std::vector<KeepOut>& keepOut = {});
+               const std::vector<KeepOut>& keepOut = {},
+               float minBenchY = -1.0e9f);
 
     // Draw all trees. Call each frame alongside scene.render() — same pattern
     // as DriveDemo::render / EnvArtSystem::draw. No-op before build / after

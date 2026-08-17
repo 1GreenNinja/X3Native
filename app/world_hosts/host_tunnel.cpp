@@ -763,7 +763,11 @@ int hostTunnel(HostContext& hc) {
             float cam[5]; tunnel.showcaseCamera(route, i, cam);
             camKeepOut.push_back({ cam[0], cam[2], 12.0f });
         }
-        trees.build(*device, route, camKeepOut);
+        // Benches never seat below the DRAWN river plane (PAIRED with
+        // applyRiverWater's seaLevel; see RoadTrees::build minBenchY).
+        const float benchDryY = (riverOn && riverRoad.plan.ok)
+                              ? riverRoad.plan.waterY + 0.3f : -1.0e9f;
+        trees.build(*device, route, camKeepOut, benchDryY);
     }
 
     // ---- THE INTERIOR PROGRAM, decided and COUNTED at boot -----------------

@@ -91,7 +91,7 @@ struct Lcg {
 } // anonymous namespace
 
 bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
-                      const std::vector<KeepOut>& keepOut) {
+                      const std::vector<KeepOut>& keepOut, float minBenchY) {
     if (m_built) return m_trees > 0;
     m_built = true;
 
@@ -243,27 +243,64 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
                 // the road, facing the pavement. Same ground rules as trunks:
                 // flat-enough, dry, outside keep-outs, CONTACT LAW base.
                 if (rng.next() < kBenchFrac) {
-                    const float bs   = sC + (rng.next() * 2.0f - 1.0f) * gl * 0.25f;
-                    const float side = -1.0f;   // sun side, with the front row
-                    float bx = 0.0f, bz = 0.0f;
-                    route.worldAt(bs, side * kBenchLat, bx, bz);
-                    // Road tangent at bs — the bench aligns to it.
-                    float tx0, tz0, tx1, tz1;
-                    route.worldAt(std::max(bs - 2.0f, 0.0f), 0.0f, tx0, tz0);
-                    route.worldAt(std::min(bs + 2.0f, route.totalLen), 0.0f, tx1, tz1);
-                    const float ty = terrainHeightAtWorld(bx, bz);
-                    const float thX = terrainHeightAtWorld(bx + 1.5f, bz);
-                    const float thZ = terrainHeightAtWorld(bx, bz + 1.5f);
-                    bool ok = std::fabs(thX - ty) <= kBenchMaxTilt &&
-                              std::fabs(thZ - ty) <= kBenchMaxTilt &&
-                              ty >= worldWaterLevelAt(bx, bz) + 0.5f &&
-                              ty >= route.roadYAt(bs) - 1.0f &&
-                              !(bs > keep0 && bs < keep1);
-                    for (const KeepOut& k : keepOut) {
-                        const float dx = k.x - bx, dz = k.z - bz;
-                        if (dx * dx + dz * dz < k.r * k.r) { ok = false; break; }
-                    }
-                    if (ok) {
+                    // Several tries per grove: the approach cuttings' batters
+                    // fail the flat-ground test at many stations, and a
+                    // one-and-done roll shipped "0 benches" on the whole
+                    // route (first run's receipt).
+                    for (int bt = 0; bt < 6; ++bt) {
+                        const float bs   = sC + (rng.next() * 2.0f - 1.0f) * gl * 0.45f;
+                        const float side = (bt < 4) ? -1.0f : 1.0f;  // prefer sun side
+                        if (bs > keep0 && bs < keep1) continue;
+                        // SCAN OUTWARD for a sittable spot. The bench lies
+                        // ALONG THE CONTOUR (long axis on the road tangent),
+                        // so the honest flatness test is its own four
+                        // corners (1.8 x 0.6 m footprint), not a 3 m
+                        // world-axis cross — the axis test rejected every
+                        // station on this route (receipt: two 0-bench runs),
+                        // while the batter-lip first-pass seated one half in
+                        // the slope (receipt: shots_bench6/bench_side.png).
+                        float ttx0, ttz0, ttx1, ttz1;
+                        route.worldAt(std::max(bs - 2.0f, 0.0f), 0.0f, ttx0, ttz0);
+                        route.worldAt(std::min(bs + 2.0f, route.totalLen), 0.0f, ttx1, ttz1);
+                        float tdx = ttx1 - ttx0, tdz = ttz1 - ttz0;
+                        const float tl = std::sqrt(tdx * tdx + tdz * tdz);
+                        if (tl < 0.01f) continue;
+                        tdx /= tl; tdz /= tl;
+                        const float pdx = -tdz, pdz = tdx;   // across the road
+                        float bx = 0.0f, bz = 0.0f, ty = 0.0f;
+                        bool ok = false;
+                        for (float blat = 12.5f; blat <= 19.5f; blat += 0.75f) {
+                            route.worldAt(bs, side * blat, bx, bz);
+                            float hMin = 1e9f, hMax = -1e9f;
+                            for (int ci = 0; ci < 4; ++ci) {
+                                const float su = (ci & 1) ? 0.9f : -0.9f;
+                                const float sv = (ci & 2) ? 0.3f : -0.3f;
+                                const float h = terrainHeightAtWorld(
+                                    bx + tdx * su + pdx * sv,
+                                    bz + tdz * su + pdz * sv);
+                                hMin = std::min(hMin, h); hMax = std::max(hMax, h);
+                            }
+                            if (hMax - hMin > 0.22f) continue;
+                            ty = (hMax + hMin) * 0.5f;
+                            if (ty < worldWaterLevelAt(bx, bz) + 0.5f) continue;
+                            // The DRAWN river plane is a separate truth from
+                            // worldWaterLevelAt (task #32): the first bench
+                            // shipped SUBMERGED despite passing the
+                            // water-table check. The host feeds the plane
+                            // level in as minBenchY.
+                            if (ty < minBenchY) continue;
+                            if (ty < route.roadYAt(bs) - 3.0f) continue;
+                            ok = true;
+                            break;
+                        }
+                        for (const KeepOut& k : keepOut) {
+                            const float dx = k.x - bx, dz = k.z - bz;
+                            if (dx * dx + dz * dz < k.r * k.r) { ok = false; break; }
+                        }
+                        if (!ok) continue;
+                        float tx0, tz0, tx1, tz1;
+                        route.worldAt(std::max(bs - 2.0f, 0.0f), 0.0f, tx0, tz0);
+                        route.worldAt(std::min(bs + 2.0f, route.totalLen), 0.0f, tx1, tz1);
                         // Model long axis is +Z; yaw maps it onto the tangent.
                         const float yaw = std::atan2(tx1 - tx0, tz1 - tz0);
                         const float c = std::cos(yaw), sn = std::sin(yaw);
@@ -272,7 +309,16 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
                                               sn, 0, c,  0,
                                               bx, ty - kBenchSink, bz, 1 };
                         const char* glb = (rng.next() < 0.5f) ? kBenchGlbA : kBenchGlbB;
-                        if (m_art.addGlbInstance(glb, T)) ++m_benches;
+                        if (m_art.addGlbInstance(glb, T)) {
+                            ++m_benches;
+                            // Coords logged so the eye-gate can aim a camera
+                            // at every bench (NO_SLOP rule 2).
+                            x3::logInfo("road_trees: bench at (" +
+                                        std::to_string(bx) + ", " +
+                                        std::to_string(ty) + ", " +
+                                        std::to_string(bz) + ")");
+                            break;
+                        }
                     }
                 }
             }
