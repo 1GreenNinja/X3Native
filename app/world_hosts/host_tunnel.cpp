@@ -933,6 +933,9 @@ int hostTunnel(HostContext& hc) {
     bool  jakeAnimated = false;
     int   jakeJumpClip = -1;
     float jakeJumpT    = -1.0f;      // >=0 while the jump one-shot plays
+    int   jakePunchClip = -1, jakeKickClip = -1;
+    int   jakeActClip  = -1;         // active combat one-shot
+    float jakeActT     = -1.0f;
     float jakeYaw = 0.0f;                    // faces his MOVEMENT, not the camera
     float jakePrevFeet[3] = { 0, 0, 0 };
 
@@ -2125,6 +2128,11 @@ int hostTunnel(HostContext& hc) {
                                     // will pick the truly in-place one.
                                     jakeJumpClip = exactClip("Jump");
                                     if (jakeJumpClip < 0) jakeJumpClip = exactClip("Regular_Jump");
+                                    // Unarmed strikes ("Punch and kick do not
+                                    // work" — they were never wired): this
+                                    // rig's unarmed kit is the flashy pair.
+                                    jakePunchClip = exactClip("Backflip_and_Hooks");
+                                    jakeKickClip  = exactClip("Backflip_Sweep_Kick");
                                     if (idle < 0) idle = jakeSkin.findClip({ "idle" });
                                     if (idle < 0) idle = 0;
                                     jakeSkin.setLocomotionClips(idle, walk, run, 0.2f, 2.0f);
@@ -2218,11 +2226,27 @@ int hostTunnel(HostContext& hc) {
                     while (d < -3.14159265f) d += 6.2831853f;
                     jakeYaw += d * std::min(1.0f, fdt * 10.0f);
                 }
-                // JUMP ONE-SHOT: Regular_Jump overrides locomotion for its
-                // own duration, then locomotion resumes.
-                if (pin.jumpPressed && jakeJumpClip >= 0 && jakeJumpT < 0.0f)
+                // COMBAT ONE-SHOTS: LMB = hooks combo, RMB = sweep kick.
+                // Animation-only for now; damage lands with the campaign
+                // melee system (task 20). Gated on shell input so clicking
+                // the console does not throw punches.
+                if (shell.inputEnabled() && jakeActT < 0.0f && jakeJumpT < 0.0f) {
+                    static bool lmbWas = false, rmbWas = false;
+                    const bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                    const bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+                    if (lmb && !lmbWas && jakePunchClip >= 0) { jakeActClip = jakePunchClip; jakeActT = 0.0f; }
+                    else if (rmb && !rmbWas && jakeKickClip >= 0) { jakeActClip = jakeKickClip; jakeActT = 0.0f; }
+                    lmbWas = lmb; rmbWas = rmb;
+                }
+                // JUMP ONE-SHOT: overrides locomotion for its own duration.
+                if (pin.jumpPressed && jakeJumpClip >= 0 && jakeJumpT < 0.0f && jakeActT < 0.0f)
                     jakeJumpT = 0.0f;
-                if (jakeJumpT >= 0.0f && jakeJumpClip >= 0) {
+                if (jakeActT >= 0.0f && jakeActClip >= 0) {
+                    jakeActT += fdt;
+                    jakeSkin.apply(jakeModel, *device, (uint32_t)jakeActClip, jakeActT);
+                    if (jakeActT >= jakeSkin.clipDuration((uint32_t)jakeActClip))
+                        jakeActT = -1.0f;
+                } else if (jakeJumpT >= 0.0f && jakeJumpClip >= 0) {
                     jakeJumpT += fdt;
                     jakeSkin.apply(jakeModel, *device, (uint32_t)jakeJumpClip, jakeJumpT);
                     if (jakeJumpT >= jakeSkin.clipDuration((uint32_t)jakeJumpClip))
