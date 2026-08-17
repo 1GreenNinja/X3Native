@@ -2651,13 +2651,14 @@ int runDefaultHost(HostContext& hc) {
                     device->setSkyParams(sp);
                     x3::logInfo("--day: bright-midday sky override active (underwater staging)");
                 }
-                // The sky's baked irradiance at full strength shifted the
-                // calibrated interior reads (the FP viewmodel washed pink-white
-                // vs the pre-merge baseline): scale the IBL ambient so interiors
-                // match the baseline (eye-compared) while the facade's shadow
-                // side keeps enough sky fill to read its banding. Sun, sky
-                // background and the glass pass's reflections are unscaled.
-                device->setIblIntensity(0.5f);
+                // FULL sky irradiance (fix/exterior-atmosphere). The historic
+                // 0.5 cut kept the FP viewmodel from washing pink-white INDOORS,
+                // but RoomDressing::applyZoneAtmosphere now owns interior IBL
+                // per-zone and re-asserts it on every zone change, so interiors
+                // never see this global. Matches kExteriorIbl (room_dressing) —
+                // and since m_iblSpecular is unset (-1 falls back to this), it
+                // also restores full env-specular to outdoor glass/metal.
+                device->setIblIntensity(1.0f);
                 // STREET LIGHT (host-owned): the facility-apron lamps by the
                 // breach + the Spire-approach road rows. kNoRoom entities;
                 // the city grid's lamps build with the region (hook below).
