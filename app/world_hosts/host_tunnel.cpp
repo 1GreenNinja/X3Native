@@ -2023,7 +2023,8 @@ int hostTunnel(HostContext& hc) {
         const bool trafficOn = ringOn && !(e && e[0] == '0');
         if (trafficOn &&
             traffic.build(ringSpec, ringRoadY, device, phys.get(),
-                          x3::game::convertedGlbRoot(), x3::game::TrafficConfig{})) {
+                          x3::game::convertedGlbRoot(), x3::game::TrafficConfig{},
+                          audioOn ? audio.get() : nullptr)) {
             // The ONE global contact callback (nothing else in this host uses
             // it; the canon world's monster facade has its own world). A hard
             // hit converts the struck car to a dynamic body — the work-zone
@@ -2195,7 +2196,17 @@ int hostTunnel(HostContext& hc) {
                 riverLife.prePhysics(dt);
                 // TRAFFIC IN CAPTURES TOO (gotcha 4.1b's lesson: moving
                 // content that only ticks in the live loop is invisible in
-                // every proof shot). Focus = the capture camera.
+                // every proof shot). Focus = the capture camera, and the
+                // camera IS the "player" the radar sign reads — X3_RADAR_MPH
+                // lets a still pose a speed the parked capture camera cannot
+                // actually be doing (the same lever pattern as X3_TRAFFIC_NEAR).
+                {
+                    static const float kShotMph = []() {
+                        const char* e = std::getenv("X3_RADAR_MPH");
+                        return e ? (float)std::atof(e) : 0.0f;
+                    }();
+                    traffic.setPlayer(cam, kShotMph * 0.44704f);
+                }
                 traffic.update(dt, cam, phys.get());
                 if (shotTick) shotTick(dt);   // staged swimmer BEFORE the step
                 phys->step(dt);
@@ -4670,6 +4681,14 @@ int hostTunnel(HostContext& hc) {
                 const x3::phys::Vec3 ff = onFoot.feet();
                 tfoc[0] = ff.x; tfoc[1] = ff.y; tfoc[2] = ff.z;
             }
+            // THE RADAR SIGN reads the PLAYER's speed, so it needs the number
+            // the speedo shows — the car's own forward speed while driving,
+            // zero on foot. PAIRED with the HUD's mph readout below
+            // (`car.forwardSpeed() * 2.23694f`): both are the same fact, and a
+            // sign that disagreed with the speedo would be the boost-gauge
+            // defect all over again (NO_SLOP rule 4).
+            traffic.setPlayer(tfoc, (driving && carBuilt)
+                                        ? std::fabs(car.forwardSpeed()) : 0.0f);
             traffic.update(fdt, tfoc, phys.get());
         }
         phys->step(fdt);
@@ -4929,10 +4948,23 @@ int hostTunnel(HostContext& hc) {
         // other half of the "lit in headless capture, black when driven" bug.
         { const float cp[3] = { cx, cy, cz };
           // Muzzle-flash / grenade-boom pulses ride the same single upload
-          // (a second setPointLights call would overwrite the pool).
+          // (a second setPointLights call would overwrite the pool). So do the
+          // TRAFFIC lights — cop bars, tow beacons, breakdown hazards, the
+          // radar sign's panel wash. They go through the same `extra` lane for
+          // the same reason a muzzle flash does: they are transient, they are
+          // near the subject, and they must survive even when the bore pool
+          // alone would fill the budget. FreewayTraffic::lights() is already
+          // bounded (kMaxTrafficLights) and sorted nearest-first, so this
+          // concatenation cannot blow the array.
+          static std::vector<x3::rhi::PointLight> xl;
+          xl.clear();
           x3::rhi::PointLight wl[2];
           const uint32_t wn = weaponLights(fdt, wl);
-          x3::game::uploadTunnelLights(*device, cp, wn ? wl : nullptr, wn); }
+          for (uint32_t i = 0; i < wn; ++i) xl.push_back(wl[i]);
+          const auto& tl = traffic.lights();
+          xl.insert(xl.end(), tl.begin(), tl.end());
+          x3::game::uploadTunnelLights(*device, cp, xl.empty() ? nullptr : xl.data(),
+                                       (uint32_t)xl.size()); }
         // SPEED FOV. Physical speed alone does not read as fast on a screen —
         // the frame has to widen and the periphery has to rush. 72 deg parked ->
         // 88 flat out, eased so it swells under acceleration instead of snapping.
