@@ -34,6 +34,7 @@ struct CliOptions {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
+         testCanonMission = false, // --test-canonmission: canon_act1.mission.json + the canon objective-spine walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
          testStairNav = false,
          testPropClip = false,    // --test-propclip: dressing-layer prop AABB vs room bounds (GATE A ext)

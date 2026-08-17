@@ -1,6 +1,8 @@
 // MISSION RUNNER — x3.mission/1 implementation. See mission.h.
 #include "mission.h"
 #include "level1_game.h"
+#include "canon_play.h"          // --test-canonmission + pollCanonMissionFlags (--world canonlevel)
+#include "level_loader.h"        // loadCanonTower / buildCanonFloor for the canon self-test
 #include "headless_device.h"
 #include "scene.h"
 #include "timeline.h"
@@ -276,6 +278,31 @@ void pollLevel1MissionFlags(const Level1Game& game, MissionEventBridge& bridge,
                                deadOf(game.checkpointEnemies()));
     if (game.martinezDead()) bridge.setKills("martinez", 1);
 }
+
+// ===========================================================================
+// Canon poll adapter — CanonPlay public queries -> mission flags (P1-4).
+// ===========================================================================
+// The rescue/clone/Sarah beats advance on the StoryFlags the canon host already
+// writes (girl.freed.*, girl.extracted.*, clone.defeated, sarah.freed,
+// sarah.extracted) — missions and dialog share one world. This adapter only
+// bridges the beats CanonPlay owns directly but never mirrors into StoryFlags:
+// leaving the cell, arming, Martinez, and the player's floor (the climb).
+
+void pollCanonMissionFlags(const CanonPlay& play, MissionEventBridge& bridge,
+                           StoryFlags& flags, int playerFloor) {
+    // Beat edges (latched; StoryFlags::set is idempotent).
+    if (play.leftCell())                         flags.set("canon.leftCell");
+    if (play.armed())                            flags.set("canon.armed");
+    if (play.martinezSpawned() && !play.martinezAlive())
+                                                 flags.set("canon.martinez.dead");
+
+    // The floor climb: the host passes the player's current floor (derived from
+    // the stairwell nav chain's floorForY). Latched, so reaching floor 7 once is
+    // enough for {"flag":"canon.floor.7"} — descending later never clears it.
+    if (playerFloor >= 1 && playerFloor <= 9)
+        flags.set("canon.floor." + std::to_string(playerFloor));
+}
+
 
 // ===========================================================================
 // MissionRunner
@@ -797,6 +824,154 @@ bool runMissionSelfTest() {
     }
 
     x3::logInfo("mission: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+    return pass == total;
+}
+
+// ===========================================================================
+// --test-canonmission (P1-4): the canon mission spine, headless.
+// ===========================================================================
+
+bool runCanonMissionSelfTest() {
+    int pass = 0, total = 0;
+    auto check = [&](bool ok, const char* name) {
+        ++total;
+        if (ok) { ++pass; x3::logInfo(std::string("  PASS C") + std::to_string(total) + " " + name); }
+        else    {         x3::logWarn(std::string("  FAIL C") + std::to_string(total) + " " + name); }
+        return ok;
+    };
+
+    // ---- C1: missions/canon_act1.mission.json parses + validates from disk. ----
+    MissionDoc doc;
+    {
+        const std::string path = findMissionFile("canon_act1.mission.json");
+        std::vector<std::string> errs;
+        const bool ok = !path.empty() && loadMissionFile(path, doc, errs) &&
+                        validateMission(doc, errs);
+        for (const auto& e : errs) x3::logWarn("[canonmission-test] " + e);
+        check(ok && doc.id == "canon_act1" && doc.stages.size() == 9 &&
+              doc.start == "wake",
+              "canon_act1.mission.json loads + validates (9 stages, start=wake)");
+    }
+
+    // ---- The full beat walk: the objective string is present and correct at
+    // every beat, cell -> helipad, driven purely by the flag bridge. ----
+    StoryFlags flags;
+    MissionRunner runner;
+    runner.ctx().flags = &flags;
+    std::vector<std::string> objSeq;
+    runner.setObjectiveSink([&](const std::string& t) { objSeq.push_back(t); });
+
+    check(runner.start(doc) && runner.currentStageId() == "wake" &&
+          runner.state() == MissionRunner::State::Running &&
+          !objSeq.empty() && objSeq.back() == "Escape the detention cell",
+          "start: lands wake with the cell objective");
+    runner.tick();
+    check(runner.currentStageId() == "wake" && flags.has("canon.mission.begun"),
+          "negative control: no flags -> holds wake (objective never blanks mid-game)");
+
+    flags.set("canon.leftCell");
+    runner.tick();
+    check(runner.currentStageId() == "arm" && objSeq.back() == "Find a weapon",
+          "beat wake -> arm on canon.leftCell");
+    flags.set("canon.armed");
+    runner.tick();
+    check(runner.currentStageId() == "martinez" && objSeq.back() == "Defeat Chief Martinez",
+          "beat arm -> martinez on canon.armed");
+    flags.set("canon.martinez.dead");
+    runner.tick();
+    check(runner.currentStageId() == "triage" && objSeq.back() == "Rescue the girls in the Medical Bay",
+          "beat martinez -> triage on canon.martinez.dead");
+    flags.set("girl.freed.keisha");
+    runner.tick();
+    check(runner.currentStageId() == "climb" && objSeq.back() == "Climb the tower to Floor 7",
+          "beat triage -> climb on girl.freed.keisha (any-of)");
+    flags.set("canon.floor.7");
+    runner.tick();
+    check(runner.currentStageId() == "clone" && objSeq.back() == "Defeat Jake's Clone on Floor 7",
+          "beat climb -> clone on canon.floor.7");
+    flags.set("clone.defeated");
+    runner.tick();
+    check(runner.currentStageId() == "sarah" && objSeq.back() == "Free Sarah from the containment field",
+          "beat clone -> sarah on clone.defeated");
+    flags.set("sarah.freed");
+    runner.tick();
+    check(runner.currentStageId() == "helipad" && objSeq.back() == "Get Sarah to the Helipad",
+          "beat sarah -> helipad on sarah.freed");
+    flags.set("sarah.extracted");
+    runner.tick();
+    check(runner.currentStageId() == "outro" && objSeq.back() == "TO BE CONTINUED",
+          "beat helipad -> outro (TO BE CONTINUED) on sarah.extracted");
+    // Negative control: the outro holds until the Act-2 handoff (Phase 5) — the
+    // objective stays present through the win card, exactly like today.
+    runner.tick();
+    check(runner.currentStageId() == "outro" && runner.state() == MissionRunner::State::Running,
+          "outro holds: no act2.handoff -> still Running with 'TO BE CONTINUED'");
+    flags.set("act2.handoff");
+    runner.tick();
+    check(runner.state() == MissionRunner::State::Complete &&
+          flags.has("mission.canon_act1.done") && objSeq.back().empty(),
+          "outro -> Complete on act2.handoff (done flag + objective cleared)");
+
+    // Continuity proof: exactly the 9 stage texts then the terminal empty — no
+    // mid-game gap anywhere in the sequence.
+    check(objSeq.size() == 10,
+          "objective sequence is the 9 beats + the terminal empty (continuous cell->helipad->outro)");
+
+    // ---- The escaped-path cascade: intro.outcome=escaped + already armed skips
+    // the cell/arm beats and lands straight on Martinez (no blank objective). ----
+    {
+        StoryFlags f2;
+        f2.set("intro.outcome=escaped");
+        f2.set("canon.armed");
+        MissionRunner r2;
+        r2.ctx().flags = &f2;
+        std::vector<std::string> seq2;
+        r2.setObjectiveSink([&](const std::string& t) { seq2.push_back(t); });
+        check(r2.start(doc) && r2.currentStageId() == "martinez" &&
+              !seq2.empty() && seq2.back() == "Defeat Chief Martinez",
+              "escaped cascade: outcome=escaped + armed -> straight to Martinez (cell/arm skipped)");
+    }
+
+    // ---- pollCanonMissionFlags on a REAL CanonPlay (canonical JSON permitting). ----
+    {
+        CanonFloor floor = loadCanonTower(canonProjectJsonPath());
+        if (!floor.valid()) {
+            x3::logInfo("  SKIP canonical tower JSON absent — poll-adapter section PASS (skipped)");
+        } else {
+            HeadlessRenderDevice device;
+            std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+            physics->init();
+            Scene scene;
+            buildCanonFloor(floor, scene, device, *physics);
+            CanonPlay play;
+            play.build(floor, scene, device, *physics, riggedGlbRoot(), canonGirlsDialogPath());
+
+            StoryFlags pf;
+            MissionEventBridge pb;
+            pb.bind(&pf);
+
+            // Fresh build: unarmed, still in the cell -> no canon.* flags.
+            pollCanonMissionFlags(play, pb, pf, 1);
+            check(!pf.has("canon.leftCell") && !pf.has("canon.armed"),
+                  "poll: fresh CanonPlay (in-cell, unarmed) sets no canon.* flags");
+            // Arm -> canon.armed.
+            play.cheatArm(scene);
+            pollCanonMissionFlags(play, pb, pf, 1);
+            check(pf.has("canon.armed"), "poll: cheatArm -> canon.armed");
+            // Martinez alive -> not dead.
+            check(!pf.has("canon.martinez.dead"), "poll: Martinez alive -> canon.martinez.dead unset");
+            // Floor bridge.
+            pollCanonMissionFlags(play, pb, pf, 3);
+            check(pf.has("canon.floor.3"), "poll: playerFloor 3 -> canon.floor.3");
+            pollCanonMissionFlags(play, pb, pf, 7);
+            check(pf.has("canon.floor.7"), "poll: playerFloor 7 -> canon.floor.7");
+
+            play.shutdown();
+            physics->shutdown();
+        }
+    }
+
+    x3::logInfo("canonmission: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
     return pass == total;
 }
 

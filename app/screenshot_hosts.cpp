@@ -30,6 +30,8 @@
 #include "leveldoc_world.h"
 #include "level_loader.h"
 #include "canon_play.h"        // R-5: --screenshot-upperfloors content proof
+#include "mission.h"           // P1-4: --screenshot-canonmission objective-HUD proof
+#include "objective.h"         // P1-4: ObjectiveSystem::drawCurrent for the HUD line
 #include "level1.h"            // F2 rescue rooms: buildLevel1 / Level1ArtMask (--screenshot-rescuerooms)
 #include "wing_dressing.h"     // F2-F7 wing dressing (--screenshot-rescuerooms)
 #include "editor/editor_host.h"
@@ -124,6 +126,117 @@ int dispatchScreenshotHosts(HostContext& hc) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return 0;
+    }
+    // ---- P1-4 canon-mission-objective HUD proof (X3_CANONMISSION_SHOT=<dir>) -----
+    // Env-gated + headless-only (inert in every normal run — nothing sets the var).
+    // Builds the canon tower + CanonPlay, wires the REAL mission runner + the
+    // canon_act1.mission.json doc to an ObjectiveSystem exactly like app_run does,
+    // advances the mission through three beats by setting the SAME StoryFlags the
+    // live game writes (cell -> mid-floor climb -> Sarah), and captures one PNG per
+    // beat with the OBJECTIVE HUD line drawn on top. This is the eyeball gate that
+    // the mission spine shows a continuous objective string mid-game on canonlevel.
+    if (const char* cmDir = std::getenv("X3_CANONMISSION_SHOT");
+        cmDir && *cmDir && headless && device) {
+        x3::logInfo(std::string("[canonmission-shot]: rendering mission-objective proof -> ") + cmDir);
+        std::error_code mkec;
+        std::filesystem::create_directories(cmDir, mkec);
+        std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
+        phys->init();
+        x3::game::Scene scene;
+        x3::game::CanonFloor floor = x3::game::loadCanonTower(x3::game::canonProjectJsonPath());
+        int rc = 0;
+        if (!floor.valid()) {
+            x3::logError("[canonmission-shot] canonical JSON absent — cannot capture");
+            rc = 1;
+        } else {
+            x3::game::buildCanonFloor(floor, scene, *device, *phys);
+            x3::game::CanonPlay play;
+            play.build(floor, scene, *device, *phys,
+                       x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath());
+
+            // The REAL mission wiring (mirrors app_run): doc + runner + the free-text
+            // objective lane the live HUD reads. Flags are the SAME StoryFlags the
+            // canon host + chat trees write.
+            x3::game::MissionDoc mdoc;
+            x3::game::MissionRunner mrun;
+            x3::game::StoryFlags flags;
+            x3::game::ObjectiveSystem obj;
+            std::vector<std::string> merr;
+            const std::string mp = x3::game::findMissionFile("canon_act1.mission.json");
+            const bool missionOk = !mp.empty() && x3::game::loadMissionFile(mp, mdoc, merr) &&
+                                   x3::game::validateMission(mdoc, merr);
+            if (!missionOk) {
+                for (const auto& e : merr) x3::logError("[canonmission-shot] " + e);
+                rc = 1;
+            } else {
+                mrun.ctx().flags = &flags;
+                mrun.setObjectiveSink([&obj](const std::string& t) { obj.setText(t); });
+                mrun.start(mdoc);
+
+                device->setAmbient(0.34f, 0.34f, 0.38f);
+                { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false;
+                  sp.sunDir[0]=0.2f; sp.sunDir[1]=-1.0f; sp.sunDir[2]=0.1f; device->setSkyParams(sp); }
+
+                auto beat = [&](const char* roomName, const std::string& outPath) -> bool {
+                    const uint32_t r = floor.roomByName(roomName);
+                    if (r == x3::game::kNoRoom) { x3::logError(std::string("  room absent: ") + roomName); return false; }
+                    const x3::game::CanonRoom& R = floor.rooms[r];
+                    x3::rhi::PointLight pl{};
+                    pl.pos[0]=R.cx; pl.pos[1]=R.y0()+std::min(3.0f,R.h*0.6f); pl.pos[2]=R.cz;
+                    pl.range=std::max(R.w,R.d)+10.0f; pl.color[0]=4.0f; pl.color[1]=3.8f; pl.color[2]=3.4f;
+                    x3::rhi::PointLight l0=pl, l1=pl, l2=pl;
+                    l1.pos[0]=R.cx - R.w*0.30f; l2.pos[0]=R.cx + R.w*0.30f;
+                    x3::rhi::PointLight lights[3] = { l0, l1, l2 };
+                    device->setPointLights(lights, 3);
+                    const float ex = R.cx - R.w*0.38f, ey = R.y0() + 1.7f, ez = R.cz - R.d*0.38f;
+                    const float aimX = R.cx + R.w*0.12f, aimY = R.y0() + 0.9f, aimZ = R.cz + R.d*0.18f;
+                    const float dx = aimX-ex, dy = aimY-ey, dz = aimZ-ez;
+                    const float yaw = std::atan2(dz, dx);
+                    const float horiz = std::sqrt(dx*dx + dz*dz);
+                    const float pitch = std::atan2(dy, std::max(0.01f, horiz));
+                    device->setCamera(ex, ey, ez, yaw, pitch, 70.0f);
+                    std::vector<uint32_t> vis; vis.reserve(floor.rooms.size());
+                    for (uint32_t i=0;i<(uint32_t)floor.rooms.size();++i) vis.push_back(i);
+                    scene.setVisibleRooms(vis.data(), (uint32_t)vis.size());
+                    mrun.tick();   // advance on the flags set so far
+                    const int kSettle = 6;
+                    for (int i=0;i<kSettle;++i) {
+                        glfwPollEvents();
+                        if (i==kSettle-1) device->armCapture(outPath.c_str());
+                        auto f = device->beginFrame();
+                        if (f.valid) {
+                            scene.render(*device, f);
+                            play.draw(*device, f, scene);
+                            obj.drawCurrent(*device, f);   // the OBJECTIVE HUD line
+                        }
+                        device->endFrame(f);
+                    }
+                    const bool wrote = device->captureFrame(outPath.c_str());
+                    x3::logInfo(std::string(wrote ? "  wrote " : "  FAILED ") + outPath +
+                                " (objective: \"" + obj.currentLabel() + "\")");
+                    return wrote;
+                };
+
+                // Beat 1: the cell (wake) — no flags yet.
+                bool ok = beat("Jake", std::string(cmDir) + "/cell_wake.png");
+                // Beat 2: mid-floor climb — armed + Martinez down + a girl freed, on F5.
+                flags.set("canon.leftCell"); flags.set("canon.armed");
+                flags.set("canon.martinez.dead"); flags.set("girl.freed.aria");
+                flags.set("canon.floor.5");
+                ok = beat("Drone Bay Beta", std::string(cmDir) + "/midfloor_climb.png") && ok;
+                // Beat 3: near Sarah — reached F7 + the clone is down.
+                flags.set("canon.floor.7"); flags.set("clone.defeated");
+                ok = beat("Sarah's Holding Cell", std::string(cmDir) + "/near_sarah.png") && ok;
+                rc = ok ? 0 : 1;
+
+                play.shutdown();
+            }
+        }
+        phys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return rc;
     }
     // ---- Headless editor PROOF (--screenshot-editor [path.png]) ------------------
     // Inits ImGui in the headless device (a hidden GLFW window backs the GLFW backend;

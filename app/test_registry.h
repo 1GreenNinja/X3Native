@@ -84,6 +84,7 @@ struct TestFlags {
     bool testNet = false, testNetSync = false, testNetInterp = false, testNetPredict = false;
     bool testRescue = false, testThirdPerson = false, testNpcTalk = false, testChatTree = false;
     bool testMission = false, testDestruction = false, testDebris = false, testGpuSkin = false;
+    bool testCanonMission = false;   // --test-canonmission: canon mission spine (P1-4)
     bool testMeshlet = false, testGpuCull = false, testCollapse = false, testNav = false;
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)
     bool testWeapons = false, testScript = false, testVehicle = false, testVehParts = false;
