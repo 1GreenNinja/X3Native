@@ -188,6 +188,50 @@ constexpr DeathBeat kSchedule[] = {
 };
 constexpr int kScheduleCount = (int)(sizeof(kSchedule) / sizeof(kSchedule[0]));
 
+// THE DEORBIT SCHEDULE (DeathOutcome::DeorbitCrash). Same grammar, different
+// story: the rupture and a SHORTENED bow->stern cascade kill her (0.0-1.5 s),
+// the lights go out, and then instead of cooking off in place the wreck FALLS
+// toward the planet (plunge ramps from kDeorbitFallStart), venting a burning
+// entry trail, sheds two hull sections under aero-stress, and terminates in
+// one distant CoreDetonation flash — the impact read on the disc — followed
+// by the dissipating plume. "Crash land on a planet", visible end to end.
+constexpr DeathBeat kDeorbitSchedule[] = {
+    // t      kind                    u      lat    vert   radius
+    { 0.00f, DeathFx::Rupture,      -0.10f,  0.0f, -32.0f, 175.0f },
+    { 0.16f, DeathFx::Cascade,      -0.92f,  9.0f,   5.0f,  72.0f },
+    { 0.36f, DeathFx::Cascade,      -0.66f, -13.0f, 11.0f,  67.0f },
+    { 0.42f, DeathFx::Vent,         -0.52f,  27.0f,  8.0f,  25.0f },
+    { 0.58f, DeathFx::Cascade,      -0.38f,  15.0f, -10.0f, 63.0f },
+    { 0.80f, DeathFx::Cascade,      -0.10f, -16.0f,  9.0f,  59.0f },
+    { 0.95f, DeathFx::Vent,          0.02f, -28.0f, -14.0f, 24.0f },
+    { 1.06f, DeathFx::Cascade,       0.22f,  12.0f,  14.0f, 55.0f },
+    { 1.30f, DeathFx::Cascade,       0.55f, -14.0f, -12.0f, 51.0f },
+    { 1.50f, DeathFx::HullFragment,  0.30f, -20.0f,  4.0f,  42.0f },
+    // ---- the fall: entry trail + stress shedding --------------------------
+    { 2.60f, DeathFx::Vent,         -0.30f,  22.0f,  10.0f, 30.0f },
+    { 3.30f, DeathFx::Vent,          0.20f, -22.0f, -10.0f, 30.0f },
+    { 3.60f, DeathFx::Cascade,      -0.05f,  10.0f, -16.0f, 40.0f },
+    { 4.00f, DeathFx::Vent,         -0.45f, -18.0f,  14.0f, 28.0f },
+    { 4.40f, DeathFx::HullFragment,  0.55f,  16.0f,  -6.0f, 44.0f },
+    { 4.80f, DeathFx::Vent,          0.35f,  20.0f,  12.0f, 28.0f },
+    { 5.00f, DeathFx::Cascade,      -0.60f, -12.0f, -10.0f, 38.0f },
+    { 5.60f, DeathFx::Vent,         -0.15f,  24.0f,  -8.0f, 26.0f },
+    { 6.40f, DeathFx::Vent,          0.10f, -20.0f,  16.0f, 26.0f },
+    // ---- terminal: the impact flash on the disc, then the plume dies ------
+    { 7.90f, DeathFx::CoreDetonation, 0.0f,  0.0f, -12.0f, 300.0f },
+    { 8.30f, DeathFx::Vent,         -0.20f,  18.0f,  10.0f, 30.0f },
+    { 8.60f, DeathFx::Vent,          0.25f, -16.0f, -12.0f, 30.0f },
+};
+constexpr int kDeorbitScheduleCount =
+    (int)(sizeof(kDeorbitSchedule) / sizeof(kDeorbitSchedule[0]));
+
+// Deorbit fall shape: the wreck starts losing station at kDeorbitFallStart and
+// accelerates toward the planet at kDeorbitFallAccel (a READ, not physics —
+// ~790 m travelled by 9 s, which at the 2.6 km arena distance is a clearly
+// visible recession toward the disc). The entry burn ramps over [2.8, 5.2] s.
+constexpr float kDeorbitFallStart = 2.2f;
+constexpr float kDeorbitFallAccel = 34.0f;   // m/s^2 along planetDir
+
 // LIGHTS-OUT curve. Full brightness through the rupture, two stutters as the
 // power net collapses, then a hard fall to the floor by ~1.9 s.
 float lightsAt(float t) {
@@ -208,6 +252,13 @@ int CapitalDeathSequence::scheduleSize() { return kScheduleCount; }
 
 void CapitalDeathSequence::begin(CapitalDeathState& s, const float center[3],
                                  const float axis[3], float halfLen) {
+    const float noDir[3] = { 0.0f, 0.0f, 0.0f };
+    begin(s, center, axis, halfLen, DeathOutcome::BreakupInSpace, noDir);
+}
+
+void CapitalDeathSequence::begin(CapitalDeathState& s, const float center[3],
+                                 const float axis[3], float halfLen,
+                                 DeathOutcome outcome, const float planetDir[3]) {
     s = CapitalDeathState{};          // full reset — re-arming a used state is safe
     s.active = true;
     s.center[0] = center[0]; s.center[1] = center[1]; s.center[2] = center[2];
@@ -218,6 +269,17 @@ void CapitalDeathSequence::begin(CapitalDeathState& s, const float center[3],
     s.axis[0] = a[0]; s.axis[1] = a[1]; s.axis[2] = a[2];
     s.halfLen = halfLen > 1.0f ? halfLen : 1.0f;
     s.lights = 1.0f;
+    // Outcome: a crash with nowhere to crash demotes to the in-place breakup.
+    float p[3] = { planetDir[0], planetDir[1], planetDir[2] };
+    const float pl = std::sqrt(p[0]*p[0] + p[1]*p[1] + p[2]*p[2]);
+    if (outcome == DeathOutcome::DeorbitCrash && pl > 1e-5f) {
+        s.outcome = DeathOutcome::DeorbitCrash;
+        s.planetDir[0] = p[0] / pl;
+        s.planetDir[1] = p[1] / pl;
+        s.planetDir[2] = p[2] / pl;
+    } else {
+        s.outcome = DeathOutcome::BreakupInSpace;
+    }
 }
 
 int CapitalDeathSequence::step(CapitalDeathState& s, float dt,
@@ -225,24 +287,45 @@ int CapitalDeathSequence::step(CapitalDeathState& s, float dt,
     if (!s.active) return 0;
     if (dt > 0.0f) s.t += dt;
 
+    const bool deorbit = (s.outcome == DeathOutcome::DeorbitCrash);
+    const DeathBeat* sched = deorbit ? kDeorbitSchedule : kSchedule;
+    const int schedCount   = deorbit ? kDeorbitScheduleCount : kScheduleCount;
+    const float duration   = durationFor(s.outcome);
+
     // ---- Presentation scalars ------------------------------------------
     s.lights = lightsAt(s.t);
     // Dead-stick roll: angular rate eases in as the attitude thrusters die,
     // asymptoting near 0.5 rad/s, so the hull is visibly rolling by ~1 s and
-    // has turned ~100 deg by the end of the window.
+    // has turned ~100 deg by the end of the window. The deorbit rolls slower
+    // (0.22 rad/s cap): the fall + burn carry that ending, and a fast corkscrew
+    // would fight the "she's going IN" read.
     {
-        const float rate = 0.50f * (1.0f - std::exp(-s.t * 1.30f));
+        const float cap0 = deorbit ? 0.22f : 0.50f;
+        const float rate = cap0 * (1.0f - std::exp(-s.t * 1.30f));
         s.tumble += rate * (dt > 0.0f ? dt : 0.0f);
     }
-    // She stops holding station and goes down: a gentle constant acceleration
-    // (not physics — a READ). ~11 m by 3 s, ~31 m by 5 s.
-    s.sag = 1.25f * s.t * s.t;
+    if (!deorbit) {
+        // She stops holding station and goes down: a gentle constant
+        // acceleration (not physics — a READ). ~11 m by 3 s, ~31 m by 5 s.
+        s.sag    = 1.25f * s.t * s.t;
+        s.plunge = 0.0f;
+        s.burn   = 0.0f;
+    } else {
+        // DEORBIT: the read is the FALL toward the planet, not the sag.
+        s.sag = 0.30f * s.t * s.t;
+        const float tf = s.t - kDeorbitFallStart;
+        s.plunge = tf > 0.0f ? 0.5f * kDeorbitFallAccel * tf * tf : 0.0f;
+        // Entry burn ramps over [2.8, 5.2] s and holds until the impact flash.
+        float k = (s.t - 2.8f) / 2.4f;
+        k = k < 0.0f ? 0.0f : (k > 1.0f ? 1.0f : k);
+        s.burn = k * k * (3.0f - 2.0f * k);
+    }
 
     // ---- Emit every beat that came due, up to the budget ----------------
     int n = 0;
     const int cap = maxOut < kMaxEventsPerStep ? maxOut : kMaxEventsPerStep;
-    while (n < cap && s.cursor < kScheduleCount && kSchedule[s.cursor].t <= s.t) {
-        const DeathBeat& b = kSchedule[s.cursor];
+    while (n < cap && s.cursor < schedCount && sched[s.cursor].t <= s.t) {
+        const DeathBeat& b = sched[s.cursor];
         ++s.cursor;
         if (!out) continue;   // caller only wants the cursor advanced
 
@@ -265,13 +348,19 @@ int CapitalDeathSequence::step(CapitalDeathState& s, float dt,
         e.radius = b.radius;
         const float along = b.u * s.halfLen;
         for (int k = 0; k < 3; ++k) {
-            e.pos[k] = s.center[k] + ax[k] * along
+            // The wreck's EFFECTIVE centre rides the deorbit plunge (0 for
+            // the in-place breakup), so the trail beats fire ON the falling
+            // hull, not at the point where she died.
+            e.pos[k] = s.center[k] + s.planetDir[k] * s.plunge
+                                   + ax[k] * along
                                    + rt[k] * b.lat
                                    + tu[k] * b.vert;
             // The hull is already sagging when the later beats fire.
             if (k == 1) e.pos[k] -= s.sag;
-            // Plumes and debris stream AWAY from the spine.
-            e.drift[k] = rt[k] * b.lat * 0.35f + tu[k] * b.vert * 0.35f;
+            // Plumes and debris stream AWAY from the spine — and, in the
+            // deorbit, BACKWARD along the fall (the entry trail).
+            e.drift[k] = rt[k] * b.lat * 0.35f + tu[k] * b.vert * 0.35f
+                       - s.planetDir[k] * s.burn * 18.0f;
         }
         // A vent with no lateral offset would have no drift at all; give it
         // a small outward push so the plume never hangs as a static bead.
@@ -279,11 +368,117 @@ int CapitalDeathSequence::step(CapitalDeathState& s, float dt,
             for (int k = 0; k < 3; ++k) e.drift[k] = tu[k] * 6.0f;
     }
 
-    if (s.cursor >= kScheduleCount && s.t >= kDurationSec) {
+    if (s.cursor >= schedCount && s.t >= duration) {
         s.finished = true;
         s.active   = false;
     }
     return n;
+}
+
+// ===========================================================================
+// CAPITAL MOTION
+// ===========================================================================
+void CapitalMotion::begin(CapitalMotionState& s, const float startPos[3]) {
+    s = CapitalMotionState{};
+    // Anchor behind the start point on -Z so that arcPhase = +pi/2 puts the
+    // hull EXACTLY at startPos with the arc tangent = (-1, 0, 0): the nose
+    // faces the player's approach lane, matching the reveal framing.
+    s.anchor[0] = startPos[0];
+    s.anchor[1] = startPos[1];
+    s.anchor[2] = startPos[2] - s.radius;
+    s.arcPhase  = 1.57079632679f;   // pi/2
+    s.speed     = kPatrolSpeed;     // she is ALREADY under way at the reveal
+    s.pos[0] = startPos[0]; s.pos[1] = startPos[1]; s.pos[2] = startPos[2];
+    s.fwd[0] = -1.0f; s.fwd[1] = 0.0f; s.fwd[2] = 0.0f;
+    s.vel[0] = -kPatrolSpeed; s.vel[1] = 0.0f; s.vel[2] = 0.0f;
+    s.phase  = CapitalMovePhase::Patrol;
+}
+
+void CapitalMotion::update(CapitalMotionState& s, float dt,
+                           bool shieldsDown, bool adrift) {
+    if (dt < 0.0f) dt = 0.0f;
+    s.phase = adrift      ? CapitalMovePhase::Adrift
+            : shieldsDown ? CapitalMovePhase::Combat
+                          : CapitalMovePhase::Patrol;
+    const float target = adrift ? 0.0f
+                       : (shieldsDown ? kCombatSpeed : kPatrolSpeed);
+    // dt-correct exponential ease (the 165 Hz rule: never per-frame).
+    s.speed += (target - s.speed) * (1.0f - std::exp(-kSpeedEase * dt));
+    // Advance along the arc. pos is DERIVED from the phase each step, so the
+    // hull can never leave the circle no matter the dt stream: the arc IS the
+    // arena bound.
+    s.arcPhase += (s.speed / s.radius) * dt;
+    const float c = std::cos(s.arcPhase), n = std::sin(s.arcPhase);
+    s.pos[0] = s.anchor[0] + s.radius * c;
+    s.pos[1] = s.anchor[1];
+    s.pos[2] = s.anchor[2] + s.radius * n;
+    // Tangent heading (d pos / d arcPhase, normalized) + true velocity.
+    // Below a crawl the heading HOLDS (an adrift hull keeps its last aspect;
+    // a zero-speed tangent would still be well-defined, but the freeze must
+    // not swing the nose as the ease crosses zero asymptotically).
+    if (s.speed > 0.05f) {
+        s.fwd[0] = -n; s.fwd[1] = 0.0f; s.fwd[2] = c;
+    }
+    s.vel[0] = -n * s.speed; s.vel[1] = 0.0f; s.vel[2] = c * s.speed;
+}
+
+// ===========================================================================
+// CAPITAL GUN BATTERY
+// ===========================================================================
+void CapitalBattery::init(CapitalBatteryState& s) {
+    s = CapitalBatteryState{};
+    for (int i = 0; i < kCapitalGunCount; ++i) {
+        s.gun[i].hp = s.gun[i].maxHp = kGunHp;
+        // Staggered opening: gun i's first spool completes at ~1.2 * (i+1) s.
+        s.gun[i].cd     = (kGunPeriod / (float)kCapitalGunCount) * (float)(i + 1)
+                          - kGunSpool;
+        s.gun[i].spoolT = -1.0f;
+    }
+}
+
+uint32_t CapitalBattery::update(CapitalBatteryState& s, float dt, bool inRange,
+                                uint32_t* spooled) {
+    uint32_t fired = 0u, sp = 0u;
+    for (int i = 0; i < kCapitalGunCount; ++i) {
+        CapitalGun& g = s.gun[i];
+        if (g.hp <= 0) { g.spoolT = -1.0f; continue; }   // shot off: silent forever
+        if (!inRange)  { g.spoolT = -1.0f; continue; }   // stand down, keep cd
+        if (g.spoolT < 0.0f) {
+            g.cd -= dt;
+            if (g.cd <= 0.0f) {
+                g.spoolT = kGunSpool;                    // telegraph starts
+                sp |= (1u << i);
+            }
+        } else {
+            g.spoolT -= dt;
+            if (g.spoolT <= 0.0f) {                      // the bolt
+                g.spoolT = -1.0f;
+                g.cd     = kGunPeriod;
+                fired |= (1u << i);
+            }
+        }
+    }
+    if (spooled) *spooled = sp;
+    return fired;
+}
+
+bool CapitalBattery::gunAlive(const CapitalBatteryState& s, int i) {
+    return i >= 0 && i < kCapitalGunCount && s.gun[i].hp > 0;
+}
+
+int CapitalBattery::aliveGuns(const CapitalBatteryState& s) {
+    int n = 0;
+    for (int i = 0; i < kCapitalGunCount; ++i) if (s.gun[i].hp > 0) ++n;
+    return n;
+}
+
+bool CapitalBattery::damageGun(CapitalBatteryState& s, int i, int amount) {
+    if (i < 0 || i >= kCapitalGunCount || amount <= 0) return false;
+    CapitalGun& g = s.gun[i];
+    if (g.hp <= 0) return false;
+    g.hp -= amount;
+    if (g.hp <= 0) { g.hp = 0; g.spoolT = -1.0f; return true; }
+    return false;
 }
 
 // ----------------------------------------------------------------------------
@@ -630,6 +825,220 @@ bool runShipDamageSelfTest() {
         }
         check(CapitalDeathSequence::isActive(d),
               "T18c the death sequence fires at the end of a real kill run");
+    }
+
+    // ======================================================================
+    // T19..T21 — CAPITAL MOTION (owner: "The overlords ship should move
+    // around"). Bounds, dt-stability, phase-driven speed, adrift freeze.
+    // ======================================================================
+    // T19 — she MOVES, stays ON the arc (the arena bound), mass-appropriate.
+    {
+        CapitalMotionState mo{};
+        const float start[3] = { 2600.0f, 0.0f, 0.0f };
+        CapitalMotion::begin(mo, start);
+        check(std::fabs(mo.pos[0] - 2600.0f) < 1e-3f &&
+              std::fabs(mo.pos[2]) < 1e-3f &&
+              std::fabs(mo.fwd[0] + 1.0f) < 1e-4f,
+              "T19 motion begins at the reveal pose (2600,0,0 heading -X)");
+        float travelled = 0.0f, prev[3] = { mo.pos[0], mo.pos[1], mo.pos[2] };
+        bool onArc = true, speedOk = true;
+        for (int i = 0; i < 60 * 600; ++i) {          // ten full minutes
+            CapitalMotion::update(mo, 1.0f / 60.0f, false, false);
+            const float dx = mo.pos[0] - mo.anchor[0];
+            const float dz = mo.pos[2] - mo.anchor[2];
+            if (std::fabs(std::sqrt(dx*dx + dz*dz) - mo.radius) > 0.01f) onArc = false;
+            const float sx = mo.pos[0]-prev[0], sz = mo.pos[2]-prev[2];
+            travelled += std::sqrt(sx*sx + sz*sz);
+            prev[0]=mo.pos[0]; prev[1]=mo.pos[1]; prev[2]=mo.pos[2];
+            if (mo.speed > CapitalMotion::kCombatSpeed + 0.01f) speedOk = false;
+        }
+        check(onArc, "T19b ten minutes of patrol never leaves the arc (bounded)");
+        check(travelled > 6000.0f && speedOk,
+              "T19c she actually travels (>6 km in 10 min) at capped speed");
+        const float expect = CapitalMotion::kPatrolSpeed * 600.0f;
+        check(std::fabs(travelled - expect) < expect * 0.02f,
+              "T19d patrol distance matches kPatrolSpeed * t (dt-correct)");
+        check(std::fabs(mo.fwd[0]*mo.fwd[0] + mo.fwd[1]*mo.fwd[1] +
+                        mo.fwd[2]*mo.fwd[2] - 1.0f) < 1e-3f,
+              "T19e heading stays unit (the draw basis never degenerates)");
+    }
+    // T20 — dt-STABLE: 60 Hz and 240 Hz land within metres after a minute
+    //       (165 Hz rule: motion scales by dt, never per-frame).
+    {
+        CapitalMotionState a{}, b{};
+        const float start[3] = { 2600.0f, 0.0f, 0.0f };
+        CapitalMotion::begin(a, start);
+        CapitalMotion::begin(b, start);
+        for (int i = 0; i < 60 * 60;  ++i) CapitalMotion::update(a, 1.0f/60.0f,  true, false);
+        for (int i = 0; i < 240 * 60; ++i) CapitalMotion::update(b, 1.0f/240.0f, true, false);
+        const float dx = a.pos[0]-b.pos[0], dz = a.pos[2]-b.pos[2];
+        check(std::sqrt(dx*dx + dz*dz) < 2.0f,
+              "T20 60 Hz vs 240 Hz motion converges (<2 m after 60 s)");
+    }
+    // T21 — PHASE-DRIVEN: shields-down raises speed; adrift eases it to a
+    //       freeze WITHOUT snapping the heading.
+    {
+        CapitalMotionState mo{};
+        const float start[3] = { 0.0f, 0.0f, 0.0f };
+        CapitalMotion::begin(mo, start);
+        for (int i = 0; i < 60 * 30; ++i) CapitalMotion::update(mo, 1.0f/60.0f, true, false);
+        check(mo.phase == CapitalMovePhase::Combat &&
+              mo.speed > CapitalMotion::kPatrolSpeed + 4.0f,
+              "T21 shields down -> combat phase, speed rises toward kCombatSpeed");
+        const float fBefore[3] = { mo.fwd[0], mo.fwd[1], mo.fwd[2] };
+        float moved = 0.0f;
+        for (int i = 0; i < 60 * 40; ++i) {
+            const float p0[3] = { mo.pos[0], mo.pos[1], mo.pos[2] };
+            CapitalMotion::update(mo, 1.0f/60.0f, true, true);   // engines dead
+            if (i >= 60 * 35) {   // the last 5 s: she should be frozen
+                const float mx = mo.pos[0]-p0[0], mz = mo.pos[2]-p0[2];
+                moved += std::sqrt(mx*mx + mz*mz);
+            }
+        }
+        check(mo.phase == CapitalMovePhase::Adrift && mo.speed < 0.05f &&
+              moved < 0.5f,
+              "T21b engines dead -> speed eases to a dead stop (adrift freeze)");
+        const float dot = mo.fwd[0]*fBefore[0] + mo.fwd[1]*fBefore[1] +
+                          mo.fwd[2]*fBefore[2];
+        check(dot > 0.90f,
+              "T21c the freeze keeps her aspect (no heading snap while easing out)");
+    }
+
+    // ======================================================================
+    // T22 — CAPITAL GUN BATTERY (owner: "big mounted weapons that HURT.. but
+    //       I can shoot off"). Fire ceases from DESTROYED mounts only.
+    // ======================================================================
+    {
+        CapitalBatteryState bt{};
+        CapitalBattery::init(bt);
+        check(CapitalBattery::aliveGuns(bt) == kCapitalGunCount,
+              "T22 battery seeds all gun mounts alive");
+        // 12 s in range at 60 Hz: every gun spools + fires, staggered.
+        int firesPerGun[kCapitalGunCount] = {};
+        uint32_t spooled = 0u; bool spoolBeforeFire = true;
+        bool spoolSeen[kCapitalGunCount] = {};
+        for (int i = 0; i < 60 * 12; ++i) {
+            uint32_t sp = 0u;
+            const uint32_t f = CapitalBattery::update(bt, 1.0f/60.0f, true, &sp);
+            spooled |= sp;
+            for (int g = 0; g < kCapitalGunCount; ++g) {
+                if (sp & (1u << g)) spoolSeen[g] = true;
+                if (f & (1u << g)) {
+                    if (!spoolSeen[g]) spoolBeforeFire = false;   // telegraph law
+                    ++firesPerGun[g];
+                }
+            }
+        }
+        bool allFired = true;
+        for (int g = 0; g < kCapitalGunCount; ++g)
+            if (firesPerGun[g] < 2) allFired = false;
+        check(allFired && spooled == 0xFu,
+              "T22b every live mount telegraphs + fires on its own cadence");
+        check(spoolBeforeFire, "T22c no bolt without its spool telegraph first");
+        // Shoot off gun 1: it goes silent FOREVER; the others keep firing.
+        check(CapitalBattery::damageGun(bt, 1, 90),
+              "T22d a landed hit shears the mount (damageGun reports the kill)");
+        check(!CapitalBattery::gunAlive(bt, 1) &&
+              CapitalBattery::aliveGuns(bt) == kCapitalGunCount - 1,
+              "T22e the shot-off mount reads dead, the rest read alive");
+        int fires2[kCapitalGunCount] = {};
+        for (int i = 0; i < 60 * 12; ++i) {
+            const uint32_t f = CapitalBattery::update(bt, 1.0f/60.0f, true, nullptr);
+            for (int g = 0; g < kCapitalGunCount; ++g)
+                if (f & (1u << g)) ++fires2[g];
+        }
+        check(fires2[1] == 0 && fires2[0] > 0 && fires2[2] > 0 && fires2[3] > 0,
+              "T22f fire ceases from the DESTROYED mount only");
+        // Out of range: nothing fires, spools cancel.
+        CapitalBatteryState bt2{}; CapitalBattery::init(bt2);
+        uint32_t any = 0u;
+        for (int i = 0; i < 60 * 12; ++i)
+            any |= CapitalBattery::update(bt2, 1.0f/60.0f, false, nullptr);
+        check(any == 0u, "T22g out of range the whole battery stands down");
+        // Dead gun soaks no further kills; battery kGunHp * count == the
+        // Turrets subsystem pool (the physical<->model bridge stays exact).
+        check(!CapitalBattery::damageGun(bt, 1, 90),
+              "T22h a dead mount cannot be killed twice");
+        check(CapitalBattery::kSubQuarter * kCapitalGunCount == 120,
+              "T22i four gun kills == the full 120 HP Turrets subsystem");
+    }
+
+    // ======================================================================
+    // T23/T24 — THE TWO AUTHORED ENDINGS (owner: "either crash land on a
+    //           planet OR break up in space").
+    // ======================================================================
+    auto pumpLong = [](CapitalDeathState& s, std::vector<DeathEvent>& all) {
+        DeathEvent buf[CapitalDeathSequence::kMaxEventsPerStep];
+        for (int i = 0; i < 60 * 12 && !CapitalDeathSequence::isFinished(s); ++i) {
+            const int n = CapitalDeathSequence::step(s, 1.0f/60.0f, buf,
+                              CapitalDeathSequence::kMaxEventsPerStep);
+            for (int k = 0; k < n; ++k) all.push_back(buf[k]);
+        }
+    };
+    // T23 — DEORBIT CRASH: the wreck FALLS toward the planet under an entry
+    //       burn and terminates in the impact flash.
+    {
+        CapitalDeathState d{};
+        const float c[3] = { 2600.0f, 0.0f, 0.0f }, ax[3] = { 1, 0, 0 };
+        const float pd[3] = { -0.47f, 0.13f, -0.87f };   // hero-world sky ray
+        CapitalDeathSequence::begin(d, c, ax, 210.0f,
+                                    DeathOutcome::DeorbitCrash, pd);
+        check(d.outcome == DeathOutcome::DeorbitCrash,
+              "T23 deorbit arm keeps the crash outcome (planet dir valid)");
+        float plungePrev = -1.0f; bool plungeMono = true;
+        std::vector<DeathEvent> all;
+        DeathEvent buf[CapitalDeathSequence::kMaxEventsPerStep];
+        for (int i = 0; i < 60 * 12 && !CapitalDeathSequence::isFinished(d); ++i) {
+            const int n = CapitalDeathSequence::step(d, 1.0f/60.0f, buf,
+                              CapitalDeathSequence::kMaxEventsPerStep);
+            for (int k = 0; k < n; ++k) all.push_back(buf[k]);
+            if (d.plunge < plungePrev - 1e-4f) plungeMono = false;
+            plungePrev = d.plunge;
+        }
+        check(CapitalDeathSequence::isFinished(d) && plungeMono &&
+              d.plunge > 500.0f,
+              "T23b the wreck plunges monotonically >500 m toward the planet");
+        check(std::fabs(d.burn - 1.0f) < 1e-4f,
+              "T23c the atmosphere-entry burn ramps to full");
+        check(!all.empty() && all.front().kind == DeathFx::Rupture,
+              "T23d the deorbit still OPENS on the kill rupture");
+        // The terminal flash happens far DOWN the fall, not where she died.
+        bool coreFar = false;
+        for (const auto& e : all) {
+            if (e.kind != DeathFx::CoreDetonation) continue;
+            const float dx = e.pos[0]-c[0], dy = e.pos[1]-c[1], dz = e.pos[2]-c[2];
+            if (std::sqrt(dx*dx + dy*dy + dz*dz) > 400.0f) coreFar = true;
+        }
+        check(coreFar, "T23e the impact flash fires >400 m down the fall line");
+        // Determinism across two runs (same contract as T16).
+        CapitalDeathState d2{};
+        CapitalDeathSequence::begin(d2, c, ax, 210.0f,
+                                    DeathOutcome::DeorbitCrash, pd);
+        std::vector<DeathEvent> all2; pumpLong(d2, all2);
+        bool same = all.size() == all2.size();
+        for (size_t i = 0; same && i < all.size(); ++i)
+            same = all[i].kind == all2[i].kind &&
+                   std::fabs(all[i].pos[0]-all2[i].pos[0]) < 1e-5f &&
+                   std::fabs(all[i].pos[1]-all2[i].pos[1]) < 1e-5f &&
+                   std::fabs(all[i].pos[2]-all2[i].pos[2]) < 1e-5f;
+        check(same, "T23f the deorbit is bit-deterministic across runs");
+    }
+    // T24 — BREAKUP stays the breakup: no plunge, no burn — and a degenerate
+    //       planet dir DEMOTES a requested crash (nowhere to crash).
+    {
+        CapitalDeathState d{};
+        const float c[3] = { 0, 0, 0 }, ax[3] = { 1, 0, 0 };
+        CapitalDeathSequence::begin(d, c, ax, 210.0f);
+        std::vector<DeathEvent> all; pumpLong(d, all);
+        check(d.plunge == 0.0f && d.burn == 0.0f &&
+              (int)all.size() == CapitalDeathSequence::scheduleSize(),
+              "T24 the in-place breakup carries no plunge/burn (unchanged)");
+        CapitalDeathState d2{};
+        const float zero[3] = { 0, 0, 0 };
+        CapitalDeathSequence::begin(d2, c, ax, 210.0f,
+                                    DeathOutcome::DeorbitCrash, zero);
+        check(d2.outcome == DeathOutcome::BreakupInSpace,
+              "T24b a crash with no planet demotes to the space breakup");
     }
 
     x3::logInfo("ship-damage: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");

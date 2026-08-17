@@ -23,6 +23,7 @@
 #include "../intro_cockpit_rig.h"
 #include "../asset_root.h"
 #include "../headless_device.h"
+#include "../mesh_prims.h"              // capital gun-mount prims (base + barrel)
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -309,17 +310,102 @@ bool buildIntroCombatArt(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device) {
     if (rig.enemyModel.ok) rig.enemyDraw = x3::asset::makeDrawables(rig.enemyModel);
     rig.capModel = rig.loader->load("SpaceShip4.glb");
     if (rig.capModel.ok) rig.capDraw = x3::asset::makeDrawables(rig.capModel);
+    // The capital's PHYSICAL gun mounts (feat/overlord-encounter): prim-built
+    // in METRES at capital scale — a 22x14x22 m armored base block + a 30 m
+    // barrel (drawn twin, see drawIntroCapitalGun). A 1x1 gunmetal base color
+    // keeps the PBR route off the untextured-full-metal black (rule 5).
+    {
+        x3::prims::PrimMesh base = x3::prims::makeBox(11.0f, 7.0f, 11.0f,
+                                                      0.0f, 0.0f, 0.0f);
+        rig.gunBaseMesh = device.createMesh(base.verts.data(),
+            (uint32_t)base.verts.size(), base.index.data(),
+            (uint32_t)base.index.size());
+        x3::prims::PrimMesh barrel = x3::prims::makeCylinder(3.2f, 3.2f, 18.0f, 12);
+        rig.gunBarrelMesh = device.createMesh(barrel.verts.data(),
+            (uint32_t)barrel.verts.size(), barrel.index.data(),
+            (uint32_t)barrel.index.size());
+        const uint8_t gunPx[4] = { 58, 62, 72, 255 };     // dark gunmetal
+        rig.gunTex = device.createTexture(gunPx, 1, 1, /*srgb*/true);
+    }
     x3::logInfo("[introcockpit] combat art: enemy=" +
                 std::to_string(rig.enemyDraw.size()) + " drawable(s), capital=" +
-                std::to_string(rig.capDraw.size()) + " drawable(s)");
+                std::to_string(rig.capDraw.size()) + " drawable(s) + 4 gun mounts");
     return !rig.enemyDraw.empty();
+}
+
+void drawIntroCapitalGun(x3::rhi::IRenderDevice& device,
+                         const x3::rhi::FrameContext& frame,
+                         x3::rhi::MeshHandle baseMesh, x3::rhi::MeshHandle barrelMesh,
+                         x3::rhi::TextureHandle baseColor, x3::rhi::TextureHandle mr,
+                         const float pos[3], const float aimDir[3],
+                         bool alive, float spool) {
+    // One capital gun mount: an armored base block + a barrel slewed onto
+    // `aimDir` (the guns TRACK the player — that is what reads as a weapon).
+    // Destroyed: the barrel is GONE (shot off) and a scorched stub of the base
+    // remains, dark and unlit — the visible removal the owner asked for.
+    // `spool` in [0,1] drives a warm charge glow on a live mount's barrel
+    // (the telegraph is visible on the hull, not just the HUD).
+    if (!baseMesh.valid() || !barrelMesh.valid()) return;
+    // Aim basis: fwd = aimDir (unit-ish), up ~ world up re-orthonormalized.
+    float f[3] = { aimDir[0], aimDir[1], aimDir[2] };
+    const float fl = std::sqrt(f[0]*f[0] + f[1]*f[1] + f[2]*f[2]);
+    if (fl > 1e-5f) { f[0]/=fl; f[1]/=fl; f[2]/=fl; }
+    else            { f[0] = -1.0f; f[1] = 0.0f; f[2] = 0.0f; }
+    float up[3] = { 0.0f, 1.0f, 0.0f };
+    if (std::fabs(f[1]) > 0.95f) { up[0] = 1.0f; up[1] = 0.0f; }
+    float x[3] = { up[1]*f[2] - up[2]*f[1],
+                   up[2]*f[0] - up[0]*f[2],
+                   up[0]*f[1] - up[1]*f[0] };
+    const float xl = std::sqrt(x[0]*x[0] + x[1]*x[1] + x[2]*x[2]);
+    if (xl > 1e-5f) { x[0]/=xl; x[1]/=xl; x[2]/=xl; }
+    const float u[3] = { f[1]*x[2] - f[2]*x[1],
+                         f[2]*x[0] - f[0]*x[2],
+                         f[0]*x[1] - f[1]*x[0] };
+    const float scl = alive ? 1.0f : 0.55f;   // the stub is a shorn remnant
+    // BASE BLOCK (world-axis aligned: it is bolted to the hull).
+    {
+        float T[16] = { scl, 0, 0, 0,   0, scl, 0, 0,   0, 0, scl, 0,
+                        pos[0], pos[1], pos[2], 1.0f };
+        const float tintA[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        const float tintD[4] = { 0.28f, 0.26f, 0.25f, 1.0f };   // scorched
+        const float emisA[4] = { 0.10f, 0.11f, 0.13f, 1.0f };
+        const float emisD[4] = { 0.05f, 0.02f, 0.01f, 1.0f };   // faint hot metal
+        device.drawMeshPBR(frame, baseMesh, baseColor,
+                           x3::rhi::TextureHandle{}, mr,
+                           alive ? tintA : tintD, alive ? emisA : emisD, T,
+                           false, false, x3::rhi::TextureHandle{},
+                           x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
+                           /*selfLight=*/alive ? 0.16f : 0.06f);
+    }
+    if (!alive) return;   // the gun itself is GONE — stub only
+    // BARREL: prim cylinder is +Y-axis; build basis mapping +Y -> aim f.
+    // Offset the barrel forward so it protrudes from the base block.
+    {
+        const float bl = 1.0f;   // mesh is 30 m long (hy=15 half-height)
+        float T[16] = { x[0]*bl, x[1]*bl, x[2]*bl, 0,
+                        f[0]*bl, f[1]*bl, f[2]*bl, 0,     // +Y -> aim
+                        u[0]*bl, u[1]*bl, u[2]*bl, 0,
+                        pos[0] + f[0]*18.0f, pos[1] + f[1]*18.0f,
+                        pos[2] + f[2]*18.0f, 1.0f };
+        const float tint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        // The spool telegraph: the barrel heats amber as the shot charges.
+        const float emis[4] = { 0.10f + 1.20f * spool,
+                                0.10f + 0.55f * spool,
+                                0.12f + 0.18f * spool, 1.0f };
+        device.drawMeshPBR(frame, barrelMesh, baseColor,
+                           x3::rhi::TextureHandle{}, mr,
+                           tint, emis, T,
+                           false, false, x3::rhi::TextureHandle{},
+                           x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
+                           /*selfLight=*/0.16f + 0.5f * spool);
+    }
 }
 
 void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                         const std::vector<x3::asset::ModelDrawable>& draws,
                         const float pos[3], const float fwd[3], const float up[3],
                         float scale, x3::rhi::TextureHandle fallbackMr,
-                        float hitFlash, float emisScale) {
+                        float hitFlash, float emisScale, float entryBurn) {
     // FULL-ORIENTATION ship draw (combat readability + the muzzle fix): model
     // +Z -> `fwd` (3D — pitch/roll read on the hull, matching the physics quat
     // the wing muzzles are computed from; the yaw-only legacy draw left the hull
@@ -356,8 +442,14 @@ void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     // reads INSTANTLY at dogfight range (the impact sparks alone vanish at
     // 100 m+). Decays at the caller's rate (EnemyShip::hitFlash / kHitFlashSec).
     const float fl01 = hitFlash < 0.0f ? 0.0f : (hitFlash > 1.0f ? 1.0f : hitFlash);
-    const float tint[4] = { 1.0f + 2.0f * fl01, 1.0f + 0.9f * fl01,
-                            1.0f + 0.35f * fl01, 1.0f };
+    // ENTRY BURN (deorbit crash): drive the draw hard toward re-entry orange.
+    // Multiplicative on top of the hit-flash tint so the two axes compose;
+    // blue is CUT (not just red raised) or a pale hull washes to white.
+    const float eb = entryBurn < 0.0f ? 0.0f : (entryBurn > 1.0f ? 1.0f : entryBurn);
+    const float tint[4] = { (1.0f + 2.0f * fl01) * (1.0f + 1.6f * eb),
+                            (1.0f + 0.9f * fl01) * (1.0f + 0.25f * eb),
+                            (1.0f + 0.35f * fl01) * (1.0f - 0.62f * eb),
+                            1.0f };
     // CANON: SHIPS ARE SELF-LIT (Star Trek rule — owner, over a screenshot of his
     // fighter rendering as a black silhouette: "We need the ship to have emissive
     // tendencies like Star Trek ships do"). Same recipe as host_space drawShipAt:
@@ -402,7 +494,28 @@ void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             emis[0] = 0.30f; emis[1] = 0.34f; emis[2] = 0.40f; emis[3] = 1.0f;   // Trek window rows: crisp, not blanket
             emisTex = x3::rhi::TextureHandle{ dr.baseColorTexId };
         }
-        emis[0] *= emisBoost; emis[1] *= emisBoost * 0.92f; emis[2] *= emisBoost * 0.80f;
+        if (eb > 0.01f) {
+            // ENTRY BURN OVERRIDE: the authored emissive map only covers the
+            // running-light strips, so boosting it cannot set 450 m of hull
+            // alight. Re-gate the emissive onto the BASE COLOR map (every
+            // texel glows in proportion to its albedo) at a hot orange —
+            // texture-gated, so ACES shapes a white-hot core with an orange
+            // falloff instead of clipping (rule 5). Albedo tint alone loses
+            // to the white sun-specular wash; the emissive lane wins.
+            // The hull albedo is NEAR-BLACK (its lit look is mostly specular),
+            // so the gate needs an order of magnitude, not a nudge: a 0.05
+            // texel must still reach ~1.0 emitted red to beat the white
+            // specular wash. Mid texels bloom white-hot — correct for
+            // re-entry plasma.
+            emisTex = x3::rhi::TextureHandle{ dr.baseColorTexId };
+            emis[0] = (0.40f + 9.0f * eb) * emisBoost;
+            emis[1] = (0.32f + 2.8f * eb) * emisBoost;
+            emis[2] = (0.28f + 0.35f * eb) * emisBoost;
+        } else {
+            emis[0] *= emisBoost;
+            emis[1] *= emisBoost * 0.92f;
+            emis[2] *= emisBoost * 0.80f;
+        }
         const x3::rhi::TextureHandle mr =
             dr.mrTexId ? x3::rhi::TextureHandle{ dr.mrTexId } : fallbackMr;
         device.drawMeshPBR(frame, x3::rhi::MeshHandle{ dr.meshId },
