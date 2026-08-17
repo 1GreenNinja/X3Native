@@ -1182,6 +1182,87 @@ inline float contentGuard(float x, float z) {
     return g;
 }
 
+// ===========================================================================
+// THE UNDERGROUND RIVER's chain (see terrain.h). Derivation samples the
+// PRE-CORRIDOR, PRE-UR field: a thread_local flag makes authoredLandforms
+// skip the UR carve while the magic-static initializer below is measuring
+// naturals (no self-reference), and terrainCorridorDelta is subtracted so
+// the table cannot depend on road-registration order (determinism).
+// ===========================================================================
+namespace { thread_local bool g_skipUnderRiver = false; }
+
+// EXPORTED (terrain.h) — step out of the internal-helper anonymous namespace
+// so this IS x3::game::worldUnderRiverChain, not a shadowing local.
+} // namespace (internal helpers)
+
+const UnderRiverChain& worldUnderRiverChain() {
+    static const UnderRiverChain kChain = [] {
+        UnderRiverChain c;
+        // Authored route + per-node character (drops/pools/widths — the map
+        // block in terrain.h names every clearance).
+        struct N { float x, z, drop, rush, hw, bed; bool pool; };
+        const N kN[] = {
+            { -1040.0f, 1080.0f, 0.0f, 0.0f, 5.5f, 2.0f, false },  // 0 head grotto
+            { -1075.0f,  860.0f, 0.0f, 0.0f, 5.5f, 2.0f, false },
+            { -1090.0f,  560.0f, 0.0f, 0.0f, 5.5f, 2.0f, false },
+            { -1055.0f,  300.0f, 0.0f, 0.2f, 5.5f, 2.0f, false },
+            {  -960.0f,   60.0f, 2.5f, 1.0f, 5.0f, 2.2f, false },  // 4 DROP 1
+            {  -905.0f,  -60.0f, 0.0f, 0.5f, 5.5f, 2.0f, false },
+            {  -700.0f, -140.0f, 0.0f, 0.0f, 9.0f, 3.5f, true  },  // 6 cavern pool
+            {  -640.0f, -260.0f, 2.5f, 1.0f, 5.0f, 2.2f, false },  // 7 DROP 2
+            {  -580.0f, -360.0f, 0.0f, 0.4f, 5.5f, 2.0f, false },
+            {  -520.0f, -420.0f, 0.0f, 0.0f, 5.5f, 2.0f, false },
+            // The tail rides the massif's east flank down to the CANYON MOUTH
+            // (C0 is at (-140,-520)) — north of the R1 ravine the whole way
+            // (R1 head (-410,-455): a tail through there floated water over
+            // R1's own cut — measured, node 11 of the first table). The
+            // sketch's exit south: the river surfaces where the canyon
+            // begins, and the canyon carries it away.
+            {  -480.0f, -430.0f, 1.5f, 0.8f, 5.0f, 2.2f, false },  // 10 gorge steps
+            {  -370.0f, -420.0f, 0.0f, 0.4f, 5.5f, 2.0f, false },
+            {  -265.0f, -465.0f, 1.0f, 0.8f, 5.0f, 2.2f, false },  // 12 last drop
+            {  -190.0f, -490.0f, 0.0f, 0.3f, 9.0f, 3.5f, true  },  // 13 plunge pool
+        };
+        c.n = (int)(sizeof(kN) / sizeof(kN[0]));
+        float total = 0.0f;
+        for (int i = 0; i < c.n; ++i) {
+            c.x[i] = kN[i].x; c.z[i] = kN[i].z;
+            c.hw[i] = kN[i].hw; c.bedDrop[i] = kN[i].bed;
+            c.rush[i] = kN[i].rush; c.pool[i] = kN[i].pool;
+            if (i > 0) {
+                const float dx = c.x[i] - c.x[i-1], dz = c.z[i] - c.z[i-1];
+                total += std::sqrt(dx * dx + dz * dz);
+            }
+            c.cum[i] = total;
+        }
+        // Naturals: pre-corridor, pre-UR (the flag guards re-entry).
+        g_skipUnderRiver = true;
+        for (int i = 0; i < c.n; ++i)
+            c.natural[i] = terrainHeightAtWorld(c.x[i], c.z[i])
+                         - terrainCorridorDelta(c.x[i], c.z[i]);
+        g_skipUnderRiver = false;
+        // The derived table: head 8 m under its ground (a sealed spring), a
+        // guaranteed overall fall, authored drops, never above ground, and
+        // strictly descending whatever the country does.
+        float extra = 0.0f;
+        for (int i = 0; i < c.n; ++i) extra += kN[i].drop;
+        const float headY   = c.natural[0] - 8.0f;
+        const float portalY = std::min(c.natural[c.n-1] - 1.2f,
+                                       headY - 0.0045f * total - extra);
+        float dsum = 0.0f;
+        for (int i = 0; i < c.n; ++i) {
+            dsum += kN[i].drop;
+            c.w[i] = headY + (portalY + extra - headY) * (c.cum[i] / total) - dsum;
+            c.w[i] = std::min(c.w[i], c.natural[i] - 1.0f);
+            if (i > 0) c.w[i] = std::min(c.w[i], c.w[i-1] - 0.25f);
+        }
+        return c;
+    }();
+    return kChain;
+}
+
+namespace {   // internal helpers resume (see the export note above)
+
 // Apply the authored landform layer (bluff -> canyon ridge+cut -> ravines ->
 // river levee+cut). Pure + deterministic in (x,z); only runs when
 // cfg.worldFeatures (the canonical world), so every legacy self-test config
@@ -1234,6 +1315,27 @@ float authoredLandforms(float h, float x, float z) {
         if (d < 30.0f) {
             const float g = facilityGuard(x, z) * contentGuard(x, z);
             const float target = bed + (h - bed) * sstep(4.0f, 15.0f, d);
+            if (target < h) h += (target - h) * g;
+        }
+    }
+
+    // ---- THE UNDERGROUND RIVER's trench (W-UNDERRIVER; see terrain.h). ----
+    // Absolute carve, THE RIVER's proven pattern — a corridor's depth-below-
+    // natural lerp would let the floor breach the waterline between nodes.
+    // g_skipUnderRiver guards the chain derivation's own sampling (the flag
+    // is checked BEFORE the chain static so derivation can never re-enter).
+    if (!g_skipUnderRiver &&
+        x > -1160.0f && x < -140.0f && z > -540.0f && z < 1150.0f) {
+        const UnderRiverChain& uc = worldUnderRiverChain();
+        float d, w, bed;
+        polyClosest(uc.x, uc.z, uc.w, uc.n, x, z, d, w, uc.bedDrop, &bed);
+        if (d < kURWallOutW) {
+            const float g = facilityGuard(x, z) * contentGuard(x, z);
+            // bed -> rock-beach shelf -> walls easing to the natural country.
+            const float t1 = sstep(kURBedHalfW, kURBedHalfW + 3.5f, d);
+            const float t2 = sstep(kURShelfHalfW, kURWallOutW, d);
+            const float inner = (w - bed) + ((w + kURShelfLift) - (w - bed)) * t1;
+            const float target = inner + (h - inner) * t2;
             if (target < h) h += (target - h) * g;
         }
     }
@@ -1916,6 +2018,19 @@ float worldWaterLevelAt(float x, float z) {
         polyClosest(rc.x, rc.z, rc.w, rc.n, x, z, d, w);
     }
     if (d <= kWorldRiverHalfWidth) return w;
+    // THE UNDERGROUND RIVER (W-UNDERRIVER): wet within the chain's per-node
+    // half-width at the derived level — the SAME table the trench carve and
+    // the drawn ribbon (app/underground_river.cpp) consume. One truth: swim,
+    // CONTACT LAW, fish and the visible water can never disagree down here.
+    {
+        const UnderRiverChain& uc = worldUnderRiverChain();
+        if (uc.n >= 2 &&
+            x > -1160.0f && x < -140.0f && z > -540.0f && z < 1150.0f) {
+            float du, wu, hwu;
+            polyClosest(uc.x, uc.z, uc.w, uc.n, x, z, du, wu, uc.hw, &hwu);
+            if (du <= hwu) return wu;
+        }
+    }
     // OCEAN: inside the offshore basin's influence ring AND the terrain bowl is
     // actually below the sea surface there (the -6 shore ring stays dry beach).
     const float bx = x - kBasinCx, bz = z - kBasinCz;

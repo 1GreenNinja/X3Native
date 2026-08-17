@@ -32,6 +32,7 @@
 #include "../ridge_road.h"       // the dirt road along the tops, lot -> the bore's massif
 #include "../river_bridge.h"
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
+#include "../underground_river.h" // W-UNDERRIVER — the river under the mountain
 #include "../traffic.h"          // W-TRAFFIC — AI traffic on the 16-lane freeway
 #include "../gas_station.h"      // W-STATIONS — forecourts + the fuel stub
 #include "../vehicle.h"
@@ -1140,6 +1141,47 @@ int hostTunnel(HostContext& hc) {
         }
     }
 
+    // ==== THE UNDERGROUND RIVER (W-UNDERRIVER) ==============================
+    // The sketch's blue line from the NW lake site down under the bluff
+    // plateau to the plunge pool by the canyon-feeding ravine. The trench is
+    // already in the height field (terrain.cpp carves it from the same
+    // derived table worldWaterLevelAt answers), so swimming, CONTACT LAW and
+    // the streamer all work down there for free; this builds the rock vault,
+    // the luminescent rushing water and the cavern light. DEFAULT ON;
+    // X3_UNDERRIVER=0 is the off door (NO_SLOP rule 6).
+    x3::game::UndergroundRiver underRiver;
+    {
+        const char* e = std::getenv("X3_UNDERRIVER");
+        if (!(e && e[0] == '0')) {
+            std::vector<x3::rhi::PointLight> url;
+            const auto ur = underRiver.build(scene, *device, nullptr, &url);
+            if (ur.built && !url.empty()) {
+                // Join the host's light array (ONE setPointLights owner —
+                // same rule the town followed).
+                std::vector<x3::rhi::PointLight> pl = tunnel.lights();
+                if (townOn) pl.insert(pl.end(), town.lights().begin(), town.lights().end());
+                pl.insert(pl.end(), url.begin(), url.end());
+                device->setPointLights(pl.data(), (uint32_t)pl.size());
+            }
+            // Conflict probe (measurements, not vibes): a road corridor
+            // crossing the trench would be a real defect — log the deepest
+            // foreign lowering along the spine so it cannot hide.
+            {
+                const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
+                float worst = 0.0f, wx = 0.0f, wz = 0.0f;
+                for (int i = 0; i < uc.n; ++i) {
+                    const float dCa = x3::game::terrainCorridorDelta(uc.x[i], uc.z[i]);
+                    if (dCa < worst) { worst = dCa; wx = uc.x[i]; wz = uc.z[i]; }
+                }
+                if (worst < -0.05f)
+                    x3::logWarn("[under-river] a registered corridor lowers the spine by "
+                                + std::to_string(-worst) + " m at ("
+                                + std::to_string(wx) + ", " + std::to_string(wz)
+                                + ") — check for a road crossing the trench");
+            }
+        }
+    }
+
     // ---- THE INTERIOR PROGRAM, decided and COUNTED at boot -----------------
     // This is the whole hook the rooms lane needs from the host: the fitout says
     // where the service doors are, the room program says what is behind them,
@@ -2016,6 +2058,7 @@ int hostTunnel(HostContext& hc) {
                 // boats/fish so the capture proves the LIVING river.
                 riverWaterClock += dt;
                 applyRiverWater(riverWaterClock, cam[0], cam[2]);
+                if (underRiver.built()) underRiver.update(dt, scene);
                 device->setSkyTime(riverWaterClock);   // cloud drift (see the interactive loop)
                 riverLife.prePhysics(dt);
                 // TRAFFIC IN CAPTURES TOO (gotcha 4.1b's lesson: moving
@@ -3611,6 +3654,7 @@ int hostTunnel(HostContext& hc) {
         // ---- THE RIVER HAS WATER (Tim: "Can we pour the water in now").
         // One lambda with the headless path — same tone, same clock shape.
         riverWaterClock += fdt;
+        if (underRiver.built()) underRiver.update(fdt, scene);
         {
             // Focus = whoever the camera is following this frame.
             float wfx = startPos[0], wfz = startPos[2];

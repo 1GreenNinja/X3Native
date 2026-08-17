@@ -519,6 +519,7 @@ struct CliOptions {
     bool        testRouteFrame = false;
     bool        testRoadNetwork = false;   // --test-roadnetwork
     bool        testRiverBridge = false;   // --test-riverbridge (valley road + Bridge No.1)
+    bool        testUnderRiver = false;    // --test-underriver (the river under the mountain)
     bool        testTraffic = false;       // --test-traffic (freeway AI traffic)
     bool        testGasStation = false;    // --test-gasstation (W-STATIONS forecourts + fuel stub)
     // Headless editor proof (--screenshot-editor [path.png]): init ImGui in a headless

@@ -79,6 +79,7 @@ struct TestFlags {
     bool testRouteFrame = false;
     bool testRoadNetwork = false;     // --test-roadnetwork (the ring tours)      // --test-routeframe (polyline frame, P1)
     bool testRiverBridge = false;     // --test-riverbridge (valley road + Bridge No.1)
+    bool testUnderRiver = false;      // --test-underriver (the river under the mountain)
     bool testTraffic = false;         // --test-traffic (freeway AI traffic)
     bool testGasStation = false;      // --test-gasstation (W-STATIONS forecourts + fuel stub)
     bool testTunnelDrive = false;      // --test-tunneldrive (drive-through the demo bore, negative-controlled)

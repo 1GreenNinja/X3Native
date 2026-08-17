@@ -200,6 +200,63 @@ uint32_t worldOceanShoreTable(float* outRadii, uint32_t maxSectors);
 constexpr float kWorldRiverRainRiseMax = 0.9f;   // hard bound (m); levee min is 0.6*c
 void  setWorldRiverRainRise(float riseM);        // clamped to [0, kWorldRiverRainRiseMax]
 float worldRiverRainRise();
+
+// ===========================================================================
+// THE UNDERGROUND RIVER (W-UNDERRIVER — ROAD_NETWORK_SKETCH_V2.png's blue line
+// from the NW lake down past the city; owner: "we want an underground river...
+// with rock beaches... movie grade.. rushing water" / "under the mountain..
+// That will be Amazinng").
+//
+// MECHANISM: cut-and-cover, the project's decided answer (see TERRAIN CORRIDOR
+// DEPRESSION above — no CSG, no voxels, no holes). The trench below is carved
+// ABSOLUTELY into authoredLandforms (the same pattern as THE RIVER: bed at
+// waterY-bedDrop, walkable rock BEACH shelves at waterY+0.45, walls easing to
+// the natural country), and app/underground_river.cpp closes it with a rock
+// VAULT mesh so the hill reads shut from above; inside, the trench IS the
+// cavern floor, so streaming, collision, CONTACT LAW and worldWaterLevelAt
+// all keep working untouched.
+//
+// THE WATER TABLE IS DERIVED, NOT GUESSED (NO_SLOP rule 9): node waterY ramps
+// from natural(head)-8 (the spring grotto under the future NW lake site) down
+// to natural(portal)-1.2 (the plunge pool where it surfaces beside the R1
+// ravine that already feeds the canyon), with authored whitewater DROPS
+// subtracted, clamped under the PRE-CORRIDOR natural ground everywhere, and
+// re-monotonized — so the run descends strictly whatever the fbm country
+// does. Sampling skips the UR carve itself (no self-reference) and subtracts
+// corridor deltas (roads may or may not be registered yet — the table must
+// not depend on registration order).
+//
+// Route (authored, world XZ): head grotto (-1040,1080) at the future lake's
+// outlet -> S under the west country -> UNDER THE BLUFF PLATEAU (the +20 m
+// high ground west of x=-450 — the map's "under the mountain" reach, nodes
+// 4..8) -> a cavern pool -> two whitewater drops -> a stepped gorge opening
+// to daylight -> plunge pool at (-445,-455), 35 m from the R1 ravine head
+// whose authored job is already "feeds the canyon off the bluff's south
+// shoulder". Clearances: Scrapyard pad guard 493 m, West Outpost >= 245 m,
+// facility keep-out >= 280 m, canyon spine >= 270 m.
+// ===========================================================================
+struct UnderRiverChain {
+    static constexpr int kMax = 16;
+    int   n = 0;
+    float x[kMax] = {}, z[kMax] = {};
+    float w[kMax] = {};        // derived water surface Y (strictly descending)
+    float natural[kMax] = {};  // pre-corridor, pre-UR ground at the node
+    float hw[kMax] = {};       // water half-width (pools wider)
+    float bedDrop[kMax] = {};  // bed depth below w (pools deeper)
+    float rush[kMax] = {};     // whitewater factor 0..1 (drops)
+    bool  pool[kMax] = {};
+    float cum[kMax] = {};      // along-chain length (m)
+};
+const UnderRiverChain& worldUnderRiverChain();
+// Carve geometry (PAIRED with the carve in terrain.cpp authoredLandforms and
+// the vault/selftest in app/underground_river.cpp):
+constexpr float kURBedHalfW    = 4.5f;    // wet channel floor half-width
+constexpr float kURShelfHalfW  = 12.0f;   // rock-beach shelf out to here (walkable)
+constexpr float kURWallOutW    = 24.0f;   // walls ease to natural country by here
+constexpr float kURShelfLift   = 0.45f;   // beach height ABOVE the water surface
+// The gorge: the trench's last reach before the plunge pool runs OPEN to the
+// sky (no vault) — the river steps down into daylight.
+constexpr float kURGorgeLen    = 90.0f;
 // Fill `out` with the working chain's nodes at the CURRENT risen level (the
 // same per-node cap worldWaterLevelAt applies). Returns the node count
 // (<= maxN). This is the array the drawn river surface renders from.
