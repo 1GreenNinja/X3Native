@@ -133,6 +133,10 @@ const Destination kDest[] = {
 { "tunnel",       "Terrain Corridor Tunnel",  "Drive a road bored through a hillside - the corridor-depression tech.", "tunnel",            DestGroup::DevWorld,   false },
 { "complex",      "Survival Complex",         "The 7-level survival complex (gamma fold).",                            "complex",           DestGroup::DevWorld,   false },
 { "mines",        "The Mines",                "Mine-entrance showcase - Armory rock, timber portals, glowing mouths.", "mines",             DestGroup::DevWorld,   false },
+// LEVEL ARCHITECT — the cutaway. Not a place you stand in; a place you LOOK at
+// the whole tower from, in X-ray, floor by floor. Listed because the directory
+// claims to list every world the build can dispatch.
+{ "cutaway",      "Cutaway View",             "Level Architect: the whole facility in X-ray - stacked floors, hover cards.", "cutaway",  DestGroup::DevWorld,   false },
 };
 constexpr uint32_t kDestCount = (uint32_t)(sizeof(kDest) / sizeof(kDest[0]));
 

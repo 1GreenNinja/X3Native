@@ -329,6 +329,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.townShot = true; o.worldMode = "tunnel"; o.screenshot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.townShotDir = argv[++i];
         }
+        else if (a == "--screenshot-cutaway") {                                   // LEVEL ARCHITECT cutaway proof set
+            o.cutawayShot = true; o.worldMode = "cutaway"; o.screenshot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.cutawayShotDir = argv[++i];
+        }
+        else if (a == "--test-cutaway") o.testCutaway = true;
         else if (a == "--test-clubnpcs") o.testClubNpcs = true;
         else if (a == "--test-jukebox") o.testJukebox = true;
         else if (a == "--test-listen") o.testListen = true;
