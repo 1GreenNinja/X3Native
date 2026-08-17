@@ -2184,7 +2184,13 @@ int hostTunnel(HostContext& hc) {
                 jakePrevFeet[0] = ft.x; jakePrevFeet[1] = ft.y; jakePrevFeet[2] = ft.z;
                 const float planar = std::sqrt(vx * vx + vz * vz);
                 if (planar > 0.4f) {
-                    const float want = std::atan2(vz, vx) + 1.5707963f;
+                    // THE BABYLON FLIP (Tim: "this is the X3 Babylon thing we
+                    // nEVER fixed"): the rig is authored facing +Z, the engine
+                    // walks -Z — 180 degrees from the old clone-rig constant.
+                    // Baked here; jake_yaw (degrees) remains the live dial —
+                    // if any rig still disagrees, dial it, report the number,
+                    // and THAT gets baked next.
+                    const float want = std::atan2(vz, vx) - 1.5707963f;
                     float d = want - jakeYaw;
                     while (d >  3.14159265f) d -= 6.2831853f;
                     while (d < -3.14159265f) d += 6.2831853f;
