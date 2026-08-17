@@ -1,0 +1,839 @@
+[WARN]  [assets] 12/245 manifest asset(s) missing locally (e.g. assets/surface_library/terrain_bluff_clay/albedo.png) and the asset store was unreachable — run: python tools/asset_store.py fetch --all
+[INFO]  X3Engine starting...
+[INFO]  [boot] static init + args                     +     2.8 ms  (t=     2.8 ms)
+[INFO]  [boot] decode prewarm kicked (async)          +     0.2 ms  (t=     2.9 ms)
+[INFO]  window: 1977x1056
+[INFO]  [boot] glfw init + window                     +    88.8 ms  (t=    91.7 ms)
+[INFO]  [rhi] VALIDATION: layers=OFF sync-validation=OFF  <-- NO VUID CHECKING: a '0 VUID' result from this run is MEANINGLESS  <-- NO SYNC CHECKING: missing barriers will NOT be reported
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [audio] miniaudio up: 48000 Hz, 6 ch
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [boot] rhi: vk instance                       +   507.4 ms  (t=   599.1 ms)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [rhi] RT: ray-query SUPPORTED (+ position fetch) — RT AO/reflections/DDGI available
+[INFO]  [boot] rhi: phys-device select                +    76.1 ms  (t=   675.2 ms)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] decode prewarm: 41 file(s) in 688.0 ms (parallel, pre-device)
+[INFO]  [cull] dedicated compute queue available (family 2) — Tier 1 eligible
+[INFO]  [rhi] device ready: NVIDIA GeForce RTX 5090 (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)
+[INFO]  [boot] rhi: instance+device                   +   282.4 ms  (t=   957.6 ms)
+[INFO]  [rhi] pipeline cache: WARM — loaded 1818289 bytes from D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\build\bin\Release\x3pipeline.cache
+[INFO]  [rhi] GPU timestamp queries enabled (timestampPeriod=1.000000 ns/tick)
+[INFO]  [boot] rhi: swapchain+frames+shadow           +   235.0 ms  (t=  1192.6 ms)
+[INFO]  [rhi] RT soft-shadow mesh pipelines ready (mesh_rt.frag: inline ray-query sun + point shadows)
+[INFO]  [rhi] GPU-driven mesh pipeline ready (bindless textures + per-object SSBO + multidraw-indirect)
+[INFO]  [rhi] planet body pipeline ready (push-constant model + bindless triplanar PBR)
+[INFO]  [rhi] translucent glass pipeline ready (transparent pass)
+[INFO]  [rhi] directional shadow pipeline ready (2048^2 depth, depth-only, PCF compare sampler)
+[INFO]  [cull] tier 1 [mesh-shader capable]
+[INFO]  [cull] Tier 1 async-compute path READY (timeline semaphore + compute pools)
+[INFO]  [cull] D15 GPU cull ready (caps tier 1, r_cullpath gates the path)
+[INFO]  [cull] HZB pyramid ready: 988x528 mips=10
+[INFO]  [boot] rhi: core pipelines (createGraphics)   +    79.0 ms  (t=  1271.7 ms)
+[INFO]  [boot] GLB preload kicked (mid device-init, async)
+[INFO]  [rhi] HUD font role Console/HudMono -> Consolas (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Consolas.ttf) [monospace]
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Fire Extinguisher.glb in 0.5 ms (prims=1 mats=0 anims=0)
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Security Cam.glb in 0.6 ms (prims=1 mats=0 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Hanging Light.glb in 1.0 ms (prims=2 mats=1 anims=0)
+[INFO]  [rhi] HUD font role Title -> Orbitron-Bold (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Orbitron\static\Orbitron-Bold.ttf) [proportional]
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Wall Light.glb in 1.8 ms (prims=2 mats=1 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [rhi] HUD font role Menu -> SpaceGrotesk-Medium (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Space_Grotesk\static\SpaceGrotesk-Medium.ttf) [proportional]
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Barrel.glb in 52.1 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Crate Short.glb in 51.9 ms (prims=1 mats=1 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [rhi] HUD font role Enemy -> Tektur_Condensed-Bold (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Tektur\static\Tektur_Condensed-Bold.ttf) [proportional]
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [rhi] HUD font role News -> SpaceMono-Bold (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Space_Mono\SpaceMono-Bold.ttf) [monospace]
+[INFO]  [rhi] HUD fonts: 5/5 role atlases baked from TTF
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Garbage Bin.glb in 131.8 ms (prims=1 mats=1 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Duct Vent.glb in 129.2 ms (prims=1 mats=1 anims=0)
+[INFO]  [rhi] HUD 2D pipeline ready (NDC quads + TTF/bitmap glyph atlas, alpha-blended, no depth)
+[INFO]  [boot] rhi: hud (font atlas + pipelines)      +   146.5 ms  (t=  1418.2 ms)
+[INFO]  [gltf] loaded AnnaBodySuit_anim.glb in 167.6 ms (prims=1 mats=1 anims=7)
+[INFO]  [rhi] analytic sky pipeline ready (full-screen tri, far-depth, depth-test no-write)
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Pallet.glb in 194.2 ms (prims=1 mats=1 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded WeaponEnergyPistol2.glb in 221.7 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded WeaponBFG.glb in 221.2 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded WeaponEnergyPistol.glb in 221.8 ms (prims=1 mats=1 anims=0)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [rhi] IBL ready (env 256 + irradiance 32 + prefilter 128/5mip + BRDF LUT 256, split-sum)
+[INFO]  [boot] rhi: sky+ibl objects                   +   357.3 ms  (t=  1775.5 ms)
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Duct Straight.glb in 489.8 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Crate Long.glb in 502.7 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Exit Sign.glb in 495.4 ms (prims=2 mats=1 anims=0)
+[INFO]  [gltf] loaded WeaponRailgun.glb in 509.5 ms (prims=5 mats=1 anims=0)
+[INFO]  [gltf] loaded WeaponShotgun2.glb in 511.5 ms (prims=1 mats=1 anims=0)
+[INFO]  [rhi] volumetric light scattering pipeline ready (sun shafts + point-light haze)
+[INFO]  [rhi] HDR post pipeline ready (R16G16B16A16_SFLOAT scene + 5-mip bloom + TAA resolve + ACES composite)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_Ceiling_A.glb in 510.3 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded OverLordEnforcer99.glb in 479.9 ms (prims=1 mats=1 anims=1)
+[INFO]  [gltf] loaded WeaponRocketLauncher.glb in 517.6 ms (prims=5 mats=1 anims=0)
+[INFO]  [gltf] loaded AnnaCasual.glb in 524.7 ms (prims=1 mats=1 anims=3)
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded AnnaTactical.glb in 529.5 ms (prims=1 mats=1 anims=3)
+[INFO]  [gltf] loaded alien_crawler_anim.glb in 530.8 ms (prims=1 mats=1 anims=10)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_Door_A.glb in 597.2 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded SciFi_Warehouse_Kit/Fusebox 01.glb in 589.9 ms (prims=1 mats=1 anims=0)
+[INFO]  [rhi] velocity pre-pass ready (RG16F per-object motion vectors -> TAA)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_Light_A.glb in 595.8 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_Wall_B.glb in 596.7 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_Wall_A.glb in 598.9 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_Console.glb in 597.2 ms (prims=1 mats=1 anims=0)
+[INFO]  [rhi] SSAO ready (half-res 32-tap hemisphere + depth-aware blur, depth-reconstruction)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_Pipes_A.glb in 599.6 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_DoorFrame_A.glb in 603.8 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_Floor_A.glb in 602.0 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded ModularSciFi_Interior/SM_Wall_C.glb in 605.7 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded Detention/SM_Hospital_Bed.glb in 591.2 ms (prims=18 mats=3 anims=0)
+[INFO]  [rhi] water pipeline ready (Gerstner grid, sky-reflection + depth-refraction + sun glint)
+[INFO]  [rhi] particle + decal pipelines ready (instanced billboards, additive/alpha, soft vs scene depth)
+[INFO]  [rhi] GPU-compute debris world ready (compute integrate + instanced cube draw, capacity 65536)
+[INFO]  [rhi] GPU compute skinning ready (compute LBS pre-pass into per-frame skinned vbo)
+[INFO]  [boot] rhi: post/ssao/gi/fx pipelines         +   109.6 ms  (t=  1885.1 ms)
+[INFO]  [rt] acceleration-structure module ready (ray-query inline RT)
+[INFO]  [gltf] loaded marcus_webb_anim.glb in 642.6 ms (prims=1 mats=1 anims=9)
+[INFO]  [gltf] loaded Characters/Drone.glb in 826.3 ms (prims=1 mats=1 anims=0)
+[INFO]  [rhi] boot precompile: 59 pipelines total (8 RT-chain) in 69.3 ms (warm cache) — rtao=1 refl=1 ddgi=1; no pipeline may be created after frame 1
+[INFO]  [boot] rhi: RT precompile                     +   234.1 ms  (t=  2119.3 ms)
+[WARN]  [asset] mountPak failed (not a zip / missing): base.x3pak
+[INFO]  [boot] audio init + sfx loads                 +     1.9 ms  (t=  2121.2 ms)
+[INFO]  [boot] physics init                           +     1.7 ms  (t=  2122.8 ms)
+[INFO]  [gltf] loaded Jake_22_actions.glb in 953.1 ms (prims=1 mats=1 anims=24)
+[INFO]  [gltf] loaded chief_martinez.glb in 963.0 ms (prims=1 mats=1 anims=1)
+[INFO]  [gltf] loaded chief_martinez_anim.glb in 956.3 ms (prims=1 mats=1 anims=9)
+[INFO]  [boot] FIRST FRAME (world build complete)     +   146.9 ms  (t=  2269.7 ms)
+[INFO]  [rhi] reflection DENOISE stage ON (edge-aware a-trous)
+[INFO]  [csm] OFF -> legacy single cascade (ortho half-extent 45.0 m, camera-locked) | probe@100m -> uv 1.389,-0.057 depth 0.712
+[INFO]  [boot] ibl first bake: 24.6 ms (incl. pending upload retire)
+[INFO]  [gltf] loaded DroneOscillating.glb in 991.0 ms (prims=5 mats=5 anims=1)
+[INFO]  [gltf] preloadModels: 41/41 warmed in 1028.0 ms (parallel)
+[INFO]  [boot] loading frame (pre-build, IBL bake)    +    42.1 ms  (t=  2311.8 ms)
+[INFO]  [intro] runInteractiveIntro: beat sequence start
+[WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
+[INFO]  [gltf] loaded Cockpit/fighter_cockpit.glb in 124.6 ms (prims=101 mats=20 anims=0)
+[INFO]  [introcockpit] built: 126 entit(ies) from 128 drawable(s) — 20 emissive screen(s), 3 glass pane(s)
+[INFO]  [gltf] loaded SpaceShip.glb in 111.3 ms (prims=1 mats=1 anims=0)
+[INFO]  [gltf] loaded SpaceShip4.glb in 137.4 ms (prims=1 mats=1 anims=0)
+[INFO]  [introcockpit] combat art: enemy=1 drawable(s), capital=1 drawable(s)
+[INFO]  [intro] beat 'cine.flight' (cinematic clip [0.000000..20.000000] s) [audio]
+[INFO]  [cutscene] playing 'cold_open' clip [0.000000..20.000000] s — press K to skip
+[INFO]  [gltf] loaded rigged_glb/JakeFighterShip.glb in 285.9 ms (prims=15 mats=8 anims=0)
+[INFO]  [cutscene] actor 'jake_ship' loaded rigged_glb/JakeFighterShip.glb (15 drawables, normScale=1.528903)
+[INFO]  [gltf] loaded rigged_glb/JakeFighterShip.glb in 2.0 ms (CACHED: prims=15 mats=8 anims=0)
+[INFO]  [cutscene] actor 'jake_ship_escape' loaded rigged_glb/JakeFighterShip.glb (15 drawables, normScale=1.528903)
+[INFO]  [gltf] loaded rigged_glb/SpaceShip4.glb in 30.3 ms (prims=1 mats=1 anims=0)
+[INFO]  [cutscene] actor 'capital_ship' loaded rigged_glb/SpaceShip4.glb (1 drawables, normScale=23.087290)
+[INFO]  [gltf] loaded rigged_glb/SpaceShip4.glb in 5.5 ms (CACHED: prims=1 mats=1 anims=0)
+[INFO]  [cutscene] actor 'capital_ship_escape' loaded rigged_glb/SpaceShip4.glb (1 drawables, normScale=23.087290)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_02.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_02_normal.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_01_detail.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_02_spec.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_yellow_05.png (128x128, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ColorMapSqr.png (256x256, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ice_01_normal.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ice_01.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/icedetail_01.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_blue_03.png (128x128, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Gas/Textures/planet_gas_03.png (2048x1024, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Gas/Textures/planet_gas_08.png (2048x1024, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_yellow_01.png (128x128, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Lava/Textures/lava_01.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Lava/Textures/lavadetail_01.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ice_04_normal.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Lava/Textures/lavadistmap.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_red_04.png (128x128, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/terrestrialdetail_01.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/landmask_01.png (4096x4096, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/terrestrialdetail_01_normal.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Misc/Textures/polegradient_01.png (128x128, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/cloudscap_01.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/clouds_01.png (4096x4096, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/lights_01.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/lights_01_uv.png (256x128, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/lights_01_mask.png (1024x512, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Sun/Textures/sunsurface_01.png (1024x1024, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Thunderstorm/Textures/storm_02.png (1024x1024, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/Atmosphere_01.png (512x4, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Sun/Textures/suncorona_01.png (1024x1024, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Gas/Textures/ring_01.png (1024x64, srgb)
+[INFO]  [rhi] upload batch: 595 uploads in 6 flush(es), 1.0 ms total flush wait
+[WARN]  [audio] load failed: D:/GameDevAssets\Sci-fi Evolution Gift Pack/Alarm.wav (ma=-7) — silent for this sound
+[INFO]  [tlas-db] TLAS double-buffer: builds=64 deviceWaits=1 (waits/1000builds=15; boot=1, steady=0) lastBuildCpu=0.025ms ring=3-slot
+[INFO]  [pacing] SPIKE frame=67 cpu=11.14ms (median 5.17) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=71 cpu=31.42ms (median 5.63) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=75 cpu=25.92ms (median 5.63) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=92 cpu=16.27ms (median 6.19) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=94 cpu=23.72ms (median 6.19) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=96 cpu=24.34ms (median 6.20) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=100 cpu=20.71ms (median 6.20) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=101 cpu=30.17ms (median 6.37) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=104 cpu=14.61ms (median 6.20) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=109 cpu=30.00ms (median 6.20) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=111 cpu=17.05ms (median 6.20) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=113 cpu=19.71ms (median 6.20) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=118 cpu=44.38ms (median 6.19) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=132 cpu=15.87ms (median 6.15) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=133 cpu=27.39ms (median 6.19) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=135 cpu=12.51ms (median 6.19) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=139 cpu=15.78ms (median 6.19) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=147 cpu=14.61ms (median 6.19) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=153 cpu=16.34ms (median 6.15) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=163 cpu=15.27ms (median 6.15) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=165 cpu=19.40ms (median 6.19) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=170 cpu=25.56ms (median 6.19) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=171 cpu=32.26ms (median 6.20) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=175 cpu=25.76ms (median 6.20) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=179 cpu=18.73ms (median 6.20) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=183 cpu=14.02ms (median 6.20) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=185 cpu=20.92ms (median 6.20) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=194 cpu=17.23ms (median 6.52) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=195 cpu=26.48ms (median 6.52) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=212 cpu=23.05ms (median 6.15) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=213 cpu=21.34ms (median 6.15) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=214 cpu=13.67ms (median 6.15) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=215 cpu=18.92ms (median 6.15) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=216 cpu=21.53ms (median 6.19) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=218 cpu=13.44ms (median 6.15) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=223 cpu=19.49ms (median 6.13) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=228 cpu=20.44ms (median 6.13) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=230 cpu=14.50ms (median 6.09) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=232 cpu=26.64ms (median 6.13) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=237 cpu=19.89ms (median 6.15) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=240 cpu=12.63ms (median 6.15) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=241 cpu=15.72ms (median 6.15) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=246 cpu=21.09ms (median 6.15) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=248 cpu=16.42ms (median 6.15) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=250 cpu=19.33ms (median 6.15) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=252 cpu=14.99ms (median 6.15) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=254 cpu=29.20ms (median 6.21) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=258 cpu=17.36ms (median 6.21) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=266 cpu=33.35ms (median 6.62) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=268 cpu=39.21ms (median 6.62) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=270 cpu=45.03ms (median 6.62) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=272 cpu=42.40ms (median 6.62) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=274 cpu=48.33ms (median 6.64) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=275 cpu=37.12ms (median 6.91) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=276 cpu=40.98ms (median 6.91) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=277 cpu=42.91ms (median 7.00) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=278 cpu=95.62ms (median 7.36) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=280 cpu=39.46ms (median 7.36) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=282 cpu=38.76ms (median 7.36) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=284 cpu=36.02ms (median 7.44) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=286 cpu=33.25ms (median 7.44) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=288 cpu=30.50ms (median 7.44) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=290 cpu=32.02ms (median 8.00) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=293 cpu=29.46ms (median 8.00) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=297 cpu=26.37ms (median 8.46) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=301 cpu=20.57ms (median 7.90) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=302 cpu=22.83ms (median 8.00) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=304 cpu=43.02ms (median 8.00) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=307 cpu=27.22ms (median 8.46) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=308 cpu=30.15ms (median 8.46) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=328 cpu=21.92ms (median 9.86) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=340 cpu=36.11ms (median 11.62) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=342 cpu=26.06ms (median 11.41) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=350 cpu=38.67ms (median 11.41) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=354 cpu=28.13ms (median 11.62) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=360 cpu=33.04ms (median 11.84) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=365 cpu=31.66ms (median 12.12) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=389 cpu=27.47ms (median 11.71) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=429 cpu=26.06ms (median 11.58) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=465 cpu=26.20ms (median 11.44) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=496 cpu=25.57ms (median 11.34) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=541 cpu=29.88ms (median 11.31) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=570 cpu=31.10ms (median 10.88) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=576 cpu=23.66ms (median 10.80) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=582 cpu=25.49ms (median 10.80) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=593 cpu=29.82ms (median 10.85) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=596 cpu=35.42ms (median 10.88) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=631 cpu=36.68ms (median 10.49) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=666 cpu=23.11ms (median 10.72) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=678 cpu=21.74ms (median 10.80) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=680 cpu=27.51ms (median 10.80) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=699 cpu=23.85ms (median 10.71) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=740 cpu=20.62ms (median 10.30) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=787 cpu=23.38ms (median 9.80) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=804 cpu=23.41ms (median 9.57) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=805 cpu=29.02ms (median 9.57) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=829 cpu=30.38ms (median 9.40) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=840 cpu=24.76ms (median 9.26) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=867 cpu=21.36ms (median 8.02) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=871 cpu=18.18ms (median 8.02) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=877 cpu=18.51ms (median 8.02) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=881 cpu=16.97ms (median 8.02) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=893 cpu=22.81ms (median 7.86) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=898 cpu=16.04ms (median 7.72) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=902 cpu=17.57ms (median 7.72) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=905 cpu=22.01ms (median 7.72) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=909 cpu=15.27ms (median 7.54) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=915 cpu=17.86ms (median 7.70) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=919 cpu=16.61ms (median 7.54) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=923 cpu=16.76ms (median 7.70) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=928 cpu=15.59ms (median 7.36) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=932 cpu=22.53ms (median 7.54) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=934 cpu=18.48ms (median 7.36) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=939 cpu=28.36ms (median 7.18) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=957 cpu=25.18ms (median 7.18) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=959 cpu=24.51ms (median 7.18) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=962 cpu=23.36ms (median 7.13) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=970 cpu=18.40ms (median 6.94) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=976 cpu=15.86ms (median 6.84) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=980 cpu=19.89ms (median 6.73) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=982 cpu=15.87ms (median 6.84) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=986 cpu=15.03ms (median 6.84) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=988 cpu=15.40ms (median 6.73) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=990 cpu=19.79ms (median 6.66) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=994 cpu=13.67ms (median 6.66) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=998 cpu=20.49ms (median 6.66) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1002 cpu=18.22ms (median 6.66) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1013 cpu=17.97ms (median 6.64) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1017 cpu=20.08ms (median 6.73) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1022 cpu=14.05ms (median 6.73) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1024 cpu=29.80ms (median 6.73) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1030 cpu=15.25ms (median 6.84) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1046 cpu=19.08ms (median 6.73) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1048 cpu=17.10ms (median 6.73) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1056 cpu=17.90ms (median 6.90) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1064 cpu=13.90ms (median 6.84) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1069 cpu=17.38ms (median 6.90) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1073 cpu=18.21ms (median 6.84) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1076 cpu=18.35ms (median 6.84) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1083 cpu=18.98ms (median 6.60) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1097 cpu=17.08ms (median 6.60) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1101 cpu=15.49ms (median 6.60) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1110 cpu=17.02ms (median 6.57) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1114 cpu=18.04ms (median 6.57) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1121 cpu=23.68ms (median 6.49) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1137 cpu=16.51ms (median 6.57) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1141 cpu=18.50ms (median 6.57) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1143 cpu=13.46ms (median 6.57) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1145 cpu=19.71ms (median 6.57) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1149 cpu=22.45ms (median 6.57) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1156 cpu=17.21ms (median 6.57) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1160 cpu=17.99ms (median 6.57) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1162 cpu=14.53ms (median 6.57) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1169 cpu=33.22ms (median 6.57) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1173 cpu=17.01ms (median 6.57) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1181 cpu=19.38ms (median 6.45) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1183 cpu=19.75ms (median 6.45) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1191 cpu=13.95ms (median 6.23) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1197 cpu=17.77ms (median 6.22) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1201 cpu=17.30ms (median 6.22) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1210 cpu=16.99ms (median 6.06) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1213 cpu=13.09ms (median 6.22) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1217 cpu=13.57ms (median 6.22) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1224 cpu=20.36ms (median 6.22) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1228 cpu=24.06ms (median 6.06) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1230 cpu=12.45ms (median 6.06) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1232 cpu=18.70ms (median 6.22) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1234 cpu=13.50ms (median 6.23) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1236 cpu=13.00ms (median 6.23) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1240 cpu=13.57ms (median 6.22) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1251 cpu=20.66ms (median 6.23) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1259 cpu=13.90ms (median 6.06) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1264 cpu=18.17ms (median 6.23) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1268 cpu=12.06ms (median 6.03) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1276 cpu=15.98ms (median 6.02) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1288 cpu=18.55ms (median 6.04) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1290 cpu=17.38ms (median 6.04) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1292 cpu=13.17ms (median 6.03) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1296 cpu=17.15ms (median 6.03) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1301 cpu=15.76ms (median 6.04) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1303 cpu=18.08ms (median 6.04) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1305 cpu=15.90ms (median 6.04) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1307 cpu=17.22ms (median 6.04) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1309 cpu=12.43ms (median 6.04) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1311 cpu=17.22ms (median 6.04) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1315 cpu=21.17ms (median 6.04) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1319 cpu=17.90ms (median 6.04) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1321 cpu=14.43ms (median 6.04) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1328 cpu=21.59ms (median 6.04) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1336 cpu=21.67ms (median 6.05) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1340 cpu=12.48ms (median 6.05) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1346 cpu=14.03ms (median 6.03) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1348 cpu=19.50ms (median 6.03) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1352 cpu=19.60ms (median 6.02) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1356 cpu=15.76ms (median 6.03) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1360 cpu=19.17ms (median 6.03) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1362 cpu=18.90ms (median 6.03) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1369 cpu=14.60ms (median 6.05) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1375 cpu=19.01ms (median 6.11) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1379 cpu=12.46ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1381 cpu=17.15ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1385 cpu=17.36ms (median 6.46) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1389 cpu=15.70ms (median 6.24) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1393 cpu=12.65ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1395 cpu=16.30ms (median 6.24) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1403 cpu=19.51ms (median 6.46) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1407 cpu=16.82ms (median 6.46) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1409 cpu=12.93ms (median 6.46) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1411 cpu=17.08ms (median 6.46) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1417 cpu=19.06ms (median 6.24) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1419 cpu=15.49ms (median 6.24) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1422 cpu=22.36ms (median 6.46) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1427 cpu=18.91ms (median 6.24) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1438 cpu=22.70ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1440 cpu=12.56ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1442 cpu=14.41ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1444 cpu=14.70ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1446 cpu=17.23ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1451 cpu=26.68ms (median 6.23) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1453 cpu=12.79ms (median 6.23) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1461 cpu=12.57ms (median 6.23) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1462 cpu=19.06ms (median 6.24) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1474 cpu=17.16ms (median 6.74) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1476 cpu=23.13ms (median 6.74) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1479 cpu=18.25ms (median 6.72) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1486 cpu=29.12ms (median 6.33) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1491 cpu=20.67ms (median 6.33) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1499 cpu=22.39ms (median 6.31) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1501 cpu=18.76ms (median 6.24) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1503 cpu=14.62ms (median 6.24) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1504 cpu=13.18ms (median 6.24) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1506 cpu=15.36ms (median 6.24) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1512 cpu=26.47ms (median 6.23) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1516 cpu=13.55ms (median 6.23) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1518 cpu=19.34ms (median 6.23) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1524 cpu=15.80ms (median 6.31) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1526 cpu=12.63ms (median 6.31) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1528 cpu=22.69ms (median 6.31) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1534 cpu=12.99ms (median 6.31) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1548 cpu=16.22ms (median 6.23) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1556 cpu=16.70ms (median 6.11) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1568 cpu=18.20ms (median 6.20) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1576 cpu=16.94ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1584 cpu=14.64ms (median 6.19) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1588 cpu=19.52ms (median 6.20) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1599 cpu=16.07ms (median 6.02) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1619 cpu=15.09ms (median 5.99) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1621 cpu=15.11ms (median 5.99) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1623 cpu=13.45ms (median 5.96) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1625 cpu=19.39ms (median 5.99) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1629 cpu=21.39ms (median 5.99) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1631 cpu=12.06ms (median 5.99) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1633 cpu=15.14ms (median 5.96) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1637 cpu=19.32ms (median 5.96) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1639 cpu=15.16ms (median 5.96) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1646 cpu=21.48ms (median 5.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1651 cpu=16.96ms (median 5.88) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1653 cpu=13.85ms (median 5.88) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1657 cpu=16.33ms (median 5.88) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1659 cpu=17.94ms (median 5.88) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1663 cpu=12.93ms (median 5.82) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1668 cpu=18.16ms (median 5.73) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1672 cpu=12.84ms (median 5.64) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1692 cpu=13.86ms (median 5.73) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1708 cpu=13.37ms (median 5.73) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1716 cpu=12.11ms (median 5.73) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1722 cpu=13.39ms (median 5.76) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1728 cpu=12.99ms (median 5.76) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1732 cpu=12.54ms (median 5.76) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1736 cpu=11.88ms (median 5.94) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1738 cpu=12.42ms (median 5.73) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1742 cpu=11.63ms (median 5.27) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1746 cpu=11.97ms (median 4.89) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1748 cpu=11.77ms (median 4.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1750 cpu=11.98ms (median 4.89) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1752 cpu=11.59ms (median 4.89) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1754 cpu=12.87ms (median 4.89) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1756 cpu=10.27ms (median 4.89) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1758 cpu=12.07ms (median 4.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1760 cpu=10.41ms (median 4.89) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1762 cpu=11.73ms (median 4.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1764 cpu=11.83ms (median 4.89) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1766 cpu=11.56ms (median 4.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1768 cpu=14.28ms (median 4.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1772 cpu=11.61ms (median 4.89) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1776 cpu=11.87ms (median 4.89) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1778 cpu=13.75ms (median 4.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1780 cpu=10.86ms (median 4.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1782 cpu=11.25ms (median 4.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1784 cpu=10.68ms (median 4.89) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1786 cpu=11.42ms (median 4.41) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1788 cpu=11.35ms (median 4.41) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1790 cpu=11.56ms (median 4.41) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1792 cpu=11.43ms (median 3.86) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=1794 cpu=11.58ms (median 4.41) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [cutscene] 'cold_open' complete
+[INFO]  [intro] beat 'cine.reveal' (cinematic clip [20.000000..30.000000] s) [audio]
+[INFO]  [cutscene] playing 'cold_open' clip [20.000000..30.000000] s — press K to skip
+[INFO]  [gltf] loaded rigged_glb/JakeFighterShip.glb in 2.5 ms (CACHED: prims=15 mats=8 anims=0)
+[INFO]  [cutscene] actor 'jake_ship' loaded rigged_glb/JakeFighterShip.glb (15 drawables, normScale=1.528903)
+[INFO]  [gltf] loaded rigged_glb/JakeFighterShip.glb in 2.3 ms (CACHED: prims=15 mats=8 anims=0)
+[INFO]  [cutscene] actor 'jake_ship_escape' loaded rigged_glb/JakeFighterShip.glb (15 drawables, normScale=1.528903)
+[INFO]  [gltf] loaded rigged_glb/SpaceShip4.glb in 4.0 ms (CACHED: prims=1 mats=1 anims=0)
+[INFO]  [cutscene] actor 'capital_ship' loaded rigged_glb/SpaceShip4.glb (1 drawables, normScale=23.087290)
+[INFO]  [gltf] loaded rigged_glb/SpaceShip4.glb in 3.7 ms (CACHED: prims=1 mats=1 anims=0)
+[INFO]  [cutscene] actor 'capital_ship_escape' loaded rigged_glb/SpaceShip4.glb (1 drawables, normScale=23.087290)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_02.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_02_normal.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_01_detail.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_02_spec.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_yellow_05.png (128x128, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ColorMapSqr.png (256x256, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ice_01_normal.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ice_01.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/icedetail_01.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_blue_03.png (128x128, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Gas/Textures/planet_gas_03.png (2048x1024, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Gas/Textures/planet_gas_08.png (2048x1024, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_yellow_01.png (128x128, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Lava/Textures/lava_01.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Lava/Textures/lavadetail_01.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ice_04_normal.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Lava/Textures/lavadistmap.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_red_04.png (128x128, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/terrestrialdetail_01.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/landmask_01.png (4096x4096, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/terrestrialdetail_01_normal.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Misc/Textures/polegradient_01.png (128x128, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/cloudscap_01.png (2048x2048, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/clouds_01.png (4096x4096, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/lights_01.png (2048x2048, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/lights_01_uv.png (256x128, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/lights_01_mask.png (1024x512, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Sun/Textures/sunsurface_01.png (1024x1024, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Thunderstorm/Textures/storm_02.png (1024x1024, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/Atmosphere_01.png (512x4, srgb)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Sun/Textures/suncorona_01.png (1024x1024, linear)
+[INFO]  [cutscene]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Gas/Textures/ring_01.png (1024x64, srgb)
+[INFO]  [rhi] upload batch: 104 uploads in 1 flush(es), 0.1 ms total flush wait
+[WARN]  [audio] load failed: D:/GameDevAssets\Sci-fi Evolution Gift Pack/Alarm.wav (ma=-7) — silent for this sound
+[INFO]  [pacing] SPIKE frame=2712 cpu=1776.60ms (median 8.74) gpu=0.23ms | pso+0 mod+0 pools+0 allocs+0 asbuild+18 +iblbake
+[INFO]  [pacing] SPIKE frame=2721 cpu=11.92ms (median 3.25) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=2722 cpu=7.60ms (median 3.29) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3303 cpu=12.93ms (median 6.05) gpu=0.22ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3577 cpu=16.50ms (median 6.08) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3578 cpu=17.67ms (median 6.08) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3579 cpu=39.55ms (median 6.09) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3580 cpu=33.08ms (median 6.09) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3581 cpu=33.51ms (median 6.10) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3589 cpu=21.04ms (median 6.10) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3604 cpu=17.40ms (median 6.08) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3607 cpu=23.71ms (median 6.08) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3608 cpu=40.53ms (median 6.08) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3609 cpu=16.80ms (median 6.09) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3614 cpu=32.92ms (median 6.08) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3615 cpu=13.41ms (median 6.09) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3616 cpu=20.33ms (median 6.09) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3619 cpu=28.23ms (median 6.10) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3621 cpu=32.94ms (median 6.11) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3624 cpu=18.58ms (median 6.10) gpu=0.24ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3627 cpu=41.60ms (median 6.12) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3628 cpu=39.46ms (median 6.15) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3629 cpu=21.37ms (median 6.15) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3630 cpu=64.64ms (median 6.15) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3631 cpu=16.78ms (median 6.15) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3632 cpu=32.13ms (median 6.16) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3633 cpu=22.97ms (median 6.19) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3636 cpu=19.13ms (median 6.21) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3645 cpu=34.05ms (median 6.15) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3646 cpu=72.65ms (median 6.19) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3647 cpu=79.05ms (median 6.20) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3648 cpu=28.68ms (median 6.20) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3664 cpu=12.49ms (median 6.15) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3676 cpu=12.89ms (median 6.28) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3682 cpu=51.33ms (median 6.21) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3683 cpu=26.46ms (median 6.21) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3684 cpu=22.52ms (median 6.28) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3685 cpu=15.24ms (median 6.40) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3686 cpu=16.62ms (median 6.40) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3688 cpu=38.16ms (median 6.42) gpu=0.25ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3697 cpu=31.04ms (median 6.42) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3699 cpu=31.94ms (median 6.47) gpu=0.27ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3701 cpu=57.37ms (median 6.61) gpu=0.27ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3702 cpu=71.04ms (median 6.67) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3703 cpu=37.44ms (median 6.67) gpu=0.26ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3795 cpu=23.31ms (median 6.28) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3797 cpu=30.13ms (median 6.28) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3798 cpu=28.49ms (median 6.47) gpu=0.27ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3799 cpu=18.93ms (median 6.47) gpu=0.27ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3800 cpu=15.22ms (median 6.51) gpu=0.27ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3820 cpu=37.37ms (median 5.80) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3821 cpu=27.41ms (median 5.80) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3822 cpu=18.49ms (median 6.01) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3834 cpu=11.34ms (median 5.03) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3853 cpu=12.58ms (median 5.86) gpu=0.29ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3854 cpu=17.35ms (median 5.86) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3855 cpu=19.09ms (median 5.86) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3876 cpu=22.90ms (median 6.02) gpu=0.29ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3878 cpu=12.09ms (median 6.04) gpu=0.29ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3955 cpu=14.91ms (median 6.07) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3959 cpu=20.10ms (median 6.22) gpu=0.28ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3967 cpu=13.25ms (median 6.41) gpu=0.30ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3994 cpu=15.57ms (median 7.06) gpu=0.30ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=3999 cpu=17.99ms (median 7.27) gpu=0.30ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=4030 cpu=16.82ms (median 7.69) gpu=0.32ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=4040 cpu=17.99ms (median 7.84) gpu=0.32ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=4066 cpu=24.46ms (median 8.09) gpu=0.31ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [cutscene] 'cold_open' complete
+[INFO]  [intro] beat 'play.dodge' (interactive: 2 enemies, 8.000000 s timeout)
+[INFO]  [intro-feel] strafeAccel=110.000000 linearAccel=130.000000 noseFollow=0.000000 flightAssist=0.800000 assistDelay=0.450000 maxStrafeSpeed=160.000000 targetHold=1.600000 lookSmoothing=22.000000 chaseLagMax=8.000000 chaseLagRate=7.500000 lookBias=0.150000 cockpitSway=1.000000  (override: X3_SPACE_<KEY>=v or space.<key>=v in x3native_settings.cfg)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_02.png (2048x2048, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_02_normal.png (2048x2048, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_01_detail.png (2048x2048, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/moon_02_spec.png (2048x2048, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_yellow_05.png (128x128, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ColorMapSqr.png (256x256, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ice_01_normal.png (2048x2048, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ice_01.png (2048x2048, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/icedetail_01.png (2048x2048, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_blue_03.png (128x128, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Gas/Textures/planet_gas_03.png (2048x1024, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Gas/Textures/planet_gas_08.png (2048x1024, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_yellow_01.png (128x128, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Lava/Textures/lava_01.png (2048x2048, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Lava/Textures/lavadetail_01.png (2048x2048, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Ice/Textures/ice_04_normal.png (2048x2048, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Lava/Textures/lavadistmap.png (2048x2048, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/sunset_red_04.png (128x128, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/terrestrialdetail_01.png (2048x2048, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/landmask_01.png (4096x4096, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/terrestrialdetail_01_normal.png (2048x2048, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Misc/Textures/polegradient_01.png (128x128, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/cloudscap_01.png (2048x2048, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/clouds_01.png (4096x4096, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/lights_01.png (2048x2048, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/lights_01_uv.png (256x128, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Terrestrial/Textures/lights_01_mask.png (1024x512, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Sun/Textures/sunsurface_01.png (1024x1024, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Thunderstorm/Textures/storm_02.png (1024x1024, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/Atmosphere_01.png (512x4, srgb)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Sun/Textures/suncorona_01.png (1024x1024, linear)
+[INFO]  [intro]: loaded C:/Users/Tim/X3/Assets/FORGE3D/Planets/Gas/Textures/ring_01.png (1024x64, srgb)
+[INFO]  [intro] dogfight sky = Kethzar Prime (214 ly from Sol), 6 bodies + SOL pinpoint
+[INFO]  [intro] flyable star hung at 11 km along the sky sun ray (r=1.1 km; heat 7 km, shield-dive inside)
+[INFO]  [gltf] loaded JakeFighterShip_textured.glb in 296.0 ms (prims=1 mats=1 anims=0)
+[INFO]  [intro] player ship 3P model=loaded
+[INFO]  [pacing] SPIKE frame=4086 cpu=2842.14ms (median 8.09) gpu=0.32ms | pso+0 mod+0 pools+0 allocs+0 asbuild+5 +iblbake
+[INFO]  [pacing] SPIKE frame=4224 cpu=12.10ms (median 6.04) gpu=1.30ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [intro-sfx] first trigger: enemy_laser (3D at muzzle)
+[INFO]  [intro-sfx] first trigger: lock_chirp (lock acquired)
+[INFO]  [pacing] SPIKE frame=4415 cpu=12.07ms (median 5.55) gpu=1.31ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=4574 cpu=12.62ms (median 5.31) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=4584 cpu=12.77ms (median 5.10) gpu=1.38ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=4700 cpu=13.61ms (median 6.06) gpu=1.30ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5019 cpu=18.25ms (median 5.92) gpu=1.32ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5033 cpu=18.19ms (median 5.73) gpu=1.27ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5045 cpu=16.19ms (median 5.46) gpu=1.37ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5053 cpu=18.78ms (median 5.41) gpu=1.27ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5063 cpu=13.02ms (median 5.34) gpu=1.29ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5163 cpu=12.67ms (median 5.16) gpu=1.48ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5197 cpu=40.81ms (median 6.20) gpu=1.41ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5198 cpu=28.91ms (median 6.20) gpu=1.52ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5260 cpu=13.61ms (median 5.98) gpu=1.69ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5261 cpu=13.53ms (median 6.00) gpu=1.70ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5262 cpu=13.50ms (median 6.00) gpu=1.93ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5296 cpu=31.72ms (median 5.82) gpu=1.55ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5297 cpu=21.49ms (median 5.90) gpu=1.73ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5298 cpu=24.20ms (median 5.90) gpu=1.56ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5299 cpu=22.95ms (median 5.90) gpu=1.66ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5300 cpu=35.20ms (median 5.90) gpu=1.58ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5301 cpu=21.84ms (median 5.92) gpu=1.80ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5302 cpu=12.43ms (median 5.92) gpu=1.78ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5303 cpu=17.10ms (median 5.93) gpu=1.75ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5304 cpu=26.65ms (median 5.93) gpu=1.80ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5305 cpu=25.07ms (median 5.93) gpu=1.66ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5306 cpu=28.01ms (median 5.93) gpu=1.65ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5307 cpu=21.59ms (median 5.93) gpu=1.85ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5321 cpu=12.66ms (median 6.12) gpu=1.90ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5322 cpu=36.44ms (median 6.14) gpu=1.78ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5323 cpu=35.54ms (median 6.14) gpu=1.85ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5324 cpu=31.14ms (median 6.19) gpu=1.85ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5326 cpu=33.12ms (median 6.32) gpu=1.84ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5328 cpu=15.31ms (median 6.32) gpu=1.85ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5343 cpu=14.84ms (median 6.64) gpu=1.74ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5350 cpu=23.83ms (median 6.82) gpu=1.69ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5351 cpu=17.04ms (median 6.82) gpu=1.83ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5356 cpu=19.47ms (median 6.97) gpu=1.90ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5455 cpu=15.35ms (median 6.88) gpu=1.79ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5462 cpu=27.39ms (median 6.88) gpu=1.74ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5464 cpu=16.58ms (median 6.93) gpu=1.75ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5473 cpu=14.28ms (median 7.00) gpu=2.08ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5474 cpu=15.76ms (median 7.00) gpu=1.92ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5475 cpu=19.98ms (median 7.00) gpu=1.81ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5476 cpu=21.40ms (median 7.00) gpu=1.98ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5477 cpu=32.51ms (median 7.04) gpu=1.57ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5478 cpu=39.05ms (median 7.04) gpu=1.66ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5479 cpu=15.30ms (median 7.04) gpu=1.92ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5481 cpu=16.55ms (median 7.04) gpu=2.04ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5482 cpu=20.82ms (median 7.04) gpu=2.16ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5494 cpu=19.31ms (median 7.13) gpu=1.59ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5496 cpu=20.55ms (median 7.18) gpu=1.66ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5509 cpu=16.03ms (median 7.31) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5511 cpu=17.03ms (median 7.31) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5515 cpu=14.86ms (median 7.32) gpu=1.40ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5516 cpu=15.03ms (median 7.45) gpu=1.37ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5519 cpu=25.61ms (median 7.66) gpu=1.40ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5531 cpu=22.49ms (median 9.13) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5533 cpu=26.21ms (median 9.57) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5536 cpu=24.88ms (median 9.91) gpu=1.67ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5541 cpu=26.68ms (median 10.60) gpu=1.38ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5550 cpu=30.43ms (median 12.12) gpu=1.40ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5551 cpu=31.91ms (median 12.31) gpu=1.60ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5553 cpu=36.38ms (median 12.59) gpu=1.41ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5554 cpu=28.91ms (median 12.64) gpu=1.48ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5555 cpu=31.86ms (median 12.68) gpu=1.38ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5558 cpu=34.34ms (median 12.98) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5560 cpu=33.68ms (median 13.01) gpu=1.40ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5567 cpu=35.96ms (median 13.43) gpu=1.45ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5572 cpu=56.55ms (median 13.93) gpu=1.43ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5574 cpu=38.89ms (median 14.01) gpu=1.51ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5578 cpu=38.84ms (median 14.28) gpu=1.47ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5580 cpu=30.47ms (median 15.03) gpu=1.47ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5581 cpu=36.78ms (median 15.07) gpu=1.38ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5621 cpu=47.51ms (median 16.70) gpu=1.49ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5623 cpu=37.82ms (median 16.74) gpu=1.37ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5662 cpu=39.09ms (median 18.93) gpu=1.57ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5876 cpu=29.36ms (median 13.38) gpu=1.96ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5943 cpu=28.45ms (median 13.07) gpu=1.46ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5949 cpu=36.17ms (median 13.17) gpu=1.43ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=5950 cpu=30.59ms (median 13.17) gpu=1.54ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6077 cpu=36.21ms (median 14.75) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6096 cpu=30.77ms (median 15.34) gpu=1.67ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6104 cpu=31.90ms (median 15.66) gpu=1.35ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6106 cpu=32.51ms (median 15.76) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6241 cpu=33.30ms (median 16.52) gpu=1.41ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6274 cpu=48.52ms (median 16.17) gpu=1.41ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6311 cpu=34.79ms (median 17.13) gpu=1.61ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6399 cpu=37.77ms (median 14.24) gpu=1.55ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6444 cpu=30.77ms (median 13.49) gpu=1.42ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6453 cpu=44.86ms (median 13.56) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6454 cpu=29.02ms (median 13.56) gpu=1.35ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6469 cpu=34.85ms (median 13.99) gpu=1.37ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6475 cpu=29.37ms (median 14.19) gpu=1.64ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6492 cpu=36.02ms (median 14.87) gpu=1.46ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6511 cpu=36.48ms (median 15.43) gpu=1.53ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6515 cpu=42.47ms (median 15.59) gpu=1.54ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6556 cpu=33.31ms (median 15.80) gpu=1.64ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6633 cpu=24.30ms (median 12.15) gpu=1.63ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6678 cpu=31.20ms (median 12.05) gpu=1.49ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6695 cpu=31.17ms (median 12.03) gpu=1.47ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6725 cpu=31.32ms (median 12.17) gpu=1.59ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6754 cpu=27.47ms (median 12.38) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6776 cpu=28.55ms (median 12.43) gpu=1.43ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6780 cpu=33.74ms (median 12.50) gpu=1.45ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6784 cpu=27.78ms (median 12.57) gpu=1.57ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6786 cpu=28.92ms (median 12.58) gpu=1.38ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6789 cpu=27.76ms (median 12.58) gpu=1.55ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6790 cpu=30.59ms (median 12.58) gpu=1.34ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6792 cpu=27.37ms (median 12.58) gpu=1.43ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6800 cpu=26.08ms (median 13.00) gpu=1.58ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6803 cpu=41.26ms (median 13.06) gpu=1.64ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6806 cpu=30.69ms (median 13.08) gpu=1.37ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6809 cpu=29.14ms (median 13.15) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6811 cpu=35.85ms (median 13.17) gpu=1.52ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6816 cpu=28.13ms (median 13.71) gpu=1.33ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6908 cpu=36.89ms (median 16.05) gpu=1.41ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6945 cpu=38.51ms (median 15.31) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6996 cpu=33.88ms (median 14.43) gpu=1.33ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6997 cpu=35.66ms (median 14.48) gpu=1.32ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=6998 cpu=35.38ms (median 14.48) gpu=1.45ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7001 cpu=45.12ms (median 14.50) gpu=1.35ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7006 cpu=46.17ms (median 14.67) gpu=1.38ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7009 cpu=34.44ms (median 14.88) gpu=1.42ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7012 cpu=35.64ms (median 14.92) gpu=1.57ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7013 cpu=37.06ms (median 14.97) gpu=1.64ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7016 cpu=37.42ms (median 15.15) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7018 cpu=46.31ms (median 15.31) gpu=1.71ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7020 cpu=33.60ms (median 15.48) gpu=1.53ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7214 cpu=31.56ms (median 14.04) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7216 cpu=33.13ms (median 14.04) gpu=1.42ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7224 cpu=28.93ms (median 14.05) gpu=1.42ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7246 cpu=39.51ms (median 14.20) gpu=1.52ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7253 cpu=30.69ms (median 14.20) gpu=1.41ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7254 cpu=28.75ms (median 14.20) gpu=1.41ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7276 cpu=34.91ms (median 14.72) gpu=1.51ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7285 cpu=42.82ms (median 15.00) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7413 cpu=28.34ms (median 13.43) gpu=1.72ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7514 cpu=30.97ms (median 11.61) gpu=1.61ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7520 cpu=24.10ms (median 11.70) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7526 cpu=25.26ms (median 11.74) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7570 cpu=48.19ms (median 11.93) gpu=1.35ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7571 cpu=25.60ms (median 12.04) gpu=1.61ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7573 cpu=27.43ms (median 12.04) gpu=1.34ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7575 cpu=26.38ms (median 12.04) gpu=1.45ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7577 cpu=24.90ms (median 12.04) gpu=1.31ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7583 cpu=35.87ms (median 12.04) gpu=1.45ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7587 cpu=30.36ms (median 12.08) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7594 cpu=26.70ms (median 12.23) gpu=1.32ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7596 cpu=30.12ms (median 12.33) gpu=1.32ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7637 cpu=30.82ms (median 15.21) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7687 cpu=36.55ms (median 15.62) gpu=1.45ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7777 cpu=29.66ms (median 14.17) gpu=1.37ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7894 cpu=34.17ms (median 13.14) gpu=1.55ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7900 cpu=31.61ms (median 13.14) gpu=1.67ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7902 cpu=30.06ms (median 13.11) gpu=1.54ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7915 cpu=30.09ms (median 13.18) gpu=1.38ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7916 cpu=28.47ms (median 13.26) gpu=1.43ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7923 cpu=30.45ms (median 13.69) gpu=1.55ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7926 cpu=28.06ms (median 13.79) gpu=1.32ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=7964 cpu=32.01ms (median 15.69) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8022 cpu=31.50ms (median 15.69) gpu=1.40ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8033 cpu=37.68ms (median 15.51) gpu=1.52ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8083 cpu=34.18ms (median 15.10) gpu=1.41ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8089 cpu=31.70ms (median 15.13) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8094 cpu=31.04ms (median 15.13) gpu=1.46ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8096 cpu=31.44ms (median 15.13) gpu=1.35ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8121 cpu=34.26ms (median 16.06) gpu=1.35ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8122 cpu=33.86ms (median 16.06) gpu=1.33ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8130 cpu=35.13ms (median 16.26) gpu=1.35ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8139 cpu=49.06ms (median 16.69) gpu=1.55ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8141 cpu=34.35ms (median 16.69) gpu=1.38ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8211 cpu=37.85ms (median 18.51) gpu=1.32ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8214 cpu=41.77ms (median 18.52) gpu=1.55ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8216 cpu=60.65ms (median 18.79) gpu=1.45ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8232 cpu=54.64ms (median 19.65) gpu=1.48ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8245 cpu=40.40ms (median 20.10) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8253 cpu=43.20ms (median 20.11) gpu=1.42ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8265 cpu=42.21ms (median 20.15) gpu=1.36ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8280 cpu=45.10ms (median 20.15) gpu=1.54ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8309 cpu=41.44ms (median 20.64) gpu=1.52ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8383 cpu=48.31ms (median 16.79) gpu=1.61ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8454 cpu=33.57ms (median 14.16) gpu=1.37ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8479 cpu=28.24ms (median 13.83) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8485 cpu=29.84ms (median 13.83) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8486 cpu=30.09ms (median 13.83) gpu=1.50ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8510 cpu=34.23ms (median 14.20) gpu=1.52ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8578 cpu=31.70ms (median 14.43) gpu=1.60ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8582 cpu=31.47ms (median 14.49) gpu=1.38ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8583 cpu=42.06ms (median 14.49) gpu=1.39ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake
+[INFO]  [pacing] SPIKE frame=8613 cpu=28.54ms (median 14.14) gpu=1.53ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1 +iblbake

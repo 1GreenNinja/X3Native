@@ -2158,11 +2158,16 @@ void VulkanRenderDevice::prepareFrameData() {
             // the ground. Rides the CACHED sky params (same cover, same drift
             // clock the sky UBO gets at its own fill site below), so the shade
             // on the road always sweeps with the deck overhead — paired values
-            // are one value. Strength 0.85, not 1.0: a cumulus core kills the
-            // direct sun but the host's global cover dim (host weather ticks
-            // scale sunIntensity with cover) already carries part of that
-            // energy loss, and the remaining 15% keeps the dapple from reading
-            // as a hole in the terrain. Gate shut (all zero) when no sky or no
+            // are one value. Strength 0.85, not 1.0: the remaining 15% keeps a
+            // cumulus core from reading as a HOLE in the terrain rather than
+            // shade. (An earlier draft of this comment credited the host's
+            // SkyParams::sunIntensity cut with carrying part of the energy
+            // loss. It does NOT — sunIntensity scales the SKY DISK + glow only,
+            // as IRenderDevice.h states at the field, which is why a 94% storm
+            // deck still lit the grass like June. The ground's two dials are
+            // THIS factor for the DIRECT sun and the IBL probe — which rebakes
+            // from the sky, deck and all — for the skylight.)
+            // Gate shut (all zero) when no sky or no
             // cover -> indoor worlds and clear days byte-identical.
             const bool cloudsOn = m_sky.enabled && m_sky.cloud > 0.001f;
             sc.cloudShadow = glm::vec4(cloudsOn ? 0.85f : 0.0f,

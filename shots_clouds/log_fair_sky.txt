@@ -1,17 +1,17 @@
 [INFO]  X3Engine starting...
-[INFO]  [boot] static init + args                     +     2.2 ms  (t=     2.2 ms)
+[INFO]  [boot] static init + args                     +     2.6 ms  (t=     2.6 ms)
 [INFO]  headless mode: rendering offscreen (no window / no swapchain) at 1280x720
-[INFO]  [boot] glfw init + window                     +     9.3 ms  (t=    11.5 ms)
+[INFO]  [boot] glfw init + window                     +    10.5 ms  (t=    13.1 ms)
 [INFO]  [rhi] VALIDATION: layers=OFF sync-validation=OFF  <-- NO VUID CHECKING: a '0 VUID' result from this run is MEANINGLESS  <-- NO SYNC CHECKING: missing barriers will NOT be reported
-[INFO]  [boot] rhi: vk instance                       +   182.1 ms  (t=   193.6 ms)
+[INFO]  [boot] rhi: vk instance                       +   172.1 ms  (t=   185.2 ms)
 [INFO]  [rhi] RT: ray-query SUPPORTED (+ position fetch) — RT AO/reflections/DDGI available
-[INFO]  [boot] rhi: phys-device select                +     1.6 ms  (t=   195.2 ms)
+[INFO]  [boot] rhi: phys-device select                +     1.6 ms  (t=   186.8 ms)
 [INFO]  [cull] dedicated compute queue available (family 2) — Tier 1 eligible
 [INFO]  [rhi] device ready: NVIDIA GeForce RTX 5090 (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing) [HEADLESS: offscreen target, no surface/swapchain]
-[INFO]  [boot] rhi: instance+device                   +   142.5 ms  (t=   337.6 ms)
+[INFO]  [boot] rhi: instance+device                   +   134.0 ms  (t=   320.7 ms)
 [INFO]  [rhi] pipeline cache: WARM — loaded 2644541 bytes from D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\build\bin\Release\x3pipeline.cache
 [INFO]  [rhi] GPU timestamp queries enabled (timestampPeriod=1.000000 ns/tick)
-[INFO]  [boot] rhi: swapchain+frames+shadow           +     3.2 ms  (t=   340.8 ms)
+[INFO]  [boot] rhi: swapchain+frames+shadow           +     3.3 ms  (t=   324.0 ms)
 [INFO]  [rhi] RT soft-shadow mesh pipelines ready (mesh_rt.frag: inline ray-query sun + point shadows)
 [INFO]  [rhi] GPU-driven mesh pipeline ready (bindless textures + per-object SSBO + multidraw-indirect)
 [INFO]  [rhi] planet body pipeline ready (push-constant model + bindless triplanar PBR)
@@ -21,7 +21,7 @@
 [INFO]  [cull] Tier 1 async-compute path READY (timeline semaphore + compute pools)
 [INFO]  [cull] D15 GPU cull ready (caps tier 1, r_cullpath gates the path)
 [INFO]  [cull] HZB pyramid ready: 640x360 mips=10
-[INFO]  [boot] rhi: core pipelines (createGraphics)   +    41.3 ms  (t=   382.2 ms)
+[INFO]  [boot] rhi: core pipelines (createGraphics)   +    35.9 ms  (t=   359.9 ms)
 [INFO]  [rhi] HUD font role Console/HudMono -> Consolas (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Consolas.ttf) [monospace]
 [INFO]  [rhi] HUD font role Title -> Orbitron-Bold (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Orbitron\static\Orbitron-Bold.ttf) [proportional]
 [INFO]  [rhi] HUD font role Menu -> SpaceGrotesk-Medium (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Space_Grotesk\static\SpaceGrotesk-Medium.ttf) [proportional]
@@ -29,10 +29,10 @@
 [INFO]  [rhi] HUD font role News -> SpaceMono-Bold (D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets\fonts\Space_Mono\SpaceMono-Bold.ttf) [monospace]
 [INFO]  [rhi] HUD fonts: 5/5 role atlases baked from TTF
 [INFO]  [rhi] HUD 2D pipeline ready (NDC quads + TTF/bitmap glyph atlas, alpha-blended, no depth)
-[INFO]  [boot] rhi: hud (font atlas + pipelines)      +    15.5 ms  (t=   397.6 ms)
+[INFO]  [boot] rhi: hud (font atlas + pipelines)      +    16.8 ms  (t=   376.7 ms)
 [INFO]  [rhi] analytic sky pipeline ready (full-screen tri, far-depth, depth-test no-write)
 [INFO]  [rhi] IBL ready (env 256 + irradiance 32 + prefilter 128/5mip + BRDF LUT 256, split-sum)
-[INFO]  [boot] rhi: sky+ibl objects                   +     1.7 ms  (t=   399.4 ms)
+[INFO]  [boot] rhi: sky+ibl objects                   +     1.8 ms  (t=   378.5 ms)
 [INFO]  [rhi] volumetric light scattering pipeline ready (sun shafts + point-light haze)
 [INFO]  [rhi] HDR post pipeline ready (R16G16B16A16_SFLOAT scene + 5-mip bloom + TAA resolve + ACES composite)
 [INFO]  [rhi] velocity pre-pass ready (RG16F per-object motion vectors -> TAA)
@@ -41,10 +41,10 @@
 [INFO]  [rhi] particle + decal pipelines ready (instanced billboards, additive/alpha, soft vs scene depth)
 [INFO]  [rhi] GPU-compute debris world ready (compute integrate + instanced cube draw, capacity 65536)
 [INFO]  [rhi] GPU compute skinning ready (compute LBS pre-pass into per-frame skinned vbo)
-[INFO]  [boot] rhi: post/ssao/gi/fx pipelines         +     7.6 ms  (t=   407.0 ms)
+[INFO]  [boot] rhi: post/ssao/gi/fx pipelines         +     7.0 ms  (t=   385.5 ms)
 [INFO]  [rt] acceleration-structure module ready (ray-query inline RT)
 [INFO]  [rhi] boot precompile: 59 pipelines total (8 RT-chain) in 6.3 ms (warm cache) — rtao=1 refl=1 ddgi=1; no pipeline may be created after frame 1
-[INFO]  [boot] rhi: RT precompile                     +     3.7 ms  (t=   410.7 ms)
+[INFO]  [boot] rhi: RT precompile                     +     3.7 ms  (t=   389.3 ms)
 [INFO]  --world tunnel: terrain-corridor bore demo
 [INFO]  tunnel corridor: 'demo ridge' registered — 640 m spine, roofed YES
 [INFO]  tunnel corridor: CUT-AND-COVER — 1 corridor, 32 nodes, 640 m, floor 10.1/14.0 | road 15.4..16.7 m | max cut 152.2 m | ROOFED s=89..542 (453 m), of which the natural hillside alone covers s=100..532 (432 m) and the rest is the cut-and-cover extension | road under earth: 0.0 m (worst ground-above-road -0.10 m — negative is the trench floor sitting under the slab, which is correct)
@@ -179,29 +179,29 @@
 [INFO]  road ribbon 'valley road': 3.53 miles | 7 meshes, 15493 quads, 502 fine stations | 4 x 12 ft lanes + 4 ft shoulders + 20 ft aprons = 96 ft paved | 159 guardrail segments (min drop railed 2.0 m) | 52 jersey-wall segments (ditch band, min drop 0.7 m)
 [WARN]  [surface-lib] set 'rd_asphalt_01' incomplete under D:\GameDev\X3Native\.claude\worktrees\agent-ac78e9cb58a88573a\assets/surface_library
 [INFO]  bridge No.1: 4 meshes, 888 tris — 280 ft deck, piers at ±60 ft, soffit 103.0 ft over the water
-[INFO]  [gltf] loaded nature/PoplarTree001.glb in 334.7 ms (prims=3 mats=3 anims=0)
+[INFO]  [gltf] loaded nature/PoplarTree001.glb in 332.1 ms (prims=3 mats=3 anims=0)
 [INFO]  [env-art] node/material skip on nature/PoplarTree001.glb: 3 -> 2 primitives
 [INFO]  [env-art] loaded nature/PoplarTree001.glb — 2 drawables; baseColorTex=2 mr=0 normal=2; materials=3 mat0.baseColor.r=1.000000
 [INFO]  road_trees: 10 trees (0 oak, 10 poplar) in 2 groves along 640 m of road (65 positions rejected)
 [INFO]  tunnel interior: 4 service doors, 4 opening onto a program (15 spaces, 20 entities of the Tier-A budget of 40); least rock over any room ceiling 110 ft
 [WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
-[INFO]  [gltf] loaded Vehicles/CTR.glb in 29.2 ms (prims=52 mats=19 anims=0)
+[INFO]  [gltf] loaded Vehicles/CTR.glb in 29.0 ms (prims=52 mats=19 anims=0)
 [INFO]  [gltf] orphaned COLLISION PROXY mesh 'Collider' not rendered (parent it in the asset to use it as a hull)
 [WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
-[INFO]  [gltf] loaded Vehicles/M3_E36.glb in 9.8 ms (prims=26 mats=26 anims=0)
+[INFO]  [gltf] loaded Vehicles/M3_E36.glb in 10.8 ms (prims=26 mats=26 anims=0)
 [WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
-[INFO]  [gltf] loaded Vehicles/E30.glb in 12.0 ms (prims=42 mats=42 anims=0)
+[INFO]  [gltf] loaded Vehicles/E30.glb in 12.4 ms (prims=42 mats=42 anims=0)
 [WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
 [INFO]  [gltf] loaded Vehicles/Coupe.glb in 8.0 ms (prims=19 mats=19 anims=0)
 [WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
-[INFO]  [gltf] loaded Vehicles/Muscle.glb in 17.8 ms (prims=34 mats=18 anims=0)
+[INFO]  [gltf] loaded Vehicles/Muscle.glb in 19.0 ms (prims=34 mats=18 anims=0)
 [WARN]  [gltf] L5: material has NO metallicRoughnessTexture and a metallicFactor above 0.35 (glTF's default is 1.0 — a full metal has no diffuse lobe and renders BLACK indoors); clamping the synthesized MR texel to 0.35
-[INFO]  [gltf] loaded Vehicles/Skyline_by_BUMSTRUM.glb in 3.9 ms (prims=6 mats=2 anims=0)
+[INFO]  [gltf] loaded Vehicles/Skyline_by_BUMSTRUM.glb in 4.3 ms (prims=6 mats=2 anims=0)
 [INFO]  garage: 6 vehicle(s) parked in the bay
 [INFO]  [tunnel] SPAWN at (3300.8, 4.2, -276.3)
 [INFO]  [vehicle] grip 1.600000 -> long peak 1.920000, lat peak 1.920000 / plateau 1.600000
 [INFO]  [vehicle] gearbox: 6 gears [3.154000, 2.150000, 1.560000, 1.242000, 1.024000, 0.821000]  final 4.600000  shift up 7050.000000 / down 2475.000000  switchTime 0.280000 latency 0.550000  redline 7500.000000  inertia 0.350000
-[INFO]  [gltf] loaded Vehicles/CTR.glb in 11.1 ms (CACHED: prims=52 mats=19 anims=0)
+[INFO]  [gltf] loaded Vehicles/CTR.glb in 11.4 ms (CACHED: prims=52 mats=19 anims=0)
 [INFO]  [gltf] orphaned COLLISION PROXY mesh 'Collider' not rendered
 [INFO]  [audio] miniaudio up: 48000 Hz, 6 ch
 [INFO]  [engine_note] bank online: 6 RPM points x on-load/overrun + noise bed
@@ -211,13 +211,13 @@
 [INFO]  [river-life] depth station 1/3 at (390.000000, -365.000000): 5.500000 m mid-channel (was 3.2 shelf-only)
 [INFO]  [river-life] depth station 2/3 at (515.000000, -627.500000): 5.500000 m mid-channel (was 3.2 shelf-only)
 [INFO]  [river-life] depth station 3/3 at (655.000000, -875.000000): 5.500000 m mid-channel (was 3.2 shelf-only)
-[INFO]  [gltf] loaded Fish_Rudd.glb in 29.7 ms (prims=29 mats=1 anims=0)
+[INFO]  [gltf] loaded Fish_Rudd.glb in 28.4 ms (prims=29 mats=1 anims=0)
 [INFO]  fish: rudd <- Fish_Rudd.glb  29 swim poses, 1298 tris/pose, PBR albedo+normal+MR, length 0.260000 m
-[INFO]  [gltf] loaded Fish_Bream.glb in 26.6 ms (prims=29 mats=1 anims=0)
+[INFO]  [gltf] loaded Fish_Bream.glb in 26.4 ms (prims=29 mats=1 anims=0)
 [INFO]  fish: bream <- Fish_Bream.glb  29 swim poses, 1414 tris/pose, PBR albedo+normal+MR, length 0.300000 m
-[INFO]  [gltf] loaded Fish_Perch.glb in 21.9 ms (prims=29 mats=1 anims=0)
+[INFO]  [gltf] loaded Fish_Perch.glb in 22.6 ms (prims=29 mats=1 anims=0)
 [INFO]  fish: perch <- Fish_Perch.glb  29 swim poses, 1762 tris/pose, PBR albedo+normal+MR, length 0.240000 m
-[INFO]  [gltf] loaded Fish_Pike.glb in 82.3 ms (prims=29 mats=1 anims=0)
+[INFO]  [gltf] loaded Fish_Pike.glb in 84.9 ms (prims=29 mats=1 anims=0)
 [INFO]  fish: pike <- Fish_Pike.glb  29 swim poses, 3954 tris/pose, PBR albedo+normal+MR, length 0.920000 m
 [INFO]  fish: school 0 rudd x12 at (390.000000, -365.000000) surfaceY=-6.250000
 [INFO]  fish: school 1 perch x5 at (450.000000, -495.000000) surfaceY=-6.250000
@@ -225,7 +225,7 @@
 [INFO]  fish: school 3 pike x1 at (655.000000, -875.000000) surfaceY=-7.925000
 [INFO]  fish: built 28 fish in 4 schools — 28 REAL (pose-baked GLB), 0 procedural loft, 0 dry schools skipped; 42480 tris across 28 draws
 [INFO]  [river-life] FISH: 28 fish in 4 schools on the bridge reach
-[INFO]  [gltf] loaded marcus_webb_anim.glb in 280.3 ms (prims=1 mats=1 anims=9)
+[INFO]  [gltf] loaded marcus_webb_anim.glb in 286.4 ms (prims=1 mats=1 anims=9)
 [INFO]  [monster] marcus_webb_anim.glb  ->  GPU-SKINNED (compute pre-pass)
 [INFO]  [monster] marcus_webb_anim.glb is animated — clips: Attack(3.000000s), Attack2(2.000000s), Death(1.666667s), Hitreaction(0.416667s), Idle(8.250000s), Jump(0.625000s), Run(0.750000s), Struggle(1.708333s), Walk(1.375000s); idle=4 walk=8 run=6 jump=5 attack=0 attack2=1 hitreact=3 death=2 hit=3 locoBlend=1
 [INFO]  [monster-anim] marcus_webb_anim.glb STATE AUDIT: IDLE=BAKED'Idle' WALK/RUN=BAKED'Walk' ATTACK=BAKED'Attack' HIT=BAKED'Hitreaction' DEATH=BAKED'Death'
@@ -244,35 +244,35 @@
 [INFO]  [monster] entity 288 placed at (570.376648, -5.300000, -731.077271) HP=100 [real GLB]
 [INFO]  [enemy-audit] type=0 model=chief_martinez_anim.glb  ->  RIGGED+ANIMATED('Idle') +walk/run blend  [real GLB]
 [INFO]  [river-life] built: 2 speedboat(s) on the reach, water Y -6.250000
-[INFO]  --world tunnel: shot cam=(-301.9, 17.6, -472.2) yaw=2.749 pitch=-0.029
-[INFO]  [boot] FIRST FRAME (world build complete)     +  4938.4 ms  (t=  5349.1 ms)
+[INFO]  --world tunnel: shot cam=(-301.9, 17.6, -472.2) yaw=2.749 pitch=0.550
+[INFO]  [boot] FIRST FRAME (world build complete)     +  4931.9 ms  (t=  5321.2 ms)
 [INFO]  [rhi] reflection DENOISE stage ON (edge-aware a-trous)
 [INFO]  [csm] ON -> 4 cascades, lambda 0.75, distance 400 m, splits 27.1/60.7/131.4/400.0 m, half-extents 37.3/83.6/181.0/550.9 m
-[INFO]  [boot] ibl first bake: 2.8 ms (incl. pending upload retire)
+[INFO]  [boot] ibl first bake: 2.5 ms (incl. pending upload retire)
 [INFO]  [rt] skinned-TLAS: 2 skinned char(s) now in the scene TLAS (this frame: 2 BLAS build, 0 refit) -> shadows/refl/DDGI/audio see them
-[INFO]  [tlas-db] TLAS double-buffer: builds=64 deviceWaits=1 (waits/1000builds=15; boot=1, steady=0) lastBuildCpu=0.015ms ring=3-slot
-[INFO]  [cloud-perf] shots_clouds/perf_base_cloud0.png: gpu=1.077 ms (avg of last 60 settle frames)
-[INFO]  [rhi] captureFrame: wrote shots_clouds/perf_base_cloud0.png (1280x720)
-[INFO]  --world tunnel: wrote shots_clouds/perf_base_cloud0.png
+[INFO]  [tlas-db] TLAS double-buffer: builds=64 deviceWaits=1 (waits/1000builds=15; boot=1, steady=0) lastBuildCpu=0.017ms ring=3-slot
+[INFO]  [cloud-perf] shots_clouds/fair_02_sky.png: gpu=0.898 ms (avg of last 60 settle frames)
+[INFO]  [rhi] captureFrame: wrote shots_clouds/fair_02_sky.png (1280x720)
+[INFO]  --world tunnel: wrote shots_clouds/fair_02_sky.png
 [WARN]  [worldmap] : cannot open
 [INFO]  [worldmap] 0 POIs from ``
-[INFO]  [worldmap] terrain underlay baked 512x512 (covers 15235 x 16017 m) in 89.61 ms
-[INFO]  [pacing] SPIKE frame=201 cpu=292.44ms (median 1.35) gpu=1.06ms | pso+0 mod+0 pools+0 allocs+2 asbuild+1
+[INFO]  [worldmap] terrain underlay baked 512x512 (covers 15235 x 16017 m) in 93.41 ms
+[INFO]  [pacing] SPIKE frame=201 cpu=281.32ms (median 1.18) gpu=0.90ms | pso+0 mod+0 pools+0 allocs+2 asbuild+1
 [INFO]  [rhi] captureFrame: wrote shots_wmap/01_overview.png (1280x720)
 [INFO]  [tunnel] map/HUD proof: wrote shots_wmap/01_overview.png
-[INFO]  [pacing] SPIKE frame=204 cpu=161.51ms (median 1.35) gpu=0.72ms | pso+0 mod+0 pools+0 allocs+0 asbuild+0
+[INFO]  [pacing] SPIKE frame=204 cpu=161.85ms (median 1.18) gpu=0.72ms | pso+0 mod+0 pools+0 allocs+0 asbuild+0
 [INFO]  [rhi] captureFrame: wrote shots_wmap/02_drive.png (1280x720)
 [INFO]  [tunnel] map/HUD proof: wrote shots_wmap/02_drive.png
-[INFO]  [pacing] SPIKE frame=207 cpu=125.88ms (median 1.35) gpu=0.71ms | pso+0 mod+0 pools+0 allocs+0 asbuild+0
+[INFO]  [pacing] SPIKE frame=207 cpu=128.22ms (median 1.18) gpu=0.72ms | pso+0 mod+0 pools+0 allocs+0 asbuild+0
 [INFO]  [rhi] captureFrame: wrote shots_wmap/03_waypoint.png (1280x720)
 [INFO]  [tunnel] map/HUD proof: wrote shots_wmap/03_waypoint.png
-[INFO]  [pacing] SPIKE frame=210 cpu=126.73ms (median 1.35) gpu=0.71ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=210 cpu=127.18ms (median 1.18) gpu=0.72ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
 [INFO]  [rhi] captureFrame: wrote shots_wmap/04_chevron.png (1280x720)
 [INFO]  [tunnel] map/HUD proof: wrote shots_wmap/04_chevron.png
-[INFO]  [pacing] SPIKE frame=213 cpu=187.28ms (median 1.35) gpu=0.77ms | pso+0 mod+0 pools+0 allocs+0 asbuild+0
+[INFO]  [pacing] SPIKE frame=213 cpu=197.55ms (median 1.18) gpu=0.78ms | pso+0 mod+0 pools+0 allocs+0 asbuild+0
 [INFO]  [rhi] captureFrame: wrote shots_wmap/04b_chevron_behind.png (1280x720)
 [INFO]  [tunnel] map/HUD proof: wrote shots_wmap/04b_chevron_behind.png
-[INFO]  [pacing] SPIKE frame=216 cpu=180.29ms (median 1.35) gpu=0.72ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
+[INFO]  [pacing] SPIKE frame=216 cpu=195.93ms (median 1.18) gpu=0.73ms | pso+0 mod+0 pools+0 allocs+0 asbuild+1
 [INFO]  [rhi] captureFrame: wrote shots_wmap/05_dashed_bore.png (1280x720)
 [INFO]  [tunnel] map/HUD proof: wrote shots_wmap/05_dashed_bore.png
 [INFO]  [env-art] destroy(): GPU resources released

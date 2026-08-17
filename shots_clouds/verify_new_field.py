@@ -80,3 +80,34 @@ for label, off in [("origin", (0.0, 0.0)), ("50km", (50000.0, 50000.0))]:
         d0 = cover_at(pts, cov, 3600.0)
         frac = float((d0 > 0.02).mean()); mean = float(d0.mean())
         print(f"{label:6s} cover={cov:.2f}  sky-fraction={frac:.3f}  mean-density={mean:.3f}")
+
+# ---- 4. THE SUN DIMS AS COVERAGE RISES ------------------------------------
+# The landscape-average version of the receipt, because the per-pixel one is a
+# liar in both directions: a fixed ground camera samples ESSENTIALLY ONE deck
+# cell (100 m of visible ground projects to 100 m on a deck whose features are
+# ~1.8 km), so it reads a step — full sun while that one cell is a hole, then a
+# cliff when it closes — and a high wide camera is mostly distant terrain that
+# aerial perspective has already washed to the haze colour. Measured GPU frames
+# show both: spawn cam 65.85 luma at cover 0.00/0.25/0.50/0.75 then 45.58 at
+# 1.00; wide cam 140.1 -> 139.0 across the whole range.
+#
+# So average what the shader actually computes, over 8 km of ground: the mean
+# of cloudShadowFactor (3 octaves, strength 0.85, the mesh.frag lane) is the
+# fraction of direct sun the landscape keeps. THIS is the number that has to
+# fall monotonically with cover, and the GPU's two anchor points sit on it.
+print()
+sun = np.array([0.35, 0.92, 0.18], dtype=f32); sun /= np.linalg.norm(sun)
+pts = (rng.uniform(-4000, 4000, size=(200000, 2))).astype(f32)
+wp = (pts + (sun[[0, 2]] * (f32(1400.0) - f32(0.0)) / max(sun[1], 0.2))).astype(f32)
+prev = None
+for cov in (0.0, 0.25, 0.42, 0.50, 0.70, 0.75, 0.94, 1.0):
+    if cov <= 0.001:
+        keep = 1.0
+    else:
+        d3 = cover_at(wp, cov, 3600.0, octaves=3.0)          # the ground lane
+        keep = float((1.0 - 0.85 * (1.0 - np.exp(-d3 * 5.0))).mean())
+    d5 = cover_at(wp, cov, 3600.0) if cov > 0.001 else np.zeros(1, dtype=f32)
+    occ = float((1.0 - np.exp(-d5 * 5.0)).mean())            # the sky lane
+    flag = "" if prev is None or keep <= prev + 1e-6 else "  <-- NOT MONOTONIC"
+    print(f"cover={cov:.2f}  direct sun kept={keep:.3f}   deck opacity={occ:.3f}{flag}")
+    prev = keep

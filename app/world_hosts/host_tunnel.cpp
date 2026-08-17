@@ -113,6 +113,72 @@ static float skyVisibleAt(x3::phys::IPhysicsWorld& phys, float x, float y, float
     return 0.85f * (t * t * (3.0f - 2.0f * t));
 }
 
+// ===========================================================================
+// THE SKY IS ONE VALUE (NO_SLOP 4). Three sites in this host set SkyParams —
+// the boot sky, the HEADLESS capture loop and the interactive loop — and they
+// had drifted. The storm branch (cover floor 0.94, the exposure crush, the
+// sun-intensity cut) lived ONLY in the interactive loop, so every storm PROOF
+// SHOT rendered a cover-0.76 mid-grey deck under a full-brightness sky while
+// the played game showed the near-black one: the screenshots were telling a
+// different story than the build, which is the exact defect the capture loop's
+// own weather comment was written about. Both mappings live here now.
+// Receipt: shots_clouds/storm_01_sky.png + storm_02_ground.png (this commit)
+// against shots_clouds/before_storm_01_sky.png (the divergent pair).
+// ===========================================================================
+
+// Push the sky. The SKYLIGHT that comes with it needs no code here, and that
+// is worth writing down because the obvious "fix" is a trap:
+//
+// COVER DIMS THE FILL, NOT JUST THE SUN — mesh.frag's cloudShadowFactor
+// (task #27) takes the DIRECT sun away per-fragment, but the other half of an
+// overcast day is that the sky stops being a bright blue dome and stops
+// filling the shadows. The engine ALREADY does that half: setSkyParams marks
+// the IBL environment dirty (VulkanRenderDevice.cpp — `if (memcmp(&m_sky,...))
+// m_iblDirty = true`) and the probe rebakes FROM THE SKY, deck and all, so a
+// near-black storm deck bakes a near-black fill.
+//
+// The trap: setAmbient() looks like the dial and is DEAD in this world —
+// mesh.frag's iblAmbient() uses the baked environment whenever one is valid
+// and only falls back to the flat `ambient` constant when it is not. MEASURED
+// (a scale of 0.74 pushed through setAmbient at cover 0.75): tunnel-portal
+// interior 138.54 -> 138.50, shaded grass 155.61 -> 155.61, road 53.64 ->
+// 53.64. Nothing. The same probes DO move when the deck itself goes dark
+// (cover 1.0: portal 123.55, grass 109.33, road 35.25) — that is the IBL
+// rebake, already working. NO_SLOP 1: the wheel was in the engine.
+static void applySky(x3::rhi::IRenderDevice& dev,
+                     const x3::rhi::IRenderDevice::SkyParams& sp) {
+    dev.setSkyParams(sp);
+}
+
+// Weather sample -> sky. `flash` is StormSystem::flash() (0 outside a strike).
+static x3::rhi::IRenderDevice::SkyParams skyFromWeather(
+        const x3::game::WeatherSample& ws, float flash) {
+    x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
+    sp.enabled = true;
+    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
+    // Cloud cover tracks the haze the state already asked for, so an overcast
+    // sky is actually overcast instead of clear-with-fog.
+    sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
+    // The storm FLASH rides on exposure rather than on the sun: a strike lights
+    // the whole cloud deck from inside, so raising the sun would throw hard
+    // directional shadows from a light source that is not there.
+    sp.exposure = ws.sky.exposure + flash;
+    // sunIntensity is the SKY DISK + glow only (IRenderDevice.h) — cutting it
+    // keeps a hot disk from punching through an overcast, and costs the ground
+    // nothing (that is cloudShadowFactor's job).
+    sp.sunIntensity = sp.sunIntensity * (1.0f - 0.65f * std::min(1.0f, sp.cloud));
+    if (ws.state == x3::game::WeatherState::Storm) {
+        // A storm is not 'cloudy with effects' — the deck goes heavy and the
+        // light DIES, which is also what makes every lightning flash read
+        // (contrast is the flash's whole currency). 0.94 is the cover
+        // sky.frag's gloom curve (smoothstep 0.55..0.95) was CALIBRATED to:
+        // below it the deck renders mid-grey no matter what the state says.
+        sp.cloud    = std::max(sp.cloud, 0.94f);
+        sp.exposure = ws.sky.exposure * 0.52f + flash * 1.35f;
+    }
+    return sp;
+}
+
 int hostTunnel(HostContext& hc) {
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
@@ -628,7 +694,7 @@ int hostTunnel(HostContext& hc) {
         // X3_WEATHER on, the weather tick owns cover and this is ignored.
         if (const char* cv = std::getenv("X3_CLOUD"))
             sp.cloud = std::min(1.0f, std::max(0.0f, (float)std::atof(cv)));
-        device->setSkyParams(sp);
+        applySky(*device, sp);   // sky + the fill its cover implies
     }
     device->setCameraFar(4000.0f);
 
@@ -1351,12 +1417,11 @@ int hostTunnel(HostContext& hc) {
                     wetness.tick(dt, ws.precipitation, ws.tempC, ws.snowfall);
                     storm.tick(dt, ws.state == x3::game::WeatherState::Storm ? ws.hazardLevel : 0.0f,
                                nullptr, cam[0], cam[1], cam[2]);
-                    x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
-                    sp.enabled = true;
-                    sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
-                    sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
-                    sp.exposure = ws.sky.exposure + storm.flash();
-                    device->setSkyParams(sp);
+                    // ONE mapping with the interactive loop (skyFromWeather,
+                    // top of file). This site used to carry its own cut-down
+                    // copy WITHOUT the storm branch, which is why the storm
+                    // proof shots were brighter than the storm you play.
+                    applySky(*device, skyFromWeather(ws, storm.flash()));
                     x3::rhi::IRenderDevice::WetnessParams wp{};
                     wp.amount = wetness.wetness() * (1.0f - wetness.snowCover());
                     device->setWetness(wp);
@@ -2198,32 +2263,15 @@ int hostTunnel(HostContext& hc) {
             if (carBuilt) car.chassisPos(lp);
             storm.tick(fdt, stormI, audioOn ? audio.get() : nullptr, lp[0], lp[1], lp[2]);
 
-            // Push the sky. The storm FLASH rides on exposure rather than on the
-            // sun: a strike lights the whole cloud deck from inside, so raising
-            // the sun would throw hard directional shadows from a light source
-            // that is not there and give the whole thing away.
-            x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
-            sp.enabled = true;
-            sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
-            // Cloud cover tracks the haze the state already asked for, so an
-            // overcast sky is actually overcast instead of clear-with-fog.
-            sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
-            sp.exposure = ws.sky.exposure + storm.flash();
-            // CLOUDS COST LIGHT (Tim: "Do we have real clouds that obscure
-            // and dim the sun? The ground is way too sunny"). The deck was
-            // visual-only — full sun through 94% overcast. Sun intensity now
-            // falls with cover (an overcast day keeps ~35% direct light) and
-            // the light goes flat (ambient-heavy) the way an overcast sky
-            // actually lights the ground.
-            sp.sunIntensity = sp.sunIntensity * (1.0f - 0.65f * std::min(1.0f, sp.cloud));
-            if (ws.state == x3::game::WeatherState::Storm) {
-                // A storm is not 'cloudy with effects' — the deck goes heavy
-                // and the light DIES, which is also what makes every lightning
-                // flash read (contrast is the flash's whole currency).
-                sp.cloud    = std::max(sp.cloud, 0.94f);
-                sp.exposure = ws.sky.exposure * 0.52f + storm.flash() * 1.35f;
-            }
-            device->setSkyParams(sp);
+            // Push the sky + the fill its cover implies. THE MAPPING LIVES AT
+            // THE TOP OF THIS FILE (skyFromWeather/applySky) and is shared with
+            // the headless capture loop — the two used to diverge and the proof
+            // shots lied about the storm. CLOUDS COST LIGHT (Tim: "Do we have
+            // real clouds that obscure and dim the sun? The ground is way too
+            // sunny"): the deck cuts the sky disk here, cloudShadowFactor cuts
+            // the direct sun per-fragment (task #27), and applySky() drops the
+            // skylight fill — all three off the one cover number.
+            applySky(*device, skyFromWeather(ws, storm.flash()));
 
             // Wet ground for the renderer. Lying SNOW suppresses the wet look
             // rather than adding to it -- snow is bright and near-matte where
@@ -2322,7 +2370,10 @@ int hostTunnel(HostContext& hc) {
                     sp.sunDir[0] = 0.35f; sp.sunDir[1] = 0.92f; sp.sunDir[2] = 0.18f;
                     sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
                     sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f; sp.cloud = 0.42f;
-                    device->setSkyParams(sp);
+                    // applySky, not setSkyParams: `wx off` after a storm has to
+                    // put the SKYLIGHT back too, or the demo sky returns over a
+                    // ground still lit for the overcast that just left.
+                    applySky(*device, sp);
                     device->setSnowCover(0.0f);
                     device->setWetness(x3::rhi::IRenderDevice::WetnessParams{});
                     console->print("weather: off (the demo's fixed bright sky)");

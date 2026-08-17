@@ -3425,6 +3425,11 @@ private:
     // extra draws/work). See docs/PERF_LOG.md.
     // 2nd lift (still "couldn't see"): 0.26 -> 0.42. Sunless B1 needs a real ambient
     // floor; point lights only pool under fixtures, leaving floor/walls black between.
+    // NOT the dial for an outdoor world: mesh.frag's iblAmbient() prefers the baked
+    // environment and only falls back to this flat constant when none is valid, so
+    // setAmbient() is a no-op anywhere the sky probe is live (measured under the
+    // cloud deck — see host_tunnel.cpp applySky()). Sky-lit worlds change the fill
+    // by changing the SKY; m_iblDirty rebakes the probe from it.
     glm::vec3               m_ambient{ 0.42f, 0.44f, 0.50f };
     int                     m_debugView = 0;   // r_debugview: 0 = off, 1 = shading normals
     // CLI --set override latch (see setCVarOverrides above). Default-constructed
