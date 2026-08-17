@@ -82,6 +82,7 @@ struct TestFlags {
     bool testTraffic = false;         // --test-traffic (freeway AI traffic)
     bool testGasStation = false;      // --test-gasstation (W-STATIONS forecourts + fuel stub)
     bool testFactory     = false;     // --test-factory (the works siting + the tickets)
+    bool testInterchange = false;     // --test-interchange (the diamond grade split)
     bool testTunnelDrive = false;      // --test-tunneldrive (drive-through the demo bore, negative-controlled)
     bool testSummitLot   = false;      // --test-summitlot (the pad at the top of the summit spur)
     bool testRidgeRoad   = false;      // --test-ridgeroad (the dirt road along the tops)

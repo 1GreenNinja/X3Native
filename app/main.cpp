@@ -362,6 +362,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testTraffic = o.testTraffic;
     _tf.testGasStation = o.testGasStation;
         _tf.testFactory     = o.testFactory;
+        _tf.testInterchange = o.testInterchange;
         _tf.testTunnelDrive = o.testTunnelDrive;
         _tf.testSummitLot   = o.testSummitLot;
         _tf.testRidgeRoad   = o.testRidgeRoad;

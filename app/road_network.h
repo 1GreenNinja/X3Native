@@ -277,6 +277,22 @@ void     clearRoadJunctions();
 uint32_t roadJunctionCount();
 float    distToNearestRoadJunction(float x, float z);   // 1e9 if none noted
 
+// ---------------------------------------------------------------------------
+// INTERCHANGE ZONES — a GRADE-SEPARATED junction is the opposite of an
+// at-grade one: crossing traffic goes OVER on a deck and joins by RAMP, so
+// the freeway must NOT get a median crossover there. planTurnarounds() drops
+// a crossover at every noted junction landing (right for a side road meeting
+// the freeway at grade — crossing traffic needs its gap) and every ~1.7 km of
+// rhythm; both would put a median U-turn beside an off-ramp. A zone noted
+// here suppresses BOTH kinds of crossover within its radius. Registered by
+// registerInterchange(); cleared by clearRoadJunctions() — the two registries
+// have the same lifecycle (a zone without its ramps' junction notes is
+// meaningless), so one clear call clears both (NO_SLOP rule 4).
+// ---------------------------------------------------------------------------
+void  noteInterchangeZone(float x, float z, float radiusM);
+bool  inInterchangeZone(float x, float z);
+uint32_t interchangeZoneCount();
+
 // How far back from a main road's centreline a branch's terminal node sits;
 // the junction mouth (ruled twist + the swooping merge fillets) owns this
 // reach. Widened +20 -> +40 for the merges' ~40 m tangent legs.

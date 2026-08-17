@@ -379,6 +379,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-traffic") o.testTraffic = true;
         else if (a == "--test-gasstation") o.testGasStation = true;
         else if (a == "--test-factory") o.testFactory = true;
+        else if (a == "--test-interchange") o.testInterchange = true;
         else if (a == "--screenshot-editor") {
             o.editorShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.editorShotPath = argv[++i];
