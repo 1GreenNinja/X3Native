@@ -28,6 +28,10 @@ GLBS = [
     "WeaponSciFiLaserGun.glb",
     "WeaponSciFiMissileLauncher.glb",
     "WeaponFreezeRayCryo.glb",
+    # Meshy-generated flamethrower (2026-08, assets/weapon-models lane): a real
+    # projector silhouette so the flamethrower stops borrowing the rocket
+    # launcher's tube. Store-distributed (asset_store.py fetch), plain non-Draco.
+    "WeaponFlameThrower.glb",
 ]
 
 COMPONENT = {5120: ("b", 1), 5121: ("B", 1), 5122: ("h", 2), 5123: ("H", 2), 5125: ("I", 4), 5126: ("f", 4)}
