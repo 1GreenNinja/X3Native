@@ -109,6 +109,8 @@ struct HostContext {
     bool        crowdShot = false;          std::string crowdShotPath;
     bool        complexShot = false;        std::string complexShotDir = "docs/screenshots/complex";
     bool        tunnelShot = false;         std::string tunnelShotDir = "docs/screenshots/tunnel";
+    // --screenshot-jake: the on-foot AnimatedCharacter proof set (see cli.h).
+    bool        jakeShot = false;           std::string jakeShotDir = "docs/screenshots/jake";
 
     // ---- A/B / GI force switches consulted by some hosts' settle logic ----
     bool        ddgiForce = false;          // --ddgi: longer probe-convergence settle
