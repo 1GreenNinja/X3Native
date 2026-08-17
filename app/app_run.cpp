@@ -3009,7 +3009,15 @@ int runDefaultHost(HostContext& hc) {
 
     // ---- Combat FX (gameplay-feel pass): shot tracers + muzzle flash. The
     // crosshair now lives in the screen-space HUD layer (S7), not here. ----
-    x3::game::CombatFx combatFx;
+    // HEAP-allocated (the intro_orchestrator "host_space convention"): CombatFx
+    // carries ~850 KB of particle pool + submit scratch, and this function's
+    // stack frame is already enormous — as a plain local it tipped the Debug
+    // build over the 1 MB default stack (STATUS_STACK_OVERFLOW in --smoketest)
+    // when the weapon-vfx lane widened Particle by one end-color. One boot-time
+    // allocation; nothing on the render path.
+    const std::unique_ptr<x3::game::CombatFx> combatFxPtr =
+        std::make_unique<x3::game::CombatFx>();
+    x3::game::CombatFx& combatFx = *combatFxPtr;
     combatFx.init(*device);
     x3::boot::mark("combat fx init");
     // FX / debris / UI primed — bar nearly full.
@@ -3219,8 +3227,15 @@ int runDefaultHost(HostContext& hc) {
                             // dispatch passes it to MonsterManager::fire — closes the projectile
                             // half of the resist-rhythm loop (plasma bolts read as Energy, etc).
                             x3::DamageType type = x3::DamageType::Kinetic;
-                            x3::audio::SoundHandle impactSnd{}; };  // per-bolt impact SFX (weapon may have switched mid-flight)
+                            x3::audio::SoundHandle impactSnd{};  // per-bolt impact SFX (weapon may have switched mid-flight)
+                            // weapon-vfx lane: the napalm FIRE-POOL payload, stamped from
+                            // ProjectileSpawn (authored by the canon-12 roster, consumed on
+                            // impact by FirePoolSystem). 0 on every other weapon.
+                            float fpDuration = 0.0f, fpRadius = 0.0f; int fpDps = 0; };
     std::vector<LiveProjectile> projectiles;
+    // NAPALM fire pools (weapon-vfx lane): host-owned, HARD-BOUNDED at
+    // x3::game::kMaxFirePools (6) simultaneous — oldest recycled (see weapon.h).
+    x3::game::FirePoolSystem firePools;
     uint32_t weaponRng = 0xA11CE5u;   // deterministic spread stream
     float    weaponRecoilPitch = 0.0f; // accumulated upward camera kick (rad), decays
     constexpr float kRecoilRecover = 6.0f; // recoil recovery rate (rad/s decay)
@@ -5669,7 +5684,51 @@ int runDefaultHost(HostContext& hc) {
                 // only the impact call is taken from 8e9f7d5.
                 combatFx.spawnImpact(hitP, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z },
                                      x3::game::fxKindFromId(arsenal.current().impactFx));
+                // weapon-vfx lane: a PROJECTILE STREAM weapon (flamethrower 3 puffs /
+                // freezeray 4 crystals) reads as its TRAVELLING particles, not the
+                // tracer. Populate the stream along the real ballistic path with the
+                // SAME boltFx the live loop calls once per bolt per frame — each
+                // settle frame drops each pellet's core at a deterministic point of
+                // its flight, so by the capture the whole cone is alive.
+                const x3::game::WeaponDef& cd = arsenal.current();
+                if (cd.kind == x3::game::FireKind::Projectile && cd.pellets > 1 &&
+                    cd.projSpeed > 0.0f) {
+                    const float flight = cd.range / cd.projSpeed;
+                    const float spreadT = std::tan(cd.spreadDeg * 3.14159265f / 180.0f);
+                    const x3::phys::Vec3 rH{ -fxLook.z, 0.0f, fxLook.x };   // horizontal right
+                    for (int pk = 0; pk < cd.pellets; ++pk) {
+                        uint32_t h = (uint32_t)(i * 2654435761u) ^ (uint32_t)((pk + 1) * 40503u);
+                        h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15;
+                        const float u0 = (float)(h & 0xFFFFu) / 65536.0f;          // flight phase
+                        const float u1 = (float)((h >> 16) & 0xFFFFu) / 65536.0f;  // cone azimuth
+                        const float tt   = 0.05f + u0 * flight;
+                        const float dist = cd.projSpeed * tt;
+                        const float lat  = dist * spreadT;
+                        x3::phys::Vec3 bp{
+                            mz.x + fxLook.x * dist + rH.x * std::cos(u1 * 6.2831853f) * lat,
+                            mz.y + fxLook.y * dist + std::sin(u1 * 6.2831853f) * lat
+                                 - 0.5f * cd.projectileGravity * tt * tt,   // -8 = flames RISE
+                            mz.z + fxLook.z * dist + rH.z * std::cos(u1 * 6.2831853f) * lat };
+                        combatFx.boltFx(bp, x3::phys::Vec3{ fxLook.x * cd.projSpeed,
+                                                            fxLook.y * cd.projSpeed,
+                                                            fxLook.z * cd.projSpeed },
+                                        x3::game::fxKindFromId(cd.impactFx));
+                    }
+                }
                 combatFx.update(dt);
+            }
+            // weapon-vfx proof: X3_SHOT_FIREPOOL=1 stages a live BURNING NAPALM POOL
+            // ~3.5 m ahead of the camera on the real floor (raycast-snapped) through
+            // the same firePoolFx path the live loop renders — flames, embers, smoke.
+            if (std::getenv("X3_SHOT_FIREPOOL")) {
+                x3::phys::Vec3 pc{ ssX + fxLook.x * 3.5f, ssY - 1.55f, ssZ + fxLook.z * 3.5f };
+                const x3::phys::RayHit gh = physics->rayCast(
+                    x3::phys::Vec3{ pc.x, ssY, pc.z },
+                    x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 6.0f, x3::phys::Layer::Static);
+                if (gh.hit) pc.y = gh.point.y;
+                if (i == 0) combatFx.addDecal(pc, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+                combatFx.firePoolFx(pc, 3.0f, dt);
+                if (console->getInt("shot_fire") == 0 && !fxDemo) combatFx.update(dt);
             }
             if (fxDemo) combatFx.update(dt);
             // --world canonlevel SCREENSHOT lighting + cull: feed the player's visible
@@ -6303,7 +6362,9 @@ int runDefaultHost(HostContext& hc) {
                 // photographs nothing at all.
                 // (X3_SHOT_ZAP needs the same: the money shot IS the FX — the arcs
                 // spidering across the water.)
-                if (fxDemo || console->getInt("shot_fire") != 0 || !zapShotMode.empty()) {
+                // (X3_SHOT_FIREPOOL too: the staged burning ground pool is pure FX.)
+                if (fxDemo || console->getInt("shot_fire") != 0 || !zapShotMode.empty() ||
+                    std::getenv("X3_SHOT_FIREPOOL")) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
                 }
@@ -10674,7 +10735,12 @@ int runDefaultHost(HostContext& hc) {
                 for (const auto& pj : shot.projectiles) {
                     // [W9-3 RPG] skill/mod damage layer on the bolt (base def untouched).
                     const int pjDmg = x3::game::rpgScaleDamage(pj.damage, rpgMods, rpgCritRng);
-                    projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, pj.gravity, impactKind, pj.type, pjImpactSnd });
+                    LiveProjectile lp{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, pj.gravity, impactKind, pj.type, pjImpactSnd };
+                    // weapon-vfx lane: carry the napalm fire-pool payload to the impact.
+                    lp.fpDuration = pj.firePoolDuration;
+                    lp.fpRadius   = pj.firePoolRadius;
+                    lp.fpDps      = pj.firePoolDps;
+                    projectiles.push_back(lp);
                 }
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
                 if (!usesFireLoop)
@@ -10810,6 +10876,38 @@ int runDefaultHost(HostContext& hc) {
             }
         }
 
+        // ---- NAPALM fire-pool IGNITION (weapon-vfx lane): consume the firePool
+        // payload a napalm bolt carried to its impact. The pool burns on the GROUND
+        // (a shell that strikes a wall or a body still splashes burning fuel at the
+        // feet), so snap DOWN from the impact point; then the SurfaceType rule:
+        // a pool never ignites on Water (extinguish -> steam), Lava needs none.
+        // Lava is not host-classifiable yet (no lava query exists) — the rule is
+        // implemented + tested in FirePoolSystem; this host classifies Water only.
+        auto igniteFirePool = [&](const LiveProjectile& b, const x3::phys::Vec3& at) {
+            if (b.fpDuration <= 0.0f || b.fpRadius <= 0.0f) return;
+            x3::phys::Vec3 ground = at;
+            const x3::phys::RayHit gh = physics->rayCast(
+                x3::phys::Vec3{ at.x, at.y + 0.2f, at.z },
+                x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 6.0f, x3::phys::Layer::Static);
+            if (gh.hit) ground = gh.point;
+            x3::game::SurfaceType surf = x3::game::SurfaceType::Unknown;
+            const float wY = x3::game::worldWaterLevelAt(ground.x, ground.z);
+            if (wY > x3::game::kWorldWaterDry && ground.y <= wY + 0.05f)
+                surf = x3::game::SurfaceType::Water;
+            const x3::game::FirePoolSpawn r =
+                firePools.spawn(ground, b.fpRadius, b.fpDps, b.fpDuration, surf);
+            if (r == x3::game::FirePoolSpawn::Ignited) {
+                // A big scorch under the fire — it outlives the burn as the aftermath.
+                combatFx.addDecal(ground, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+                x3::logInfo("napalm: ground fire ignited (" + std::to_string(b.fpDps) +
+                            " dps, r=" + std::to_string(b.fpRadius) + " m, " +
+                            std::to_string(b.fpDuration) + " s)");
+            } else if (r == x3::game::FirePoolSpawn::ExtinguishedWater) {
+                combatFx.extinguishFx(x3::phys::Vec3{ ground.x, wY, ground.z });
+                x3::logInfo("napalm: shell EXTINGUISHED on water (no pool)");
+            }
+        };
+
         // ---- WEAPONS: advance live projectile bolts. Each step moves the bolt and
         // raycasts the segment against Enemy then Static; on an enemy hit it deals
         // damage via the enemy fire path (aimed straight at the bolt's travel dir);
@@ -10859,9 +10957,12 @@ int runDefaultHost(HostContext& hc) {
                         if (rs.hitMonster) r = rs;
                     }
                     combatFx.addTracer(b.pos, eh.point);
-                    // Rocket detonates in a fireball; other bolts splash at the hit.
-                    if (b.impactKind == x3::game::WeaponFxKind::Rocket)
+                    // Rocket/napalm detonate in a fireball; other bolts splash at the hit.
+                    if (b.impactKind == x3::game::WeaponFxKind::Rocket ||
+                        b.impactKind == x3::game::WeaponFxKind::Napalm)
                         combatFx.spawnExplosion(eh.point, 1.4f);
+                    // Napalm: the burning fuel pools at the victim's feet too.
+                    igniteFirePool(b, eh.point);
                     if (r.killed) { combatFx.spawnDeath(eh.point);
                         audio->playSound3D(sndDeath, eh.point.x, eh.point.y, eh.point.z, 1.0f, 1.0f); }
                     else combatFx.spawnBlood(eh.point, ndir);
@@ -10869,11 +10970,14 @@ int runDefaultHost(HostContext& hc) {
                 } else {
                     x3::phys::RayHit sh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Static);
                     if (sh.hit) {
-                        // Rocket -> violent fireball; energy/ballistic bolts -> per-kind splash.
-                        if (b.impactKind == x3::game::WeaponFxKind::Rocket)
+                        // Rocket/napalm -> violent fireball; energy/ballistic bolts -> per-kind splash.
+                        if (b.impactKind == x3::game::WeaponFxKind::Rocket ||
+                            b.impactKind == x3::game::WeaponFxKind::Napalm)
                             combatFx.spawnExplosion(sh.point, 1.4f);
                         else
                             combatFx.spawnImpact(sh.point, sh.normal, b.impactKind);
+                        // Napalm: leave the burning ground pool (the actual weapon).
+                        igniteFirePool(b, sh.point);
                         combatFx.addTracer(b.pos, sh.point);
                         if (b.impactSnd.valid())
                             audio->playSound3D(b.impactSnd, sh.point.x, sh.point.y, sh.point.z, 0.6f, 1.0f);
@@ -10889,6 +10993,76 @@ int runDefaultHost(HostContext& hc) {
                 }
                 if (consumed) { projectiles[pi] = projectiles.back(); projectiles.pop_back(); }
                 else ++pi;
+            }
+        }
+
+        // ---- NAPALM FIRE POOLS (weapon-vfx lane): render each live pool's flames
+        // (dt-scaled emission), advance the bounded pool set, and dispatch the due
+        // damage ticks — the player by distance (the barrel splash pattern), enemies
+        // via short Enemy-layer probe rays run through the SAME per-host onFire
+        // chain every bolt impact uses. Bio type: burning fuel is a chemical burn
+        // (also keeps a pool tick from re-chilling anyone the way a stray Cryo
+        // re-tag would). Frozen with the sim. ----
+        if (!simFrozen && !terrainWorld && firePools.liveCount() > 0) {
+            for (int fi = 0; fi < x3::game::FirePoolSystem::capacity(); ++fi) {
+                const auto& fp = firePools.pool(fi);
+                if (fp.remaining > 0.0f) combatFx.firePoolFx(fp.center, fp.radius, dt);
+            }
+            x3::game::FirePoolSystem::Tick poolTicks[x3::game::kMaxFirePools];
+            const int nTicks = firePools.update(dt, poolTicks, x3::game::kMaxFirePools);
+            for (int t = 0; t < nTicks; ++t) {
+                const auto& tk = poolTicks[t];
+                // Player: stand in the fire, take the tick (flat inside the pool —
+                // a burning pool has no gentle edge).
+                {
+                    const x3::phys::Vec3 pp = player.damageTargetPos();
+                    const float dx = pp.x - tk.center.x, dy = pp.y - tk.center.y,
+                                dz = pp.z - tk.center.z;
+                    if (std::sqrt(dx*dx + dy*dy + dz*dz) < tk.radius && player.isAlive())
+                        player.takeDamage(tk.damage);
+                }
+                // Enemies: 8 radial probe rays at hip height, each PRE-BOUNDED to the
+                // pool radius on the Enemy layer, then dispatched through the standard
+                // per-host chain along the same ray (the chain re-raycasts and finds
+                // the same nearest body; the pre-check just keeps the reach honest).
+                const x3::phys::Vec3 org{ tk.center.x, tk.center.y + 0.7f, tk.center.z };
+                for (int rr = 0; rr < 8; ++rr) {
+                    const float az = (float)rr * (3.14159265f / 4.0f);
+                    const x3::phys::Vec3 rd{ std::cos(az), 0.0f, std::sin(az) };
+                    const x3::phys::RayHit ph =
+                        physics->rayCast(org, rd, tk.radius, x3::phys::Layer::Enemy);
+                    if (!ph.hit) continue;
+                    x3::game::FireResult r = game.onFire(org, rd, scene, *physics,
+                                                         tk.damage, x3::DamageType::Bio);
+                    if (!r.hitMonster && canonWorld && canonPlay.built()) {
+                        x3::game::FireResult rc = canonPlay.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rc.hitMonster) r = rc;
+                    }
+                    if (!r.hitMonster && canonWorld) {
+                        x3::game::FireResult ca = canonAliens.fire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (ca.hitMonster) r = ca;
+                    }
+                    if (!r.hitMonster) {
+                        x3::game::FireResult rm = midFloors.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rm.hitMonster) r = rm;
+                    }
+                    if (!r.hitMonster) {
+                        x3::game::FireResult rt = topFloors.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rt.hitMonster) r = rt;
+                    }
+                    if (!r.hitMonster) {
+                        x3::game::FireResult rn = nexus.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rn.hitMonster) r = rn;
+                    }
+                    if (!r.hitMonster) {
+                        x3::game::FireResult rs = subLevels.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rs.hitMonster) r = rs;
+                    }
+                    if (r.killed) {
+                        combatFx.spawnDeath(r.endPoint);
+                        audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
+                    }
+                }
             }
         }
 

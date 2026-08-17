@@ -224,6 +224,23 @@ constexpr float kChaseSpeed    = 2.5f;
 constexpr float kCryoSlowFactor   = 0.35f;  // chase-speed multiplier while chilled
 constexpr float kCryoSlowDuration = 2.5f;   // seconds; REFRESHED (not stacked) per hit
 
+// ---- FROST TINT (2026-08, weapon-vfx lane) --------------------------------
+// The VISUAL half of the chill: a slowed enemy that doesn't look cold reads as
+// lag, not mechanics. While isChilled(), drawMonster folds this icy multiplier
+// into the model tint (red knocked down, blue pushed up); the moment the slow
+// expires the fold is skipped ENTIRELY, so the tint reverts EXACTLY when the
+// speed does — both key off the same m_cryoSlowTimer, they cannot drift.
+// Kept as a pure inline fold so --test-weapons can assert apply/revert headlessly.
+constexpr float kFrostTintR = 0.55f;   // red suppressed — cold steals the warmth
+constexpr float kFrostTintG = 0.95f;   // green nearly untouched
+constexpr float kFrostTintB = 1.45f;   // blue pushed — the icy cast
+inline void applyFrostTint(float tint[4], bool chilled) {
+    if (!chilled) return;              // not chilled == byte-identical tint
+    tint[0] *= kFrostTintR;
+    tint[1] *= kFrostTintG;
+    tint[2] *= kFrostTintB;
+}
+
 // Stop distance (meters, horizontal): the monster crawls toward the player only
 // while horizontal distance exceeds this, so it doesn't grind into the player.
 constexpr float kChaseStopDist = 1.5f;
