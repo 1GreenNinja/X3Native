@@ -421,13 +421,33 @@ public:
             const float thr = std::clamp(std::fabs(m_in.throttle), 0.0f, 1.0f);
             const float tau = (thr > m_thrSm) ? 0.12f : 0.70f;   // rise fast, fall slow
             m_thrSm += (thr - m_thrSm) * (1.0f - std::exp(-dt / tau));
-            // SQUARED load shaping: holding 70 mph in the 0.50 overdrive takes
-            // ~0.4 pedal (drag + a low-boost turbo), and a LINEAR band read
-            // that as "half sporty" and held 5th at 5000 rpm forever
-            // (measured, H1). load = thr^2 keeps everything below ~0.6 pedal
-            // in the relaxed end of the band while a genuine WOT still slides
-            // the thresholds all the way up.
-            const float load = m_thrSm * m_thrSm;
+            // THE KICKDOWN DETENT (W-HANDLING3, 2026-08-17). A real automatic
+            // does not read pedal travel as a continuous "sportiness" dial: it
+            // has a DETENT near the floor, and anything short of it is cruise.
+            // Model that literally — load is 0 below kDetentFrac of pedal and
+            // smoothsteps to 1 at the floor.
+            //
+            // WHY, measured (rule 9): the previous shaping was load = thr^2,
+            // which is continuous and therefore has no safe margin anywhere.
+            // Holding 70 mph took 0.46 pedal -> load 0.21 -> the 5->6 upshift
+            // threshold landed at 4750 rpm while 5th at 70 mph sits at 4822 —
+            // SEVENTY-TWO rpm of margin. It "worked" only until the spoiler's
+            // induced drag (see the wing-drag block below) raised cruise
+            // throttle a few points; then the box hunted 5-6-5-6 with rpm
+            // spiking to 5890 (H1, 2026-08-17) — the owner's "pegs redline"
+            // complaint growing back in miniature. Worse, the hunt is
+            // SELF-DRIVEN: upshifting into the 0.50 overdrive needs more pedal
+            // to hold speed, which raises the load, which demands the downshift
+            // that started it.
+            // With the detent, cruise at 0.46 pedal is load 0 -> upshift at
+            // 4125 rpm -> 700 rpm of margin, and holding 6th at 0.55 pedal is
+            // STILL load 0, so the loop cannot close. WOT is untouched
+            // (load 1 -> the 0.94/0.33 points), and a genuine kickdown past
+            // the detent still slides the whole band up.
+            constexpr float kDetentFrac = 0.55f;   // pedal fraction where "go" begins
+            float load = (m_thrSm - kDetentFrac) / (1.0f - kDetentFrac);
+            load = std::clamp(load, 0.0f, 1.0f);
+            load = load * load * (3.0f - 2.0f * load);          // smoothstep
             JPH::VehicleTransmission& tr = m_ctrl->GetTransmission();
             tr.mShiftUpRPM   = m_redlineRPM *
                 (kShiftUpLightFrac   + (kShiftUpFrac   - kShiftUpLightFrac)   * load);
@@ -508,6 +528,28 @@ public:
                 const JPH::RVec3 at  = m_chassis->GetCenterOfMassPosition() +
                                        rot * (-m_localForward * kDownforceRearOffset);
                 m_chassis->AddForce(down * mag, at);
+
+                // THE WING'S DRAG (W-HANDLING3, 2026-08-17). A wing that makes
+                // downforce and costs NOTHING is free lunch, and the receipt
+                // for it was sitting in the top-speed number: with the 0.50
+                // overdrive un-capping the gearing, the drag-limited terminal
+                // came out at 198 mph — 45 mph ABOVE the car's own stated ~155,
+                // because the only drag in the sim was the body's kAeroDrag and
+                // the spoiler was pure lift. Real aero is a TRADE: downforce
+                // buys grip and it costs top end, which is exactly the choice
+                // `car_downforce` should expose.
+                //   D_wing = L / (L/D)
+                // L/D 3.0 is a road-car aero package (an add-on rear wing plus
+                // splitter runs ~2.5-3.5; an F1 wing ~4). NOT tuned to hit a
+                // target speed — the speed is whatever this falls out as, and
+                // --test-vehicle H2/H3 report it. PAIRED with kDownforceFrac70
+                // above and with kAeroDrag: all three set the terminal velocity
+                // (NO_SLOP rule 4).
+                constexpr float kWingLoverD = 3.0f;
+                const JPH::Vec3 vel = m_chassis->GetLinearVelocity();
+                const float spd = vel.Length();
+                if (spd > 0.5f)
+                    m_chassis->AddForce(vel * (-(mag / kWingLoverD) / spd));
             }
         }
 

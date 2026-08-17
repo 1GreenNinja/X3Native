@@ -1198,28 +1198,48 @@ bool runDriveEnterExitSelfTest() {
             // H1 CRUISE-70: integral throttle controller holds 70 mph for 30 s;
             // measure the last 8 s. (An integrator, not a magic constant — the
             // steady-state throttle is whatever the drag actually demands.)
+            // TWO RPMs, BOTH GATED (NO_SLOP rule 4 — they are one value to the
+            // owner but two code paths, and only one of them is the complaint):
+            //   engineRPM() = Jolt's road-speed-locked value -> THE TACH
+            //     (host_tunnel.cpp needle, "it shouldnt peg redline").
+            //   audioRPM()  = DriveDemo's own flywheel state -> THE ENGINE NOTE
+            //     (host_tunnel.cpp pitch = rpm/1071). Gating only the tach
+            //     would let a settled needle sit over a screaming note.
+            // Also track the PEAK over the measured window, not just the mean:
+            // a mean of 2400 can hide a box hunting 6-5-6 into the limiter.
             float thr = 0.2f;
-            float sumRpm = 0.0f, sumV = 0.0f; int nM = 0, gearAtEnd = 0;
+            float sumRpm = 0.0f, sumARpm = 0.0f, sumV = 0.0f, peakRpm = 0.0f, sumThr = 0.0f;
+            int nM = 0, gearAtEnd = 0;
             for (int i = 0; i < 1800; ++i) {
                 const float v = hcar.forwardSpeed();
                 thr = std::clamp(thr + 0.004f * (31.29f - v), 0.0f, 0.8f);
                 x3::phys::VehicleInput in{}; in.throttle = thr;
                 hcar.setInput(in); hcar.preStep(dt); ph->step(dt); hcar.postStep(dt);
                 if (i >= 1320) {   // last 8 s
-                    sumRpm += hcar.engineRPM(); sumV += hcar.forwardSpeed(); ++nM;
+                    sumRpm += hcar.engineRPM(); sumARpm += hcar.audioRPM();
+                    sumV += hcar.forwardSpeed(); sumThr += thr; ++nM;
+                    peakRpm = std::max(peakRpm, std::max(hcar.engineRPM(), hcar.audioRPM()));
                     gearAtEnd = hcar.gear();
                 }
             }
-            const float cruiseRpm = nM ? sumRpm / nM : 0.0f;
-            const float cruiseV   = nM ? sumV / nM : 0.0f;
+            const float cruiseRpm  = nM ? sumRpm / nM : 0.0f;
+            const float cruiseARpm = nM ? sumARpm / nM : 0.0f;
+            const float cruiseV    = nM ? sumV / nM : 0.0f;
             x3::logInfo("[drive-test] H1 CRUISE-70: v=" + std::to_string(cruiseV * 2.23694f) +
                         " mph, gear=" + std::to_string(gearAtEnd) +
-                        ", rpm=" + std::to_string(cruiseRpm) +
+                        ", tach rpm=" + std::to_string(cruiseRpm) +
+                        ", NOTE rpm=" + std::to_string(cruiseARpm) +
+                        ", peak=" + std::to_string(peakRpm) +
+                        ", cruise throttle=" + std::to_string(nM ? sumThr / nM : 0.0f) +
                         " (redline 7500; owner: no pegging at cruise)");
             check(std::fabs(cruiseV - 31.29f) < 2.0f, "H1 cruise: speed holds 70 +- 4.5 mph");
             check(gearAtEnd == 6, "H1 cruise: settles in 6th (the 0.50 overdrive engages)");
             check(cruiseRpm > 1900.0f && cruiseRpm < 3600.0f,
-                  "H1 cruise: rpm mid-band (1900-3600), NOT pegged at redline");
+                  "H1 cruise: TACH rpm mid-band (1900-3600), NOT pegged at redline");
+            check(cruiseARpm > 1900.0f && cruiseARpm < 3600.0f,
+                  "H1 cruise: ENGINE NOTE rpm mid-band too (the note settles, it does not scream)");
+            check(peakRpm < 4200.0f,
+                  "H1 cruise: no rpm SPIKES in the window (the box is not hunting 6-5-6)");
 
             // H2 WOT to terminal velocity (45 s is asymptote-close).
             float vPeak = 0.0f, rpmAtPeak = 0.0f; int gearAtPeak = 0;
