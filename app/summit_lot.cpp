@@ -342,6 +342,21 @@ void buildSummitLot(const SummitLotResult& lot, Scene& scene,
     upload(slab,  &asphalt, slabTint,  /*collide*/true);
     upload(kerb,  &cement,  kerbTint,  /*collide*/true);
     upload(paint, nullptr,  paintTint, /*collide*/false);
+
+    // A RECEIPT THAT THE PAD WAS DRAWN. registerSummitLot already logs that the
+    // lot was PLANNED; nothing said whether the geometry ever reached the
+    // scene, and the first eyes-on run found bare hillside where the plan said
+    // pavement. Registration and construction are two different claims.
+    char b[220];
+    std::snprintf(b, sizeof(b),
+                  "summit lot BUILT at (%.0f, %.0f, %.0f): slab %zu verts%s, kerb %zu%s, "
+                  "paint %zu | asphalt %s, cement %s",
+                  (double)lot.cx, (double)topY, (double)lot.cz,
+                  slab.v.size(), asphalt.ok ? "" : " (UNTEXTURED fallback)",
+                  kerb.v.size(), cement.ok ? "" : " (UNTEXTURED fallback)",
+                  paint.v.size(),
+                  asphalt.ok ? "ok" : "MISSING", cement.ok ? "ok" : "MISSING");
+    x3::logInfo(b);
 }
 
 // ---------------------------------------------------------------------------

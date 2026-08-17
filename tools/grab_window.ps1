@@ -27,17 +27,51 @@ public class WinGrab {
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+    // MUST be called before any measuring. Without it Windows reports the
+    // window in LOGICAL pixels while CopyFromScreen works in PHYSICAL ones, so
+    // on a scaled display (this box runs 150%) every grab is a silent crop of
+    // the top-left corner of the frame — which is exactly how the first pass of
+    // these captures came out, and a cropped screenshot is worse than none
+    // because it looks like a whole one.
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    // Windows REFUSES a foreground steal from a background process, and it
+    // fails SILENTLY: SetForegroundWindow returns false, the target stays
+    // buried, and CopyFromScreen happily photographs whatever sits on top of
+    // it. On this box that is another lane's terminal — a capture of the wrong
+    // program, filed as evidence. Hence: attach to the current foreground
+    // thread's input queue (which lifts the restriction), then VERIFY.
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 }
 '@
+[void][WinGrab]::SetProcessDPIAware()
 
 $p = Get-Process -Name $Proc -ErrorAction SilentlyContinue |
      Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if (-not $p) { Write-Error "no $Proc window found"; exit 1 }
 
 $h = $p.MainWindowHandle
-[void][WinGrab]::ShowWindow($h, 9)          # SW_RESTORE
-[void][WinGrab]::SetForegroundWindow($h)
-Start-Sleep -Milliseconds 600
+for ($try = 1; $try -le 6; $try++) {
+    $fg     = [WinGrab]::GetForegroundWindow()
+    $fgThr  = [WinGrab]::GetWindowThreadProcessId($fg, [IntPtr]::Zero)
+    $meThr  = [WinGrab]::GetCurrentThreadId()
+    [void][WinGrab]::AttachThreadInput($meThr, $fgThr, $true)
+    [void][WinGrab]::ShowWindow($h, 9)      # SW_RESTORE
+    [void][WinGrab]::BringWindowToTop($h)
+    [void][WinGrab]::SetForegroundWindow($h)
+    [void][WinGrab]::AttachThreadInput($meThr, $fgThr, $false)
+    Start-Sleep -Milliseconds 600
+    if ([WinGrab]::GetForegroundWindow() -eq $h) { break }
+}
+# REFUSE to save a picture of the wrong window. A mislabelled capture is worse
+# than a missing one: it gets read as evidence.
+if ([WinGrab]::GetForegroundWindow() -ne $h) {
+    Write-Error "could not bring $Proc to the foreground — NOT saving (would have photographed another window)"
+    exit 1
+}
 
 $r = New-Object WinGrab+RECT
 [void][WinGrab]::GetClientRect($h, [ref]$r)

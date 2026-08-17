@@ -740,6 +740,37 @@ int hostTunnel(HostContext& hc) {
         }
         startPos[1] = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]) + 1.0f;
     }
+    // X3_SPAWN=lot|spur|bore — START somewhere other than the ring. THE REVIEW
+    // KNOB. The summit lot is 7.5 km from the default spawn, so in practice
+    // nobody had ever seen it: not the owner (twenty minutes of driving), not
+    // an agent (the --screenshot harness is headless and does not go there).
+    // A destination nobody can get to is not finished, and "I did not look at
+    // it" is the honest reading of every review that skipped it.
+    // DEFAULT OFF and unset spawns exactly as before (NO_SLOP rule 6).
+    if (const char* sp = std::getenv("X3_SPAWN")) {
+        const std::string w(sp);
+        bool moved = false;
+        if (w == "lot" && summitLot.built) {
+            // On the pad's entry mouth, facing in along the aisle.
+            startPos[0] = summitLot.mouthX; startPos[2] = summitLot.mouthZ; moved = true;
+        } else if (w == "spur" && summitSpur.built) {
+            startPos[0] = summitSpur.spec.x.back();
+            startPos[2] = summitSpur.spec.z.back(); moved = true;
+        } else if (w == "bore") {
+            float p[3]; route.posAt(std::max(8.0f, route.boreS0 - 40.0f), p);
+            startPos[0] = p[0]; startPos[2] = p[2]; moved = true;
+        }
+        if (moved) {
+            startPos[1] = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]) + 1.0f;
+            char sb[160];
+            std::snprintf(sb, sizeof(sb), "--world tunnel: X3_SPAWN=%s — spawning at (%.0f, %.0f, %.0f)",
+                          w.c_str(), (double)startPos[0], (double)startPos[1], (double)startPos[2]);
+            x3::logInfo(sb);
+        } else {
+            x3::logWarn(std::string("--world tunnel: X3_SPAWN=") + w +
+                        " not available (want lot|spur|bore) — default spawn");
+        }
+    }
 
     x3::game::TerrainStreamer streamer;
     const x3::game::TerrainConfig& cfg = x3::game::worldTerrainConfig();
@@ -2752,6 +2783,10 @@ int hostTunnel(HostContext& hc) {
             std::snprintf(b, sizeof(b), "teleported to (%.0f, %.0f, %.0f)",
                           (double)tx, (double)(gy + 2.0f), (double)tz);
             con->print(b);
+            // ALSO to the log, not just the console pane: a screenshot of the
+            // console does not survive being cropped, and a capture without
+            // coordinates cannot prove WHERE it was taken. Receipts.
+            x3::logInfo(std::string("tp: ") + b);
         }, "tp [x z | lot|spur|bore|ring] — move the car (review tool)");
         con->registerCommand("car", [&](const std::vector<std::string>&) {
             char b[256];
