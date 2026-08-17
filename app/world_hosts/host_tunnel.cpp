@@ -1568,6 +1568,17 @@ int hostTunnel(HostContext& hc) {
         // Live trims for Jake's placement, so a wrong-facing or sunk rig is a
         // console line to diagnose instead of a rebuild: degrees added to his
         // travel yaw, metres added to his measured ground compensation.
+        con->registerCommand("wx_debug", [&, con](const std::vector<std::string>&) {
+            const x3::game::WeatherSample& ws = weather.sample();
+            char b[256];
+            std::snprintf(b, sizeof(b),
+                "wx='%s' on=%d | sample: state=%d precip=%.2f snow=%d tempC=%.1f | "
+                "fed: kind=%d amt=%.2f | live particles=%u",
+                console->getString("wx").c_str(), (int)weatherOn, (int)ws.state,
+                (double)ws.precipitation, (int)ws.snowfall, (double)ws.tempC,
+                (int)precipKind, (double)precipAmt, precip.liveCount());
+            con->print(b);
+        }, "print the whole rain chain: state -> sample -> fed amount -> live particles");
         con->registerCommand("rain", [con](const std::vector<std::string>& args) {
             if (args.size() < 2) { con->print("rain 0-10: 0 off | 1-3 sprinkle | 4-6 downpour | 7-8 heavy | 9-10 MONSOON"); return; }
             const float v = std::min(10.0f, std::max(0.0f, (float)std::atof(args[1].c_str())));
