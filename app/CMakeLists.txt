@@ -246,6 +246,7 @@ add_library(x3app SHARED
     alert.cpp
     fx.cpp
     hud.cpp
+    hud_panel.cpp
     loading_screen.cpp
     canon_aliens.cpp
     pack_spiders.cpp

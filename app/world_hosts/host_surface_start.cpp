@@ -46,6 +46,7 @@
 #include "../mesh_prims.h"
 #include "../player.h"
 #include "../objective.h"
+#include "../hud_panel.h"   // rounded dark HUD chips (feat/hud-restyle)
 #include "../rescue.h"
 #include "../monster.h"
 #include "../asset_root.h"
@@ -609,12 +610,13 @@ int hostSurfaceStart(HostContext& hc) {
             if (atBreach) {
                 const char* prompt = "[E] ENTER FACILITY";
                 const float px = 22.0f;                       // glyph size (px)
-                const float tx = (float)cw * 0.5f - px * 0.5f * 9.0f;  // ~centered (18 chars)
-                const float ty = (float)ch * 0.62f;
-                const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.85f };
                 const float cl[4] = { 1.0f, 0.84f, 0.35f, 1.0f };      // amber (the breach sign)
-                device->drawHudText(frame, prompt, tx + 2.0f, ty + 2.0f, px, sh);
-                device->drawHudText(frame, prompt, tx, ty, px, cl);
+                // Rounded dark chip so the prompt reads over the white facility
+                // concrete (hud_panel.h — the one primitive).
+                x3::game::hudPromptChip(*device, frame, prompt,
+                                        (float)cw * 0.5f, (float)ch * 0.62f - 6.0f,
+                                        px, cl, 1.0f, x3::game::kHudAccentAmber,
+                                        x3::rhi::FontRole::Console);
             }
         }
         shell.draw(frame);
