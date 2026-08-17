@@ -1226,22 +1226,72 @@ CellWindow cellObsWindow(const CanonFloor& floor) {
 
 // =====================================================================================
 // SEAL-BAND closure rules (fix/cell-shell-hole). Single source for the builder AND the
-// lint. NOTE: these currently encode the SHIPPED (pre-fix) behavior — the seal-band
-// lint consumes them first so its red run documents the defect; the fix flips them and
-// wires the builder in the same change.
+// lint (the same shared-rule pattern as the wall dedup). `legacyRule` reproduces the
+// pre-fix behavior — the seal-band lint's permanent negative control.
 // =====================================================================================
 bool canonLidVisible(const CanonFloor& floor, uint32_t ri, bool legacyRule) {
     if (ri >= floor.rooms.size()) return false;
     const CanonRoom& r = floor.rooms[ri];
-    // Shipped rule (QA D3/D4 deep rooms + W5-1b solidLid): everything else is
-    // collision-only/invisible.
-    (void)legacyRule;
-    return r.cy < -50.0f || r.solidLid;
+    // Legacy rule (QA D3/D4 deep rooms + W5-1b solidLid): everything else was
+    // collision-only/invisible — the cell-shell hole.
+    if (r.cy < -50.0f || r.solidLid) return true;
+    if (legacyRule) return false;
+    // FIX: a room interpenetrating a TALLER room has no wall of its own above its
+    // ceiling on the shared boundary — the lid IS the closure of the band
+    // y[r.top, n.top], so it must render or the player looks over the wall top into
+    // the neighbor's lit interior. Deck rooms/partners (sub-standing height) exempt:
+    // a rendered lid would roof over the walkable deck, and a deck's "interior"
+    // above is sky by design.
+    constexpr float kStandHL = 1.8f;
+    if (r.h < kStandHL) return false;
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.kind != DoorwayKind::Overlap) continue;
+        if (dw.a != ri && dw.b != ri) continue;
+        const uint32_t o = (dw.a == ri) ? dw.b : dw.a;
+        if (o >= floor.rooms.size()) continue;
+        const CanonRoom& n = floor.rooms[o];
+        if (n.platform || n.h < kStandHL) continue;
+        if (n.y1() > r.y1() + 0.05f) return true;
+    }
+    return false;
 }
 
 std::vector<CanonBand> canonPlinthBands(const CanonFloor& floor, bool legacyRule) {
-    (void)floor; (void)legacyRule;
-    return {};   // shipped behavior: no plinth bands were ever built
+    std::vector<CanonBand> out;
+    if (legacyRule) return out;              // pre-fix: no plinth bands were built
+    constexpr float eps = 0.05f;
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.kind != DoorwayKind::Overlap) continue;
+        for (int side = 0; side < 2; ++side) {
+            const uint32_t ri = side ? dw.b : dw.a, ni = side ? dw.a : dw.b;
+            if (ri >= floor.rooms.size() || ni >= floor.rooms.size()) continue;
+            const CanonRoom& r = floor.rooms[ri];
+            const CanonRoom& n = floor.rooms[ni];
+            if (r.platform || n.platform) continue;
+            if (n.y0() >= r.y0() - eps) continue;    // partner floor not lower: no slot
+            // Overlap strip of r's footprint inside n; each side of the strip that is
+            // a face of r strictly inside n slices n's interior — the open slot under
+            // r's floor slab there gets a plinth band y[n.floor, r.floor].
+            const float ox0 = std::max(r.x0(), n.x0()), ox1 = std::min(r.x1(), n.x1());
+            const float oz0 = std::max(r.z0(), n.z0()), oz1 = std::min(r.z1(), n.z1());
+            if (ox1 - ox0 < eps || oz1 - oz0 < eps) continue;
+            auto band = [&](int face, float plane, float lo, float hi) {
+                // Dedup (a pair may appear twice in the JSON): a duplicate band would
+                // stack two coplanar boxes -> z-fight (LAW 2 doubled).
+                for (const CanonBand& b : out)
+                    if (b.room == ri && b.face == face &&
+                        std::fabs(b.plane - plane) < 0.01f && std::fabs(b.lo - lo) < 0.01f &&
+                        std::fabs(b.hi - hi) < 0.01f && std::fabs(b.y0 - n.y0()) < 0.01f)
+                        return;
+                out.push_back({ ri, face, plane, lo, hi, n.y0(), r.y0() });
+            };
+            if (std::fabs(ox0 - r.x0()) < eps && r.x0() > n.x0() + eps) band(0, r.x0(), oz0, oz1);
+            if (std::fabs(ox1 - r.x1()) < eps && r.x1() < n.x1() - eps) band(1, r.x1(), oz0, oz1);
+            if (std::fabs(oz0 - r.z0()) < eps && r.z0() > n.z0() + eps) band(2, r.z0(), ox0, ox1);
+            if (std::fabs(oz1 - r.z1()) < eps && r.z1() < n.z1() - eps) band(3, r.z1(), ox0, ox1);
+        }
+    }
+    return out;
 }
 
 // =====================================================================================
@@ -1620,10 +1670,14 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         if (!r.openCeiling) {
             // W5-1b: solidLid rooms (the sealed Nexus Access under the 4.5 cavern)
             // render their lid too — their roof is exposed to a vantage above.
-            const bool deepLid = r.cy < -50.0f || r.solidLid;
+            // SEAL-BAND (fix/cell-shell-hole): so does every room interpenetrated by a
+            // TALLER room — the lid is the only closure of the band above its wall
+            // tops, and an invisible lid there was the "hole in Jake's cell" (a
+            // sightline over the cell wall into the lit Main Hall). One shared rule,
+            // consumed by the seal-band lint too: canonLidVisible().
             addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
                    r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true,
-                   /*visible*/deepLid);
+                   /*visible*/canonLidVisible(floor, ri));
         }
 
         // 4 walls with doorway gaps where the resolver produced them.
@@ -1633,6 +1687,35 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         if (!skipFace[ri * 4 + 1]) buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
         if (!skipFace[ri * 4 + 2]) buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
         if (!skipFace[ri * 4 + 3]) buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
+    }
+
+    // ---- SEAL-BAND PLINTHS (fix/cell-shell-hole): close the open slot under a room's
+    // floor slab where an Overlap partner's floor sits LOWER — the mirrored sibling of
+    // the invisible-lid hole (a 0.25-0.50 m see-under crack at the base of every
+    // interpenetrating room). Bands come from the same rule the seal-band lint checks
+    // (canonPlinthBands). The band bottom is SUNK 5 cm into the partner's floor slab
+    // and the top stops 5 cm INSIDE the room's own slab (bottom -0.10, top -0.00), so
+    // no plinth face is ever coplanar with a slab surface (LAW 2: never doubled).
+    {
+        const std::vector<CanonBand> plinths = canonPlinthBands(floor);
+        for (const CanonBand& b : plinths) {
+            if (b.room >= nRooms) continue;
+            const CanonRoom& r = floor.rooms[b.room];
+            float tint[4]; tintFor(r.type, tint);
+            const x3::rhi::TextureHandle tex = wallVariants[b.room % 3];
+            const float y0 = b.y0 - 0.05f, y1 = b.y1 - 0.05f;
+            const float hh = (y1 - y0) * 0.5f, c = (b.lo + b.hi) * 0.5f, half = (b.hi - b.lo) * 0.5f;
+            if (hh < 0.01f || half < 0.01f) continue;
+            if (b.face <= 1)   // X-plane face: thin in X, runs in Z
+                addBox(scene, device, physics, kWallT * 0.5f, hh, half,
+                       b.plane, (y0 + y1) * 0.5f, c, tex, tint, b.room, true, wallVis);
+            else               // Z-plane face: thin in Z, runs in X
+                addBox(scene, device, physics, half, hh, kWallT * 0.5f,
+                       c, (y0 + y1) * 0.5f, b.plane, tex, tint, b.room, true, wallVis);
+        }
+        if (!plinths.empty())
+            x3::logInfo("buildCanonFloor: SEAL-BAND — " + std::to_string(plinths.size()) +
+                        " plinth band(s) closing under-slab slots at overlap junctions");
     }
 
     // ---- THRESHOLD RAMPS at doored/adjacent/overlap openings with a FLOOR-HEIGHT
