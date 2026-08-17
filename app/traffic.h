@@ -61,7 +61,15 @@
 namespace x3::game {
 
 struct TrafficConfig {
-    uint32_t targetCount = 60;      // live cars maintained around the focus
+    // POPULATION. 60 (the first pass) left a SIXTEEN-lane freeway reading as
+    // deserted — measured from the air at station u=20778: one car per ~400 m
+    // of road spread across 16 lanes. The owner's ask was "fill it with
+    // traffic". 300 puts roughly one vehicle per 100 lane-metres inside the
+    // ring, which is real light-to-moderate freeway flow; the same-lane
+    // spacing rule settles the live count around 300-370 depending on how
+    // much route falls inside the ring. Receipts: shots_traffic/03 (200),
+    // 04 (400) and the [tunnel-perf] lines beside them.
+    uint32_t targetCount = 300;     // live cars maintained around the focus
     float    ringNearM   = 300.0f;  // spawn no closer than this
     float    ringFarM    = 1500.0f; // spawn no further than this
     float    cullM       = 1600.0f; // despawn beyond this
@@ -70,6 +78,10 @@ struct TrafficConfig {
     // which a hit traffic car goes DYNAMIC. ~2.7 m/s closing at the hero
     // car's 1500 kg. Below it the kinematic body just shoves.
     float    looseImpulse = 4000.0f;
+    // X3_TRAFFIC_NEAR/_FAR/_COUNT are read in build() when this is true (the
+    // host's path). --test-traffic sets it FALSE: a gate that moves because
+    // someone left a capture lever exported in their shell is not a gate.
+    bool     envOverrides = true;
 };
 
 class FreewayTraffic {

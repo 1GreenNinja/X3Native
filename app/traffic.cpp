@@ -177,12 +177,14 @@ bool FreewayTraffic::build(const RoadSpec& spec, const std::vector<float>& roadY
     // All three are read here, once, so the boot line reports what is ACTUALLY
     // in force (a lever whose value never reaches the log is a lever nobody
     // can trust).
-    if (const char* e = std::getenv("X3_TRAFFIC_NEAR"))
-        m_cfg.ringNearM = std::max(0.0f, (float)std::atof(e));
-    if (const char* e = std::getenv("X3_TRAFFIC_FAR"))
-        m_cfg.ringFarM  = std::max(m_cfg.ringNearM + 1.0f, (float)std::atof(e));
-    if (const char* e = std::getenv("X3_TRAFFIC_COUNT"))
-        m_cfg.targetCount = (uint32_t)std::max(0, std::atoi(e));
+    if (m_cfg.envOverrides) {
+        if (const char* e = std::getenv("X3_TRAFFIC_NEAR"))
+            m_cfg.ringNearM = std::max(0.0f, (float)std::atof(e));
+        if (const char* e = std::getenv("X3_TRAFFIC_FAR"))
+            m_cfg.ringFarM  = std::max(m_cfg.ringNearM + 1.0f, (float)std::atof(e));
+        if (const char* e = std::getenv("X3_TRAFFIC_COUNT"))
+            m_cfg.targetCount = (uint32_t)std::max(0, std::atoi(e));
+    }
     m_rng = cfg.seed ? cfg.seed : 1u;
     m_device = device;
     m_phys = phys;
@@ -246,6 +248,34 @@ bool FreewayTraffic::build(const RoadSpec& spec, const std::vector<float>& roadY
             // documented convention). A sideways model would drive broadside.
             x3::logWarn(std::string("traffic: DROP ") + d.label +
                         " — authored along X, not Z (rule 3: facing broken)");
+            continue;
+        }
+        // ---- THE ASPECT GATE ------------------------------------------------
+        // Rescaling to targetLenM is UNIFORM, so it only produces a real car
+        // when the measured box is the car's OWN box. Two of the RCC exports
+        // carry a bbox polluted by an off-body node, and the length rescale
+        // then squashes or inflates everything else:
+        //   Jeep.glb    7.61 x  9.07 x 40.76  -> W/L 0.19 -> 0.78 m wide,
+        //               0.93 m tall: a pancake in lane 4.
+        //   Pickup.glb 10.50 x  8.36 x 17.46  -> W/L 0.60 -> 3.24 m wide,
+        //               2.58 m tall: wider than its own lane.
+        // Both were caught BY EYE first (shots_traffic/13 — two squat, too-wide
+        // hulls in the median lanes) and only then measured; the gate is the
+        // measurement, so the next polluted export cannot reach the road.
+        // Bands cover everything from a Skyline (W/L 0.42, H/L 0.28) to a box
+        // van (0.51 / 0.44) to a semi tractor (0.30 / 0.52); the nine models
+        // that ship all sit inside them, and no real road vehicle sits outside.
+        // NO_SLOP rule 1 (metres are law) + rule 9 (measure, don't vibe).
+        const float wOverL = ext[0] / ext[2], hOverL = ext[1] / ext[2];
+        if (wOverL < 0.25f || wOverL > 0.55f || hOverL < 0.20f || hOverL > 0.75f) {
+            char wb[220];
+            std::snprintf(wb, sizeof(wb),
+                "traffic: DROP %s — bbox cannot be a road vehicle: "
+                "%.2f x %.2f x %.2f m, W/L %.2f (want 0.25-0.55), H/L %.2f "
+                "(want 0.20-0.75). Uniform length-rescale would ship it "
+                "mis-proportioned (rule 1).",
+                d.label, ext[0], ext[1], ext[2], wOverL, hOverL);
+            x3::logWarn(wb);
             continue;
         }
         m.scale = d.targetLenM / ext[2];
@@ -845,6 +875,10 @@ bool runTrafficSelfTest() {
         TrafficConfig cfg;
         cfg.seed = seed;
         cfg.targetCount = target;
+        // The gates own their numbers. X3_TRAFFIC_NEAR/_FAR/_COUNT are capture
+        // levers for the host; a suite that silently retargets because one is
+        // exported in the operator's shell proves nothing.
+        cfg.envOverrides = false;
         t->build(ringSpec, ringY, nullptr, nullptr, "", cfg);
         return t;
     };

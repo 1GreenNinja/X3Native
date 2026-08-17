@@ -1450,12 +1450,19 @@ int hostTunnel(HostContext& hc) {
             }
             {
                 char pb[256];
+                // TRAFFIC COUNT ON THE PERF LINE. The first ON/OFF pair read
+                // bit-identical (tris/draws/objs to the digit) because zero
+                // cars were live at that camera — a perf "receipt" for a
+                // system that never drew. The live count now rides the same
+                // line, so an empty frame can never again be reported as a
+                // cheap one.
                 std::snprintf(pb, sizeof(pb),
                               "[tunnel-perf] %s: gpu %.3f ms avg (settled 60f) "
-                              "= %.0f fps | tris %llu draws %u objs %u",
+                              "= %.0f fps | tris %llu draws %u objs %u | traffic %u live (%u loose)",
                               out.c_str(), perfN ? perfMsSum / perfN : 0.0,
                               perfN && perfMsSum > 0.0 ? 1000.0 / (perfMsSum / perfN) : 0.0,
-                              (unsigned long long)perfTris, perfDraws, perfObjs);
+                              (unsigned long long)perfTris, perfDraws, perfObjs,
+                              traffic.liveCount(), traffic.looseCount());
                 x3::logInfo(pb);
             }
             const bool wrote = device->captureFrame(out.c_str());
