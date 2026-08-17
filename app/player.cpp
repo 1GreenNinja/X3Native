@@ -92,6 +92,21 @@ constexpr float kJetFlareM    = 6.0f;     // m of ground proximity that arms the
 constexpr float kJetFlareSink = -1.4f;    // m/s max sink rate inside the flare window
 constexpr float kJetFlareK    = 4.0f;     // 1/s vertical blend while flaring (firm)
 constexpr float kJetLandSpd   = 6.0f;     // m/s planar ceiling for a clean touchdown
+// ---- COAST BEFORE THE BRAKE — borrowed, with its receipt, from the SPACE
+// lane. app/space_pilot.h's Tuning carries `flightAssist` (a station-keeping
+// brake) AND `assistDelay`, and the comment on the latter records what the
+// owner said when it was missing: *"visually it darts left and right, but it
+// doesn't FEEL like its moving much past the initial burst"* — the brake bit
+// on the FIRST idle frame, so every burst died the instant the key came up.
+// kJetHover is the same station-keeping brake by another name and had the same
+// defect: release W at 300 mph and the hover ease started immediately, so you
+// could never coast across a valley to look at it, which is the entire stated
+// purpose of the pack ("get over the whole world quickly to OBSERVE").
+// PAIRED with SpacePilotController::Tuning::assistDelay (space_pilot.h) — the
+// two are the same idea and each names the other. Their arcade preset uses
+// 0.45 s for a dogfight; a 300 mph observation cruise wants a long glide.
+constexpr float kJetAssistDelay = 2.5f;   // s of hands-off coasting before hover bites
+constexpr float kJetCoastDrag   = 0.06f;  // 1/s bleed while coasting (thin-air, not a brake)
 } // namespace
 
 void Player::spawn(x3::phys::IPhysicsWorld& physics, float x, float y, float z) {
@@ -286,7 +301,15 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
             const float r3x = -std::sin(m_yaw),     r3z = std::cos(m_yaw);
             // Target velocity + blend rate for this frame's intent.
             float tx = 0.0f, ty = 0.0f, tz = 0.0f;
-            float k  = kJetHover;                    // no input: ease to hover
+            // COAST, THEN HOVER (the assistDelay borrow — see the constant's
+            // receipt). Hands off, the pack first GLIDES on thin-air drag for
+            // kJetAssistDelay seconds; only then does the station-keeping
+            // hover brake engage. Any input at all resets the timer.
+            const bool jetAnyInput = thrust || brake ||
+                                     std::fabs(in.moveStrafe) > 0.01f ||
+                                     in.jumpHeld || in.diveHeld;
+            m_jetIdleFor = jetAnyInput ? 0.0f : (m_jetIdleFor + dt);
+            float k = (m_jetIdleFor >= kJetAssistDelay) ? kJetHover : kJetCoastDrag;
             if (thrust) {
                 // Aim 5% OVER the cap and clamp below, so the spool actually
                 // ARRIVES at 300 mph instead of approaching it forever.
@@ -481,6 +504,7 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
 void Player::setJetpack(bool on, x3::phys::IPhysicsWorld& physics) {
     if (on == m_jetpack) return;
     m_jetpack = on;
+    m_jetIdleFor = 0.0f;      // a freshly strapped pack has not been coasting
     if (!on && m_jetFlying) {
         // Pack off mid-air: gravity returns and the fall clip + CONTACT LAW
         // own what happens next. Deliberate — `fly 0` at altitude is a choice.
@@ -877,7 +901,11 @@ bool runPlayerSelfTest() {
     {
         std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
         w->init();
-        makeGround(*w, 0, 0, 400.0f);
+        // 2 km of half-extent, not 400 m: the coast phase (J2a) adds a couple
+        // of hundred metres of downrange to what the climb already covers, and
+        // a lander that runs off the edge of the test plane never touches down
+        // — J3 would fail for a reason that has nothing to do with the flare.
+        makeGround(*w, 0, 0, 2000.0f);
         Player p;
         p.spawn(*w, 0.0f, 0.05f, 0.0f);
         for (int i = 0; i < 30; ++i) frame(p, *w, PlayerInput{});
@@ -909,15 +937,33 @@ bool runPlayerSelfTest() {
         check(j1Fly && j1Spool && j1Cap && j1Up,
               "J1 jetpack: W spools over seconds to the 134.1 m/s (300 mph) clamp along the look");
 
-        // ---- J2: release everything — auto-hover: speed bleeds off and the
-        // altitude then HOLDS (no gravity sag, no climb).
-        for (int i = 0; i < 360; ++i) frame(p, *w, PlayerInput{});   // 6 s hands-off
+        // ---- J2a: release everything — the pack COASTS first. The assistDelay
+        // borrow from the space lane (kJetAssistDelay, and the receipt on it):
+        // the hover brake used to bite on the first idle frame, which killed
+        // every glide. Two seconds hands-off must still be carrying most of the
+        // speed, or "cross the valley to look at it" does not exist.
+        const float spdAtRelease = p.jetSpeed();
+        for (int i = 0; i < 120; ++i) frame(p, *w, PlayerInput{});   // 2 s < the 2.5 s delay
+        const float coastSpd = p.jetSpeed();
+        const bool j2aCoast = coastSpd > spdAtRelease * 0.80f;
+        if (!j2aCoast)
+            x3::logError("[player-test] J2a detail: release=" + std::to_string(spdAtRelease) +
+                         " after2s=" + std::to_string(coastSpd));
+        check(j2aCoast, "J2a jetpack: hands off COASTS first (assistDelay) — a glide, not an instant brake");
+
+        // ---- J2b: keep hands off past the delay — the station-keeping hover
+        // then bleeds the speed and the altitude HOLDS (no gravity sag, no climb).
+        for (int i = 0; i < 600; ++i) frame(p, *w, PlayerInput{});   // +10 s, brake engaged
         const float hoverSpd = p.jetSpeed();
         const float hy0 = p.feet().y;
         for (int i = 0; i < 60; ++i) frame(p, *w, PlayerInput{});    // +1 s settled
         const bool j2Slow = hoverSpd < 6.0f;
         const bool j2Hold = std::fabs(p.feet().y - hy0) < 1.0f && p.jetFlying();
-        check(j2Slow && j2Hold, "J2 jetpack: no input = auto-hover (speed bleeds, altitude holds)");
+        if (!(j2Slow && j2Hold))
+            x3::logError("[player-test] J2b detail: hoverSpd=" + std::to_string(hoverSpd) +
+                         " dy=" + std::to_string(p.feet().y - hy0) +
+                         " flying=" + std::to_string(p.jetFlying()));
+        check(j2Slow && j2Hold, "J2b jetpack: past the delay, auto-hover (speed bleeds, altitude holds)");
 
         // ---- J3: hold Ctrl to sink; the flare caps the last metres and the
         // touchdown returns the walking controller with boots ON the ground.

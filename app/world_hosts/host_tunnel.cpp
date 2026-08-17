@@ -2224,6 +2224,16 @@ int hostTunnel(HostContext& hc) {
         // and draws Jake through these; empty for every ordinary proof shot.
         std::function<void(float)> shotTick;
         std::function<void(const x3::rhi::FrameContext&)> shotDraw;
+        // CHASE-CAM HOOK (X3_SHOT_JETPACK). settleAndGrab holds ONE fixed
+        // camera for its whole 200-frame settle, which is right for a treading
+        // swimmer and impossible for a subject doing 134 m/s: he leaves the
+        // frame 440 m behind in the settle alone. Rather than fake the speed
+        // (park him and draw a plume — that is the "screenshot of a lie" this
+        // repo keeps catching), the camera is allowed to FOLLOW. Set it and
+        // settleAndGrab recomputes the eye every frame from the live subject;
+        // unset — every existing capture in this host — the camera is the
+        // constant it always was, so no reference shot moves.
+        std::function<void(float cam[5])> shotCam;
 
         // X3_SHOT_PUMP=1 draws the station HUD into the still (see the block
         // inside the settle loop); X3_SHOT_PUMP=2 additionally holds E, so the
@@ -2244,7 +2254,12 @@ int hostTunnel(HostContext& hc) {
             gasStations.fuel().armed  = true;
         }
 
-        auto settleAndGrab = [&](const float cam[5], const std::string& out) -> bool {
+        auto settleAndGrab = [&](const float camIn[5], const std::string& out) -> bool {
+            // The eye lives in a MUTABLE copy so shotCam can steer it (see the
+            // hook's receipt above); `cam` stays a read-only alias so every
+            // existing read site below is untouched.
+            float camv[5] = { camIn[0], camIn[1], camIn[2], camIn[3], camIn[4] };
+            const float* const cam = camv;
             // The streamer only enqueues the full ring on a focus-tile crossing
             // (host_cliffs.cpp's trick): nudge the focus on frame 1, then hold.
             const int kFrames = 200;
@@ -2263,6 +2278,7 @@ int hostTunnel(HostContext& hc) {
             // Paired: shots_clouds/run_captures.sh greps for it.
             for (int i = 0; i < kFrames; ++i) {
                 glfwPollEvents();
+                if (shotCam) shotCam(camv);   // chase the staged subject (X3_SHOT_JETPACK)
                 const float fx = (i == 1) ? cam[0] + 40.0f : cam[0];
                 streamer.update(scene, *device, *phys, fx, cam[2]);
                 // THE RIVER HOLDS WATER IN CAPTURES TOO. This settle loop never
@@ -2280,6 +2296,11 @@ int hostTunnel(HostContext& hc) {
                 traffic.update(dt, cam, phys.get());
                 if (shotTick) shotTick(dt);   // staged swimmer BEFORE the step
                 phys->step(dt);
+                // Re-aim AFTER the step: the top-of-frame call above set the
+                // streamer's focus, but a 134 m/s subject has moved 2.2 m by
+                // the time we draw, and a chase frame that lags by that much
+                // is visibly off-centre.
+                if (shotCam) shotCam(camv);
                 riverLife.postPhysics(dt, scene, *device, *phys,
                                       audioOn ? audio.get() : nullptr,
                                       x3::phys::Vec3{ cam[0], cam[1], cam[2] });
@@ -2973,6 +2994,219 @@ int hostTunnel(HostContext& hc) {
             }
             shotTick = nullptr;
             shotDraw = nullptr;
+        }
+
+        // ==== JETPACK PROOF (X3_SHOT_JETPACK=1) — W-JETPACK ==================
+        // Owner: "a fly command.. that spawns a jetpack... that flies at
+        // 300MPH.. so jake can get over the whole world quickly to observe."
+        // The pack, the plume and the flight pose only ever exist in the
+        // interactive loop, so without staging NO capture could ever show
+        // them (the exact trap the weather/river/town comments above each
+        // record). This runs the REAL Player jetpack state machine, the REAL
+        // shared AnimatedCharacter module, and the REAL JetpackRig — nothing
+        // here re-implements flight for a photograph.
+        //
+        // It also carries the OWNER'S OTHER QUESTION as a measurement, not an
+        // opinion: does the terrain streamer keep up at 134 m/s? The car
+        // streams at 90. Every flight frame asks the streamer whether the tile
+        // under his feet is resident; the miss count is printed and is the
+        // honest answer (NO_SLOP rule 9).
+        if (const char* je = std::getenv("X3_SHOT_JETPACK"); je && je[0] == '1') {
+            // Jake's rig — the same shared-module load the interactive exit
+            // runs, and the pack pieces through the same lazy JetpackRig.
+            jakeTried = true;
+            jake.load(*device, x3::game::assetRoot() + "/rigged_glb",
+                      "Jake_44_actions.glb", x3::game::jakeClipTable());
+            const bool packOk = jetRig.load(*device, x3::game::convertedGlbRoot());
+            if (!packOk)
+                x3::logWarn("[jet-shot] the pack pieces did not load — the proof "
+                            "would photograph a man with nothing on his back");
+
+            // WIDEN THE RING FIRST, exactly as the `fly` command does: this is
+            // the paired site for the streamer radius (see the console block).
+            const int jetSavedR = streamer.radius();
+            streamer.setRadius(14);
+
+            // Stage on the valley road's own start, thrusting along the route:
+            // open country, the river and the road in frame, and the massif on
+            // the horizon to give 300 mph something to move against.
+            const float jsx = startPos[0], jsz = startPos[2];
+            const float jsy = x3::game::terrainHeightAtWorld(jsx, jsz) + 1.2f;
+            if (!footSpawned) { onFoot.spawn(*phys, jsx, jsy, jsz); footSpawned = true; }
+            else onFoot.setFeetPosition(*phys, x3::phys::Vec3{ jsx, jsy, jsz });
+            onFoot.setJetpack(true, *phys);
+            jetpackOn = true;
+
+            // The flight the shots are taken out of. Yaw runs along the route;
+            // pitch is nose-up during the climb, then level for the cruise.
+            const float jetYaw = std::atan2(route.dirZ, route.dirX);
+            float jetPitch = 0.0f;
+            x3::game::PlayerInput jin;
+            int    jetMisses = 0, jetFrames = 0;
+            float  jetSpeedPeak = 0.0f;
+            uint32_t jetResidentMin = 0xFFFFFFFFu;
+            shotTick = [&](float d) {
+                onFoot.setLook(jetYaw, jetPitch);
+                onFoot.update(jin, d, *phys);
+                jake.setJetpack(onFoot.jetFlying());
+                x3::game::AnimatedCharacter::Intent ji;
+                ji.moveFwd = jin.moveFwd;
+                jake.update(onFoot, ji, jetYaw, d, *phys, *device);
+                // The plume drive, same shape as the interactive one.
+                const bool held = onFoot.jetFlying() &&
+                                  (jin.moveFwd > 0.1f || jin.jumpHeld || jin.diveHeld);
+                const float want = held ? 1.0f : (onFoot.jetFlying() ? 0.25f : 0.0f);
+                jetThrustVis += (want - jetThrustVis) * (1.0f - std::exp(-6.0f * d));
+                // STREAMER KEEP-UP, measured every flight frame.
+                if (onFoot.jetFlying()) {
+                    const x3::phys::Vec3 ft = onFoot.feet();
+                    ++jetFrames;
+                    if (!streamer.focusTileResident(ft.x, ft.z)) ++jetMisses;
+                    jetResidentMin = std::min(jetResidentMin, streamer.residentCount());
+                    jetSpeedPeak = std::max(jetSpeedPeak, onFoot.jetSpeed());
+                }
+            };
+            shotDraw = [&](const x3::rhi::FrameContext& fr) {
+                jake.draw(fr, *device, onFoot, 0.0f, 0.0f, true);
+                float sm[16];
+                if (jetRig.loaded() && jake.boneWorld("mixamorigSpine2", onFoot, 0.0f, 0.0f, sm)) {
+                    jetRig.draw(fr, *device, sm);
+                    const x3::phys::Vec3 ft = onFoot.feet();
+                    static float jsPrev[3] = { 0, 0, 0 };
+                    static bool  jsHave = false;
+                    float jv[3] = { 0, 0, 0 };
+                    if (jsHave) { jv[0] = (ft.x - jsPrev[0]) * 60.0f;
+                                  jv[1] = (ft.y - jsPrev[1]) * 60.0f;
+                                  jv[2] = (ft.z - jsPrev[2]) * 60.0f; }
+                    jsPrev[0] = ft.x; jsPrev[1] = ft.y; jsPrev[2] = ft.z; jsHave = true;
+                    jetRig.submitThrustFx(*device, dt, jetThrustVis, jv);
+                }
+            };
+            // A CHASE CAMERA, three-quarter rear and slightly high — the pack
+            // is on his BACK, so the one angle that proves it is behind him.
+            const float chaseBack = 7.0f, chaseSide = 3.4f, chaseUp = 1.9f;
+            shotCam = [&](float c5[5]) {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                const float fx2 = std::cos(jetYaw), fz2 = std::sin(jetYaw);
+                const float rx2 = -std::sin(jetYaw), rz2 = std::cos(jetYaw);
+                c5[0] = ft.x - fx2 * chaseBack + rx2 * chaseSide;
+                c5[1] = ft.y + chaseUp;
+                c5[2] = ft.z - fz2 * chaseBack + rz2 * chaseSide;
+                const float tx2 = ft.x, ty2 = ft.y + 1.0f, tz2 = ft.z;
+                const float dxc = tx2 - c5[0], dyc = ty2 - c5[1], dzc = tz2 - c5[2];
+                c5[3] = std::atan2(dzc, dxc);
+                c5[4] = std::atan2(dyc, std::sqrt(dxc * dxc + dzc * dzc));
+            };
+
+            // ---- CLIMB: Space to ignite, W held nose-up 25 deg, until he is
+            // clear of the ground and spooling.
+            jin.moveFwd = 1.0f; jin.jumpHeld = true; jetPitch = 0.4363f;  // 25 deg
+            for (int i = 0; i < 60; ++i) { shotTick(dt); phys->step(dt); }
+            jin.jumpHeld = false;
+            for (int i = 0; i < 240; ++i) { shotTick(dt); phys->step(dt); }
+            // ---- CRUISE: level out and let the spool ARRIVE at the clamp.
+            jetPitch = 0.0f;
+            for (int i = 0; i < 300; ++i) { shotTick(dt); phys->step(dt); }
+            {
+                const x3::phys::Vec3 ft = onFoot.feet();
+                char jb[240];
+                std::snprintf(jb, sizeof(jb),
+                    "[jet-shot] cruise: feet=(%.0f, %.0f, %.0f) agl=%.0f m "
+                    "speed=%.1f m/s (%.0f mph) flying=%d thrustVis=%.2f",
+                    ft.x, ft.y, ft.z, ft.y - x3::game::terrainHeightAtWorld(ft.x, ft.z),
+                    onFoot.jetSpeed(), onFoot.jetSpeed() * 2.23694f,
+                    onFoot.jetFlying() ? 1 : 0, jetThrustVis);
+                x3::logInfo(jb);
+            }
+            // SHOT A — AT SPEED. The chase cam rides with him through the
+            // settle, so the still is a real 300 mph frame, not a parked pose.
+            {
+                float camA[5]; shotCam(camA);
+                ok = settleAndGrab(camA, dir + "/20_jetpack_flight.png") && ok;
+            }
+            // SHOT B — THE PACK, close and three-quarter rear, so the two
+            // textured pieces can be inspected (rule 5: nothing black).
+            {
+                // saveBack by VALUE: the lambda outlives this block (it stays
+                // installed until the landing capture clears it), so a
+                // reference capture of a stack local would dangle.
+                const float saveBack = 3.1f;
+                shotCam = [&, saveBack](float c5[5]) {
+                    const x3::phys::Vec3 ft = onFoot.feet();
+                    const float fx2 = std::cos(jetYaw), fz2 = std::sin(jetYaw);
+                    const float rx2 = -std::sin(jetYaw), rz2 = std::cos(jetYaw);
+                    c5[0] = ft.x - fx2 * saveBack + rx2 * 1.5f;
+                    c5[1] = ft.y + 1.55f;
+                    c5[2] = ft.z - fz2 * saveBack + rz2 * 1.5f;
+                    const float dxc = ft.x - c5[0], dyc = (ft.y + 1.25f) - c5[1], dzc = ft.z - c5[2];
+                    c5[3] = std::atan2(dzc, dxc);
+                    c5[4] = std::atan2(dyc, std::sqrt(dxc * dxc + dzc * dzc));
+                };
+                float camB[5]; shotCam(camB);
+                ok = settleAndGrab(camB, dir + "/21_jetpack_pack.png") && ok;
+            }
+            // ---- THE LANDING. Cut thrust, hold the sink channel, and let the
+            // real flare + THE CONTACT LAW put his boots down. The camera goes
+            // back to the chase and stops following the instant he touches, so
+            // the still is the touchdown and not a shot of the sky.
+            jin = x3::game::PlayerInput{};
+            jin.diveHeld = true;
+            bool jetLanded = false;
+            float jetTouchY = 0.0f, jetGroundY = 0.0f;
+            for (int i = 0; i < 7200 && !jetLanded; ++i) {
+                shotTick(dt); phys->step(dt);
+                if (!onFoot.jetFlying() && onFoot.grounded()) {
+                    const x3::phys::Vec3 ft = onFoot.feet();
+                    jetTouchY  = ft.y;
+                    jetGroundY = x3::game::terrainHeightAtWorld(ft.x, ft.z);
+                    jetLanded  = true;
+                }
+            }
+            {
+                char jb[224];
+                std::snprintf(jb, sizeof(jb),
+                    "[jet-shot] landing: touched=%d feetY=%.2f terrainY=%.2f "
+                    "boots %.2f m ABOVE the field (CONTACT LAW: never negative)",
+                    jetLanded ? 1 : 0, jetTouchY, jetGroundY, jetTouchY - jetGroundY);
+                x3::logInfo(jb);
+                if (jetLanded && jetTouchY - jetGroundY < -0.05f)
+                    x3::logError("[jet-shot] CONTACT LAW VIOLATION: boots under the field");
+            }
+            // Descend the last visible metres again for the photograph: he is
+            // ON the ground now, so a fixed camera is honest here.
+            {
+                shotCam = nullptr;
+                const x3::phys::Vec3 ft = onFoot.feet();
+                const float fx2 = std::cos(jetYaw), fz2 = std::sin(jetYaw);
+                const float rx2 = -std::sin(jetYaw), rz2 = std::cos(jetYaw);
+                const float cxl = ft.x - fx2 * 5.5f + rx2 * 3.0f;
+                const float czl = ft.z - fz2 * 5.5f + rz2 * 3.0f;
+                const float cyl = ft.y + 2.0f;
+                const float dxc = ft.x - cxl, dyc = (ft.y + 0.9f) - cyl, dzc = ft.z - czl;
+                const float camC[5] = { cxl, cyl, czl, std::atan2(dzc, dxc),
+                                        std::atan2(dyc, std::sqrt(dxc * dxc + dzc * dzc)) };
+                ok = settleAndGrab(camC, dir + "/22_jetpack_landed.png") && ok;
+            }
+            {   // THE STREAMER RECEIPT — the owner's question, answered by count.
+                char jb[224];
+                std::snprintf(jb, sizeof(jb),
+                    "[jet-shot] STREAMER AT SPEED: %d of %d flight frames had NO "
+                    "resident tile under the feet (%.2f%%), peak %.1f m/s (%.0f mph), "
+                    "min resident %u of %u at radius %d",
+                    jetMisses, jetFrames,
+                    jetFrames ? 100.0 * (double)jetMisses / (double)jetFrames : 0.0,
+                    jetSpeedPeak, jetSpeedPeak * 2.23694f,
+                    jetResidentMin == 0xFFFFFFFFu ? 0u : jetResidentMin,
+                    streamer.maxResidentForRadius(), streamer.radius());
+                x3::logInfo(jb);
+            }
+            onFoot.setJetpack(false, *phys);
+            jake.setJetpack(false);
+            jetpackOn = false;
+            streamer.setRadius(jetSavedR);
+            shotTick = nullptr;
+            shotDraw = nullptr;
+            shotCam  = nullptr;
         }
 
         // ==== SUB PROOF (X3_SHOT_SUB=1) — the patrol submarine, framed off its
@@ -4101,8 +4335,9 @@ int hostTunnel(HostContext& hc) {
                 streamer.setRadius(14);
                 jetpackOn = true;
                 con->print("JETPACK ON - SPACE lifts off; hold W: thrust where you look "
-                           "(pitch = altitude), S: air-brake, CTRL: sink, no input: hover. "
-                           "300 mph flat out. 'fly' again to unstrap.");
+                           "(pitch = altitude), S: air-brake, CTRL: sink; hands off you "
+                           "COAST a few seconds, then it holds a hover. 300 mph flat out. "
+                           "'fly' again to unstrap.");
                 x3::logInfo("[tunnel] JETPACK ON");
             } else {
                 onFoot.setJetpack(false, *phys);

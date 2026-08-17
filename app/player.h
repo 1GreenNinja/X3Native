@@ -290,6 +290,11 @@ private:
     bool  m_jetpack   = false;            // pack worn (mode toggled on)
     bool  m_jetFlying = false;            // airborne under the flight model
     float m_jetVelX = 0.0f, m_jetVelY = 0.0f, m_jetVelZ = 0.0f; // smoothed flight velocity
+    // Seconds of hands-off flight. Below kJetAssistDelay the pack COASTS on
+    // thin-air drag; past it the station-keeping hover brake engages. Borrowed
+    // from SpacePilotController::Tuning::assistDelay (app/space_pilot.h) —
+    // paired, and the receipt lives on kJetAssistDelay in player.cpp.
+    float m_jetIdleFor = 0.0f;
 
     // ---- Audio hook state (audio-assets pass, W2-B) -----------------------
     GameCueFn m_cueSink;                // host-wired; empty => throttled log (see cues.h)
