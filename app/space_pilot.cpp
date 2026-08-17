@@ -854,6 +854,25 @@ void SpacePilotController::toggleCameraMode() {
     m_thirdPerson = !m_thirdPerson;
 }
 
+// ---------------------------------------------------------------------------
+// AimSovereignty — see the header for the full doctrine. The whole point is
+// that every clause here returns 0 (assist OFF); the assist only runs when the
+// player is idle, past the input grace, AND already holding the target.
+// ---------------------------------------------------------------------------
+float AimSovereignty::gate(bool lookingNow, float errRad, float assistRate, float dt) {
+    // 1) Input sovereignty: refresh the grace on any look input; otherwise the
+    //    grace DRAINS BY dt (dt-integrated — identical feel at 60 and 165 Hz).
+    if (lookingNow)          grace_ = kGraceSec;
+    else if (grace_ > 0.0f)  grace_ = std::max(0.0f, grace_ - dt);
+    // 2) Aim-away hysteresis: past the break cone the hold suspends; only the
+    //    nose coming back inside the (much tighter) engage cone resumes it.
+    if      (errRad > kBreakRad)  suspended_ = true;
+    else if (errRad < kEngageRad) suspended_ = false;
+    if (assistRate <= 0.0f || lookingNow || grace_ > 0.0f || suspended_)
+        return 0.0f;
+    return assistRate;   // 3) idle + on-target: hold the aim through the strafe
+}
+
 // ===========================================================================
 // Read-only state
 // ===========================================================================
@@ -1431,6 +1450,120 @@ bool runSpaceSelfTest() {
         s2.steerNoseToward(d2, 0.0f, kDt);
         check(s2.yaw() == before2, "T18b target hold at rate 0 is a hard no-op");
         w->shutdown();
+    }
+
+    // T19 — AIM SOVEREIGNTY x TARGET HOLD (the 2026-08-14 goal, now THROUGH the
+    // sovereignty gate): with a lock held and the hold ENGAGED, a sustained 6DOF
+    // strafe keeps the nose (reticle) on the contact the whole time. This is the
+    // regression guard that the snap-back fix did not break "strafe and keep on
+    // a target the whole time".
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t{};
+        t.maxStrafeAccel = 110.0f; t.noseFollow = 0.0f; t.flightAssist = 0.0f;
+        s.spawn(*w, 0, 0, 0, t);
+        const float tgt[3] = { 800.0f, 0.0f, 0.0f };   // dead ahead: player IS aiming at him
+        AimSovereignty sov;
+        sov.onNewTarget(0.0f);                          // locked while on-aim -> engaged
+        PlayerInput strafe{}; strafe.moveStrafe = 1.0f;
+        float lastRate = 0.0f;
+        for (int i = 0; i < 180; ++i) {                 // 3 s of held strafe
+            const x3::phys::Vec3 p = s.pos();
+            const float dir[3] = { tgt[0]-p.x, tgt[1]-p.y, tgt[2]-p.z };
+            const float err = s.steerNoseToward(dir, 0.0f, kDt);       // probe only
+            lastRate = sov.gate(false, err, 1.6f, kDt);
+            s.steerNoseToward(dir, lastRate, kDt);
+            s.update(strafe, kDt, *w);
+        }
+        const x3::phys::Vec3 p = s.pos();
+        float dir[3] = { tgt[0]-p.x, tgt[1]-p.y, tgt[2]-p.z };
+        const float dl = std::sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+        for (int k = 0; k < 3; ++k) dir[k] /= dl;
+        const x3::phys::Vec3 f = s.forward();
+        const float onTarget = f.x*dir[0] + f.y*dir[1] + f.z*dir[2];
+        x3::logInfo("  [info] T19 gated hold after 3 s strafe: cos=" +
+                    std::to_string(onTarget) + ", lateral offset " +
+                    std::to_string(std::fabs(p.z)) + " m, speed " +
+                    std::to_string(s.speed()) + " m/s, final rate " +
+                    std::to_string(lastRate));
+        check(onTarget > 0.99f && s.speed() > 60.0f && lastRate > 0.0f,
+              "T19 sovereignty-gated hold keeps the reticle on target through a strafe");
+        w->shutdown();
+    }
+
+    // T20 — AIM-AWAY IS FINAL (owner, live 2026-08-16: "The aim always returns
+    // to the overlord ship!!! it should NOT.."): the player whips the nose 90+
+    // deg off the locked capital and RELEASES the mouse — the hold must return
+    // rate 0 on every idle frame and the nose must NOT come back.
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t{};
+        t.maxStrafeAccel = 110.0f; t.noseFollow = 0.0f; t.flightAssist = 0.0f;
+        s.spawn(*w, 0, 0, 0, t);
+        const float tgt[3] = { 800.0f, 0.0f, 0.0f };
+        AimSovereignty sov;
+        sov.onNewTarget(0.0f);                          // starts engaged, on-aim
+        // Player whips: ~103 deg of deliberate yaw over 1 s (12 px/frame).
+        PlayerInput look{}; look.lookDX = 12.0f;
+        for (int i = 0; i < 60; ++i) {
+            const x3::phys::Vec3 p = s.pos();
+            const float dir[3] = { tgt[0]-p.x, tgt[1]-p.y, tgt[2]-p.z };
+            const float err  = s.steerNoseToward(dir, 0.0f, kDt);
+            const float rate = sov.gate(true, err, 1.6f, kDt);   // mouse active
+            s.steerNoseToward(dir, rate, kDt);
+            s.update(look, kDt, *w);
+        }
+        // Mouse released: 2 s idle. The old gate would slew the nose straight
+        // back onto the capital here at 1.6 rad/s (the reported snap-back).
+        PlayerInput idle{};
+        float maxIdleRate = 0.0f;
+        for (int i = 0; i < 120; ++i) {
+            const x3::phys::Vec3 p = s.pos();
+            const float dir[3] = { tgt[0]-p.x, tgt[1]-p.y, tgt[2]-p.z };
+            const float err  = s.steerNoseToward(dir, 0.0f, kDt);
+            const float rate = sov.gate(false, err, 1.6f, kDt);
+            if (rate > maxIdleRate) maxIdleRate = rate;
+            s.steerNoseToward(dir, rate, kDt);
+            s.update(idle, kDt, *w);
+        }
+        const x3::phys::Vec3 p = s.pos();
+        float dir[3] = { tgt[0]-p.x, tgt[1]-p.y, tgt[2]-p.z };
+        const float dl = std::sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+        for (int k = 0; k < 3; ++k) dir[k] /= dl;
+        const x3::phys::Vec3 f = s.forward();
+        const float onTarget = f.x*dir[0] + f.y*dir[1] + f.z*dir[2];
+        x3::logInfo("  [info] T20 nose vs capital 2 s after aim-away release: cos=" +
+                    std::to_string(onTarget) + " (max idle assist rate " +
+                    std::to_string(maxIdleRate) + ")");
+        check(maxIdleRate == 0.0f && onTarget < 0.5f && sov.suspended(),
+              "T20 aim-away sticks: releasing the mouse never returns the nose to the target");
+        w->shutdown();
+    }
+
+    // T21 — INPUT IS SOVEREIGN: while the player is actively looking the gate
+    // is 0 even with the hold engaged and on-target; it stays 0 through the
+    // grace window after the last input; only then does the hold resume.
+    {
+        AimSovereignty sov;
+        sov.onNewTarget(0.0f);                          // engaged, on-aim
+        const float r0 = sov.gate(true, 0.05f, 1.6f, kDt);
+        check(r0 == 0.0f, "T21a active look input always overrides the assist");
+        bool zeroThroughGrace = true;
+        for (int i = 0; i < 22; ++i)                    // 22 frames = 0.367 s < kGraceSec
+            if (sov.gate(false, 0.05f, 1.6f, kDt) != 0.0f) zeroThroughGrace = false;
+        check(zeroThroughGrace, "T21b assist stays off through the post-input grace");
+        float resumed = 0.0f;
+        for (int i = 0; i < 30 && resumed == 0.0f; ++i) // grace drains -> hold resumes
+            resumed = sov.gate(false, 0.05f, 1.6f, kDt);
+        check(resumed == 1.6f, "T21c idle + on-target past the grace: hold resumes at full rate");
+        // ...and a fresh lock OFF the nose starts suspended (never aims for you).
+        AimSovereignty sov2;
+        sov2.onNewTarget(0.7f);                         // locked 40 deg off the nose
+        const float rAcq = sov2.gate(false, 0.7f, 1.6f, kDt);
+        check(rAcq == 0.0f && sov2.suspended(),
+              "T21d a fresh off-nose lock never yanks the nose (no auto-acquire)");
     }
 
     // T15/T16 — the two systems this defect pass added, folded in so the
