@@ -264,8 +264,19 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // ~44 and puts 6th at ~168. Now the engine actually sweeps its range in
     // every gear — that is what makes it rev AND feel fast, far more than peak
     // torque does. Six gears also matches the 1-6 shift-pattern HUD.
+    //
+    // 6th 0.821 -> 0.50 (2026-08-16, OWNER SPEC verbatim: "make the final gear
+    // a 0.50:1" — his cruise-RPM fix, NO_SLOP rule 8). The old 0.821 x 4.6
+    // 6th hit redline at 153 mph, BELOW the ~160 drag ceiling, so top speed
+    // was the rev limiter — the tach genuinely pegged the whole time on the
+    // freeway ("it shouldnt peg redline the whole time you drive"). The 0.50
+    // overdrive puts the 6th-gear redline far above the drag ceiling: top
+    // speed is now drag-limited mid-band, and a steady 70 mph cruise in 6th
+    // sits ~2350 rpm (with the 5.2 final below + 0.33 m wheels — PAIRED).
+    // Reaching 6th at cruise throttle is the adaptive shift band's job
+    // (kShiftUpLightFrac, JoltVehicle.cpp — the box knows throttle now).
     vd.gearRatios[0] = 3.154f; vd.gearRatios[1] = 2.150f; vd.gearRatios[2] = 1.560f;
-    vd.gearRatios[3] = 1.242f; vd.gearRatios[4] = 1.024f; vd.gearRatios[5] = 0.821f;
+    vd.gearRatios[3] = 1.242f; vd.gearRatios[4] = 1.024f; vd.gearRatios[5] = 0.50f;
     vd.gearCount  = 6;
     // 993 TURBO CHARACTER CURVE. Soft off boost, a hard step as it spools around
     // 0.32-0.45 of redline (~2400-3400 rpm), a long fat plateau to 0.85, then it
@@ -283,10 +294,15 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // topped out ~168 mph — but the aero drag (kAeroDrag 1.4, JoltVehicle.cpp)
     // caps the car near 160 anyway, so the last 8 mph of gearing were pure
     // paper. 4.6 trades them for ~10% more wheel torque in EVERY gear — the
-    // whole car punches harder everywhere you actually drive it. 1st now
-    // redlines ~40 mph, 6th ~153. Live-tune: `car_final` (dial back toward
-    // 4.2 if the top end matters more than the punch).
-    vd.finalDrive = 4.6f;
+    // whole car punches harder everywhere you actually drive it.
+    // 4.6 -> 5.2 (2026-08-16, PAIRED with the 0.50 6th above). The deep
+    // overdrive frees the final drive to go shorter: gears 1-5 gain ~13%
+    // wheel torque (1st redlines ~35 mph, 5th ~109), while 6th (0.50 x 5.2 =
+    // 2.60 total) still geartops at ~223 mph at redline — which keeps the
+    // 220-with-NOS spec REACHABLE in gear (5.3+ would cap it below 220;
+    // 5.2 is the shortest final that doesn't). Cruise at 70 in 6th = ~2350
+    // rpm. Live-tune: `car_final`.
+    vd.finalDrive = 5.2f;
     // Wheel rays filter on Dynamic (the chassis layer): Jolt's vehicle object filter
     // is the COLLISION MATRIX, and Dynamic-vs-Static collides, so a Dynamic-masked
     // ray hits the Static ground. (Static-vs-Static does NOT collide — a Static mask
@@ -609,7 +625,9 @@ void DriveDemo::postStep(float dt) {
     // suspension-deep below the carved terrain field, the car is lifted back
     // onto it and its downward velocity cleared. Corridors carve the field
     // itself, so bores/underpasses are safe — the law only ever pushes UP.
-    if (m_ctl && m_physics && m_chassis.valid()) {
+    // m_contactLaw: ON in every world; OFF only in the headless slab tests,
+    // whose ground is NOT the terrain field (see setTerrainContactLaw).
+    if (m_contactLaw && m_ctl && m_physics && m_chassis.valid()) {
         float worst = 0.0f;
         for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i) {
             x3::phys::WheelState ws;
@@ -846,6 +864,11 @@ bool runDriveEnterExitSelfTest() {
     }
     DriveDemo car;
     check(car.buildPhysics(*phys, 0.0f, 1.2f, 0.0f), "spawn: chassis + wheeled controller built");
+    // This world's ground is the SLAB above, not the streamed terrain — the
+    // contact-law lifter would hoist the car onto the PHANTOM procedural
+    // field (37 m up at z=-381 after the W-MOUNTAIN merge; it broke the
+    // wheels-contact/ride-height/skidpad sections). See setTerrainContactLaw.
+    car.setTerrainContactLaw(false);
     phys->optimizeBroadphase();
 
     const float dt = 1.0f / 60.0f;
@@ -1090,6 +1113,310 @@ bool runDriveEnterExitSelfTest() {
 
     car.shutdown();
     phys->shutdown();
+
+    // =======================================================================
+    // HANDLING PASS (2026-08-16, W-HANDLING2). Owner spec, verbatim: "Can we
+    // substantially increase the 'stick on the road' idea? It should be harder
+    // to flip the car upside down and spin it just driving" / "spoilers for
+    // downforce" / "it shouldnt peg redline the whole time you drive" / "make
+    // the final gear a 0.50:1". Everything below is MEASURED (rule 9) on a
+    // fresh 16-km slab world:
+    //   H1 CRUISE-70: steady 70 mph must settle in 6th at mid-band rpm — the
+    //      throttle-adaptive shift band + 0.50 overdrive under test.
+    //   H2 TOP SPEED: WOT to terminal velocity; must still exceed 155 mph and
+    //      must NOT be pinned at the rev limiter when it gets there.
+    //   H3 NOS: same pull with the 200-shot (x1.6); logs how close the 220
+    //      spec is (gear-reachability is the gate; the drag equilibrium is
+    //      reported honestly).
+    //   H4 SLALOM at ~100 mph on clean pavement, run TWICE — shipped aero
+    //      (downforce 1, roll damping on) vs none: the SPIN gate.
+    //   H5 CURB STRIKE (12 cm staggered, straight line) at ~100 mph, same
+    //      A/B: the FLIP gate. Kept SEPARATE from H4 on purpose — see the
+    //      comment at handlingRun for the receipt.
+    // =======================================================================
+    {
+        auto buildLongWorld = [&](std::unique_ptr<x3::phys::IPhysicsWorld>& outPhys,
+                                  DriveDemo& outCar, bool withCurbs) -> bool {
+            outPhys.reset(x3::phys::createPhysicsWorld());
+            if (!outPhys->init()) return false;
+            // 16 km x 400 m slab along Z, top at y=0. The car spawns near +Z
+            // and drives -Z (its forward).
+            x3::prims::PrimMesh g =
+                x3::prims::makeBox(200.0f, 0.5f, 8000.0f, 0.0f, -0.5f, 0.0f, 0.02f);
+            outPhys->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
+                                   g.cindex.data(), (uint32_t)g.cindex.size());
+            if (withCurbs) {
+                // Two 12-cm curbs (half-extent 0.06 -> top at y=0.12), LEFT
+                // wheels first then RIGHT 8 m later — a staggered strike is
+                // the roll excitation a symmetric bump is not. Curb halves
+                // span [-60.5, -0.5] and [0.5, 60.5] in x, so the car running
+                // down x=0 puts its LEFT wheels (x = -0.80) on the first and
+                // its RIGHT wheels on the second.
+                //
+                // THE 3-METRE LENGTH IS LOAD-BEARING (W-HANDLING3, rule 10).
+                // W-HANDLING2 authored these 0.30 m long in z and the strike
+                // NEVER HAPPENED: at 100 mph a 60 Hz step advances the wheel
+                // 44.7/60 = 0.745 m, so the suspension raycast stepped clean
+                // OVER a 0.30 m curb and sampled flat slab on both sides —
+                // roll came back 7e-6 deg, a green that meant "no test ran".
+                // 3 m (hz 1.5) is ~4 guaranteed samples at 100 mph AND is what
+                // a real curb/rumble strip section is. Any bump test in this
+                // engine must be longer than v_max/60 or it is not a test.
+                x3::prims::PrimMesh cl =
+                    x3::prims::makeBox(30.0f, 0.06f, 1.5f, -30.5f, 0.06f, 7450.0f, 0.1f);
+                outPhys->addStaticMesh(cl.cverts.data(), (uint32_t)(cl.cverts.size() / 3),
+                                       cl.cindex.data(), (uint32_t)cl.cindex.size());
+                x3::prims::PrimMesh cr =
+                    x3::prims::makeBox(30.0f, 0.06f, 1.5f, 30.5f, 0.06f, 7442.0f, 0.1f);
+                outPhys->addStaticMesh(cr.cverts.data(), (uint32_t)(cr.cverts.size() / 3),
+                                       cr.cindex.data(), (uint32_t)cr.cindex.size());
+            }
+            if (!outCar.buildPhysics(*outPhys, 0.0f, 1.2f, 7800.0f)) return false;
+            outCar.setTerrainContactLaw(false);   // slab world (phantom-field receipt above)
+            outPhys->optimizeBroadphase();
+            const float dt2 = 1.0f / 60.0f;
+            for (int i = 0; i < 90; ++i) {        // settle on the suspension
+                x3::phys::VehicleInput in{};
+                outCar.setInput(in); outCar.preStep(dt2);
+                outPhys->step(dt2); outCar.postStep(dt2);
+            }
+            return true;
+        };
+        auto rollDeg = [&](x3::phys::IPhysicsWorld& p, const DriveDemo& c) {
+            float q[4]; p.getBodyRotation(c.chassis(), q);
+            float f[3], u[3], r, pt;
+            vehcam::hullAxes(q, f, u);
+            vehcam::hullRollPitch(f, u, r, pt);
+            return r * 57.2958f;
+        };
+
+        // ---- H1 + H2 + H3: cruise, then WOT to terminal, then NOS. ----
+        std::unique_ptr<x3::phys::IPhysicsWorld> ph;
+        DriveDemo hcar;
+        if (check(buildLongWorld(ph, hcar, false), "handling: long-slab world builds"),
+            ph && hcar.controller()) {
+            // H1 CRUISE-70: integral throttle controller holds 70 mph for 30 s;
+            // measure the last 8 s. (An integrator, not a magic constant — the
+            // steady-state throttle is whatever the drag actually demands.)
+            // TWO RPMs, BOTH GATED (NO_SLOP rule 4 — they are one value to the
+            // owner but two code paths, and only one of them is the complaint):
+            //   engineRPM() = Jolt's road-speed-locked value -> THE TACH
+            //     (host_tunnel.cpp needle, "it shouldnt peg redline").
+            //   audioRPM()  = DriveDemo's own flywheel state -> THE ENGINE NOTE
+            //     (host_tunnel.cpp pitch = rpm/1071). Gating only the tach
+            //     would let a settled needle sit over a screaming note.
+            // Also track the PEAK over the measured window, not just the mean:
+            // a mean of 2400 can hide a box hunting 6-5-6 into the limiter.
+            float thr = 0.2f;
+            float sumRpm = 0.0f, sumARpm = 0.0f, sumV = 0.0f, peakRpm = 0.0f, sumThr = 0.0f;
+            int nM = 0, gearAtEnd = 0;
+            for (int i = 0; i < 1800; ++i) {
+                const float v = hcar.forwardSpeed();
+                thr = std::clamp(thr + 0.004f * (31.29f - v), 0.0f, 0.8f);
+                x3::phys::VehicleInput in{}; in.throttle = thr;
+                hcar.setInput(in); hcar.preStep(dt); ph->step(dt); hcar.postStep(dt);
+                if (i >= 1320) {   // last 8 s
+                    sumRpm += hcar.engineRPM(); sumARpm += hcar.audioRPM();
+                    sumV += hcar.forwardSpeed(); sumThr += thr; ++nM;
+                    peakRpm = std::max(peakRpm, std::max(hcar.engineRPM(), hcar.audioRPM()));
+                    gearAtEnd = hcar.gear();
+                }
+            }
+            const float cruiseRpm  = nM ? sumRpm / nM : 0.0f;
+            const float cruiseARpm = nM ? sumARpm / nM : 0.0f;
+            const float cruiseV    = nM ? sumV / nM : 0.0f;
+            x3::logInfo("[drive-test] H1 CRUISE-70: v=" + std::to_string(cruiseV * 2.23694f) +
+                        " mph, gear=" + std::to_string(gearAtEnd) +
+                        ", tach rpm=" + std::to_string(cruiseRpm) +
+                        ", NOTE rpm=" + std::to_string(cruiseARpm) +
+                        ", peak=" + std::to_string(peakRpm) +
+                        ", cruise throttle=" + std::to_string(nM ? sumThr / nM : 0.0f) +
+                        " (redline 7500; owner: no pegging at cruise)");
+            check(std::fabs(cruiseV - 31.29f) < 2.0f, "H1 cruise: speed holds 70 +- 4.5 mph");
+            check(gearAtEnd == 6, "H1 cruise: settles in 6th (the 0.50 overdrive engages)");
+            check(cruiseRpm > 1900.0f && cruiseRpm < 3600.0f,
+                  "H1 cruise: TACH rpm mid-band (1900-3600), NOT pegged at redline");
+            check(cruiseARpm > 1900.0f && cruiseARpm < 3600.0f,
+                  "H1 cruise: ENGINE NOTE rpm mid-band too (the note settles, it does not scream)");
+            check(peakRpm < 4200.0f,
+                  "H1 cruise: no rpm SPIKES in the window (the box is not hunting 6-5-6)");
+
+            // H2 WOT to terminal velocity (45 s is asymptote-close).
+            float vPeak = 0.0f, rpmAtPeak = 0.0f; int gearAtPeak = 0;
+            for (int i = 0; i < 2700; ++i) {
+                x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+                hcar.setInput(in); hcar.preStep(dt); ph->step(dt); hcar.postStep(dt);
+                const float v = hcar.forwardSpeed();
+                if (v > vPeak) { vPeak = v; rpmAtPeak = hcar.engineRPM(); gearAtPeak = hcar.gear(); }
+            }
+            x3::logInfo("[drive-test] H2 TOP SPEED: " + std::to_string(vPeak * 2.23694f) +
+                        " mph in gear " + std::to_string(gearAtPeak) +
+                        " at " + std::to_string(rpmAtPeak) + " rpm (limiter 7500)");
+            check(vPeak * 2.23694f > 155.0f, "H2 top speed: still exceeds 155 mph");
+            check(rpmAtPeak < 7350.0f,
+                  "H2 top speed: DRAG-limited mid-band, not bouncing the rev limiter");
+
+            // H3 NOS 200-shot (x1.6, parts.json nos_200 — PAIRED): keep pulling.
+            hcar.setTorqueBoost(1.6f);
+            float vNos = vPeak, rpmNos = rpmAtPeak; int gearNos = gearAtPeak;
+            for (int i = 0; i < 1800; ++i) {
+                x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+                hcar.setInput(in); hcar.preStep(dt); ph->step(dt); hcar.postStep(dt);
+                const float v = hcar.forwardSpeed();
+                if (v > vNos) { vNos = v; rpmNos = hcar.engineRPM(); gearNos = hcar.gear(); }
+            }
+            hcar.setTorqueBoost(1.0f);
+            // 220 mph gear-reachability: 6th's speed at redline. PAIRED with
+            // buildPhysics (wheel r=0.33, 6th 0.50, final 5.2, redline 7500):
+            // v = redline / (60/(2*pi*r) * 0.50 * final) — must exceed 220 mph
+            // or NOS can never get there no matter the power.
+            const float wheelRpmPerMps = 60.0f / (2.0f * 3.14159265f * 0.33f);
+            const float gearTop6 = 7500.0f / (wheelRpmPerMps * 0.50f * 5.2f) * 2.23694f;
+            x3::logInfo("[drive-test] H3 NOS TOP SPEED: " + std::to_string(vNos * 2.23694f) +
+                        " mph in gear " + std::to_string(gearNos) + " at " +
+                        std::to_string(rpmNos) + " rpm; 6th geartop at redline = " +
+                        std::to_string(gearTop6) + " mph (220 spec gear-reachable)");
+            check(gearTop6 > 220.0f,
+                  "H3 NOS: 220 mph remains gear-reachable (6th geartop above it)");
+            hcar.shutdown(); ph->shutdown();
+        }
+
+        // ---- H4 SLALOM / H5 CURB STRIKE at ~100 mph: shipped aero vs none. ----
+        // THE TWO COMPLAINTS ARE TWO TESTS (W-HANDLING3, 2026-08-17). W-HANDLING2
+        // ran the slalom THROUGH the curbs in one section and the result was
+        // uninterpretable: the no-aero car spun out at the first flick and never
+        // reached the curbs, so "shipped rolls, no-aero doesn't" compared a
+        // curb strike against a spin. Split:
+        //   H4 = flicks on CLEAN pavement  -> the SPIN complaint ("harder to
+        //        ... spin it just driving").
+        //   H5 = straight over the staggered curbs -> the FLIP complaint
+        //        ("harder to flip the car upside down"), same speed, same
+        //        A/B, no steering input to confound it.
+        struct HRun { float maxRoll, maxSlip, vStrike, maxAsym; int twoUp; bool upright, spun; };
+        auto handlingRun = [&](bool shippedAero, bool curbs, bool slalom,
+                               const char* tag, HRun& out) -> bool {
+            std::unique_ptr<x3::phys::IPhysicsWorld> p2;
+            DriveDemo c2;
+            if (!buildLongWorld(p2, c2, curbs)) return false;
+            if (!shippedAero) {
+                x3::phys::WheeledTuning t;
+                t.downforce = 0.0f; t.rollDamp = 0.0f;   // the "before" car
+                c2.applyTuning(t);
+            }
+            out = HRun{0.0f, 0.0f, 0.0f, 0.0f, 0, false, false};
+            // Phase 1: WOT to ~100 mph (spawn z=+7800, curbs at ~+7446).
+            for (int i = 0; i < 1500 && c2.forwardSpeed() < 44.7f; ++i) {
+                x3::phys::VehicleInput in{}; in.throttle = 1.0f;
+                c2.setInput(in); c2.preStep(dt); p2->step(dt); c2.postStep(dt);
+            }
+            // Phase 2 (9 s): either VIOLENT slalom — full digital flicks every
+            // 0.55 s, the owner's actual A/D input at speed — or dead straight.
+            for (int j = 0; j < 540; ++j) {
+                x3::phys::VehicleInput in{};
+                in.throttle = c2.forwardSpeed() < 44.7f ? 0.7f : 0.2f;
+                in.steer    = slalom ? (((j / 33) % 2 == 0) ? 1.0f : -1.0f) : 0.0f;
+                c2.setInput(in); c2.preStep(dt); p2->step(dt); c2.postStep(dt);
+                out.maxRoll = std::max(out.maxRoll, std::fabs(rollDeg(*p2, c2)));
+                int up = 0;
+                float susp[4] = {0,0,0,0};
+                for (uint32_t wi = 0; wi < c2.controller()->wheelCount(); ++wi) {
+                    x3::phys::WheelState ws;
+                    if (c2.controller()->wheelState(wi, ws)) {
+                        if (!ws.hasContact) ++up;
+                        if (wi < 4) susp[wi] = ws.suspensionLength;
+                    }
+                }
+                if (up >= 2) ++out.twoUp;
+                // LEFT/RIGHT SUSPENSION ASYMMETRY = THE STRIKE INSTRUMENT.
+                // A wheel up on a 12 cm curb rides ~0.12 m more compressed
+                // than its partner. Without this, a curb the sim stepped over
+                // (see the 3-metre receipt in buildLongWorld) reads as a
+                // PASS — the test has to prove it hit something. Wheel order
+                // is FL, FR, RL, RR (buildPhysics).
+                out.maxAsym = std::max(out.maxAsym,
+                                       std::max(std::fabs(susp[0] - susp[1]),
+                                                std::fabs(susp[2] - susp[3])));
+                float cp[3]; c2.chassisPos(cp);
+                if (out.vStrike == 0.0f && cp[2] < 7446.0f) out.vStrike = c2.forwardSpeed();
+                // Body slip = the SPIN measure (angle between where the car
+                // points and where it is going). Sampled every tick, not just
+                // at trace time, so a spin can't hide between log lines.
+                float vel[3]; p2->getBodyLinearVelocity(c2.chassis(), vel);
+                float q2[4]; p2->getBodyRotation(c2.chassis(), q2);
+                float f2[3], u2[3]; vehcam::hullAxes(q2, f2, u2);
+                const float vFwd = c2.forwardSpeed();
+                const float right2[3] = { f2[1]*u2[2] - f2[2]*u2[1],
+                                          f2[2]*u2[0] - f2[0]*u2[2],
+                                          f2[0]*u2[1] - f2[1]*u2[0] };
+                const float vLat = vel[0]*right2[0] + vel[1]*right2[1] + vel[2]*right2[2];
+                const float slipDeg = std::atan2(std::fabs(vLat),
+                                        std::max(0.5f, std::fabs(vFwd))) * 57.2958f;
+                out.maxSlip = std::max(out.maxSlip, slipDeg);
+                // 1 Hz diagnostic trace (rule 9): where does the roll build —
+                // the flicks, or the curbs (z 7450/7442)? Body slip names a
+                // spin-then-trip; roll without slip names a suspension pump.
+                if ((j % 60) == 59) {
+                    x3::logInfo(std::string("[drive-test] ") + tag + " trace t=" +
+                                std::to_string((j + 1) / 60) +
+                                "s z=" + std::to_string(cp[2]) +
+                                " v=" + std::to_string(vFwd * 2.23694f) +
+                                " mph roll=" + std::to_string(rollDeg(*p2, c2)) +
+                                " slip=" + std::to_string(slipDeg) +
+                                " deg up=" + std::to_string(up));
+                }
+            }
+            // Upright + recovered?
+            float q[4]; p2->getBodyRotation(c2.chassis(), q);
+            float f[3], u[3]; vehcam::hullAxes(q, f, u);
+            out.upright = u[1] > 0.7f;
+            out.spun    = out.maxSlip > 45.0f;
+            c2.shutdown(); p2->shutdown();
+            return true;
+        };
+
+        // ---- H4: the SPIN gate — flicks at ~100 mph on clean pavement. ----
+        HRun s1{}, s0{};
+        const bool ranS1 = handlingRun(true,  /*curbs*/false, /*slalom*/true,  "H4-aero", s1);
+        const bool ranS0 = handlingRun(false, /*curbs*/false, /*slalom*/true,  "H4-none", s0);
+        x3::logInfo("[drive-test] H4 SLALOM ~100 mph (clean pavement): SHIPPED aero maxRoll=" +
+                    std::to_string(s1.maxRoll) + " deg, maxSlip=" + std::to_string(s1.maxSlip) +
+                    " deg, spun=" + (s1.spun ? "YES" : "NO") + ", upright=" +
+                    (s1.upright ? "YES" : "NO") + "  |  NO aero maxRoll=" +
+                    std::to_string(s0.maxRoll) + " deg, maxSlip=" + std::to_string(s0.maxSlip) +
+                    " deg, spun=" + (s0.spun ? "YES" : "NO") + ", upright=" +
+                    (s0.upright ? "YES" : "NO"));
+        check(ranS1 && ranS0, "H4 slalom: both A/B runs completed");
+        check(s1.upright, "H4 slalom: shipped car ends UPRIGHT");
+        check(s1.maxRoll < 10.0f, "H4 slalom: shipped car stays FLAT (< 10 deg roll)");
+        check(!s1.spun, "H4 slalom: shipped car does NOT spin (body slip < 45 deg)");
+        check(s1.maxSlip < s0.maxSlip,
+              "H4 slalom: the aero car holds a straighter line than the no-aero car (owner's spin complaint)");
+
+        // ---- H5: the FLIP gate — straight over the staggered curbs. ----
+        HRun k1{}, k0{};
+        const bool ranK1 = handlingRun(true,  /*curbs*/true, /*slalom*/false, "H5-aero", k1);
+        const bool ranK0 = handlingRun(false, /*curbs*/true, /*slalom*/false, "H5-none", k0);
+        x3::logInfo("[drive-test] H5 CURB STRIKE (12 cm staggered, hit at " +
+                    std::to_string(k1.vStrike * 2.23694f) + " mph): SHIPPED aero maxRoll=" +
+                    std::to_string(k1.maxRoll) + " deg, susp asym=" +
+                    std::to_string(k1.maxAsym) + " m, 2-wheel-lift ticks=" +
+                    std::to_string(k1.twoUp) + ", upright=" + (k1.upright ? "YES" : "NO") +
+                    "  |  NO aero maxRoll=" + std::to_string(k0.maxRoll) +
+                    " deg, asym=" + std::to_string(k0.maxAsym) +
+                    " m, lift=" + std::to_string(k0.twoUp) +
+                    ", upright=" + (k0.upright ? "YES" : "NO"));
+        check(ranK1 && ranK0, "H5 curb: both A/B runs completed");
+        // THE TEST-RAN GATE (rule 9, and the 3-metre receipt above): a curb
+        // the wheels never sampled reports perfect zero roll and passes
+        // everything. Prove the strike before believing the result.
+        check(k1.maxAsym > 0.05f && k0.maxAsym > 0.05f,
+              "H5 curb: the car ACTUALLY struck the curbs (suspension asymmetry > 5 cm)");
+        check(k1.upright, "H5 curb: shipped car ends UPRIGHT (does not roll over)");
+        check(k1.maxRoll < 45.0f, "H5 curb: shipped car never exceeds 45 deg of roll");
+        check(k1.maxRoll <= k0.maxRoll + 2.0f,
+              "H5 curb: downforce+roll-damping do not WORSEN the roll transient");
+    }
+
     x3::logInfo("[drive-test] " + std::to_string(passN) + " passed, " +
                 std::to_string(failN) + " failed");
     return failN == 0;

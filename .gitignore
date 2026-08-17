@@ -160,3 +160,6 @@ assets/rigged_glb/BossBreederQueen_anim.glb
 assets/rigged_glb/Oracle_anim.glb
 assets/rigged_glb/AnnaBodySuit_anim.glb
 assets/rigged_glb/SalvariPrincess_anim.glb
+
+# agent scratch (per-worktree handoff notes, never mainline)
+HANDOFF.md

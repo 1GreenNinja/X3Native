@@ -68,6 +68,18 @@ struct CharacterClipTable {
     const char* idleVariant = nullptr;  float idleVariantEvery = 20.0f;
     const char* swim        = nullptr;  // selection ready; swim STATE is the
     const char* swimIdle    = nullptr;  // river lane's (Player::swimming()).
+
+    // ---- COMBAT / RIFLE layer (the weapons task). Exact names, module-owned:
+    // hosts flip armed/aiming and call the one-shot helpers; the module owns
+    // every clip decision so no host ever re-wires a rig state by hand.
+    const char* rifleIdle   = nullptr;  // armed idle / RMB aim loop (upper body on the gun)
+    const char* rifleFire   = nullptr;  // firing one-shot (retriggerable at the fire rate)
+    const char* rifleReload = nullptr;  // reload one-shot — PAIRED VALUE: the host's
+                                        // WeaponDef::reloadTime must equal this clip's
+                                        // duration (host_tunnel tunnelRifleRoster()).
+    const char* rifleGrenade= nullptr;  // grenade-toss one-shot
+    const char* rifleRun    = nullptr;  // armed run loop (swapped into the blend while armed)
+    const char* rifleJump   = nullptr;  // armed jump one-shot (replaces `jump` while armed)
 };
 
 // The measured Jake_44_actions.glb table (post tools/jake_bake.py bake).
@@ -128,11 +140,39 @@ public:
     void draw(const x3::rhi::FrameContext& frame, x3::rhi::IRenderDevice& device,
               const Player& player, float yawTrimRad, float yTrim, bool visible);
 
-    // One-shot layer (punch/kick/reload/… — the weapons task wires inputs):
-    // play an exact-named clip exclusively once, then return to locomotion.
-    // Returns false if the clip is absent or one is already playing.
-    bool playOneShot(const char* exactName);
+    // One-shot layer (punch/kick/reload/…): play an exact-named clip
+    // exclusively once, then return to locomotion. Returns false if the clip
+    // is absent or one is already playing — unless `restart` is set, which
+    // rewinds an already-playing SAME clip to 0 (rapid fire retrigger) and
+    // replaces a DIFFERENT one (fire interrupts reload is the caller's call).
+    bool playOneShot(const char* exactName, bool restart = false);
     bool oneShotActive() const { return m_userT >= 0.0f; }
+    // Seconds into the active one-shot (-1 when none) — grenade-release timing.
+    float oneShotTime() const { return m_userT; }
+
+    // ---- WEAPON layer (the weapons task) --------------------------------
+    // Armed: locomotion run swaps to the rifle-run clip, the stationary idle
+    // becomes the rifle-ready loop, jump becomes the rifle jump. Aiming
+    // additionally faces the CAMERA (fine-aim) even while moving forward.
+    void setArmed(bool armed);
+    bool armed()  const { return m_armed; }
+    void setAiming(bool aiming) { m_aiming = aiming && m_armed; }
+    bool aiming() const { return m_aiming; }
+    // The rifle one-shots, resolved from the clip table (false if absent).
+    bool fireOneShot()    { return playOneShot(m_table.rifleFire, true); }
+    bool reloadOneShot()  { return playOneShot(m_table.rifleReload); }
+    bool grenadeOneShot() { return playOneShot(m_table.rifleGrenade); }
+    // True while the active one-shot is the grenade toss (release timing).
+    bool grenadeOneShotActive() const {
+        return m_userT >= 0.0f && m_userClip >= 0 && m_userClip == m_rifleGrenade;
+    }
+
+    // Named-bone WORLD transform (column-major 4x4) under the SAME draw
+    // matrix draw() uses (feet at the capsule, facing m_yaw) — the weapon
+    // hand socket. Resolves + caches the node on first call; false when the
+    // rig isn't animated / the bone doesn't resolve / no pose computed yet.
+    bool boneWorld(const char* boneName, const Player& player,
+                   float yawTrimRad, float yTrim, float out[16]);
 
     // Facing yaw (radians; 0 = engine -Z). Exposed for debug/host cameras.
     float yaw() const { return m_yaw; }
@@ -163,6 +203,11 @@ private:
     int m_walkBack = -1, m_runBack = -1, m_strafeL = -1, m_strafeR = -1;
     int m_turnL = -1, m_turnR = -1, m_jump = -1, m_fall = -1;
     int m_idleVar = -1, m_swim = -1, m_swimIdle = -1;
+    // Combat layer (the weapons task). m_idle/m_walk/m_run are ALSO kept so
+    // setArmed() can re-register the locomotion blend both ways.
+    int m_idle = -1, m_walk = -1, m_run = -1;
+    int m_rifleIdle = -1, m_rifleFire = -1, m_rifleReload = -1;
+    int m_rifleGrenade = -1, m_rifleRun = -1, m_rifleJump = -1;
 
     // ---- state ----
     float m_yaw = 0.0f;                       // 0 = engine -Z (asset identity)
@@ -179,6 +224,13 @@ private:
     float m_idleVarT = -1.0f;                 // >=0 while the variant plays
     int   m_userClip = -1;                    // playOneShot layer
     float m_userT = -1.0f;
+    int   m_jumpClip = -1;                    // which jump one-shot is playing
+    // Weapon layer state.
+    bool  m_armed  = false;
+    bool  m_aiming = false;
+    // boneWorld() cache: one resolved node per (last-requested) bone name.
+    std::string m_boneName;
+    int         m_boneNode = -1;
 };
 
 } // namespace x3::game

@@ -375,7 +375,15 @@ constexpr uint32_t kMaxTunnelLightsInFlight = 16;
 // TunnelCorridorWorld. Returns how many were uploaded. Call once per frame,
 // AFTER any other system that sets point lights. With no tunnels built it
 // uploads nothing and is free.
-uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3]);
+//
+// `extra`/`extraCount` (weapons task): TRANSIENT lights merged in FRONT of the
+// pooled tunnel lights — muzzle-flash and grenade-detonation pulses. They ride
+// the same single setPointLights upload (a second call would overwrite the
+// pool), are never distance-culled (a flash is by definition next to the
+// camera's subject), and cost nothing when the count is 0.
+uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3],
+                            const x3::rhi::PointLight* extra = nullptr,
+                            uint32_t extraCount = 0);
 
 // A built bore joins the pool; shutdown() leaves it. Called by
 // TunnelCorridorWorld itself — callers do not need these.
