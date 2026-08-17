@@ -655,17 +655,29 @@ void deriveRoute(const RouteSeed& seed, TunnelRoute& route, TerrainCorridor& c) 
     // the roadway. Monotone (depths only rise), so it converges — in practice in
     // one or two passes — and it is deterministic, which is what makes the
     // result survive a regenerated height field with no hand-placed fudge.
+    // Walk DENSER than the self-check that grades it (0.5 m stations, 13 lats
+    // over ±road width there), and demand a small negative margin. The old walk
+    // (1.0 m / 9 lats / worst <= 0.0) proved "clear" only on ITS lattice: the
+    // North Massif Tunnel shipped a -0.07 m hairline at s=156 that the
+    // W-MOUNTAIN scale-varied bluff strata flipped to +0.08 m — 8 cm of rock
+    // lip standing on the roadway BETWEEN the walk's samples, found by the
+    // check and never by the guarantee. 0.5 m x 19 lats is a superset of the
+    // check's lattice (plus the 0.9 m shoulder margin), and the -0.05 m
+    // epsilon means a between-samples bump needs a >5 cm crest in <1 m of
+    // ground — not something the km-scale fbm fields produce — before it can
+    // stand on the road again.
+    constexpr float kCloseEps = 0.05f;   // converge to 5 cm BELOW the floor
     for (int pass = 0; pass < 8; ++pass) {
         std::vector<float> add((size_t)kRouteNodes, 0.0f);
         float worst = -1e9f;
-        for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 1.0f) {
+        for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 0.5f) {
             const float floorWant = route.roadYAt(s) - kFloorClear;
-            for (int k = -4; k <= 4; ++k) {
-                const float lat = (float)k * (kTcRoadHalfWidth + 0.9f) / 4.0f;
+            for (int k = -9; k <= 9; ++k) {
+                const float lat = (float)k * (kTcRoadHalfWidth + 0.9f) / 9.0f;
                 float qx = 0.0f, qz = 0.0f;
                 route.worldAt(s, lat, qx, qz);
                 const float h = tunnelNaturalHeightAt(qx, qz) - terrainCorridorDepthAt(c, qx, qz);
-                const float over = h - floorWant;
+                const float over = h - floorWant + kCloseEps;
                 if (over > worst) worst = over;
                 if (over <= 0.0f) continue;
                 const int i0 = clampi((int)std::floor(s / ds), 0, kRouteNodes - 1);
