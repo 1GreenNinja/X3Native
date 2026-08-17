@@ -963,6 +963,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // across the wing re-sweeps per target — no popping.
     constexpr float kAcquireSec = 1.4f;
     uint32_t lockPrevId = 0; bool lockHad = false; float lockAge = 0.0f;
+    // AIM SOVEREIGNTY (owner, live 2026-08-16: "The aim always returns to the
+    // overlord ship!!! it should NOT.."): policy gate in front of the 6DOF
+    // target hold + camera look bias below. The player's aim always wins — the
+    // hold only ever KEEPS the aim he already has, with a grace after the last
+    // look input and an aim-away suspension (hysteresis) so it can never slew
+    // the nose back onto the capital he deliberately aimed off of. Lives in
+    // space_pilot.h so --test-space T19-T21 cover it headlessly.
+    x3::game::AimSovereignty aimSov;
     // (hitConfirmT — the reticle hit-confirm flicker — is declared up in the
     // capital-anatomy block: capitalApplyHit sets it and is defined above here.)
     // Effective projectile speed for the LEAD PIP. The player laser RESOLVES as
@@ -1873,7 +1881,6 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         // lever (default 0.15, was a hard-coded 0.30 — an assist
                         // that ate a third of every mouse whip, which is the
                         // classic "the ship doesn't zip" culprit). 0 = off.
-                        pilot.setCameraLookBias(dirT, captureMode ? 0.55f : lvLookBias);
                         fedBias = true;
                         // 6DOF TARGET HOLD (owner spec: "strafe in 6DOF and keep
                         // on a target the whole time"). Steers the SHIP'S NOSE —
@@ -1885,8 +1892,29 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         // rad/s; 0 disables the whole thing.
                         const bool lookingNow = std::fabs(in.lookDX) > 0.5f ||
                                                 std::fabs(in.lookDY) > 0.5f;
-                        pilot.steerNoseToward(dirT,
-                            (lvTargetHold > 0.0f && !lookingNow) ? lvTargetHold : 0.0f, dt);
+                        // SNAP-BACK FIX (owner, live 2026-08-16: "The aim always
+                        // returns to the overlord ship!!! it should NOT.."): the
+                        // per-frame gate above was the whole defence, so the
+                        // instant the mouse stopped the hold slewed the nose back
+                        // onto the locked capital from ANY angle. AimSovereignty
+                        // (space_pilot.h) now arbitrates: a grace after the last
+                        // input, and an aim-away suspension with hysteresis — the
+                        // hold KEEPS the aim the player has, never re-acquires
+                        // one he aimed away from. Capture runs are scripted
+                        // evidence shots, not play: they keep the old always-on
+                        // framing gate untouched.
+                        const float errRad = pilot.steerNoseToward(dirT, 0.0f, dt); // probe only
+                        if (!lockHad || targeting.lockedId() != lockPrevId)
+                            aimSov.onNewTarget(errRad);   // fresh lock never yanks the nose
+                        const float holdRate = captureMode
+                            ? ((lvTargetHold > 0.0f && !lookingNow) ? lvTargetHold : 0.0f)
+                            : aimSov.gate(lookingNow, errRad, lvTargetHold, dt);
+                        // The camera gaze bias obeys the same suspension — an
+                        // aimed-away player keeps his OWN view too, instead of
+                        // the gaze creeping back toward the capital.
+                        pilot.setCameraLookBias(dirT, captureMode ? 0.55f
+                            : (aimSov.suspended() ? 0.0f : lvLookBias));
+                        pilot.steerNoseToward(dirT, holdRate, dt);
                     }
                     break;
                 }

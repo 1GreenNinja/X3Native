@@ -319,6 +319,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testLevelLint = o.testLevelLint;
         _tf.testPropClip = o.testPropClip;
         _tf.testCanonPlay = o.testCanonPlay;
+        _tf.testGrounding = o.testGrounding;
         _tf.testStairNav = o.testStairNav;
         _tf.testGoldenPath = o.testGoldenPath;
         _tf.testOpening = o.testOpening;
@@ -344,6 +345,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testIntroBranch = o.testIntroBranch;
         _tf.testSurfaceStart = o.testSurfaceStart;
         _tf.testSurfaceHandoff = o.testSurfaceHandoff;
+        _tf.testApronLanding = o.testApronLanding;
         _tf.testStarsystems = o.testStarsystems;
         _tf.testCutscene = o.testCutscene;
         _tf.testFilmic = o.testFilmic;
@@ -362,6 +364,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testTraffic = o.testTraffic;
     _tf.testGasStation = o.testGasStation;
         _tf.testFactory     = o.testFactory;
+        _tf.testInterchange = o.testInterchange;
         _tf.testTunnelDrive = o.testTunnelDrive;
         _tf.testSummitLot   = o.testSummitLot;
         _tf.testRidgeRoad   = o.testRidgeRoad;
@@ -377,6 +380,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testPackSpiders = o.testPackSpiders;
         _tf.testClone = o.testClone;
         _tf.testGallery = o.testGallery;
+        _tf.testCutaway = o.testCutaway;
         _tf.testSpireMid = o.testSpireMid;
         _tf.testNexus = o.testNexus;
         _tf.testSpireTop = o.testSpireTop;
@@ -865,6 +869,7 @@ int x3AppMain(int argc, char** argv) {
         _hc.tunnelShot       = o.tunnelShot;       _hc.tunnelShotDir    = o.tunnelShotDir;
         _hc.jakeShot         = o.jakeShot;         _hc.jakeShotDir      = o.jakeShotDir;
         _hc.townShot         = o.townShot;         _hc.townShotDir      = o.townShotDir;
+        _hc.cutawayShot      = o.cutawayShot;      _hc.cutawayShotDir   = o.cutawayShotDir;
         // THE A/B SWITCHES HAVE TO BE SET BEFORE THE DISPATCH. These were only
         // assigned further down, in the block feeding the DEFAULT host — i.e.
         // after dispatchScreenshotHosts() had already returned. Every screenshot

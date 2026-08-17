@@ -83,13 +83,18 @@ const Destination kDest[] = {
 // tower's one real way in off the apron, and the ESCAPED-branch rescuer's arrival
 // spawn (specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md §2: the handoff's dest key).
 { "entrance",     "Facility Entrance",        "The F1 entrance hall - the tower's one real way in, off the apron.",    "canonlevel",        DestGroup::Facility,   true  },
+// [ONE WORLD landing, feat/canon-apron-landing] The apron ring OUTSIDE the
+// breach — where the intro's flyable outcomes (escaped / capital-killed) now
+// set the player down IN canonlevel (no more --world surface handoff; that
+// world stays a dev shortcut). Anchor maths: app/apron_landing.h.
+{ "apron",        "Facility Apron",           "The landing apron outside the breach - where the intro sets you down.", "",                  DestGroup::Facility,   true  },
 
 { "granite",      "The Descent - Granite",    "Strata offshoot pocket at -55 m.",                                      "strata",            DestGroup::Underworld, true  },
 { "basalt",       "The Descent - Basalt",     "Strata offshoot pocket at -95 m.",                                      "strata",            DestGroup::Underworld, true  },
 { "obsidian",     "The Descent - Obsidian",   "Strata offshoot pocket at -125 m.",                                     "strata",            DestGroup::Underworld, true  },
 { "crystal",      "The Crystal Veins",        "The glowing crystal offshoot at -155 m.",                               "strata",            DestGroup::Underworld, true  },
 { "magma",        "The Magma Zone",           "The molten offshoot at -180 m.",                                        "strata",            DestGroup::Underworld, true  },
-{ "club",         "Club 1127",                "The disco at The Deep, Y=-200. Code 1127 in the cab is the long way.",  "club",              DestGroup::Underworld, true  },
+{ "club",         "Club 1127",                "The disco at The Deep, Y=-800. Code 1127 in the cab is the long way.",  "club",              DestGroup::Underworld, true  },
 
 { "crash",        "The Crash Site",           "Where the ship came down, off the +Z breach face.",                     "",                  DestGroup::Planet,     true  },
 { "city",         "The City",                 "The streamed metropolis region, out past the apron.",                   "",                  DestGroup::Planet,     true  },
@@ -133,6 +138,10 @@ const Destination kDest[] = {
 { "tunnel",       "Terrain Corridor Tunnel",  "Drive a road bored through a hillside - the corridor-depression tech.", "tunnel",            DestGroup::DevWorld,   false },
 { "complex",      "Survival Complex",         "The 7-level survival complex (gamma fold).",                            "complex",           DestGroup::DevWorld,   false },
 { "mines",        "The Mines",                "Mine-entrance showcase - Armory rock, timber portals, glowing mouths.", "mines",             DestGroup::DevWorld,   false },
+// LEVEL ARCHITECT — the cutaway. Not a place you stand in; a place you LOOK at
+// the whole tower from, in X-ray, floor by floor. Listed because the directory
+// claims to list every world the build can dispatch.
+{ "cutaway",      "Cutaway View",             "Level Architect: the whole facility in X-ray - stacked floors, hover cards.", "cutaway",  DestGroup::DevWorld,   false },
 };
 constexpr uint32_t kDestCount = (uint32_t)(sizeof(kDest) / sizeof(kDest[0]));
 

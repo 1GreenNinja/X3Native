@@ -673,6 +673,10 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
         CanonRoom r;
         if (const JValue* v = rv.find("n")) r.name = v->asStr();
         if (const JValue* v = rv.find("t")) r.type = v->asStr();
+        // "desc" — the room's flavour line. Present on every Floor 2-7 room in
+        // the canonical project; empty on Floor 1. Parsed here so the CUTAWAY
+        // hover cards read the OWNER's words, not a second hand-kept table.
+        if (const JValue* v = rv.find("desc")) r.desc = v->asStr();
         if (const JValue* v = rv.find("x")) r.cx = (float)v->asNum();
         if (const JValue* v = rv.find("y")) r.cy = (float)v->asNum();
         if (const JValue* v = rv.find("z")) r.cz = (float)v->asNum();

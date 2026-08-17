@@ -53,6 +53,12 @@ struct MapCamera {
     float scale = 1.0f, tScale = 1.0f; // current / target px-per-meter
     float minScale = 0.05f;            // world overview (~20 km across a 1080p view)
     float maxScale = 48.0f;            // room detail
+    // MAP ROTATION (Q/E, W-MAP v3). Radians, world-frame: rot=0 is the
+    // original unrotated north-per-worldToPx orientation every existing
+    // caller/self-test assumes. `rot` is what's actually drawn with;
+    // `tRot` is what Q/E steer toward, lerped in update() same as pan/zoom —
+    // so a held key sweeps smoothly instead of snapping.
+    float rot = 0.0f, tRot = 0.0f;
     // The GTA zoom feel: wheel re-anchors the world point under the cursor and
     // the camera holds that point fixed under the cursor pixel through the
     // whole zoom lerp. Cleared by any pan.
@@ -61,16 +67,28 @@ struct MapCamera {
 
     static constexpr float kZoomLerpRate  = 12.0f;  // 1/s — exp converge (~90% in 0.19 s)
     static constexpr float kPanLerpRate   = 14.0f;  // 1/s
+    static constexpr float kRotLerpRate   = 10.0f;  // 1/s
     static constexpr float kWheelStepMul  = 1.30f;  // zoom factor per wheel notch
 
     void setViewport(float w, float h) { if (w > 0) vw = w; if (h > 0) vh = h; }
-    void jumpTo(float wx, float wz, float s);              // snap (map open)
+    void jumpTo(float wx, float wz, float s);              // snap (map open) — also resets rotation
     void zoomAt(float pxX, float pxY, float wheelSteps);   // cursor-anchored exponential zoom
     void panPixels(float dxPx, float dyPx);                // mouse drag (immediate)
     void panWorld(float dxM, float dzM);                   // WASD (target shift)
+    void rotateBy(float dRad);                             // Q/E (target shift, shortest-path lerp)
     void update(float dt);                                 // lerp toward targets
     void worldToPx(float wx, float wz, float& pxX, float& pxY) const;
     void pxToWorld(float pxX, float pxY, float& wx, float& wz) const;
+    // World-space unit direction -> unit screen-space direction, same
+    // rotation worldToPx applies (no translation/scale) — how the compass
+    // rose places its N/E/S/W letters so they stay truthful as the map spins.
+    void worldDirToScreenDir(float dx, float dz, float& sx, float& sy) const;
+    // Screen-pixel vector -> world-metre vector at scale `s` (the shared
+    // inverse the anchor/drag/WASD math uses — see the .cpp note; it carries
+    // the north-up flip and the rotation so those paths can never drift from
+    // pxToWorld again).
+    void screenVecToWorldVec(float dxPx, float dyPx, float s,
+                             float& wdx, float& wdz) const;
     bool settled(float scaleEps = 1e-3f, float panEpsM = 1e-2f) const;
 };
 
@@ -190,6 +208,21 @@ void bakeFloorTilePixels(const CanonFloor& floor, std::vector<uint8_t>& outRgba,
 void bakeTerrainTilePixels(std::vector<uint8_t>& outRgba, uint32_t res,
                            float wx0, float wz0, float wx1, float wz1);
 
+// Stamp the road network INTO an already-baked terrain tile buffer (casing +
+// bright core, dashed bores, same palette as drawRouteOverlays — the two are
+// PAIRED, see the color constants at both sites). Why baked at all when
+// drawRouteOverlays exists: the per-frame HUD path stamps quads into the
+// device's ~4096-quad/frame vertex ring, and the WHOLE 46-mile network at
+// world-overview zoom needs more stamps than the ring holds — the casing pass
+// ate the budget and the bright cores silently vanished, which is exactly the
+// owner's "I just cant see ANYTHING on the MAP" blank-network overview.
+// Texture pixels cost no ring space, so the baked layer carries the network at
+// low zoom; drawRouteOverlays takes over above kRouteOverlayMinScale where the
+// visible (bounded) subset fits the ring and draws crisper at true width.
+void overlayRoadsOntoTilePixels(std::vector<uint8_t>& rgba, uint32_t res,
+                                float wx0, float wz0, float wx1, float wz1,
+                                const std::vector<MapRouteOverlay>& routes);
+
 // Rasterize live scene entities (a region's ownership ledger) by their world
 // AABBs (meshBounds x transform): height-banded tint (low = dark floor teal,
 // tall = bright wall cyan), painter's order by top Y, 1px darker rim. Entities
@@ -242,6 +275,14 @@ public:
     const MapTile* ensureTerrainTile(x3::rhi::IRenderDevice& device);
     void invalidateTerrainTile(x3::rhi::IRenderDevice& device);
 
+    // Below this camera scale (px per metre) the BAKED terrain+roads tile
+    // carries the road network and drawRouteOverlays draws nothing; at or
+    // above it the per-frame overlay pass draws the (bounded) visible subset
+    // crisp at true width. One constant, two consumers — drawScreen's tile
+    // pick and drawRouteOverlays' early-out MUST agree or the network
+    // double-draws (halo) or vanishes at the boundary.
+    static constexpr float kRouteOverlayMinScale = 0.20f;
+
     // ---- Fast travel (host polls after drawScreen) -------------------------
     bool travelRequested() const { return m_travelRequested; }
     const MapPoi* travelTarget() const;     // valid while travelRequested()
@@ -290,6 +331,7 @@ public:
         bool  mouseDown = false, mousePressed = false;
         float wheel = 0.0f;                     // scroll notches this frame
         bool  keyW = false, keyA = false, keyS = false, keyD = false;
+        bool  keyQ = false, keyE = false;       // MAP ROTATION (W-MAP v3) — held, not edge
         bool  enterEdge = false, escEdge = false;
         float playerX = 0, playerY = 0, playerZ = 0, playerYaw = 0;
         int   compCount = 0;
@@ -323,6 +365,13 @@ private:
     void drawRouteLabels(x3::ui::UiContext& ui, float W, float H) const;
     void drawMapMarker(x3::ui::UiContext& ui, const MapMarker& mk, float px, float py,
                        bool hovered) const;
+    // N/E/S/W compass rose (W-MAP v3, Q/E rotation). The letters COUNTER-
+    // ROTATE around the rose center as the map rotates — they stay upright
+    // (HUD text can't be drawn rotated) but their POSITIONS track the same
+    // rotation worldToPx applies to everything else, so "N" is always over
+    // true +Z regardless of how the view is spun. Native compass: +Z north
+    // (CLAUDE.md axes), +X east.
+    void drawCompassRose(x3::ui::UiContext& ui, float W, float H) const;
 
     MapPoiTable m_pois;
     std::string m_spireDocPath;
@@ -335,6 +384,9 @@ private:
     std::vector<MapRouteOverlay> m_routes;   // road-network worlds (else empty)
     std::vector<MapMarker>       m_markers;  // portals / garage / landmarks (else empty)
     MapTile m_terrainTile;                   // road-network underlay (see ensureTerrainTile)
+    MapTile m_terrainRoadsTile;              // same tile WITH the network baked in — drawn
+                                             // below kRouteOverlayMinScale (one height pass
+                                             // bakes both; see ensureTerrainTile)
 
     Waypoint m_waypoint;
     bool m_open = false;

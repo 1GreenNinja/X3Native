@@ -47,6 +47,14 @@ namespace x3::game {
 struct CanonRoom {
     std::string name;
     std::string type;       // "Cell" / "Hallway" / "Boss Arena" / "Cave" / ...
+    // The room's one-line FLAVOUR LINE, straight from the project JSON's "desc"
+    // field ("Brain-computer links. Memory extraction."). It was in the data all
+    // along and the parser silently dropped it; the CUTAWAY VIEW's hover cards
+    // (app/cutaway.h) are its first consumer. Floors 2-7 ship one per room; the
+    // 53 Floor-1 rooms have an EMPTY desc in the JSON and are filled in from
+    // kF1Desc in app/cutaway.cpp — PAIRED VALUE (NO_SLOP rule 4): if a Floor-1
+    // room here ever gains a real "desc" in the JSON, drop its kF1Desc row.
+    std::string desc;
     float cx = 0, cy = 0, cz = 0;   // center (world m)
     float w = 0, h = 0, d = 0;      // FULL extents (x, y, z) (world m)
 
