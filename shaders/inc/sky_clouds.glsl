@@ -53,16 +53,25 @@ float cloudNoise(vec2 p) {
 // value noise otherwise carries) and a FRACTIONAL octave count: `octaves`
 // fades the high-frequency terms out smoothly, so a distant sample can drop
 // detail that would alias into horizon static without popping a transition.
+//
+// NORMALIZED by the live weight sum — this is load-bearing, not cosmetic.
+// Unnormalized, a 3-octave sum tops out at 0.875 where 5 octaves reach 0.969,
+// so every consumer running fewer octaves read LESS COVERAGE through the same
+// threshold: the ground shadow (3 octaves) saw 97% full sun under a sky that
+// drew 47% cloud, and the sky's own distance fade (oct -> 2) thinned the deck
+// toward the horizon instead of crowding it. Measured in
+// shots_clouds/verify_new_field.py — one field, one amplitude, any octave count.
 float cloudFbm(vec2 p, float octaves) {
     const mat2 kRot = mat2(0.80, 0.60, -0.60, 0.80) * 2.03;  // rotate + lacunarity
-    float a = 0.5, sum = 0.0;
+    float a = 0.5, sum = 0.0, norm = 0.0;
     for (int k = 0; k < CLOUD_FBM_OCTAVES; ++k) {
         float w = clamp(octaves - float(k), 0.0, 1.0);
-        sum += a * w * cloudNoise(p);
+        sum  += a * w * cloudNoise(p);
+        norm += a * w;
         p = kRot * p + 11.7;
         a *= 0.5;
     }
-    return sum;
+    return sum / max(norm, 1e-4);
 }
 
 // Cloud density in [0,1] at a world XZ on the deck plane.
@@ -77,7 +86,14 @@ float cloudCoverAt(vec2 worldXZ, float cover, float t, float octaves) {
     vec2 w = vec2(cloudFbm(p * 0.5 + 17.3, octaves),
                   cloudFbm(p * 0.5 - 9.1,  octaves));
     float d  = cloudFbm(p + (w - 0.5) * 1.6, octaves);
-    float lo = mix(0.68, 0.16, clamp(cover, 0.0, 1.0));
+    // Threshold CALIBRATED against the normalized field, numerically (see
+    // shots_clouds/verify_new_field.py): solved lo per cover for the target
+    // sky-fraction ladder (0.42 -> ~47% scattered cumulus, 0.66 -> ~80%
+    // broken overcast, 0.94 -> ~97% storm deck), then fit. Quadratic because
+    // the required curve steepens at high cover — a linear mix leaves the
+    // storm deck full of holes.
+    float c  = clamp(cover, 0.0, 1.0);
+    float lo = 0.66 - 0.20 * c - 0.29 * c * c;
     return smoothstep(lo, lo + 0.30, d);
 }
 
