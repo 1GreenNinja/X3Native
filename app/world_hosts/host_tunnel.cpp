@@ -2094,6 +2094,14 @@ int hostTunnel(HostContext& hc) {
         }, "print the car's live state");
     }
 
+    // X3_PERF_LOG=1: rolling avg-FPS to the log every 5 s (host_echotropolis
+    // precedent). Exists so a BOUNDED unattended run can measure spawn-view
+    // perf before/after a terrain/shader change — the 165->26 fps corridor-pin
+    // regression was only caught by an eyeball on the F3 overlay; this gives
+    // the same number to a log a lane agent can diff.
+    const bool perfLog = [] { const char* e = std::getenv("X3_PERF_LOG"); return e && e[0] == '1'; }();
+    double perfT0 = glfwGetTime(); uint32_t perfFrames = 0;
+
     while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         // RE-SUBMIT THE BORE LIGHTS EVERY FRAME. They were set exactly ONCE at boot
         // (setPointLights above), which is why the tunnel is lit in headless captures
@@ -2104,6 +2112,17 @@ int hostTunnel(HostContext& hc) {
         mapEsc = false;   // BEFORE the poll: the escape handler runs inside it
         glfwPollEvents();
         shell.beginFrame();
+        if (perfLog) {
+            ++perfFrames;
+            const double pnow = glfwGetTime();
+            if (pnow - perfT0 >= 5.0) {
+                char pb[96];
+                std::snprintf(pb, sizeof(pb), "[perf] avg FPS %.1f over %.1fs",
+                              (double)perfFrames / (pnow - perfT0), pnow - perfT0);
+                x3::logInfo(pb);
+                perfT0 = pnow; perfFrames = 0;
+            }
+        }
 
         // ESC OPENS THE MENU, IT DOES NOT QUIT — the shell owns that now, along
         // with the console and the FPS overlay. This host used to hand-roll the

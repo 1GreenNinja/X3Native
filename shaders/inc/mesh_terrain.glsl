@@ -20,8 +20,8 @@
 //   * SAND is a SHORELINE material only — gated by proximity to the offshore
 //     ocean basin (kShoreXZ, matches terrain.cpp kBasinCx/Cz) so inland lows and
 //     the flattened city/facility pads don't read as beach.
-//   * SNOW lives on the high ranges only (kSnowBottom 180 — the base field can
-//     never reach it) and prefers flatter ground (it slides off cliffs).
+//   * SNOW lives on the high ranges only (kSnowBottom, tuned below — the base
+//     field can never reach it) and prefers flatter ground (it slides off cliffs).
 //   * ALPINE band: grass gives way to rock with altitude well below the snowline.
 //   * Slope-rock thresholds unchanged — on real mountainsides normal.y drops far
 //     below 0.90, so slopes saturate to full rock naturally.
@@ -30,13 +30,19 @@
 //     warm sandstone rock; W highlands = mossier grass.
 const float kSeaLevel    = 4.0;    // world Y of the basin water surface (ocean_base)
 const float kSandTop     = 16.0;   // beach fades out by here (near the basin only)
-// SNOW: retuned 180/265 -> 118/185 for the TUNNEL RIDGE (peak ~162 m — the old
-// 180 m floor sat ABOVE it, so the one mountain the player drives through
-// could never cap). Still comfortably above the 55 m base field (no lowland
-// snow); the four distant 400-500 m ranges just cap lower down, which is what
-// ranges do.
-const float kSnowBottom  = 118.0;  // snow begins (mountain shoulders)
-const float kSnowFull    = 185.0;  // fully snow by here (high peaks)
+// SNOW: PAIRED TO THE TUNNEL RIDGE SUMMIT (app/terrain.cpp kRanges tunnel
+// ridge — a change to that range's amp IS a change to this pair). History:
+// 180/265 -> 118/185 when the ridge peaked at ~162 m (the 180 floor sat above
+// the only mountain the player drives through); now the owner's raise (amp
+// 285 -> 460, natural summit 289 m, 2026-08-16) put that WHOLE massif above
+// the 118 line and it rendered as one pale snow dome — the exact opposite of
+// the "bluish dark cliffs" the raise was for. 225/300: the dark-stone band
+// (full by kAlpineTintHi 150) owns 150..225 outright, the cap starts where
+// the ridge's own shoulders end, and the 289 m summit reads ~0.94 snow — a
+// white CAP over dark rock, not a white mountain. The distant 300-500 m
+// ranges still cap; the 55 m base field still never can.
+const float kSnowBottom  = 225.0;  // snow begins (above the dark-cliff band)
+const float kSnowFull    = 300.0;  // fully snow by here (high peaks)
 const float kAlpineLo    = 75.0;   // grass starts yielding to rock
 const float kAlpineHi    = 140.0;  // fully rock by here (below the snow line)
 // HIGH-ROCK band (the SECOND rock set + tint): where the mountain stops being
@@ -46,6 +52,17 @@ const float kAlpineTintLo = 70.0;
 const float kAlpineTintHi = 150.0;
 const vec3  kAlpineRock   = vec3(0.52, 0.58, 0.72);   // darker, cooler (tint fallback)
 const vec3  kAlpineVein   = vec3(0.62, 0.78, 1.15);   // blue in the crevices
+// CLIFF FACES GO DARK BY SLOPE, NOT ONLY BY ALTITUDE (owner 2026-08-16:
+// "bluish dark cliffs" on the Large Mountain). The altitude band above still
+// owns the summit; this lets a genuinely STEEP face pick up the same dark
+// blue-grey stone from kCliffAltLo up, so the great lower faces of the massif
+// read as cliff bands instead of roadside-cutting tan. Gated well above the
+// 0..55 m rolling field so road cuttings and river banks keep the warm rock:
+// both gates must pass — steepness alone never recolours lowland ground.
+const float kCliffSlopeLo = 0.45;   // n.y at/below this (>63 deg) -> fully dark stone
+const float kCliffSlopeHi = 0.72;   // n.y at/above this (<44 deg) -> no slope contribution
+const float kCliffAltLo   = 38.0;   // dark-cliff eligibility begins (above the base field's soil)
+const float kCliffAltHi   = 70.0;   // fully eligible by here (= kAlpineTintLo)
 // SLOPE-ROCK THRESHOLDS. These were 0.90/0.965, which is far too flat to mean
 // "cliff": normal.y = 0.93 is a 21.5 deg grassy hillside, and the old curve made
 // that 58% rock. On the rolling base field every gentle undulation therefore
@@ -425,6 +442,11 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
     // shared rock set.
     {
         float alt = smoothstep(kAlpineTintLo, kAlpineTintHi, s.hN);
+        // Steep faces join the dark-stone band from kCliffAltLo up (see the
+        // kCliffSlope* block comment). max(), not +: a steep face high on the
+        // massif is already fully dark and must not overshoot the crossfade.
+        alt = max(alt, (1.0 - smoothstep(kCliffSlopeLo, kCliffSlopeHi, clamp(wn.y, 0.0, 1.0)))
+                       * smoothstep(kCliffAltLo, kCliffAltHi, s.hN));
         if (alt > 0.0) {
             vec3 hi;
             if (rockHiIdx != 0u) {

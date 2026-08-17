@@ -3034,10 +3034,24 @@ void TunnelCorridorWorld::showcaseCamera(const TunnelRoute& route, int which, fl
         // Framed so the lid can actually be JUDGED: 190 m up and 300 m back put
         // the whole ridge inside a few pixels and showed nothing but streamer
         // LOD. 85 m up, 210 m back, pitched into the hill.
+        //
+        // TERRAIN-CLAMPED (W-MOUNTAIN 2026-08-16): "+85 m over the road" was a
+        // constant tuned against the 162 m ridge; the owner's raise put the
+        // flank at this station well above it and the frame was a rock-texture
+        // close-up FROM INSIDE THE HILL (shots_mountain/04_saddle, first
+        // pass). The eye height now rides the measured ground at the camera's
+        // own footprint, and the pitch is re-aimed at the lid over mid-bore
+        // instead of a canned angle, so the pose composes at ANY massif height.
         const float mid = (route.boreS0 + route.boreS1) * 0.5f;
         float p[3]; route.posAt(std::max(0.0f, mid - 210.0f), p);
         cam[0] = p[0]; cam[1] = p[1] + 85.0f; cam[2] = p[2];
-        cam[3] = yawFwd; cam[4] = -0.30f;
+        const float camGround = terrainHeightAtWorld(cam[0], cam[2]);
+        if (cam[1] < camGround + 30.0f) cam[1] = camGround + 30.0f;
+        float t[3]; route.posAt(mid, t);
+        t[1] = terrainHeightAtWorld(t[0], t[2]) + 10.0f;     // the lid itself
+        const float dx = t[0]-cam[0], dy = t[1]-cam[1], dz = t[2]-cam[2];
+        const float hl = std::sqrt(dx*dx + dz*dz);
+        cam[3] = yawFwd; cam[4] = std::atan2(dy, std::max(1.0f, hl));
         return;
     }
     if (which == 4) {
@@ -3235,6 +3249,25 @@ bool runTunnelMouthSelfTest() {
                       worstGrade * 100.0f, kTcMaxGrade * 100.0f, maxCut);
         check(worstGrade <= kTcMaxGrade * 1.02f && maxCut > 5.0f,
               "M5 the graded road still respects kTcMaxGrade", d);
+    }
+
+    // ---- [diag] THE LARGE MOUNTAIN'S NATURAL SUMMIT (not a gate). The owner
+    // tunes this massif by eye ("taller... bluish dark cliffs.. stepped
+    // bluffs"); this prints the measured summit so a raise lands in the
+    // receipts as a NUMBER (rule 9), not a vibe. Scans the ridge band's bbox
+    // (kRanges tunnel ridge, spine (-753,-740)->(-431,36), outW 240) on the
+    // NATURAL field (corridor delta backed out).
+    {
+        float top = -1e9f, tx = 0.0f, tz = 0.0f;
+        for (float sz = -1000.0f; sz <= 300.0f; sz += 6.0f)
+            for (float sx = -1020.0f; sx <= -170.0f; sx += 6.0f) {
+                const float h = terrainHeightAtWorld(sx, sz) - terrainCorridorDelta(sx, sz);
+                if (h > top) { top = h; tx = sx; tz = sz; }
+            }
+        std::snprintf(d, sizeof(d),
+                      "[diag] Large Mountain natural summit %.1f m (%.0f ft) at (%.0f, %.0f)",
+                      top, top * 3.28084f, tx, tz);
+        x3::logInfo(d);
     }
 
     // ---- M6: REGENERATION PROOF. Re-derive the whole construction on other
