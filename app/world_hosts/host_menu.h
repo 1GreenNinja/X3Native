@@ -9,10 +9,14 @@
 // CONSOLE CVARS THAT ALREADY EXIST (NO_SLOP rule 4 — the slider and the typed
 // command move the SAME value, so they can never disagree):
 //
-//   * THE GAME MENU (ESC): the main game's menu chrome — the same UiContext
-//     widgets, fonts and panel the campaign menu draws with (app/ui.h), plus
-//     the REAL x3::ui::SettingsMenu screen (Bloom/SSAO/SSGI/Shadows/VSync/
-//     RT AO — the main game's controls), reused whole. Wired into a host via
+//   * THE GAME MENU (ESC): the MAIN GAME'S OWN PAUSE SCREEN — x3::ui::PauseMenu,
+//     the one --ui-demo / --screenshot-menu captures — reused whole, not
+//     re-drawn. This module authors NO menu chrome; it hands PauseMenu a
+//     x3::ui::PauseRows saying which rows this world can service (no save
+//     system, no TRAVEL, no main menu to quit to; but weather, lighting, map
+//     and console). Its SETTINGS row opens the REAL x3::ui::SettingsMenu
+//     screen (Bloom/SSAO/SSGI/Shadows/VSync/RT AO — the main game's
+//     controls), also reused whole. Wired into a host via
 //     HostShell::setEscapeHandler first-refusal: ESC opens/closes this, the
 //     console (~) and SHIFT+ESC keep working through the shell untouched.
 //     While the menu or settings screen is up the HOST FREEZES ITS SIM (the
