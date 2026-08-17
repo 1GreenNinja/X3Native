@@ -759,7 +759,7 @@ int dispatchTests(const TestFlags& tf) {
     }
     if (tf.testTunnelDrive) {
         x3::logInfo("running TUNNEL DRIVE-THROUGH self-test (real rig through the demo "
-                    "bore; earth-ramp NEGATIVE CONTROL with X3_TUNNEL_PORTAL_CUT=0)...");
+                    "bore; field-level NEGATIVE CONTROL: the natural hill must bury the road)...");
         return x3::game::runTunnelDriveSelfTest() ? 0 : 1;
     }
     if (tf.testTunnelMouth) {

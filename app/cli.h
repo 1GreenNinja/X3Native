@@ -35,8 +35,9 @@ struct CliOptions {
          // depression — the freeway-tunnel primitive. See app/terrain.h.
          testTerrainCorridor = false,
          // --test-tunneldrive: DRIVE-THROUGH acceptance for the tunnel demo —
-         // the real rig must exit the far portal; negative-controlled against
-         // X3_TUNNEL_PORTAL_CUT=0. See app/tunnel_corridor.h.
+         // the real rig must exit the far portal; negative-controlled at the
+         // FIELD level (the natural hillside must bury the roadway). See
+         // app/tunnel_corridor.h.
          testTunnelDrive = false,
          // --test-tunnelmouth: the TUNNEL-MOUTH gate. Asserts no ground ever
          // stands on the roadway (the defect fix/tunnel-mouth closed), that
