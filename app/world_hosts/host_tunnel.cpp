@@ -1567,6 +1567,7 @@ int hostTunnel(HostContext& hc) {
     x3::game::EngineNote engineNote;
     bool bankReady = false;
     x3::audio::SoundHandle whineSnd{}, turboSnd{};   // dedicated whistle assets (bank mode)
+    x3::audio::SoundHandle bovSnd{};                 // the blow-off PSSSHT (one-shot)
     x3::audio::LoopHandle  whineBankLoop{}, turboBankLoop{};
     if (audioOn) {
         const std::string wav =
@@ -1585,6 +1586,10 @@ int hostTunnel(HostContext& hc) {
         // synthesized whistles; missing files just silence the layers.
         whineSnd = audio->load((std::filesystem::path(bankDir) / "whine_loop.wav").string());
         turboSnd = audio->load((std::filesystem::path(bankDir) / "turbo_whistle_loop.wav").string());
+        // THE BLOW-OFF VALVE. Its own asset, because the thing this replaces
+        // was the ENGINE LOOP fired as a one-shot at 4.2x pitch — see the lift
+        // handler below for what that sounded like.
+        bovSnd = audio->load((std::filesystem::path(bankDir) / "bov_psssht.wav").string());
         if (engineSnd.valid() && carBuilt) {
             float ep[3]; car.chassisPos(ep);
             (void)ep;
@@ -3638,8 +3643,28 @@ int hostTunnel(HostContext& hc) {
             const float spoolLag = 0.45f;   // == TurboParams::spoolTau
             if (thr > 0.6f) turboSpool = std::min(1.0f, turboSpool + fdt / spoolLag);
             else            turboSpool = std::max(0.0f, turboSpool - fdt * 2.5f);
-            if (prevSpool > 0.55f && thr < 0.2f) {
-                audio->playSound2D(engineSnd, 0.45f, 4.2f);   // blowoff psshh
+            // ---- BLOW-OFF VALVE: the PSSSHT ------------------------------
+            // Owner, 2026-08-17: "when you let off the gas, you hear that awful
+            // loud sound" and "we need turbo blow off valve noises... PSSSSHT
+            // ... people like those".
+            //
+            // Both sentences are the same line of code. This used to be
+            //     audio->playSound2D(engineSnd, 0.45f, 4.2f);   // blowoff psshh
+            // — the ENGINE LOOP, a 1.2 s wav, fired as a one-shot at 0.45 gain
+            // and 4.2x pitch on every lift with boost. A placeholder that was
+            // never replaced, and it is not a psshh at any pitch: it is the
+            // engine, screeching. Now it is a real dedicated sample.
+            //
+            // SCALED BY WHAT ACTUALLY DUMPED. A BOV is a slug of compressed air
+            // leaving the plenum, so a lift off 3 psi and a lift off full boost
+            // are not the same event: gain and pitch both ride prevSpool, which
+            // is how much was in there when the throttle shut. A big dump is
+            // louder AND lower (more air, longer to empty) — that difference is
+            // most of why people like the sound.
+            if (prevSpool > 0.42f && thr < 0.2f) {
+                const float dump = std::min(1.0f, (prevSpool - 0.42f) / 0.58f);
+                if (bovSnd.valid())
+                    audio->playSound2D(bovSnd, 0.30f + 0.45f * dump, 1.12f - 0.22f * dump);
                 turboSpool = 0.0f;
             }
             prevSpool = turboSpool;

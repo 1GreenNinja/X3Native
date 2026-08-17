@@ -6,6 +6,114 @@
   },
   "assets": [
     {
+      "repo_path": "assets/audio/vehicles/engine_bank/bov_psssht.wav",
+      "sha256": "fdc24cd3ea9a01ae8378acd05a86f9c1f3c8d39ae677824dacaab31eb29334f2",
+      "size": 65324,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/engine_noise_bed.wav",
+      "sha256": "30ad7425c2a54d334ea57a438049a3d08c1aa888cce650801d14a92910c11406",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_0900.wav",
+      "sha256": "e622538139e02047461dbdcbca2c4a2cd573a7a8550bec58b926262ac9906843",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_1500.wav",
+      "sha256": "655003ac7f7db7f90eebb72db6071c3e8fcbd4369f44d734b95e2aa5b33bafad",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_2500.wav",
+      "sha256": "20e07176845d79ff3abbde519a4ba4bff6e70e7f3ddd8640fecc2e9674b03ad6",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_4000.wav",
+      "sha256": "a8ffc6f9ed947c652d8826f75b73b54061326744d3377b9d29acd91ee35d5f9c",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_5500.wav",
+      "sha256": "b961284ae97bcc0f2b029ae569198beb790b29053806b389a9a3521bce31f42d",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_7000.wav",
+      "sha256": "13064b4c3e73dea87c7602c7540f30d0ff5e2171c6d7782f52388aef8392eb95",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_0900.wav",
+      "sha256": "4db327d2c973283931cdaff28ebf11cf03740a5e9a32b4c7a55d859a2604c7d4",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_1500.wav",
+      "sha256": "500f43edcb08ee6781ed21b8b50244908240083e1e81d68e4b342b75f3da5441",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_2500.wav",
+      "sha256": "9cfd97343956d816e26b65ddd700714c1c35f05fa9f9b652d25e1d33a9c54c00",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_4000.wav",
+      "sha256": "999cf89e9b26909f48cfe2cbdc7a9e56a03411123011f9f8a0b86c7da75ab707",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_5500.wav",
+      "sha256": "5f2d5d928cacd6700a46bc6d93c6fd1dbbd437006b22d224546914f146509416",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_7000.wav",
+      "sha256": "827f4808430e0c34c8fbfa10d3cc927ba4b717453b013c3137d3ecb06baeb198",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/src/extracted_high_24hz.wav",
+      "sha256": "7774c275861e4ba4d791c7506d6a9060e47cea7749cb8b9c096e4f4deed2848e",
+      "size": 268844,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/src/extracted_idle_18hz.wav",
+      "sha256": "8560bc7d2710fafaccb11fe1c22aea1115983006b6ae9043dc7bc16c010cda20",
+      "size": 268844,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/turbo_whistle_loop.wav",
+      "sha256": "311a59761816ec1dd9bf8a3ace86b2dde8890c651af8267b4a0f67c7b9a2269a",
+      "size": 192044,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/whine_loop.wav",
+      "sha256": "c8b0d5647fbbec699c72e18442df7eadd76f9bf5862706376a152ecf1057ebe4",
+      "size": 192044,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
       "repo_path": "assets/audio/weather/thunder_crack.wav",
       "sha256": "e48bd6f5f917989a09973638493e4e86fc060d46af63e50ab98813287c086f3d",
       "size": 561424,
@@ -667,15 +775,15 @@
     },
     {
       "repo_path": "assets/converted_glb/nature/OakBigTree01.glb",
-      "sha256": "285e72ff6d163ff1b5eae2567c1ea9c3bf8323930c107c70edff2b5de6a02ecb",
-      "size": 11761208,
-      "source_note": "billboard far-LOD cards textured: real pack atlases (BigOakBillboard01/PoplarTree001_Billboard), oak alpha keyed by border flood fill"
+      "sha256": "615db24c47a9c6a18bd3998f37cb826d9337963cec14fcd29998fa5c9a4cd0cf",
+      "size": 9692928,
+      "source_note": "post-merge: their rebaked Jake root fix + W-TREES bark/leaf art"
     },
     {
       "repo_path": "assets/converted_glb/nature/PoplarTree001.glb",
-      "sha256": "0326d2d5e32d7b70214c064b3999c21c525886f1a5886165c2c3d7824668fa30",
-      "size": 22345944,
-      "source_note": "billboard far-LOD cards textured: real pack atlases (BigOakBillboard01/PoplarTree001_Billboard), oak alpha keyed by border flood fill"
+      "sha256": "88a6800847003eb6824f062bac8ede5e8b9ee8b0aae478e302f6c9341de19762",
+      "size": 17726072,
+      "source_note": "post-merge: their rebaked Jake root fix + W-TREES bark/leaf art"
     },
     {
       "repo_path": "assets/converted_glb/rifthub/gate_ring.glb",
@@ -817,9 +925,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/Jake_44_actions.glb",
-      "sha256": "d35f90a6729743aee06e1904f9cde349c6cc6689621ff8c5edfbd6c796815602",
-      "size": 27610080,
-      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
+      "sha256": "ada324675ae59543c976a0422d3128db81364cc13aabcc8ba35380aa620683b2",
+      "size": 27610124,
+      "source_note": "post-merge: their rebaked Jake root fix + W-TREES bark/leaf art"
     },
     {
       "repo_path": "assets/rigged_glb/OH1.glb",
