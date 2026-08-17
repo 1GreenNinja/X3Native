@@ -347,6 +347,9 @@ public:
     // ---- Spawn bookkeeping (the self-test asserts these) ------------------
     // The room the sidearm pickup was placed in (Jake's Cell). kNoRoom if unbuilt.
     uint32_t pickupRoom() const { return m_pickupRoom; }
+    // The world position the sidearm pickup was actually placed at (after the
+    // clearance probe — see canonPickupSpotClear). Zero if unbuilt.
+    x3::phys::Vec3 pickupPos() const { return m_pickupPos; }
     // The room Martinez spawned in (the Boss Arena). kNoRoom if absent.
     uint32_t bossRoom() const { return m_bossRoom; }
     // Count of room-tagged hostile spawns (every Main-Hall / cell / attacker spawn).
@@ -492,6 +495,7 @@ private:
     void wakeNearbySpawns(const x3::phys::Vec3& eye);
 
     uint32_t m_pickupRoom    = kNoRoom;
+    x3::phys::Vec3 m_pickupPos{};   // probed sidearm position (pickupPos())
     uint32_t m_bossRoom      = kNoRoom;
     uint32_t m_taggedHostiles = 0;
     bool     m_martinezSpawned = false;
@@ -510,6 +514,14 @@ private:
 // tagged); enemiesRemaining() counts them all; and the per-girl dialog table has DISTINCT
 // lines per girl across the 4 states. Logs PASS/FAIL P#, returns true iff all pass. No
 // window / Vulkan. Skips cleanly (PASS) if the canonical JSON is absent on this machine.
+// Is `p` a legal ITEM-PICKUP spot? Lateral clearance from Static geometry on 8
+// compass rays (>= 0.45 m — a pickup half-buried in a doorway jamb reads as a
+// bug, Tim playtest 2026-08-16) AND a real floor within (kPickupUp + 0.35) m
+// below (a pickup with no floor under it is floating over a hole). Pure probe —
+// used by CanonPlay::build to choose the sidearm's spot and by --test-canonplay
+// to assert the chosen spot stays legal as the dressing evolves.
+bool canonPickupSpotClear(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& p);
+
 bool runCanonPlaySelfTest();
 
 // --test-goldenpath (W5-3): the ENDGAME SPINE check — the critical path from the cell
