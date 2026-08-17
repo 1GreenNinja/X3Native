@@ -2326,7 +2326,8 @@ int hostTunnel(HostContext& hc) {
         const bool trafficOn = ringOn && !(e && e[0] == '0');
         if (trafficOn &&
             traffic.build(ringSpec, ringRoadY, device, phys.get(),
-                          x3::game::convertedGlbRoot(), x3::game::TrafficConfig{})) {
+                          x3::game::convertedGlbRoot(), x3::game::TrafficConfig{},
+                          audioOn ? audio.get() : nullptr)) {
             // The ONE global contact callback (nothing else in this host uses
             // it; the canon world's monster facade has its own world). A hard
             // hit converts the struck car to a dynamic body — the work-zone
@@ -2539,7 +2540,17 @@ int hostTunnel(HostContext& hc) {
                 riverLife.prePhysics(dt);
                 // TRAFFIC IN CAPTURES TOO (gotcha 4.1b's lesson: moving
                 // content that only ticks in the live loop is invisible in
-                // every proof shot). Focus = the capture camera.
+                // every proof shot). Focus = the capture camera, and the
+                // camera IS the "player" the radar sign reads — X3_RADAR_MPH
+                // lets a still pose a speed the parked capture camera cannot
+                // actually be doing (the same lever pattern as X3_TRAFFIC_NEAR).
+                {
+                    static const float kShotMph = []() {
+                        const char* e = std::getenv("X3_RADAR_MPH");
+                        return e ? (float)std::atof(e) : 0.0f;
+                    }();
+                    traffic.setPlayer(cam, kShotMph * 0.44704f);
+                }
                 traffic.update(dt, cam, phys.get());
                 if (shotTick) shotTick(dt);   // staged swimmer BEFORE the step
                 phys->step(dt);
@@ -5739,6 +5750,14 @@ int hostTunnel(HostContext& hc) {
                 const x3::phys::Vec3 ff = onFoot.feet();
                 tfoc[0] = ff.x; tfoc[1] = ff.y; tfoc[2] = ff.z;
             }
+            // THE RADAR SIGN reads the PLAYER's speed, so it needs the number
+            // the speedo shows — the car's own forward speed while driving,
+            // zero on foot. PAIRED with the HUD's mph readout below
+            // (`car.forwardSpeed() * 2.23694f`): both are the same fact, and a
+            // sign that disagreed with the speedo would be the boost-gauge
+            // defect all over again (NO_SLOP rule 4).
+            traffic.setPlayer(tfoc, (driving && carBuilt)
+                                        ? std::fabs(car.forwardSpeed()) : 0.0f);
             traffic.update(fdt, tfoc, phys.get());
         }
         phys->step(fdt);
@@ -5998,18 +6017,35 @@ int hostTunnel(HostContext& hc) {
         // other half of the "lit in headless capture, black when driven" bug.
         { const float cp[3] = { cx, cy, cz };
           // Muzzle-flash / grenade-boom pulses ride the same single upload
-          // (a second setPointLights call would overwrite the pool). W-NIGHT
-          // adds three more extra lanes onto the same merge: the CAMPFIRES,
-          // the car's HEADLIGHTS (auto-on with the dark — the sun sets ten
-          // minutes into any drive, and a night road without them is
-          // unplayable), and the nearest TOWN practicals (Town::setNight was
-          // built with per-frame re-upload in mind; the boot-time single
-          // setPointLights this world used to rely on is overwritten right
-          // here every frame — the town's lamps were dead in the live loop).
-          x3::rhi::PointLight ex[40];
-          uint32_t en = weaponLights(fdt, ex);
-          en += campfires.lights(ex + en, 8, cp);
-          if (carBuilt && nightK > 0.25f && en + kHeadlightCount <= 40) {
+          // (a second setPointLights call would overwrite the pool). FIVE
+          // extra lanes now ride the same merge, and they all exist for the
+          // same reason a muzzle flash does — transient, near the subject,
+          // and they must survive even when the bore pool alone would fill
+          // the budget: WEAPONS, the CAMPFIRES, the car's HEADLIGHTS
+          // (auto-on with the dark — the sun sets ten minutes into any drive
+          // and a night road without them is unplayable), the nearest TOWN
+          // practicals (Town::setNight was built for per-frame re-upload;
+          // the boot-time single setPointLights this world used to rely on
+          // is overwritten right here every frame, so the town's lamps were
+          // dead in the live loop), and the TRAFFIC lights — cop bars, tow
+          // beacons, breakdown hazards, the radar sign's panel wash.
+          // A vector, not a fixed array: FreewayTraffic::lights() is already
+          // bounded (kMaxTrafficLights) and sorted nearest-first, but the sum
+          // of five sources is not, and silently truncating the town at 40
+          // was how the lamps went missing the first time.
+          static std::vector<x3::rhi::PointLight> xl;
+          xl.clear();
+          {
+              x3::rhi::PointLight wl[2];
+              const uint32_t wn = weaponLights(fdt, wl);
+              for (uint32_t i = 0; i < wn; ++i) xl.push_back(wl[i]);
+          }
+          {
+              x3::rhi::PointLight fl[8];
+              const uint32_t fn = campfires.lights(fl, 8, cp);
+              for (uint32_t i = 0; i < fn; ++i) xl.push_back(fl[i]);
+          }
+          if (carBuilt && nightK > 0.25f) {
               float cq[4]; phys->getBodyRotation(car.chassis(), cq);
               float cfw[3], cup[3];
               x3::game::vehcam::hullAxes(cq, cfw, cup);
@@ -6018,8 +6054,14 @@ int hostTunnel(HostContext& hc) {
                                      cfw[2]*cup[0] - cfw[0]*cup[2],
                                      cfw[0]*cup[1] - cfw[1]*cup[0] };
               const float hk = std::min(1.0f, (nightK - 0.25f) / 0.35f); // ease in with dusk
+              x3::rhi::PointLight hl[kHeadlightCount];
               // ONE producer with the capture path (top of file).
-              en += carHeadlights(cp0, cfw, rgt, hk, ex + en);
+              const uint32_t hn = carHeadlights(cp0, cfw, rgt, hk, hl);
+              for (uint32_t i = 0; i < hn; ++i) xl.push_back(hl[i]);
+          }
+          {   // The traffic's own transients (bounded + nearest-first already).
+              const auto& tfl = traffic.lights();
+              xl.insert(xl.end(), tfl.begin(), tfl.end());
           }
           if (townOn && nightK > 0.05f) {
               // Nearest town practicals (lamps + lit windows), budgeted.
@@ -6031,15 +6073,15 @@ int hostTunnel(HostContext& hc) {
                   const float d2 = dx * dx + dz * dz;
                   if (d2 < 500.0f * 500.0f) ts.push_back({ d2, i });
               }
-              const uint32_t want = std::min<uint32_t>((uint32_t)ts.size(), 40u - en);
-              const uint32_t kTown = std::min<uint32_t>(want, 14u);
+              const uint32_t kTown = std::min<uint32_t>((uint32_t)ts.size(), 14u);
               if (kTown > 0) {
                   std::partial_sort(ts.begin(), ts.begin() + kTown, ts.end(),
                                     [](const Scored& a, const Scored& b) { return a.d2 < b.d2; });
-                  for (uint32_t i = 0; i < kTown; ++i) ex[en++] = tl[ts[i].i];
+                  for (uint32_t i = 0; i < kTown; ++i) xl.push_back(tl[ts[i].i]);
               }
           }
-          x3::game::uploadTunnelLights(*device, cp, en ? ex : nullptr, en); }
+          x3::game::uploadTunnelLights(*device, cp, xl.empty() ? nullptr : xl.data(),
+                                       (uint32_t)xl.size()); }
         // SPEED FOV. Physical speed alone does not read as fast on a screen —
         // the frame has to widen and the periphery has to rush. 72 deg parked ->
         // 88 flat out, eased so it swells under acceleration instead of snapping.

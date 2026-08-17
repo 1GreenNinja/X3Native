@@ -666,6 +666,12 @@
       "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
     },
     {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/LightBar.glb",
+      "sha256": "ab860bb27445fe6baa5d239b688bc80e81f24a458fa3a4ce0658ed1a8b8b417f",
+      "size": 237660,
+      "source_note": "RCC v4 Model_Police_Siren -> convert_lightbar_glb.py + glb_zero_root_nodes.py (1.3775x0.0979x0.2485 m)"
+    },
+    {
       "repo_path": "assets/converted_glb/Vehicles/Traffic/OldVan.glb",
       "sha256": "40f15ddf6cacf6cb804133b4c3be35191854995d57ea9165f6858b31899c31f9",
       "size": 3149000,
