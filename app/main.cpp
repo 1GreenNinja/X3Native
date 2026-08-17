@@ -414,6 +414,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testMission = o.testMission;
         _tf.testDestruction = o.testDestruction;
         _tf.testDebris = o.testDebris;
+        _tf.testGibs = o.testGibs;
         _tf.testGpuSkin = o.testGpuSkin;
         _tf.testMeshlet = o.testMeshlet;
         _tf.testGpuCull = o.testGpuCull;

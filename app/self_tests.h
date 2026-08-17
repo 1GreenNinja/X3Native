@@ -10,6 +10,7 @@
 //   runGpuCullSelfTest      --test-gpucull     (headless device, GPU cull equiv)
 //   runVisUnifySelfTest     --test-visunify    (headless device, vis policy + TLAS)
 //   runDebrisSelfTest       --test-debris      (headless device, GPU debris)
+//   runGibsSelfTest         --test-gibs        (headless device, gib shard meshes)
 //   runGpuSkinSelfTest      --test-gpuskin     (headless device, compute skin)
 //   runHatchChainSelfTest   --test-hatch       (real world + Lua + bindings)
 // ===========================================================================
@@ -20,6 +21,7 @@ bool runFrustumCullSelfTest();
 bool runGpuCullSelfTest();
 bool runVisUnifySelfTest();
 bool runDebrisSelfTest();
+bool runGibsSelfTest();
 bool runGpuSkinSelfTest();
 bool runHatchChainSelfTest();
 

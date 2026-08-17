@@ -347,6 +347,10 @@ struct CliOptions {
     // --test-debris (K-T2 GPU-compute debris): spawn a burst, step the compute sim
     // through the live headless device, assert fall+settle+expiry+no-leak. Additive.
     bool        testDebris = false;
+    // --test-gibs (gib shard meshes, fix/gib-meshes): spawn a monster-kill-sized gib
+    // burst on the live headless device, assert >1 distinct shard mesh in the burst,
+    // none below the floor after settling, and a bounded oldest-recycled pool. Additive.
+    bool        testGibs = false;
     // --test-gpuskin (GPU SKINNING OF MODELS): register a skinned mesh on the live
     // headless device, set a known palette, run the compute skinning pass, read back
     // the skinned output, and assert it matches a CPU LBS reference. Additive.
