@@ -4,6 +4,7 @@
 // IVehicleController). Clean-room.
 
 #include "vehicle.h"
+#include "terrain.h"   // THE CONTACT LAW: wheels never under the height field
 
 #include "engine/core/x3_log.h"
 
@@ -599,7 +600,34 @@ void DriveDemo::updateEngineModel(float dt) {
     m_engineRpm += (target - m_engineRpm) * (1.0f - std::exp(-dt / tau));
     if (m_engineRpm < kIdle) m_engineRpm = kIdle;
 }
-void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); updateTireSquash(dt); }
+void DriveDemo::postStep(float dt) {
+    if (m_ctl) m_ctl->postStep(dt);
+    updateTireSquash(dt);
+    // ---- THE CONTACT LAW (NO_SLOP.md rule 11): "no tires, and no Boots and
+    // no feet can EVER be underground." Enforced HERE, once, for every world
+    // that drives this car. If any wheel's contact point sits beyond-
+    // suspension-deep below the carved terrain field, the car is lifted back
+    // onto it and its downward velocity cleared. Corridors carve the field
+    // itself, so bores/underpasses are safe — the law only ever pushes UP.
+    if (m_ctl && m_physics && m_chassis.valid()) {
+        float worst = 0.0f;
+        for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i) {
+            x3::phys::WheelState ws;
+            if (!m_ctl->wheelState(i, ws)) continue;
+            const float wx = ws.worldTransform[12], wy = ws.worldTransform[13],
+                        wz = ws.worldTransform[14];
+            const float burial = x3::game::terrainHeightAtWorld(wx, wz) - (wy - ws.radius);
+            if (burial > worst) worst = burial;
+        }
+        if (worst > 0.55f) {
+            x3::phys::Vec3 cp = m_physics->getBodyPosition(m_chassis);
+            cp.y += worst + 0.10f;
+            m_physics->setBodyPosition(m_chassis, cp);
+            float lv[3]; m_physics->getBodyLinearVelocity(m_chassis, lv);
+            if (lv[1] < 0.0f) { lv[1] = 0.0f; m_physics->setBodyLinearVelocity(m_chassis, lv); }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // TIRE SQUASH (render-only). Owner: "when Landing hard on pavement, the
