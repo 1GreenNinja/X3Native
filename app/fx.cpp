@@ -60,9 +60,26 @@ void CombatFx::init(x3::rhi::IRenderDevice& device) {
                               geo.index.data(), (uint32_t)geo.index.size());
     for (auto& t : m_tracers) t.life = 0.0f;
     for (auto& a : m_arcs) a.life = 0.0f;
+    for (auto& l : m_licks) l.life = 0.0f;
     m_muzzleFlash = 0.0f;
     m_nextTracer = 0;
     m_nextArc = 0;
+    m_nextLick = 0;
+}
+
+// ---------------------------------------------------------------------------
+// spawnFlameLick: claim a ring slot for one velocity-stretched fire tongue.
+// Bounded (kMaxFlameLicks; oldest recycled). See the fx.h note: licks exist
+// because the camera-facing particle billboards can only be CIRCLES, and a
+// cone of circles reads as puffs — Tim: "fire should be flames not puffs".
+// ---------------------------------------------------------------------------
+void CombatFx::spawnFlameLick(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel,
+                              float len, float width, float bright, float life) {
+    FlameLick& l = m_licks[m_nextLick];
+    m_nextLick = (m_nextLick + 1) % kMaxFlameLicks;
+    l.pos = pos; l.vel = vel;
+    l.len = len; l.width = width; l.bright = bright;
+    l.life = l.maxLife = life;
 }
 
 void CombatFx::shutdown(x3::rhi::IRenderDevice& device) {
@@ -212,6 +229,19 @@ void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3&
         flash.r = st.flashR; flash.g = st.flashG; flash.b = st.flashB;
         flash.a0 = 1.0f; flash.additive = true;
         spawnParticle(flash);
+    }
+    // FLAME ignition: short FAT licks leaving the nozzle every shot, so the fire
+    // body is connected to the gun from its first centimetre (with the stream's
+    // own licks overlapping just ahead, the cone reads as ONE tongue, not beads).
+    if (kind == WeaponFxKind::Flame) {
+        for (int i = 0; i < 3; ++i) {
+            const x3::phys::Vec3 lv{ d.x * (3.2f + frand() * 1.4f) + frandSym() * 0.5f,
+                                     d.y * (3.2f + frand() * 1.4f) + 0.3f + frandSym() * 0.4f,
+                                     d.z * (3.2f + frand() * 1.4f) + frandSym() * 0.5f };
+            spawnFlameLick(x3::phys::Vec3{ pos.x + d.x * 0.15f, pos.y + d.y * 0.15f,
+                                           pos.z + d.z * 0.15f },
+                           lv, 0.40f + frand() * 0.15f, 0.12f, 1.6f, 0.10f + frand() * 0.05f);
+        }
     }
 }
 
@@ -395,11 +425,20 @@ void CombatFx::spawnArcs(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal
 // reads as a continuous glowing bolt with a fading tail. Rocket additionally
 // puffs a little alpha smoke so the exhaust lingers.
 // ---------------------------------------------------------------------------
-void CombatFx::boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, WeaponFxKind kind) {
+void CombatFx::boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, WeaponFxKind kind,
+                      float streamPhase) {
     x3::phys::Vec3 v = normalize(vel);
     // Per-kind bolt look — now a queryable table row (fx.h boltStyleFor) so the
     // flame/frost params are testable headlessly instead of literals in a switch.
     const BoltStyle st = boltStyleFor(kind);
+    // FIRE reads as FLAMES, not puffs (Tim iteration): the connected body comes
+    // from VELOCITY-STRETCHED licks, so the round soft core underneath shrinks to
+    // a volume-filler instead of being the silhouette.
+    // (Second cut: the soft round core stays FULL size — head-on down the stream
+    // axis every velocity-stretched lick is end-on and nearly vanishes, so the
+    // cores are what fill the center of the FP view; the licks carry the shape
+    // from every other angle.)
+    const bool  flame    = (kind == WeaponFxKind::Flame);
     const float coreSize = st.coreSize;
     // Hot core at the bolt position (near-static: it just marks where the bolt is
     // THIS frame; a short life so a despawned bolt's cores fade instantly). FIRE
@@ -416,8 +455,9 @@ void CombatFx::boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, Weap
         p.gravity = 0.0f; p.drag = 0.0f; p.additive = true;
         spawnParticle(p);
     }
-    // Trail speck a little behind (fading tail).
-    {
+    // Trail speck a little behind (fading tail). FLAME skips it — the stretched
+    // licks ARE the trail; a second bead chain would re-introduce the puff read.
+    if (!flame) {
         Particle p;
         p.pos = x3::phys::Vec3{ pos.x - v.x * coreSize * 2.0f,
                                 pos.y - v.y * coreSize * 2.0f,
@@ -430,6 +470,50 @@ void CombatFx::boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, Weap
         p.a0 = 0.8f;
         p.gravity = 0.0f; p.drag = 0.0f; p.additive = true;
         spawnParticle(p);
+    }
+    // FIRE: a large, DIM volume-filler core — the connective tissue between the
+    // licks. Same trick that made the ground pool read as burning ground rather
+    // than fireflies: sharp elements carry the silhouette, a soft wide low-alpha
+    // body fills the gaps so no individual element reads as its own puff. Kept
+    // dim on purpose (VALUE, NOT LUMENS) — it must never become the silhouette.
+    if (flame) {
+        Particle p;
+        p.pos = pos;
+        p.vel = x3::phys::Vec3{ 0.0f, st.rise * 0.6f, 0.0f };
+        p.life = p.maxLife = st.life * 1.15f;
+        p.size0 = coreSize * 2.3f;
+        p.size1 = coreSize * 3.4f;                 // spreads into its neighbours
+        p.r = 1.5f; p.g = 0.52f; p.b = 0.10f;      // dim ember-orange wash
+        p.r1 = 0.6f; p.g1 = 0.12f; p.b1 = 0.02f;   // cools to deep red
+        p.a0 = 0.30f;
+        p.gravity = 0.0f; p.drag = 1.0f; p.additive = true;
+        spawnParticle(p);
+    }
+    // FIRE: velocity-stretched LICKS — the connected flame body. RATE-based
+    // (kFlameLickRate * dt, probabilistic carry) so 60 Hz and 165 Hz lay the same
+    // ~0.43 m lick spacing (< lick length -> overlapped into one tongue).
+    // streamPhase shapes the cone: near the NOZZLE (0) fat/bright/tight — one
+    // connected body across the first ~40% of range; at the TAIL (1) narrower,
+    // dimmer, laterally jittered so the fire breaks into separate curling licks.
+    if (flame) {
+        const float t = (streamPhase >= 0.0f) ? streamPhase : 0.35f;
+        const float expect = kFlameLickRate * m_lastDt;
+        int n = (int)expect;
+        if (frand() < expect - (float)n) ++n;
+        for (int i = 0; i < n; ++i) {
+            const float jit = 0.2f + 1.0f * t;        // turbulence grows down-stream
+            const x3::phys::Vec3 lv{ v.x * 1.6f + frandSym() * jit,
+                                     v.y * 1.6f + 0.5f + frand() * 0.8f + frandSym() * jit * 0.5f,
+                                     v.z * 1.6f + frandSym() * jit };
+            spawnFlameLick(x3::phys::Vec3{ pos.x + frandSym() * 0.05f,
+                                           pos.y + frandSym() * 0.05f,
+                                           pos.z + frandSym() * 0.05f },
+                           lv,
+                           0.45f + frand() * 0.30f,            // length (m)
+                           0.10f - 0.045f * t,                 // fat at the nozzle, thin at the tail
+                           1.4f - 0.8f * t,                    // bright at the nozzle
+                           0.13f + frand() * 0.08f + 0.05f * t); // tail licks linger a touch
+        }
     }
     // FIRE: an occasional hot ember popping off the puff (~1 in 4 frames) — the
     // ragged edge that separates a flame from a glowing bolt.
@@ -666,20 +750,43 @@ void CombatFx::firePoolFx(const x3::phys::Vec3& center, float radius, float dt) 
         p.gravity = 0.0f; p.drag = 0.5f; p.additive = true;
         spawnParticle(p);
     }
-    // (1) FLAMES: the emissive read — HDR orange cores that cool to red, grow and
-    // rise. ~42/s on the 3 m pool keeps ~24 alive at any instant (life ~0.6 s).
-    const int nFlame = emitCount(42.0f * area);
+    // (1) FLAME TONGUES: velocity-stretched LICKS rising off the ground ("flames
+    // not puffs" — same fix as the stream: the round particle billboards can't
+    // make an elongated tongue). ~22/s on the 3 m pool at ~0.6 s life keeps ~13
+    // licks standing at any instant, curling upward via the lick buoyancy.
+    const int nLick = emitCount(30.0f * area);
+    for (int i = 0; i < nLick; ++i) {
+        x3::phys::Vec3 lp = discPoint();
+        lp.y += 0.10f;
+        // A clumped PAIR per point: a lone sliver reads as a blade; two lobes
+        // rising off one base read as a flame tongue.
+        for (int k = 0; k < 2; ++k) {
+            const x3::phys::Vec3 lv{ frandSym() * 0.50f,
+                                     0.9f + frand() * 0.9f,
+                                     frandSym() * 0.50f };
+            spawnFlameLick(x3::phys::Vec3{ lp.x + frandSym() * 0.06f, lp.y,
+                                           lp.z + frandSym() * 0.06f },
+                           lv,
+                           0.40f + frand() * 0.35f,     // tongue length
+                           0.075f + frand() * 0.04f,    // width (sharp thread; bloom fuses)
+                           1.15f + frand() * 0.35f,     // brightness (VALUE, NOT LUMENS)
+                           0.40f + frand() * 0.30f);    // life (flicker variance)
+        }
+    }
+    // (1b) soft flame cores under the tongues — reduced to a volume-filler now
+    // that the licks carry the silhouette (was 42/s when they WERE the read).
+    const int nFlame = emitCount(34.0f * area);
     for (int i = 0; i < nFlame; ++i) {
         Particle p;
         p.pos = discPoint();
         p.pos.y += 0.05f;
         p.vel = x3::phys::Vec3{ frandSym() * 0.35f, 0.7f + frand() * 1.1f, frandSym() * 0.35f };
         p.life = p.maxLife = 0.40f + frand() * 0.35f;
-        p.size0 = 0.16f + frand() * 0.10f;
-        p.size1 = p.size0 * (1.7f + frand() * 0.5f);        // the tongue spreads as it climbs
+        p.size0 = 0.17f + frand() * 0.09f;
+        p.size1 = p.size0 * (1.7f + frand() * 0.5f);        // spreads as it climbs
         p.r = 4.5f; p.g = 1.7f; p.b = 0.35f;                // hot orange (HDR -> bloom)
         p.r1 = 1.8f; p.g1 = 0.25f; p.b1 = 0.06f;            // cools to deep red at the tip
-        p.a0 = 1.0f;
+        p.a0 = 0.75f;                                       // soft bed, not discrete balls
         p.gravity = -0.06f; p.drag = 1.2f; p.additive = true;
         spawnParticle(p);
     }
@@ -932,12 +1039,19 @@ int CombatFx::liveParticleCount() const {
     return n;
 }
 
+int CombatFx::liveFlameLickCount() const {
+    int n = 0;
+    for (const auto& l : m_licks) if (l.life > 0.0f) ++n;
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 // update: decay tracer lifetimes + the muzzle flash, integrate the particle pool
 // (semi-implicit Euler with gravity + drag), and age the decals.
 // ---------------------------------------------------------------------------
 void CombatFx::update(float dt) {
     if (dt <= 0.0f) return;
+    m_lastDt = dt;   // boltFx's rate-based lick emission reads the frame dt here
     for (auto& t : m_tracers) {
         if (t.life > 0.0f) {
             t.life -= dt;
@@ -955,6 +1069,20 @@ void CombatFx::update(float dt) {
     }
     for (auto& a : m_arcs) {
         if (a.life > 0.0f) { a.life -= dt; if (a.life < 0.0f) a.life = 0.0f; }
+    }
+    // Flame licks: drift + BUOYANCY (fire curls upward as it ages — the rising
+    // stretch axis is what bends the tongue tips up) + light damping. dt-scaled.
+    for (auto& l : m_licks) {
+        if (l.life <= 0.0f) continue;
+        const float damp = 1.0f - 1.5f * dt;
+        const float k = (damp < 0.0f) ? 0.0f : damp;
+        l.vel.x *= k; l.vel.y *= k; l.vel.z *= k;
+        l.vel.y += 3.0f * dt;                      // buoyant rise
+        l.pos.x += l.vel.x * dt;
+        l.pos.y += l.vel.y * dt;
+        l.pos.z += l.vel.z * dt;
+        l.life -= dt;
+        if (l.life < 0.0f) l.life = 0.0f;
     }
 
     // Particle integration. World gravity is -Y 9.81 (CONVENTIONS §1).
@@ -1412,6 +1540,64 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
         const uint32_t bucket = (uint32_t)((a.maxLife - a.life) / 0.03f);   // ~33 re-rolls/s
         drawLightningBolt(device, frame, a.base, tip, eyePos,
                           kLightningCoreThick * 0.5f, a.seed ^ bucket, 0.85f * k);
+    }
+
+    // ---- FLAME LICKS: velocity-stretched emissive fire tongues. --------------
+    // Each live lick is a camera-facing ribbon whose LONG axis runs along its
+    // velocity (forward down the stream, curling upward with age via buoyancy) —
+    // the elongated shape the round particle billboards cannot make. HDR emissive
+    // (drawMeshEmissive, black base) so bloom fuses overlapping licks into ONE
+    // connected flame body; color ramps hot orange -> deep red as the lick dies
+    // (the cooling read Tim confirmed), width tapers with age.
+    for (const auto& l : m_licks) {
+        if (l.life <= 0.0f) continue;
+        const float t = (l.maxLife > 0.0f) ? 1.0f - l.life / l.maxLife : 1.0f;  // age 0->1
+        x3::phys::Vec3 dir = l.vel;
+        float vlen = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+        if (vlen < 1e-4f) dir = x3::phys::Vec3{ 0.0f, 1.0f, 0.0f };
+        else dir = x3::phys::Vec3{ dir.x / vlen, dir.y / vlen, dir.z / vlen };
+        const float half = l.len * 0.5f;
+        const x3::phys::Vec3 a{ l.pos.x - dir.x * half, l.pos.y - dir.y * half,
+                                l.pos.z - dir.z * half };
+        const x3::phys::Vec3 b{ l.pos.x + dir.x * half, l.pos.y + dir.y * half,
+                                l.pos.z + dir.z * half };
+        // Camera-facing width axis (same construction as the tracer ribbon).
+        x3::phys::Vec3 view{ l.pos.x - eyeX, l.pos.y - eyeY, l.pos.z - eyeZ };
+        const float vl = std::sqrt(view.x * view.x + view.y * view.y + view.z * view.z);
+        if (vl > 1e-4f) view = x3::phys::Vec3{ view.x / vl, view.y / vl, view.z / vl };
+        x3::phys::Vec3 w = cross(dir, view);
+        const float wl = std::sqrt(w.x * w.x + w.y * w.y + w.z * w.z);
+        if (wl < 1e-3f) {
+            const x3::phys::Vec3 ref = (std::fabs(dir.y) < 0.99f)
+                ? x3::phys::Vec3{ 0, 1, 0 } : x3::phys::Vec3{ 1, 0, 0 };
+            w = normalize(cross(ref, dir));
+        } else {
+            w = x3::phys::Vec3{ w.x / wl, w.y / wl, w.z / wl };
+        }
+        const x3::phys::Vec3 nrm = cross(dir, w);          // right-handed (KNOWN_BUGS R3)
+        const float width = l.width * (1.0f - 0.40f * t);  // narrows as it dies
+        const float blackBase[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        // Hot orange young -> deep red old; intensity fades with age. VALUE, NOT
+        // LUMENS (docs/DECISIONS.md, re-learned on the first cut of this ribbon):
+        // wide bright slabs clip to flat yellow planks — the flame look is a
+        // SHARP, MODEST ribbon whose halo comes from bloom.
+        const float fade = 1.0f - t;
+        const float emis[4]    = { 2.4f - 1.4f * t,
+                                   0.85f - 0.73f * t,
+                                   0.12f - 0.095f * t,
+                                   l.bright * (0.35f + 0.65f * fade) };
+        // TWO segments, TAPERED: base half at full width, tip half narrowed +
+        // dimmed — a constant-width rectangle reads as a plank; flames taper.
+        const x3::phys::Vec3 mB{ (a.x * 3.0f + b.x) * 0.25f, (a.y * 3.0f + b.y) * 0.25f,
+                                 (a.z * 3.0f + b.z) * 0.25f };  // base-quarter center
+        const x3::phys::Vec3 mT{ (a.x + b.x * 3.0f) * 0.25f, (a.y + b.y * 3.0f) * 0.25f,
+                                 (a.z + b.z * 3.0f) * 0.25f };  // tip-quarter center
+        float model[16];
+        composeTRS3(model, w, nrm, dir, width, width * 0.10f, l.len * 0.5f, mB);
+        device.drawMeshEmissive(frame, m_box, x3::rhi::TextureHandle{}, blackBase, emis, model);
+        const float emisTip[4] = { emis[0], emis[1], emis[2], emis[3] * 0.7f };
+        composeTRS3(model, w, nrm, dir, width * 0.45f, width * 0.10f, l.len * 0.5f, mT);
+        device.drawMeshEmissive(frame, m_box, x3::rhi::TextureHandle{}, blackBase, emisTip, model);
     }
 
     // ---- Muzzle flash: a brief bright box at the muzzle. ----
