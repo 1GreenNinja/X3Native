@@ -226,6 +226,55 @@ def compose_boost():
     return img.resize((bez.size[0] // SS, bez.size[1] // SS), Image.LANCZOS)
 
 
+
+
+# ---------------------------------------------------------------------------
+# NOS ARC — solid luminescent curved bar (Tim: "Curving bar like NFS had 20
+# years ago... not beads. solid luminescent bars"). A 32-state fill atlas:
+# frame i shows the arc filled to i/31, lit portion a hot electric-blue core
+# with a soft baked glow, unlit portion a dim husk. The host picks the frame
+# by tank level — the needle-atlas pattern, applied to a fill.
+# ---------------------------------------------------------------------------
+NOS_FRAMES  = 32
+NOS_ATLAS_N = 8            # 8x4 grid
+NOS_CELL    = 256
+NOS_A0, NOS_A1 = 210.0, 130.0    # degrees, left shoulder sweep (matches host)
+NOS_R_FRAC  = 0.86         # arc radius as fraction of half-cell
+NOS_W_FRAC  = 0.10         # bar thickness
+
+
+def compose_nos_atlas():
+    n_cols, n_rows = NOS_ATLAS_N, NOS_FRAMES // NOS_ATLAS_N
+    atlas = Image.new("RGBA", (NOS_ATLAS_N * NOS_CELL, n_rows * NOS_CELL), (0, 0, 0, 0))
+    SSN = 4
+    cell_ss = NOS_CELL * SSN
+    c = cell_ss / 2.0
+    rArc = c * NOS_R_FRAC
+    half_w = c * NOS_W_FRAC * 0.5
+    for fi in range(NOS_FRAMES):
+        fill = fi / (NOS_FRAMES - 1)
+        im = Image.new("RGBA", (cell_ss, cell_ss), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        # Painted as many short, overlapping thick arc segments via PIL's arc
+        # with wide pen: husk first, then the lit span, then glow passes.
+        def arc(a_from, a_to, width, col):
+            bb = [c - rArc, c - rArc, c + rArc, c + rArc]
+            # PIL arcs go clockwise from 3 o'clock, y-down: convert.
+            d.arc(bb, start=-a_from, end=-a_to, fill=col, width=int(width))
+        # husk (whole sweep, dim)
+        arc(NOS_A0, NOS_A1, half_w * 2.0, (26, 34, 48, 200))
+        if fill > 0.001:
+            a_fill = NOS_A0 + (NOS_A1 - NOS_A0) * fill
+            # glow: widening, fading blue passes under the core
+            for gw, ga in ((4.4, 40), (3.2, 70), (2.2, 110)):
+                arc(NOS_A0, a_fill, half_w * gw, (60, 160, 255, ga))
+            # core: hot, solid
+            arc(NOS_A0, a_fill, half_w * 2.0, (120, 210, 255, 255))
+            arc(NOS_A0, a_fill, half_w * 1.1, (215, 245, 255, 255))
+        im = im.resize((NOS_CELL, NOS_CELL), Image.LANCZOS)
+        atlas.paste(im, ((fi % NOS_ATLAS_N) * NOS_CELL, (fi // NOS_ATLAS_N) * NOS_CELL))
+    return atlas
+
 def needle_atlas():
     cell_ss = (NEEDLE_PX // ATLAS_N) * SS
     atlas = Image.new("RGBA", (NEEDLE_PX, NEEDLE_PX), (0, 0, 0, 0))
@@ -287,6 +336,10 @@ def main():
     p2 = os.path.join(UI_DIR, "gauge_needle.png")
     na.save(p2)
     print("wrote", p2, na.size)
+    nos = compose_nos_atlas()
+    p4 = os.path.join(UI_DIR, "gauge_nos.png")
+    nos.save(p4)
+    print("wrote", p4, nos.size)
 
 
 if __name__ == "__main__":
