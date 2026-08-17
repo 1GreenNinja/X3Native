@@ -58,7 +58,18 @@ static float wrapAngle(float a) {
 //
 // NOT wired (measured but rejected): Walk_Turn_Left/Right are TRAVELLING
 // turns from the cm-scale batch with a ~1.4 m baked Z offset — not in-place
-// turns. Combat clips (rifle/grenade/block) wait for the weapons task.
+// turns.
+//
+// COMBAT LAYER (the weapons task) — durations read from the GLB itself:
+//   Rifleaimingidle     7   3.04 s loop — rifle at the shoulder, ready
+//   Firingrifle         0   0.25 s one-shot — retriggered at the fire rate
+//   Reloading           6   3.29 s one-shot — PAIRED VALUE: host_tunnel's
+//                           tunnelRifleRoster() reloadTime carries the same
+//                           number so the mag refills when the hands finish
+//   Tossgrenade        19   2.96 s one-shot — release at ~1.15 s (host reads
+//                           oneShotTime(); verified against the toss captures)
+//   Riflerun            9   0.71 s loop — armed run (swapped into the blend)
+//   Riflejump           8   0.58 s one-shot — armed jump
 // ---------------------------------------------------------------------------
 CharacterClipTable jakeClipTable() {
     CharacterClipTable t;
@@ -76,6 +87,12 @@ CharacterClipTable jakeClipTable() {
     t.idleVariant = "Idle_11";          t.idleVariantEvery = 20.0f;
     t.swim        = "Swim";
     t.swimIdle    = "SwimIdle";
+    t.rifleIdle   = "Rifleaimingidle";
+    t.rifleFire   = "Firingrifle";
+    t.rifleReload = "Reloading";
+    t.rifleGrenade= "Tossgrenade";
+    t.rifleRun    = "Riflerun";
+    t.rifleJump   = "Riflejump";
     return t;
 }
 
@@ -155,6 +172,7 @@ bool AnimatedCharacter::load(x3::rhi::IRenderDevice& device,
         int run  = resolve(table.run);
         if (idle < 0) idle = m_skin.findClip({ "idle" });
         if (idle < 0) idle = 0;
+        m_idle = idle; m_walk = walk; m_run = run;   // kept for setArmed()
         m_jump     = resolve(table.jump);
         m_walkBack = resolve(table.walkBack);
         m_runBack  = resolve(table.runBack);
@@ -166,6 +184,12 @@ bool AnimatedCharacter::load(x3::rhi::IRenderDevice& device,
         m_idleVar  = resolve(table.idleVariant);
         m_swim     = resolve(table.swim);
         m_swimIdle = resolve(table.swimIdle);
+        m_rifleIdle    = resolve(table.rifleIdle);
+        m_rifleFire    = resolve(table.rifleFire);
+        m_rifleReload  = resolve(table.rifleReload);
+        m_rifleGrenade = resolve(table.rifleGrenade);
+        m_rifleRun     = resolve(table.rifleRun);
+        m_rifleJump    = resolve(table.rifleJump);
         m_skin.setLocomotionClips(idle, walk, run, table.walkSpeed, table.runSpeed);
         m_skin.setLocomotionSpeed(0.0f);
         m_skin.applyLocomotion(m_model, device, 0.0f);
@@ -178,6 +202,11 @@ bool AnimatedCharacter::load(x3::rhi::IRenderDevice& device,
             m_strafeL, m_strafeR, m_turnL, m_turnR, m_fall, m_idleVar,
             m_swim, m_swimIdle);
         x3::logInfo(b);
+        std::snprintf(b, sizeof(b),
+            "[char] %s combat: rifleIdle=%d fire=%d reload=%d grenade=%d "
+            "rifleRun=%d rifleJump=%d", file.c_str(), m_rifleIdle, m_rifleFire,
+            m_rifleReload, m_rifleGrenade, m_rifleRun, m_rifleJump);
+        x3::logInfo(b);
     } else {
         x3::logInfo("[char] " + file + " not skinnable — static draw");
     }
@@ -185,14 +214,59 @@ bool AnimatedCharacter::load(x3::rhi::IRenderDevice& device,
 }
 
 // ---------------------------------------------------------------------------
-// One-shot layer (punch/kick/reload/… — inputs wired by later tasks).
+// One-shot layer (punch/kick/fire/reload/grenade). `restart` lets rapid fire
+// rewind its own clip at the weapon's fire rate instead of being refused.
 // ---------------------------------------------------------------------------
-bool AnimatedCharacter::playOneShot(const char* exactName) {
-    if (!m_animated || m_userT >= 0.0f) return false;
+bool AnimatedCharacter::playOneShot(const char* exactName, bool restart) {
+    if (!m_animated) return false;
+    if (m_userT >= 0.0f && !restart) return false;
     const int c = resolve(exactName);
     if (c < 0) return false;
     m_userClip = c;
     m_userT = 0.0f;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// WEAPON layer: armed swaps the locomotion RUN clip for the rifle run (the
+// same registration path load() used, so the blend machinery is untouched)
+// and update() selects the rifle-ready idle + the rifle jump.
+// ---------------------------------------------------------------------------
+void AnimatedCharacter::setArmed(bool armed) {
+    if (armed == m_armed) return;
+    m_armed = armed;
+    if (!armed) m_aiming = false;
+    if (!m_animated) return;
+    const int run = (armed && m_rifleRun >= 0) ? m_rifleRun : m_run;
+    m_skin.setLocomotionClips(m_idle, m_walk, run,
+                              m_table.walkSpeed, m_table.runSpeed);
+}
+
+// ---------------------------------------------------------------------------
+// Named-bone world transform: the SAME draw matrix draw() composes (feet at
+// the capsule, yaw about +Y) times the Skinner's model-space bone global —
+// the weapon hand socket (mirrors ThirdPersonView::handSocketWorld).
+// ---------------------------------------------------------------------------
+bool AnimatedCharacter::boneWorld(const char* boneName, const Player& player,
+                                  float yawTrimRad, float yTrim, float out[16]) {
+    if (!m_animated || !boneName || !out) return false;
+    if (m_boneNode < 0 || m_boneName != boneName) {
+        m_boneName = boneName;
+        m_boneNode = m_skin.resolveNodeByName(m_model, boneName);
+        if (m_boneNode < 0) return false;
+    }
+    float bone[16];
+    if (!m_skin.boneGlobal((uint32_t)m_boneNode, bone)) return false;
+    const x3::phys::Vec3 ft = player.feet();
+    const float a  = m_yaw + yawTrimRad;
+    const float ca = std::cos(a), sa = std::sin(a);
+    const float world[16] = {
+         ca, 0.0f, -sa, 0.0f,
+       0.0f, 1.0f, 0.0f, 0.0f,
+         sa, 0.0f,  ca, 0.0f,
+       ft.x, ft.y + yTrim, ft.z, 1.0f
+    };
+    x3::asset::mulMat4(world, bone, out);
     return true;
 }
 
@@ -278,7 +352,14 @@ void AnimatedCharacter::update(Player& player, const Intent& in, float camYaw,
         rate = planar / (right ? m_table.strafeRightSpeed : m_table.strafeLeftSpeed);
         faceTarget = camFace;                    // strafe faces the camera
     } else if (moving) {
-        faceTarget = yawFromDir(vx, vz);         // face the travel, not the camera
+        // Face the travel, not the camera — EXCEPT while aiming: the gun is
+        // slaved to the crosshair, so the body follows the camera (fine-aim).
+        faceTarget = (m_armed && m_aiming) ? camFace : yawFromDir(vx, vz);
+    } else if (m_armed && m_rifleIdle >= 0) {
+        // Armed + stationary: rifle at the ready (the aim loop doubles as the
+        // armed idle). Aiming keeps the body slaved to the camera.
+        sel = m_rifleIdle;
+        if (m_aiming) faceTarget = camFace;
     } else {
         // Stationary. Turn-in-place when the camera has swung away, else the
         // occasional idle variation on top of the locomotion idle.
@@ -337,7 +418,11 @@ void AnimatedCharacter::update(Player& player, const Intent& in, float camYaw,
     }
 
     // ---- 4) Apply. One-shots override, locomotion blend is the fallback.
-    if (in.jumpPressed && m_jump >= 0 && m_jumpT < 0.0f) m_jumpT = 0.0f;
+    // Armed jump takes the rifle-jump clip (hands stay on the gun).
+    if (in.jumpPressed && m_jump >= 0 && m_jumpT < 0.0f) {
+        m_jumpClip = (m_armed && m_rifleJump >= 0) ? m_rifleJump : m_jump;
+        m_jumpT = 0.0f;
+    }
 
     if (m_userT >= 0.0f) {                                   // playOneShot layer
         m_userT += dt;
@@ -346,8 +431,8 @@ void AnimatedCharacter::update(Player& player, const Intent& in, float camYaw,
     }
     if (m_jumpT >= 0.0f) {                                   // jump one-shot
         m_jumpT += dt;
-        if (m_jumpT >= m_skin.clipDuration((uint32_t)m_jump)) m_jumpT = -1.0f;
-        else { applyExclusive(device, m_jump, m_jumpT); return; }
+        if (m_jumpT >= m_skin.clipDuration((uint32_t)m_jumpClip)) m_jumpT = -1.0f;
+        else { applyExclusive(device, m_jumpClip, m_jumpT); return; }
     }
     if (sel >= 0) {                                          // directional loop
         if (sel != m_moveClip) { m_moveClip = sel; m_moveT = 0.0f; }
