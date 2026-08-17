@@ -2202,14 +2202,23 @@ int hostTunnel(HostContext& hc) {
             {
                 const bool wantNos = kd(GLFW_KEY_LEFT_SHIFT) && in.throttle > 0.1f;
                 nosActive = wantNos && nosTank > 0.02f;
+                static bool nosWasActive = false;
                 if (nosActive) {
                     float cq[4]; phys->getBodyRotation(car.chassis(), cq);
                     float fwd[3], up[3];
                     x3::game::vehcam::hullAxes(cq, fwd, up);
+                    // THE HIT: the instant the bottle lights, one hard kick —
+                    // +2.4 m/s in a frame. That is the seat-slam.
+                    if (!nosWasActive)
+                        phys->applyImpulse(car.chassis(),
+                            x3::phys::Vec3{ fwd[0] * 2600.0f, 0.0f, fwd[2] * 2600.0f });
+                    // THE SHOVE: +1.1 g sustained while spraying (was 0.49 —
+                    // "This nitrous doesnt" slam; now it does).
                     phys->applyImpulse(car.chassis(),
-                        x3::phys::Vec3{ fwd[0] * 5200.0f * fdt, 0.0f,
-                                        fwd[2] * 5200.0f * fdt });
+                        x3::phys::Vec3{ fwd[0] * 12000.0f * fdt, 0.0f,
+                                        fwd[2] * 12000.0f * fdt });
                 }
+                nosWasActive = nosActive;
                 nosTank += nosActive ? -fdt / 15.0f : fdt / 20.0f;   // 15 s bottle (Tim), ~20 s recharge
                 nosTank = std::min(1.0f, std::max(0.0f, nosTank));
             }
@@ -2514,7 +2523,13 @@ int hostTunnel(HostContext& hc) {
         {
             const float sp   = carBuilt ? std::fabs(car.forwardSpeed()) : 0.0f;
             const float t    = std::min(1.0f, sp / 55.0f);       // ~123 mph = full
-            const float want = 72.0f + 16.0f * t * t;            // eased, not linear
+            float want = 72.0f + 16.0f * t * t;                   // eased, not linear
+            // NOS FOV PUNCH: the world stretches away while the bottle sprays
+            // — fast in (12/s), lazy out (3/s), +10 degrees on top of speed.
+            static float nosFov = 0.0f;
+            nosFov += ((nosActive ? 10.0f : 0.0f) - nosFov)
+                    * std::min(1.0f, fdt * (nosActive ? 12.0f : 3.0f));
+            want += nosFov;
             static float fovNow = 72.0f;
             fovNow += (want - fovNow) * std::min(1.0f, fdt * 3.0f);   // smooth
             // ON FOOT the camera IS the player's eye, not a chase rig pulled back
