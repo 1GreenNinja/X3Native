@@ -1467,6 +1467,16 @@ public:
                               const float /*rgba*/[4],
                               float /*u0*/ = 0.0f, float /*v0*/ = 0.0f,
                               float /*u1*/ = 1.0f, float /*v1*/ = 1.0f) {}
+    // drawHudImageQuad: drawHudImage generalized to an arbitrary convex quad —
+    // xyPx = 4 corners in PIXELS, order TL,TR,BR,BL of the SOURCE image (they
+    // carry uv (0,0),(1,0),(1,1),(0,1) respectively), so a rotated map view can
+    // draw its baked tile rotated instead of smearing it into an axis-aligned
+    // rect (W-MAP v3 Q/E rotation — the receipt is shots_wmap/06b pre-fix:
+    // terrain a vertical band while the route overlays rotated correctly).
+    // Same pixel space / blending / ordering as drawHudImage; non-pure no-op
+    // default for the headless stub, same as drawHudImage.
+    virtual void drawHudImageQuad(const FrameContext&, TextureHandle /*tex*/,
+                                  const float /*xyPx*/[8], const float /*rgba*/[4]) {}
     // textAdvance: the TRUE rendered pixel width `text` occupies for `role` at glyph
     // size `px` — sums per-glyph advances (proportional) or N*cell (mono). The UI
     // layer's textWidth() reads this so centering/right-alignment is pixel-exact.

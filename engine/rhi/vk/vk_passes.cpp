@@ -1597,6 +1597,27 @@ void VulkanRenderDevice::drawHudImage(const FrameContext& fc, TextureHandle tex,
         flushHud(verts, 6, /*texFont=*/-1, /*userTex=*/tex.id);
     }
 
+void VulkanRenderDevice::drawHudImageQuad(const FrameContext& fc, TextureHandle tex,
+                  const float xyPx[8], const float rgba[4]) {
+        if (!fc.valid || !m_hudPipeline || !tex.valid() || !xyPx) return;
+        const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
+                             rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
+        const float fw = (float)std::max(1u, m_extent.width);
+        const float fh = (float)std::max(1u, m_extent.height);
+        auto vert = [&](float px, float py, float u, float v) {
+            return HudVertex{ { (px / fw) * 2.0f - 1.0f, (py / fh) * 2.0f - 1.0f },
+                              { u, v }, { c[0], c[1], c[2], c[3] } };
+        };
+        // Corner order TL,TR,BR,BL of the source image (uv fixed per corner);
+        // same two-triangle split as emitQuad: tl->bl->br, tl->br->tr.
+        const HudVertex tl = vert(xyPx[0], xyPx[1], 0.0f, 0.0f);
+        const HudVertex tr = vert(xyPx[2], xyPx[3], 1.0f, 0.0f);
+        const HudVertex br = vert(xyPx[4], xyPx[5], 1.0f, 1.0f);
+        const HudVertex bl = vert(xyPx[6], xyPx[7], 0.0f, 1.0f);
+        HudVertex verts[6] = { tl, bl, br, tl, br, tr };
+        flushHud(verts, 6, /*texFont=*/-1, /*userTex=*/tex.id);
+    }
+
 void VulkanRenderDevice::drawHudText(const FrameContext& fc, const char* text, float xPx,
                  float yPx, float pxPerGlyph, const float rgba[4]) {
         drawHudTextF(fc, x3::rhi::FontRole::Console, text, xPx, yPx, pxPerGlyph, rgba);
