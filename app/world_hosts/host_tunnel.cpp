@@ -936,6 +936,12 @@ int hostTunnel(HostContext& hc) {
         } else if (w == "bore") {
             float p[3]; route.posAt(std::max(8.0f, route.boreS0 - 40.0f), p);
             startPos[0] = p[0]; startPos[2] = p[2]; moved = true;
+        } else if (w == "interchange" && interOn) {
+            // On the crossroad, one ramp-landing out, facing the overpass —
+            // the streamer centres here, so captures and drives both work.
+            startPos[0] = interchange.cx + interchange.cX * 240.0f;
+            startPos[2] = interchange.cz + interchange.cZ * 240.0f;
+            moved = true;
         }
         if (moved) {
             startPos[1] = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]) + 1.0f;
@@ -945,7 +951,7 @@ int hostTunnel(HostContext& hc) {
             x3::logInfo(sb);
         } else {
             x3::logWarn(std::string("--world tunnel: X3_SPAWN=") + w +
-                        " not available (want lot|spur|bore) — default spawn");
+                        " not available (want lot|spur|bore|interchange) — default spawn");
         }
     }
 
