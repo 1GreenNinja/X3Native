@@ -147,12 +147,22 @@ public:
         // -10..+40 with red from 30) — the earlier defect was never the 35,
         // it was 35 psi of model under 20 psi of dial.
         float maxPsi        = 35.0f;   // peak manifold pressure over atmosphere
-        float spoolStartRpm = 1800.0f; // nothing below this
+        // SHORTER SPOOL (2026-08-16, "MORE acceleration"): 1800/0.45 was nearly
+        // half a second of nothing at WOT — the single cheapest place the car
+        // was throwing away launch. 1500/0.30 keeps the turbo CHARACTER (you
+        // still feel it arrive) but the shove lands while the launch is still
+        // happening instead of after it. Peak power unchanged — this is timing
+        // only. Live: `turbo_start` / `turbo_spool` (help text carries these
+        // numbers — NO_SLOP rule 4, change together).
+        float spoolStartRpm = 1500.0f; // nothing below this
         float spoolFullRpm  = 4200.0f; // full compressor above this
-        float spoolTau      = 0.45f;   // seconds to build (compressor inertia)
+        float spoolTau      = 0.30f;   // seconds to build (compressor inertia)
         float dumpTau       = 0.11f;   // seconds to bleed off (wastegate/BOV)
         float vacuumPsi     = 8.5f;    // depth of vacuum at a closed throttle
-        float floorTorque   = 0.85f;   // off-boost torque fraction — high so the launch still pulls
+        // floorTorque REMOVED 2026-08-16: the pressure-ratio model (updateTurbo)
+        // derives off-boost torque from absolute manifold pressure — the old
+        // ad-hoc floor had been dead for a while and its `turbo_floor` cvar was
+        // a knob wired to nothing (NO_SLOP rule 6: a dead flag is a lie).
     };
     TurboParams&       turbo()       { return m_turbo; }
     const TurboParams& turbo() const { return m_turbo; }
@@ -163,6 +173,34 @@ public:
     float boostPsi() const { return m_boostPsi; }
     // Multiplier the turbo is currently applying to engine torque.
     float turboMult() const { return m_turboMult; }
+
+    // ---- NFS STEERING: speed-sensitive map + fast slew (2026-08-16) ---------
+    // The raw input is digital (A/D = instant -1/0/+1) and used to hit the
+    // wheels UNFILTERED at the full 30-deg lock: fine at parking speed, a
+    // spin/twitch machine at 100 mph — one reason the car "doesn't like to
+    // turn" (you couldn't hold a big steer input at speed, so you stopped
+    // asking). The shaping runs in preStep (dt-scaled — the HARD rule):
+    //   1) SPEED MAP: available lock is 100% at/below fullLockMph, tapering
+    //      linearly to hiFrac at/above hiSpeedMph. Full angle for hairpins,
+    //      tight precise angles at speed — instant turn-in without twitch.
+    //   2) SLEW: the shaped target is rate-limited at slewPerSec full-lock
+    //      units/s. 7/s = lock-to-lock in ~0.3 s: FAST (arcade), but the two
+    //      or three frames of ramp keep a tap from being a step function, and
+    //      countersteer still lands near-instantly.
+    // All four knobs live: car_steer_lo / car_steer_hi / car_steer_min /
+    // car_steer_rate (host_tunnel.cpp — help text carries these defaults,
+    // NO_SLOP rule 4: change together).
+    struct SteerParams {
+        float fullLockMph = 25.0f;  // at/below this speed: 100% of max lock
+        float hiSpeedMph  = 95.0f;  // at/above this speed: hiFrac of max lock
+        float hiFrac      = 0.34f;  // lock fraction remaining at high speed
+        float slewPerSec  = 7.0f;   // steer slew, full-lock units per second
+    };
+    SteerParams&       steerParams()       { return m_steerP; }
+    const SteerParams& steerParams() const { return m_steerP; }
+    // The shaped steering actually being sent to the wheels this step [-1,1]
+    // (post speed-map, post slew). HUD / self-test telemetry.
+    float steerNow() const { return m_steerNow; }
 
     // ---- Per-instance paint tint (WORLD CARS variants) ----------------------
     // Replaces the CLEARCOAT drawables' baseColor RGB (the car-paint panels;
@@ -201,7 +239,10 @@ private:
     float m_hx = 1.07f, m_hy = 0.5f, m_hz = 1.95f;
 
     x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD)
+    x3::phys::VehicleInput m_effIn;      // post-TC input (preStep shapes steer on this)
     float m_effThrottle = 0.0f;          // post-TC throttle (engine audio load)
+    SteerParams m_steerP;                // speed-sensitive steering map (see steerParams)
+    float m_steerNow = 0.0f;             // slewed steering actually at the wheels
     bool m_tcEnabled = false;            // TC off — grip 10 hooks up and the box shifts; T toggles
     bool m_tcCutting = false;            // TC hysteresis latch — stays cut until slip falls (see setInput)
     float m_tcTrim = 1.0f;               // smoothed TC trim (one-pole, see setInput)
@@ -209,6 +250,7 @@ private:
 
     void  updateTurbo(float dt);         // called from preStep
     void  updateEngineModel(float dt);   // called from preStep
+    void  shapeSteering(float dt);       // called from preStep (speed map + slew)
     TurboParams m_turbo;
     bool  m_turboOn         = true;
     float m_boostPsi        = 0.0f;      // manifold pressure (negative = vacuum)

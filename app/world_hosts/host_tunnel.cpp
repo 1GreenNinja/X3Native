@@ -1512,8 +1512,51 @@ int hostTunnel(HostContext& hc) {
             [&](float v) { x3::phys::WheeledTuning t; t.maxEngineTorque = v * 1.35582f; car.applyTuning(t); });
         shell.addFloatCommand("car_redline", "engine redline, rpm (stock 7500)",
             [&](float v) { x3::phys::WheeledTuning t; t.maxEngineRPM = v; car.applyTuning(t); });
-        shell.addFloatCommand("car_grip", "tyre grip multiplier (stock 5.2; 1 = Jolt's economy tyre)",
+        // GRIP knobs are MULTIPLIERS over the authored stock compound (1 =
+        // stock; vehicle.cpp buildPhysics owns the stock numbers: longitudinal
+        // 10 all wheels, lateral 1.70 front / 1.60 rear). Semantics + help
+        // fixed 2026-08-16: the old help said "1 = Jolt's economy tyre" while
+        // the code composed on top of the compound — `car_grip 5.2` silently
+        // meant 52x the economy tyre.
+        shell.addFloatCommand("car_grip", "tyre grip multiplier, all wheels (1 = stock compound)",
             [&](float v) { x3::phys::WheeledTuning t; t.gripScale = v; car.applyTuning(t); });
+        // NFS TURN-IN BALANCE (see buildPhysics in vehicle.cpp): front > rear =
+        // nose bites on turn-in, rear breaks away first (progressive slide);
+        // rear > front = stability/understeer. Dial the split live.
+        shell.addFloatCommand("car_gripf", "FRONT axle grip multiplier (1 = stock; raise for sharper turn-in)",
+            [&](float v) { x3::phys::WheeledTuning t; t.gripScaleFront = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_gripr", "REAR axle grip multiplier (1 = stock; lower for looser tail)",
+            [&](float v) { x3::phys::WheeledTuning t; t.gripScaleRear = v; car.applyTuning(t); });
+        // CORNERING MASTER DIAL: lateral-only grip. CEILING: the ~2.7 g
+        // rollover threshold (see the CoM comment in vehicle.cpp buildPhysics)
+        // — stock lateral peaks ~1.9 g; ~1.4 here puts cornering AT the tip
+        // threshold and beyond it the inside wheels lift.
+        shell.addFloatCommand("car_latgrip", "cornering grip multiplier, lateral only (1 = stock ~1.9 g; >1.4 risks tip-up)",
+            [&](float v) { x3::phys::WheeledTuning t; t.latGripScale = v; car.applyTuning(t); });
+        // Lateral breakaway shape: multiplies the high-slip end of the lateral
+        // friction curve. Stock Jolt shape keeps 83% of peak grip in a slide.
+        shell.addFloatCommand("car_lattail", "slide grip vs peak: 1 = stock shape, >1 more catchable, <1 more drifty",
+            [&](float v) { x3::phys::WheeledTuning t; t.latTail = v; car.applyTuning(t); });
+        // ANTI-ROLL BARS (N/m): the corners-FLAT hardware. Stock 8000 front /
+        // 6000 rear (vehicle.cpp buildPhysics — paired numbers). Stiffer
+        // front = more push/stability, stiffer rear = livelier rotation.
+        // HARD CEILING ~12000: above it the 60 Hz solver pumps the roll mode
+        // and the car flips (measured; see WheeledVehicleDesc::antiRollFront).
+        shell.addFloatCommand("car_arb_f", "front anti-roll bar N/m (stock 8000; KEEP UNDER 12000 or the solver flips the car)",
+            [&](float v) { x3::phys::WheeledTuning t; t.antiRollFront = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_arb_r", "rear anti-roll bar N/m (stock 6000; KEEP UNDER 12000 or the solver flips the car)",
+            [&](float v) { x3::phys::WheeledTuning t; t.antiRollRear = v; car.applyTuning(t); });
+        shell.addFloatCommand("car_final", "final-drive ratio (stock 4.6; 4.2 trades punch for ~168 mph top)",
+            [&](float v) { x3::phys::WheeledTuning t; t.finalDrive = v; car.applyTuning(t); });
+        // ---- speed-sensitive steering (see DriveDemo::SteerParams) ----
+        shell.addFloatCommand("car_steer_lo", "mph at/below which you get 100% steering lock (stock 25)",
+            [&](float v) { car.steerParams().fullLockMph = v; });
+        shell.addFloatCommand("car_steer_hi", "mph at/above which lock is fully tightened (stock 95)",
+            [&](float v) { car.steerParams().hiSpeedMph = v; });
+        shell.addFloatCommand("car_steer_min", "fraction of full lock left at high speed, 0-1 (stock 0.34)",
+            [&](float v) { car.steerParams().hiFrac = v; });
+        shell.addFloatCommand("car_steer_rate", "steering slew, full-locks per second (stock 7; big = twitchier)",
+            [&](float v) { car.steerParams().slewPerSec = v; });
         shell.addFloatCommand("car_mass", "chassis mass, kg (stock 1300)",
             [&](float v) { x3::phys::WheeledTuning t; t.massKg = v; car.applyTuning(t); });
         shell.addFloatCommand("car_brake", "brake torque, Nm, all wheels",
@@ -1538,18 +1581,22 @@ int hostTunnel(HostContext& hc) {
         shell.addToggleCommand("turbo", "turbo on/off (off = the curve with no lag, naturally aspirated)",
             [&]{ return car.turboEnabled(); },
             [&](bool on) { car.setTurboEnabled(on); });
-        shell.addFloatCommand("turbo_max", "peak boost, psi (stock 16)",
+        // Help-text numbers below are PAIRED with TurboParams' defaults in
+        // vehicle.h (NO_SLOP rule 4) — the old block said "stock 16 psi" under
+        // a 35 psi model and "stock 0.45/1800" after the spool retune.
+        shell.addFloatCommand("turbo_max", "peak boost, psi (stock 35)",
             [&](float v) { car.turbo().maxPsi = v; });
-        shell.addFloatCommand("turbo_spool", "seconds for the compressor to come up (stock 0.45)",
+        shell.addFloatCommand("turbo_spool", "seconds for the compressor to come up (stock 0.30)",
             [&](float v) { car.turbo().spoolTau = v; });
         shell.addFloatCommand("turbo_dump", "seconds to bleed off on a lift (stock 0.11)",
             [&](float v) { car.turbo().dumpTau = v; });
-        shell.addFloatCommand("turbo_start", "rpm where the compressor starts to make pressure (stock 1800)",
+        shell.addFloatCommand("turbo_start", "rpm where the compressor starts to make pressure (stock 1500)",
             [&](float v) { car.turbo().spoolStartRpm = v; });
         shell.addFloatCommand("turbo_full", "rpm for full boost (stock 4200)",
             [&](float v) { car.turbo().spoolFullRpm = v; });
-        shell.addFloatCommand("turbo_floor", "torque fraction with no boost at all (stock 0.60)",
-            [&](float v) { car.turbo().floorTorque = v; });
+        // turbo_floor REMOVED 2026-08-16: the pressure-ratio model derives the
+        // off-boost floor from absolute manifold pressure; the cvar was wired
+        // to a field nothing read (NO_SLOP rule 6 — a dead knob is a lie).
         shell.addFloatCommand("turbo_vacuum", "vacuum depth at a closed throttle, psi (stock 8.5)",
             [&](float v) { car.turbo().vacuumPsi = v; });
         shell.addToggleCommand("car_tc", "traction control (also bound to T)",
@@ -1569,11 +1616,19 @@ int hostTunnel(HostContext& hc) {
             [&](bool on) { car.setTorqueBoost(on ? 1.07f : 1.0f); });
         con->registerCommand("car_reset", [&](const std::vector<std::string>&) {
             car.setTorqueBoost(1.0f);
+            // These ARE the buildPhysics numbers in vehicle.cpp (NO_SLOP rule
+            // 4: paired — change both). The old reset was a time capsule from
+            // two retunes ago: 2400 Nm (the shipped car is 800 + turbo) and
+            // gripScale 5.2 under the broken compose-on-top semantics.
             x3::phys::WheeledTuning t;
-            t.maxEngineTorque = 2400.0f; t.maxEngineRPM = 7500.0f;
-            t.gripScale = 5.2f; t.massKg = 1300.0f;
+            t.maxEngineTorque = 800.0f; t.maxEngineRPM = 7500.0f;
+            t.gripScale = 1.0f; t.latGripScale = 1.0f; t.latTail = 1.0f;
+            t.massKg = 1083.2f; t.finalDrive = 4.6f;
+            t.antiRollFront = 8000.0f; t.antiRollRear = 6000.0f;
             car.applyTuning(t);
-            con->print("car back to the shipped 993 Turbo numbers");
+            car.steerParams() = x3::game::DriveDemo::SteerParams{};
+            car.turbo() = x3::game::DriveDemo::TurboParams{};
+            con->print("car back to the shipped 992 Turbo S numbers (800 Nm, stock grip, 4.6 final)");
         }, "restore the stock vehicle tune");
         con->registerCommand("car", [&](const std::vector<std::string>&) {
             char b[256];
