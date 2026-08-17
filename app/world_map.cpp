@@ -28,6 +28,7 @@ void MapCamera::jumpTo(float wx, float wz, float s) {
     s = std::clamp(s, minScale, maxScale);
     cx = tCx = wx; cz = tCz = wz;
     scale = tScale = s;
+    rot = tRot = 0.0f;      // open the map north-up; Q/E starts fresh each time
     anchorActive = false;
 }
 
@@ -59,6 +60,8 @@ void MapCamera::panWorld(float dxM, float dzM) {
     anchorActive = false;
 }
 
+void MapCamera::rotateBy(float dRad) { tRot += dRad; }
+
 void MapCamera::update(float dt) {
     if (dt <= 0.0f) return;
     // Scale lerps in LOG space (each octave of zoom takes equal time — no
@@ -67,6 +70,22 @@ void MapCamera::update(float dt) {
     const float ls = std::log(scale), lt = std::log(tScale);
     scale = std::exp(ls + (lt - ls) * az);
     if (std::fabs(std::log(tScale) - std::log(scale)) < 1e-4f) scale = tScale;
+
+    // Rotation lerps the SHORTEST way around the circle (wrap the delta into
+    // (-pi, pi] before easing) — without this, spinning past +-180 deg snaps
+    // backward the long way around.
+    {
+        constexpr float kPi = 3.14159265358979323846f, kTau = 2.0f * kPi;
+        float dr = std::fmod(tRot - rot, kTau);
+        if (dr > kPi) dr -= kTau; else if (dr < -kPi) dr += kTau;
+        const float ar = 1.0f - std::exp(-kRotLerpRate * dt);
+        rot += dr * ar;
+        if (std::fabs(dr) < 1e-4f) rot = tRot;
+        // Keep both in a bounded range so they don't drift to huge magnitudes
+        // over a long session of held Q/E.
+        rot  = std::fmod(rot,  kTau); if (rot  <= -kPi) rot  += kTau; else if (rot  > kPi) rot  -= kTau;
+        tRot = std::fmod(tRot, kTau); if (tRot <= -kPi) tRot += kTau; else if (tRot > kPi) tRot -= kTau;
+    }
 
     if (anchorActive) {
         // Hold the anchored world point exactly under the anchor pixel through
@@ -87,13 +106,31 @@ void MapCamera::update(float dt) {
 }
 
 void MapCamera::worldToPx(float wx, float wz, float& pxX, float& pxY) const {
-    pxX = vw * 0.5f + (wx - cx) * scale;
-    pxY = vh * 0.5f + (wz - cz) * scale;
+    const float dx = wx - cx, dz = wz - cz;
+    if (rot == 0.0f) {   // the original, exact fast path — every rot==0 caller/self-test
+        pxX = vw * 0.5f + dx * scale;
+        pxY = vh * 0.5f + dz * scale;
+        return;
+    }
+    const float c = std::cos(rot), s = std::sin(rot);
+    pxX = vw * 0.5f + (dx * c - dz * s) * scale;
+    pxY = vh * 0.5f + (dx * s + dz * c) * scale;
 }
 
 void MapCamera::pxToWorld(float pxX, float pxY, float& wx, float& wz) const {
-    wx = cx + (pxX - vw * 0.5f) / scale;
-    wz = cz + (pxY - vh * 0.5f) / scale;
+    const float rx = (pxX - vw * 0.5f) / scale, ry = (pxY - vh * 0.5f) / scale;
+    if (rot == 0.0f) { wx = cx + rx; wz = cz + ry; return; }
+    // Inverse rotation: worldVec = Rot(rot)^T * screenVec (Rot is orthonormal).
+    const float c = std::cos(rot), s = std::sin(rot);
+    wx = cx + rx * c + ry * s;
+    wz = cz - rx * s + ry * c;
+}
+
+void MapCamera::worldDirToScreenDir(float dx, float dz, float& sx, float& sy) const {
+    if (rot == 0.0f) { sx = dx; sy = dz; return; }
+    const float c = std::cos(rot), s = std::sin(rot);
+    sx = dx * c - dz * s;
+    sy = dx * s + dz * c;
 }
 
 bool MapCamera::settled(float scaleEps, float panEpsM) const {
@@ -584,7 +621,12 @@ const MapTile* WorldMapSystem::ensureTerrainTile(x3::rhi::IRenderDevice& device)
     if (x1 <= x0 || z1 <= z0) return nullptr;
     const float pad = 250.0f;   // breathing room around the outermost bore mouths
     x0 -= pad; z0 -= pad; x1 += pad; z1 += pad;
-    const uint32_t res = 512;
+    // SHARPER BAKE (W-MAP v3): 512 -> 1024. Baked ONCE and cached (see the
+    // `m_terrainTile.baked` early-out above), so this is a one-time ~4x pixel
+    // cost paid at first map-open, not a per-frame one; the underlay covers
+    // the whole 46-mile network so 512px put >70 m/px across it — visibly
+    // blocky under the zoomed-in road labels. 1024 halves that.
+    const uint32_t res = 1024;
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<uint8_t> px;
     bakeTerrainTilePixels(px, res, x0, z0, x1, z1);
@@ -747,11 +789,14 @@ void WorldMapSystem::drawRouteOverlays(x3::ui::UiContext& ui, float W, float H) 
 
 void WorldMapSystem::drawRouteLabels(x3::ui::UiContext& ui, float W, float H) const {
     if (m_routes.empty()) return;
-    // Zoom-gated + sparse: hidden at world-overview (46 miles of names at
-    // once is noise), fades in as the view nears drive scale.
-    const float kFadeLo = 0.09f, kFadeHi = 0.20f;
-    if (m_cam.scale <= kFadeLo) return;
-    const float alpha = std::clamp((m_cam.scale - kFadeLo) / (kFadeHi - kFadeLo), 0.0f, 1.0f);
+    // ALWAYS-ON (W-MAP v3, owner direction — route names are wayfinding, not
+    // zoom-gated chrome: INNER TOUR / OUTER TOUR / RANGE CIRCUIT / CLIFFSIDE
+    // HIGHWAY etc. should read at a glance the instant the map opens, not
+    // only after zooming to drive scale). Was faded in above scale 0.09-0.20;
+    // clutter stays bounded anyway because this draws ONE label per UNIQUE
+    // route name (picked at the on-screen node nearest the viewport center),
+    // never one per polyline node.
+    const float alpha = 1.0f;
 
     // One label per UNIQUE route name (a route can be several overlay pieces —
     // solid/dashed spans sharing a name), placed at the on-screen node
@@ -808,6 +853,59 @@ void WorldMapSystem::drawMapMarker(x3::ui::UiContext& ui, const MapMarker& mk, f
     }
 }
 
+// N/E/S/W compass rose (W-MAP v3, Q/E rotation). Fixed screen anchor, top
+// right below the header bar. Each letter's POSITION is the corresponding
+// world unit direction run through worldDirToScreenDir — the SAME rotation
+// worldToPx applies to every road/POI on the map — so as Q/E spins the view,
+// the rose spins with it and "N" is always sitting over true +Z. The glyphs
+// themselves stay upright (HUD text has no rotation) — that's the "counter-
+// rotate" the plan asked for: the LABEL POSITIONS counter the view's spin so
+// the direction they point stays truthful even though the letterforms don't
+// visually tilt.
+void WorldMapSystem::drawCompassRose(x3::ui::UiContext& ui, float W, float H) const {
+    const float ccx = W - 62.0f, ccy = 96.0f;   // rose center, screen px
+    const float R = 34.0f;
+    // Ring + tick backdrop, so the letters read against the map underneath.
+    const float ring[4] = { 0.55f, 0.72f, 0.88f, 0.55f };
+    for (int a = 0; a < 40; ++a) {
+        const float t = (float)a / 40.0f * 6.2831853f;
+        ui.quad(ccx + std::cos(t) * R - 0.9f, ccy + std::sin(t) * R - 0.9f, 1.8f, 1.8f, ring);
+    }
+    const float bg[4] = { 0.02f, 0.05f, 0.09f, 0.55f };
+    ui.quad(ccx - R, ccy - R, R * 2.0f, R * 2.0f, bg);   // cheap disc-ish backdrop square
+    struct Card { const char* g; float dx, dz; bool major; };
+    // +Z north, +X east (CLAUDE.md axes — the native compass).
+    const Card cards[4] = {
+        { "N",  0.0f,  1.0f, true  },
+        { "E",  1.0f,  0.0f, false },
+        { "S",  0.0f, -1.0f, false },
+        { "W", -1.0f,  0.0f, false },
+    };
+    for (const Card& c : cards) {
+        float sx, sy; m_cam.worldDirToScreenDir(c.dx, c.dz, sx, sy);
+        const float len = std::sqrt(sx * sx + sy * sy);
+        if (len < 1e-5f) continue;
+        sx /= len; sy /= len;
+        const float px = ccx + sx * (R - 12.0f), py = ccy + sy * (R - 12.0f);
+        const float sz = c.major ? 16.0f : 13.0f;
+        const float colMajor[4] = { 1.0f, 0.86f, 0.30f, 0.95f };
+        const float colMinor[4] = { 0.85f, 0.92f, 1.0f, 0.85f };
+        const float* col = c.major ? colMajor : colMinor;
+        ui.textCentered(c.g, px, py - sz * 0.5f, sz, col, x3::ui::UiContext::FontRole::HudMono);
+    }
+    // North needle: a short bright tick from center toward N, GTA-style.
+    {
+        float sx, sy; m_cam.worldDirToScreenDir(0.0f, 1.0f, sx, sy);
+        const float len = std::sqrt(sx * sx + sy * sy);
+        if (len > 1e-5f) {
+            sx /= len; sy /= len;
+            const float nc[4] = { 1.0f, 0.86f, 0.30f, 0.9f };
+            for (float t = 4.0f; t < R - 16.0f; t += 2.5f)
+                ui.quad(ccx + sx * t - 1.2f, ccy + sy * t - 1.2f, 2.4f, 2.4f, nc);
+        }
+    }
+}
+
 void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& device,
                                 const x3::rhi::FrameContext& frame, const ScreenInput& in,
                                 StoryFlags& flags, float dt) {
@@ -827,6 +925,13 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
         if (in.keyS) m_cam.panWorld(0.0f,  panPx);
         if (in.keyA) m_cam.panWorld(-panPx, 0.0f);
         if (in.keyD) m_cam.panWorld( panPx, 0.0f);
+        // MAP ROTATION (Q/E, W-MAP v3): constant angular rate, held not edge —
+        // same feel as WASD pan. Q counter-clockwise, E clockwise (screen +Y
+        // is world +Z per worldToPx, so a positive angle here IS clockwise
+        // as drawn).
+        const float rotRate = 1.6f;   // rad/s
+        if (in.keyQ) m_cam.rotateBy(-rotRate * dt);
+        if (in.keyE) m_cam.rotateBy( rotRate * dt);
         // Drag pan vs click (click = press+release with < 5 px of travel).
         if (in.mouseDown) {
             if (!m_dragging) { m_dragging = true; m_dragMoved = 0.0f; }
@@ -1092,9 +1197,13 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
         ui.quad(0, H - 34, W, 34, legBg);
         const float lg[4] = { 0.55f, 0.7f, 0.8f, 0.9f };
         ui.text("[#] YOU   [+] WAYPOINT   [boxed letter] POI (CLICK = TRAVEL)   "
-                "CLICK MAP = WAYPOINT   DRAG/WASD = PAN   WHEEL = ZOOM   M = CLOSE",
+                "CLICK MAP = WAYPOINT   DRAG/WASD = PAN   Q/E = ROTATE   WHEEL = ZOOM   M = NEXT",
                 18, H - 26, 13, lg);
     }
+
+    // ---- Compass rose (W-MAP v3): always drawn, on top of the map content,
+    // truthful at every rotation (see drawCompassRose).
+    drawCompassRose(ui, W, H);
 
     // ---- Fast-travel confirm prompt (modal).
     if (m_confirmPoi >= 0 && m_confirmPoi < (int)m_pois.pois.size()) {
