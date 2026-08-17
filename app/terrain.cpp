@@ -1631,9 +1631,90 @@ void setWorldRiverRainRise(float riseM) {
 }
 float worldRiverRainRise() { return g_riverRainRise; }
 
-// Per-node levee-freeboard cap: the swollen river never tops a levee.
-static inline float riverRiseCapped(float rise, float crestC) {
-    return std::min(rise, 0.6f * crestC);
+// ---- Per-node freeboard: how much room the rise actually has. -------------
+// The authored levee term (RiverChain::c) is what the carve TRIES to hold, not
+// what the finished ground holds: a road corridor cut crossing near the bank,
+// or low natural country the levee only partly lifts, can leave far less. The
+// receipt is station (352, -5), where the authored levee says 0.2 m of room and
+// the built terrain has 0.02 m — capping on the authored number put the storm
+// river 0.33 ft OVER the crest there (riverbridge RB9). So the cap is measured
+// off the SAME ground the sweep grades: the highest bank inside the levee band
+// just outside the ribbon, both sides, minus the node's water level.
+//
+// Measured ONCE and cached: this reads terrainHeightAtWorld, so it must run
+// after the world's corridors are registered (the host builds roads long
+// before the first weather tick, and riverbridge's sweep runs after
+// registerRiverRoad). Rise 0 never calls it at all.
+namespace {
+float g_riverFreeboard[RiverChain::kMax] = {};
+bool  g_riverFreeboardDone = false;
+
+void measureRiverFreeboard() {
+    const RiverChain& rc = riverChain();
+    for (int i = 0; i < rc.n; ++i) g_riverFreeboard[i] = rc.c[i];
+    // Walk the spine in stations and attribute each station's measured bank
+    // freeboard to BOTH nodes of the segment it sits on. A node's cap is the
+    // tightest bank anywhere it influences — the receipt station (352, -5) is
+    // MID-SEGMENT, so measuring only at the nodes missed it entirely and the
+    // storm river went over the crest there.
+    for (int i = 0; i + 1 < rc.n; ++i) {
+        float tx = rc.x[i+1] - rc.x[i], tz = rc.z[i+1] - rc.z[i];
+        const float segLen = std::sqrt(tx * tx + tz * tz);
+        if (segLen < 1e-3f) continue;
+        tx /= segLen; tz /= segLen;
+        const float px = -tz, pz = tx;              // lateral: the bank direction
+        // 2.5 m stations — FINER than the riverbridge sweep that grades this
+        // (15 m). Freeboard is a min over stations, so sampling more finely can
+        // only make the cap more conservative; sampling coarser than the gate
+        // would let a tight spot BETWEEN the cap's stations fail it (it did).
+        for (float s = 0.0f; s <= segLen; s += 2.5f) {
+            const float cx = rc.x[i] + tx * s, cz = rc.z[i] + tz * s;
+            // The dry level the SURFACE actually shows here — closest approach
+            // over the whole chain, exactly as water.vert and the riverbridge
+            // sweep compute it. On a bend the nearest segment is not always the
+            // one being walked, and a per-segment lerp reads a level up to
+            // 0.2 m low there — which is precisely how the cap once cleared a
+            // station the gate then failed.
+            float dSpine = 0.0f, wy = 0.0f;
+            polyClosest(rc.x, rc.z, rc.w, rc.n, cx, cz, dSpine, wy);
+            // Freeboard is set by the LOWER of the two banks: the highest
+            // ground in the levee band on EACH side, then the min of the two.
+            // (Taking the max over both sides instead lets a tall left bank
+            // hide a low right one — the cap then cleared a station the
+            // riverbridge sweep, which grades per side, promptly failed.)
+            float fb = 1e9f;
+            for (int side = -1; side <= 1; side += 2) {
+                float crest = -1e9f;
+                for (float l = kWorldRiverHalfWidth + 0.5f;
+                     l <= kWorldRiverHalfWidth + 26.0f; l += 2.5f)
+                    crest = std::max(crest, terrainHeightAtWorld(cx + px * l * side,
+                                                                 cz + pz * l * side));
+                fb = std::min(fb, crest - wy);
+            }
+            g_riverFreeboard[i]   = std::min(g_riverFreeboard[i],   fb);
+            g_riverFreeboard[i+1] = std::min(g_riverFreeboard[i+1], fb);
+        }
+    }
+    // Never negative: a station already at/under its bank simply gets no rise.
+    for (int i = 0; i < rc.n; ++i)
+        g_riverFreeboard[i] = std::max(0.0f, g_riverFreeboard[i]);
+    g_riverFreeboardDone = true;
+    {
+        std::string m = "[river-rain] measured freeboard (m) per node:";
+        for (int i = 0; i < rc.n; ++i)
+            m += " " + std::to_string(i) + "=" + std::to_string(g_riverFreeboard[i]) +
+                 "(c" + std::to_string(rc.c[i]) + ")";
+        x3::logInfo(m);
+    }
+}
+} // namespace
+
+// Per-node freeboard cap: the swollen river never tops the bank that holds it.
+// 60% leaves the crest visibly proud even at the storm peak.
+static inline float riverRiseCapped(float rise, int node) {
+    if (rise <= 0.0f) return 0.0f;
+    if (!g_riverFreeboardDone) measureRiverFreeboard();
+    return std::min(rise, 0.6f * g_riverFreeboard[node]);
 }
 
 uint32_t worldRiverRisenNodes(WorldRiverNode* out, uint32_t maxN) {
@@ -1641,7 +1722,7 @@ uint32_t worldRiverRisenNodes(WorldRiverNode* out, uint32_t maxN) {
     const uint32_t n = std::min((uint32_t)rc.n, maxN);
     for (uint32_t i = 0; i < n; ++i)
         out[i] = { rc.x[i], rc.z[i],
-                   rc.w[i] + riverRiseCapped(g_riverRainRise, rc.c[i]) };
+                   rc.w[i] + riverRiseCapped(g_riverRainRise, (int)i) };
     return n;
 }
 
@@ -1661,7 +1742,7 @@ float worldWaterLevelAt(float x, float z) {
     if (g_riverRainRise > 0.0f) {
         float wr[RiverChain::kMax];
         for (int i = 0; i < rc.n; ++i)
-            wr[i] = rc.w[i] + riverRiseCapped(g_riverRainRise, rc.c[i]);
+            wr[i] = rc.w[i] + riverRiseCapped(g_riverRainRise, i);
         polyClosest(rc.x, rc.z, wr, rc.n, x, z, d, w);
     } else {
         polyClosest(rc.x, rc.z, rc.w, rc.n, x, z, d, w);
