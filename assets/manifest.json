@@ -721,9 +721,9 @@
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Traffic/LightBar.glb",
-      "sha256": "8270b37f8a8364337edef394467e8c8315ec908629e2cb9bd3b548b56bb724fb",
-      "size": 237132,
-      "source_note": "RCC v4 Model_Police_Siren.FBX -> tools/convert_lightbar_glb.py (W-TRAFFIC2 cop light bar)"
+      "sha256": "ab860bb27445fe6baa5d239b688bc80e81f24a458fa3a4ce0658ed1a8b8b417f",
+      "size": 237660,
+      "source_note": "RCC v4 Model_Police_Siren -> convert_lightbar_glb.py + glb_zero_root_nodes.py (1.3775x0.0979x0.2485 m)"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Traffic/OldVan.glb",

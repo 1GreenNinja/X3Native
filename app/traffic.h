@@ -225,6 +225,8 @@ public:
         int   cls;            // TrafficClass
         float gapAhead;       // arc gap to the leader in reach (1e9 = none)
         bool  merging;        // mid lane change
+        bool  brakeLit;       // brake lights on (decel past the threshold)
+        bool  blockedByPlayer;// the thing I am following IS the player
         int   signalDir;      // -1 signalling left, 0 none, +1 right
         int   temper;         // 0 normal, 1 aggressive, 2 jerk
         int   jerk;           // JerkKind
@@ -236,6 +238,21 @@ public:
     // Self-test hook: force-spawn a car at an exact station (bypasses the
     // ring/spacing rules). Returns live index or -1.
     int spawnForTest(int model, int cw, int lane, float s, float v, float cruise);
+    // Like spawnForTest but ALSO creates the Jolt kinematic body, so a gate can
+    // exercise the collision path (--test-traffic T12). Every other gate runs
+    // with phys = nullptr, which is precisely how a physics defect stayed
+    // invisible behind twenty green checks.
+    int  spawnForTestPhys(int model, int cw, int lane, float s, float v,
+                          float cruise, x3::phys::IPhysicsWorld* phys);
+    bool carHasBody(uint32_t i) const;
+    x3::phys::BodyId carBodyId(uint32_t i) const;
+    // The PHYSICS box (centre + half extents) and the box the RENDERER would
+    // draw the model into, both in world space. If these disagree you can
+    // collide with nothing where the car appears — the "no collision factor"
+    // defect's most likely shape, so it is measured, not assumed.
+    void carBodyBox(uint32_t i, float outCentre[3], float outHalf[3]) const;
+    void carDrawnBox(uint32_t i, float outLo[3], float outHi[3]) const;
+
     // Self-test hooks for the character systems: force a temperament / a role
     // onto a live car so a gate can drive ONE behaviour deterministically
     // instead of waiting for the dice.
@@ -249,6 +266,13 @@ public:
     // The breakdown gate measures against this.
     static float shoulderRoomM() { return kFwyPavedHalfM - kFwyRunningHalfM; }
 
+    // World position of a lane point — so a caller (or a gate) can PARK
+    // something exactly on a lane instead of guessing a coordinate.
+    bool laneWorldPos(int cw, float laneF, float s, float out[3]) const;
+    // Where the sim currently thinks the player is, in ITS coordinates.
+    // Returns false until setPlayer has been called and he is near the road.
+    bool playerLane(int& cw, float& laneF, float& s, float& v) const;
+
 private:
     struct Model;
     struct Car;
@@ -261,6 +285,11 @@ private:
     uint32_t rnd();                       // xorshift32 (deterministic)
     float  rndf(float a, float b);
     void   logCameraStations() const;
+    // After an X3_TRAFFIC_PRESIM fast-forward: print a paste-ready --shot-cam
+    // AIMED AT each thing worth photographing (a lit patrol car, a car
+    // mid-merge, the breakdown, the tow, the sign). Gotcha 4.1's "derive
+    // cameras from the data" law, applied to subjects that MOVE.
+    void   reportShotCams() const;
     // --- W-TRAFFIC2 sim stages, in the order update() runs them -------------
     void   rebuildOrder();                                  // sorted-by-s index
     void   driveFollowers(float dt);                        // long. control
@@ -309,6 +338,8 @@ private:
     TrafficConfig m_cfg;
     uint32_t m_rng = 1;
     float m_time = 0.0f;
+    // X3_TRAFFIC_PRESIM seconds still owed, burned on the first update().
+    float m_presimS = 0.0f;
 
     // Lane path: the route's fine render stations (shared by both
     // carriageways; per-carriageway offsets are applied at sample time).
@@ -378,6 +409,8 @@ private:
         float gapAhead = 1e9f;        // telemetry for the self-test
         float leaderV = 0.0f;         // the speed of whoever I am following
         float lastAccel = 0.0f;       // signed m/s^2 actually applied this tick
+        bool  brakeLit = false;       // rear lamps lit (see kBrakeLightMps2)
+        bool  blockedByPlayer = false;// my leader this tick IS the player
         bool  parked = false;         // breakdown: fully stopped on the shoulder
         // >=0 caps this car's target speed from the ROLE stage (a tow closing
         // on a job, a cop slowing at the scene). -1 = the role has no opinion.
@@ -417,8 +450,32 @@ private:
     // ---- The player -------------------------------------------------------
     float m_focus[3] = { 0, 0, 0 };   // this frame's focus (the update arg)
     float m_playerPos[3] = { 0, 0, 0 };
+    float m_prevPlayerPos[3] = { 0, 0, 0 };
     float m_playerSpeed = 0.0f;
     bool  m_havePlayer = false;
+
+    // THE PLAYER AS AN OBSTACLE. The owner parked on the freeway and watched
+    // traffic drive straight through him: the following controller resolved
+    // against AI cars only, so a stopped player was not in the world model at
+    // all — nobody braked, nobody merged, nobody honked, and the only thing
+    // that fired was the kinematic->dynamic conversion at impulse 4000, which
+    // is physics working perfectly on a collision that should never have
+    // happened. This projects him onto the same (cw, s, laneF) coordinates
+    // every AI car lives in, so the follower, the merge test, the no-overlap
+    // pass and the horns can treat him as exactly what he is: a vehicle.
+    struct Obstacle {
+        bool  valid = false;
+        int   cw = 1;
+        float s = 0.0f;
+        float laneF = 0.0f;
+        float v = 0.0f;        // SIGNED along this carriageway's travel
+        float halfW = 0.95f;
+        float lenM = 4.6f;
+        float lat = 0.0f;      // signed lateral offset from the route centreline
+        bool  inLane = false;  // inside the running lanes (not on the verge)
+    };
+    Obstacle m_player;
+    void projectPlayer(float dt);
 
     // ---- Horn budget ------------------------------------------------------
     // A jam must not be a cacophony: at most one horn every kHornGlobalGapS

@@ -112,6 +112,27 @@ try:
         log.append(f"mat {m.name!r} -> bc{spec['bc']} em{spec['em']} "
                    f"metal {spec['metal']} rough {spec['rough']}")
 
+    # ---- 5) NEUTRALISE THE NODE TRANSFORM -----------------------------------
+    # MEASURED DEFECT, caught by the engine's own boot log rather than by
+    # eyeball (X3_WORLD_RULES rule 0 working as intended): the first export
+    # produced correct METRE vertex data -- accessor min/max +-0.6888 -- under a
+    # node carrying scale 0.0254 and a stray translation, so readGlbForLod
+    # (which applies the full node hierarchy) measured the bar at
+    # 0.035 x 0.002 x 0.006 m. A 3.5 cm light bar.
+    #
+    # CAUSE: importing an inch-authored FBX sets scene.unit_settings.scale_length
+    # to 0.0254, and the glTF exporter faithfully emits that scene-unit->metre
+    # conversion as a ROOT NODE SCALE. transform_apply had already baked the
+    # inches out of the vertices, so the factor got applied a second time.
+    # FIX: the scene is metres, and the object's transform is identity. Both
+    # stated explicitly, so neither depends on what the importer decided.
+    bpy.context.scene.unit_settings.system = 'METRIC'
+    bpy.context.scene.unit_settings.scale_length = 1.0
+    obj.matrix_world.identity()
+    obj.location = (0.0, 0.0, 0.0)
+    obj.rotation_euler = (0.0, 0.0, 0.0)
+    obj.scale = (1.0, 1.0, 1.0)
+
     bpy.ops.export_scene.gltf(filepath=OUT, export_format='GLB',
                               export_yup=True, export_apply=True)
     log.append("CONVERTED OK -> " + OUT)
