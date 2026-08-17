@@ -3361,6 +3361,10 @@ int runDefaultHost(HostContext& hc) {
     // Live projectile bolts (plasma): host-owned; advanced + impact-resolved each
     // frame. Bounded by gameplay (a handful in flight); a plain vector is fine.
     struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range;
+                            // Phase B1: per-weapon ballistic arc, stamped from
+                            // ProjectileSpawn::gravity (m/s^2 down). 0 = the flat
+                            // path every legacy bolt flies (bit-identical).
+                            float gravity = 0.0f;
                             x3::game::WeaponFxKind impactKind = x3::game::WeaponFxKind::Default;
                             // canon-aliens Adaptive Hide: carry the firing WeaponDef's DamageType
                             // (Kinetic / Energy / Explosive / ...) along the bolt so the on-impact
@@ -7501,7 +7505,7 @@ int runDefaultHost(HostContext& hc) {
     x3::audio::LoopHandle fireLoop{};
     x3::audio::SoundHandle fireLoopSnd{};   // the sound the current loop voice was started with
     // WEAPONS: rising-edge tracking for the number keys 1..N (weapon switch) + R (reload).
-    bool prevWeaponKey[9] = {};
+    bool prevWeaponKey[x3::game::kCanonKeyCount] = {};   // Phase B3: 12 canon keys (1..9 0 - =)
     bool prevReload = false;
 
     // ---- Door-code keypad host state (§6.4 keypad gate). When the player presses
@@ -8560,10 +8564,21 @@ int runDefaultHost(HostContext& hc) {
         // keys are being typed as a code, not used to switch weapons), and while a
         // chat-tree conversation is capturing 1-4 as dialog choices.
         if (!codeMode && !termMode && !terrainWorld && !chatTrees.active()) {
-            const int n = arsenal.count() < 9 ? arsenal.count() : 9;
-            for (int wi = 0; wi < n; ++wi) {
-                bool down = keyDown(GLFW_KEY_1 + wi);
-                if (down && !prevWeaponKey[wi]) arsenal.select(wi);
+            // Phase B3: the CANON 12-weapon key row. 1..9 then 0 - = select the
+            // canonical twelve BY NAME in canon order (weapon.cpp
+            // canonKeyWeaponName) — the old `GLFW_KEY_1 + wi` slot mapping capped
+            // at 9 and left five canon weapons keyless. The two X3Native-only
+            // weapons (smg / plasma_rifle) stay on the scroll-wheel cycle below.
+            static const int kWeaponKeyCodes[x3::game::kCanonKeyCount] = {
+                GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3, GLFW_KEY_4, GLFW_KEY_5,
+                GLFW_KEY_6, GLFW_KEY_7, GLFW_KEY_8, GLFW_KEY_9, GLFW_KEY_0,
+                GLFW_KEY_MINUS, GLFW_KEY_EQUAL };
+            for (int wi = 0; wi < x3::game::kCanonKeyCount; ++wi) {
+                bool down = keyDown(kWeaponKeyCodes[wi]);
+                if (down && !prevWeaponKey[wi]) {
+                    const int slot = arsenal.indexOf(x3::game::canonKeyWeaponName(wi));
+                    if (slot >= 0) arsenal.select(slot);
+                }
                 prevWeaponKey[wi] = down;
             }
             bool rNow = keyDown(GLFW_KEY_R);
@@ -10842,11 +10857,18 @@ int runDefaultHost(HostContext& hc) {
             // one-shot — so suppress the per-shot fire SFX here for those weapons.
             const bool usesFireLoop = arsenal.current().fireSfxLoop;
             if (!shot.projectiles.empty()) {
-                // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
-                const auto& pj = shot.projectiles[0];
-                // [W9-3 RPG] skill/mod damage layer on the bolt (base def untouched).
-                const int pjDmg = x3::game::rpgScaleDamage(pj.damage, rpgMods, rpgCritRng);
-                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, impactKind, pj.type, currentImpactSfx() });
+                // ---- Projectile weapon: spawn EVERY travelling bolt this trigger
+                // pull produced (Phase B2; shape copied from the smoketest consumer,
+                // which already loops). Stream weapons (flamethrower / freezeray)
+                // emit several jittered short-lived particles per pull — bounded by
+                // kMaxStreamSpawns on the producer — every other weapon exactly one.
+                // Was a hard read of projectiles[0], which dropped the extras.
+                const x3::audio::SoundHandle pjImpactSnd = currentImpactSfx();
+                for (const auto& pj : shot.projectiles) {
+                    // [W9-3 RPG] skill/mod damage layer on the bolt (base def untouched).
+                    const int pjDmg = x3::game::rpgScaleDamage(pj.damage, rpgMods, rpgCritRng);
+                    projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, pj.gravity, impactKind, pj.type, pjImpactSnd });
+                }
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
                 if (!usesFireLoop)
                     audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
@@ -10988,6 +11010,12 @@ int runDefaultHost(HostContext& hc) {
         if (!simFrozen && !terrainWorld && !projectiles.empty()) {
             for (size_t pi = 0; pi < projectiles.size(); ) {
                 LiveProjectile& b = projectiles[pi];
+                // Phase B1: ballistic arc. Apply the spawn's per-weapon gravity to
+                // the velocity BEFORE the step so the raycast segment below matches
+                // this frame's actual travel (v.y -= g*dt; pos += v*dt). dt-SCALED,
+                // never per-frame — house rule; a per-frame term changes with the
+                // refresh rate. gravity == 0 keeps every legacy bolt exactly flat.
+                if (b.gravity != 0.0f) b.vel.y -= b.gravity * dt;
                 float speed = std::sqrt(b.vel.x*b.vel.x + b.vel.y*b.vel.y + b.vel.z*b.vel.z);
                 float stepLen = speed * dt;
                 if (stepLen < 1e-5f) stepLen = 1e-5f;
