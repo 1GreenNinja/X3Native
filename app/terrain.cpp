@@ -1533,7 +1533,11 @@ uint32_t Terrain::updateLod(Scene& scene, float camX, float camZ) {
         const float dx = t.centerX - camX, dz = t.centerZ - camZ;
         const float dist = std::sqrt(dx * dx + dz * dz);
         TerrainLod want = lodForDist(m_cfg, dist);
-        if (t.corridorPin) want = TerrainLod::Full;   // the seam fix
+        // The seam fix, SCOPED (26 fps lesson): pinning every corridor tile
+        // at every distance tripled the triangle load — 46 miles of road all
+        // at full res. The wedge only reads near the camera; past 420 m it is
+        // sub-pixel. Near pin stays absolute.
+        if (t.corridorPin && dist < 420.0f) want = TerrainLod::Full;
         if (want != t.activeLod) {
             t.activeLod = want;
             if (t.entityId != kNoLink && t.entityId < scene.size())
@@ -1909,7 +1913,11 @@ uint32_t TerrainStreamer::update(Scene& scene, x3::rhi::IRenderDevice& device,
         const float dx = t.centerX - focusX, dz = t.centerZ - focusZ;
         const float dist = std::sqrt(dx * dx + dz * dz);
         TerrainLod want = lodForDist(m_cfg, dist);
-        if (t.corridorPin) want = TerrainLod::Full;   // the seam fix
+        // The seam fix, SCOPED (26 fps lesson): pinning every corridor tile
+        // at every distance tripled the triangle load — 46 miles of road all
+        // at full res. The wedge only reads near the camera; past 420 m it is
+        // sub-pixel. Near pin stays absolute.
+        if (t.corridorPin && dist < 420.0f) want = TerrainLod::Full;
         if (want != t.activeLod) {
             t.activeLod = want;
             if (t.entityId != kNoLink && t.entityId < scene.size())
