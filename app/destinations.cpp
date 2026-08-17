@@ -83,6 +83,11 @@ const Destination kDest[] = {
 // tower's one real way in off the apron, and the ESCAPED-branch rescuer's arrival
 // spawn (specs/EFLZ_SURFACE_FACILITY_HANDOFF.spec.md §2: the handoff's dest key).
 { "entrance",     "Facility Entrance",        "The F1 entrance hall - the tower's one real way in, off the apron.",    "canonlevel",        DestGroup::Facility,   true  },
+// [ONE WORLD landing, feat/canon-apron-landing] The apron ring OUTSIDE the
+// breach — where the intro's flyable outcomes (escaped / capital-killed) now
+// set the player down IN canonlevel (no more --world surface handoff; that
+// world stays a dev shortcut). Anchor maths: app/apron_landing.h.
+{ "apron",        "Facility Apron",           "The landing apron outside the breach - where the intro sets you down.", "",                  DestGroup::Facility,   true  },
 
 { "granite",      "The Descent - Granite",    "Strata offshoot pocket at -55 m.",                                      "strata",            DestGroup::Underworld, true  },
 { "basalt",       "The Descent - Basalt",     "Strata offshoot pocket at -95 m.",                                      "strata",            DestGroup::Underworld, true  },

@@ -478,6 +478,13 @@ struct CliOptions {
     // handoff contract (breach trigger + canonlevel@entrance request + Entrance
     // spawn vs the live tower data + armed arrival + escaped-flags import, with
     // shot_down/absent negative controls). No window/Vulkan.
+    // NOTE: the GAME no longer routes through the surface world (ONE WORLD
+    // landing, feat/canon-apron-landing) — both suites now gate the `--world
+    // surface` DEV SHORTCUT's contract, which stays supported per WORLDS.md.
+    // --test-apronlanding (ONE WORLD landing): the intro's flyable outcomes land
+    // IN canonlevel — apron spawn/facing/ship set-down maths + the walk-to-breach
+    // nav probe + the placement-datum (AABB) law. No window/Vulkan.
+    bool        testApronLanding = false;
     bool        testSurfaceHandoff = false;
     // --test-starsystems (x3.starsys/1): the named-star-system registry integrity
     // gate — every system has a valid star + bodies, lookup by id/name round-trips,

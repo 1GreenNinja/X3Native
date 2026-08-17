@@ -156,7 +156,7 @@ two-line split happened (see ATTENTION_FableAAA.md).
 | Mode | What it is now |
 |---|---|
 | `level1` | the legacy hand-coded spire (pre-canon reference; still fully souped) |
-| `surface` | Act-1 cold-open landing slice (exterior module's other caller) |
+| `surface` | Act-1 landing slice (exterior module's other caller). Since feat/canon-apron-landing the GAME lands the flyable intro outcomes IN canonlevel (apron spawn, ship set down — app/apron_landing.h); this slice + its [E] breach handoff are dev/test-only |
 | `streamed` | the streamer's own tour world (regions.json WITH spire_f1 leveldoc) |
 | `elevator` / `elevator-showcase` | walkable/beauty elevator showcase (own cab kit) |
 | `club` | Club 1127 standalone (the same module the canon descent builds) |

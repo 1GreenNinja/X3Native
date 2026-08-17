@@ -344,6 +344,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testIntroBranch = o.testIntroBranch;
         _tf.testSurfaceStart = o.testSurfaceStart;
         _tf.testSurfaceHandoff = o.testSurfaceHandoff;
+        _tf.testApronLanding = o.testApronLanding;
         _tf.testStarsystems = o.testStarsystems;
         _tf.testCutscene = o.testCutscene;
         _tf.testFilmic = o.testFilmic;
