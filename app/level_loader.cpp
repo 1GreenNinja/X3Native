@@ -1225,6 +1225,26 @@ CellWindow cellObsWindow(const CanonFloor& floor) {
 }
 
 // =====================================================================================
+// SEAL-BAND closure rules (fix/cell-shell-hole). Single source for the builder AND the
+// lint. NOTE: these currently encode the SHIPPED (pre-fix) behavior — the seal-band
+// lint consumes them first so its red run documents the defect; the fix flips them and
+// wires the builder in the same change.
+// =====================================================================================
+bool canonLidVisible(const CanonFloor& floor, uint32_t ri, bool legacyRule) {
+    if (ri >= floor.rooms.size()) return false;
+    const CanonRoom& r = floor.rooms[ri];
+    // Shipped rule (QA D3/D4 deep rooms + W5-1b solidLid): everything else is
+    // collision-only/invisible.
+    (void)legacyRule;
+    return r.cy < -50.0f || r.solidLid;
+}
+
+std::vector<CanonBand> canonPlinthBands(const CanonFloor& floor, bool legacyRule) {
+    (void)floor; (void)legacyRule;
+    return {};   // shipped behavior: no plinth bands were ever built
+}
+
+// =====================================================================================
 // BUILDER. Each room is built as a shell: floor slab, ceiling lid (collision-only),
 // and 4 walls. A wall face gets a 1.2 m doorway gap (+ lintel) wherever the resolver
 // produced a doorway on that face. Gap-bridge doorways add a short connecting corridor;
