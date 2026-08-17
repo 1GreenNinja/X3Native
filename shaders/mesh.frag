@@ -328,14 +328,16 @@ void main() {
     float ndl    = max(dot(N, kSunDir), 0.0);
     float shadow = sampleShadow(vWorldPos, N, ndl);
 #ifdef RT_SHADOWS
-    // RT soft shadows (r_rtshadows): per-pixel seed (per-frame rotated when TAA
-    // is on — rtsh1.x is then a running frame counter; pinned 0 with TAA off so
-    // the dither is static) + the per-pixel point-shadow ray budget. The
-    // geometric normal (NOT the normal-mapped one) offsets ray origins so bump
-    // detail can't push the origin through its own surface.
+    // RT soft shadows (r_rtshadows): purely SPATIAL sampling state (rtsh1.x is
+    // pinned 0 by the host — see mesh_shadows.glsl's stability note) + the
+    // per-pixel point-shadow ray budget. rtshRot is the per-pixel IGN rotation
+    // of the shared Vogel sample spiral. The geometric normal (NOT the
+    // normal-mapped one) offsets ray origins so bump detail can't push the
+    // origin through its own surface.
     uint rtshSeed = rtshWang(uint(gl_FragCoord.x) * 1973u
                            + uint(gl_FragCoord.y) * 9277u
                            + uint(ssao.rtsh1.x)   * 26699u);
+    float rtshRot = 6.2831853 * rtshIgn(gl_FragCoord.xy);
     int  rtshRaysLeft = int(ssao.rtsh0.z);
     vec3 rtshNg = normalize(vNormal);
     // TWO-SIDED (see the N flip above): mixed-winding pack meshes present their
@@ -348,7 +350,7 @@ void main() {
     // shadows from skinned characters (absent from the static TLAS). Skip the
     // ray when the sun term is already dead (backface / fully CSM-shadowed).
     if (ssao.rtsh0.x >= 0.5 && ndl > 0.0 && shadow > 0.001)
-        shadow = min(shadow, rtshSunVisibility(vWorldPos, rtshNg, kSunDir, rtshSeed));
+        shadow = min(shadow, rtshSunVisibility(vWorldPos, rtshNg, kSunDir, rtshRot, rtshSeed));
 #endif
     // CLOUD SHADOWS (task #27): dim the DIRECT sun by the cloud deck overhead —
     // the same density field sky.frag draws, projected along the sun direction,
@@ -494,7 +496,7 @@ void main() {
             if (ssao.rtsh0.x >= 1.5 && rtshRaysLeft > 0 && dot(N, L) > 0.0
                 && atten * dot(PL.colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
                 --rtshRaysLeft;
-                vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshSeed);
+                vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshRot, rtshSeed);
             }
             // r_debugview 7: point RT shadows forced lit — the A/B that caught
             // the glass-in-TLAS self-occlusion (2026-07-30). Kept: zero cost,
@@ -552,7 +554,7 @@ void main() {
             if (ssao.rtsh0.x >= 1.5 && rtshRaysLeft > 0 && dot(N, L) > 0.0
                 && atten * dot(PL.colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
                 --rtshRaysLeft;
-                vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshSeed);
+                vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshRot, rtshSeed);
             }
             Lo += brdf(N, V, NoV, L, F0, diff, a, kPointDiffuseW) * PL.colorPad.rgb * (atten * vis);
 #else

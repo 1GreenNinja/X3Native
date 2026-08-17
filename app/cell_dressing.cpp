@@ -731,9 +731,14 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // SUPPOSED to be dark. That is the whole point of the room.
         // (The hatch spot went with them: the trapdoor's own amber rim lens is its read;
         // a hidden hatch that is helpfully spotlit is not hidden.)
-        // Ground the bed + footlocker (contact-shadow blobs; m_shadowDisc built above).
-        addShadowBlob(m_shadowDisc, bedX, fY, bedZ, 0.80f, 1.40f, 0.55f);               // bed
-        addShadowBlob(m_shadowDisc, bedX + 0.05f, fY, bedZ + 1.55f, 0.55f, 0.55f, 0.5f); // footlocker
+        // fix/interior-shadows (2026-08-17): the ROUND 3 contact-shadow blobs are CUT.
+        // The disc's radial fade was stashed in uv.y, which the glass pass never
+        // reads — every blob rendered as a HARD-EDGED uniform-alpha 24-gon (Tim,
+        // live: "the bed's floor shadow is a hard-edged blocky blob"). The RT point
+        // shadows (r_rtshadows 2, now multi-sample + stable) ground the bed and
+        // footlocker with REAL shadows from the tube; on non-RT hardware SSAO still
+        // supplies the contact darkening. A fake blob under a real shadow is a
+        // double-darkened blob with a polygon rim.
     }
 
     // WALL TERMINAL (the cell's control panel) on the -Z wall, with a cyan glow + a cyan
@@ -768,7 +773,7 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // R11 — CUT: the basin's private fill light ("so it never goes black"). A steel
         // basin in the far corner of a cell SHOULD be nearly black; that is what a corner
         // is. Its rim catches the tube and that is all it gets.
-        addShadowBlob(m_shadowDisc, fx, fY, fz, 0.5f, 0.5f, 0.5f);   // ground the basin
+        // (basin contact blob CUT with the others — see the bed note above)
     }
 
     // PIPES running along the ceiling (two parallel runs along Z, near the -X wall) — the

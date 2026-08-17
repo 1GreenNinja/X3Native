@@ -2119,16 +2119,22 @@ void VulkanRenderDevice::prepareFrameData() {
             }
             // RT soft-shadow lanes (r_rtshadows): read ONLY by the mesh_rt.frag
             // pipelines (bound only when the TLAS is live), so writing them is
-            // free for every other path. Per-frame jitter rotation only while
-            // TAA can integrate it; with TAA off the seed pins to 0 so the
-            // 1-spp penumbra dither is STATIC (no sizzle).
+            // free for every other path.
+            // rtsh1.x (jitter rotation) is PINNED to 0 unconditionally
+            // (fix/interior-shadows, 2026-08-17). It used to be a frame counter
+            // while TAA ran ("TAA integrates the 1-spp noise") — but TAA's
+            // neighborhood clamp can NEVER converge a full-contrast binary
+            // shadow flip, so in live play the penumbra stipple re-rolled every
+            // frame: the incessant cell flashing Tim reported. The shader now
+            // takes a stratified multi-sample estimate with a purely SPATIAL
+            // seed instead — stable frame-over-frame, and stills finally show
+            // exactly what live play shows.
             if (m_rtShadowsWantThisFrame) {
                 sc.rtsh0 = glm::vec4((float)m_rtShadows.tier,
                                      std::tan(glm::radians(m_rtShadows.sunSizeDeg)),
                                      (float)m_rtShadows.pointMax,
                                      m_rtShadows.pointRadius);
-                sc.rtsh1 = glm::vec4(taaWant ? (float)(m_rtshFrameSeed++ & 16383u) : 0.0f,
-                                     0.0f, 0.0f, 0.0f);
+                sc.rtsh1 = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
             }
             // r_debugview rides the reserved rtsh1.w lane (0 = off -> byte-identical).
             sc.rtsh1.w = (float)m_debugView;
