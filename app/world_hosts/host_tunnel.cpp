@@ -965,7 +965,19 @@ int hostTunnel(HostContext& hc) {
         // Tim, 2026-08-14: "The car is PLACED facing the wrong way. I have to TURN
         // it to drive it forward. Controls make the car behave as it should." —
         // the second sentence proves the rig and skin are fine; only spawn was wrong.
-        const float yaw = -std::atan2(-route.dirX, -route.dirZ);
+        // LOCAL tangent, not the route's global chord: the smoothing passes
+        // curl the road, and the chord-based yaw parked the car skewed across
+        // the lanes (Tim's overhead screenshot). Sample the polyline 4 m apart
+        // around the spawn station and face down THAT.
+        float tp0[3], tp1[3];
+        const float spawnS = std::max(8.0f, route.boreS0 - 55.0f);
+        route.posAt(spawnS - 2.0f, tp0);
+        route.posAt(spawnS + 2.0f, tp1);
+        float tdx = tp1[0] - tp0[0], tdz = tp1[2] - tp0[2];
+        const float tlen = std::sqrt(tdx * tdx + tdz * tdz);
+        if (tlen > 1e-3f) { tdx /= tlen; tdz /= tlen; }
+        else { tdx = route.dirX; tdz = route.dirZ; }
+        const float yaw = -std::atan2(-tdx, -tdz);
         const float q[4] = { 0.0f, std::sin(-yaw * 0.5f), 0.0f, std::cos(-yaw * 0.5f) };
         phys->setBodyRotation(car.chassis(), q);
     } else {
@@ -1518,6 +1530,16 @@ int hostTunnel(HostContext& hc) {
         // Live trims for Jake's placement, so a wrong-facing or sunk rig is a
         // console line to diagnose instead of a rebuild: degrees added to his
         // travel yaw, metres added to his measured ground compensation.
+        con->registerCommand("rain", [con](const std::vector<std::string>& args) {
+            if (args.size() < 2) { con->print("rain 0-10: 0 off | 1-3 sprinkle | 4-6 downpour | 7-8 heavy | 9-10 MONSOON"); return; }
+            const float v = std::min(10.0f, std::max(0.0f, (float)std::atof(args[1].c_str())));
+            if (v < 0.5f)      { con->set("wx", "off"); con->print("rain: off"); return; }
+            con->set("wx", v >= 8.5f ? "storm" : "rain");
+            char mb[32]; std::snprintf(mb, sizeof(mb), "%.2f", 0.4f + v * 0.42f);
+            con->set("wx_precip_mult", mb);
+            con->print(std::string("rain ") + args[1] + (v >= 8.5f ? "  (MONSOON - storm cell, lightning live)"
+                        : v >= 6.5f ? "  (heavy)" : v >= 3.5f ? "  (downpour)" : "  (sprinkle)"));
+        }, "rain 0-10 — Sprinkle to Downpour to MONSOON, with every in-between");
         con->registerCVar("wx_precip_mult", "2.4",
             "precipitation density multiplier (raises how much of the particle pool a given rain/snow state uses)");
         con->registerCVar("jake_yaw", "0", "Jake facing trim, degrees (rig-forward correction)");
