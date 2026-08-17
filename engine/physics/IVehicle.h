@@ -375,6 +375,15 @@ public:
     // and plateaued — only a measured force answers WHY). 0 for non-wheeled.
     virtual float driveForce() const { return 0.0f; }
 
+    // ---- BUOYANCY-only: move the water surface under this hull. ----
+    // BuoyancyDesc::seaLevel is ONE flat plane, fixed at build. A hull on a
+    // RIVER floats on a surface that descends downstream (and rises in rain),
+    // so the host re-feeds the LOCAL level here every step — the same level
+    // the water shader draws and worldWaterLevelAt reports, so a boat can
+    // never float above or sink under the visible surface (X3Native task #32,
+    // ONE water truth). Returns false for non-buoyancy controllers (default).
+    virtual bool setSeaLevel(float y) { (void)y; return false; }
+
     // Apply a live performance tuning (see WheeledTuning). Mutates the running
     // Jolt engine/wheel settings + the chassis mass IN PLACE — no constraint
     // rebuild, so a parked car can be re-tuned in the shop and immediately driven.

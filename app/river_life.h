@@ -105,6 +105,11 @@ private:
         float heading = 0.0f, headingPrev = 0.0f;
         bool  haveHeading = false;
         float throttle = 0.0f;         // last commanded throttle (thrust boost)
+        // The river surface under THIS hull, re-read each prePhysics and fed
+        // to the buoyancy controller (task #32 — the drawn surface descends
+        // downstream and swells in rain, so it is not one flat number). Also
+        // the level the hull's wake foam rides on.
+        float waterY = 0.0f;
         std::unique_ptr<MonsterSystem> driver;
         x3::audio::LoopHandle loop{};
         float pitch = 1.0f;            // per-boat detune on the shared loop
@@ -117,6 +122,9 @@ private:
         float age = 0, life = 1;
         float size0 = 0.3f;
         bool  spray = false;           // true = additive bow spray, else alpha foam
+        // The river surface this puff was born on (the spawning hull's local
+        // level — the reach descends, so foam cannot settle onto one flat Y).
+        float surfY = 0.0f;
     };
 
     bool        m_built = false;
@@ -136,7 +144,11 @@ private:
                       const x3::rhi::FrameContext& frame,
                       const float hullPos[3], const float hullQ[4]);
     x3::audio::SoundHandle m_outboardSnd{};
-    float       m_waterY = 0.0f;       // the plan's waterY (== rendered plane)
+    // The bridge crossing's own water level — the reach ANCHOR (logging, and
+    // the fallback when a query lands off the water table). NOT "the rendered
+    // plane": since task #32 the drawn surface descends with the channel, and
+    // every hull carries its own local waterY (see Boat::waterY).
+    float       m_waterY = 0.0f;
     uint32_t    m_rng = 0x51CA7Eu;
 };
 
