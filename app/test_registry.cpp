@@ -103,6 +103,7 @@
 #include "act2_desert.h"
 #include "act2_caves.h"
 #include "rifthub.h"                        // --test-rifthub (Stargate portal hub)
+#include "grounding.h"   // x3::game::runGroundingSelfTest (--test-grounding)
 #include "basis.h"                          // --test-basis (KNOWN_BUGS R3: the MIRROR invariant)
 #include "tod.h"
 #include "weather.h"
@@ -303,6 +304,13 @@ static bool runFilmicMathSelfTest() {
 }
 
 int dispatchTests(const TestFlags& tf) {
+    // CHARACTER GROUNDING GATE — "character feet can NOT enter the floor unless
+    // its water, sand, or lava" (Tim). Reads the inline global rather than a
+    // TestFlags field; see the note in test_registry.h for why.
+    if (g_testGrounding) {
+        x3::logInfo("running character-grounding self-test (--test-grounding)...");
+        return x3::game::runGroundingSelfTest() ? 0 : 1;
+    }
     // Headless self-tests (no window / Vulkan needed)
     if (tf.testJobs) {
         x3::logInfo("running job system (Subsystem A) self-test...");

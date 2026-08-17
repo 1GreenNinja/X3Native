@@ -1,6 +1,7 @@
 // cli — parseCli() (the arg-parse loop) lifted VERBATIM from main() (#28 Phase D).
 #include "cli.h"
 #include "settings_io.h"   // readWindowSize (saved window default)
+#include "test_registry.h" // g_testGrounding (--test-grounding; see the note there)
 #include <string_view>
 #include <cstdlib>
 #include <cstring>
@@ -145,6 +146,9 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-pickup") o.testPickup = true;
         else if (a == "--test-combat") o.testCombat = true;
         else if (a == "--test-deathragdoll") o.testDeathRagdoll = true;
+        // Sets the inline global rather than a CliOptions field (the 0cbe3f89
+        // wiring, dropped by merge 58eb79b3's KEEP-BOTH resolution — restored).
+        else if (a == "--test-grounding") x3::apphost::g_testGrounding = true;
         else if (a == "--test-audio") o.testAudio = true;
         else if (a == "--test-acoustics") o.testAcoustics = true;
         else if (a == "--test-level1") o.testLevel1 = true;
