@@ -6,11 +6,13 @@
 
 #include "world_stream.h"     // self-test: the streaming-aware fast-travel path
 #include "headless_device.h"  // self-test device
+#include "terrain.h"          // the underlay bake: pure height/water queries only
 
 #include "engine/core/x3_log.h"
 #include "engine/physics/IPhysicsWorld.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -277,6 +279,84 @@ void bakeFloorTilePixels(const CanonFloor& floor, std::vector<uint8_t>& outRgba,
     }
 }
 
+// ===========================================================================
+// Terrain underlay bake (road-network worlds) — LOW-CONTRAST, DESATURATED
+// hypsometric shading from app/terrain.h's pure height/water queries. The
+// road polylines drawn OVER this must stay the map's unmistakably brightest
+// layer (owner's GTA-legibility note), so this deliberately stays muted: a
+// charcoal-green -> pale-stone elevation gradient, darkened at cuttings and
+// ridgelines, flat pale blue-gray below the river/ocean datum.
+// ===========================================================================
+namespace {
+inline void lerp3(const float a[3], const float b[3], float t, float out[3]) {
+    for (int i = 0; i < 3; ++i) out[i] = a[i] + (b[i] - a[i]) * t;
+}
+} // namespace
+
+void bakeTerrainTilePixels(std::vector<uint8_t>& outRgba, uint32_t res,
+                           float wx0, float wz0, float wx1, float wz1) {
+    outRgba.assign((size_t)res * res * 4, 255);
+    if (res == 0 || wx1 <= wx0 || wz1 <= wz0) return;
+    const float stepX = (wx1 - wx0) / (float)res, stepZ = (wz1 - wz0) / (float)res;
+
+    // Pass 1: heights only — ONE terrainHeightAtWorld() call per pixel. Slope
+    // (below) reads back from THIS buffer's own neighbors via central
+    // difference rather than a second terrainNormalAtWorld() call per pixel,
+    // which halves the bake's total terrain.h query count; see
+    // ensureTerrainTile for the measured cost this earns.
+    std::vector<float> h((size_t)res * res);
+    float hLo = 1e9f, hHi = -1e9f;
+    for (uint32_t y = 0; y < res; ++y) {
+        for (uint32_t x = 0; x < res; ++x) {
+            const float wx = wx0 + ((float)x + 0.5f) * stepX;
+            const float wz = wz0 + ((float)y + 0.5f) * stepZ;
+            const float hh = terrainHeightAtWorld(wx, wz);
+            h[(size_t)y * res + x] = hh;
+            hLo = std::min(hLo, hh); hHi = std::max(hHi, hh);
+        }
+    }
+    const float range = std::max(1.0f, hHi - hLo);
+
+    const float cLow[3]   = { 0.062f, 0.092f, 0.070f };  // charcoal-green (valley floor)
+    const float cMid[3]   = { 0.100f, 0.090f, 0.070f };  // desaturated olive (hillside)
+    const float cHigh[3]  = { 0.165f, 0.160f, 0.150f };  // pale stone (ridge/peak) — still muted
+    const float cWater[3] = { 0.100f, 0.140f, 0.180f };  // pale blue-gray, FLAT (no slope term)
+
+    for (uint32_t y = 0; y < res; ++y) {
+        for (uint32_t x = 0; x < res; ++x) {
+            const float wx = wx0 + ((float)x + 0.5f) * stepX;
+            const float wz = wz0 + ((float)y + 0.5f) * stepZ;
+            float rgb[3];
+            const float waterY = worldWaterLevelAt(wx, wz);
+            if (waterY > kWorldWaterDry * 0.5f) {
+                // Below the river/ocean datum: flat, no relief — exactly what
+                // worldWaterLevelAt() already treats as "wet" here.
+                rgb[0] = cWater[0]; rgb[1] = cWater[1]; rgb[2] = cWater[2];
+            } else {
+                const float hh = h[(size_t)y * res + x];
+                const float t = std::clamp((hh - hLo) / range, 0.0f, 1.0f);
+                float c[3];
+                if (t < 0.55f) lerp3(cLow, cMid, t / 0.55f, c);
+                else            lerp3(cMid, cHigh, (t - 0.55f) / 0.45f, c);
+                const uint32_t xm = x > 0 ? x - 1 : x, xp = x < res - 1 ? x + 1 : x;
+                const uint32_t ym = y > 0 ? y - 1 : y, yp = y < res - 1 ? y + 1 : y;
+                const float dhdx = (h[(size_t)y * res + xp] - h[(size_t)y * res + xm]) /
+                                   std::max(1e-3f, (float)(xp - xm) * stepX);
+                const float dhdz = (h[(size_t)yp * res + x] - h[(size_t)ym * res + x]) /
+                                   std::max(1e-3f, (float)(yp - ym) * stepZ);
+                const float slope = std::sqrt(dhdx * dhdx + dhdz * dhdz);
+                const float darken = 1.0f - std::clamp(slope * 0.8f, 0.0f, 0.45f);
+                rgb[0] = c[0] * darken; rgb[1] = c[1] * darken; rgb[2] = c[2] * darken;
+            }
+            uint8_t* d = outRgba.data() + ((size_t)y * res + x) * 4;
+            d[0] = (uint8_t)std::clamp(rgb[0] * 255.0f, 0.0f, 255.0f);
+            d[1] = (uint8_t)std::clamp(rgb[1] * 255.0f, 0.0f, 255.0f);
+            d[2] = (uint8_t)std::clamp(rgb[2] * 255.0f, 0.0f, 255.0f);
+            d[3] = 255;
+        }
+    }
+}
+
 uint32_t bakeEntityTilePixels(const Scene& scene, x3::rhi::IRenderDevice& device,
                               const std::vector<uint32_t>& entities,
                               std::vector<uint8_t>& outRgba, uint32_t res,
@@ -393,6 +473,7 @@ void WorldMapSystem::shutdown(x3::rhi::IRenderDevice& device) {
     for (RegionTileEntry& rt : m_regionTiles)
         if (rt.tile.baked && rt.tile.tex.valid()) { device.destroyTexture(rt.tile.tex); rt.tile = MapTile{}; }
     m_regionTiles.clear();
+    if (m_terrainTile.baked && m_terrainTile.tex.valid()) { device.destroyTexture(m_terrainTile.tex); m_terrainTile = MapTile{}; }
 }
 
 void WorldMapSystem::discoveryTick(StoryFlags& flags, float px, float py, float pz) {
@@ -489,6 +570,43 @@ const MapTile* WorldMapSystem::regionTile(const std::string& regionId) const {
     return nullptr;
 }
 
+const MapTile* WorldMapSystem::ensureTerrainTile(x3::rhi::IRenderDevice& device) {
+    if (m_terrainTile.baked) return &m_terrainTile;
+    if (m_routes.empty()) return nullptr;   // no road-network geometry to cover yet
+    float x0 = 1e9f, z0 = 1e9f, x1 = -1e9f, z1 = -1e9f;
+    for (const MapRouteOverlay& r : m_routes) {
+        const size_t n = std::min(r.x.size(), r.z.size());
+        for (size_t i = 0; i < n; ++i) {
+            x0 = std::min(x0, r.x[i]); x1 = std::max(x1, r.x[i]);
+            z0 = std::min(z0, r.z[i]); z1 = std::max(z1, r.z[i]);
+        }
+    }
+    if (x1 <= x0 || z1 <= z0) return nullptr;
+    const float pad = 250.0f;   // breathing room around the outermost bore mouths
+    x0 -= pad; z0 -= pad; x1 += pad; z1 += pad;
+    const uint32_t res = 512;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<uint8_t> px;
+    bakeTerrainTilePixels(px, res, x0, z0, x1, z1);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    m_terrainTile.tex = device.createTexture(px.data(), res, res, /*srgb=*/false);
+    m_terrainTile.wx0 = x0; m_terrainTile.wz0 = z0; m_terrainTile.wx1 = x1; m_terrainTile.wz1 = z1;
+    m_terrainTile.res = res;
+    m_terrainTile.baked = m_terrainTile.tex.valid();
+    char b[192];
+    std::snprintf(b, sizeof(b),
+        "[worldmap] terrain underlay baked %ux%u (covers %.0f x %.0f m) in %.2f ms",
+        res, res, x1 - x0, z1 - z0, ms);
+    x3::logInfo(b);
+    return m_terrainTile.baked ? &m_terrainTile : nullptr;
+}
+
+void WorldMapSystem::invalidateTerrainTile(x3::rhi::IRenderDevice& device) {
+    if (m_terrainTile.baked && m_terrainTile.tex.valid()) device.destroyTexture(m_terrainTile.tex);
+    m_terrainTile = MapTile{};
+}
+
 void WorldMapSystem::invalidateSpireTiles(x3::rhi::IRenderDevice& device) {
     for (SpireFloor& sf : m_floors)
         if (sf.tile.baked && sf.tile.tex.valid()) { device.destroyTexture(sf.tile.tex); sf.tile = MapTile{}; }
@@ -560,29 +678,41 @@ void WorldMapSystem::drawPoiIcon(x3::ui::UiContext& ui, const MapPoi& poi, float
 // The ROAD NETWORK, as stamped polylines. The HUD layer only has axis-aligned
 // quads (the same constraint the player heading line and the gauge ticks live
 // with), so a line is a run of small overlapping squares stepped along the
-// segment. Two passes — the lighter concrete outline first, the dark asphalt
-// fill over it — so the fill is never crossed by a neighbour stamp's rim.
+// segment.
+//
+// FIGURE-GROUND (owner, mid-flight: "I just cant see ANYTHING on the MAP..
+// it needs to look like a GTA5 map"). GTA's roads are the BRIGHTEST thing on
+// the map — bold near-white ribbons with a dark casing, never thin gray
+// threads on near-black. Two passes: a near-black CASING first (drawn wider —
+// the road reads as cut INTO the muted terrain underlay), then a bright
+// near-white CORE narrower and on top. Main tours (the inner/outer rings)
+// draw at 1.6x weight, like a freeway next to a street. Both the casing and
+// the core carry the SAME dash phase for a bored/decked reach, so a tunnel
+// still reads as a broken line straight through the terrain — GTA's own
+// underpass convention — not just a gap in the fill.
 //
 // BUDGET: the device's HUD vertex ring is ~4k quads a frame and the rest of
 // the screen needs its share. The stamp step tracks the drawn width, which
-// keeps the whole 46-mile network at world-overview zoom near ~2k stamps; the
-// hard cap below is the guard rail, not the expected case.
+// keeps the whole 46-mile network at world-overview zoom well inside the cap
+// below (the guard rail, not the expected case).
 void WorldMapSystem::drawRouteOverlays(x3::ui::UiContext& ui, float W, float H) const {
     if (m_routes.empty()) return;
     const float margin = 32.0f;
-    int stampsLeft = 3200;
-    const float outCol[4]  = { 0.62f, 0.68f, 0.75f, 0.85f };   // concrete rim
-    const float fillCol[4] = { 0.10f, 0.11f, 0.13f, 1.00f };   // asphalt
+    int stampsLeft = 4200;
+    const float casingCol[4] = { 0.035f, 0.045f, 0.065f, 0.95f };  // near-black outline
+    const float coreCol[4]   = { 0.93f,  0.94f,  0.90f,  1.00f };  // bright near-white asphalt
     for (int pass = 0; pass < 2 && stampsLeft > 0; ++pass) {
-        const float* col = (pass == 0) ? outCol : fillCol;
+        const float* col = (pass == 0) ? casingCol : coreCol;
         for (const MapRouteOverlay& r : m_routes) {
             const size_t n = std::min(r.x.size(), r.z.size());
             if (n < 2) continue;
-            // True width at scale when zoomed in, floored so the overview still
-            // reads as a line rather than vanishing.
-            const float wFill = std::clamp(r.widthM * m_cam.scale, 2.0f, 14.0f);
-            const float wPx   = (pass == 0) ? wFill + 2.0f : wFill;
-            const float step  = std::max((wFill + 2.0f) * 0.45f, 3.5f);
+            const bool major = r.name == "INNER TOUR" || r.name == "OUTER TOUR";
+            const float weight = major ? 1.6f : 1.0f;
+            // True width at scale when zoomed in, floored well above "thread"
+            // (was a 2 px floor — read as a gray hair at world-overview zoom).
+            const float wCore = std::clamp(r.widthM * m_cam.scale, 4.0f, 22.0f) * weight;
+            const float wPx   = (pass == 0) ? wCore + 3.0f : wCore;
+            const float step  = std::max((wCore + 3.0f) * 0.45f, 3.5f);
             float distPx = 0.0f;              // along-route px — the dash phase
             for (size_t i = 0; i + 1 < n && stampsLeft > 0; ++i) {
                 float ax, ay, bx, by;
@@ -600,8 +730,8 @@ void WorldMapSystem::drawRouteOverlays(x3::ui::UiContext& ui, float W, float H) 
                 const int steps = std::max(1, (int)(len / step));
                 for (int k = 0; k <= steps && stampsLeft > 0; ++k) {
                     const float t = (float)k / (float)steps;
-                    if (r.dashed) {   // ~14 px on / 10 px off, phased by arc length
-                        if (std::fmod(distPx + t * len, 24.0f) > 14.0f) continue;
+                    if (r.dashed) {   // ~15 px on / 11 px off, phased by arc length
+                        if (std::fmod(distPx + t * len, 26.0f) > 15.0f) continue;
                     }
                     const float px = ax + sdx * t, py = ay + sdy * t;
                     if (px < -margin || px > W + margin || py < -margin || py > H + margin)
@@ -612,6 +742,69 @@ void WorldMapSystem::drawRouteOverlays(x3::ui::UiContext& ui, float W, float H) 
                 distPx += len;
             }
         }
+    }
+}
+
+void WorldMapSystem::drawRouteLabels(x3::ui::UiContext& ui, float W, float H) const {
+    if (m_routes.empty()) return;
+    // Zoom-gated + sparse: hidden at world-overview (46 miles of names at
+    // once is noise), fades in as the view nears drive scale.
+    const float kFadeLo = 0.09f, kFadeHi = 0.20f;
+    if (m_cam.scale <= kFadeLo) return;
+    const float alpha = std::clamp((m_cam.scale - kFadeLo) / (kFadeHi - kFadeLo), 0.0f, 1.0f);
+
+    // One label per UNIQUE route name (a route can be several overlay pieces —
+    // solid/dashed spans sharing a name), placed at the on-screen node
+    // closest to the viewport center, so it "travels" with the view instead
+    // of stacking duplicate labels or pinning to one spot off-screen.
+    struct Pick { float px = 0.0f, py = 0.0f; float d2 = 1e30f; bool have = false; };
+    std::vector<std::pair<std::string, Pick>> byName;
+    auto pickFor = [&](const std::string& nm) -> Pick& {
+        for (auto& kv : byName) if (kv.first == nm) return kv.second;
+        byName.emplace_back(nm, Pick{});
+        return byName.back().second;
+    };
+    const float cxp = W * 0.5f, cyp = H * 0.5f;
+    for (const MapRouteOverlay& r : m_routes) {
+        if (r.name.empty()) continue;
+        Pick& b = pickFor(r.name);
+        const size_t n = std::min(r.x.size(), r.z.size());
+        for (size_t i = 0; i < n; ++i) {
+            float px, py; m_cam.worldToPx(r.x[i], r.z[i], px, py);
+            if (px < 60 || py < 60 || px > W - 60 || py > H - 60) continue;
+            const float dx = px - cxp, dy = py - cyp, d2 = dx * dx + dy * dy;
+            if (d2 < b.d2) { b.d2 = d2; b.px = px; b.py = py; b.have = true; }
+        }
+    }
+    // Condensed white CAPS with a dark halo (Enemy = Tektur Condensed — the
+    // one condensed role in the font set; text()/textCentered() already draw
+    // the 1px drop-shadow halo).
+    for (auto& kv : byName) {
+        if (!kv.second.have) continue;
+        const float tc[4] = { 0.97f, 0.97f, 1.0f, alpha };
+        ui.textCentered(kv.first.c_str(), kv.second.px, kv.second.py - 16.0f, 14.0f, tc,
+                        x3::ui::UiContext::FontRole::Enemy);
+    }
+}
+
+void WorldMapSystem::drawMapMarker(x3::ui::UiContext& ui, const MapMarker& mk, float px, float py,
+                                   bool hovered) const {
+    float c[4] = { 0.75f, 0.85f, 0.95f, 0.95f };
+    const char* glyph = "P";
+    if      (mk.type == "garage") { glyph = "G"; c[0] = 1.0f;  c[1] = 0.80f; c[2] = 0.30f; }
+    else if (mk.type == "portal") { glyph = "T"; c[0] = 0.55f; c[1] = 0.85f; c[2] = 1.00f; }
+    const float s = hovered ? 16.0f : 13.0f;
+    const float bg[4] = { 0.02f, 0.05f, 0.08f, hovered ? 0.95f : 0.85f };
+    ui.quad(px - s * 0.5f, py - s * 0.5f, s, s, bg);
+    const float rim[4] = { c[0], c[1], c[2], hovered ? 1.0f : 0.9f };
+    ui.quad(px - s * 0.5f, py - s * 0.5f, s, 1.6f, rim);
+    ui.quad(px - s * 0.5f, py + s * 0.5f - 1.6f, s, 1.6f, rim);
+    ui.quad(px - s * 0.5f, py - s * 0.5f, 1.6f, s, rim);
+    ui.quad(px + s * 0.5f - 1.6f, py - s * 0.5f, 1.6f, s, rim);
+    ui.textCentered(glyph, px, py - s * 0.36f, s * 0.75f, rim, x3::ui::UiContext::FontRole::HudMono);
+    if (hovered && !mk.label.empty()) {
+        const float lbl[4] = { 0.92f, 0.97f, 1.0f, 0.95f };
+        ui.text(mk.label.c_str(), px + s, py - 7.0f, 13.0f, lbl, x3::ui::UiContext::FontRole::Menu);
     }
 }
 
@@ -705,9 +898,25 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
         }
     }
 
+    // ---- Terrain underlay (road-network worlds only; baked ONCE, see
+    // ensureTerrainTile) — drawn UNDER the road polylines so the bores'
+    // dashed reaches read against real elevation. Deliberately low-contrast
+    // (see bakeTerrainTilePixels) so the roads drawn next stay the map's
+    // brightest layer.
+    if (const MapTile* tt = ensureTerrainTile(device)) {
+        float tx0, ty0, tx1, ty1;
+        m_cam.worldToPx(tt->wx0, tt->wz0, tx0, ty0);
+        m_cam.worldToPx(tt->wx1, tt->wz1, tx1, ty1);
+        if (!(tx1 < -64 || ty1 < -64 || tx0 > W + 64 || ty0 > H + 64)) {
+            const float full[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+            device.drawHudImage(frame, tt->tex, tx0, ty0, tx1 - tx0, ty1 - ty0, full);
+        }
+    }
+
     // ---- Route overlays: the road network (road worlds; empty elsewhere).
     // Under the tiles/POIs/player so everything positional reads on top of it.
     drawRouteOverlays(ui, W, H);
+    drawRouteLabels(ui, W, H);
 
     // ---- Tiles: regions (fogged when unseen), then the Spire's selected floor.
     auto drawTile = [&](const MapTile& t, bool seen) {
@@ -761,6 +970,16 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
         }
     }
 
+    // ---- Map markers (road-network worlds: tunnel portals, LNSS garage —
+    // always visible, no discovery gating; a road world has no story-flag fog).
+    for (const MapMarker& mk : m_markers) {
+        float px, py; m_cam.worldToPx(mk.x, mk.z, px, py);
+        if (px < -40 || py < -40 || px > W + 40 || py > H + 40) continue;
+        const bool hov = !modal && std::fabs(px - in.mouseX) <= 12.0f &&
+                         std::fabs(py - in.mouseY) <= 12.0f;
+        drawMapMarker(ui, mk, px, py, hov);
+    }
+
     // ---- Companions (green dots).
     for (int i = 0; i < in.compCount && in.compX && in.compZ; ++i) {
         float px, py; m_cam.worldToPx(in.compX[i], in.compZ[i], px, py);
@@ -768,39 +987,67 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
         ui.quad(px - 3, py - 3, 6, 6, g);
     }
 
-    // ---- Waypoint (magenta cross + ring).
+    // ---- Waypoint: a GTA-radar-style magenta blip (cross + filled core +
+    // pulsing ring) — sized to read at a glance ("make it bigger", the
+    // owner's GTA note; was half this size).
     if (m_waypoint.active) {
         float px, py; m_cam.worldToPx(m_waypoint.x, m_waypoint.z, px, py);
-        const float mag[4] = { 1.0f, 0.35f, 0.95f, 0.95f };
-        ui.quad(px - 8, py - 1.5f, 16, 3, mag);
-        ui.quad(px - 1.5f, py - 8, 3, 16, mag);
-        const float ring[4] = { 1.0f, 0.35f, 0.95f, 0.35f + 0.2f * std::sin(m_pulse * 4.0f) };
-        const float rs = 14.0f;
-        ui.quad(px - rs, py - rs, rs * 2, 1.5f, ring);
-        ui.quad(px - rs, py + rs, rs * 2, 1.5f, ring);
-        ui.quad(px - rs, py - rs, 1.5f, rs * 2, ring);
-        ui.quad(px + rs, py - rs, 1.5f, rs * 2 + 1.5f, ring);
+        const float mag[4] = { 1.0f, 0.30f, 0.95f, 1.0f };
+        ui.quad(px - 12, py - 2.2f, 24, 4.4f, mag);
+        ui.quad(px - 2.2f, py - 12, 4.4f, 24, mag);
+        ui.quad(px - 4, py - 4, 8, 8, mag);   // filled center — the blip core
+        const float ring[4] = { 1.0f, 0.35f, 0.95f, 0.45f + 0.25f * std::sin(m_pulse * 4.0f) };
+        const float rs = 21.0f, rt = 2.2f;
+        ui.quad(px - rs, py - rs, rs * 2, rt, ring);
+        ui.quad(px - rs, py + rs, rs * 2, rt, ring);
+        ui.quad(px - rs, py - rs, rt, rs * 2, ring);
+        ui.quad(px + rs, py - rs, rt, rs * 2 + rt, ring);
     }
 
-    // ---- Player arrow: dot + heading line + view cone (holo line style).
+    // ---- Player arrow: a WHITE TRIANGLE in a dark disc (GTA's radar arrow),
+    // plus the view cone kept from v1. The HUD layer only has axis-aligned
+    // quads, so the disc is a scanline-filled circle and the triangle is
+    // filled by stamping rows across its width, shrinking base -> tip — the
+    // same stamped-quad technique the road polylines use for a line.
     {
         float px, py; m_cam.worldToPx(in.playerX, in.playerZ, px, py);
-        const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-        const float cone[4]  = { 0.6f, 0.9f, 1.0f, 0.22f };
         const float hx = std::cos(in.playerYaw), hz = std::sin(in.playerYaw);
-        // View cone: two faint rays at +-0.42 rad, stepped as small quads.
+        const float ux = -hz, uz = hx;   // perpendicular (left/right of heading)
+
+        const float discR = 13.0f;
+        const float discCol[4] = { 0.03f, 0.05f, 0.08f, 0.90f };
+        for (int dy = -(int)discR; dy <= (int)discR; ++dy) {
+            const float hw = std::sqrt(std::max(0.0f, discR * discR - (float)(dy * dy)));
+            ui.quad(px - hw, py + (float)dy, hw * 2.0f, 1.0f, discCol);
+        }
+        const float discRim[4] = { 0.35f, 0.6f, 0.85f, 0.9f };
+        for (int a = 0; a < 48; ++a) {
+            const float t = (float)a / 48.0f * 6.2831853f;
+            ui.quad(px + std::cos(t) * discR - 0.75f, py + std::sin(t) * discR - 0.75f, 1.5f, 1.5f, discRim);
+        }
+
+        const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        const float tipLen = 10.5f, tailLen = 6.0f, baseHalf = 6.5f;
+        for (int r = 0; r <= 9; ++r) {
+            const float t = (float)r / 9.0f;                    // 0 tail .. 1 tip
+            const float along = -tailLen + (tipLen + tailLen) * t;
+            const float halfw = baseHalf * (1.0f - t);
+            const float cxr = px + hx * along, cyr = py + hz * along;
+            const int cols = std::max(1, (int)(halfw / 1.6f));
+            for (int c = -cols; c <= cols; ++c) {
+                const float off = (float)c / (float)cols * halfw;
+                ui.quad(cxr + ux * off - 1.4f, cyr + uz * off - 1.4f, 2.8f, 2.8f, white);
+            }
+        }
+
+        // Faint view cone (unchanged from v1 — still reads as heading spread).
+        const float cone[4] = { 0.6f, 0.9f, 1.0f, 0.20f };
         for (int side = -1; side <= 1; side += 2) {
             const float a = in.playerYaw + 0.42f * (float)side;
             const float dx = std::cos(a), dz = std::sin(a);
-            for (int s = 2; s < 16; ++s)
+            for (int s = 3; s < 16; ++s)
                 ui.quad(px + dx * s * 2.4f - 1, py + dz * s * 2.4f - 1, 2, 2, cone);
         }
-        // Heading line (bright).
-        for (int s = 1; s < 11; ++s)
-            ui.quad(px + hx * s * 2.4f - 1, py + hz * s * 2.4f - 1, 2, 2, white);
-        ui.quad(px - 4, py - 4, 8, 8, white);
-        const float dotRim[4] = { 0.1f, 0.2f, 0.3f, 1.0f };
-        ui.quad(px - 2, py - 2, 4, 4, dotRim);
     }
 
     // ---- Floor selector (Spire) — left edge.
