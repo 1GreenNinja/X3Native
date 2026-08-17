@@ -632,6 +632,278 @@ std::vector<WeaponDef> makeDefaultRoster() {
         r.push_back(w);
     }
 
+    // =====================================================================
+    // THE CANONICAL 12 (2026-08). The original game's arsenal is 12 weapons:
+    //   Pistol · Shotgun · Bazooka · Laser · Plasma · ChainGun · LightningGun ·
+    //   RailGun · FlameThrower · NapalmLauncher · FreezeRay · BFG11k
+    // Eight of those already had a slot above (the Bazooka is slot 8 "rocket" —
+    // there is deliberately NO second rocket weapon), plus two X3Native-only
+    // weapons that are NOT in the canon 12 and are kept as-is (smg, plasma_rifle).
+    // The six below close the gap: Laser, RailGun, FlameThrower, NapalmLauncher,
+    // FreezeRay, BFG11k.
+    //
+    // PROVENANCE — every stat is harvested from the C++ port of the original game at
+    // D:\GameDev\EscapeLab3D (read-only), specifically src/game/weapon.cpp
+    // InitWeaponDefs() and src/game/game_types.h WEAPON_STATS/DEFAULT_MAX_AMMO. That
+    // port is the design authority for the canon roster.
+    //
+    // UNIT CONVERSION (the port is a 2D game in pixel-ish units; X3Native is metric).
+    // The scale factors are derived from the weapons the two rosters already SHARE,
+    // not invented:
+    //   * DAMAGE  ~1:1  — port Pistol 15 vs ours 16; port Bazooka 75 direct vs our
+    //                     rocket 80. Damage numbers therefore carry over directly.
+    //   * RADIUS  x0.05 — port Bazooka explosionRadius 80 vs our rocket splashRadius 4.0 m.
+    //   * SPEED   x0.05 — port Bazooka projectileSpeed 600 vs our rocket projSpeed 30 m/s.
+    //   * RANGE   x0.022 — port Pistol maxRange 2500 vs our pistol range 55 m.
+    // Where a converted range would be absurd for the facility's interiors (the
+    // RailGun's 10000 -> 220 m) it is clamped and the clamp is called out at the site.
+    // =====================================================================
+
+    // ---- 9) Laser — the canon CONTINUOUS beam. ------------------------------
+    // Port: 35 dmg/tick, fireRate 60 ("fires every frame"), isHitscan + isContinuous,
+    // maxRange 3000, ammo 200, blue. This is the roster's precision sustained-damage
+    // tool: dead accurate, no travel time, no chaining — it just does not stop while
+    // you hold it. That is what separates it from the Lightning Gun (which chains but
+    // zaps discretely and dies at 30 m).
+    //
+    // The port's literal 60 shots/s at 35 dmg = 2100 DPS, which would delete a 400-HP
+    // Act-1 boss in 0.19 s and break the W11 power-ladder invariant every other weapon
+    // is tuned against. The CONTINUOUS FEEL is the canon intent, not that DPS, so the
+    // tick is cut to 9 at 20/s = 180 sustained DPS — a clear step over the pistol (72)
+    // and in the same band as the chaingun (~195), with the beam read preserved by
+    // `continuous` + a fire rate fast enough to look unbroken.
+    {
+        WeaponDef w;
+        w.name        = "laser";
+        w.kind        = FireKind::Hitscan;   // port: isHitscan
+        w.automatic   = true;                // held = keeps firing
+        w.damage      = 9;                   // per beam tick (port 35/tick at 60/s rescaled)
+        w.type        = x3::DamageType::Energy;   // x3_damage.h lists "laser" under Energy
+        w.fireRate    = 20.0f;               // fast enough to read as unbroken
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;                // port spread 0.0 — a beam is dead-accurate
+        w.recoilDeg   = 0.08f;               // essentially none (steady beam)
+        w.range       = 66.0f;               // port 3000 x0.022
+        w.magSize     = 200;                 // port DEFAULT_MAX_AMMO[Laser] = 200
+        w.reserveAmmo = 400;
+        w.reloadTime  = 2.4f;
+        w.beam        = true;                // render as a solid beam (host hint)
+        w.continuous  = true;                // port isContinuous: ONE unbroken beam
+        w.viewmodelGlb = "WeaponEnergyPistol2.glb";  // compact emitter reads as a beam gun
+        w.vmScale     = 0.20f;
+        w.vmMuzzle    = { -0.003f, 0.652f, 0.855f };  // WeaponEnergyPistol2.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_lightning";  // closest existing kind: electric-blue energy
+        w.impactFx    = "impact_lightning";
+        w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";  // sustained beam tone
+        w.fireSfxLoop = true;                // continuous beam: ONE loop voice
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";
+        r.push_back(w);
+    }
+
+    // ---- 10) RailGun — the canon PIERCING slug. ----------------------------
+    // Port: 300 dmg, fireRate 0.5, isHitscan, penetrates = true ("through ALL
+    // enemies"), maxRange 10000, ammo 15, white. The sniper: one deliberate,
+    // expensive shot that skewers a whole line of enemies.
+    //
+    // Damage 300 carries over 1:1 (the port's damage scale matches ours). The port's
+    // "penetrates ALL" is expressed as pierceTargets = 6 extra bodies, which is every
+    // enemy a facility corridor can physically line up and gives the host a bound to
+    // walk instead of an unbounded loop. Range is CLAMPED from the converted 220 m to
+    // 150 m — still by far the longest reach in the roster (next is the rocket at
+    // 100 m) but not larger than the streamed world the ray would have to resolve in.
+    {
+        WeaponDef w;
+        w.name        = "railgun";
+        w.kind        = FireKind::Hitscan;
+        w.automatic   = false;
+        w.damage      = 300;                 // port: 300 (1:1 damage scale)
+        w.type        = x3::DamageType::Energy;   // x3_damage.h lists "railgun" under Energy
+        w.fireRate    = 0.5f;                // port: 0.5 shots/s — one deliberate shot
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;                // port spread 0.0 — perfect accuracy
+        w.recoilDeg   = 5.5f;                // heaviest kick in the roster
+        w.range       = 150.0f;              // port 10000 x0.022 = 220 m, CLAMPED to 150 m
+        w.magSize     = 5;
+        w.reserveAmmo = 15;                  // port DEFAULT_MAX_AMMO[RailGun] = 15
+        w.reloadTime  = 3.2f;                // slow, deliberate reload
+        w.pierceTargets = 6;                 // port penetrates=true ("through ALL enemies")
+        w.viewmodelGlb = "WeaponRailgun.glb"; // the purpose-built railgun mesh, finally on the railgun
+        w.vmScale     = 0.24f;                // longarm (~0.46 m held)
+        w.vmMuzzle    = {  0.000f, 0.494f, 0.909f };  // WeaponRailgun.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_rocket";     // big bright discharge (no dedicated rail kind)
+        w.impactFx    = "impact_plasma";
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav";  // heaviest single crack
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";
+        r.push_back(w);
+    }
+
+    // ---- 11) FlameThrower — the canon short-range burn cone. ---------------
+    // Port: 12 dmg/tick, fireRate 30, pelletsPerShot 3 ("3 flame puffs per tick"),
+    // spread 12 deg, maxRange 300 (the shortest in the game), appliesBurn = true,
+    // isContinuous, ammo 250, gravityScale -0.2 ("flames rise slightly").
+    //
+    // DELIBERATE DEVIATION — HITSCAN, not projectile. The port fires 3 travelling
+    // FlamePuff projectiles per tick. X3Native's projectile path spawns exactly ONE
+    // projectile per shot (Arsenal::fire pushes a single ProjectileSpawn) and the host
+    // only ever reads shot.projectiles[0], so a 3-puff burst is not expressible without
+    // changing the host — which this lane may not touch. A multi-ray hitscan CONE is
+    // already the established X3Native idiom for exactly this shape (the shotgun fires
+    // 10 spread rays), and over a 9 m reach the travel time it discards is ~0.02 s. The
+    // BEHAVIOUR that defines the weapon — a wide short cone that sets things on fire —
+    // is fully preserved via pellets/spreadDeg + the burn DOT. What is NOT preserved is
+    // visible travelling flame puffs; that is an FX-layer job the host would have to
+    // grow, and it is listed as left-undone rather than faked here.
+    {
+        WeaponDef w;
+        w.name        = "flamethrower";
+        w.kind        = FireKind::Hitscan;   // see DELIBERATE DEVIATION above
+        w.automatic   = true;                // held = continuous stream
+        w.damage      = 6;                   // per puff; x3 puffs x 12/s = ~216 DPS point-blank
+        w.type        = x3::DamageType::Bio; // closest existing tag for chemical fuel burn
+        w.fireRate    = 12.0f;               // port 30/s rescaled to keep the DPS in-band
+        w.pellets     = 3;                   // port pelletsPerShot = 3 flame puffs
+        w.spreadDeg   = 12.0f;               // port spread = 12 deg — a wide cone
+        w.recoilDeg   = 0.05f;               // almost none (a fuel stream, not a gun)
+        w.range       = 9.0f;                // port 300 x0.022 = 6.6 m, opened slightly to 9 m
+        w.magSize     = 250;                 // port DEFAULT_MAX_AMMO[FlameThrower] = 250
+        w.reserveAmmo = 500;
+        w.reloadTime  = 3.0f;                // swapping a fuel canister is slow
+        w.continuous  = true;                // port isContinuous
+        w.burnDuration= 3.0f;                // port appliesBurn — the DOT is the point
+        w.burnDps     = 8;
+        w.viewmodelGlb = "WeaponRocketLauncher.glb";  // bulky tube/nozzle reads as a projector
+        w.vmScale     = 0.24f;
+        w.vmMuzzle    = {  0.001f, 0.368f, 0.916f };  // WeaponRocketLauncher.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_rocket";     // hot orange discharge (nearest existing kind)
+        w.impactFx    = "impact_explosion";
+        w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";
+        w.fireSfxLoop = true;                // continuous stream: ONE loop voice
+        r.push_back(w);
+    }
+
+    // ---- 12) Napalm Launcher — the canon AREA-DENIAL weapon. ---------------
+    // Port: 120 dmg, fireRate 0.8, explosionRadius 120, projectileSpeed 700,
+    // gravityScale 0.8 ("heavy arcing trajectory"), firePoolDuration 5.0 s,
+    // firePoolDPS 25, appliesBurn, ammo 10.
+    //
+    // This is the weapon that is NOT just "a second rocket": the blast is the opener,
+    // and the BURNING GROUND POOL it leaves behind is the actual weapon. It denies a
+    // corridor for 5 seconds. Direct 120 + 70 splash over 6 m, then 25 DPS standing
+    // fire in a 3 m pool. Note the port's arcing trajectory (gravityScale 0.8) has no
+    // equivalent field in X3Native's flat-velocity projectile model — the host
+    // integrates pos += vel*dt with no gravity term — so the arc is NOT reproduced;
+    // it is listed as left-undone rather than silently dropped.
+    {
+        WeaponDef w;
+        w.name        = "napalm";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 120;                 // port: 120 direct (1:1 damage scale)
+        w.type        = x3::DamageType::Explosive;
+        w.fireRate    = 0.8f;                // port: 0.8 shots/s
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;                // port spread 0.0
+        w.recoilDeg   = 4.0f;
+        w.range       = 44.0f;               // port 2000 x0.022
+        w.magSize     = 4;
+        w.reserveAmmo = 10;                  // port DEFAULT_MAX_AMMO[NapalmLauncher] = 10
+        w.reloadTime  = 3.4f;
+        w.projSpeed   = 35.0f;               // port 700 x0.05
+        w.splashRadius= 6.0f;                // port explosionRadius 120 x0.05
+        w.splashDamage= 70;
+        w.firePoolDuration = 5.0f;           // port firePoolDuration = 5.0 s — AREA DENIAL
+        w.firePoolDps      = 25;             // port firePoolDPS = 25
+        w.firePoolRadius   = 3.0f;           // the standing-fire footprint
+        w.burnDuration= 4.0f;                // port appliesBurn
+        w.burnDps     = 10;
+        w.viewmodelGlb = "WeaponRocketLauncher.glb";  // a launcher tube — literally the right read
+        w.vmScale     = 0.26f;
+        w.vmMuzzle    = {  0.001f, 0.368f, 0.916f };  // WeaponRocketLauncher.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_rocket";
+        w.impactFx    = "impact_explosion";
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";
+        r.push_back(w);
+    }
+
+    // ---- 13) Freeze Ray — the canon CONTROL weapon. ------------------------
+    // Port: 5 dmg, fireRate 20, pelletsPerShot 4 ("3-5 crystalline particles"),
+    // spread 10 deg, maxRange 400, appliesFreeze = true, isContinuous, ammo 120.
+    // The port's own comment says it plainly: "5 damage/tick but the real power is
+    // the freeze". This is a CONTROL tool, not a damage tool — it is the only weapon
+    // in the roster that makes an enemy stop being a threat without killing it.
+    //
+    // Same HITSCAN deviation as the flamethrower, for the same host reason (a 4-particle
+    // cone is not expressible through the single-projectile path). The freeze is modelled
+    // as a slow rather than a hard stun: freezeSlowFactor 0.35 = down to 35% move speed
+    // for 2.5 s, refreshed by every tick you keep the beam on target.
+    {
+        WeaponDef w;
+        w.name        = "freezeray";
+        w.kind        = FireKind::Hitscan;   // see the flamethrower's DELIBERATE DEVIATION
+        w.automatic   = true;                // held = continuous cone
+        w.damage      = 5;                   // port: 5 — deliberately feeble, the slow is the payload
+        w.type        = x3::DamageType::Energy;  // no Cryo tag exists in x3_damage.h (see report)
+        w.fireRate    = 12.0f;               // port 20/s eased slightly
+        w.pellets     = 4;                   // port pelletsPerShot = 4 crystalline particles
+        w.spreadDeg   = 10.0f;               // port spread = 10 deg
+        w.recoilDeg   = 0.05f;
+        w.range       = 12.0f;               // port 400 x0.022 = 8.8 m, opened slightly to 12 m
+        w.magSize     = 120;                 // port DEFAULT_MAX_AMMO[FreezeRay] = 120
+        w.reserveAmmo = 240;
+        w.reloadTime  = 2.6f;
+        w.continuous  = true;                // port isContinuous
+        w.freezeDuration   = 2.5f;           // port appliesFreeze — THE payload
+        w.freezeSlowFactor = 0.35f;          // down to 35% move speed while frozen
+        w.viewmodelGlb = "WeaponBFG.glb";    // wide emitter aperture reads as a projector
+        w.vmScale     = 0.22f;
+        w.vmMuzzle    = { -0.003f, 0.528f, 0.864f };  // WeaponBFG.glb emitter tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_plasma";     // cool-tint energy flash (nearest existing kind)
+        w.impactFx    = "impact_plasma";
+        w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";
+        w.fireSfxLoop = true;                // continuous cone: ONE loop voice
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";
+        r.push_back(w);
+    }
+
+    // ---- 14) BFG 11k — the canon ultimate weapon. --------------------------
+    // Port: 150 direct dmg, fireRate 0.3, projectileSpeed 350 ("slow, menacing"),
+    // explosionRadius 100, secondaryBolts 8, ammoPerShot 5, maxAmmo 5, BFG-green.
+    // One full pickup is exactly ONE shot — that scarcity IS the weapon's design.
+    //
+    // Kept as the top of the ladder without trivializing it: 150 direct + 90 splash
+    // over 5 m, and at 5 rounds per shot on a 5-round magazine you fire once and then
+    // hunt for more. The 8 secondary bolts at detonation are what make it read as the
+    // BFG rather than "a bigger rocket".
+    {
+        WeaponDef w;
+        w.name        = "bfg11k";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 150;                 // port: 150 direct (1:1 damage scale)
+        w.type        = x3::DamageType::Energy;   // x3_damage.h lists "BFG" under Energy
+        w.fireRate    = 0.3f;                // port: 0.3 shots/s
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;                // port spread 0.0
+        w.recoilDeg   = 6.0f;                // the biggest shove in the game
+        w.range       = 66.0f;               // port 3000 x0.022
+        w.magSize     = 5;                   // port DEFAULT_MAX_AMMO[BFG11k] = 5
+        w.reserveAmmo = 10;
+        w.reloadTime  = 4.0f;                // slowest reload in the roster
+        w.ammoPerShot = 5;                   // port ammoPerShot = 5 — one pickup, one shot
+        w.projSpeed   = 17.5f;               // port 350 x0.05 — slow and menacing
+        w.splashRadius= 5.0f;                // port explosionRadius 100 x0.05
+        w.splashDamage= 90;                  // devastating blast at the center
+        w.secondaryBolts = 8;                // port secondaryBolts = 8
+        w.viewmodelGlb = "WeaponBFG.glb";    // the purpose-built BFG mesh, finally on the BFG
+        w.vmScale     = 0.26f;               // bulkiest energy cannon read
+        w.vmMuzzle    = { -0.003f, 0.528f, 0.864f };  // WeaponBFG.glb emitter tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_plasma";     // green-ish energy discharge
+        w.impactFx    = "impact_explosion";
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav";
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";
+        r.push_back(w);
+    }
+
     // W2-C: every weapon shares the repo-local reload + dry-fire WAVs (committed by
     // the sound department under assets/audio/weapons/; resolveAudio silent-skips
     // if absent). Per-weapon bespoke reload foley can override these later.
@@ -844,7 +1116,13 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     // Consume a round, arm the fire-rate cooldown (from the effective rate), recoil.
     // CHARGE weapons (Lightning) do NOT consume a mag round — their charge pool is
     // drained continuously in tick() while the beam is held (see setBeamHeld).
-    if (!m_infiniteAmmo && !d.usesCharge) s.ammoInMag -= 1;   // IDKFA: never deplete
+    // CANON-12: a shot may cost more than one round (the BFG eats 5 of its 5). Clamp at
+    // 0 so a partially-stocked mag still fires its last shot rather than going negative.
+    const int roundsPerShot = (d.ammoPerShot > 1) ? d.ammoPerShot : 1;
+    if (!m_infiniteAmmo && !d.usesCharge) {
+        s.ammoInMag -= roundsPerShot;   // IDKFA: never deplete
+        if (s.ammoInMag < 0) s.ammoInMag = 0;
+    }
     // PASSIVE REGEN: pulling the trigger INTERRUPTS regen and restarts the cool-down
     // beat. tick() also does this off m_beamHeld (the host's held-fire flag), but doing
     // it here too means the rule holds for ANY fire path — a caller that fires without
@@ -867,6 +1145,13 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
             ray.chain        = false;
             ray.falloffStart = d.falloffStart;
             ray.type         = d.type;          // canon-aliens Adaptive-Hide tag
+            // CANON-12 payloads: railgun pierce, laser continuity, flame burn, freeze slow.
+            ray.pierceTargets    = d.pierceTargets;
+            ray.continuous       = d.continuous;
+            ray.burnDuration     = d.burnDuration;
+            ray.burnDps          = d.burnDps;
+            ray.freezeDuration   = d.freezeDuration;
+            ray.freezeSlowFactor = d.freezeSlowFactor;
             out.rays.push_back(ray);
         }
         // Lightning Gun chain: extra rays the host resolves against NEARBY enemies
@@ -882,6 +1167,12 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
             ray.chain        = true;
             ray.falloffStart = d.falloffStart;
             ray.type         = d.type;          // chain rays inherit the firing weapon's type
+            // Chain links inherit the firing weapon's status payloads too.
+            ray.continuous       = d.continuous;
+            ray.burnDuration     = d.burnDuration;
+            ray.burnDps          = d.burnDps;
+            ray.freezeDuration   = d.freezeDuration;
+            ray.freezeSlowFactor = d.freezeSlowFactor;
             out.rays.push_back(ray);
         }
     } else { // Projectile
@@ -894,6 +1185,15 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
         pj.splashRadius = d.splashRadius;   // Plasma Rifle: small AoE on impact
         pj.splashDamage = d.splashDamage;
         pj.type         = d.type;            // canon-aliens Adaptive-Hide tag
+        // CANON-12 payloads: napalm's ground pool + burn, freeze slow, BFG secondaries.
+        pj.firePoolDuration = d.firePoolDuration;
+        pj.firePoolDps      = d.firePoolDps;
+        pj.firePoolRadius   = d.firePoolRadius;
+        pj.burnDuration     = d.burnDuration;
+        pj.burnDps          = d.burnDps;
+        pj.freezeDuration   = d.freezeDuration;
+        pj.freezeSlowFactor = d.freezeSlowFactor;
+        pj.secondaryBolts   = d.secondaryBolts;
         out.projectiles.push_back(pj);
     }
     return out;
@@ -1900,6 +2200,280 @@ bool runWeaponsSelfTest() {
         wcheck(lensOff, "W14e vm_fov 0 == share the world lens (magnification 1, no change)");
         wcheck(bigger && offAxis && magMath,
                "W14f vm_fov 45 vs world 60 magnifies the gun + pushes it off-axis by tan ratio");
+    }
+
+    // =======================================================================
+    // W15/W16 — THE CANONICAL 12. The original game's arsenal (per the C++ port at
+    // D:\GameDev\EscapeLab3D, src/game/game_types.h WeaponType) is:
+    //   Pistol Shotgun Bazooka Laser Plasma ChainGun LightningGun RailGun
+    //   FlameThrower NapalmLauncher FreezeRay BFG11k
+    // These tests assert the roster COVERS all twelve, that every newly-added weapon
+    // carries its own PROBE-MEASURED barrel tip (not a guess, and not a value shared
+    // with a different-length gun), and that each one's distinguishing behaviour
+    // actually reaches the host through ResolvedFire.
+    // =======================================================================
+
+    // ---- W15a: all twelve canon weapons are present in the roster. ---------
+    // The Bazooka is slot "rocket" (there is deliberately no second rocket weapon).
+    {
+        Arsenal a;
+        struct Canon { const char* canonName; const char* slot; };
+        const Canon canon[] = {
+            { "Pistol",         "pistol"       }, { "Shotgun",        "shotgun"      },
+            { "Bazooka",        "rocket"       }, { "Laser",          "laser"        },
+            { "Plasma",         "plasma"       }, { "ChainGun",       "chaingun"     },
+            { "LightningGun",   "lightning"    }, { "RailGun",        "railgun"      },
+            { "FlameThrower",   "flamethrower" }, { "NapalmLauncher", "napalm"       },
+            { "FreezeRay",      "freezeray"    }, { "BFG11k",         "bfg11k"       },
+        };
+        bool allPresent = true;
+        for (const Canon& c : canon) {
+            if (a.indexOf(c.slot) < 0) {
+                allPresent = false;
+                x3::logInfo(std::string("[weapons-test]   MISSING canon weapon ") +
+                            c.canonName + " (expected roster slot '" + c.slot + "')");
+            }
+        }
+        wcheck(allPresent, "W15a all 12 canonical weapons present in the arsenal");
+    }
+
+    // ---- W15b: every new weapon's vmMuzzle IS the probe-MEASURED barrel tip. -
+    // This is the guard against the viewmodel-anchor bug: a guessed or copy-pasted
+    // muzzle puts the gun's barrel line in the wrong place (the shotgun's source model
+    // is 4.4 m — a shared guess was off by metres) and makes the FX spawn off-barrel.
+    // Values are the output of `python tools/weapon_muzzle_probe.py` for each weapon's
+    // OWN viewmodelGlb; re-run that tool if a viewmodel GLB is ever swapped.
+    {
+        Arsenal a;
+        struct Measured { const char* slot; const char* glb; float x, y, z; };
+        const Measured measured[] = {
+            { "laser",        "WeaponEnergyPistol2.glb", -0.003f, 0.652f, 0.855f },
+            { "railgun",      "WeaponRailgun.glb",        0.000f, 0.494f, 0.909f },
+            { "flamethrower", "WeaponRocketLauncher.glb", 0.001f, 0.368f, 0.916f },
+            { "napalm",       "WeaponRocketLauncher.glb", 0.001f, 0.368f, 0.916f },
+            { "freezeray",    "WeaponBFG.glb",           -0.003f, 0.528f, 0.864f },
+            { "bfg11k",       "WeaponBFG.glb",           -0.003f, 0.528f, 0.864f },
+        };
+        bool muzzlesMeasured = true, glbsMatch = true;
+        for (const Measured& m : measured) {
+            const int i = a.indexOf(m.slot);
+            if (i < 0) { muzzlesMeasured = false; continue; }
+            const WeaponDef& d = a.def(i);
+            // The muzzle must be the measurement for the GLB this weapon actually draws —
+            // a muzzle measured off a DIFFERENT model is exactly the bug being guarded.
+            if (d.viewmodelGlb != m.glb) {
+                glbsMatch = false;
+                x3::logInfo(std::string("[weapons-test]   ") + m.slot + " draws " +
+                            d.viewmodelGlb + " but its muzzle was measured on " + m.glb +
+                            " — re-run tools/weapon_muzzle_probe.py");
+            }
+            if (std::fabs(d.vmMuzzle.x - m.x) > 1e-4f ||
+                std::fabs(d.vmMuzzle.y - m.y) > 1e-4f ||
+                std::fabs(d.vmMuzzle.z - m.z) > 1e-4f) {
+                muzzlesMeasured = false;
+                x3::logInfo(std::string("[weapons-test]   ") + m.slot + " vmMuzzle is not the measured value");
+            }
+        }
+        wcheck(muzzlesMeasured, "W15b every canon-12 addition carries its PROBE-MEASURED barrel tip");
+        wcheck(glbsMatch,       "W15c each measured muzzle belongs to the GLB that weapon actually draws");
+    }
+
+    // ---- W15d: the new weapons fire FROM their own muzzle, and the muzzle is --
+    // genuinely per-weapon (a shared guess would collapse these onto one point).
+    // W13a already proves muzzle == vmMuzzle-through-the-viewmodel-matrix for the WHOLE
+    // roster; this pins the specific claim that the SIX ADDITIONS have distinct barrel
+    // reaches rather than all inheriting one default.
+    {
+        Arsenal a;
+        const char* added[] = { "laser", "railgun", "flamethrower", "napalm", "freezeray", "bfg11k" };
+        const float ex = 0.0f, ey = 1.7f, ez = 0.0f;
+        const x3::phys::Vec3 fwd{ 1, 0, 0 };
+        bool allAhead = true, anyDistinct = false;
+        float firstReach = -1.0f;
+        for (const char* nm : added) {
+            const int i = a.indexOf(nm);
+            if (i < 0) { allAhead = false; continue; }
+            a.select(i);
+            const x3::phys::Vec3 m = a.currentMuzzle(ex, ey, ez, 0.0f, 0.0f);
+            const float reach = (m.x - ex) * fwd.x + (m.y - ey) * fwd.y + (m.z - ez) * fwd.z;
+            // The barrel tip must lead the eye (the shot leaves the gun, not the face)
+            // and sit BELOW eye level (the fixed viewmodel-anchor read).
+            if (reach < 0.2f || m.y >= ey) allAhead = false;
+            if (firstReach < 0.0f) firstReach = reach;
+            else if (std::fabs(reach - firstReach) > 1e-3f) anyDistinct = true;
+        }
+        wcheck(allAhead,    "W15d each added weapon's muzzle leads the eye and sits below eye level");
+        wcheck(anyDistinct, "W15e the added weapons have DISTINCT barrel reaches (not one shared guess)");
+    }
+
+    // ---- W16a: RAILGUN PIERCES. The slug must carry a pierce budget through to --
+    // the host on its ray; every other hitscan weapon must NOT (a stray pierce would
+    // silently turn the shotgun into a wall-of-piercing-pellets).
+    {
+        Arsenal a;
+        uint32_t rng = 0x1234u;
+        const int i = a.indexOf("railgun");
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        const bool pierces = shot.fired && !shot.rays.empty() && shot.rays[0].pierceTargets > 0;
+        // Nothing else in the roster pierces.
+        bool othersDontPierce = true;
+        for (int wi = 0; wi < a.count(); ++wi)
+            if (wi != i && a.def(wi).pierceTargets != 0) othersDontPierce = false;
+        wcheck(pierces && othersDontPierce,
+               "W16a RailGun fires a PIERCING slug (pierceTargets reaches the host; nothing else pierces)");
+    }
+
+    // ---- W16b: LASER IS CONTINUOUS. It must be an automatic beam flagged -------
+    // continuous, and fire fast enough that held fire reads as one unbroken line
+    // rather than discrete shots. Contrast with the Lightning Gun, which is a beam
+    // but deliberately NOT continuous (discrete zaps).
+    {
+        Arsenal a;
+        uint32_t rng = 0x2345u;
+        const int i = a.indexOf("laser");
+        const WeaponDef& d = a.def(i);
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        const bool contDef = d.continuous && d.beam && d.automatic && d.fireRate >= 15.0f;
+        const bool contRay = shot.fired && !shot.rays.empty() &&
+                             shot.rays[0].continuous && shot.rays[0].beam;
+        // The distinction from the lightning gun must be real, not nominal.
+        const int li = a.indexOf("lightning");
+        const bool distinct = (li < 0) || !a.def(li).continuous;
+        wcheck(contDef && contRay && distinct,
+               "W16b Laser is a CONTINUOUS beam (flagged through to the host; distinct from lightning)");
+    }
+
+    // ---- W16c: FREEZE RAY APPLIES A SLOW. Every particle must carry a real -----
+    // slow (a factor genuinely below 1) for a real duration, and the weapon must be
+    // feeble on raw damage — the port is explicit that the freeze, not the damage,
+    // is the payload. Nothing else in the roster may freeze.
+    {
+        Arsenal a;
+        uint32_t rng = 0x3456u;
+        const int i = a.indexOf("freezeray");
+        const WeaponDef& d = a.def(i);
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        bool everyRayFreezes = shot.fired && !shot.rays.empty();
+        for (const auto& ray : shot.rays)
+            if (!(ray.freezeDuration > 0.0f && ray.freezeSlowFactor < 1.0f &&
+                  ray.freezeSlowFactor > 0.0f)) everyRayFreezes = false;
+        // A control weapon, not a damage weapon: it must be the weakest per-hit gun.
+        bool weakest = true;
+        for (int wi = 0; wi < a.count(); ++wi)
+            if (wi != i && a.def(wi).damage < d.damage) weakest = false;
+        // Cone: the port fires multiple crystalline particles, not one ray.
+        const bool isCone = (int)shot.rays.size() >= 3 && d.spreadDeg > 0.0f;
+        bool othersDontFreeze = true;
+        for (int wi = 0; wi < a.count(); ++wi)
+            if (wi != i && a.def(wi).freezeDuration != 0.0f) othersDontFreeze = false;
+        wcheck(everyRayFreezes && weakest && isCone && othersDontFreeze,
+               "W16c FreezeRay applies a real SLOW on every particle (the payload, not its 5 damage)");
+    }
+
+    // ---- W16d: NAPALM LEAVES AREA DAMAGE. The bolt must carry a burning ground -
+    // pool (duration AND dps AND radius) through to the host — that standing fire is
+    // what separates napalm from the rocket. The rocket must NOT leave one.
+    {
+        Arsenal a;
+        uint32_t rng = 0x4567u;
+        const int i = a.indexOf("napalm");
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        const bool leavesPool = shot.fired && !shot.projectiles.empty() &&
+                                shot.projectiles[0].firePoolDuration > 0.0f &&
+                                shot.projectiles[0].firePoolDps      > 0 &&
+                                shot.projectiles[0].firePoolRadius   > 0.0f;
+        // It must also still be an explosive (the pool is in ADDITION to the blast).
+        const bool alsoExplodes = !shot.projectiles.empty() &&
+                                  shot.projectiles[0].splashRadius > 0.0f;
+        // The rocket is the control: a plain blast with no lingering fire.
+        const int ri = a.indexOf("rocket");
+        const bool rocketHasNoPool = (ri < 0) || a.def(ri).firePoolDuration == 0.0f;
+        wcheck(leavesPool && alsoExplodes && rocketHasNoPool,
+               "W16d NapalmLauncher leaves AREA DAMAGE (burning ground pool + blast; the rocket does not)");
+    }
+
+    // ---- W16e: FLAMETHROWER BURNS, at close range, in a cone. -----------------
+    {
+        Arsenal a;
+        uint32_t rng = 0x5678u;
+        const int i = a.indexOf("flamethrower");
+        const WeaponDef& d = a.def(i);
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        bool everyRayBurns = shot.fired && !shot.rays.empty();
+        for (const auto& ray : shot.rays)
+            if (!(ray.burnDuration > 0.0f && ray.burnDps > 0)) everyRayBurns = false;
+        const bool isCone = (int)shot.rays.size() >= 3 && d.spreadDeg >= 10.0f;
+        // Shortest reach in the roster — the burn is paid for with range.
+        bool shortest = true;
+        for (int wi = 0; wi < a.count(); ++wi)
+            if (wi != i && a.def(wi).range < d.range) shortest = false;
+        wcheck(everyRayBurns && isCone && shortest,
+               "W16e FlameThrower applies a BURN DOT in a wide cone at the shortest range in the roster");
+    }
+
+    // ---- W16f: BFG 11k detonates with secondary bolts and eats FIVE rounds. ----
+    // ammoPerShot is the canon scarcity rule (a full 5-round pickup is ONE shot);
+    // if it silently consumed 1 the weapon would be five times as available as designed.
+    {
+        Arsenal a;
+        uint32_t rng = 0x6789u;
+        const int i = a.indexOf("bfg11k");
+        const WeaponDef& d = a.def(i);
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        const int before = a.state(i).ammoInMag;
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        const int spent = before - a.state(i).ammoInMag;
+        const bool bolts = shot.fired && !shot.projectiles.empty() &&
+                           shot.projectiles[0].secondaryBolts > 0;
+        const bool blast = !shot.projectiles.empty() && shot.projectiles[0].splashRadius > 0.0f;
+        const bool ammoCost = (d.ammoPerShot == 5) && (spent == 5);
+        // Every other weapon still consumes exactly one round per pull.
+        Arsenal b;
+        const int pi = b.indexOf("pistol");
+        b.select(pi);
+        b.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        const int pBefore = b.state(pi).ammoInMag;
+        uint32_t rng2 = 0x789Au;
+        b.fire(eye, fwd, rng2);
+        const bool pistolStillOne = (pBefore - b.state(pi).ammoInMag) == 1;
+        wcheck(bolts && blast && ammoCost && pistolStillOne,
+               "W16f BFG11k detonates with secondary bolts and costs 5 rounds a shot (others still cost 1)");
+    }
+
+    // ---- W16g: the additions did not disturb the existing roster. -------------
+    // Every pre-existing weapon must still carry ZERO of the new canon-12 payloads —
+    // this is the "additive, byte-identical" claim made in the WeaponDef comments,
+    // asserted rather than assumed.
+    {
+        Arsenal a;
+        const char* preExisting[] = { "pistol", "smg", "shotgun", "plasma",
+                                      "chaingun", "plasma_rifle", "lightning", "rocket" };
+        bool untouched = true;
+        for (const char* nm : preExisting) {
+            const int i = a.indexOf(nm);
+            if (i < 0) { untouched = false; continue; }
+            const WeaponDef& d = a.def(i);
+            if (d.pierceTargets != 0 || d.burnDuration != 0.0f || d.burnDps != 0 ||
+                d.freezeDuration != 0.0f || d.firePoolDuration != 0.0f ||
+                d.firePoolDps != 0 || d.secondaryBolts != 0 ||
+                d.ammoPerShot != 1 || d.continuous) {
+                untouched = false;
+                x3::logInfo(std::string("[weapons-test]   pre-existing weapon '") + nm +
+                            "' picked up a canon-12 payload it should not have");
+            }
+        }
+        wcheck(untouched, "W16g the 8 pre-existing weapons are unchanged by the canon-12 additions");
     }
 
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +
