@@ -3,6 +3,7 @@
 
 #include "terrain.h"
 #include "tunnel_corridor.h"   // the outer tour's bores are real tunnels
+#include "river_bridge.h"      // the valley road's ring landings (gates R1/R2)
 #include "scene.h"
 #include "surface_library.h"
 #include "asset_root.h"
@@ -1368,10 +1369,12 @@ float segPointDist(float px, float pz, float ax, float az, float bx, float bz) {
 // junction mouth patch owns this reach: enough run for the twist from the
 // branch's flat edge onto the main road's sloped surface to finish BY the main
 // pavement's edge (kPavedHalfM), not 2 m short of it.
-// Widened 33.4 -> 53.4 m for the SWOOPING MERGES (Tim: "THEY NEED SWOOPING
-// CURVES FROM BOTH WAYS"): the on-ramp fillet arcs need ~40 m of tangent leg
-// along the branch before the corner, and the old setback only had ~25.
-constexpr float kJctSetbackM = kPavedHalfM + 40.0f;   // 53.4 m
+// Widened for the SWOOPING MERGES (Tim: "THEY NEED SWOOPING CURVES FROM BOTH
+// WAYS"): the on-ramp fillet arcs need ~40 m of tangent leg along the branch
+// before the corner, and the old +20 setback only had ~25. Now a header
+// constant (kJunctionSetbackM) because external routes (the valley road)
+// attach with the same machinery.
+constexpr float kJctSetbackM = kJunctionSetbackM;   // 54.6 m
 
 // THE JUNCTION BOX — one extra 2-node corridor across the junction throat.
 // Between the branch corridor's end cap and the main corridor's band there is
@@ -1416,6 +1419,140 @@ void registerJunctionBox(float endX, float endZ, float jx, float jz, float datum
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// ATTACH A ROUTE END TO ANOTHER ROAD — see road_network.h. The exported half
+// of the junction machinery, for routes authored outside this module.
+// ---------------------------------------------------------------------------
+RoadJunction attachRoadEndToRoute(RoadSpec& s, bool atFront,
+                                  const RoadSpec& mainSpec,
+                                  const std::vector<float>& mainRoadY,
+                                  uint32_t* outMainNode) {
+    RoadJunction j;
+    size_t n = s.x.size();
+    const size_t mn = mainSpec.x.size();
+    if (n < 3 || mn < 3 || mainRoadY.size() != mn || mainSpec.z.size() != mn)
+        return j;
+
+    // THE OVERSHOOT TRUNCATION. The valley road's west leg was authored
+    // against an older course revision: it ran 290 m PAST today's tour and
+    // CROSSED it mid-segment at (94, -3848) — two full pavements stacked,
+    // which is the owner's screenshot. So: walk inward from the end to the
+    // route node nearest the main centreline, and cut everything beyond it
+    // before attaching. An end already at the road truncates nothing.
+    auto distToMain = [&](float px, float pz) {
+        float best = 1e18f;
+        for (size_t k = 0; k + 1 < mn; ++k)
+            best = std::min(best, segPointDist(px, pz,
+                mainSpec.x[k], mainSpec.z[k], mainSpec.x[k+1], mainSpec.z[k+1]));
+        return best;
+    };
+    size_t e = atFront ? 0 : n - 1;
+    size_t bestI = e;
+    float  bestD = distToMain(s.x[e], s.z[e]);
+    {
+        const long dir = atFront ? +1 : -1;
+        size_t steps = 0;
+        for (long i = (long)e + dir; i >= 0 && i < (long)n && steps < 48;
+             i += dir, ++steps) {
+            const float dd = distToMain(s.x[(size_t)i], s.z[(size_t)i]);
+            if (dd < bestD) { bestD = dd; bestI = (size_t)i; }
+            else if (dd > bestD + 250.0f) break;   // receding for good
+        }
+    }
+    if (bestD > 120.0f) return j;                  // never comes near that road
+    if (bestI != e) {
+        if (atFront) {
+            const size_t rem = bestI;
+            for (const RoadSpec::Gap& g : s.gaps)
+                if (g.i0 < rem) return j;          // overshoot crossed a gap?!
+            s.x.erase(s.x.begin(), s.x.begin() + (long)rem);
+            s.z.erase(s.z.begin(), s.z.begin() + (long)rem);
+            if (!s.pinY.empty())
+                s.pinY.erase(s.pinY.begin(), s.pinY.begin() + (long)rem);
+            for (RoadSpec::Gap& g : s.gaps) {
+                g.i0 -= (uint32_t)rem; g.i1 -= (uint32_t)rem;
+            }
+        } else {
+            for (const RoadSpec::Gap& g : s.gaps)
+                if (g.i1 > bestI) return j;        // overshoot crossed a gap?!
+            s.x.resize(bestI + 1);
+            s.z.resize(bestI + 1);
+            if (!s.pinY.empty()) s.pinY.resize(bestI + 1);
+        }
+        n = s.x.size();
+        if (n < 3) return j;
+        e = atFront ? 0 : n - 1;
+    }
+    // The landing: nearest main node to the (possibly truncated) end.
+    size_t J = 0; float bd = 1e18f;
+    for (size_t i = 0; i + 1 < mn; ++i) {          // [mn-1] may duplicate [0]
+        const float dx = mainSpec.x[i] - s.x[e], dz = mainSpec.z[i] - s.z[e];
+        const float dd = dx * dx + dz * dz;
+        if (dd < bd) { bd = dd; J = i; }
+    }
+    const float jx = mainSpec.x[J], jz = mainSpec.z[J], jy = mainRoadY[J];
+
+    // Drop any terminal-adjacent node sitting INSIDE the setback circle, or
+    // the retreated terminal would land beyond it and the approach folds
+    // back over itself.
+    auto innerDist = [&]() {
+        const size_t i2 = atFront ? 1 : n - 2;
+        const float ddx = s.x[i2] - jx, ddz = s.z[i2] - jz;
+        return std::sqrt(ddx * ddx + ddz * ddz);
+    };
+    while (n > 3 && innerDist() < kJctSetbackM + 8.0f) {
+        const size_t kill = atFront ? 1 : n - 2;
+        for (const RoadSpec::Gap& g : s.gaps)
+            if (kill >= g.i0 && kill <= g.i1) { n = 0; break; }
+        if (n == 0) return j;                      // ate into a gap — authoring error
+        s.x.erase(s.x.begin() + (long)kill);
+        s.z.erase(s.z.begin() + (long)kill);
+        if (!s.pinY.empty()) s.pinY.erase(s.pinY.begin() + (long)kill);
+        for (RoadSpec::Gap& g : s.gaps)
+            if (g.i0 > kill) { --g.i0; --g.i1; }
+        n = s.x.size();
+        e = atFront ? 0 : n - 1;
+    }
+    const size_t inner = atFront ? 1 : n - 2;
+
+    // Retreat the terminal node to the junction setback along the route's own
+    // last leg — the mouth patch and the merge fillets own that reach.
+    float dx = s.x[inner] - jx, dz = s.z[inner] - jz;
+    const float dl = std::sqrt(dx * dx + dz * dz);
+    if (dl < 1.0f) return j;
+    dx /= dl; dz /= dl;
+    s.x[e] = jx + dx * kJctSetbackM;
+    s.z[e] = jz + dz * kJctSetbackM;
+
+    // Pin the terminal datum to the main road's — the approach must arrive AT
+    // GRADE, which is the whole point ("at least swoop curves down to it").
+    if (s.pinY.size() != n)
+        s.pinY.assign(n, std::numeric_limits<float>::quiet_NaN());
+    s.pinY[e] = jy;
+
+    // The main road's frame at the landing (wrap past a ring's closing dup).
+    const size_t jp = (J + 1 < mn - 1) ? J + 1 : 0;
+    const size_t jm = (J > 0) ? J - 1 : mn - 2;
+    float mtx = mainSpec.x[jp] - mainSpec.x[jm], mtz = mainSpec.z[jp] - mainSpec.z[jm];
+    const float mtl = std::sqrt(mtx * mtx + mtz * mtz);
+    j.valid = true;
+    j.jx = jx; j.jz = jz; j.jy = jy;
+    j.mainTX = 1.0f; j.mainTZ = 0.0f; j.mainGrade = 0.0f;
+    if (mtl > 1e-4f) {
+        j.mainTX = mtx / mtl; j.mainTZ = mtz / mtl;
+        j.mainGrade = (mainRoadY[jp] - mainRoadY[jm]) / mtl;
+    }
+    j.endX = s.x[e]; j.endZ = s.z[e];
+    j.endY = jy;   // placeholder — caller overwrites with the graded datum
+    if (outMainNode) *outMainNode = (uint32_t)J;
+    return j;
+}
+
+void registerRoadJunctionThroat(float endX, float endZ,
+                                float jx, float jz, float datumY) {
+    registerJunctionBox(endX, endZ, jx, jz, datumY);
+}
 
 SpawnConnectorResult registerSpawnConnector(const TunnelRoute& spawnRoute,
                                             const RoadSpec& ringSpec,
@@ -3675,6 +3812,67 @@ bool runRoadNetworkSelfTest() {
                     check(spurLeft > 0 && spurRight > 0,
                           "J4 the ridgeline earns barriers on BOTH edges", d);
                 }
+            }
+
+            // ============ THE VALLEY ROAD LANDINGS + THE OVERLAP LAW ========
+            // Owner screenshot: an elevated road stacked on a lower one, raw
+            // pavement edges, sheer face between the decks — the valley
+            // road's leg tables END on the tour with no junction machinery.
+            // R1 proves both ends now land AT GRADE through the shared
+            // attachment; R2 is the STRIPING/STACKING law: outside a
+            // junction throat, no route's centreline may come within a full
+            // pavement width of another's — overlapped pavements are exactly
+            // what rendered as "dense parallel white lines" and a plinth.
+            const RiverRoadResult rv = registerRiverRoad(&ringSpec, &ringY);
+            {
+                const float offA = (rv.roadY.empty() || !rv.ringJctA.valid) ? 1e9f
+                    : std::fabs(rv.roadY.front() - rv.ringJctA.jy);
+                const float offB = (rv.roadY.empty() || !rv.ringJctB.valid) ? 1e9f
+                    : std::fabs(rv.roadY.back() - rv.ringJctB.jy);
+                std::snprintf(d, sizeof(d),
+                    "west (%.0f, %.0f) off %.2f ft, east (%.0f, %.0f) off %.2f ft, "
+                    "pin deficit %.2f ft",
+                    rv.ringJctA.jx, rv.ringJctA.jz, offA * kMToFt,
+                    rv.ringJctB.jx, rv.ringJctB.jz, offB * kMToFt,
+                    rv.road.pinErrM * kMToFt);
+                check(rv.road.ok && rv.ringJctA.valid && rv.ringJctB.valid &&
+                      rv.road.pinErrM <= 0.06f && offA < 0.02f && offB < 0.02f,
+                      "R1 the valley road lands on the tour AT GRADE, both ends", d);
+            }
+            {
+                struct RR { const char* nm; const RoadSpec* s; };
+                std::vector<RR> rl{ { "ring", &ringSpec }, { "connector", &cx.spec } };
+                if (rc.built) { rl.push_back({ "circuit", &rc.spec });
+                                rl.push_back({ "access",  &rc.accessSpec }); }
+                if (sp.built)   rl.push_back({ "spur",    &sp.spec });
+                if (rv.road.ok) rl.push_back({ "valley",  &rv.spec });
+                float worst = 1e9f; const char* wa = ""; const char* wb = "";
+                float wx = 0, wz = 0;
+                for (size_t a = 0; a < rl.size(); ++a)
+                    for (size_t b = 0; b < rl.size(); ++b) {
+                        if (a == b) continue;
+                        const RoadSpec& A = *rl[a].s;
+                        const RoadSpec& B = *rl[b].s;
+                        for (size_t i = 0; i < A.x.size(); i += 2) {
+                            if (distToNearestRoadJunction(A.x[i], A.z[i]) < 60.0f)
+                                continue;   // junction throats are SHARED ground
+                            float best = 1e9f;
+                            for (size_t k = 0; k + 1 < B.x.size(); ++k)
+                                best = std::min(best,
+                                    segPointDist(A.x[i], A.z[i], B.x[k], B.z[k],
+                                                 B.x[k+1], B.z[k+1]));
+                            if (best < worst) {
+                                worst = best; wa = rl[a].nm; wb = rl[b].nm;
+                                wx = A.x[i]; wz = A.z[i];
+                            }
+                        }
+                    }
+                std::snprintf(d, sizeof(d),
+                    "closest non-junction approach %.0f m (%s node at (%.0f, %.0f) "
+                    "to %s; pavement width %.1f m)",
+                    worst, wa, wx, wz, wb, 2.0f * kPavedHalfM);
+                check(worst >= 2.0f * kPavedHalfM,
+                      "R2 no route's pavement overlaps another outside a junction", d);
             }
 
             // X3_ROADNET_DUMP=1: node/datum/barrier dump — the instrument the
