@@ -17,7 +17,7 @@
 namespace x3 { namespace apphost {
 
 struct CliOptions {
-    bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
+    bool smoketest = false, testAsset = false, testConsole = false, testEngineConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          // --test-doors: door-mesh-swap polish gate (ease curve / dt-scaling /
          // per-floor variants / 1.8 m capsule PASSABILITY / servo start-stop).

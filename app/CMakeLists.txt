@@ -25,6 +25,9 @@ add_library(x3app SHARED
     cli.cpp
     # #28 deep monolith split — default host (interactive render loop)
     app_run.cpp
+    # D-CONSOLE fold — the shared cvar/command registry app_run AND HostShell
+    # both call (one registry, no drift). See app/engine_console.h.
+    engine_console.cpp
     # #28 deep monolith split — headless screenshot/capture handlers
     screenshot_hosts.cpp
     # #28 deep monolith split — extracted self-contained --world hosts

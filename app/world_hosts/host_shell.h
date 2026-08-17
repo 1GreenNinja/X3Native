@@ -45,6 +45,7 @@
 #include "../ui.h"
 #include "../host_context.h"
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
@@ -136,6 +137,32 @@ public:
                           const std::function<bool()>& get,
                           const std::function<void(bool)>& set);
 
+    // ---- NOCLIP (D-CONSOLE fold) --------------------------------------------
+    // attach() registers 'noclip'/'idclip' on this shell's console (the shared
+    // catalog — app/engine_console.h) wired to a REAL detached freefly camera:
+    // WASD + mouse, Shift = fast. It does not fight the host's own chase/
+    // gameplay camera because the host stops driving the camera at all while
+    // it is active — see overrideCamera() below.
+    //
+    // trackCamera(): call EVERY frame, before the host decides its own camera,
+    // with whatever pose the host WOULD have used. Cheap; its only job is
+    // seeding the flycam's start pose the instant noclip switches on, so the
+    // view detaches cleanly instead of jumping to the origin.
+    void trackCamera(float x, float y, float z, float yaw, float pitch);
+    bool noclipActive() const { return m_fly.active; }
+    // Where the host's own camera setup normally calls device->setCamera():
+    // call overrideCamera() first. While noclip is active it advances the
+    // flycam from WASD + mouse delta and calls setCamera() itself, returning
+    // true — the host must skip its own camera work entirely that frame.
+    // Returns false (touches nothing) when noclip is off, or while the
+    // console/menu owns input.
+    bool overrideCamera(float dt, float fovDeg);
+    // The flycam's current pose, for a host that wants auxiliary per-position
+    // systems (audio listener, weather/reverb probes) to track the free
+    // camera too instead of going stale at wherever the car/Jake was left.
+    // Only meaningful when noclipActive() and after overrideCamera() this frame.
+    void flyCamPose(float& x, float& y, float& z, float& yaw, float& pitch) const;
+
     // ---- For the GLFW callbacks only (they are free functions and cannot be
     // friends of a class they are declared before). Not for host use.
     bool onKey(int glfwKey, int action, int mods);
@@ -171,6 +198,20 @@ private:
     bool m_mouseWasDown = false;
     // Menu keyboard nav edges, latched by the key callback and consumed by draw.
     bool m_navUp = false, m_navDown = false, m_navActivate = false;
+
+    // ---- NOCLIP freefly state ------------------------------------------------
+    struct FlyCam { float pos[3] = { 0.0f, 0.0f, 0.0f }; float yaw = 0.0f, pitch = 0.0f; bool active = false; };
+    FlyCam m_fly;
+    float  m_lastCam[5] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };   // x,y,z,yaw,pitch — see trackCamera()
+    bool   m_haveLastCam = false;
+    double m_flyLastMX = 0.0, m_flyLastMY = 0.0;
+    bool   m_flyMouseSeeded = false;
+
+    // ---- LIVE console -> device cvar apply (world_host_common.h), driven
+    // automatically from draw() so every host attaching this shell gets the
+    // owner's "type r_exposure 0.5 and SEE it" for free.
+    unsigned    m_liveApplyFrame = 0;
+    std::size_t m_liveApplyHash  = 0;
 };
 
 } // namespace x3::apphost

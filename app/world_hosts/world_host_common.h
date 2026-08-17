@@ -9,6 +9,7 @@
 
 #include "engine/core/x3_log.h"
 #include "engine/core/x3_boot.h"
+#include "engine/core/IConsole.h"       // live cvar apply (applyLiveHostRenderCVars)
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
 
@@ -19,10 +20,12 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
+#include <functional>
 
 namespace x3::apphost {
 
@@ -332,6 +335,139 @@ inline void applyHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDevice& 
 // means. Silence is the thing that cost a lane its conclusions; a run that
 // ignored a flag must SAY SO in its own output.
 // ===========================================================================
+// ===========================================================================
+// LIVE CONSOLE -> DEVICE APPLY (D-CONSOLE fold). applyHostRenderCVars ABOVE is
+// BOOT-TIME ONLY — it reads hc.cliCVars (the `--set` list parsed once off the
+// command line). It has no idea a console exists: typing `r_exposure 0.5` at
+// an interactive --world host's console (HostShell — app/world_hosts/
+// host_shell.h/.cpp) after boot never reached the device, because nothing
+// ever read the LIVE cvar value again. That is the second half of the
+// owner's complaint ("do we have the console with EVERY COMMAND ACTIVE") —
+// the render cvars now exist on every host's console (app/engine_console.h),
+// but typing a new value did nothing until this.
+//
+// This is the per-frame sibling: read the SAME watched cvars straight off a
+// live x3::con::IConsole and re-push them to the device — the world-host
+// equivalent of app_run.cpp's applyRtaoCVars (its own per-frame cvar sync
+// hub; setCsmParams there is pushed from live console cvars every frame the
+// exact same way, so this does not introduce a new pattern, it generalizes
+// the existing one). Driven automatically from HostShell::draw() — see
+// host_shell.cpp — so every host that attaches a HostShell gets it "for free".
+//
+// DELIBERATELY NOT HERE: r_wetness*. Unlike every field below (which the
+// --world hosts here only ever set ONCE at boot — see host_tunnel.cpp's
+// applyHostRenderCVars() call site), wetness is a PER-FRAME AUTHORITATIVE
+// value a host's own weather sim drives (host_tunnel.cpp: x3::game::
+// WetnessModel -> device.setWetness() every frame, from real rain
+// accumulation, not from a cvar). Pushing r_wetness here every ~15 frames
+// would fight that — periodically stomping live rain-soak back to the cvar's
+// resting value — which is the exact "must not fight" failure this fold's
+// noclip/chase-cam care was written against, just for a different system.
+//
+// COST: IConsole (engine/core/Console.cpp) exposes no dirty/change counter,
+// so "cheap" here means a string hash of the watched values, gated to run
+// every ~15th frame, and the device push only fires when that hash actually
+// changed. An untouched console costs one hash build every 15 frames — a
+// couple dozen string reads and an XOR-fold, not fifteen no-op device calls.
+// ===========================================================================
+inline size_t hashLiveHostCVars(const x3::con::IConsole& console) {
+    static const char* const kWatched[] = {
+        "r_exposure", "r_debugview", "r_metalambient", "r_clusterlights",
+        "r_tonemap", "r_bloom", "r_bloomintensity", "r_bloomthreshold",
+        "r_autoexposure", "r_aespeed", "r_aemin", "r_aemax", "r_aekey",
+        "r_taa", "r_taasharpen", "r_velocity", "r_filmic",
+        "r_ssao", "r_ssao_radius", "r_ssao_bias", "r_ssao_intensity", "r_ssao_power", "r_ssao_strength",
+        "r_ssgi", "r_ssgi_intensity", "r_ssgi_strength",
+        "r_rtao", "r_rtao_radius", "r_rtao_rays", "r_rtao_strength",
+        "r_ssr", "r_rtreflections", "r_reflquality", "r_reflintensity",
+        "r_refldenoise", "r_refldn_depth", "r_refldn_normal", "r_refldn_disc",
+        "r_rtshadows", "r_rtsun_size", "r_rtpoint_max", "r_rtpoint_size",
+        "r_ddgi", "r_ddgi_debug", "r_ddgi_rays", "r_ddgi_intensity",
+        "r_ddgi_nx", "r_ddgi_ny", "r_ddgi_nz", "r_ddgi_hyst",
+        "r_csm", "r_csm_lambda", "r_csm_dist", "r_csm_blend", "r_shadowforward", "r_csm_debug",
+    };
+    std::hash<std::string> hasher;
+    size_t acc = 0;
+    for (const char* n : kWatched)
+        acc ^= hasher(console.getString(n)) + 0x9e3779b97f4a7c15ULL + (acc << 6) + (acc >> 2);
+    return acc;
+}
+
+// Unconditionally pushes the watched set to the device (no hashing/gating —
+// callers wanting the cheap per-frame version want applyLiveHostRenderCVars
+// below). Exposed directly too, so a host can force one push right after
+// HostShell::attach(), before the first hashed cycle, so the registered
+// DEFAULTS take visible effect even if the player never types anything.
+inline void pushLiveHostCVarsToDevice(const x3::con::IConsole& console, x3::rhi::IRenderDevice& device) {
+    auto f = [&](const char* n) { return console.getFloat(n); };
+    auto i = [&](const char* n) { return console.getInt(n); };
+    auto b = [&](const char* n) { return console.getInt(n) != 0; };
+
+    device.setDebugView(i("r_debugview"));
+    device.setExposure(f("r_exposure"));
+    device.setMetalAmbient(f("r_metalambient"));
+    device.setClusterLights(b("r_clusterlights"));
+
+    x3::rhi::IRenderDevice::SsaoParams sp{};
+    sp.enabled = b("r_ssao"); sp.radius = f("r_ssao_radius"); sp.bias = f("r_ssao_bias");
+    sp.intensity = f("r_ssao_intensity"); sp.power = f("r_ssao_power"); sp.strength = f("r_ssao_strength");
+    device.setSsaoParams(sp);
+
+    x3::rhi::IRenderDevice::GiParams gp{};
+    gp.enabled = b("r_ssgi"); gp.intensity = f("r_ssgi_intensity"); gp.strength = f("r_ssgi_strength");
+    device.setGiParams(gp);
+
+    x3::rhi::IRenderDevice::RtaoParams rp{};
+    rp.enabled = b("r_rtao"); rp.radius = f("r_rtao_radius"); rp.rays = i("r_rtao_rays"); rp.strength = f("r_rtao_strength");
+    device.setRtaoParams(rp);
+
+    x3::rhi::IRenderDevice::ReflectionParams rf{};
+    rf.ssr = b("r_ssr"); rf.rtFallback = b("r_rtreflections"); rf.fullRes = b("r_reflquality");
+    rf.intensity = f("r_reflintensity"); rf.denoiseIters = i("r_refldenoise");
+    rf.denoiseDepthSigma = f("r_refldn_depth"); rf.denoiseNormalPow = f("r_refldn_normal");
+    rf.denoiseDiscScale = f("r_refldn_disc");
+    device.setReflectionParams(rf);
+
+    x3::rhi::IRenderDevice::PostFXParams px{};
+    px.tonemapMode = i("r_tonemap"); px.bloomEnabled = b("r_bloom");
+    px.bloomIntensity = f("r_bloomintensity"); px.bloomThreshold = f("r_bloomthreshold");
+    px.autoExposure = b("r_autoexposure"); px.aeSpeed = f("r_aespeed"); px.aeMin = f("r_aemin");
+    px.aeMax = f("r_aemax"); px.aeKey = f("r_aekey"); px.taa = b("r_taa"); px.taaSharpen = f("r_taasharpen");
+    px.velocity = b("r_velocity"); px.filmicAllowed = b("r_filmic");
+    device.setPostFX(px);
+
+    x3::rhi::IRenderDevice::RtShadowParams rs{};
+    rs.tier = i("r_rtshadows"); rs.sunSizeDeg = f("r_rtsun_size");
+    rs.pointMax = i("r_rtpoint_max"); rs.pointRadius = f("r_rtpoint_size");
+    device.setRtShadowParams(rs);
+
+    x3::rhi::IRenderDevice::DdgiParams dg{};
+    dg.enabled = b("r_ddgi"); dg.debug = i("r_ddgi_debug"); dg.raysPerProbe = i("r_ddgi_rays");
+    dg.intensity = f("r_ddgi_intensity"); dg.countX = i("r_ddgi_nx"); dg.countY = i("r_ddgi_ny");
+    dg.countZ = i("r_ddgi_nz"); dg.hysteresis = f("r_ddgi_hyst");
+    device.setDdgiParams(dg);
+
+    x3::rhi::IRenderDevice::CsmParams cs{};
+    cs.enabled = b("r_csm"); cs.lambda = f("r_csm_lambda"); cs.distance = f("r_csm_dist");
+    cs.blend = f("r_csm_blend"); cs.forwardBias = f("r_shadowforward"); cs.debug = b("r_csm_debug");
+    device.setCsmParams(cs);
+}
+
+// Call EVERY FRAME from an interactive host with a live console (HostShell
+// drives this — app/world_hosts/host_shell.cpp — so a host wires it once and
+// gets it "for free"). `frameCounter` is any monotonically increasing
+// per-frame counter; every 15th frame the watched cvars are hashed and, ONLY
+// if the hash changed since the last push, re-applied to the device.
+// `lastHash` is caller-owned state (HostShell keeps one per instance).
+inline void applyLiveHostRenderCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& device,
+                                     unsigned frameCounter, size_t& lastHash) {
+    if (frameCounter != 0 && (frameCounter % 15u) != 0u) return;
+    const size_t h = hashLiveHostCVars(console);
+    if (frameCounter != 0 && h == lastHash) return;
+    lastHash = h;
+    pushLiveHostCVarsToDevice(console, device);
+}
+
 inline void reportUnappliedHostCVars(const HostContext& hc, const std::string& who) {
     if (hc.cliCVars.empty()) return;
     std::vector<std::string> unapplied;
