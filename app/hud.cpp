@@ -254,7 +254,7 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     size_t widest = 0;
     for (int i = 0; i < lineCount; ++i) widest = std::max(widest, std::char_traits<char>::length(lines[i]));
     const float panelW = widest * glyph + pad * 2.0f;
-    const float panelH = lineCount * (glyph * 1.5f) + pad * 2.0f;
+    const float panelH = lineCount * hudLineH(glyph) + pad * 2.0f;
     const float x0 = (w > 0) ? ((float)w - panelW - 8.0f) : 8.0f;
     const float y0 = 8.0f;
 
@@ -269,7 +269,9 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
         const float tx = x0 + pad;
         device.drawHudText(frame, lines[i], tx + 1.0f, ty + 1.0f, glyph, shadow);
         device.drawHudText(frame, lines[i], tx, ty, glyph, white);
-        ty += glyph + 2.0f;
+        ty += hudLineH(glyph);   // was glyph+2: the panel was sized 1.5x but the
+                                 // rows advanced 1.14x, so the block sat high in
+                                 // its own plate with a dead band at the bottom.
     }
 }
 
@@ -553,7 +555,7 @@ void Hud::drawVigilBark(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     // speaks). A dark plate keeps him readable over any scene.
     const float px = std::max(12.0f, (float)h * 0.020f);   // glyph size scales with res
     const float pad = px * 0.9f;
-    const float lineH = px * 1.4f;
+    const float lineH = hudLineH(px);   // TRUE leading (1.4x still kissed descenders)
     const float maxTextW = (float)w * 0.70f;               // wrap to 70% of the screen
 
     // Word-wrap "VIGIL: <text>" to maxTextW using the proportional Menu atlas.
@@ -631,8 +633,8 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     // The console is the HoloPanel design language turned into a dev surface:
     // a rounded dark slab (square top edge — it slides from the screen edge)
     // with glowing green monospace, like a terminal built into the world.
-    const float panel[4] = { 0.008f, 0.030f, 0.016f, 0.86f };   // near-black green glass
-    const float edge[4]  = { 0.25f, 1.0f, 0.45f, 0.90f };       // terminal-green separator
+    const float panel[4] = { 0.004f, 0.018f, 0.009f, 0.80f };   // near-black green glass
+    const float edge[4]  = { 0.30f, 1.0f, 0.50f, 0.95f };       // terminal-green separator
     hudPanel(device, frame, 0.0f, top, (float)w, panelH, kHudPanelRadius,
              panel, nullptr, 1.0f, /*topEdge=*/false,
              /*roundTop=*/false, /*roundBottom=*/true);
@@ -643,7 +645,7 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     // (not just the glyph size) so the text clears the bright bottom-edge separator.
     // The prompt line is the HOTTEST green on the slab.
     const float inputY = top + panelH - pad - lineH;
-    const float inText[4] = { 0.45f, 1.0f, 0.55f, 1.0f };
+    const float inText[4] = { 0.55f, 1.0f, 0.62f, 1.0f };   // BRIGHT prompt green
     std::string inLine = "] " + m_input + "_";   // blinking-ish caret marker
     device.drawHudText(frame, inLine.c_str(), pad, inputY, kGlyphPx, inText);
 
@@ -655,8 +657,8 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     const auto& lines = console.outputLines();
     // Scrollback greens: the newest line bright, older lines dimming toward the
     // top — the phosphor-terminal read (per-line color is free; same draw path).
-    const float outNew[4] = { 0.40f, 1.00f, 0.50f, 1.0f };
-    const float outOld[4] = { 0.30f, 0.66f, 0.38f, 1.0f };
+    const float outNew[4] = { 0.50f, 1.00f, 0.58f, 1.0f };
+    const float outOld[4] = { 0.34f, 0.74f, 0.42f, 1.0f };
     const int total    = (int)lines.size();
     const int visRows  = std::max(1, (int)((inputY - (top + pad)) / lineH));
     const int maxScroll = std::max(0, total - visRows);

@@ -48,12 +48,15 @@ void hudPanel(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame
         device.drawHudQuad(frame, x + rTop, y, w - 2.0f * rTop, 1.0f, ec);
     }
 
-    // Optional accent bar down the left inner edge (between the corner bands).
+    // Optional accent bar down the left inner edge. It starts BELOW the top arc
+    // and ends ABOVE the bottom arc, and is nudged 1px inboard — drawn flush at
+    // `x` it juts into open scene at the corners, where the rounded fill has
+    // already pulled away, and reads as a detached tick floating off the panel.
     if (accent) {
         const float ac[4] = { accent[0], accent[1], accent[2], accent[3] * alpha };
-        const float ay = y + std::max(rTop, 2.0f);
-        const float ah = h - std::max(rTop, 2.0f) - std::max(rBot, 2.0f);
-        if (ah > 0.0f) device.drawHudQuad(frame, x, ay, 3.0f, ah, ac);
+        const float ay = y + rTop;
+        const float ah = h - rTop - rBot;
+        if (ah > 0.0f) device.drawHudQuad(frame, x + 1.0f, ay, 3.0f, ah, ac);
     }
 }
 

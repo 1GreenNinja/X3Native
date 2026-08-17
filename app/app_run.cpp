@@ -6721,6 +6721,22 @@ int runDefaultHost(HostContext& hc) {
             // Font role sampler: Playing state draws an (empty) HUD; the sampler text
             // below renders every FontRole over the scene with nothing obscuring it.
             demoUi.setState(x3::ui::GameState::Playing);
+        } else if (uiDemoScreen == "console") {
+            // Dev-console capture: open it and seed a little scrollback so the
+            // terminal-green-on-black-glass treatment can actually be LOOKED at
+            // (it is otherwise only visible with a keyboard in hand).
+            demoUi.setState(x3::ui::GameState::Playing);
+            console->print("X3 console ready. Type 'help' for commands.");
+            console->print("r_exposure 0.5");
+            console->print("[cvar] r_exposure = 0.5");
+            console->print("noclip");
+            console->print("[noclip] freefly camera ON");
+            hud.toggleConsole();
+        } else if (uiDemoScreen == "hud" || uiDemoScreen == "hudwhite") {
+            // HUD layout proof still (feat/hud-restyle): Playing state + a fully
+            // populated HudModel below — long 3-line objective, enemies chip, HP,
+            // ammo — so panel sizing/stacking is verifiable at any resolution.
+            demoUi.setState(x3::ui::GameState::Playing);
         } else {
             // MainMenu: hover START so it reads as focused.
             const float mbh = std::max(44.0f, mh * 0.075f);
@@ -6751,6 +6767,27 @@ int runDefaultHost(HostContext& hc) {
                     device->hudSize(mcw, mch);
                     hm.dispW = (int)mcw; hm.dispH = (int)mch;
                 }
+                // --ui-demo hud: populate the full production-HUD model with a
+                // deliberately LONG objective (forces a 3-line wrap) so multi-line
+                // layout + panel sizing is provable from a headless still.
+                // "hudwhite": the WORST-CASE legibility vantage — a full-screen
+                // white wash standing in for the white terrain Tim's objective
+                // text washed out against. If the HUD reads here it reads
+                // anywhere; nothing brighter than white exists.
+                if (uiDemoScreen == "hudwhite") {
+                    const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                    device->drawHudQuad(frame, 0.0f, 0.0f,
+                                        (float)kHeadlessW, (float)kHeadlessH, white);
+                }
+                if (uiDemoScreen == "hud" || uiDemoScreen == "hudwhite") {
+                    hm.hp = 62; hm.maxHp = 100;
+                    hm.weapon = "pistol";
+                    hm.ammoInMag = 12; hm.ammoReserve = 72;
+                    hm.enemiesRemaining = 7;
+                    hm.showCrosshair = true;
+                    hm.objective = "Fight down the spire - save the captives, "
+                                   "reach Martinez in the flooded lower galleries";
+                }
                 demoUi.update(uin, *device, frame, hm, dt);
                 // --ui-demo fonts: a role sampler so every FontRole is eyeballable in
                 // one still (Title/Menu proportional, News/Console/Enemy). Each line
@@ -6776,6 +6813,10 @@ int runDefaultHost(HostContext& hc) {
                     row(FR::News,  "AREA CLEAR", grn, 30.0f);
                     row(FR::Console, "Console/HudMono: Roboto Mono  HP 100  37 / 120", grn, 24.0f);
                 }
+                // Dev console last (it sits on top of everything, as in the game).
+                // dt*4 so the slide-down finishes inside the settle loop.
+                if (uiDemoScreen == "console")
+                    hud.drawConsole(*device, frame, *console, dt * 4.0f);
             }
             device->endFrame(frame);
         }

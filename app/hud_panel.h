@@ -27,11 +27,22 @@
 namespace x3::game {
 
 // ---- Shared HUD panel palette (linear RGBA) -------------------------------
-// Dark slate "black glass" fill, ~78% opaque: dark enough that light text
-// reads over white terrain, translucent enough that the world stays present.
-constexpr float kHudPanelFill[4]   = { 0.030f, 0.045f, 0.065f, 0.78f };
+// NEAR-BLACK GLASS, not a grey card (Tim's calibration): the fill colour is
+// almost pure black, so on any normal scene this reads as smoked glass rather
+// than the pale slate card it used to be.
+//
+// ON THE ALPHA — this is a measured value, not a taste one. The swapchain is
+// sRGB-encoded, so a translucent plate over white terrain lands much lighter
+// than the linear math suggests: at 0.70 alpha the composite is linear 0.31,
+// which encodes to sRGB ~0.60 — MID GREY, and light text on mid grey is the
+// exact wash-out that started this work (verified in shots_hud/hud_white.png).
+// 0.86 puts the plate at linear ~0.14 / sRGB ~0.41 over pure white: still
+// visibly translucent (the world reads through it on dark and mid scenes) but
+// dark enough that light text holds at the worst vantage in the game. Going
+// more transparent than this trades away the bug we were asked to fix.
+constexpr float kHudPanelFill[4]   = { 0.008f, 0.012f, 0.018f, 0.86f };
 // The subtle 1px lighter top-edge line (cool, barely-there).
-constexpr float kHudPanelEdge[4]   = { 0.45f, 0.75f, 0.95f, 0.30f };
+constexpr float kHudPanelEdge[4]   = { 0.45f, 0.75f, 0.95f, 0.26f };
 // Accent bar colors — the game's established status-ink family.
 constexpr float kHudAccentCyan[4]  = { 0.32f, 0.86f, 1.00f, 0.90f };
 constexpr float kHudAccentGreen[4] = { 0.30f, 1.00f, 0.45f, 0.90f };
@@ -42,6 +53,25 @@ constexpr float kHudAccentRed[4]   = { 1.00f, 0.25f, 0.20f, 0.90f };
 constexpr float kHudTextLight[4]   = { 0.92f, 0.96f, 0.98f, 1.00f };
 // The consistent corner radius (px) — one radius across the whole HUD.
 constexpr float kHudPanelRadius    = 8.0f;
+
+// ---- THE ONE SPACING SCALE --------------------------------------------------
+// Every HUD block uses these and nothing else, so margins and gaps agree
+// everywhere instead of each block inventing its own 8/10/12/16/18/22.
+constexpr float kHudMargin = 16.0f;   // screen edge -> panel
+constexpr float kHudGap    = 12.0f;   // panel -> panel within a stack
+constexpr float kHudPadX   = 14.0f;   // panel edge -> text (horizontal)
+constexpr float kHudPadY   = 10.0f;   // panel edge -> text (vertical)
+
+// TRUE line height for stacked text at cap size `px`.
+//
+// THIS IS THE MULTI-LINE OVERPRINT FIX. A HUD glyph drawn at `px` is NOT px
+// tall on screen: the atlas scales by px / cellAdvance('M'), so the inked
+// ascender runs well past the nominal cap height. Advancing a wrapped block by
+// px + a few pixels therefore draws line 2 through the belly of line 1. The
+// console learned this the hard way years ago (its comment already reads "TTF
+// glyphs need ~1.5x leading (was +2 -> lines overlapped)") — this hoists that
+// constant to the one place every multi-line block can share.
+constexpr float hudLineH(float px) { return px * 1.5f; }
 
 // Draw the rounded dark translucent panel.
 //   radius  — corner radius in px (clamped to half the smaller dimension).

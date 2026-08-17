@@ -195,9 +195,14 @@ public:
     void bar(float x, float y, float w, float h, float frac,
              const float fill[4], const char* caption = nullptr) const;
 
-    // A translucent backing panel (rounded look approximated by a plain quad +
-    // a 1px bright top edge). Non-interactive.
-    void panel(float x, float y, float w, float h, const float rgba[4]) const;
+    // A translucent backing panel: rounded corners + near-black glass fill +
+    // a subtle 1px lighter top edge (app/hud_panel.h is the one primitive).
+    // `accent` (optional) draws the 3px status bar down the left inner edge,
+    // INSET past the corner arcs — pass it here rather than laying your own
+    // quad over the panel, which pokes out at the rounded corners.
+    // Non-interactive.
+    void panel(float x, float y, float w, float h, const float rgba[4],
+               const float* accent = nullptr) const;
 
     // An enemy nameplate / threat label: `s` drawn CENTERED at screen (cx, top) in
     // the Enemy font (Tektur Condensed — the aggressive, condensed threat voice),

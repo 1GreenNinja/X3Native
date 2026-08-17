@@ -69,21 +69,21 @@ void ObjectiveSystem::drawCurrent(x3::rhi::IRenderDevice& device,
     // panel with a cyan accent (feat/hud-restyle): the raw yellow line used to
     // wash out completely on white terrain. Light header + warm objective-yellow
     // body over dark glass reads at any vantage.
-    const float x = 16.0f, y = 40.0f;
+    const float x = kHudMargin, y = 4.0f + 26.0f + kHudGap;   // clear the FPS chip
     const float hdrPx = 12.0f, bodyPx = 16.0f;
     const float hdrCol[4]  = { 0.32f, 0.86f, 1.0f, 0.95f };   // cyan header
     const float bodyCol[4] = { 1.0f, 0.93f, 0.55f, 1.0f };    // warm objective-yellow
     const float hdrW  = device.textAdvance(x3::rhi::FontRole::Menu, "OBJECTIVE", hdrPx);
     const float bodyW = device.textAdvance(x3::rhi::FontRole::Console, label.c_str(), bodyPx);
-    const float padX = 14.0f, padY = 10.0f;
-    const float panelW = (hdrW > bodyW ? hdrW : bodyW) + padX * 2.0f + 4.0f;
-    const float panelH = padY * 2.0f + hdrPx + 6.0f + bodyPx;
+    // Height from TRUE line heights (hudLineH) — a cap-height advance overprints.
+    const float panelW = (hdrW > bodyW ? hdrW : bodyW) + kHudPadX * 2.0f + 4.0f;
+    const float panelH = kHudPadY * 2.0f + hudLineH(hdrPx) + hudLineH(bodyPx);
     hudPanel(device, frame, x, y, panelW, panelH, kHudPanelRadius,
              nullptr, kHudAccentCyan);
     device.drawHudTextF(frame, x3::rhi::FontRole::Menu, "OBJECTIVE",
-                        x + padX + 4.0f, y + padY, hdrPx, hdrCol);
+                        x + kHudPadX + 4.0f, y + kHudPadY, hdrPx, hdrCol);
     device.drawHudText(frame, label.c_str(),
-                       x + padX + 4.0f, y + padY + hdrPx + 6.0f, bodyPx, bodyCol);
+                       x + kHudPadX + 4.0f, y + kHudPadY + hudLineH(hdrPx), bodyPx, bodyCol);
 }
 
 // ===========================================================================
