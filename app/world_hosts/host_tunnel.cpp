@@ -2347,6 +2347,168 @@ int hostTunnel(HostContext& hc) {
             }
         }
 
+        // ==== BANK PROOF (X3_SHOT_BANKS=1) — the ONE WATER TRUTH, with eyes.
+        // RB8's station sweep says in NUMBERS that the drawn river never tops a
+        // bank anywhere on the run; this is the same claim with a picture, at
+        // the WORST station the sweep can find — measured here the same way
+        // (crest = highest ground between the waterline and 2x the half-width
+        // out, on each side; freeboard = crest - the drawn water level).
+        // Shoot it twice: once dry, once with X3_WEATHER=storm, and the pair is
+        // the rain-runoff gate (#23) — the river visibly higher, still inside.
+        if (const char* ke = std::getenv("X3_SHOT_BANKS");
+            ke && ke[0] == '1' && riverOn) {
+            uint32_t rn = 0;
+            const x3::game::WorldRiverNode* nds = x3::game::worldRiverNodes(rn);
+            const uint32_t carved = x3::game::worldRiverCarveCount();
+            const char* wxEnv = std::getenv("X3_WEATHER");
+            const std::string tag = (wxEnv && wxEnv[0] && std::strcmp(wxEnv, "0") != 0)
+                                  ? std::string("_") + wxEnv : std::string("_dry");
+            const float HW = x3::game::kWorldRiverHalfWidth;
+            // LET THE RUNOFF FINISH ITS RAMP. The swell takes ~15 s to go from
+            // 0.3 to 0.9 m and settleAndGrab is 200 frames = 3.3 s, so the
+            // first cut of this proof caught the river only 0.20 m up and the
+            // "rain-swollen" image looked like the dry one. Tick the weather
+            // model alone (no rendering — this is the same integrator the
+            // capture loop runs, just fast) for 30 s first.
+            if (weatherOn) {
+                for (int i = 0; i < 1800; ++i) {
+                    weather.tick(dt);
+                    const x3::game::WeatherSample& ws = weather.sample();
+                    wetness.tick(dt, ws.precipitation, ws.tempC, ws.snowfall);
+                    tickRiverRise(dt, ws.precipitation, ws.snowfall);
+                }
+                char wb[160];
+                std::snprintf(wb, sizeof(wb),
+                    "[bank-shot] weather pre-rolled 30 s: precipitation %.2f, "
+                    "state %d", weather.sample().precipitation,
+                    (int)weather.sample().state);
+                x3::logInfo(wb);
+            }
+            // Freeboard at a node, and the side that is tighter.
+            auto freeboardAt = [&](uint32_t i, float& outNx, float& outNz,
+                                   float& outSide) -> float {
+                const uint32_t j = (i + 1 < rn) ? i + 1 : i;
+                const uint32_t k = (i > 0) ? i - 1 : i;
+                float dx = nds[j].x - nds[k].x, dz = nds[j].z - nds[k].z;
+                const float dl = std::sqrt(dx * dx + dz * dz);
+                if (dl > 1e-3f) { dx /= dl; dz /= dl; }
+                outNx = -dz; outNz = dx;                    // left-hand normal
+                float best = 1e9f; outSide = 1.0f;
+                for (int s = -1; s <= 1; s += 2) {
+                    // The LEVEE BAND, exactly RB8's: half-width+0.5 .. +26 m.
+                    // (The first cut swept HW..2*HW and graded the ocean floor
+                    // as a river bank — see the estuary skip below.)
+                    float crest = -1e9f;
+                    for (float o = HW + 0.5f; o <= HW + 26.0f; o += 2.5f) {
+                        const float px = nds[i].x + outNx * o * (float)s;
+                        const float pz = nds[i].z + outNz * o * (float)s;
+                        crest = std::max(crest, x3::game::terrainHeightAtWorld(px, pz));
+                    }
+                    const float fb = crest - x3::game::worldWaterLevelAt(nds[i].x, nds[i].z);
+                    if (fb < best) { best = fb; outSide = (float)s; }
+                }
+                return best;
+            };
+            // THE ESTUARY IS NOT A RIVER (RB8's own words): inside the ocean
+            // basin disc the shader hands the level to the sea and the basin
+            // floor is 190 ft down — there are no banks to hold there.
+            auto inBasin = [&](uint32_t i) {
+                const float bx = nds[i].x - x3::game::kWorldOceanBasinX;
+                const float bz = nds[i].z - x3::game::kWorldOceanBasinZ;
+                return bx * bx + bz * bz <
+                       x3::game::kWorldOceanBasinR * x3::game::kWorldOceanBasinR;
+            };
+            // The tightest carved station on the whole run — the one that
+            // actually decides the claim.
+            uint32_t worst = 1; float worstFb = 1e9f, lastRiver = 1.0f;
+            for (uint32_t i = 1; i + 1 < std::max(2u, carved); ++i) {
+                if (inBasin(i)) continue;
+                lastRiver = (float)i;
+                float nx, nz, sd;
+                const float fb = freeboardAt(i, nx, nz, sd);
+                if (fb < worstFb) { worstFb = fb; worst = i; }
+            }
+            const uint32_t lastIdx = (uint32_t)lastRiver;
+            x3::logInfo("[bank-shot] tightest carved station is node " +
+                        std::to_string(worst) + " at freeboard " +
+                        std::to_string(worstFb) + " m (last river node " +
+                        std::to_string(lastIdx) + ")");
+            // FIXED stations, not "whichever is tightest right now": the dry
+            // and the rain-swollen runs have to be the SAME camera or the pair
+            // proves nothing (the first cut picked node 4 dry and node 7 in the
+            // storm and the two images were of different places).
+            // Node 2 is where the RISE is visible: the runoff cap is MEASURED
+            // per node off the built ground and is 1.7 m there, so the swell
+            // can express its full 0.9 m against a real bank. Nodes 4/6/7 are
+            // the opposite end — the levee-critical band, cap 0.2 m, the
+            // tightest freeboard on the whole run — which is where "never over
+            // the levees" is actually at risk ([river-rain] prints the table).
+            uint32_t stations[4] = { std::min(2u, lastIdx), std::min(4u, lastIdx),
+                                     std::min(6u, lastIdx), std::min(7u, lastIdx) };
+            for (int s = 0; s < 4; ++s) {
+                const uint32_t i = stations[s];
+                float nx, nz, sd;
+                const float fb = freeboardAt(i, nx, nz, sd);
+                const float wl = x3::game::worldWaterLevelAt(nds[i].x, nds[i].z);
+                // Stand back on the DRY side, high enough that both banks and
+                // the waterline are in one frame.
+                const float back = HW * 2.4f;
+                const float px = nds[i].x - nx * sd * back;
+                const float pz = nds[i].z - nz * sd * back;
+                // Eye ABOVE THE BANK IT STANDS BEHIND. The first cut measured
+                // the eye off the water (wl + 9) and at node 2 — where the
+                // crest is 22 m up — the camera ended INSIDE the wooded hill
+                // and the "bank proof" was a picture of grass with no river in
+                // it. Clear the crest, then look down at the waterline.
+                const float py = std::max(wl + fb, wl) + 8.0f;
+                const float yaw = std::atan2(nds[i].z - pz, nds[i].x - px);
+                const float pitch = std::atan2(wl - py, back);
+                const float cam[5] = { px, py, pz, yaw, pitch };
+                char nm[256], lb[288];
+                std::snprintf(nm, sizeof(nm), "%s/16_banks%s_%d.png",
+                              dir.c_str(), tag.c_str(), s);
+                std::snprintf(lb, sizeof(lb),
+                    "[bank-shot] station node %u at (%.1f, %.1f): drawn water %.2f, "
+                    "tightest bank crest %.2f, FREEBOARD %.3f m (%s) -> %s",
+                    i, nds[i].x, nds[i].z, wl, wl + fb, fb,
+                    fb > 0.0f ? "INSIDE ITS BANKS" : "OVER THE BANK",
+                    nm);
+                x3::logInfo(lb);
+                if (fb <= 0.0f)
+                    x3::logError("[bank-shot] WATER IS OVER THE BANK CREST at node " +
+                                 std::to_string(i));
+                ok = settleAndGrab(cam, nm) && ok;
+
+                // THE WATERLINE FRAME (station 0 only) — the rain-runoff A/B.
+                // A bank shot from 80 m up cannot show 0.75 m of swell: it is
+                // ~9 px. So put the eye 1.4 m over the DRY surface, in the
+                // ribbon, looking downstream. `nds[i].waterY` is the BASE table
+                // (worldRiverRisenNodes builds the risen copy separately), so
+                // the camera is at the SAME world Y in both runs by
+                // construction — and the water climbing toward the lens is the
+                // proof, measured in the log line below.
+                if (s == 0) {
+                    const float wx = nds[i].x + nx * sd * (HW - 6.0f);
+                    const float wz = nds[i].z + nz * sd * (HW - 6.0f);
+                    const float wyEye = nds[i].waterY + 1.4f;
+                    const uint32_t j = (i + 1 < rn) ? i + 1 : i;
+                    const float wyaw = std::atan2(nds[j].z - wz, nds[j].x - wx);
+                    const float wcam[5] = { wx, wyEye, wz, wyaw, -0.045f };
+                    char wn[256], wl2[288];
+                    std::snprintf(wn, sizeof(wn), "%s/17_waterline%s.png",
+                                  dir.c_str(), tag.c_str());
+                    std::snprintf(wl2, sizeof(wl2),
+                        "[bank-shot] waterline frame: eye Y %.2f (dry surface %.2f "
+                        "+ 1.4), water NOW %.2f -> %.2f m under the lens "
+                        "(risen %.2f m) -> %s",
+                        wyEye, nds[i].waterY, wl, wyEye - wl,
+                        wl - nds[i].waterY, wn);
+                    x3::logInfo(wl2);
+                    ok = settleAndGrab(wcam, wn) && ok;
+                }
+            }
+        }
+
         // ==== MAP/HUD PROOF SET (map/HUD wiring) — overview / drive-zoom /
         // waypoint / driving-HUD chevron. Uses the engine's OWN
         // armCapture/captureFrame GPU-swapchain readback — the SAME mechanism
