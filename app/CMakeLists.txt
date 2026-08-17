@@ -70,6 +70,7 @@ add_library(x3app SHARED
     # W-FOREST — the sketch's brown regions: area forests, two-tier draw
     forest.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
+    interchange.cpp     # the diamond interchange — the first structural grade split
     traffic.cpp         # W-TRAFFIC — AI traffic on the 16-lane freeway
     summit_lot.cpp      # the parking lot at the top of the summit spur
     ridge_road.cpp      # the dirt road along the tops, lot -> the bore's massif

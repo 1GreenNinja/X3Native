@@ -114,6 +114,7 @@
 #include "summit_lot.h"        // x3::game::runSummitLotSelfTest (--test-summitlot)
 #include "ridge_road.h"        // x3::game::runRidgeRoadSelfTest (--test-ridgeroad)
 #include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
+#include "interchange.h"       // x3::game::runInterchangeSelfTest (--test-interchange)
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
 #include "traffic.h"           // x3::game::runTrafficSelfTest (--test-traffic)
 #include "gas_station.h"       // x3::game::runGasStationSelfTest (--test-gasstation)
@@ -750,6 +751,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running ROAD NETWORK self-test (lay the 15-mile inner tour as "
                     "chained corridors; grade, length and cap)...");
         return x3::game::runRoadNetworkSelfTest() ? 0 : 1;
+    }
+    if (tf.testInterchange) {
+        x3::logInfo("running INTERCHANGE self-test (the diamond grade split: deck "
+                    "clearance over every lane, ramps at grade both ends, no median "
+                    "crossover inside a ramp pair, no jointed bends)...");
+        return x3::game::runInterchangeSelfTest() ? 0 : 1;
     }
     if (tf.testRouteFrame) {
         x3::logInfo("running ROUTE FRAME self-test (polyline frame: straight unchanged, "

@@ -28,6 +28,7 @@
 #include <array>
 #include <memory>
 #include "../road_network.h"
+#include "../interchange.h"      // W-INTERCHANGE — the diamond grade split
 #include "../summit_lot.h"       // the pad the summit spur climbs to
 #include "../ridge_road.h"       // the dirt road along the tops, lot -> the bore's massif
 #include "../river_bridge.h"
@@ -456,6 +457,40 @@ int hostTunnel(HostContext& hc) {
         }
     }
 
+    // THE DIAMOND INTERCHANGE (X3_INTERCHANGE=0 to disable) — the network's
+    // first STRUCTURAL grade split: a crossroad OVER the freeway on a deck,
+    // four swooping ramps, no median crossover inside the ramp pairs. Every
+    // earlier branch meets the freeway at grade — a T-junction glued onto an
+    // eight-lane divided freeway; this is the machinery road_network.h's own
+    // comment spec'd instead. Registered LAST of the roads so its measured
+    // site test sees every junction already noted and every route registered
+    // (its crossroad + ramps must stay off all of them), and BEFORE the
+    // stations so the turnaround planner both see the interchange zone.
+    x3::game::InterchangeResult interchange;
+    bool interOn = false;
+    {
+        const char* e = std::getenv("X3_INTERCHANGE");
+        interOn = ringOn && !(e && e[0] == '0');   // DEFAULT ON (NO_SLOP rule 6)
+        if (interOn) {
+            std::vector<const x3::game::RoadSpec*> avoidI;
+            if (connOn) avoidI.push_back(&connector.spec);
+            if (outerOn) avoidI.push_back(&outerRing.spec);
+            if (riverOn) avoidI.push_back(&riverRoad.spec);
+            if (circuitOn) {
+                avoidI.push_back(&rangeCircuit.spec);
+                avoidI.push_back(&rangeCircuit.accessSpec);
+            }
+            if (summitSpur.built) avoidI.push_back(&summitSpur.spec);
+            if (ridgeRoad.built)  avoidI.push_back(&ridgeRoad.spec);
+            if (outerConnOn)      avoidI.push_back(&outerConn.spec);
+            interchange = x3::game::registerInterchange(ringSpec, ringRoadY, &avoidI);
+            interOn = interchange.built;
+            if (!interchange.built)
+                x3::logWarn(std::string("--world tunnel: interchange NOT built — ") +
+                            interchange.whyNot);
+        }
+    }
+
     // ==== W-STATIONS — "places for cars to go, to fuel up" ==================
     // Sited from the routes just registered (the freeway's turnaround
     // crossovers, the town approach, the country crossroads), then CARVED here
@@ -550,6 +585,12 @@ int hostTunnel(HostContext& hc) {
         if (circuitOn) {
             addSpec(rangeCircuit.spec, "RANGE CIRCUIT");
             addSpec(rangeCircuit.accessSpec, "RANGE CIRCUIT");
+        }
+        if (interOn) {
+            addSpec(interchange.spec, "OVERPASS");   // deck reach draws dashed
+            for (int q = 0; q < 4; ++q)
+                if (interchange.ramp[q].built)
+                    addSpec(interchange.ramp[q].spec, "");   // ramps: unlabeled
         }
         char mb[128];
         std::snprintf(mb, sizeof(mb), "[tunnel] map: %u road overlay polyline(s) staged",
@@ -1026,6 +1067,23 @@ int hostTunnel(HostContext& hc) {
                                   &outerConn.roadY);
         x3::game::buildJunctionMouth(outerConn.ringJct, scene, *device, *phys);
         x3::game::buildJunctionMouth(outerConn.outerJct, scene, *device, *phys);
+    }
+    // THE DIAMOND INTERCHANGE: the crossroad's ribbon (its span reach is a
+    // gap — the deck owns it), the overpass deck itself, four ramp ribbons
+    // at half cross-section, and EIGHT junction mouths — every ramp blends
+    // into both roads with the same ruled twist + swooping fillets every
+    // at-grade branch gets.
+    if (interOn) {
+        x3::game::buildRoadRibbon(interchange.spec, scene, *device, *phys,
+                                  &interchange.roadY);
+        x3::game::buildOverpassDeck(interchange, scene, *device, *phys);
+        for (int q = 0; q < 4; ++q) {
+            const auto& rp = interchange.ramp[q];
+            if (!rp.built) continue;
+            x3::game::buildRoadRibbon(rp.spec, scene, *device, *phys, &rp.roadY);
+            x3::game::buildJunctionMouth(rp.fwyJct, scene, *device, *phys);
+            x3::game::buildJunctionMouth(rp.crossJct, scene, *device, *phys);
+        }
     }
     if (riverOn) {
         x3::game::buildRoadRibbon(riverRoad.spec, scene, *device, *phys,
