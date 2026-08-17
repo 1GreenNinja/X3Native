@@ -912,7 +912,21 @@ int hostTunnel(HostContext& hc) {
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
     x3::game::DriveDemo car;
-    const float spawnGroundY = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]);
+    // SPAWN ON TOP OF THE ROAD (Tim, after landing on the dirt BESIDE it):
+    // terrain height is right except where the vertical-curve pass floats the
+    // ribbon above the graded field (sags float up to ~5 m). The rule, done
+    // properly: a raycast straight down takes the TOPMOST collider — the road
+    // surface when the road is there, the terrain when it is not — i.e. spawn
+    // where a wheel would actually land. Terrain height stays as the fallback
+    // if the physics tiles under the spawn have not streamed in yet.
+    float spawnGroundY = x3::game::terrainHeightAtWorld(startPos[0], startPos[2]);
+    {
+        const x3::phys::RayHit hit = phys->rayCast(
+            x3::phys::Vec3{ startPos[0], spawnGroundY + 60.0f, startPos[2] },
+            x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 120.0f, x3::phys::Layer::Static);
+        if (hit.hit && hit.point.y > spawnGroundY - 0.5f)
+            spawnGroundY = hit.point.y;
+    }
     const bool carBuilt = car.build(*device, *phys, startPos[0], spawnGroundY + 1.4f, startPos[2]);
     if (carBuilt) {
         // E46_New, not CTR. Tim asked for a seat, a passenger seat, a dash and a
@@ -1906,12 +1920,37 @@ int hostTunnel(HostContext& hc) {
                     // right = (-dirZ, 0, dirX), so left is its negation -- taken
                     // from the route rather than the car's own heading so you
                     // always step toward the walkway, even if you stopped skewed.
-                    const float ox =  route.dirZ * 2.4f, oz = -route.dirX * 2.4f;
+                    // FEET ABOVE GROUND — THE LAW (Tim, third strike: "make
+                    // his Feet stay ABOVE GROUND"). The old spawn was chassis
+                    // arithmetic (+2.4 m left, +1.2 up): midair on an
+                    // embankment, INSIDE the hill in a cut — and a capsule
+                    // under the heightfield never comes back. Candidates are
+                    // tried left / right / behind; each one's Y is a downward
+                    // RAYCAST (topmost surface — pavement or dirt), floored by
+                    // the terrain height. Feet land ON something, always.
+                    const float cand[3][2] = {
+                        {  route.dirZ * 2.4f, -route.dirX * 2.4f },   // left
+                        { -route.dirZ * 2.4f,  route.dirX * 2.4f },   // right
+                        { -route.dirX * 3.2f, -route.dirZ * 3.2f },   // behind
+                    };
+                    float sx = vp[0], sy = vp[1] + 1.2f, sz = vp[2];
+                    for (int ci = 0; ci < 3; ++ci) {
+                        const float cx2 = vp[0] + cand[ci][0], cz2 = vp[2] + cand[ci][1];
+                        float gy = x3::game::terrainHeightAtWorld(cx2, cz2);
+                        const x3::phys::RayHit rh = phys->rayCast(
+                            x3::phys::Vec3{ cx2, vp[1] + 30.0f, cz2 },
+                            x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 90.0f,
+                            x3::phys::Layer::Static);
+                        if (rh.hit) gy = std::max(gy, rh.point.y);
+                        // A candidate more than 4 m below the car is a drop-off
+                        // (bridge edge) — try the next side.
+                        if (gy > vp[1] - 4.0f) { sx = cx2; sz = cz2; sy = gy + 1.1f; break; }
+                    }
                     if (!footSpawned) {
-                        onFoot.spawn(*phys, vp[0] + ox, vp[1] + 1.2f, vp[2] + oz);
+                        onFoot.spawn(*phys, sx, sy, sz);
                         footSpawned = true;
                     } else {
-                        onFoot.setFeetPosition(*phys, x3::phys::Vec3{ vp[0] + ox, vp[1] + 1.2f, vp[2] + oz });
+                        onFoot.setFeetPosition(*phys, x3::phys::Vec3{ sx, sy, sz });
                     }
                     driving = false;
                     // Load him ONCE, on the first exit rather than at boot: most
@@ -1988,6 +2027,15 @@ int hostTunnel(HostContext& hc) {
             spaceWas = spaceNow;
             pin.lookDX = ddx; pin.lookDY = ddy;
             onFoot.update(pin, fdt, *phys);
+            {   // FEET-ABOVE-GROUND INVARIANT — not a fix, a LAW enforced per
+                // frame: whatever goes wrong anywhere else, if Jake's feet are
+                // ever below the terrain surface they are put back on it NOW.
+                // One height query per on-foot frame.
+                const x3::phys::Vec3 jf = onFoot.feet();
+                const float gy = x3::game::terrainHeightAtWorld(jf.x, jf.z);
+                if (jf.y < gy - 0.25f)
+                    onFoot.setFeetPosition(*phys, x3::phys::Vec3{ jf.x, gy + 0.15f, jf.z });
+            }
 
             // Drive the rig from what the capsule actually DID: planar speed
             // picks idle/walk/run (the locomotion blend), and he faces his
