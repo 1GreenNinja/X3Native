@@ -526,6 +526,10 @@ float measureRun(const x3::phys::WheeledTuning& tuning, float boostMult, Fn&& fn
                         g.cindex.data(), (uint32_t)g.cindex.size());
     DriveDemo car;
     if (!car.buildPhysics(*phys, 0.0f, 1.2f, 0.0f)) { phys->shutdown(); return -1.0f; }
+    // Slab world, not the streamed terrain: keep the contact-law lifter off so
+    // the procedural field can't hoist the car mid-measurement (see
+    // DriveDemo::setTerrainContactLaw — the phantom-mountain receipt).
+    car.setTerrainContactLaw(false);
     phys->optimizeBroadphase();
     car.applyTuning(tuning);
     if (boostMult > 1.0f) car.setTorqueBoost(boostMult);

@@ -121,6 +121,18 @@ public:
     void  setTractionControl(bool on) { m_tcEnabled = on; }
     bool  tractionControl() const { return m_tcEnabled; }
 
+    // THE CONTACT LAW toggle (NO_SLOP rule 11 — default ON, every WORLD keeps
+    // it on). Exists ONLY for the headless self-tests, which drive on a flat
+    // slab world that is NOT the streamed terrain: postStep's lifter samples
+    // terrainHeightAtWorld() — the procedural WORLD field — and after the
+    // W-MOUNTAIN merge that field rises ~37 m a few hundred meters from the
+    // test origin, so the slab-test car was hoisted up a PHANTOM mountainside
+    // at 140 mph (chassis.y = 37 m on a flat slab; broke the wheels-contact /
+    // ride-height / skidpad sections, 2026-08-16). Tests on non-terrain worlds
+    // call setTerrainContactLaw(false); every real host leaves it on.
+    void  setTerrainContactLaw(bool on) { m_contactLaw = on; }
+    bool  terrainContactLaw() const { return m_contactLaw; }
+
     // ---- CLIMB MODE: crawl traction for steep terrain -----------------------
     // The car is already AWD; what stops it on a mountainside is wheelspin —
     // all four spun deep into the friction plateau where grip FALLS. Climb
@@ -244,6 +256,7 @@ private:
     SteerParams m_steerP;                // speed-sensitive steering map (see steerParams)
     float m_steerNow = 0.0f;             // slewed steering actually at the wheels
     bool m_tcEnabled = false;            // TC off — grip 10 hooks up and the box shifts; T toggles
+    bool m_contactLaw = true;            // terrain contact-law lifter (see setTerrainContactLaw)
     bool m_tcCutting = false;            // TC hysteresis latch — stays cut until slip falls (see setInput)
     float m_tcTrim = 1.0f;               // smoothed TC trim (one-pole, see setInput)
     bool m_climbMode = false;            // crawl traction (see setClimbMode)
