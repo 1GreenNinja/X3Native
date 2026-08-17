@@ -782,6 +782,7 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running SUMMIT PARKING LOT self-test (the pad at the top of the "
                     "summit spur: carved, level, on the peak, drivable into)...");
         return x3::game::runSummitLotSelfTest() ? 0 : 1;
+    }
     if (tf.testFactory) {
         x3::logInfo("running FACTORY self-test (the Glimvale Works is sited in the "
                     "sketch's NE sector on ground flat enough to build on, its drive "

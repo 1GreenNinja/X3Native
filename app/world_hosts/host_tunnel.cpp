@@ -457,7 +457,8 @@ int hostTunnel(HostContext& hc) {
         }
     }
 
-    // ==== W-STATIONS — "places for cars to go, to fuel up" ===========    // Sited from the routes just registered (the freeway's turnaround
+    // ==== W-STATIONS — "places for cars to go, to fuel up" ==================
+    // Sited from the routes just registered (the freeway's turnaround
     // crossovers, the town approach, the country crossroads), then CARVED here
     // — this is the last stop before the height-query gate closes at
     // TerrainStreamer::init(), and it must also precede buildRoadRibbon()
@@ -473,7 +474,9 @@ int hostTunnel(HostContext& hc) {
                              connOn ? &connector.spec : nullptr,
                              connOn ? &connector.roadY : nullptr);
             gasStations.registerPads();
-=======
+        }
+    }
+
     // THE GLIMVALE WORKS (X3_FACTORY=0 to disable — the flag is for turning it
     // OFF, NO_SLOP rule 6). Planned and its drive registered HERE, in the boot
     // slot, for the reason every producer above is here: app/terrain.h's
@@ -3964,7 +3967,6 @@ int hostTunnel(HostContext& hc) {
         {
             static bool eWasDown = false;
             const bool eDown = kd(GLFW_KEY_E);   // shell-gated: E while typing is just a letter
-            if (eDown && !eWasDown && carBuilt && !atPump) {
             // A GOLDEN TICKET IN REACH OWNS THE PRESS. E already means
             // get-out/get-in, so the two have to be arbitrated somewhere and
             // "the thing you are standing on top of wins" is the only reading
@@ -3989,7 +3991,9 @@ int hostTunnel(HostContext& hc) {
                     if (tickets.allFound()) factory.openGate();
                 }
             }
-            if (eDown && !eWasDown && carBuilt && !eConsumed) {
+            // !atPump: at a pump E means REFUEL (W-STATIONS); !eConsumed: a
+            // ticket in reach owns the press (W-FACTORY). Both yield to get-in.
+            if (eDown && !eWasDown && carBuilt && !atPump && !eConsumed) {
                 if (driving) {
                     float vp[3]; car.chassisPos(vp);
                     parkedAt[0] = vp[0]; parkedAt[1] = vp[1]; parkedAt[2] = vp[2];
