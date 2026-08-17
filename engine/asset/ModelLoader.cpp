@@ -70,6 +70,10 @@ namespace fs = std::filesystem;
 
 namespace x3::asset {
 
+// Defined below; used by the loader's classifyNonVisual().
+bool isOrphanCollisionProxy(const std::string& nm);
+
+
 namespace {
 
 // KTX2/Basis transcode is a documented best-effort seam. basisu is not wired
@@ -474,6 +478,7 @@ public:
         buildNodes(*data, model);
         buildSkins(*data, model);
         buildAnimations(*data, model);
+        classifyNonVisual(model, path);
         m_capturePrims = nullptr;
 
         // A model is "ok" if it produced at least one drawable primitive.
@@ -959,6 +964,85 @@ private:
         }
     }
 
+    // ---- Mark primitives that must never be DRAWN or MEASURED: physics proxies
+    // and non-primary LODs. See MeshPrimitive::nonVisual for why this exists.
+    //
+    // Proxy detection is by NAME, on the mesh and on every node that references
+    // it — the parenting does not change what the geometry IS, and the previous
+    // net only looked at ORPHANED meshes, so a hull the converter happened to
+    // parent stayed visible.
+    //
+    // LOD detection keeps the LOWEST level present per base name and drops the
+    // rest. Files really do ship every level as a sibling node (the railgun and
+    // rocket launcher each carry model_LOD0..LOD4), and drawing all five stacks
+    // four redundant full-size copies on top of the one the player sees. A file
+    // whose only level is e.g. _LOD2 keeps it — the minimum present wins, so
+    // nothing is ever classified into invisibility.
+    void classifyNonVisual(Model& model, const std::string& path) {
+        auto lower = [](std::string v) {
+            for (char& c : v) c = (char)std::tolower((unsigned char)c);
+            return v;
+        };
+        // base name -> lowest LOD level seen (parsed from a trailing _LODn).
+        auto lodOf = [&](const std::string& nm, std::string& base) -> int {
+            const std::string l = lower(nm);
+            const size_t p = l.rfind("_lod");
+            if (p == std::string::npos || p + 4 >= l.size()) return -1;
+            int lvl = 0;
+            for (size_t i = p + 4; i < l.size(); ++i) {
+                if (l[i] < '0' || l[i] > '9') return -1;
+                lvl = lvl * 10 + (l[i] - '0');
+            }
+            base = l.substr(0, p);
+            return lvl;
+        };
+        // Names attached to each mesh index: its own name plus every node's.
+        std::vector<std::vector<std::string>> names(model.meshNames.size());
+        for (size_t i = 0; i < model.meshNames.size(); ++i)
+            names[i].push_back(model.meshNames[i]);
+        for (const Node& nd : model.nodes)
+            if (nd.meshIndex >= 0 && (size_t)nd.meshIndex < names.size())
+                names[(size_t)nd.meshIndex].push_back(nd.name);
+
+        // Lowest LOD level per base name across the whole file.
+        std::unordered_map<std::string, int> minLod;
+        for (size_t mi = 0; mi < names.size(); ++mi)
+            for (const std::string& nm : names[mi]) {
+                std::string base; const int lv = lodOf(nm, base);
+                if (lv < 0) continue;
+                auto it = minLod.find(base);
+                if (it == minLod.end() || lv < it->second) minLod[base] = lv;
+            }
+
+        uint32_t proxies = 0, lods = 0;
+        std::string firstProxy, firstLod;
+        for (MeshPrimitive& p : model.primitives) {
+            if (p.meshIndex >= names.size()) continue;
+            bool isProxy = false, isDemotedLod = false;
+            for (const std::string& nm : names[p.meshIndex]) {
+                if (isOrphanCollisionProxy(nm)) { isProxy = true; if (firstProxy.empty()) firstProxy = nm; }
+                std::string base; const int lv = lodOf(nm, base);
+                if (lv >= 0) {
+                    auto it = minLod.find(base);
+                    if (it != minLod.end() && lv > it->second) {
+                        isDemotedLod = true;
+                        if (firstLod.empty()) firstLod = nm;
+                    }
+                }
+            }
+            if (isProxy)            { p.nonVisual = true; ++proxies; }
+            else if (isDemotedLod)  { p.nonVisual = true; ++lods; }
+        }
+        if (proxies)
+            logInfo("[gltf] " + std::to_string(proxies) + " COLLISION-PROXY primitive(s) (e.g. '" +
+                    firstProxy + "') marked non-visual in " + path +
+                    " — not drawn, not measured");
+        if (lods)
+            logInfo("[gltf] " + std::to_string(lods) + " reduced-LOD primitive(s) (e.g. '" +
+                    firstLod + "') marked non-visual in " + path +
+                    " — only the primary LOD is drawn");
+    }
+
     void buildSkins(const cgltf_data& data, Model& model) {
         model.skins.reserve(data.skins_count);
         for (size_t i = 0; i < data.skins_count; ++i) {
@@ -1399,6 +1483,7 @@ std::vector<ModelDrawable> makeDrawables(const Model& m) {
     if (m.nodes.empty()) {
         const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         for (const auto& p : m.primitives) {
+            if (p.nonVisual) continue;   // physics hull / reduced LOD
             ModelDrawable d;
             if (fillDrawable(m, p, ident, d)) out.push_back(d);
         }
@@ -1441,6 +1526,7 @@ std::vector<ModelDrawable> makeDrawables(const Model& m) {
         if (nd.meshIndex < 0) continue;
         static const float identS[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         for (const auto& p : m.primitives) {
+            if (p.nonVisual) continue;   // physics hull / reduced LOD
             if ((int)p.meshIndex != nd.meshIndex) continue;
             const bool skinnedHere = p.skinned && nd.skinIndex >= 0;
             ModelDrawable d;
@@ -1472,6 +1558,7 @@ std::vector<ModelDrawable> makeDrawables(const Model& m) {
         for (const Node& nd : m.nodes) if (nd.meshIndex >= 0) nodeMeshes.insert((uint32_t)nd.meshIndex);
         const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         for (const auto& p : m.primitives) {
+            if (p.nonVisual) continue;   // physics hull / reduced LOD
             if (nodeMeshes.count(p.meshIndex)) continue;
             const std::string& nm = (p.meshIndex < m.meshNames.size())
                                         ? m.meshNames[p.meshIndex] : std::string();
@@ -1524,6 +1611,7 @@ std::vector<ModelDrawable> makeDrawablesNamed(const Model& m,
         const Node& nd = m.nodes[i];
         if (nd.meshIndex < 0) continue;
         for (const auto& p : m.primitives) {
+            if (p.nonVisual) continue;   // physics hull / reduced LOD
             if ((int)p.meshIndex != nd.meshIndex) continue;
             ModelDrawable d;
             if (fillDrawable(m, p, world[i].data(), d)) {
@@ -1541,6 +1629,7 @@ std::vector<ModelDrawable> makeDrawablesNamed(const Model& m,
         for (const Node& nd : m.nodes) if (nd.meshIndex >= 0) nodeMeshes.insert((uint32_t)nd.meshIndex);
         const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         for (const auto& p : m.primitives) {
+            if (p.nonVisual) continue;   // physics hull / reduced LOD
             if (nodeMeshes.count(p.meshIndex)) continue;
             const std::string& nm = (p.meshIndex < m.meshNames.size())
                                         ? m.meshNames[p.meshIndex] : std::string();

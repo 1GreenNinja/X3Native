@@ -240,12 +240,14 @@ ArtUpExtent staticArtUpExtent(const x3::asset::Model& m, bool zUp) {
     bool anyNodeMesh = false;
     for (size_t i = 0; i < m.nodes.size(); ++i) {
         if (m.nodes[i].meshIndex < 0) continue;
-        for (const auto& p : m.primitives)
+        for (const auto& p : m.primitives) {
+            if (p.nonVisual) continue;   // hull / reduced LOD: never the drawn body
             if ((int)p.meshIndex == m.nodes[i].meshIndex) { sweepBox(&world[i * 16], p); anyNodeMesh = true; }
+        }
     }
     if (!anyNodeMesh) {                            // node-less model: identity transform
         static const float I[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-        for (const auto& p : m.primitives) sweepBox(I, p);
+        for (const auto& p : m.primitives) { if (p.nonVisual) continue; sweepBox(I, p); }
     }
     if (!e.ok) return e;
     e.lo = mn[a]; e.hi = mx[a];
@@ -269,6 +271,7 @@ ArtUpExtent posedUpExtent(const x3::asset::Model& m, const x3::anim::Skinner& sk
     const int a = zUp ? 2 : 1;
     float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
     for (const auto& p : m.primitives) {
+        if (p.nonVisual) continue;       // hull / reduced LOD: never the drawn body
         if (!p.skinned || p.basePos.empty()) continue;
         const size_t vcount = p.basePos.size() / 3;
         for (size_t v = 0; v < vcount; ++v) {

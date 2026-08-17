@@ -50,6 +50,22 @@ struct MeshPrimitive {
     // NOTE for skinned primitives this is the BIND-pose box, which the joint
     // matrices may rescale wholesale — measure those through the skinning
     // palette, not this. ----
+    // ---- NON-VISUAL geometry (fix/spawn-anomalies, Tim 2026-08-17: "the tiny
+    // body was cloned, under the full size model ... Car models had the same
+    // issue. It was a collider mesh").
+    //
+    // Art packs ship geometry that is NOT meant to be seen: physics hulls
+    // (Collider / UCX_ / UBX_ / USP_ / *_phys) and reduced LOD copies. Nothing
+    // in glTF marks them, so the loader used to hand every primitive in the file
+    // to the renderer AND to every bounds query. Two ways that bites:
+    //   * a hull drawn at the wrong transform is a SECOND, mis-scaled copy of the
+    //     body sitting under the real one (the "mini car", and the tiny humanoid
+    //     under the full-size enemy);
+    //   * even when suppressed from DRAWING, the hull still sat in the bounds, so
+    //     size and grounding maths measured a body that is not the visible one.
+    // Classified once at load; honoured by the drawable builders AND the bounds
+    // helpers, so a proxy can never be drawn or measured. ----
+    bool                 nonVisual = false;
     bool                 hasBBox = false;
     float                bboxMin[3] = { 0, 0, 0 };
     float                bboxMax[3] = { 0, 0, 0 };

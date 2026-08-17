@@ -401,6 +401,9 @@ inline ModelExtent modelBindExtentY(const x3::asset::Model& m) {
     ModelExtent e;
     float lo = 1e30f, hi = -1e30f;
     for (const auto& p : m.primitives) {
+        // A physics hull or a reduced LOD is not the body the player sees; letting
+        // it into the extent measures geometry that is never drawn.
+        if (p.nonVisual) continue;
         if (!p.basePos.empty()) {
             for (size_t i = 1; i < p.basePos.size(); i += 3) {
                 const float y = p.basePos[i];
