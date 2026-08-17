@@ -117,6 +117,7 @@
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
 #include "traffic.h"           // x3::game::runTrafficSelfTest (--test-traffic)
 #include "gas_station.h"       // x3::game::runGasStationSelfTest (--test-gasstation)
+#include "factory.h"           // x3::game::runFactorySelfTest (--test-factory)
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
@@ -781,6 +782,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running SUMMIT PARKING LOT self-test (the pad at the top of the "
                     "summit spur: carved, level, on the peak, drivable into)...");
         return x3::game::runSummitLotSelfTest() ? 0 : 1;
+    if (tf.testFactory) {
+        x3::logInfo("running FACTORY self-test (the Glimvale Works is sited in the "
+                    "sketch's NE sector on ground flat enough to build on, its drive "
+                    "reaches the freeway at grade, and five tickets hide in five "
+                    "real places)...");
+        return x3::game::runFactorySelfTest() ? 0 : 1;
     }
     if (tf.testTunnelDrive) {
         x3::logInfo("running TUNNEL DRIVE-THROUGH self-test (real rig through the demo "
