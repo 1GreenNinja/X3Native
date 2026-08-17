@@ -2377,6 +2377,17 @@ void VulkanRenderDevice::prepareFrameData() {
             // Clarity (see WaterParams::clarity): 0 keeps the historic opaque
             // surface byte-identical (alpha 1 through the enabled blend).
             w.p4 = glm::vec4(m_water.clarity, 0.0f, 0.0f, 0.0f);
+            // RIVER MODE (task #32 — one water truth): count 0 = legacy flat
+            // sea, byte-identical. See WaterParams::riverNodes.
+            const uint32_t rn = std::min(m_water.riverNodeCount,
+                                         WaterParams::kMaxRiverNodes);
+            w.riverInfo  = glm::vec4((float)rn, m_water.riverHalfWidth, 0.0f, 0.0f);
+            w.riverBasin = glm::vec4(m_water.basinCenter[0], m_water.basinCenter[1],
+                                     m_water.basinRadius, m_water.oceanLevel);
+            for (uint32_t i = 0; i < rn; ++i)
+                w.riverNodes[i] = glm::vec4(m_water.riverNodes[i][0],
+                                            m_water.riverNodes[i][1],
+                                            m_water.riverNodes[i][2], 0.0f);
             std::memcpy(m_waterUboMapped[m_frameIdx], &w, sizeof(WaterUBO));
         }
 

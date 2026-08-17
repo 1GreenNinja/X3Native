@@ -852,6 +852,11 @@ public:
 
     void setInput(const VehicleInput& in) override { m_in = in; }
 
+    // The water surface can MOVE under the hull (a river descends downstream
+    // and swells in rain) — see IVehicleController::setSeaLevel. Everything
+    // below reads m_d.seaLevel fresh each preStep, so this is the whole fix.
+    bool setSeaLevel(float y) override { m_d.seaLevel = y; return true; }
+
     // Forces are applied each fixed step. We add them in preStep so the upcoming
     // world step integrates them.
     void preStep(float dt) override {

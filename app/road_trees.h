@@ -60,11 +60,11 @@ public:
     // heights this reads include the corridor cut, so call AFTER it). Returns
     // false if the tree GLBs failed to load (nothing draws; the road is
     // simply treeless — never fatal).
-    // minBenchY: benches never seat below this world Y. The host passes the
-    // DRAWN river plane's level (riverRoad.plan.waterY) — worldWaterLevelAt
-    // does not know the visual plane (task #32), and the first bench shipped
-    // submerged at a spot that PASSED the water-table check. PAIRED with the
-    // host's applyRiverWater seaLevel.
+    // minBenchY is a DEAD PARAMETER kept only so no caller breaks: since
+    // task #32 the DRAWN river surface follows the same worldWaterLevelAt
+    // table, so the water-table check IS the drawn waterline — one truth.
+    // Benches additionally clear the rain-runoff head-room
+    // (kWorldRiverRainRiseMax). Pass -1.0e9f.
     // `phys` (optional, but the host passes it): TRUNK COLLISION. Owner,
     // 2026-08-17, looking at the groves: "Trees look pretty good, and we just
     // need collision on with their trunks." EnvArtSystem is visual-only by

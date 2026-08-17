@@ -154,6 +154,33 @@ constexpr float kWorldSeaLevel = -10.0f;    // the ocean surface Y (W9 terrain d
 constexpr float kWorldWaterDry = -3.0e38f;  // "no water here" sentinel (< any real Y)
 float worldWaterLevelAt(float x, float z);
 
+// The offshore ocean basin's footprint (the same disc worldWaterLevelAt tests
+// and the terrain bowl deepens over) — exported so the water shader's river
+// mode can hand the estuary off to a real sea. terrain.cpp's kBasinCx/Cz
+// alias these (PAIRED — a change to one IS a change to both).
+constexpr float kWorldOceanBasinX = 1100.0f;
+constexpr float kWorldOceanBasinZ = -1350.0f;
+constexpr float kWorldOceanBasinR = 950.0f;
+
+// ---------------------------------------------------------------------------
+// RAIN RUNOFF (W-WATER, task #23) — the river runs HIGH in heavy rain.
+// The host's weather tick feeds the (smoothed) rise in metres; BOTH truths
+// consume it through the same node table: worldWaterLevelAt adds the risen
+// level, and worldRiverRisenNodes() hands the identical risen node Y to the
+// drawn surface (host_tunnel's applyRiverWater). Per node the rise is capped
+// at 60% of that node's levee freeboard (min(rise, 0.6 * crestC)) so the
+// swollen river NEVER tops a levee — the beach reach (crest +0.2) barely
+// creeps up its shelf while the deep reaches (crest +2.2) rise the full
+// bounded amount. Rise 0 (the default) is bit-neutral everywhere.
+// ---------------------------------------------------------------------------
+constexpr float kWorldRiverRainRiseMax = 0.9f;   // hard bound (m); levee min is 0.6*c
+void  setWorldRiverRainRise(float riseM);        // clamped to [0, kWorldRiverRainRiseMax]
+float worldRiverRainRise();
+// Fill `out` with the working chain's nodes at the CURRENT risen level (the
+// same per-node cap worldWaterLevelAt applies). Returns the node count
+// (<= maxN). This is the array the drawn river surface renders from.
+uint32_t worldRiverRisenNodes(WorldRiverNode* out, uint32_t maxN);
+
 // ===========================================================================
 // TERRAIN CORRIDOR DEPRESSION — the polyline generalization of the river carve,
 // and the mechanism that makes freeway tunnels possible WITHOUT CSG, voxels or

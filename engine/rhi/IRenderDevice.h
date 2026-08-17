@@ -1229,6 +1229,25 @@ public:
         // what makes a river read as WATER instead of a painted ribbon: the
         // shoreline shows its bed, and life under the surface is visible.
         float clarity = 0.0f;
+        // ---- RIVER MODE (task #32 — ONE water truth) -----------------------
+        // riverNodeCount == 0 (the default) keeps the historic FLAT plane at
+        // `seaLevel`, byte-identical for every ocean world. When >= 2, the
+        // patch's surface Y follows the closest-approach interpolation of this
+        // polyline's per-node water level (the SAME table the terrain carve
+        // and worldWaterLevelAt use — the drawn plane and the query can no
+        // longer split truth). Outside `riverHalfWidth` of the spine the
+        // surface alpha-fades out (the waterline the ribbon mesh would have),
+        // EXCEPT inside the ocean basin disc (basinCenter/basinRadius), where
+        // the level hands off to `oceanLevel` instead (the estuary meets a
+        // real sea; terrain above oceanLevel clips it into shoreline). Nodes
+        // are (x, z, waterY) in world metres.
+        static constexpr uint32_t kMaxRiverNodes = 20;
+        uint32_t riverNodeCount = 0;
+        float    riverHalfWidth = 0.0f;
+        float    riverNodes[kMaxRiverNodes][3] = {};
+        float    basinCenter[2] = { 0.0f, 0.0f };
+        float    basinRadius    = 0.0f;      // 0 => no ocean fallback disc
+        float    oceanLevel     = 0.0f;
     };
     // Set the active water parameters for subsequent frames (cached + re-applied
     // each frame, like setSkyParams). Calling with enabled=false disables water.

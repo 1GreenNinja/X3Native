@@ -1469,6 +1469,7 @@ bool BoatDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& ph
 }
 
 void BoatDemo::setInput(const x3::phys::VehicleInput& in) { if (m_ctl) m_ctl->setInput(in); }
+void BoatDemo::setSeaLevel(float y) { if (m_ctl) m_ctl->setSeaLevel(y); }
 void BoatDemo::preStep(float dt)  { if (m_ctl) m_ctl->preStep(dt); }
 void BoatDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
 

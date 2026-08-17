@@ -3053,8 +3053,16 @@ private:
         glm::vec4 p2;             // 160: x=patchHalfExtent,y=1/W,z=1/H,w=camera far (0 => legacy 200)
         glm::vec4 p3;             // 176: xyz=horizonColor (linear), w=1 when supplied else 0
         glm::vec4 p4;             // 192: x=clarity (0 = legacy opaque), yzw reserved
+        // RIVER MODE (task #32): x=riverNodeCount (0 = legacy flat sea),
+        // y=riverHalfWidth (m); zw reserved.
+        glm::vec4 riverInfo;      // 208
+        // xy=ocean basin centre (world XZ), z=basin radius (0 = no sea
+        // fallback), w=oceanLevel (the sea surface Y the estuary hands off to).
+        glm::vec4 riverBasin;     // 224
+        // Per node: x=world x, y=world z, z=waterY (w unused). Count above.
+        glm::vec4 riverNodes[20]; // 240
     };
-    static_assert(sizeof(WaterUBO) == 208, "WaterUBO must match the std140 layout in water.{vert,frag}");
+    static_assert(sizeof(WaterUBO) == 560, "WaterUBO must match the std140 layout in water.{vert,frag}");
     WaterParams m_water{};   // cached tunables (setWaterParams)
     // Unit-patch grid mesh (vec2 grid coord per vertex), built once at init.
     VkBuffer      m_waterVbo = VK_NULL_HANDLE; VmaAllocation m_waterVboAlloc = nullptr;

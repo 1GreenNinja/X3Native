@@ -829,11 +829,12 @@ int hostTunnel(HostContext& hc) {
             float cam[5]; tunnel.showcaseCamera(route, i, cam);
             camKeepOut.push_back({ cam[0], cam[2], 12.0f });
         }
-        // Benches never seat below the DRAWN river plane (PAIRED with
-        // applyRiverWater's seaLevel; see RoadTrees::build minBenchY).
-        const float benchDryY = (riverOn && riverRoad.plan.ok)
-                              ? riverRoad.plan.waterY + 0.3f : -1.0e9f;
-        trees.build(*device, route, camKeepOut, benchDryY, phys.get());
+        // The minBenchY shim (drawn-plane level) is GONE: the drawn river now
+        // follows the same worldWaterLevelAt table (task #32 — one truth), so
+        // RoadTrees' own water-table check IS the drawn waterline. `phys` stays
+        // — that is the trunk collision the owner asked for, unrelated to the
+        // shim that shared the call.
+        trees.build(*device, route, camKeepOut, -1.0e9f, phys.get());
     }
 
     // ==== THE SMALL MOUNTAIN TOWN (W-TOWN) ==================================
@@ -1070,31 +1071,21 @@ int hostTunnel(HostContext& hc) {
     // just never got a water feed in THIS host, so Jake hiked the riverbed
     // dry under the water table.
     //
-    // THE FEED IS THE SURFACE HE CAN SEE. This host draws ONE flat Gerstner
-    // plane at the bridge plan's waterY, while worldWaterLevelAt reports the
-    // spline's sloping level — 0.26 m below the plane a mere 32 m downstream.
-    // Fed the spline, he treads with his head under the drawn surface. So
-    // inside the bridge reach the PLANE owns the answer; beyond it (and in
-    // the ocean) the spline query stands. Same clamp the fish got.
-    {
-        const bool  rOn = riverOn && riverRoad.plan.ok;
-        const float rcx = rOn ? riverRoad.plan.cx : 0.0f;
-        const float rcz = rOn ? riverRoad.plan.cz : 0.0f;
-        const float rwy = rOn ? riverRoad.plan.waterY : 0.0f;
-        // The +0.35 m bias: the Player's buoyancy rests the EYE just above the
-        // fed surface, which leaves the drawn head bobbing right AT the
-        // waterline — reading as submerged whenever a crest rolls through. A
-        // treading human rides higher than his eye line; reporting the surface
-        // a hand-span HIGH makes the buoyancy lift him that much further, so
-        // head + shoulders clear the drawn plane.
-        onFoot.setWaterQuery([rOn, rcx, rcz, rwy](float x, float z) {
-            const float w = x3::game::worldWaterLevelAt(x, z);
-            if (!rOn || w <= x3::game::kWorldWaterDry + 1.0f) return w;
-            const float dx = x - rcx, dz = z - rcz;
-            if (dx * dx + dz * dz < 260.0f * 260.0f) return rwy + 0.35f;
-            return w;
-        });
-    }
+    // THE FEED IS THE SURFACE HE CAN SEE — and since task #32 the drawn
+    // surface IS worldWaterLevelAt (the water shader steps the plane down the
+    // channel from the same node table), so the old bridge-reach clamp to the
+    // flat plane is deleted. What stays is the +0.35 m presentation bias: the
+    // Player's buoyancy rests the EYE just above the fed surface, which
+    // leaves the drawn head bobbing right AT the waterline — reading as
+    // submerged whenever a crest rolls through. A treading human rides higher
+    // than his eye line; reporting the surface a hand-span HIGH makes the
+    // buoyancy lift him that much further, so head + shoulders clear the
+    // drawn crests.
+    onFoot.setWaterQuery([](float x, float z) {
+        const float w = x3::game::worldWaterLevelAt(x, z);
+        if (w <= x3::game::kWorldWaterDry + 1.0f) return w;
+        return w + 0.35f;
+    });
     bool  driving      = true;
     bool  footSpawned  = false;
     float parkedAt[3]  = { 0, 0, 0 };   // where the car was left, for the re-entry prompt
@@ -1614,11 +1605,41 @@ int hostTunnel(HostContext& hc) {
     // darker+greener than the sea defaults, specular drops 12->5 and the
     // fresnel floor 0.02->0.012 (less sky mirror face-on). Caustics ride along
     // (the canon undersea pass) so the deepened bed reads THROUGH the surface.
-    auto applyRiverWater = [&](float t) {
+    // (fx, fz) = this frame's focus (camera/player/car XZ): river mode feeds
+    // the LOCAL water level there into seaLevel (the shader's underside-view
+    // gate) and the caustics plane — the flat bridge-level plane is gone.
+    auto applyRiverWater = [&](float t, float fx, float fz) {
         if (!(riverOn && riverRoad.plan.ok)) return;
         x3::rhi::IRenderDevice::WaterParams wpr{};
         wpr.enabled   = true;
-        wpr.seaLevel  = riverRoad.plan.waterY;
+        // ONE WATER TRUTH (task #32): the drawn surface follows the SAME node
+        // table worldWaterLevelAt interpolates — stepped down the channel per
+        // vertex in water.vert, estuary handed off to the real sea. The old
+        // single flat plane at plan.waterY stood ~1.2 m/chain-node above the
+        // carved table downstream and climbed the banks (receipt: the bench
+        // that shipped submerged at (-340,11,-468) while PASSING the
+        // worldWaterLevelAt+0.5 check).
+        {
+            using WP = x3::rhi::IRenderDevice::WaterParams;
+            x3::game::WorldRiverNode rn[WP::kMaxRiverNodes];
+            const uint32_t n = x3::game::worldRiverRisenNodes(rn, WP::kMaxRiverNodes);
+            wpr.riverNodeCount = n;
+            for (uint32_t i = 0; i < n; ++i) {
+                wpr.riverNodes[i][0] = rn[i].x;
+                wpr.riverNodes[i][1] = rn[i].z;
+                wpr.riverNodes[i][2] = rn[i].waterY;
+            }
+            wpr.riverHalfWidth = x3::game::kWorldRiverHalfWidth;
+            wpr.basinCenter[0] = x3::game::kWorldOceanBasinX;
+            wpr.basinCenter[1] = x3::game::kWorldOceanBasinZ;
+            wpr.basinRadius    = x3::game::kWorldOceanBasinR;
+            wpr.oceanLevel     = x3::game::kWorldSeaLevel;
+        }
+        // seaLevel carries the LOCAL level at the focus (underside-view gate +
+        // caustics plane); dry land falls back to the bridge's level.
+        const float lw = x3::game::worldWaterLevelAt(fx, fz);
+        wpr.seaLevel  = (lw > x3::game::kWorldWaterDry + 1.0f)
+                      ? lw : riverRoad.plan.waterY;
         wpr.time      = t;
         wpr.amplitude = 0.16f;          // a river swell, not an ocean — and low
                                         // enough that a treading head clears
@@ -1637,11 +1658,32 @@ int hostTunnel(HostContext& hc) {
         wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
         device->setWaterParams(wpr);
         x3::rhi::IRenderDevice::CausticsParams cp{};
-        cp.enabled = true; cp.waterY = riverRoad.plan.waterY;
+        cp.enabled = true; cp.waterY = wpr.seaLevel;   // local level, not the flat plane
         cp.time = t; cp.intensity = 0.85f;
         device->setCaustics(cp);
     };
     float riverWaterClock = 0.0f;
+
+    // ==== RAIN RUNOFF (W-WATER, task #23): heavy rain swells the river. ====
+    // Owner's scale is rain 0-10; WeatherSample::precipitation is 0-1, so
+    // "rain >= 6" = precipitation >= 0.6. At the threshold the reach rises a
+    // visible 0.3 m, scaling to kWorldRiverRainRiseMax (0.9 m) in a full
+    // storm — and terrain.cpp caps the rise per node at 60% of the levee
+    // freeboard, so the swollen river NEVER tops a levee. The level eases in
+    // and out (a river lags its rain); both the drawn surface and
+    // worldWaterLevelAt consume the same setWorldRiverRainRise state, so swim
+    // physics, fish and the visible water rise together (one truth, rule 4).
+    float riverRainRise = 0.0f;
+    auto tickRiverRise = [&](float d, float precip, bool snow) {
+        if (!(riverOn && riverRoad.plan.ok)) return;
+        const float target = (!snow && precip >= 0.6f)
+            ? 0.3f + (x3::game::kWorldRiverRainRiseMax - 0.3f)
+                     * std::min(1.0f, (precip - 0.6f) / 0.4f)
+            : 0.0f;
+        const float step = 0.06f * d;              // ~15 s swell, same ebb
+        riverRainRise += std::clamp(target - riverRainRise, -step, step);
+        x3::game::setWorldRiverRainRise(riverRainRise);
+    };
 
     phys->optimizeBroadphase();
 
@@ -1679,7 +1721,7 @@ int hostTunnel(HostContext& hc) {
                 // what the runtime gate said. Same lambda, same tone, plus the
                 // boats/fish so the capture proves the LIVING river.
                 riverWaterClock += dt;
-                applyRiverWater(riverWaterClock);
+                applyRiverWater(riverWaterClock, cam[0], cam[2]);
                 riverLife.prePhysics(dt);
                 // TRAFFIC IN CAPTURES TOO (gotcha 4.1b's lesson: moving
                 // content that only ticks in the live loop is invisible in
@@ -1701,6 +1743,7 @@ int hostTunnel(HostContext& hc) {
                     weather.tick(dt);
                     const x3::game::WeatherSample& ws = weather.sample();
                     wetness.tick(dt, ws.precipitation, ws.tempC, ws.snowfall);
+                    tickRiverRise(dt, ws.precipitation, ws.snowfall);
                     storm.tick(dt, ws.state == x3::game::WeatherState::Storm ? ws.hazardLevel : 0.0f,
                                nullptr, cam[0], cam[1], cam[2]);
                     x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
@@ -2330,6 +2373,300 @@ int hostTunnel(HostContext& hc) {
             shotDraw = nullptr;
         }
 
+        // ==== SUB PROOF (X3_SHOT_SUB=1) — the patrol submarine, framed off its
+        // LIVE hull, twice: from the BRIDGE DECK (the owner's "visible from the
+        // bridge") and from IN THE WATER beside it (the swimmer's view). Every
+        // shot logs where the hull actually was and how far its top sat under
+        // the local surface, because "it's a submarine" is a claim about a
+        // NUMBER (submergence > 0) and not about vibes (NO_SLOP rule 9).
+        if (const char* be = std::getenv("X3_SHOT_SUB");
+            be && be[0] == '1' && riverOn && riverRoad.plan.ok && riverLife.subBuilt()) {
+            const auto& plan = riverRoad.plan;
+            const float rdx = plan.dirZ, rdz = -plan.dirX;   // downstream unit
+            auto subLog = [&](const char* tag) {
+                float sp[3]; riverLife.subPos(sp);
+                char sb[224];
+                std::snprintf(sb, sizeof(sb),
+                    "[sub-shot] %s hull=(%.1f, %.2f, %.1f) submergence=%.2f m "
+                    "surface=%.2f bed=%.2f",
+                    tag, sp[0], sp[1], sp[2], riverLife.subSubmergence(),
+                    x3::game::worldWaterLevelAt(sp[0], sp[2]),
+                    x3::game::terrainHeightAtWorld(sp[0], sp[2]));
+                x3::logInfo(sb);
+            };
+            subLog("pre-shot");
+
+            // PRE-ROLL to a FRAMEABLE moment. The lane straddles the crossing,
+            // so at an arbitrary frame the sub can be directly under the deck —
+            // the first cut caught it at 4.4 m range and pitch -83°, a
+            // top-down blob. Tick physics (no rendering needed) until the hull
+            // is well out on the reach, then frame that. Deterministic: the
+            // patrol is a fixed lane at a fixed speed.
+            auto advanceSub = [&](float wantDist, int maxSteps) {
+                for (int i = 0; i < maxSteps; ++i) {
+                    float sp[3]; riverLife.subPos(sp);
+                    const float ddx = sp[0] - plan.cx, ddz = sp[2] - plan.cz;
+                    if (std::sqrt(ddx * ddx + ddz * ddz) >= wantDist) return;
+                    riverLife.prePhysics(dt);
+                    phys->step(dt);
+                    riverLife.postPhysics(dt, scene, *device, *phys,
+                                          audioOn ? audio.get() : nullptr,
+                                          x3::phys::Vec3{ sp[0], sp[1], sp[2] });
+                }
+            };
+            // The sub's own travel direction, sampled over 30 steps, so the
+            // framing can LEAD it through settleAndGrab's 200-frame settle.
+            auto subDir = [&](float& dx, float& dz) {
+                float a[3]; riverLife.subPos(a);
+                for (int i = 0; i < 30; ++i) {
+                    riverLife.prePhysics(dt); phys->step(dt);
+                    riverLife.postPhysics(dt, scene, *device, *phys,
+                                          audioOn ? audio.get() : nullptr,
+                                          x3::phys::Vec3{ a[0], a[1], a[2] });
+                }
+                float b[3]; riverLife.subPos(b);
+                dx = b[0] - a[0]; dz = b[2] - a[2];
+                const float l = std::sqrt(dx * dx + dz * dz);
+                if (l > 1e-3f) { dx /= l; dz /= l; } else { dx = rdx; dz = rdz; }
+            };
+
+            // SHOT E — FROM THE BRIDGE. Standing on the deck at the crossing,
+            // looking down the reach at the hull. The camera is on the DECK's
+            // own Y (plan.deckY, eye height above it), not a staged crane, so
+            // this is the view a player who stops on the bridge actually gets.
+            {
+                advanceSub(24.0f, 6000);
+                float dirX = 0.0f, dirZ = 0.0f; subDir(dirX, dirZ);
+                float sp[3]; riverLife.subPos(sp);
+                // Lead the hull through the 200-frame settle (~3.3 s at ~1.2
+                // m/s). Without this the sub walks a hull-length out of frame.
+                sp[0] += dirX * 4.0f; sp[2] += dirZ * 4.0f;
+                // Stand at the DOWNSTREAM PARAPET, not mid-deck: the first cut
+                // put the eye on the centreline and the deck slab filled the
+                // bottom half of the frame (43 ft out-to-out, and the reach
+                // runs across the deck's narrow axis). deckHalfWidth + 0.8 m
+                // puts the eye at the rail, where a player who stops on the
+                // bridge to look at the river actually stands.
+                // ...on the sub's OWN side of the deck (the lane straddles the
+                // crossing, so the hull is upstream half the time).
+                const float sideSgn = ((sp[0] - plan.cx) * rdx +
+                                       (sp[2] - plan.cz) * rdz) >= 0.0f ? 1.0f : -1.0f;
+                const float edge = (plan.deckHalfWidth + 0.8f) * sideSgn;
+                const float ex = plan.cx + rdx * edge, ez = plan.cz + rdz * edge;
+                const float ey = plan.deckY + 1.7f;
+                const float ddx = sp[0] - ex, ddz = sp[2] - ez;
+                const float hdist = std::sqrt(ddx * ddx + ddz * ddz);
+                const float yawE = std::atan2(ddz, ddx);
+                const float pitchE = std::atan2(sp[1] - ey, std::max(1.0f, hdist));
+                const float camE[5] = { ex, ey, ez, yawE, pitchE };
+                char cb[192];
+                std::snprintf(cb, sizeof(cb),
+                    "[sub-shot] bridge cam=(%.1f, %.2f, %.1f) yaw=%.3f pitch=%.3f "
+                    "range=%.1f m", ex, ey, ez, yawE, pitchE, hdist);
+                x3::logInfo(cb);
+                ok = settleAndGrab(camE, dir + "/14_sub_from_bridge.png") && ok;
+                subLog("after bridge shot");
+            }
+
+            // SHOT F — FROM IN THE WATER. Camera under the surface, abeam of
+            // the hull, with the same green column fog the swim shots use (the
+            // interactive camera owns that edge; the staged path sets it).
+            {
+                x3::rhi::IRenderDevice::FogParams fp{};
+                fp.enabled  = true;
+                fp.color[0] = 0.010f; fp.color[1] = 0.045f; fp.color[2] = 0.055f;
+                fp.density  = 0.055f; fp.start = 0.15f; fp.maxOpacity = 0.96f;
+                device->setFog(fp);
+                // ABEAM OF THE HULL'S OWN HEADING, not of the reach axis: the
+                // lane reverses, so half the time "13 m off the reach normal"
+                // is dead ahead of the bow and the shot is a nose-on blob.
+                // Perpendicular of the travel direction is (-dz, dx).
+                float dirX = 0.0f, dirZ = 0.0f; subDir(dirX, dirZ);
+                float sp[3]; riverLife.subPos(sp);
+                // Lead the hull: the settle runs 200 more frames of physics and
+                // a patrolling sub does not wait for the shutter.
+                const float lead = 4.0f;
+                const float tx = sp[0] + dirX * lead, tz = sp[2] + dirZ * lead;
+                const float px = tx - dirZ * 13.0f, pz = tz + dirX * 13.0f;
+                const float surf = x3::game::worldWaterLevelAt(px, pz);
+                const float camFY = surf - 1.2f;
+                const float yawF = std::atan2(tz - pz, tx - px);
+                const float pitchF = std::atan2(sp[1] - camFY, 13.0f);
+                const float camF[5] = { px, camFY, pz, yawF, pitchF };
+                char cb[192];
+                std::snprintf(cb, sizeof(cb),
+                    "[sub-shot] underwater cam=(%.1f, %.2f, %.1f) yaw=%.3f pitch=%.3f "
+                    "surface=%.2f", px, camFY, pz, yawF, pitchF, surf);
+                x3::logInfo(cb);
+                ok = settleAndGrab(camF, dir + "/15_sub_underwater.png") && ok;
+                subLog("after underwater shot");
+                x3::rhi::IRenderDevice::FogParams off{};
+                device->setFog(off);
+            }
+        }
+
+        // ==== BANK PROOF (X3_SHOT_BANKS=1) — the ONE WATER TRUTH, with eyes.
+        // RB8's station sweep says in NUMBERS that the drawn river never tops a
+        // bank anywhere on the run; this is the same claim with a picture, at
+        // the WORST station the sweep can find — measured here the same way
+        // (crest = highest ground between the waterline and 2x the half-width
+        // out, on each side; freeboard = crest - the drawn water level).
+        // Shoot it twice: once dry, once with X3_WEATHER=storm, and the pair is
+        // the rain-runoff gate (#23) — the river visibly higher, still inside.
+        if (const char* ke = std::getenv("X3_SHOT_BANKS");
+            ke && ke[0] == '1' && riverOn) {
+            uint32_t rn = 0;
+            const x3::game::WorldRiverNode* nds = x3::game::worldRiverNodes(rn);
+            const uint32_t carved = x3::game::worldRiverCarveCount();
+            const char* wxEnv = std::getenv("X3_WEATHER");
+            const std::string tag = (wxEnv && wxEnv[0] && std::strcmp(wxEnv, "0") != 0)
+                                  ? std::string("_") + wxEnv : std::string("_dry");
+            const float HW = x3::game::kWorldRiverHalfWidth;
+            // LET THE RUNOFF FINISH ITS RAMP. The swell takes ~15 s to go from
+            // 0.3 to 0.9 m and settleAndGrab is 200 frames = 3.3 s, so the
+            // first cut of this proof caught the river only 0.20 m up and the
+            // "rain-swollen" image looked like the dry one. Tick the weather
+            // model alone (no rendering — this is the same integrator the
+            // capture loop runs, just fast) for 30 s first.
+            if (weatherOn) {
+                for (int i = 0; i < 1800; ++i) {
+                    weather.tick(dt);
+                    const x3::game::WeatherSample& ws = weather.sample();
+                    wetness.tick(dt, ws.precipitation, ws.tempC, ws.snowfall);
+                    tickRiverRise(dt, ws.precipitation, ws.snowfall);
+                }
+                char wb[160];
+                std::snprintf(wb, sizeof(wb),
+                    "[bank-shot] weather pre-rolled 30 s: precipitation %.2f, "
+                    "state %d", weather.sample().precipitation,
+                    (int)weather.sample().state);
+                x3::logInfo(wb);
+            }
+            // Freeboard at a node, and the side that is tighter.
+            auto freeboardAt = [&](uint32_t i, float& outNx, float& outNz,
+                                   float& outSide) -> float {
+                const uint32_t j = (i + 1 < rn) ? i + 1 : i;
+                const uint32_t k = (i > 0) ? i - 1 : i;
+                float dx = nds[j].x - nds[k].x, dz = nds[j].z - nds[k].z;
+                const float dl = std::sqrt(dx * dx + dz * dz);
+                if (dl > 1e-3f) { dx /= dl; dz /= dl; }
+                outNx = -dz; outNz = dx;                    // left-hand normal
+                float best = 1e9f; outSide = 1.0f;
+                for (int s = -1; s <= 1; s += 2) {
+                    // The LEVEE BAND, exactly RB8's: half-width+0.5 .. +26 m.
+                    // (The first cut swept HW..2*HW and graded the ocean floor
+                    // as a river bank — see the estuary skip below.)
+                    float crest = -1e9f;
+                    for (float o = HW + 0.5f; o <= HW + 26.0f; o += 2.5f) {
+                        const float px = nds[i].x + outNx * o * (float)s;
+                        const float pz = nds[i].z + outNz * o * (float)s;
+                        crest = std::max(crest, x3::game::terrainHeightAtWorld(px, pz));
+                    }
+                    const float fb = crest - x3::game::worldWaterLevelAt(nds[i].x, nds[i].z);
+                    if (fb < best) { best = fb; outSide = (float)s; }
+                }
+                return best;
+            };
+            // THE ESTUARY IS NOT A RIVER (RB8's own words): inside the ocean
+            // basin disc the shader hands the level to the sea and the basin
+            // floor is 190 ft down — there are no banks to hold there.
+            auto inBasin = [&](uint32_t i) {
+                const float bx = nds[i].x - x3::game::kWorldOceanBasinX;
+                const float bz = nds[i].z - x3::game::kWorldOceanBasinZ;
+                return bx * bx + bz * bz <
+                       x3::game::kWorldOceanBasinR * x3::game::kWorldOceanBasinR;
+            };
+            // The tightest carved station on the whole run — the one that
+            // actually decides the claim.
+            uint32_t worst = 1; float worstFb = 1e9f, lastRiver = 1.0f;
+            for (uint32_t i = 1; i + 1 < std::max(2u, carved); ++i) {
+                if (inBasin(i)) continue;
+                lastRiver = (float)i;
+                float nx, nz, sd;
+                const float fb = freeboardAt(i, nx, nz, sd);
+                if (fb < worstFb) { worstFb = fb; worst = i; }
+            }
+            const uint32_t lastIdx = (uint32_t)lastRiver;
+            x3::logInfo("[bank-shot] tightest carved station is node " +
+                        std::to_string(worst) + " at freeboard " +
+                        std::to_string(worstFb) + " m (last river node " +
+                        std::to_string(lastIdx) + ")");
+            // FIXED stations, not "whichever is tightest right now": the dry
+            // and the rain-swollen runs have to be the SAME camera or the pair
+            // proves nothing (the first cut picked node 4 dry and node 7 in the
+            // storm and the two images were of different places).
+            // Node 2 is where the RISE is visible: the runoff cap is MEASURED
+            // per node off the built ground and is 1.7 m there, so the swell
+            // can express its full 0.9 m against a real bank. Nodes 4/6/7 are
+            // the opposite end — the levee-critical band, cap 0.2 m, the
+            // tightest freeboard on the whole run — which is where "never over
+            // the levees" is actually at risk ([river-rain] prints the table).
+            uint32_t stations[4] = { std::min(2u, lastIdx), std::min(4u, lastIdx),
+                                     std::min(6u, lastIdx), std::min(7u, lastIdx) };
+            for (int s = 0; s < 4; ++s) {
+                const uint32_t i = stations[s];
+                float nx, nz, sd;
+                const float fb = freeboardAt(i, nx, nz, sd);
+                const float wl = x3::game::worldWaterLevelAt(nds[i].x, nds[i].z);
+                // Stand back on the DRY side, high enough that both banks and
+                // the waterline are in one frame.
+                const float back = HW * 2.4f;
+                const float px = nds[i].x - nx * sd * back;
+                const float pz = nds[i].z - nz * sd * back;
+                // Eye ABOVE THE BANK IT STANDS BEHIND. The first cut measured
+                // the eye off the water (wl + 9) and at node 2 — where the
+                // crest is 22 m up — the camera ended INSIDE the wooded hill
+                // and the "bank proof" was a picture of grass with no river in
+                // it. Clear the crest, then look down at the waterline.
+                const float py = std::max(wl + fb, wl) + 8.0f;
+                const float yaw = std::atan2(nds[i].z - pz, nds[i].x - px);
+                const float pitch = std::atan2(wl - py, back);
+                const float cam[5] = { px, py, pz, yaw, pitch };
+                char nm[256], lb[288];
+                std::snprintf(nm, sizeof(nm), "%s/16_banks%s_%d.png",
+                              dir.c_str(), tag.c_str(), s);
+                std::snprintf(lb, sizeof(lb),
+                    "[bank-shot] station node %u at (%.1f, %.1f): drawn water %.2f, "
+                    "tightest bank crest %.2f, FREEBOARD %.3f m (%s) -> %s",
+                    i, nds[i].x, nds[i].z, wl, wl + fb, fb,
+                    fb > 0.0f ? "INSIDE ITS BANKS" : "OVER THE BANK",
+                    nm);
+                x3::logInfo(lb);
+                if (fb <= 0.0f)
+                    x3::logError("[bank-shot] WATER IS OVER THE BANK CREST at node " +
+                                 std::to_string(i));
+                ok = settleAndGrab(cam, nm) && ok;
+
+                // THE WATERLINE FRAME (station 0 only) — the rain-runoff A/B.
+                // A bank shot from 80 m up cannot show 0.75 m of swell: it is
+                // ~9 px. So put the eye 1.4 m over the DRY surface, in the
+                // ribbon, looking downstream. `nds[i].waterY` is the BASE table
+                // (worldRiverRisenNodes builds the risen copy separately), so
+                // the camera is at the SAME world Y in both runs by
+                // construction — and the water climbing toward the lens is the
+                // proof, measured in the log line below.
+                if (s == 0) {
+                    const float wx = nds[i].x + nx * sd * (HW - 6.0f);
+                    const float wz = nds[i].z + nz * sd * (HW - 6.0f);
+                    const float wyEye = nds[i].waterY + 1.4f;
+                    const uint32_t j = (i + 1 < rn) ? i + 1 : i;
+                    const float wyaw = std::atan2(nds[j].z - wz, nds[j].x - wx);
+                    const float wcam[5] = { wx, wyEye, wz, wyaw, -0.045f };
+                    char wn[256], wl2[288];
+                    std::snprintf(wn, sizeof(wn), "%s/17_waterline%s.png",
+                                  dir.c_str(), tag.c_str());
+                    std::snprintf(wl2, sizeof(wl2),
+                        "[bank-shot] waterline frame: eye Y %.2f (dry surface %.2f "
+                        "+ 1.4), water NOW %.2f -> %.2f m under the lens "
+                        "(risen %.2f m) -> %s",
+                        wyEye, nds[i].waterY, wl, wyEye - wl,
+                        wl - nds[i].waterY, wn);
+                    x3::logInfo(wl2);
+                    ok = settleAndGrab(wcam, wn) && ok;
+                }
+            }
+        }
+
         // ==== MAP/HUD PROOF SET (map/HUD wiring) — overview / drive-zoom /
         // waypoint / driving-HUD chevron. Uses the engine's OWN
         // armCapture/captureFrame GPU-swapchain readback — the SAME mechanism
@@ -2882,7 +3219,16 @@ int hostTunnel(HostContext& hc) {
         // ---- THE RIVER HAS WATER (Tim: "Can we pour the water in now").
         // One lambda with the headless path — same tone, same clock shape.
         riverWaterClock += fdt;
-        applyRiverWater(riverWaterClock);
+        {
+            // Focus = whoever the camera is following this frame.
+            float wfx = startPos[0], wfz = startPos[2];
+            if (driving && carBuilt) {
+                float cp[3]; car.chassisPos(cp); wfx = cp[0]; wfz = cp[2];
+            } else if (footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet(); wfx = ft.x; wfz = ft.z;
+            }
+            applyRiverWater(riverWaterClock, wfx, wfz);
+        }
         if (weatherOn) {
             weather.tick(fdt);
             // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
@@ -2897,6 +3243,7 @@ int hostTunnel(HostContext& hc) {
 
             const x3::game::WeatherSample& ws = weather.sample();
             wetness.tick(fdt, ws.precipitation, ws.tempC, ws.snowfall);
+            tickRiverRise(fdt, ws.precipitation, ws.snowfall);
 
             // Lightning only under an actual storm; hazardLevel already carries
             // "how bad", so intensity comes free and correct.

@@ -328,6 +328,10 @@ public:
                float x, float y, float z, float seaLevel, bool isSub = false);
 
     void setInput(const x3::phys::VehicleInput& in);
+    // Move the water surface under the hull (a RIVER's surface descends
+    // downstream and swells in rain — feed worldWaterLevelAt at the hull's XZ
+    // each step). No-op on a flat ocean; see IVehicleController::setSeaLevel.
+    void setSeaLevel(float y);
     void preStep(float dt);
     void postStep(float dt);
 
