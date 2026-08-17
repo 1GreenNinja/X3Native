@@ -105,6 +105,7 @@ struct TestFlags {
     bool testCompanionCombat = false;   // --test-companion-combat (Sarah ally combat, Lane B)
     bool testVigil = false;
     bool testMission = false, testDestruction = false, testDebris = false, testGpuSkin = false;
+    bool testGibs = false;      // --test-gibs (gib shard meshes: variety/floor/bounded pool)
     bool testMeshlet = false, testGpuCull = false, testCollapse = false, testNav = false;
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)
     bool testWeapons = false, testScript = false, testVehicle = false, testVehParts = false;

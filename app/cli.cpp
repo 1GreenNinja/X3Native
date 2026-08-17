@@ -231,6 +231,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-mission") o.testMission = true;
         else if (a == "--test-destruction") o.testDestruction = true;
         else if (a == "--test-debris") o.testDebris = true;
+        else if (a == "--test-gibs") o.testGibs = true;
         else if (a == "--test-gpuskin") o.testGpuSkin = true;
         else if (a == "--test-meshlet") o.testMeshlet = true;
         else if (a == "--test-gpucull") o.testGpuCull = true;

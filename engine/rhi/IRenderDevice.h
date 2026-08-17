@@ -1311,13 +1311,34 @@ public:
     // Lifecycle: configure once (gpuDebrisConfig), spawn bursts at fracture/explosion
     // events (gpuDebrisSpawnBurst), step the sim each frame AFTER beginFrame and
     // BEFORE the draw (gpuDebrisStep dispatches the compute pass), then draw the live
-    // pool between beginFrame/endFrame (gpuDebrisDraw issues ONE instanced cube draw
+    // pool between beginFrame/endFrame (gpuDebrisDraw issues ONE instanced shard draw
     // over the whole pool capacity; dead slots collapse to nothing in the shader).
+    //
+    // GIB MESHES (fix/gib-meshes): the instanced draw renders one of
+    // kGpuDebrisShardCount DISTINCT low-poly irregular shard meshes per fragment
+    // (procedurally authored once at device init — jagged asymmetric chunks, NOT
+    // scaled cubes). Each instance selects its shard from an integer hash of its
+    // pool slot, so a single burst spans several distinct meshes. The hash below is
+    // the canonical CPU mirror of shaders/debris.vert's slotHash (MUST match); the
+    // gib self-test asserts mesh variety through it.
     //
     // PASCAL (1080 Ti): plain compute only — NO hardware ray tracing. The compute is
     // a synchronous pass on the graphics queue (the spec's async path is a 5090
     // optimization; the synchronous fallback is correct everywhere). POD only — no
     // Vulkan types cross this boundary.
+
+    // Number of distinct procedural shard meshes in the debris draw's mesh set.
+    // MUST match kShardCount in shaders/debris.vert.
+    static constexpr uint32_t kGpuDebrisShardCount = 6;
+    // Which shard mesh a given pool slot renders: gpuDebrisShardHash(slot) %
+    // kGpuDebrisShardCount. MUST match slotHash in shaders/debris.vert.
+    static uint32_t gpuDebrisShardHash(uint32_t slot) {
+        uint32_t h = slot * 0x9E3779B9u;
+        h ^= h >> 16;
+        h *= 0x85EBCA6Bu;
+        h ^= h >> 13;
+        return h;
+    }
 
     // Simulation tunables (spec §5/§15). All cached by the device; re-applied each
     // gpuDebrisStep. Defaults are sensible for a ~1m-scale ground world.
@@ -1362,7 +1383,8 @@ public:
     // Advance the debris sim by `dt` (dispatches the compute pass over the pool).
     // Call once per frame between beginFrame and gpuDebrisDraw.
     virtual void gpuDebrisStep(float dt) = 0;
-    // Draw the live debris pool (one instanced cube draw over the pool capacity).
+    // Draw the live debris pool (one instanced shard-mesh draw over the pool
+    // capacity; each instance renders one of kGpuDebrisShardCount irregular shards).
     // Call between beginFrame/endFrame, after gpuDebrisStep. `tint` is linear RGBA.
     virtual void gpuDebrisDraw(const FrameContext&, const float tint[4]) = 0;
     // Current alive (active + sleeping) fragment count (cheap; no GPU readback).

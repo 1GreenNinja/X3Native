@@ -78,10 +78,10 @@ void VulkanRenderDevice::recordDebrisDrawBody(VkCommandBuffer cmd) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_debrisDrawPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_debrisDrawLayout,
                                 0, 1, &m_debrisDrawSet[m_frameIdx], 0, nullptr);
-        VkDeviceSize zero = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m_debrisCubeVbo, &zero);
-        vkCmdBindIndexBuffer(cmd, m_debrisCubeIbo, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, m_debrisCubeIndexCount, kDebrisCapacity, 0, 0, 0);
+        // No vertex/index buffers: the vertex shader fetches shard geometry from the
+        // shard-set SSBO (draw set binding 2) per gl_VertexIndex, and selects one of
+        // the distinct shard meshes per instance (see shaders/debris.vert).
+        vkCmdDraw(cmd, kDebrisShardVertsMax, kDebrisCapacity, 0, 0);
     }
 
 void VulkanRenderDevice::recordSkinComputeBody(VkCommandBuffer cmd) {
