@@ -26,6 +26,7 @@
 #include "../road_network.h"
 #include "../river_bridge.h"
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
+#include "../traffic.h"          // W-TRAFFIC — AI traffic on the 16-lane freeway
 #include "../vehicle.h"
 #include "../mesh_prims.h"
 #include "../asset_root.h"
@@ -1266,6 +1267,37 @@ int hostTunnel(HostContext& hc) {
         riverLife.build(scene, *device, *phys,
                         audioOn ? audio.get() : nullptr, riverRoad.plan);
 
+    // ==== FREEWAY TRAFFIC (W-TRAFFIC) =======================================
+    // "now that we have a 16 lane freeway.. we will need to fill it with
+    // traffic ;->" — kinematic lane-followers on the inner tour's own lane
+    // splines (app/traffic.h). DEFAULT ON (NO_SLOP rule 6: the flag is for
+    // turning it OFF) — X3_TRAFFIC=0 disables.
+    x3::game::FreewayTraffic traffic;
+    struct TrafficContactCtx {
+        x3::game::FreewayTraffic* t = nullptr;
+        x3::phys::IPhysicsWorld*  p = nullptr;
+    } trafficCtx;
+    {
+        const char* e = std::getenv("X3_TRAFFIC");
+        const bool trafficOn = ringOn && !(e && e[0] == '0');
+        if (trafficOn &&
+            traffic.build(ringSpec, ringRoadY, device, phys.get(),
+                          x3::game::convertedGlbRoot(), x3::game::TrafficConfig{})) {
+            // The ONE global contact callback (nothing else in this host uses
+            // it; the canon world's monster facade has its own world). A hard
+            // hit converts the struck car to a dynamic body — the work-zone
+            // drum pattern, car-sized.
+            trafficCtx.t = &traffic;
+            trafficCtx.p = phys.get();
+            phys->setContactCallback(
+                [](x3::phys::BodyId a, x3::phys::BodyId b, const float*,
+                   const float*, float impulse, void* user) {
+                    auto* c = static_cast<TrafficContactCtx*>(user);
+                    c->t->onContact(a, b, impulse, c->p);
+                }, &trafficCtx);
+        }
+    }
+
     // THE RIVER HOLDS WATER — one lambda, BOTH render paths. The water pass
     // used to be armed only inside the interactive loop, so every headless
     // capture (the proof shots included) rendered a dry river: the gate was
@@ -1342,6 +1374,10 @@ int hostTunnel(HostContext& hc) {
                 riverWaterClock += dt;
                 applyRiverWater(riverWaterClock);
                 riverLife.prePhysics(dt);
+                // TRAFFIC IN CAPTURES TOO (gotcha 4.1b's lesson: moving
+                // content that only ticks in the live loop is invisible in
+                // every proof shot). Focus = the capture camera.
+                traffic.update(dt, cam, phys.get());
                 if (shotTick) shotTick(dt);   // staged swimmer BEFORE the step
                 phys->step(dt);
                 riverLife.postPhysics(dt, scene, *device, *phys,
@@ -1387,6 +1423,7 @@ int hostTunnel(HostContext& hc) {
                     forests.draw(*device, frame, cam,
                                  std::cos(cam[3]), std::sin(cam[3]));
                     if (carBuilt) car.render(frame);
+                    traffic.render(frame, cam);
                     riverLife.render(*device, frame, scene);
                     if (shotDraw) shotDraw(frame);   // the staged swimmer
                     if (weatherOn) precip.submit(*device, frame);
@@ -1884,6 +1921,8 @@ int hostTunnel(HostContext& hc) {
         if (carBuilt) car.shutdown();
         trees.shutdown(*device);
         forests.shutdown(*device);
+        phys->setContactCallback(nullptr, nullptr);   // trafficCtx dies with this scope
+        traffic.shutdown(phys.get());
         riverLife.shutdown(audioOn ? audio.get() : nullptr);
         tunnel.shutdown(*device, *phys);
         for (auto& w : tourBores) w->shutdown(*device, *phys);
@@ -2228,6 +2267,9 @@ int hostTunnel(HostContext& hc) {
             if (pf.valid) {
                 scene.render(*device, pf);
                 if (carBuilt) car.render(pf);
+                float pcam[3] = { startPos[0], startPos[1], startPos[2] };
+                if (carBuilt) car.chassisPos(pcam);
+                traffic.render(pf, pcam);               // traffic holds its pose paused
                 riverLife.render(*device, pf, scene);   // boats stay visible paused
                 shell.draw(pf, fdt);
             }
@@ -2727,6 +2769,16 @@ int hostTunnel(HostContext& hc) {
         if (carBuilt) car.chassisPos(vp);
         streamer.update(scene, *device, *phys, vp[0], vp[2]);
         riverLife.prePhysics(fdt);            // boat autopilot BEFORE the step
+        {   // TRAFFIC: sim + kinematic march, before the step (the bodies'
+            // step-target velocities come from moveKinematic). Focus follows
+            // whoever the player currently is — car or Jake on foot.
+            float tfoc[3] = { vp[0], vp[1], vp[2] };
+            if (!driving && footSpawned) {
+                const x3::phys::Vec3 ff = onFoot.feet();
+                tfoc[0] = ff.x; tfoc[1] = ff.y; tfoc[2] = ff.z;
+            }
+            traffic.update(fdt, tfoc, phys.get());
+        }
         phys->step(fdt);
         if (carBuilt) car.postStep(fdt);
         // RE-SAMPLE THE CHASE TARGET AFTER THE STEP.
@@ -3057,6 +3109,9 @@ int hostTunnel(HostContext& hc) {
                              std::cos(camYaw), std::sin(camYaw));
             }
             if (carBuilt) car.render(frame);
+            {   const float fcam[3] = { cx, cy, cz };
+                traffic.render(frame, fcam);           // the freeway is populated
+            }
             riverLife.render(*device, frame, scene);   // boats + drivers + wakes
         }
 
@@ -3553,6 +3608,8 @@ int hostTunnel(HostContext& hc) {
     }
 
     if (audioOn) engineNote.shutdown();          // bank voices before the mixer dies
+    phys->setContactCallback(nullptr, nullptr);            // trafficCtx dies with this scope
+    traffic.shutdown(phys.get());                          // kinematic boxes out before phys
     riverLife.shutdown(audioOn ? audio.get() : nullptr);   // outboard loops + hulls
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     trees.shutdown(*device);

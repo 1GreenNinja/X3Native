@@ -366,6 +366,30 @@
       "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
     },
     {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/OldVan.glb",
+      "sha256": "40f15ddf6cacf6cb804133b4c3be35191854995d57ea9165f6858b31899c31f9",
+      "size": 3149000,
+      "source_note": "W-TRAFFIC roster: armory finds, draco-decoded via tools/traffic_decode_batch.py (npx @gltf-transform/cli copy); audited textured + metre-scale by tools/traffic_roster_audit.py"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/Pickup2_URP.glb",
+      "sha256": "708ac260c23b676e52fa676e8c0d1359ff7c8f9f69b1e08593289b266a3f7646",
+      "size": 5548440,
+      "source_note": "W-TRAFFIC roster: armory finds, draco-decoded via tools/traffic_decode_batch.py (npx @gltf-transform/cli copy); audited textured + metre-scale by tools/traffic_roster_audit.py"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/Sedan_Car3.glb",
+      "sha256": "32483b48ee8fdfaba4b262ea60cb30006c9db72f370d7ead7d6fcd721ba331a4",
+      "size": 3622160,
+      "source_note": "W-TRAFFIC roster: armory finds, draco-decoded via tools/traffic_decode_batch.py (npx @gltf-transform/cli copy); audited textured + metre-scale by tools/traffic_roster_audit.py"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/Sedan_Car4.glb",
+      "sha256": "eef866bad2374a62d5f3468985f257ec40a35a9414bbb19d0840b34d210fefb0",
+      "size": 3680372,
+      "source_note": "W-TRAFFIC roster: armory finds, draco-decoded via tools/traffic_decode_batch.py (npx @gltf-transform/cli copy); audited textured + metre-scale by tools/traffic_roster_audit.py"
+    },
+    {
       "repo_path": "assets/converted_glb/Vehicles/Truck.glb",
       "sha256": "300f95611cda276fbbc7fddda914091213da7e5eea09a5171fd1540c07c7dc70",
       "size": 890564,
