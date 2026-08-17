@@ -424,12 +424,19 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // (Newtonian) and only bleeds when you take your hands off the stick for
     // longer than space.assistDelay. Set space.flightAssist=0 for pure Newtonian
     // with no station-keeping at all.
-    const float lvStrafeAccel   = x3::apphost::readTuningFloat("space.strafeAccel",   110.0f);
-    const float lvLinearAccel   = x3::apphost::readTuningFloat("space.linearAccel",   130.0f);
+    // 6DOF DART PASS (owner, live 2026-08-17: "the ship needs to dart around free
+    // space much as the enemy ships do — strafing, rising, sinking, accelerating —
+    // with visible movement vs the huge capital"). The strafe/vertical cap was 160
+    // vs a 360 forward cap, so sideways motion read as the poor cousin; and the
+    // 0.8 station-keep brake bled every dodge the moment the stick released. Raise
+    // lateral/vertical to ~90% of forward, punch the accels, and soften the brake so
+    // the ship SLIDES then settles instead of settling immediately. All dial-able.
+    const float lvStrafeAccel   = x3::apphost::readTuningFloat("space.strafeAccel",   200.0f);
+    const float lvLinearAccel   = x3::apphost::readTuningFloat("space.linearAccel",   170.0f);
     const float lvNoseFollow    = x3::apphost::readTuningFloat("space.noseFollow",      0.0f);
-    const float lvFlightAssist  = x3::apphost::readTuningFloat("space.flightAssist",    0.8f);
-    const float lvAssistDelay   = x3::apphost::readTuningFloat("space.assistDelay",     0.45f);
-    const float lvMaxStrafeSpd  = x3::apphost::readTuningFloat("space.maxStrafeSpeed", 160.0f);
+    const float lvFlightAssist  = x3::apphost::readTuningFloat("space.flightAssist",    0.5f);
+    const float lvAssistDelay   = x3::apphost::readTuningFloat("space.assistDelay",     0.7f);
+    const float lvMaxStrafeSpd  = x3::apphost::readTuningFloat("space.maxStrafeSpeed", 320.0f);
     const float lvTargetHold    = x3::apphost::readTuningFloat("space.targetHold",      1.6f);
     const float lvLookSmoothing = x3::apphost::readTuningFloat("space.lookSmoothing",  22.0f);
     const float lvChaseLagMax   = x3::apphost::readTuningFloat("space.chaseLagMax",     8.0f);
