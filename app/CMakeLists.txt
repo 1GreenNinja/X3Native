@@ -138,6 +138,7 @@ add_library(x3app SHARED
     weapon.cpp
     monster.cpp
     anim.cpp
+    character_anim.cpp
     thirdperson.cpp
     melee.cpp
     objective.cpp

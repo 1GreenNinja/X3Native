@@ -279,6 +279,14 @@ struct CliOptions {
     // Implies --world tunnel + headless.
     bool        tunnelShot = false;
     std::string tunnelShotDir = "docs/screenshots/tunnel";
+    // --screenshot-jake <dir>: the ON-FOOT ANIMATED-CHARACTER proof set
+    // (`--world tunnel`, headless). Drives the REAL Player capsule + the
+    // shared AnimatedCharacter module with synthetic input and captures the
+    // gates BY EYE: standing at origin-height (zero trims — the GLB bake
+    // proof), walking TOWARD the camera facing correctly, strafes A/D
+    // unmirrored, backpedal, jump mid-flight, and each F1 camera mode.
+    bool        jakeShot = false;
+    std::string jakeShotDir = "docs/screenshots/jake";
 
     // --test-gamma: the LINEAR-vs-GAMMA acceptance-gate MEASUREMENT. Clears a
     // VK_FORMAT_B8G8R8A8_SRGB image (the swapchain format after the fix) to a ramp

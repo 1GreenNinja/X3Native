@@ -18,7 +18,7 @@
 #include "../tunnel_fitout.h"
 #include "../tunnel_rooms.h"
 #include "../player.h"
-#include "../anim.h"                     // Skinner — Jake's idle/walk/run rig
+#include "../character_anim.h"           // AnimatedCharacter — Jake's shared rig runtime
 
 #include <array>
 #include <memory>
@@ -917,32 +917,20 @@ int hostTunnel(HostContext& hc) {
     x3::con::IConsole* console = nullptr;
     std::string wxApplied = "off";
 
-    // ---- JAKE. The on-foot camera was a first-person eye, which is exactly
-    // why you could not see him: you were inside his head. A body nobody can see
-    // is a body nobody has, so getting out now pulls the camera back and puts
-    // the man on screen.
-    std::unique_ptr<x3::asset::IAssetSource> jakeSrc;
-    std::unique_ptr<x3::asset::IModelLoader> jakeLoader;
-    x3::asset::Model jakeModel;
-    std::vector<x3::asset::ModelDrawable> jakeDraw;
+    // ---- JAKE. The shared AnimatedCharacter module (app/character_anim.h)
+    // owns EVERYTHING that used to be hand-wired here — the exact clip
+    // lookups, the facing convention, the contact-law feet clamp, the
+    // measured directional clips, the jump/fall/turn one-shots. This host is
+    // merely the module's first consumer (owner: "THIS ENGINE NEEDS
+    // CONSISTENT APPLICATION OF MODEL ANIMATION"). Any other world gets Jake
+    // by writing these same few lines.
+    x3::game::AnimatedCharacter jake;
     bool jakeTried = false;
-    // ANIMATION (the Sarah recipe, sarah.cpp): a Skinner drives idle/walk/run
-    // by planar speed. Tim: "Jake isn't rigged... He needs his textures.. his
-    // animations" — he was right on both counts, and both had one cause: the
-    // host loaded JakeClone_player.glb, which has 20 COMBAT clips and ZERO
-    // textures (that is why he rendered white), while Jake_44_actions.glb —
-    // sitting in the same directory — has the baseColor texture AND the
-    // Idle / walking / run clips. The 26 MB earns its keep the moment
-    // something plays those clips, and now something does.
-    x3::anim::Skinner jakeSkin;
-    bool  jakeAnimated = false;
-    int   jakeJumpClip = -1;
-    float jakeJumpT    = -1.0f;      // >=0 while the jump one-shot plays
-    int   jakePunchClip = -1, jakeKickClip = -1;
-    int   jakeActClip  = -1;         // active combat one-shot
-    float jakeActT     = -1.0f;
-    float jakeYaw = 0.0f;                    // faces his MOVEMENT, not the camera
-    float jakePrevFeet[3] = { 0, 0, 0 };
+    // The river lane's hook: swim/swimIdle clip indices, resolved and ready
+    // the moment the rig loads (selection logic already lives in the module;
+    // the swim STATE is Player::swimming(), wired via setWaterQuery).
+    x3::game::AnimatedCharacter::SwimClipset jakeSwimClipset;
+    float jakeCamToast = 0.0f;       // seconds left on the F1 mode banner
 
     x3::game::Player onFoot;
     // W10 SWIMMING, wired (owner: "we need water.. you can swim in"). The
@@ -1407,11 +1395,121 @@ int hostTunnel(HostContext& hc) {
                 x3::logInfo(cb);
                 ok = settleAndGrab(cam, path) && ok;
             }
-        } else {
+        } else if (!hc.jakeShot) {
             float cam[5]; tunnel.showcaseCamera(route, 0, cam);
             if (hc.shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = hc.shotCam[k];
             const std::string out = screenshot ? screenshotPath : std::string("w_tunnel.png");
             ok = settleAndGrab(cam, out);
+        }
+
+        // ==== --screenshot-jake: the ON-FOOT ANIMATED-CHARACTER proof set ====
+        // Drives the REAL Player capsule + the shared AnimatedCharacter module
+        // (app/character_anim.h) with synthetic input — no key faking, the
+        // same code the interactive loop runs — and captures each gate:
+        // grounded at origin-height with ZERO trims (the GLB-bake proof),
+        // walking TOWARD the camera facing correctly, strafes both ways
+        // (mirror check), backpedal, jump mid-flight, fall, and the three F1
+        // camera modes.
+        if (hc.jakeShot) {
+            const std::string jdir = hc.jakeShotDir;
+            fs::create_directories(jdir, ec);
+            const float jx = startPos[0] + route.dirX * 30.0f;
+            const float jz = startPos[2] + route.dirZ * 30.0f;
+            auto groundAt = [&](float x, float z) -> float {
+                float gy = x3::game::terrainHeightAtWorld(x, z);
+                const x3::phys::RayHit rh = phys->rayCast(
+                    x3::phys::Vec3{ x, gy + 60.0f, z },
+                    x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 150.0f,
+                    x3::phys::Layer::Static);
+                if (rh.hit) gy = std::max(gy, rh.point.y);
+                return gy;
+            };
+            const float jgy = groundAt(jx, jz);
+            onFoot.spawn(*phys, jx, jgy + 0.4f, jz);
+            jake.load(*device, x3::game::assetRoot() + "/rigged_glb",
+                      "Jake_44_actions.glb", x3::game::jakeClipTable());
+
+            auto placeJake = [&](float lift) {
+                onFoot.setFeetPosition(*phys,
+                    x3::phys::Vec3{ jx, groundAt(jx, jz) + 0.2f + lift, jz });
+            };
+            // One proof sequence: `frames` sim steps of (moveFwd, moveStrafe,
+            // sprint) at a fixed look yaw; jumpAt >= 0 presses Space on that
+            // frame; fixedCam (x,y,z,yaw,pitch) or camMode (F1 modes) frames
+            // the shot; the LAST frame is captured.
+            auto jakeSeq = [&](const char* name, int frames, float mf, float ms,
+                              bool sprint, int jumpAt, float lookYaw,
+                              const float* fixedCam, int camMode) -> bool {
+                char out[512];
+                std::snprintf(out, sizeof(out), "%s/%s.png", jdir.c_str(), name);
+                for (int i = 0; i < frames; ++i) {
+                    glfwPollEvents();
+                    const x3::phys::Vec3 f0 = onFoot.feet();
+                    streamer.update(scene, *device, *phys,
+                                    (i == 1) ? f0.x + 40.0f : f0.x, f0.z);
+                    x3::game::PlayerInput pin;
+                    pin.moveFwd = mf; pin.moveStrafe = ms; pin.sprint = sprint;
+                    pin.jumpPressed = (i == jumpAt);
+                    onFoot.setLook(lookYaw, 0.0f);
+                    onFoot.update(pin, dt, *phys);
+                    phys->step(dt);
+                    x3::game::AnimatedCharacter::Intent ji;
+                    ji.moveFwd = mf; ji.moveStrafe = ms; ji.sprint = sprint;
+                    ji.jumpPressed = pin.jumpPressed;
+                    jake.update(onFoot, ji, lookYaw, dt, *phys, *device);
+                    float cam[5];
+                    if (fixedCam) { for (int k = 0; k < 5; ++k) cam[k] = fixedCam[k]; }
+                    else x3::game::characterCameraEye(onFoot, camMode, cam[0],
+                                                      cam[1], cam[2], cam[3], cam[4]);
+                    device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 74.0f);
+                    if (i == frames - 1) device->armCapture(out);
+                    auto fr = device->beginFrame();
+                    if (fr.valid) {
+                        scene.render(*device, fr);
+                        trees.draw(*device, fr);
+                        if (carBuilt) car.render(fr);
+                        jake.draw(fr, *device, onFoot, 0.0f, 0.0f,
+                                  fixedCam != nullptr || camMode != 0);
+                    }
+                    device->endFrame(fr);
+                }
+                const bool wrote = device->captureFrame(out);
+                if (wrote) x3::logInfo(std::string("--screenshot-jake: wrote ") + out);
+                else       x3::logError(std::string("--screenshot-jake: capture FAILED ") + out);
+                return wrote;
+            };
+
+            // Camera yaw convention: fwd = (cos y, ., sin y). Jake's default
+            // facing is engine -Z, i.e. look yaw -pi/2.
+            const float kFace = -1.5707963f;         // player looks -Z
+            const float gy0 = groundAt(jx, jz);
+            // Front camera: 12 m out on -Z, looking BACK (+Z) at him — far
+            // enough that the walk-toward sequence cannot reach the near
+            // plane (the first cut at 7 m ended inside his chest).
+            const float camFront[5] = { jx, gy0 + 1.3f, jz - 12.0f, +1.5707963f, -0.04f };
+            // Side camera: 7 m out on +X, looking -X, for jump/fall arcs.
+            const float camSide[5]  = { jx + 7.0f, gy0 + 1.6f, jz, 3.14159265f, -0.03f };
+
+            placeJake(0.0f);
+            ok = jakeSeq("10_idle_grounded", 150, 0, 0, false, -1, kFace, camFront, -1) && ok;
+            placeJake(0.0f);
+            ok = jakeSeq("11_walk_toward",    60, 1, 0, false, -1, kFace, camFront, -1) && ok;
+            placeJake(0.0f);
+            ok = jakeSeq("12_strafe_D",       70, 0, +1, false, -1, kFace, nullptr, 2) && ok;
+            placeJake(0.0f);
+            ok = jakeSeq("13_strafe_A",       70, 0, -1, false, -1, kFace, nullptr, 2) && ok;
+            placeJake(0.0f);
+            ok = jakeSeq("14_backpedal",      80, -1, 0, false, -1, kFace, nullptr, 2) && ok;
+            placeJake(0.0f);
+            ok = jakeSeq("15_jump_midair",    46, 0, 0, false, 20, kFace, camSide, -1) && ok;
+            placeJake(6.0f);                          // drop from 6 m: fall pose
+            ok = jakeSeq("16_fall",           40, 0, 0, false, -1, kFace, camSide, -1) && ok;
+            placeJake(0.0f);
+            ok = jakeSeq("17_cam_first",      80, 1, 0, false, -1, kFace, nullptr, 0) && ok;
+            placeJake(0.0f);
+            ok = jakeSeq("18_cam_near",       80, 1, 0, false, -1, kFace, nullptr, 1) && ok;
+            placeJake(0.0f);
+            ok = jakeSeq("19_cam_far",        80, 1, 0, false, -1, kFace, nullptr, 2) && ok;
         }
 
         // ==== SWIM PROOF (X3_SHOT_SWIM=1) — Jake treading mid-channel, then
@@ -1428,83 +1526,26 @@ int hostTunnel(HostContext& hc) {
             const float sz = plan.cz + rdz * 32.0f;
             const float wy = plan.waterY;
 
-            // Jake's rig, loaded exactly the way the interactive exit does.
+            // Jake's rig — the SAME shared-module load the interactive exit
+            // runs (W-RIVER's hand-rolled Skinner recipe + |restY| yFix are
+            // gone: the baked asset has feet at origin, so the module draws
+            // at the capsule's feet with ZERO compensation, land or water;
+            // Swim/SwimIdle come from the measured clip table).
             jakeTried = true;
-            jakeSrc.reset(x3::asset::createAssetSource());
-            if (jakeSrc && jakeSrc->mountDir(x3::game::assetRoot() + "/rigged_glb", 0)) {
-                jakeLoader.reset(x3::asset::createModelLoader(device, jakeSrc.get()));
-                jakeModel = jakeLoader->load("Jake_44_actions.glb");
-                if (jakeModel.ok) {
-                    jakeDraw = x3::asset::makeDrawables(jakeModel);
-                    if (jakeSkin.bind(jakeModel)) {
-                        jakeSkin.setRootYLock(true);
-                        jakeSkin.enableGpuSkinning(*device, jakeModel);
-                        int idle = jakeSkin.findClip({ "idle", "stand", "breath" });
-                        const int walk = jakeSkin.findClip({ "walking", "walk" });
-                        const int run  = jakeSkin.findClip({ "run", "sprint", "jog" });
-                        if (idle < 0) idle = 0;
-                        jakeSkin.setLocomotionClips(idle, walk, run, 0.2f, 2.0f);
-                        jakeAnimated = true;
-                        x3::logInfo("[swim-shot] jake bound: rootYLockRestY=" +
-                                    std::to_string(jakeSkin.rootYLockRestY()) +
-                                    " idle=" + std::to_string(idle));
-                    }
-                }
-            }
+            jake.load(*device, x3::game::assetRoot() + "/rigged_glb",
+                      "Jake_44_actions.glb", x3::game::jakeClipTable());
             onFoot.spawn(*phys, sx, wy + 0.6f, sz);   // drops in, swim state takes him
+            const float downstreamYaw = std::atan2(rdz, rdx);   // camYaw convention
             bool diveHeld = false;
             shotTick = [&](float d) {
                 x3::game::PlayerInput pin;            // no move — tread / sink only
                 pin.diveHeld = diveHeld;
                 onFoot.update(pin, d, *phys);
-                if (jakeAnimated) {
-                    jakeSkin.setLocomotionSpeed(0.0f);
-                    jakeSkin.applyLocomotion(jakeModel, *device, d);
-                }
+                x3::game::AnimatedCharacter::Intent ji;   // idle intent
+                jake.update(onFoot, ji, downstreamYaw, d, *phys, *device);
             };
             shotDraw = [&](const x3::rhi::FrameContext& fr) {
-                if (jakeDraw.empty()) return;
-                const x3::phys::Vec3 ft = onFoot.feet();
-                static int drawN = 0;
-                if ((drawN++ % 200) == 0) {
-                    char db[128];
-                    std::snprintf(db, sizeof(db), "[swim-shot] draw #%d at (%.1f, %.2f, %.1f)",
-                                  drawN - 1, ft.x, ft.y, ft.z);
-                    x3::logInfo(db);
-                }
-                const float a  = std::atan2(rdz, rdx) + 1.5707963f;  // face downstream
-                // ARMATURE-OFFSET COMPENSATION — |restY|, calibrated against
-                // the staged swimmer (the one place this offset was ever
-                // MEASURED against a known capsule): the current
-                // Jake_44_actions export measures restY = +1.142 and renders
-                // 1.2 m LOW at yFix 0 (he vanished under the riverbed), while
-                // the old export measured -0.9488 and needed +0.9488. Both
-                // pathologies — and the clean-skeleton ~0 case — resolve to
-                // yFix = |restY|.
-                const float restY = jakeAnimated ? jakeSkin.rootYLockRestY() : 0.0f;
-                const float yFix  = std::fabs(restY);
-                const float ca = std::cos(a), sa = std::sin(a);
-                const float world[16] = {
-                     ca, 0.0f, -sa, 0.0f,
-                   0.0f, 1.0f, 0.0f, 0.0f,
-                     sa, 0.0f,  ca, 0.0f,
-                   ft.x, ft.y + yFix, ft.z, 1.0f
-                };
-                for (const x3::asset::ModelDrawable& d : jakeDraw) {
-                    const float bc[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
-                                          d.baseColorFactor[2], d.baseColorFactor[3] };
-                    const float emis[3] = { d.emissiveFactor[0], d.emissiveFactor[1],
-                                            d.emissiveFactor[2] };
-                    device->drawMeshPBR(fr,
-                        x3::rhi::MeshHandle{ d.meshId },
-                        x3::rhi::TextureHandle{ d.baseColorTexId },
-                        x3::rhi::TextureHandle{ d.normalTexId },
-                        x3::rhi::TextureHandle{ d.mrTexId },
-                        bc, emis, world, d.alphaMask, d.alphaBlend,
-                        x3::rhi::TextureHandle{ d.emissiveTexId },
-                        x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
-                        d.clearcoat, d.clearcoatRough);
-                }
+                jake.draw(fr, *device, onFoot, 0.0f, 0.0f, true);
             };
 
             // PRE-SETTLE: he spawns just over the surface and drops in; the
@@ -1921,10 +1962,11 @@ int hostTunnel(HostContext& hc) {
             char b[256];
             std::snprintf(b, sizeof(b),
                 "feet(%.1f, %.2f, %.1f) | terrain %.2f | topmost-static %s%.2f | "
-                "driving=%d spawned=%d | rigRestY=%.4f jake_y=%.2f",
+                "driving=%d spawned=%d | yaw=%.1fdeg jake_y=%.2f cam=%d",
                 jf.x, jf.y, jf.z, gy, rh.hit ? "" : "(miss) ",
                 rh.hit ? rh.point.y : 0.0f, (int)driving, (int)footSpawned,
-                (double)jakeSkin.rootYLockRestY(), (double)console->getFloat("jake_y"));
+                (double)(jake.yaw() * 57.29578f),
+                (double)console->getFloat("jake_y"), console->getInt("jake_cam"));
             con->print(b);
         }, "print Jake's feet vs terrain vs topmost surface — the burial confession");
         con->registerCommand("wx_debug", [&, con](const std::vector<std::string>&) {
@@ -1950,8 +1992,9 @@ int hostTunnel(HostContext& hc) {
         }, "rain 0-10 — Sprinkle to Downpour to MONSOON, with every in-between");
         con->registerCVar("wx_precip_mult", "2.4",
             "precipitation density multiplier (raises how much of the particle pool a given rain/snow state uses)");
-        con->registerCVar("jake_yaw", "0", "Jake facing trim, degrees (rig-forward correction)");
-        con->registerCVar("jake_y",   "0", "Jake height trim, metres (on top of the measured armature offset)");
+        con->registerCVar("jake_yaw", "0", "Jake facing trim, degrees (asset owns the truth; default 0)");
+        con->registerCVar("jake_y",   "0", "Jake height trim, metres (asset feet sit at origin; default 0)");
+        con->registerCVar("jake_cam", "2", "on-foot camera: 0 first person, 1 third near, 2 third far (F1 cycles)");
         // ENGINE NOTE A/B: 1 = the multi-RPM bank (default), 0 = the legacy
         // single re-pitched loop. Flip it live; the owner's ear is the gate.
         con->registerCVar("snd_bank", "1",
@@ -2335,6 +2378,24 @@ int hostTunnel(HostContext& hc) {
             prevMapM = mNow;
         }
 
+        // ---- F1: ON-FOOT CAMERA CYCLE (Tim: "f1 can cycle... 1st 3rd et").
+        // Edge-triggered through shell.key (typing F1-ish text in the console
+        // must not swing the camera); only meaningful on foot. The mode
+        // persists in jake_cam; a short HUD banner names the new mode.
+        {
+            static bool f1Was = false;
+            const bool f1Now = shell.key(GLFW_KEY_F1);
+            if (f1Now && !f1Was && !driving && footSpawned && console) {
+                const int m = (console->getInt("jake_cam") + 1)
+                              % x3::game::kCharacterCamModes;
+                console->set("jake_cam", m == 0 ? "0" : m == 1 ? "1" : "2");
+                jakeCamToast = 2.2f;
+                x3::logInfo(std::string("[tunnel] camera: ")
+                            + x3::game::characterCamModeName(m));
+            }
+            f1Was = f1Now;
+        }
+
         // ---- E: GET OUT / GET IN ----------------------------------------
         // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
         // to the car. Without that gate E teleports you into a car you left half
@@ -2391,70 +2452,18 @@ int hostTunnel(HostContext& hc) {
                     // plus its textures is not worth paying for on the chance.
                     if (!jakeTried) {
                         jakeTried = true;
-                        jakeSrc.reset(x3::asset::createAssetSource());
-                        const std::string glbDir = x3::game::assetRoot() + "/rigged_glb";
-                        if (jakeSrc && jakeSrc->mountDir(glbDir, 0)) {
-                            jakeLoader.reset(x3::asset::createModelLoader(device, jakeSrc.get()));
-                            // Jake_44_actions, NOT JakeClone_player. The clone is
-                            // 1.4 MB but has ZERO textures (the white statue) and
-                            // only combat clips; the 44-action rig carries the
-                            // baseColor texture and Idle / walking / run.
-                            jakeModel = jakeLoader->load("Jake_44_actions.glb");
-                            if (jakeModel.ok) {
-                                jakeDraw = x3::asset::makeDrawables(jakeModel);
-                                // EXACT clip lookup — the fuzzy matcher chose
-                                // 'Leftstrafewalking' for walk and
-                                // 'BackRight_Run' for run (clip order beat
-                                // intent): Jake strafed when walking. Exact
-                                // names from the rig's own 44-clip list.
-                                auto exactClip = [&](const char* nm) -> int {
-                                    for (uint32_t ci2 = 0; ci2 < jakeSkin.clipCount(); ++ci2)
-                                        if (jakeSkin.clipName(ci2) == std::string_view(nm)) return (int)ci2;
-                                    return -1;
-                                };
-                                if (jakeSkin.bind(jakeModel)) {
-                                    // ROOT-Y LOCK: the Jake clips are the family
-                                    // with the -0.9488 armature-offset root Y
-                                    // (anim.h setRootYLock documents exactly this
-                                    // rig); his world Y is owned by the capsule.
-                                    jakeSkin.setRootYLock(true);
-                                    jakeSkin.enableGpuSkinning(*device, jakeModel);
-                                    int idle = exactClip("Idle");
-                                    int walk = exactClip("Walking");
-                                    int run  = exactClip("Running");
-                                    // 'Jump' preferred over 'Regular_Jump':
-                                    // Regular_Jump carries ROOT MOTION — the
-                                    // mesh lunges relative to its capsule and
-                                    // travels INTO the chase camera (Tim:
-                                    // "jumping switches camera to INSIDE
-                                    // JAKE"). W-JAKE's measured-motion table
-                                    // will pick the truly in-place one.
-                                    jakeJumpClip = exactClip("Jump");
-                                    if (jakeJumpClip < 0) jakeJumpClip = exactClip("Regular_Jump");
-                                    // Unarmed strikes ("Punch and kick do not
-                                    // work" — they were never wired): this
-                                    // rig's unarmed kit is the flashy pair.
-                                    jakePunchClip = exactClip("Backflip_and_Hooks");
-                                    jakeKickClip  = exactClip("Backflip_Sweep_Kick");
-                                    if (idle < 0) idle = jakeSkin.findClip({ "idle" });
-                                    if (idle < 0) idle = 0;
-                                    jakeSkin.setLocomotionClips(idle, walk, run, 0.2f, 2.0f);
-                                    jakeSkin.setLocomotionSpeed(0.0f);
-                                    jakeSkin.applyLocomotion(jakeModel, *device, 0.0f);
-                                    jakeAnimated = true;
-                                    x3::logInfo("[tunnel] Jake animated: idle=" + std::to_string(idle)
-                                                + " walk=" + std::to_string(walk)
-                                                + " run=" + std::to_string(run));
-                                }
-                                char jb[128];
-                                std::snprintf(jb, sizeof(jb), "[tunnel] Jake: %u drawable(s)%s",
-                                              (uint32_t)jakeDraw.size(),
-                                              jakeAnimated ? " (rigged)" : " (STATIC - no skin)");
-                                x3::logInfo(jb);
-                            } else {
-                                x3::logWarn("[tunnel] Jake_44_actions.glb failed to load - no body on foot");
-                            }
-                        }
+                        // THE WHOLE RECIPE lives in AnimatedCharacter now:
+                        // exact-name clips from the MEASURED jakeClipTable()
+                        // (labels untrusted), root-Y lock, GPU skinning,
+                        // contact-law clamp, facing, one-shots. Jake_44_actions
+                        // (post tools/jake_bake.py: feet at origin, -Z facing
+                        // baked, clips in-place), NOT JakeClone_player (zero
+                        // textures, combat clips only — the white statue).
+                        if (jake.load(*device, x3::game::assetRoot() + "/rigged_glb",
+                                      "Jake_44_actions.glb", x3::game::jakeClipTable()))
+                            jakeSwimClipset = jake.swimClipset();   // river lane hook
+                        else
+                            x3::logWarn("[tunnel] Jake_44_actions.glb failed to load - no body on foot");
                     }
                     x3::logInfo("[tunnel] on foot - E near the car to get back in");
                 } else {
@@ -2489,79 +2498,35 @@ int hostTunnel(HostContext& hc) {
             pin.diveHeld = kd(GLFW_KEY_LEFT_CONTROL) || kd(GLFW_KEY_C);
             pin.lookDX = ddx; pin.lookDY = ddy;
             onFoot.update(pin, fdt, *phys);
-            {   // FEET-ABOVE-GROUND INVARIANT v2. v1 clamped to the TERRAIN
-                // height field — but Jake walks on ROADS, which ride ABOVE the
-                // field on embankments and decks. Fall through pavement into
-                // the gap beneath and v1 was satisfied (feet above dirt) while
-                // he was entombed under the road ("Jake is STILL underground").
-                // v2 clamps to the TOPMOST WALKABLE SURFACE: max of the height
-                // field and a downward raycast from above his head — the same
-                // painted-road rule the car spawn learned.
-                const x3::phys::Vec3 jf = onFoot.feet();
-                float gy = x3::game::terrainHeightAtWorld(jf.x, jf.z);
-                const x3::phys::RayHit jrh = phys->rayCast(
-                    x3::phys::Vec3{ jf.x, jf.y + 40.0f, jf.z },
-                    x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 120.0f,
-                    x3::phys::Layer::Static);
-                if (jrh.hit) gy = std::max(gy, jrh.point.y);
-                if (jf.y < gy - 0.25f) {
-                    onFoot.setFeetPosition(*phys, x3::phys::Vec3{ jf.x, gy + 0.15f, jf.z });
-                    x3::logInfo("[tunnel] CONTACT LAW: Jake lifted onto the surface "
-                                "(was below by more than 0.25 m)");
-                }
+
+            // COMBAT ONE-SHOTS: LMB = hooks combo, RMB = sweep kick (owner:
+            // "Punch and kick do not work" — they were never wired). The
+            // module's playOneShot layer owns playback (it refuses while one
+            // is active, so mashing can't stutter-restart a combo); the HOST
+            // owns the binding, gated on shell input so clicking the console
+            // does not throw punches. Animation-only: damage lands with the
+            // campaign melee system (task 20).
+            if (shell.inputEnabled()) {
+                static bool lmbWas = false, rmbWas = false;
+                const bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                const bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+                if (lmb && !lmbWas)      jake.playOneShot("Backflip_and_Hooks");
+                else if (rmb && !rmbWas) jake.playOneShot("Backflip_Sweep_Kick");
+                lmbWas = lmb; rmbWas = rmb;
             }
 
-            // Drive the rig from what the capsule actually DID: planar speed
-            // picks idle/walk/run (the locomotion blend), and he faces his
-            // direction of travel — not the camera — turning smoothly.
-            if (jakeAnimated) {
-                const x3::phys::Vec3 ft = onFoot.feet();
-                const float vx = (ft.x - jakePrevFeet[0]) / std::max(fdt, 1e-4f);
-                const float vz = (ft.z - jakePrevFeet[2]) / std::max(fdt, 1e-4f);
-                jakePrevFeet[0] = ft.x; jakePrevFeet[1] = ft.y; jakePrevFeet[2] = ft.z;
-                const float planar = std::sqrt(vx * vx + vz * vz);
-                if (planar > 0.4f) {
-                    // THE BABYLON FLIP (Tim: "this is the X3 Babylon thing we
-                    // nEVER fixed"): the rig is authored facing +Z, the engine
-                    // walks -Z — 180 degrees from the old clone-rig constant.
-                    // Baked here; jake_yaw (degrees) remains the live dial —
-                    // if any rig still disagrees, dial it, report the number,
-                    // and THAT gets baked next.
-                    const float want = std::atan2(vz, vx) - 1.5707963f;
-                    float d = want - jakeYaw;
-                    while (d >  3.14159265f) d -= 6.2831853f;
-                    while (d < -3.14159265f) d += 6.2831853f;
-                    jakeYaw += d * std::min(1.0f, fdt * 10.0f);
-                }
-                // COMBAT ONE-SHOTS: LMB = hooks combo, RMB = sweep kick.
-                // Animation-only for now; damage lands with the campaign
-                // melee system (task 20). Gated on shell input so clicking
-                // the console does not throw punches.
-                if (shell.inputEnabled() && jakeActT < 0.0f && jakeJumpT < 0.0f) {
-                    static bool lmbWas = false, rmbWas = false;
-                    const bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-                    const bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-                    if (lmb && !lmbWas && jakePunchClip >= 0) { jakeActClip = jakePunchClip; jakeActT = 0.0f; }
-                    else if (rmb && !rmbWas && jakeKickClip >= 0) { jakeActClip = jakeKickClip; jakeActT = 0.0f; }
-                    lmbWas = lmb; rmbWas = rmb;
-                }
-                // JUMP ONE-SHOT: overrides locomotion for its own duration.
-                if (pin.jumpPressed && jakeJumpClip >= 0 && jakeJumpT < 0.0f && jakeActT < 0.0f)
-                    jakeJumpT = 0.0f;
-                if (jakeActT >= 0.0f && jakeActClip >= 0) {
-                    jakeActT += fdt;
-                    jakeSkin.apply(jakeModel, *device, (uint32_t)jakeActClip, jakeActT);
-                    if (jakeActT >= jakeSkin.clipDuration((uint32_t)jakeActClip))
-                        jakeActT = -1.0f;
-                } else if (jakeJumpT >= 0.0f && jakeJumpClip >= 0) {
-                    jakeJumpT += fdt;
-                    jakeSkin.apply(jakeModel, *device, (uint32_t)jakeJumpClip, jakeJumpT);
-                    if (jakeJumpT >= jakeSkin.clipDuration((uint32_t)jakeJumpClip))
-                        jakeJumpT = -1.0f;
-                } else {
-                    jakeSkin.setLocomotionSpeed(planar);
-                    jakeSkin.applyLocomotion(jakeModel, *device, fdt);
-                }
+            // Everything the rig needs — the CONTACT LAW feet clamp, facing,
+            // clip selection (walk/run/backpedal/strafe/turn/jump/fall/idle
+            // variation/swim, all MEASURED), and skinning — is the module's
+            // job now. The Babylon flip and the -0.9488 yFix are GONE: the
+            // asset was baked to the engine convention (tools/jake_bake.py).
+            {
+                x3::game::AnimatedCharacter::Intent ji;
+                ji.moveFwd     = pin.moveFwd;
+                ji.moveStrafe  = pin.moveStrafe;
+                ji.sprint      = pin.sprint;
+                ji.jumpPressed = pin.jumpPressed;
+                jake.update(onFoot, ji, camYaw, fdt, *phys, *device);
             }
         }
 
@@ -2975,20 +2940,14 @@ int hostTunnel(HostContext& hc) {
             if (shell.overrideCamera(fdt, (!driving && footSpawned) ? 74.0f : fovNow)) {
                 shell.flyCamPose(cx, cy, cz, camYaw, camPitch);   // keep precip/audio probes with the free cam
             } else if (!driving && footSpawned) {
-                float ex, ey, ez, fyaw = 0.0f, fpit = 0.0f;
-                onFoot.camera(ex, ey, ez, fyaw, fpit);
-                camYaw = fyaw; camPitch = fpit;
-                // OVER THE SHOULDER. Pulled back along the look vector and offset
-                // to the right, the way every third-person game frames a walking
-                // character -- dead-centre behind the head means the body hides
-                // exactly what you are walking toward.
-                const float cp = std::cos(fpit), sp2 = std::sin(fpit);
-                const float fx = cp * std::cos(fyaw), fy2 = sp2, fz = cp * std::sin(fyaw);
-                const float rx = -std::sin(fyaw), rz = std::cos(fyaw);
-                const float back = 3.1f, shoulder = 0.55f;
-                cx = ex - fx * back + rx * shoulder;
-                cy = ey - fy2 * back + 0.35f;
-                cz = ez - fz * back + rz * shoulder;
+                // F1 CAMERA CYCLE (Tim: "he needs to be able to look around
+                // with the mouse... f1 can cycle... 1st 3rd et"): first person
+                // / third-near (2.5 m) / third-far (5.5 m), all riding the
+                // SAME Player look angles so the mouse orbits in every mode.
+                // The mode lives in the jake_cam cvar (persisted, dialable).
+                const int camMode = console ? console->getInt("jake_cam")
+                                            : (int)x3::game::CharacterCamMode::ThirdFar;
+                x3::game::characterCameraEye(onFoot, camMode, cx, cy, cz, camYaw, camPitch);
                 device->setCamera(cx, cy, cz, camYaw, camPitch, 74.0f);
             } else {
                 device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
@@ -3205,49 +3164,37 @@ int hostTunnel(HostContext& hc) {
                 }
             }
 
-            // ---- DRAW JAKE, at the capsule's feet, facing where he walks.
-            // The rig is authored +Z forward; jakeYaw tracks his direction of
-            // TRAVEL (smoothed in the movement block) — a man who faces his
-            // camera instead of his path moonwalks every time you strafe.
-            if (!driving && footSpawned && !jakeDraw.empty()) {
-                const x3::phys::Vec3 ft = onFoot.feet();
-                const float a = (jakeAnimated ? jakeYaw : camYaw + 1.5707963f)
-                              + console->getFloat("jake_yaw") * 0.0174533f;
-                // THE HARD RULE (Tim: "HARD RULES for where FEET and TIRES can
-                // and can NOT BE"): the rig's rest origin goes AT the capsule's
-                // feet, compensated by the skeleton's own MEASURED armature
-                // offset — |restY|, W-RIVER's calibration: the CURRENT
-                // Jake_44_actions export measures restY = +1.142 and renders
-                // 1.2 m LOW at zero compensation (measured against the swim
-                // capsule — the staged swimmer vanished under the riverbed);
-                // the OLD export measured -0.9488 and needed +0.9488. Both
-                // pathologies — and the clean-skeleton ~0 case — resolve to
-                // |restY|. jake_y trims live.
-                const float jRest = jakeAnimated ? jakeSkin.rootYLockRestY() : 0.0f;
-                const float yFix = std::fabs(jRest)
-                                 + console->getFloat("jake_y");
-                const float ca = std::cos(a), sa = std::sin(a);
-                // Column-major 4x4: rotation about +Y, translation at the feet.
-                const float world[16] = {
-                     ca, 0.0f, -sa, 0.0f,
-                   0.0f, 1.0f, 0.0f, 0.0f,
-                     sa, 0.0f,  ca, 0.0f,
-                   ft.x, ft.y + yFix, ft.z, 1.0f
-                };
-                for (const x3::asset::ModelDrawable& d : jakeDraw) {
-                    const float bc[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
-                                          d.baseColorFactor[2], d.baseColorFactor[3] };
-                    const float emis[3] = { d.emissiveFactor[0], d.emissiveFactor[1],
-                                            d.emissiveFactor[2] };
-                    device->drawMeshPBR(frame,
-                        x3::rhi::MeshHandle{ d.meshId },
-                        x3::rhi::TextureHandle{ d.baseColorTexId },
-                        x3::rhi::TextureHandle{ d.normalTexId },
-                        x3::rhi::TextureHandle{ d.mrTexId },
-                        bc, emis, world, d.alphaMask, d.alphaBlend,
-                        x3::rhi::TextureHandle{ d.emissiveTexId },
-                        x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
-                        d.clearcoat, d.clearcoatRough);
+            // ---- DRAW JAKE. Placement, facing and the yFix that used to live
+            // here are the module's job — and the yFix is GONE outright: the
+            // asset now carries feet-at-origin, -Z-forward (tools/jake_bake.py),
+            // so identity IS correct and jake_yaw/jake_y are pure trims
+            // (default 0). Hidden in first person: you ARE the head.
+            if (!driving && footSpawned) {
+                const bool firstPerson = console &&
+                    console->getInt("jake_cam") == (int)x3::game::CharacterCamMode::FirstPerson;
+                jake.draw(frame, *device, onFoot,
+                          (console ? console->getFloat("jake_yaw") : 0.0f) * 0.0174533f,
+                          console ? console->getFloat("jake_y") : 0.0f,
+                          !firstPerson);
+            }
+
+            // ---- F1 CAMERA MODE BANNER — a short, centered confirmation so
+            // cycling is legible ("what mode am I in?" should never be a
+            // guess). Fades out by simply not drawing after 2.2 s.
+            if (jakeCamToast > 0.0f) {
+                jakeCamToast -= fdt;
+                uint32_t hw3 = 0, hh3 = 0; device->hudSize(hw3, hh3);
+                if (hw3 && hh3 && console) {
+                    const char* nm = x3::game::characterCamModeName(console->getInt("jake_cam"));
+                    char tb[64];
+                    std::snprintf(tb, sizeof(tb), "CAMERA: %s", nm);
+                    const float px = std::floor((float)hh3 * 0.030f);
+                    const float tw = (float)std::strlen(tb) * px;
+                    const float tx = ((float)hw3 - tw) * 0.5f, ty = (float)hh3 * 0.12f;
+                    const float sh[4]  = { 0.0f, 0.0f, 0.0f, 0.75f };
+                    const float fgc[4] = { 0.75f, 0.92f, 1.0f, 1.0f };
+                    device->drawHudText(frame, tb, tx + 1.0f, ty + 1.0f, px, sh);
+                    device->drawHudText(frame, tb, tx, ty, px, fgc);
                 }
             }
 

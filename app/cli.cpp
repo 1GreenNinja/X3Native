@@ -319,6 +319,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.tunnelShot = true; o.worldMode = "tunnel"; o.screenshot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.tunnelShotDir = argv[++i];
         }
+        else if (a == "--screenshot-jake") {                                      // on-foot AnimatedCharacter proof set
+            o.jakeShot = true; o.worldMode = "tunnel"; o.screenshot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.jakeShotDir = argv[++i];
+        }
         else if (a == "--test-clubnpcs") o.testClubNpcs = true;
         else if (a == "--test-jukebox") o.testJukebox = true;
         else if (a == "--test-listen") o.testListen = true;
