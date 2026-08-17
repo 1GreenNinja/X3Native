@@ -867,6 +867,113 @@ bool runLevelLintSelfTest() {
                         nc2Escapes, nc2Escapes > 0 ? "red-capable" : "BROKEN"));
     }
 
+    // ---- SEAL-BAND gate (fix/cell-shell-hole, owner playtest 2026-08-16: "This... is
+    // a hole in Jake's cell" — a tall slit at the cell's upper corner seeing clean
+    // through into the lit Main Hall). WHY SEAL-SHELL MISSED IT: that probe asks "does
+    // an opening give onto SEALED INTERIOR space?" — and every sample through this hole
+    // lands inside the NEIGHBOR's sealed volume, so it passes. The defect is a
+    // JUNCTION BAND, not a void leak: a room interpenetrating a TALLER room (Overlap)
+    // has no wall of its own above its ceiling on the shared boundary — its ceiling
+    // LID is the only closure of the band y[r.top, n.top], and the builder shipped
+    // that lid COLLISION-ONLY/INVISIBLE (render rule: deep rooms only). Geometrically
+    // "sealed", visually a hole: the player looks over the wall top into the next
+    // corridor. Mirrored class below the floor: partner floor lower -> an open slot
+    // under the room's slab (y[n.floor, r.floor]) inside the neighbor.
+    // This gate derives every required band closure INDEPENDENTLY from room geometry
+    // and checks the shared builder rules (canonLidVisible / canonPlinthBands) supply
+    // them. Negative control: the legacy rules (invisible lid, no plinths) must go red.
+    {
+        constexpr float ePs = 0.05f;
+        constexpr float kStandH = 1.8f;   // deck rule: same threshold seal-shell uses
+        struct BandCheck { int topNeed = 0, topMiss = 0, botNeed = 0, botMiss = 0;
+                           std::vector<std::string> viols; };
+        auto checkBands = [&](bool legacy) {
+            BandCheck bc;
+            const std::vector<CanonBand> plinths = canonPlinthBands(floor, legacy);
+            std::vector<std::pair<uint32_t, uint32_t>> seen;
+            for (const CanonDoorway& dw : floor.doorways) {
+                if (dw.kind != DoorwayKind::Overlap) continue;
+                for (int side = 0; side < 2; ++side) {
+                    const uint32_t ri = side ? dw.b : dw.a, ni = side ? dw.a : dw.b;
+                    if (ri >= floor.rooms.size() || ni >= floor.rooms.size()) continue;
+                    if (std::find(seen.begin(), seen.end(), std::make_pair(ri, ni)) != seen.end())
+                        continue;                    // a pair may appear twice in the JSON
+                    seen.push_back({ ri, ni });
+                    const CanonRoom& r = floor.rooms[ri];
+                    const CanonRoom& n = floor.rooms[ni];
+                    if (r.platform || n.platform) continue;
+                    // Overlap strip of r's footprint inside n.
+                    const float ox0 = std::max(r.x0(), n.x0()), ox1 = std::min(r.x1(), n.x1());
+                    const float oz0 = std::max(r.z0(), n.z0()), oz1 = std::min(r.z1(), n.z1());
+                    if (ox1 - ox0 < ePs || oz1 - oz0 < ePs) continue;
+                    // TOP band: neighbor interior continues ABOVE r's lid. DECK EXEMPTION
+                    // (same kStandH rule as seal-shell): a sub-standing-height room is an
+                    // open-air deck — a rendered lid there would roof over the walkable
+                    // surface, and a deck partner's "interior" above is sky by design.
+                    if (n.y1() > r.y1() + ePs && !r.openCeiling &&
+                        r.h >= kStandH && n.h >= kStandH) {
+                        ++bc.topNeed;
+                        if (!canonLidVisible(floor, ri, legacy)) {
+                            ++bc.topMiss;
+                            bc.viols.push_back(fmt(
+                                "SEAL-BAND room %u '%s': lid INVISIBLE under taller '%s' — open band "
+                                "y %.2f..%.2f over strip x[%.1f,%.1f] z[%.1f,%.1f]: sightline over the "
+                                "wall top into the neighbor's interior",
+                                ri, r.name.c_str(), n.name.c_str(), r.y1(), n.y1(), ox0, ox1, oz0, oz1));
+                        }
+                    }
+                    // BOTTOM band(s): neighbor floor BELOW r's slab -> each side of the
+                    // overlap strip that is a face of r strictly inside n needs a plinth.
+                    if (n.y0() < r.y0() - ePs) {
+                        struct Need { int face; float plane, lo, hi; };
+                        std::vector<Need> need;
+                        if (std::fabs(ox0 - r.x0()) < ePs && r.x0() > n.x0() + ePs) need.push_back({ 0, r.x0(), oz0, oz1 });
+                        if (std::fabs(ox1 - r.x1()) < ePs && r.x1() < n.x1() - ePs) need.push_back({ 1, r.x1(), oz0, oz1 });
+                        if (std::fabs(oz0 - r.z0()) < ePs && r.z0() > n.z0() + ePs) need.push_back({ 2, r.z0(), ox0, ox1 });
+                        if (std::fabs(oz1 - r.z1()) < ePs && r.z1() < n.z1() - ePs) need.push_back({ 3, r.z1(), ox0, ox1 });
+                        for (const Need& nd : need) {
+                            ++bc.botNeed;
+                            bool covered = false;
+                            for (const CanonBand& pb : plinths) {
+                                if (pb.room != ri || pb.face != nd.face) continue;
+                                if (std::fabs(pb.plane - nd.plane) > 0.02f) continue;
+                                if (pb.lo > nd.lo + ePs || pb.hi < nd.hi - ePs) continue;
+                                if (pb.y0 > n.y0() + ePs || pb.y1 < r.y0() - ePs) continue;
+                                covered = true; break;
+                            }
+                            if (!covered) {
+                                ++bc.botMiss;
+                                bc.viols.push_back(fmt(
+                                    "SEAL-BAND room %u '%s': OPEN SLOT under the floor slab inside lower "
+                                    "'%s' — face %s plane %.1f span [%.1f,%.1f] y %.2f..%.2f has no plinth",
+                                    ri, r.name.c_str(), n.name.c_str(), kFaceName[nd.face],
+                                    nd.plane, nd.lo, nd.hi, n.y0(), r.y0()));
+                            }
+                        }
+                    }
+                }
+            }
+            return bc;
+        };
+
+        const BandCheck live = checkBands(false);
+        for (const std::string& v : live.viols) rep.violations.push_back(v);
+        const BandCheck nc = checkBands(true);
+        if (nc.topMiss + nc.botMiss <= live.topMiss + live.botMiss)
+            rep.violations.push_back(fmt(
+                "SEAL-BAND NEGATIVE CONTROL FAILED: the legacy rules produced %d open band(s) "
+                "(baseline %d) — the probe cannot see the very defect it was built for",
+                nc.topMiss + nc.botMiss, live.topMiss + live.botMiss));
+        for (size_t i = 0; i < nc.viols.size() && i < 6; ++i)
+            x3::logInfo("[levellint] seal-band NC (legacy rules) would ship: " + nc.viols[i]);
+        x3::logInfo(fmt("[levellint] seal-band: %d top band(s) (%d open), %d bottom band(s) "
+                        "(%d open); negative control %d legacy open band(s) (%s)",
+                        live.topNeed, live.topMiss, live.botNeed, live.botMiss,
+                        nc.topMiss + nc.botMiss,
+                        nc.topMiss + nc.botMiss > live.topMiss + live.botMiss
+                            ? "red-capable" : "BROKEN"));
+    }
+
     // ---- HIDDEN-4.5 SEAL gate (fix/spire-hollow-core, owner canon 2026-07-25:
     // level 4.5 is HIDDEN — elevator-only, no stairway, no sightline; AMENDED by
     // the owner's 7762 master order: ONE sanctioned code-locked opening exists —
