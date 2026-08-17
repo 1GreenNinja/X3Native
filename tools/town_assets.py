@@ -359,20 +359,38 @@ def measure(path):
     return dict(lo=lo, hi=hi, ctr=ctr, frontDeg=frontDeg, src=src, panes=panes)
 
 
+MAX_PANES = 3
+
+
 def measure_panes(gltf, bin_, ctr, lo, frontDeg):
-    """WHERE THE LIT WINDOWS ACTUALLY ARE — measured, not assumed.
+    """WHERE THE LIT WINDOWS ACTUALLY ARE — measured per WINDOW, not averaged.
 
     Round one placed its two dusk panes at hard-coded storey heights (2.35 m and
-    5.20 m above ground) because the HouseForge kit gave nothing better to go on.
-    This kit does: every house models its glazing as a separate `Glass` material,
-    so the panes can be put exactly where the artist put the windows. That
-    matters here because the kit's houses run 9 m to 25.7 m tall — one fixed pair
-    of storey heights would have put House_2's upper pane inside its roof.
+    5.20 m above ground) because the HouseForge kit modelled no glazing to
+    measure. This kit does: every house carries its glazing as a separate
+    `Glass` material, so the lit panes can go exactly where the artist put the
+    windows.
 
-    Returns up to two (heightAboveBase, alongOffset) pairs for the glass nearest
-    the FRONT elevation, in the asset's own front frame:
-        along = the horizontal axis parallel to the front wall
-        height = metres above the bbox BOTTOM (which is what the placer grounds)
+    THE FIRST ATTEMPT AVERAGED, AND THAT WAS WRONG — visibly so. Taking the
+    centroid of a whole storey's glass puts the pane on the blank wall BETWEEN
+    two windows; the capture showed exactly that, two grey cards stuck to the
+    clapboard of the square's hero. So the glass is split into CONNECTED
+    COMPONENTS — individual windows — and the biggest few are returned with
+    their own centre AND their own size, so the emissive quad covers a real
+    opening and is invisible against the dark glass when unlit.
+
+    Returns up to MAX_PANES (height, along, depth, halfW, halfH) in the front
+    frame:
+        along  = horizontal axis parallel to the front wall
+        height = metres above the bbox BOTTOM (what the placer grounds on)
+        depth  = metres from the bbox CENTRE along the front normal
+
+    DEPTH IS MEASURED FOR THE SAME REASON THE REST IS. The first version pushed
+    every pane out to the bbox support plane, on the assumption that the front
+    face of the bounding box IS the front wall. It is not: these houses have
+    EAVES, and the roof overhangs the wall by up to 2.7 m, so the panes hung in
+    mid-air a couple of metres proud of the clapboard — which is what the
+    capture showed. The glass knows where the wall is; ask it.
     """
     fx, fz = -math.sin(math.radians(frontDeg)), -math.cos(math.radians(frontDeg))
     ax, az = -fz, fx                      # along-wall axis
@@ -385,37 +403,62 @@ def measure_panes(gltf, bin_, ctr, lo, frontDeg):
             pos = read_accessor(gltf, bin_, pr["attributes"]["POSITION"])
             idx = read_accessor(gltf, bin_, pr["indices"]).reshape(-1) if "indices" in pr else None
             tri = pos[idx].reshape(-1, 3, 3) if idx is not None else pos.reshape(-1, 3, 3)
-            cen = tri.mean(axis=1)
-            for c in cen:
+            for c in tri.mean(axis=1):
                 dx, dz = float(c[0] - ctr[0]), float(c[2] - ctr[2])
-                pts.append((dx * fx + dz * fz,            # depth along the front normal
-                            dx * ax + dz * az,            # along the wall
-                            float(c[1] - lo[1])))         # height above the bbox bottom
+                pts.append((dx * fx + dz * fz, dx * ax + dz * az, float(c[1] - lo[1])))
     if not pts:
         return []
-    depth = np.array([p[0] for p in pts])
-    # Front elevation only: the glass in the outer 35% of the front-facing depth.
-    keep = depth >= depth.max() - 0.35 * (depth.max() - depth.min() + 1e-6)
-    sel = [p for p, k in zip(pts, keep) if k]
-    if not sel:
-        return []
-    hs = np.array([p[2] for p in sel])
-    # Split into a lower and an upper storey at the largest gap in the heights.
-    order = np.argsort(hs); sh = hs[order]
-    groups = [sel]
-    if len(sh) > 4:
-        gaps = np.diff(sh)
-        gi = int(np.argmax(gaps))
-        if gaps[gi] > 1.2:                      # a real storey break, not scatter
-            cut = 0.5 * (sh[gi] + sh[gi + 1])
-            groups = [[p for p in sel if p[2] <= cut], [p for p in sel if p[2] > cut]]
+    P = np.array(pts)
+
+    def area(c):
+        return (max(c[:, 1].max() - c[:, 1].min(), 0.05)
+                * max(c[:, 2].max() - c[:, 2].min(), 0.05))
+
+    def windows_at(depth_tol):
+        """Cluster the glass within `depth_tol` of the front-most surface."""
+        F = P[P[:, 0] >= P[:, 0].max() - depth_tol]
+        if len(F) == 0:
+            return []
+        # Connected components in the (along, height) plane = one window each.
+        # EPS 1.0 m is MEASURED, not picked: this kit's windows are MULLIONED,
+        # glazed as grids of ~0.74 x 0.22 m sub-panes about 0.8 m apart, so a
+        # tighter epsilon returns 67 single mullions instead of 5 windows —
+        # which is exactly what the first attempt did. 1.0 m spans a mullion
+        # gap and still leaves the blank wall between two windows uncrossed.
+        EPS = 1.0
+        n = len(F); seen = np.zeros(n, bool); comps = []
+        plane = F[:, 1:3]
+        for i in range(n):
+            if seen[i]:
+                continue
+            stack = [i]; seen[i] = True; grp = [i]
+            while stack:
+                k = stack.pop()
+                d2 = ((plane - plane[k]) ** 2).sum(1)
+                for j in np.nonzero((d2 < EPS * EPS) & ~seen)[0]:
+                    seen[j] = True; stack.append(int(j)); grp.append(int(j))
+            comps.append(F[grp])
+        return sorted((c for c in comps if area(c) > 0.4), key=area, reverse=True)
+
+    # The depth tolerance has to ADAPT. A house whose front wall is square to
+    # the measured front direction puts all its street glass at one depth; one
+    # whose front is a diagonal (House_1's front is 101.9 deg) spreads it over
+    # metres, and a fixed 2 m window found only 8 of its triangles. Widen until
+    # at least two windows appear, then stop — the narrowest tolerance that
+    # answers is the one least likely to have swept in the side elevation.
+    comps = []
+    for tol in (1.5, 2.5, 4.0, 6.5):
+        comps = windows_at(tol)
+        if len(comps) >= 2:
+            break
     out = []
-    for g in groups:
-        if not g:
-            continue
-        out.append((round(float(np.mean([p[2] for p in g])), 2),
-                    round(float(np.mean([p[1] for p in g])), 2)))
-    return out[:2]
+    for c in comps[:MAX_PANES]:
+        hw = min(max((c[:, 1].max() - c[:, 1].min()) * 0.5, 0.4), 2.2)
+        hh = min(max((c[:, 2].max() - c[:, 2].min()) * 0.5, 0.4), 1.8)
+        out.append((round(float(c[:, 2].mean()), 2), round(float(c[:, 1].mean()), 2),
+                    round(float(c[:, 0].mean()), 2),
+                    round(float(hw), 2), round(float(hh), 2)))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -483,14 +526,16 @@ def cmd_report():
         print(f"{r[0]:22s} {r[1]:7.2f}{r[2]:7.2f}{r[3]:7.2f} | {r[4]:7.2f}{r[5]:7.2f}"
               f"{r[6]:7.2f}{r[7]:7.2f}{r[8]:7.2f}{r[9]:7.2f} {r[10]:8.1f}  {r[11]}")
     print("\n// paste into kAssets[] in app/town.cpp")
-    print("// { glb, cx, cz, hx, hz, loY, hiY, frontDeg, {win0Y,win0A}, {win1Y,win1A} }")
+    print("// { glb, cx,cz, hx,hz, loY,hiY, frontDeg, { {y,along,depth,halfW,halfH} x3 } }")
     for r in rows:
         m = measure(os.path.join(OUT, r[0] + ".glb"))
-        p = m["panes"] + [(0.0, 0.0)] * (2 - len(m["panes"]))
+        p = list(m["panes"]) + [(0.0, 0.0, 0.0, 0.0, 0.0)] * (MAX_PANES - len(m["panes"]))
         pad = " " * max(0, 26 - len(r[0]))
+        panes = ", ".join(
+            f"{{{q[0]:6.2f}f,{q[1]:7.2f}f,{q[2]:7.2f}f,{q[3]:5.2f}f,{q[4]:5.2f}f}}" for q in p)
         print(f'    {{ "Town/{r[0]}.glb",{pad} {r[4]:7.2f}f,{r[5]:7.2f}f,'
-              f'{r[6]:7.2f}f,{r[7]:7.2f}f,{r[8]:6.2f}f,{r[9]:7.2f}f,{r[10]:8.1f}f, '
-              f'{{{p[0][0]:6.2f}f,{p[0][1]:7.2f}f}}, {{{p[1][0]:6.2f}f,{p[1][1]:7.2f}f}} }},')
+              f'{r[6]:7.2f}f,{r[7]:7.2f}f,{r[8]:6.2f}f,{r[9]:7.2f}f,{r[10]:8.1f}f,\n'
+              f'      {{ {panes} }} }},')
 
 
 def cmd_verify():

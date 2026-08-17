@@ -91,9 +91,22 @@ namespace x3::game {
 // PAIRED with kSidewalkLatM below and with RoadSpec::halfWidth in
 // road_network.h — widen the road and this must move with it.
 constexpr float kStreetKeepOutM = 17.5f;
-// Where the pedestrian loop runs: on the verge, outside the apron, inside the
-// shop fronts (nearest shop face sits at ~19 m).
-constexpr float kSidewalkLatM   = 16.4f;
+// Where the pedestrian loop runs: on the OUTER APRON, and it has to be inside
+// the road's carve or the walkers are not on a sidewalk at all.
+//
+// THE RECEIPT. This was 16.4 m — "on the verge, outside the apron". But
+// `RoadSpec::halfWidth` is kPavedHalfM + 1 = 15.63 m, and the corridor only
+// carves the height field out to there. Beyond it the field is the raw
+// hillside, and beside a CUT road (this spur cuts 34 ft) that is the batter
+// slope. So the loop ran up a bank: the walkers climbed a mud embankment
+// instead of a pavement, and the pedestrian gate's camera — which grounds
+// itself on the same terrain — ended up buried in it, 60% of the frame dirt.
+// 13.6 m is on the apron (which spans kShoulderHalfM 8.53 m to kPavedHalfM
+// 14.63 m), so the ground under it is the graded road surface, while still
+// leaving 5 m between a walker and the running lanes.
+// PAIRED with kPavedHalfM / RoadSpec::halfWidth in road_network.h — this must
+// stay strictly inside the carve.
+constexpr float kSidewalkLatM   = 13.6f;
 // Pedestrians tick only this close to the camera (terrain residency + fps).
 constexpr float kPedActiveM     = 320.0f;
 
@@ -139,11 +152,22 @@ public:
     uint32_t draw(x3::rhi::IRenderDevice& device,
                   const x3::rhi::FrameContext& frame) const;
 
-    // NIGHT DIAL, 0 = full day .. 1 = full night. Scales the shop-window
-    // emissive and the lamp lights. Windows glowing at noon is its own kind of
-    // slop, so the host drives this from its time of day; the default (1) is
-    // the dusk the lane was briefed for.
+    // NIGHT DIAL, 0 = full day .. 1 = full night. Scales the window emissive
+    // and the lamp lights.
+    //
+    // THE DEFAULT IS 0 — DAY — and that is a bug fix. It used to be 1, and
+    // nothing ever called this, so every window in the town burned at full
+    // strength under a noon sun: eyes-on, the panes read as pale tan cards
+    // stuck to the clapboard. "Windows glowing at noon is its own kind of
+    // slop" was already written here; the dial just had no driver.
     void setNight(float k);
+
+    // THE DRIVER, so the dial cannot drift from the sky again. Sun elevation
+    // and the night dial are ONE VALUE (NO_SLOP rule 4): full day above
+    // sunDir.y 0.25, full night at or below 0.05, ramped between. The host
+    // calls this wherever it pushes SkyParams, and the two can no longer
+    // disagree — which is exactly how the noon-lit windows happened.
+    void setNightFromSun(float sunDirY);
 
     // Warm point lights, one per street lamp/torch — feed these to
     // IRenderDevice::setPointLights alongside the host's own.
@@ -215,7 +239,7 @@ private:
     float m_dirX = 1.0f, m_dirZ = 0.0f;    // street tangent at the centre
     float m_uCentre = 0.0f;
 
-    float    m_night     = 1.0f;
+    float    m_night     = 0.0f;   // DAY by default; see setNightFromSun
     uint32_t m_buildings = 0, m_props = 0, m_cars = 0;
     float    m_cx = 0.0f, m_cz = 0.0f, m_cy = 0.0f;
     bool     m_built = false;
