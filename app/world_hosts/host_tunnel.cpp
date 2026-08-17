@@ -1382,15 +1382,17 @@ int hostTunnel(HostContext& hc) {
             // facing is engine -Z, i.e. look yaw -pi/2.
             const float kFace = -1.5707963f;         // player looks -Z
             const float gy0 = groundAt(jx, jz);
-            // Front camera: 7 m out on -Z, looking BACK (+Z) at him.
-            const float camFront[5] = { jx, gy0 + 1.3f, jz - 7.0f, +1.5707963f, -0.04f };
+            // Front camera: 12 m out on -Z, looking BACK (+Z) at him — far
+            // enough that the walk-toward sequence cannot reach the near
+            // plane (the first cut at 7 m ended inside his chest).
+            const float camFront[5] = { jx, gy0 + 1.3f, jz - 12.0f, +1.5707963f, -0.04f };
             // Side camera: 7 m out on +X, looking -X, for jump/fall arcs.
             const float camSide[5]  = { jx + 7.0f, gy0 + 1.6f, jz, 3.14159265f, -0.03f };
 
             placeJake(0.0f);
             ok = jakeSeq("10_idle_grounded", 150, 0, 0, false, -1, kFace, camFront, -1) && ok;
             placeJake(0.0f);
-            ok = jakeSeq("11_walk_toward",    80, 1, 0, false, -1, kFace, camFront, -1) && ok;
+            ok = jakeSeq("11_walk_toward",    60, 1, 0, false, -1, kFace, camFront, -1) && ok;
             placeJake(0.0f);
             ok = jakeSeq("12_strafe_D",       70, 0, +1, false, -1, kFace, nullptr, 2) && ok;
             placeJake(0.0f);
