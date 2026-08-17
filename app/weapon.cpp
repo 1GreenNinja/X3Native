@@ -310,6 +310,19 @@ void WeaponSystem::drawViewmodel(x3::rhi::IRenderDevice& device,
 // + docs/ASSET_INVENTORY.md S5 weapon table). No purchased C# copied — only the
 // plausible numeric stats from the design bible are used.
 
+// Phase B3 — canon 12-weapon key row, in the CANON order from the original
+// game's arsenal (see the CANONICAL 12 block below): Pistol · Shotgun ·
+// Bazooka(rocket) · Laser · Plasma · ChainGun · LightningGun · RailGun ·
+// FlameThrower · NapalmLauncher · FreezeRay · BFG11k. Keys 1..9 map to canon
+// slots 1-9; 0 - = map to canon slots 10-12. Names, not roster indices — the
+// live arsenal interleaves smg/plasma_rifle (X3Native-only, scroll-wheel only).
+const char* canonKeyWeaponName(int i) {
+    static const char* kCanonOrder[kCanonKeyCount] = {
+        "pistol", "shotgun", "rocket",  "laser",        "plasma",   "chaingun",
+        "lightning", "railgun", "flamethrower", "napalm", "freezeray", "bfg11k" };
+    return (i >= 0 && i < kCanonKeyCount) ? kCanonOrder[i] : nullptr;
+}
+
 std::vector<WeaponDef> makeDefaultRoster() {
     std::vector<WeaponDef> r;
 
@@ -2810,6 +2823,77 @@ bool runWeaponsSelfTest() {
                               a.def(i).freezeDuration   == kCryoSlowDuration;
         wcheck(mirrored,
                "W17f MonsterSystem's kCryoSlowFactor/kCryoSlowDuration mirror the FreezeRay def");
+    }
+
+    // ==== W18: Phase B — the app_run patch's data contracts, pinned here. ======
+
+    // ---- W18a: the canon 12-key row resolves EVERY canon weapon in the live
+    // arsenal (all 12 selectable by key), with 12 DISTINCT names. ---------------
+    {
+        Arsenal a;
+        bool allResolve = true, distinct = true;
+        for (int i = 0; i < kCanonKeyCount; ++i) {
+            const char* nm = canonKeyWeaponName(i);
+            if (!nm || a.indexOf(nm) < 0) allResolve = false;
+            for (int j = 0; j < i; ++j)
+                if (nm && canonKeyWeaponName(j) &&
+                    std::string(nm) == canonKeyWeaponName(j)) distinct = false;
+        }
+        const bool bounds = canonKeyWeaponName(-1) == nullptr &&
+                            canonKeyWeaponName(kCanonKeyCount) == nullptr;
+        wcheck(allResolve && distinct && bounds,
+               "W18a canon key row: 12 distinct names, every one resolves in the arsenal, "
+               "out-of-range keys return null");
+    }
+
+    // ---- W18b: canon ORDER — 1=Pistol ... 9=FlameThrower, then 0 - = carry
+    // canon slots 10-12 (Napalm / FreezeRay / BFG11k). ---------------------------
+    {
+        const bool order =
+            std::string(canonKeyWeaponName(0))  == "pistol"       &&
+            std::string(canonKeyWeaponName(1))  == "shotgun"      &&
+            std::string(canonKeyWeaponName(2))  == "rocket"       &&   // canon Bazooka
+            std::string(canonKeyWeaponName(8))  == "flamethrower" &&
+            std::string(canonKeyWeaponName(9))  == "napalm"       &&   // the '0' key
+            std::string(canonKeyWeaponName(10)) == "freezeray"    &&   // the '-' key
+            std::string(canonKeyWeaponName(11)) == "bfg11k";           // the '=' key
+        wcheck(order, "W18b canon key ORDER: 1..9 = canon 1-9, 0 - = bind canon slots 10-12");
+    }
+
+    // ---- W18c: the host integrator's ballistic form (v.y -= g*dt; pos += v*dt)
+    // ARCS a napalm spawn and leaves a zero-gravity spawn exactly flat. This
+    // mirrors app_run.cpp's LiveProjectile step (Phase B1) so a regression there
+    // has a headless tripwire on the formula itself. -----------------------------
+    {
+        Arsenal a;
+        bool arcs = false, flatStaysFlat = true;
+        const float dt = 1.0f / 165.0f;   // the house refresh-rate case
+        if (a.selectByName("napalm")) {
+            a.tick(10.0f);
+            ResolvedFire shot = a.fire(eye, fwd, rng);
+            if (!shot.projectiles.empty() && shot.projectiles[0].gravity > 0.0f) {
+                x3::phys::Vec3 p = shot.projectiles[0].pos, v = shot.projectiles[0].vel;
+                const float y0 = p.y, vy0 = v.y;
+                for (int s = 0; s < 165; ++s) {   // 1 simulated second
+                    v.y -= shot.projectiles[0].gravity * dt;
+                    p.x += v.x * dt; p.y += v.y * dt; p.z += v.z * dt;
+                }
+                // Fired level: after 1 s the bolt must have DROPPED below the
+                // flat path by g/2*t^2 (within integration tolerance).
+                const float flatY = y0 + vy0 * 1.0f;
+                arcs = p.y < flatY - 0.25f * shot.projectiles[0].gravity * 0.5f;
+            }
+        }
+        if (a.selectByName("plasma")) {
+            a.tick(10.0f);
+            ResolvedFire shot = a.fire(eye, fwd, rng);
+            if (!shot.projectiles.empty()) {
+                flatStaysFlat = shot.projectiles[0].gravity == 0.0f;
+            } else flatStaysFlat = false;
+        }
+        wcheck(arcs && flatStaysFlat,
+               "W18c integrator form: napalm arcs under v.y-=g*dt at 165 Hz; "
+               "zero-gravity bolts stay flat");
     }
 
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +

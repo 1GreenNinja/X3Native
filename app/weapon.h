@@ -535,6 +535,15 @@ struct ResolvedFire {
 // Values pulled from the design docs (see weapon.cpp provenance).
 std::vector<WeaponDef> makeDefaultRoster();
 
+// Phase B3 — the canonical 12-weapon KEY ROW. The number-key row (1..9 then
+// 0 - =) selects the CANON twelve in canon order, BY NAME (the live arsenal
+// also carries the two X3Native-only weapons, smg and plasma_rifle, which are
+// NOT in the canon 12 and stay on the scroll-wheel cycle). Returns the canon
+// weapon name for key index i (0-based: i==0 is the '1' key, i==9 is '0',
+// i==10 is '-', i==11 is '='), or nullptr outside [0, kCanonKeyCount).
+constexpr int kCanonKeyCount = 12;
+const char* canonKeyWeaponName(int i);
+
 // Apply a uniform random cone of half-angle `spreadDeg` around unit `dir`, using
 // the deterministic stream `rngState` (xorshift; advanced in place). Returns a new
 // unit direction. spreadDeg <= 0 returns `dir` unchanged (perfect accuracy).
