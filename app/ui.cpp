@@ -3,6 +3,7 @@
 // Clean-room: built only from the public IRenderDevice + IConsole interfaces.
 // No id Tech / RBDOOM source consulted.
 #include "ui.h"
+#include "hud_panel.h"         // the ONE rounded dark-translucent panel primitive
 #include "headless_device.h"   // shared no-op IRenderDevice (for --test-ui)
 #include "world_menu.h"        // U31: the world/place selection menu's own gate
 #include "version_gen.h"       // X3_VERSION_STRING — build stamp on the title screen
@@ -113,8 +114,12 @@ void UiContext::label(const char* s, float x, float y, float px, const float rgb
 }
 
 void UiContext::panel(float x, float y, float w, float h, const float rgba[4]) const {
-    quad(x, y, w, h, rgba);
-    quad(x, y, w, 2.0f, kColPanelEdge);   // bright top edge
+    // Routed through the ONE HUD panel primitive: rounded corners, dark
+    // translucent fill, subtle 1px lighter top edge (feat/hud-restyle). Every
+    // panel() customer (RPG chips, world map, menus) inherits the look.
+    if (m_draw && m_device)
+        x3::game::hudPanel(*m_device, m_frame, x, y, w, h,
+                           x3::game::kHudPanelRadius, rgba);
 }
 
 float UiContext::enemyNameplate(const char* s, float cx, float top, float px,
@@ -822,13 +827,17 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.quad(ccx - thick * 0.5f, ccy + g,       thick, arm, col);
     }
 
-    // ---- HP bar (bottom-left) ----------------------------------------------
+    // ---- HP bar (bottom-left, on a rounded dark panel) ---------------------
     if (m.maxHp > 0) {
         int hp = m.hp; if (hp < 0) hp = 0; if (hp > m.maxHp) hp = m.maxHp;
         const float frac = (float)hp / (float)m.maxHp;
         const float barW = 280.0f, barH = 22.0f;
         const float bx = 18.0f;
         const float by = h - barH - 20.0f;
+        // Backing panel: bar + the "HP NNN" readout on one plate.
+        const float hpTextW = UiContext::textWidth(UiContext::FontRole::HudMono, "HP 000", 16.0f);
+        ui.panel(bx - 8.0f, by - 9.0f, barW + hpTextW + 30.0f, barH + 18.0f,
+                 x3::game::kHudPanelFill);
         float fill[4];
         if (frac > 0.5f) {            // green -> amber
             float t = (1.0f - frac) / 0.5f;
@@ -846,11 +855,28 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
                 UiContext::FontRole::HudMono);
     }
 
-    // ---- Weapon + ammo (bottom-right) --------------------------------------
+    // ---- Weapon + ammo (bottom-right, on a rounded dark panel) -------------
     if (m.weapon && m.weapon[0]) {
         const float px = 18.0f;
         const float ammoPx = 30.0f;
         const float ay = h - ammoPx - 22.0f;
+        // Backing panel sized to the block (name line + ammo/charge readout +
+        // charge bar when present), right-anchored at the same margin.
+        {
+            const float namePx = 16.0f;
+            char measBuf[48];
+            if (m.isCharge)         std::snprintf(measBuf, sizeof(measBuf), "%d", m.chargeCur);
+            else if (m.reloading)   std::snprintf(measBuf, sizeof(measBuf), "RELOADING...");
+            else                    std::snprintf(measBuf, sizeof(measBuf), "%d / %d", m.ammoInMag, m.ammoReserve);
+            float contentW = UiContext::textWidth(UiContext::FontRole::HudMono, measBuf, ammoPx);
+            contentW = std::max(contentW, UiContext::textWidth(UiContext::FontRole::Menu, m.weapon, namePx));
+            if (m.isCharge) contentW = std::max(contentW, 150.0f);   // the charge bar
+            const float top    = ay - namePx - 6.0f - (m.isCharge ? 18.0f : 0.0f);
+            const float bottom = ay + ammoPx + (m.isCharge ? 14.0f : 2.0f);
+            ui.panel(w - contentW - px - 12.0f, top - 8.0f,
+                     contentW + px + 12.0f - 6.0f, bottom - top + 16.0f,
+                     x3::game::kHudPanelFill);
+        }
         if (m.isCharge) {
             // CHARGE weapon (Lightning): big charge number + a blue-electric bar
             // (fills to the stacking cap) instead of "MAG / RESERVE". Pulses red at
@@ -923,11 +949,14 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
                 kColTextDim, UiContext::FontRole::Menu);
     }
 
-    // ---- Objective: drawn GTA/Cyberpunk-style UNDER THE MINIMAP (see below, after
-    // the minimap box is laid out). ----
+    // ---- LEFT HUD STACK (feat/hud-restyle): objective + enemies counter live in
+    // a consistent left-anchored column of rounded dark panels (CP2077 quality,
+    // but LEFT — Tim's call). Shared margins so it reads as one designed unit. ----
+    const float lx    = 16.0f;   // left margin of the stack
+    float       lyTop = 40.0f;   // below the FPS/ms line (~y 8, ~24 tall)
 
-    // ---- Enemies-remaining counter (TOP-LEFT, just under the FPS meter). <0 hides
-    // it (non-combat HUDs / vantages). Reads "AREA CLEAR" in green when none remain. ----
+    // ---- Enemies-remaining counter chip. <0 hides it (non-combat HUDs /
+    // vantages). Reads "AREA CLEAR" in green when none remain. ----
     if (m.enemiesRemaining >= 0) {
         char enBuf[48];
         const bool clear = (m.enemiesRemaining == 0);
@@ -937,9 +966,67 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         float enCol[4];
         if (clear) { enCol[0]=0.45f; enCol[1]=1.0f;  enCol[2]=0.55f; enCol[3]=1.0f; }
         else       { enCol[0]=1.0f;  enCol[1]=0.62f; enCol[2]=0.30f; enCol[3]=1.0f; }
-        // Top-left, below the FPS/ms stats line (~y 8, ~24 tall). News font (Space
-        // Mono Bold) — the event/ticker voice for pickups / "AREA CLEAR".
-        ui.text(enBuf, 10.0f, 40.0f, enPx, enCol, UiContext::FontRole::News);
+        // News font (Space Mono Bold) — the event/ticker voice — on its own chip.
+        const float enW = UiContext::textWidth(UiContext::FontRole::News, enBuf, enPx);
+        const float chipH = enPx + 12.0f;
+        ui.panel(lx, lyTop, enW + 24.0f, chipH, x3::game::kHudPanelFill);
+        // Accent bar tinted by state (green clear / amber hostiles).
+        const float acc[4] = { enCol[0], enCol[1], enCol[2], 0.9f };
+        ui.quad(lx, lyTop + 2.0f, 3.0f, chipH - 4.0f, acc);
+        ui.text(enBuf, lx + 14.0f, lyTop + 6.0f, enPx, enCol, UiContext::FontRole::News);
+        lyTop += chipH + 8.0f;
+    }
+
+    // ---- Objective (CP2077 quality, LEFT-ANCHORED): a rounded dark panel with a
+    // cyan accent bar, cyan "OBJECTIVE" header, and the body word-wrapped to <=3
+    // lines in Cyberpunk yellow — light text on dark glass, never raw over the
+    // world (it washed out on white terrain). ----
+    if (m.objective && m.objective[0]) {
+        const float maxW   = 300.0f;                             // wrap width
+        const float hdrPx  = 12.0f;
+        const float bodyPx = 15.0f;
+        const float hdrCol[4]  = { 0.32f, 0.86f, 1.0f, 0.95f };  // cyan
+        const float bodyCol[4] = { 0.99f, 0.92f, 0.07f, 1.0f };  // CP yellow
+        // Word-wrap the body to up to 3 lines.
+        std::string text = m.objective;
+        std::string lines[3];
+        int nLines = 0;
+        {
+            std::string cur;
+            size_t i = 0;
+            while (i <= text.size() && nLines < 3) {
+                size_t sp = text.find(' ', i);
+                std::string word = text.substr(i, sp == std::string::npos ? text.size() - i : sp - i);
+                std::string trial = cur.empty() ? word : cur + " " + word;
+                if (cur.empty() || UiContext::textWidth(trial.c_str(), bodyPx) <= maxW) {
+                    cur = trial;
+                } else {
+                    lines[nLines++] = cur;
+                    cur = word;
+                }
+                if (sp == std::string::npos) break;
+                i = sp + 1;
+            }
+            if (!cur.empty() && nLines < 3) lines[nLines++] = cur;
+        }
+        // Panel sized to the content.
+        float contentW = UiContext::textWidth("OBJECTIVE", hdrPx);
+        for (int li = 0; li < nLines; ++li)
+            contentW = std::max(contentW, UiContext::textWidth(lines[li].c_str(), bodyPx));
+        const float padX = 14.0f, padY = 10.0f;
+        const float lineStep = bodyPx + 4.0f;
+        const float panelW = contentW + padX * 2.0f + 4.0f;      // + accent clearance
+        const float panelH = padY * 2.0f + hdrPx + 6.0f + (float)nLines * lineStep;
+        ui.panel(lx, lyTop, panelW, panelH, x3::game::kHudPanelFill);
+        ui.quad(lx, lyTop + 2.0f, 3.0f, panelH - 4.0f, x3::game::kHudAccentCyan);
+        float oy = lyTop + padY;
+        ui.text("OBJECTIVE", lx + padX + 4.0f, oy, hdrPx, hdrCol);
+        oy += hdrPx + 6.0f;
+        for (int li = 0; li < nLines; ++li) {
+            ui.text(lines[li].c_str(), lx + padX + 4.0f, oy, bodyPx, bodyCol);
+            oy += lineStep;
+        }
+        lyTop += panelH + 8.0f;
     }
 
     // ---- Minimap RADAR (top-right box) -------------------------------------
@@ -953,14 +1040,10 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         const float mmW = 150.0f, mmH = 150.0f;
         const float mmx = w - mmW - 16.0f;
         const float mmy = 16.0f;
-        const float frameCol[4] = { 0.10f, 0.13f, 0.18f, 0.55f };
-        const float edgeCol[4]  = { 0.30f, 0.62f, 0.95f, 0.75f };
-        ui.quad(mmx, mmy, mmW, mmH, frameCol);
-        // 1px border.
-        ui.quad(mmx, mmy, mmW, 1.0f, edgeCol);
-        ui.quad(mmx, mmy + mmH - 1.0f, mmW, 1.0f, edgeCol);
-        ui.quad(mmx, mmy, 1.0f, mmH, edgeCol);
-        ui.quad(mmx + mmW - 1.0f, mmy, 1.0f, mmH, edgeCol);
+        // Rounded dark panel backing (the ONE primitive) — same glass as the rest
+        // of the HUD, so the radar reads as part of the set.
+        const float frameCol[4] = { 0.05f, 0.075f, 0.10f, 0.62f };
+        ui.panel(mmx, mmy, mmW, mmH, frameCol);
 
         const float cxp = mmx + mmW * 0.5f;   // box center (player) in pixels
         const float cyp = mmy + mmH * 0.5f;
@@ -1121,48 +1204,6 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
             float a = 1.0f - (std::sqrt(d2) / maxDist) * 0.5f;   // 1.0 near -> 0.5 far
             const float plate[4] = { 1.0f, 0.32f, 0.28f, a };    // reddish threat tint
             ui.enemyNameplate(label, sx, sy, 15.0f, plate);
-        }
-    }
-
-    // ---- Objective (GTA/Cyberpunk style): UNDER THE MINIMAP, right-aligned to the
-    // map's right edge, a cyan header + the objective word-wrapped to <=3 lines in
-    // Cyberpunk yellow (non-white). ----
-    if (m.objective && m.objective[0]) {
-        const float mmW = 150.0f, mmH = 150.0f, mmy = 16.0f;
-        const float right = w - 16.0f;            // map's right edge
-        const float maxW  = mmW + 90.0f;          // allow a touch wider than the map
-        float oy = mmy + mmH + 8.0f;              // just under the map box
-        // Header chip.
-        const float hdrPx = 12.0f;
-        const float hdrCol[4] = { 0.32f, 0.86f, 1.0f, 0.95f };   // cyan
-        ui.text("OBJECTIVE", right - UiContext::textWidth("OBJECTIVE", hdrPx), oy, hdrPx, hdrCol);
-        oy += hdrPx + 5.0f;
-        // Word-wrap the body to up to 3 lines, Cyberpunk yellow.
-        const float bodyPx = 15.0f;
-        const float bodyCol[4] = { 0.99f, 0.92f, 0.07f, 1.0f };  // CP yellow
-        std::string text = m.objective;
-        std::string lines[3];
-        int nLines = 0;
-        std::string cur;
-        size_t i = 0;
-        while (i <= text.size() && nLines < 3) {
-            size_t sp = text.find(' ', i);
-            std::string word = text.substr(i, sp == std::string::npos ? text.size() - i : sp - i);
-            std::string trial = cur.empty() ? word : cur + " " + word;
-            if (cur.empty() || UiContext::textWidth(trial.c_str(), bodyPx) <= maxW) {
-                cur = trial;
-            } else {
-                lines[nLines++] = cur;
-                cur = word;
-            }
-            if (sp == std::string::npos) break;
-            i = sp + 1;
-        }
-        if (!cur.empty() && nLines < 3) lines[nLines++] = cur;
-        for (int li = 0; li < nLines; ++li) {
-            ui.text(lines[li].c_str(), right - UiContext::textWidth(lines[li].c_str(), bodyPx),
-                    oy, bodyPx, bodyCol);
-            oy += bodyPx + 3.0f;
         }
     }
 
