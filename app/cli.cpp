@@ -261,6 +261,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-minefx") o.testMineFx = true;   // mines lane: entrance census + glow bake (no GPU needed)
         else if (a == "--test-carspec") o.testCarSpec = true; // per-car table: eleven cars that genuinely differ (no GPU needed)
         else if (a == "--test-cartune") o.testCarTune = true; // per-car tuning sliders: ranges, round-trip, save (no GPU needed)
+        else if (a == "--test-garage") o.testGarage = true;   // the car chooser: wrap, art-only, turntable, fleet bars (no GPU needed)
         else if (a == "--test-tunnelfitout") o.testTunnelFitout = true; // bore interior: lay-bys, lamp burnout, signage (no GPU needed)
         else if (a == "--test-tunnelrooms") o.testTunnelRooms = true; // behind the doors: halls, rooms, stairs, the way down (no GPU needed)
         else if (a == "--test-precip")  o.testPrecip  = true; // falling snow/rain: camera-local volume, recycle, flutter (no GPU needed)

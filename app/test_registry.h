@@ -110,6 +110,7 @@ struct TestFlags {
     bool testPrecip  = false;// precip lane: falling snow/rain, camera-local volume
     bool testCarSpec = false;// vehicle lane: the PER-CAR character table (one method, eleven variable sets)
     bool testCarTune = false;// vehicle lane: per-car tuning sliders (ranges, round-trip, cars.json save)
+    bool testGarage  = false;// vehicle lane: the garage car chooser (wrap, art-only, turntable, fleet bars)
     bool testTunnelFitout = false;// tunnel lane: bore interior program placement
     bool testTunnelRooms = false;// tunnel lane: rooms/halls/stairs behind the service doors
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)

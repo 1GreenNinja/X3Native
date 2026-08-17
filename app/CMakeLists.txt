@@ -202,6 +202,7 @@ add_library(x3app SHARED
     vehparts.cpp
     carspec.cpp         # the PER-CAR character table (one method, eleven sets of variables)
     car_tune_ui.cpp     # sliders bound to the selected car's own variables + save to cars.json
+    garage_screen.cpp   # the car chooser: a turntable in the LNSS bay, not a menu
     csm_test.cpp
     mesh_lod.cpp        # Lane 5: screen-space-error discrete LOD selection
     mesh_decimate.cpp   # Lane 5: QEM edge-collapse decimation (builds LOD chains)

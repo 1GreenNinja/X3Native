@@ -158,6 +158,7 @@
 #include "precip_fx.h"
 #include "carspec.h"             // x3::game::runCarSpecSelfTest (--test-carspec)
 #include "car_tune_ui.h"         // x3::game::runCarTuneSelfTest (--test-cartune)
+#include "garage_screen.h"       // x3::game::runGarageSelfTest (--test-garage)
 #include "tunnel_fitout.h"
 #include "tunnel_rooms.h"        // x3::game::runTunnelRoomsSelfTest (--test-tunnelrooms)
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
@@ -1128,6 +1129,14 @@ int dispatchTests(const TestFlags& tf) {
                     "an edit survives the real loader while no other car moves + the panel "
                     "edits a COPY + units convert for display only)...");
         return x3::game::runCarTuneSelfTest() ? 0 : 1;
+    }
+    if (tf.testGarage) {
+        x3::logInfo("running GARAGE CHOOSER self-test "
+                    "(art-only roster + cursor wraps both ways + lands on the driven car + "
+                    "a DETERMINISTIC turntable that is still while shut and stays wrapped "
+                    "after ten minutes + fleet-relative bars + an empty roster REFUSES to "
+                    "open + the reveal ease clamps at 2 fps)...");
+        return x3::game::runGarageSelfTest() ? 0 : 1;
     }
     if (tf.testTunnelFitout) {
         x3::logInfo("running TUNNEL INTERIOR FITOUT self-test "

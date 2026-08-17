@@ -26,6 +26,7 @@
 #include "../vehicle.h"
 #include "../carspec.h"                  // the PER-CAR table (mass/torque/curve/voice)
 #include "../car_tune_ui.h"              // F7: sliders on the driven car's own variables
+#include "../garage_screen.h"            // G: the car chooser, on a turntable in the bay
 #include "../mesh_prims.h"
 #include "../asset_root.h"
 #include "engine/audio/IAudioSystem.h"   // ENGINE NOTE: RPM-driven loop
@@ -804,6 +805,14 @@ int hostTunnel(HostContext& hc) {
     };
     std::vector<ParkedCar> parked;
 
+    // THE TURNTABLE, in the middle of the bay. Recorded while the room program
+    // is still in scope so the chooser can stand a car exactly where the shop
+    // floor is, rather than guessing at a position and hoping it lands inside
+    // the building.
+    bool  bayFound = false;
+    float bayX = 0.0f, bayY = 0.0f, bayZ = 0.0f;   // turntable centre + floor
+    float bayYaw = 0.0f;                           // the bay's long axis
+
     // Where the plant rooms ended up, so their hums can start once the audio
     // system exists (STEP 3b below).
     std::vector<std::array<float, 3>> plantHumPos;
@@ -831,6 +840,17 @@ int hostTunnel(HostContext& hc) {
         for (const x3::game::TunnelSpace& sp : rooms.spaces()) {
             if (sp.kind != x3::game::SpaceKind::Garage) continue;
             const float gLen = sp.s1 - sp.s0, gDep = sp.latOut - sp.latIn;
+            // The turntable stands in the middle of the aisle, between the two
+            // rows of bays — the spot you would actually walk to if you wanted
+            // to look at a car properly.
+            {
+                const float ms = (sp.s0 + sp.s1) * 0.5f;
+                const float ml = (sp.latIn + sp.latOut) * 0.5f;
+                route.worldAt(ms, (float)sp.side * ml, bayX, bayZ);
+                bayY = sp.floorY;
+                bayYaw = std::atan2(route.dirZ, route.dirX);
+                bayFound = true;
+            }
             for (uint32_t b = 0; b < x3::game::kTrGarageBays && (int)b < kFleetCount; ++b) {
                 const uint32_t row = b / 3, bay = b % 3;
                 const float bs  = sp.s0 + (0.6f + (float)bay * 3.0f) * (gLen / 10.5f) + 2.4f;
@@ -856,6 +876,12 @@ int hostTunnel(HostContext& hc) {
                 parked.push_back(std::move(pc));
             }
         }
+        // NOTE (2026-08-16): until now this vector was FILLED, LOGGED, and then
+        // never read again — six GLBs loaded into the bay and not one of them
+        // ever drawn. The log line below said "6 vehicle(s) parked in the bay"
+        // to a room that was empty, which is the worst version of this
+        // codebase's recurring failure: a silent gap that also files a false
+        // report. drawParked() below is the missing half.
         if (!parked.empty()) {
             char pb2[96];
             std::snprintf(pb2, sizeof(pb2), "garage: %u vehicle(s) parked in the bay",
@@ -875,6 +901,36 @@ int hostTunnel(HostContext& hc) {
             plantHumPos.push_back({ wx, sp.floorY + 1.2f, wz });
         }
     }
+
+    // Draw one loaded GLB at a world transform. These are STATIC props, so the
+    // node hierarchy has to be composed (unlike Jake, whose skinned drawables
+    // already carry their pose) — a car drawn without its nodeTransform
+    // collapses every wheel and panel onto the body origin.
+    auto drawGlbAt = [&](const x3::rhi::FrameContext& f,
+                         const std::vector<x3::asset::ModelDrawable>& dr,
+                         const float world[16]) {
+        for (const x3::asset::ModelDrawable& d : dr) {
+            float fin[16];
+            x3::asset::mulMat4(world, d.nodeTransform, fin);
+            const float bc[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
+                                  d.baseColorFactor[2], d.baseColorFactor[3] };
+            const float em[3] = { d.emissiveFactor[0], d.emissiveFactor[1],
+                                  d.emissiveFactor[2] };
+            device->drawMeshPBR(f, x3::rhi::MeshHandle{ d.meshId },
+                x3::rhi::TextureHandle{ d.baseColorTexId },
+                x3::rhi::TextureHandle{ d.normalTexId },
+                x3::rhi::TextureHandle{ d.mrTexId },
+                bc, em, fin, d.alphaMask, d.alphaBlend,
+                x3::rhi::TextureHandle{ d.emissiveTexId },
+                x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
+                d.clearcoat, d.clearcoatRough);
+        }
+    };
+    // THE MISSING HALF. Without this call the bay is an empty room that logs
+    // six parked cars.
+    auto drawParked = [&](const x3::rhi::FrameContext& f) {
+        for (const ParkedCar& pc : parked) drawGlbAt(f, pc.draw, pc.world);
+    };
 
     // ---- ON FOOT ---------------------------------------------------------
     // E gets you OUT. The bore now has walkways, lay-bys, service doors and
@@ -987,6 +1043,40 @@ int hostTunnel(HostContext& hc) {
     // headless drive/skidpad harnesses — which stand a car on a flat slab
     // wherever the analytic field happens to be — are not lifted every frame.
     car.setTerrainContactLaw(true);
+
+    // ---- THE GARAGE CHOOSER (G) ------------------------------------------
+    // Tim: "a garage screen to choose ... better than NFS EVER DID". It is not
+    // a menu over a frozen frame: the camera moves to the turntable in LATE
+    // NIGHT SPEED, the highlighted car stands on it turning under the shop
+    // lights, and taking one REBUILDS the car from its spec — new chassis box,
+    // centre of mass, track, wheelbase, engine, gearing and tyres. That is
+    // also what closes the loop the tuning panel leaves open ("CoM / TRACK
+    // apply on the next car build" — this is that build).
+    x3::game::GarageScreen garage;
+    garage.build(carCat);
+    if (carSpec) garage.selectByGlb(carSpec->glb);
+    bool gWas = false, gEnterWas = false, gLeftWas = false, gRightWas = false;
+    // The car standing on the turntable: a display model, loaded on demand and
+    // swapped as the cursor moves. It is a prop, not a vehicle — one Jolt rig
+    // idling for a preview would be a rig too many.
+    ParkedCar podium;
+    std::string podiumGlb;
+    auto loadPodium = [&](const std::string& rel) {
+        if (rel == podiumGlb) return;
+        podium.src.reset(x3::asset::createAssetSource());
+        if (!podium.src || !podium.src->mountDir(x3::game::convertedGlbRoot(), 0)) return;
+        podium.loader.reset(x3::asset::createModelLoader(device, podium.src.get()));
+        podium.model = podium.loader->load(rel.c_str());
+        if (!podium.model.ok) { podiumGlb.clear(); podium.draw.clear(); return; }
+        podium.draw = x3::asset::makeDrawables(podium.model);
+        podiumGlb = rel;
+    };
+    // X3_GARAGE=1 opens it at boot so the chooser is REVIEWABLE from a
+    // screenshot — the same affordance the tuning panel needed, and for the
+    // same reason: a UI only ever seen by the person holding the key ships
+    // with its text overlapping.
+    if (const char* gv = std::getenv("X3_GARAGE"))
+        if (gv[0] && gv[0] != '0') garage.setOpen(true);
 
     // F7 — THE TUNING PANEL. Tim: "We need sliders in car settings for each
     // car to change its attributes!" It edits the DRIVEN car's own CarSpec, so
@@ -1325,6 +1415,25 @@ int hostTunnel(HostContext& hc) {
                     }
                     if (tunePanel.open())
                         tunePanel.draw(*device, frame, nullptr, nullptr);
+                    drawParked(frame);
+                    // The turntable car in the capture path too, so the
+                    // chooser can be REVIEWED from a screenshot rather than
+                    // only by standing in the bay with a hand on G.
+                    if (garage.open()) {
+                        if (const x3::game::CarSpec* hl = garage.highlighted())
+                            loadPodium(hl->glb);
+                        if (bayFound && !podium.draw.empty()) {
+                            const float ga2 = garage.spinRad();
+                            const float cga = std::cos(ga2), sga = std::sin(ga2);
+                            const float pm[16] = { cga, 0, -sga, 0,
+                                                     0, 1,    0, 0,
+                                                   sga, 0,  cga, 0,
+                                                  bayX, bayY + 0.42f, bayZ, 1 };
+                            drawGlbAt(frame, podium.draw, pm);
+                        }
+                    }
+                    garage.tick(1.0f / 60.0f);
+                    garage.drawCard(*device, frame);
                 }
 
                 device->endFrame(frame);
@@ -2091,6 +2200,64 @@ int hostTunnel(HostContext& hc) {
             f7Was = f7;
         }
 
+        // ---- G: THE GARAGE CHOOSER ---------------------------------------
+        // A/D browse, ENTER takes the car, G closes. Gated on the console and
+        // the map like every other panel here.
+        if (!shell.consoleOpen() && !mapOpen) {
+            const bool gNow = glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS;
+            if (gNow && !gWas) garage.toggle();
+            gWas = gNow;
+
+            if (garage.open()) {
+                const bool lNow = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS;
+                const bool rNow = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS;
+                if (lNow && !gLeftWas)  garage.moveCursor(-1);
+                if (rNow && !gRightWas) garage.moveCursor(+1);
+                gLeftWas = lNow; gRightWas = rNow;
+
+                const bool eNow = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
+                if (eNow && !gEnterWas) {
+                    // TAKE IT. A full rebuild, not a re-skin: the chassis box,
+                    // centre of mass, track, wheelbase, engine, gearing and
+                    // tyres all come from the chosen spec, so what you drive
+                    // out is a different machine and not the hero car wearing
+                    // someone else's bodywork.
+                    if (const x3::game::CarSpec* pick = garage.highlighted()) {
+                        float keep[3] = { startPos[0], spawnGroundY + 1.4f, startPos[2] };
+                        if (carBuilt) {
+                            car.chassisPos(keep);
+                            keep[1] += 0.6f;      // clear of the floor on respawn
+                            car.shutdown();
+                        }
+                        carSpec = pick;
+                        for (int fi = 0; fi < kFleetCount; ++fi)
+                            if (kFleet[fi].file == pick->glb) { fleetSel = fi; break; }
+                        if (car.build(*device, *phys, keep[0], keep[1], keep[2], carSpec)) {
+                            car.setTerrainContactLaw(true);
+                            car.skin(*device, x3::game::convertedGlbRoot(), pick->glb);
+                            tunePanel.bind(carCat, pick->id);   // sliders follow the car
+                            char sb2[160];
+                            std::snprintf(sb2, sizeof(sb2),
+                                "garage: took the %s — %.0f ft-lb at %.0f rpm, %.0f lb",
+                                pick->name.c_str(),
+                                (double)(pick->torqueNm * 0.737562f), (double)pick->maxRpm,
+                                (double)(pick->massKg * 2.20462f));
+                            x3::logInfo(sb2);
+                        } else {
+                            x3::logError("garage: rebuild failed — car is gone");
+                        }
+                    }
+                    garage.setOpen(false);
+                }
+                gEnterWas = eNow;
+            } else {
+                gLeftWas = gRightWas = gEnterWas = false;
+            }
+        }
+        garage.tick(fdt);
+        if (garage.open())
+            if (const x3::game::CarSpec* hl = garage.highlighted()) loadPodium(hl->glb);
+
         // ---- E: GET OUT / GET IN ----------------------------------------
         // Edge-triggered, and re-entry is PROXIMITY gated: you have to walk back
         // to the car. Without that gate E teleports you into a car you left half
@@ -2645,6 +2812,31 @@ int hostTunnel(HostContext& hc) {
                 cy = ey - fy2 * back + 0.35f;
                 cz = ez - fz * back + rz * shoulder;
                 device->setCamera(cx, cy, cz, camYaw, camPitch, 74.0f);
+            } else if (garage.reveal() > 0.001f && bayFound) {
+                // THE GARAGE CAMERA. Not a cut to a black void with a floating
+                // car: it EASES from wherever you were to a three-quarter view
+                // across the turntable, inside the shop, with the lifts and the
+                // rack still standing around it. The blend is the same reveal
+                // that fades the card in, so the move and the panel arrive
+                // together instead of one snapping ahead of the other.
+                const float t = garage.reveal();
+                const float ease = t * t * (3.0f - 2.0f * t);      // smoothstep
+                // Stand off the turntable at 3/4 front, a little above the
+                // roofline — the angle a person actually walks to.
+                const float standoff = 5.6f, height = 2.05f;
+                const float ga = bayYaw + 2.2f;
+                const float gx2 = bayX + std::cos(ga) * standoff;
+                const float gz2 = bayZ + std::sin(ga) * standoff;
+                const float gy2 = bayY + height;
+                const float gYaw = std::atan2(bayZ - gz2, bayX - gx2);
+                // Pitch down onto the car rather than at the far wall.
+                const float gPitch = -0.17f;
+                device->setCamera(cx + (gx2 - cx) * ease,
+                                  cy + (gy2 - cy) * ease,
+                                  cz + (gz2 - cz) * ease,
+                                  camYaw + (gYaw - camYaw) * ease,
+                                  camPitch + (gPitch - camPitch) * ease,
+                                  fovNow + (52.0f - fovNow) * ease);
             } else {
                 device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
             }
@@ -2664,7 +2856,28 @@ int hostTunnel(HostContext& hc) {
                                        0.05f + 0.40f * (1.0f - skyVis));
         }
         auto frame = device->beginFrame();
-        if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
+        if (frame.valid) {
+            scene.render(*device, frame);
+            if (carBuilt) car.render(frame);
+            // The fleet standing in the bay. This call is the half that was
+            // missing: the models were loaded and the room was empty.
+            drawParked(frame);
+            // THE TURNTABLE. The highlighted car, turning on the spot in the
+            // middle of the shop floor. Drawn only while the chooser is up, so
+            // a car is never standing in the aisle during normal driving.
+            if (garage.reveal() > 0.001f && bayFound && !podium.draw.empty()) {
+                const float a = garage.spinRad();
+                const float ca2 = std::cos(a), sa2 = std::sin(a);
+                // Rises onto the plinth as the panel eases in, so the car
+                // ARRIVES rather than popping into the room.
+                const float lift = 0.12f + 0.30f * garage.reveal();
+                const float m[16] = { ca2, 0, -sa2, 0,
+                                        0, 1,    0, 0,
+                                      sa2, 0,  ca2, 0,
+                                     bayX, bayY + lift, bayZ, 1 };
+                drawGlbAt(frame, podium.draw, m);
+            }
+        }
 
         // ---- WHEEL-SPIN FX: spawn skid marks + smoke when the rears slip ----
         if (frame.valid && carBuilt) {
@@ -2886,6 +3099,11 @@ int hostTunnel(HostContext& hc) {
                 tunePanel.draw(*device, frame, window, carBuilt ? &car : nullptr);
                 if (tunePanel.takeSaveRequest()) tunePanel.save(carCat);
             }
+
+            // THE GARAGE CARD. Drawn from the reveal rather than from open(),
+            // so it fades OUT with the camera on the way back instead of
+            // vanishing the instant the key is pressed.
+            garage.drawCard(*device, frame);
 
             // ---- BOOST GAUGE ----------------------------------------------
             // The ROUND dial, left of the tach at 0.70 of its radius — the

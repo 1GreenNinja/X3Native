@@ -24,7 +24,7 @@
   "cars": [
     {
       "id": "ctr",
-      "name": "CTR (current hero car)",
+      "name": "CTR",
       "glb": "Vehicles/CTR.glb",
       "layout": "RWD",
       "massKg": 1083.2,
