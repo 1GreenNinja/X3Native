@@ -59,8 +59,14 @@ public:
     // heights this reads include the corridor cut, so call AFTER it). Returns
     // false if the tree GLBs failed to load (nothing draws; the road is
     // simply treeless — never fatal).
+    // minBenchY: benches never seat below this world Y. The host passes the
+    // DRAWN river plane's level (riverRoad.plan.waterY) — worldWaterLevelAt
+    // does not know the visual plane (task #32), and the first bench shipped
+    // submerged at a spot that PASSED the water-table check. PAIRED with the
+    // host's applyRiverWater seaLevel.
     bool build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
-               const std::vector<KeepOut>& keepOut = {});
+               const std::vector<KeepOut>& keepOut = {},
+               float minBenchY = -1.0e9f);
 
     // Draw all trees. Call each frame alongside scene.render() — same pattern
     // as DriveDemo::render / EnvArtSystem::draw. No-op before build / after
@@ -73,12 +79,14 @@ public:
 
     uint32_t treeCount()  const { return m_trees; }
     uint32_t groveCount() const { return m_groves; }
+    uint32_t benchCount() const { return m_benches; }
 
 private:
     EnvArtSystem m_art;
-    uint32_t m_trees  = 0;
-    uint32_t m_groves = 0;
-    bool     m_built  = false;
+    uint32_t m_trees   = 0;
+    uint32_t m_groves  = 0;
+    uint32_t m_benches = 0;   // armory bench models seated under the groves
+    bool     m_built   = false;
 };
 
 } // namespace x3::game

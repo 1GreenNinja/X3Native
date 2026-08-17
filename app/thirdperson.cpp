@@ -559,24 +559,14 @@ bool ThirdPersonView::handSocketWorld(float out[16], std::string_view weaponName
     // the CURRENT weapon so Tim can dial it by eye, then bake. Zero deltas (default)
     // reproduce the baked row byte-for-byte. See effectiveGrip()/the BAKE block in
     // thirdperson.h. Position deltas: x=right, y=down, z=forward (hand-local).
+    // The grip TRS itself is composed by the SHARED tpComposeGrip (thirdperson.h)
+    // — the tunnel host's module-socketed rifle uses the same composer, so the
+    // two grip frames cannot drift.
     const TpGrip& g = tpGripFor(weaponName);
-    const float gForward = g.forward  + m_gripOvZ;
-    const float gRight   = g.right    + m_gripOvX;
-    const float gDown    = g.down     + m_gripOvY;
-    const float gYawDeg  = g.yawDeg   + m_gripOvYaw;
-    const float gPitchD  = g.pitchDeg + m_gripOvPitch;
-    const float gRollDeg = g.rollDeg  + m_gripOvRoll;
-    const float cy = std::cos(gYawDeg  * (kPi / 180.0f)), sy = std::sin(gYawDeg  * (kPi / 180.0f));
-    const float cp = std::cos(gPitchD  * (kPi / 180.0f)), sp = std::sin(gPitchD  * (kPi / 180.0f));
-    const float cr = std::cos(gRollDeg * (kPi / 180.0f)), sr = std::sin(gRollDeg * (kPi / 180.0f));
-    // R = Ry(yaw) * Rx(pitch) * Rz(roll) (intrinsic), column-major.
-    float Rz[16] = { cr, sr, 0,0,  -sr, cr, 0,0,  0,0,1,0,  0,0,0,1 };
-    float Rx[16] = { 1,0,0,0,  0, cp, sp, 0,  0,-sp, cp, 0,  0,0,0,1 };
-    float Ry[16] = { cy,0,-sy,0,  0,1,0,0,  sy,0,cy,0,  0,0,0,1 };
-    float RxRz[16], grip[16];
-    x3::asset::mulMat4(Rx, Rz, RxRz);
-    x3::asset::mulMat4(Ry, RxRz, grip);
-    grip[12] = gRight; grip[13] = -gDown; grip[14] = gForward;
+    float grip[16];
+    tpComposeGrip(g.forward + m_gripOvZ,   g.right   + m_gripOvX,
+                  g.down    + m_gripOvY,   g.yawDeg  + m_gripOvYaw,
+                  g.pitchDeg + m_gripOvPitch, g.rollDeg + m_gripOvRoll, grip);
     float out2[16];
     x3::asset::mulMat4(handWorld, grip, out2);
     std::memcpy(out, out2, 16 * sizeof(float));
