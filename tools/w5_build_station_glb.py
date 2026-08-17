@@ -245,7 +245,197 @@ def build_mega_station(out_glb):
     print("[w5] wrote", out_glb, os.path.getsize(out_glb), "bytes")
 
 
+
+# ---------------------------------------------------------------------------
+# THE MIAMI PUMP — Leartes "Miami Vice City" SM_Gaspump, the close-up-quality
+# single unit that dresses the free end of each pump island (the Mega station's
+# baked pumps carry the mid-shot; this one carries the walk-up).
+#
+# The pack (\\p13700\G\Assets\Miami Vice City) ships NO .mat and NO .meta files,
+# so convert_unity_pack.py's GUID resolution has nothing to chew — but the
+# pump's maps are cleanly named next to the mesh:
+#   T_Gaspump_BC.png (basecolor)  T_Gaspump_N.png (normal)
+#   T_Gaspump_ORM.png — pixel-checked 2026-08-17: R=AO (broad, mean 0.67),
+#   G=roughness (narrow 0.22..0.51), B=metallic (bimodal 0/1) — ALREADY the
+#   glTF metallicRoughness layout (G=rough, B=metal; ENGINE_GOTCHAS 3.6), so it
+#   injects raw as BOTH mrTex and occlusionTexture. No repack.
+#
+# The FBX carries LOD0..LOD3 + UCX convex hulls as SIBLING nodes and the engine
+# loader draws every node in the scene — shipped as-is the pump renders four
+# times over with its collision hulls on top. So: keep the _LOD0 node chain,
+# delete the rest, and COMPACT the buffer (the dropped geometry is ~2/3 of the
+# bytes; a gitignored asset is no excuse for shipping dead weight the loader
+# maps every boot).
+#
+# Orientation (X3_WORLD_RULES rule 3): authored origin at the base (contact),
+# 0.51 m wide (X) x 1.80 tall x 0.84 deep (Z); metres as authored, no scale.
+# ---------------------------------------------------------------------------
+MIAMI_ART = next((p for p in (
+    r"\\p13700\G\Assets\Miami Vice City\LeartesStudios\MiamiViceCity\HDRP\Art",
+    r"D:\Assets\Miami Vice City\LeartesStudios\MiamiViceCity\HDRP\Art",
+) if os.path.isdir(p)), None)
+
+
+def compact_glb(js, bin_):
+    """Rebuild the binary chunk keeping only bufferViews reachable from the
+    surviving accessors/images; remap every index. Run AFTER node/mesh strip."""
+    used_acc = set()
+    for mesh in js.get("meshes", []):
+        for p in mesh["primitives"]:
+            used_acc.update(p["attributes"].values())
+            if "indices" in p:
+                used_acc.add(p["indices"])
+    used_bv = {js["accessors"][a]["bufferView"] for a in used_acc
+               if "bufferView" in js["accessors"][a]}
+    used_bv.update(im["bufferView"] for im in js.get("images", [])
+                   if "bufferView" in im)
+    new_bin = bytearray(); bv_map = {}; new_bvs = []
+    for i, bv in enumerate(js.get("bufferViews", [])):
+        if i not in used_bv:
+            continue
+        while len(new_bin) % 4:
+            new_bin.append(0)
+        off = bv.get("byteOffset", 0)
+        nbv = dict(bv); nbv["byteOffset"] = len(new_bin)
+        new_bin.extend(bin_[off:off + bv["byteLength"]])
+        bv_map[i] = len(new_bvs); new_bvs.append(nbv)
+    js["bufferViews"] = new_bvs
+    acc_map = {}; new_accs = []
+    for i, a in enumerate(js.get("accessors", [])):
+        if i not in used_acc:
+            continue
+        na = dict(a)
+        if "bufferView" in na:
+            na["bufferView"] = bv_map[na["bufferView"]]
+        acc_map[i] = len(new_accs); new_accs.append(na)
+    js["accessors"] = new_accs
+    for mesh in js.get("meshes", []):
+        for p in mesh["primitives"]:
+            p["attributes"] = {k: acc_map[v] for k, v in p["attributes"].items()}
+            if "indices" in p:
+                p["indices"] = acc_map[p["indices"]]
+    for im in js.get("images", []):
+        if "bufferView" in im:
+            im["bufferView"] = bv_map[im["bufferView"]]
+    return js, new_bin
+
+
+def build_miami_pump(out_glb):
+    assert FBX2GLTF, "FBX2glTF.exe not found"
+    assert MIAMI_ART, "Miami Vice City pack not found on \\\\p13700\\G or D:\\Assets"
+    src_fbx = os.path.join(MIAMI_ART, "Meshes", "Gasoline", "SM_Gaspump.fbx")
+    tex_dir = os.path.join(MIAMI_ART, "Textures", "Gaspump")
+    tmp = tempfile.mkdtemp(prefix="w5p_")
+    # Convert from a BARE dir: with the PNGs out of reach FBX2glTF embeds no
+    # textures, so the raw GLB is geometry + named material slots only and the
+    # capped maps below are the ONLY pixels in the file.
+    fbx = os.path.join(tmp, "SM_Gaspump.fbx")
+    shutil.copyfile(src_fbx, fbx)
+    raw = os.path.join(tmp, "pump")
+    subprocess.run([FBX2GLTF, "-b", "-i", fbx, "-o", raw], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    js, bin_ = glb_read(raw + ".glb")
+
+    # ---- keep the LOD0 chain only --------------------------------------
+    keep_meshes = set()
+    for nd in js.get("nodes", []):
+        name = nd.get("name", "")
+        if "mesh" in nd and not name.endswith("_LOD0"):
+            nd.pop("mesh")            # LOD1-3 + convex hulls: not drawn, not shipped
+        elif "mesh" in nd:
+            keep_meshes.add(nd["mesh"])
+    assert keep_meshes, "no *_LOD0 node in SM_Gaspump.fbx"
+    mesh_map = {}
+    new_meshes = []
+    for i, m in enumerate(js.get("meshes", [])):
+        if i in keep_meshes:
+            mesh_map[i] = len(new_meshes); new_meshes.append(m)
+    js["meshes"] = new_meshes
+    for nd in js.get("nodes", []):
+        if "mesh" in nd:
+            nd["mesh"] = mesh_map[nd["mesh"]]
+    js, bin_ = compact_glb(js, bin_)
+
+    clear_node_trs(js)
+    shift, size = recentre(js, bin_)
+    print("[w5] pump recentred by %.3f %.3f %.3f ; size %.3f x %.3f x %.3f m"
+          % (shift + size))
+    assert 1.5 < size[1] < 2.1, "pump height off: authored-in-metres assumption broke"
+
+    bc  = add_png(js, bin_, Image.open(os.path.join(tex_dir, "T_Gaspump_BC.png")),
+                  "T_Gaspump_BC")
+    nrm = add_png(js, bin_, Image.open(os.path.join(tex_dir, "T_Gaspump_N.png")),
+                  "T_Gaspump_N")
+    orm = add_png(js, bin_, Image.open(os.path.join(tex_dir, "T_Gaspump_ORM.png")),
+                  "T_Gaspump_ORM")
+    mr_glass = mr_1x1(js, bin_, rough=0.12, metal=0.0)
+    used_mats = {p.get("material") for m in js["meshes"] for p in m["primitives"]}
+    for mi, m in enumerate(js.get("materials", [])):
+        if mi not in used_mats:
+            continue
+        pbr = m.setdefault("pbrMetallicRoughness", {})
+        if m.get("name") == "MI_Gaspump":
+            pbr["baseColorTexture"] = {"index": bc}
+            pbr["baseColorFactor"] = [1.0, 1.0, 1.0, 1.0]
+            pbr["metallicFactor"] = 1.0     # ORM.B carries the split
+            pbr["roughnessFactor"] = 1.0    # ORM.G carries it
+            pbr["metallicRoughnessTexture"] = {"index": orm}
+            m["normalTexture"] = {"index": nrm}
+            m["occlusionTexture"] = {"index": orm}   # ORM.R = AO
+        else:
+            # MI_Glass (the little price display): the house dark-glass
+            # standard (X3_WORLD_RULES rule 7) — near-black, tight gloss,
+            # never a bright flat quad.
+            pbr["baseColorFactor"] = [0.02, 0.025, 0.03, 1.0]
+            pbr["metallicFactor"] = 0.0
+            pbr["roughnessFactor"] = 0.12
+            pbr["metallicRoughnessTexture"] = {"index": mr_glass}
+        print("[w5]   pump mat %-16s -> %s" % (m.get("name"),
+              "BC+N+ORM" if m.get("name") == "MI_Gaspump" else "dark glass"))
+
+    # Prune the 1x1 data-URI placeholder images FBX2glTF invented for the
+    # unresolved slots (the bare-dir trick above): nothing references them any
+    # more, and the engine loader should never be asked to parse a data: URI.
+    used_tex = set()
+    for m in js.get("materials", []):
+        pbr = m.get("pbrMetallicRoughness", {})
+        for t in (pbr.get("baseColorTexture"), pbr.get("metallicRoughnessTexture"),
+                  m.get("normalTexture"), m.get("occlusionTexture"),
+                  m.get("emissiveTexture")):
+            if t:
+                used_tex.add(t["index"])
+    tex_map = {}; new_tex = []
+    for i, t in enumerate(js.get("textures", [])):
+        if i in used_tex:
+            tex_map[i] = len(new_tex); new_tex.append(t)
+    js["textures"] = new_tex
+    used_img = {t["source"] for t in new_tex}
+    img_map = {}; new_img = []
+    for i, im in enumerate(js.get("images", [])):
+        if i in used_img:
+            img_map[i] = len(new_img); new_img.append(im)
+    js["images"] = new_img
+    for t in js["textures"]:
+        t["source"] = img_map[t["source"]]
+    for m in js.get("materials", []):
+        pbr = m.get("pbrMetallicRoughness", {})
+        for t in (pbr.get("baseColorTexture"), pbr.get("metallicRoughnessTexture"),
+                  m.get("normalTexture"), m.get("occlusionTexture"),
+                  m.get("emissiveTexture")):
+            if t:
+                t["index"] = tex_map[t["index"]]
+
+    os.makedirs(os.path.dirname(out_glb), exist_ok=True)
+    glb_write(out_glb, js, bin_)
+    shutil.rmtree(tmp, ignore_errors=True)
+    print("[w5] wrote", out_glb, os.path.getsize(out_glb), "bytes")
+
+
 if __name__ == "__main__":
     out_dir = sys.argv[1] if len(sys.argv) > 1 else \
         os.path.join(REPO, "assets", "converted_glb", "GasStation")
-    build_mega_station(os.path.join(out_dir, "gas_station_mega.glb"))
+    which = sys.argv[2] if len(sys.argv) > 2 else "all"
+    if which in ("all", "station"):
+        build_mega_station(os.path.join(out_dir, "gas_station_mega.glb"))
+    if which in ("all", "pump"):
+        build_miami_pump(os.path.join(out_dir, "gas_pump_miami.glb"))

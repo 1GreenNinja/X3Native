@@ -30,6 +30,12 @@
       "source_note": "F3: hospital cot for the canon detention cell (textures injected)"
     },
     {
+      "repo_path": "assets/converted_glb/GasStation/gas_pump_miami.glb",
+      "sha256": "8ed7f9aaf3b39c125c624a7b90f9c07ea52e787b819696156a9e1444b680a43c",
+      "size": 4442444,
+      "source_note": "W-STATIONS Lane 5: Leartes Miami Vice City SM_Gaspump, LOD0 + BC/N/ORM via tools/w5_build_station_glb.py build_miami_pump (licensed pack, \\p13700\\G)"
+    },
+    {
       "repo_path": "assets/converted_glb/GasStation/gas_station_mega.glb",
       "sha256": "340b39b4a1d90dbeb72b3c837c1a1cd47111de8ac157db55460fbf37230c4a8b",
       "size": 1700448,

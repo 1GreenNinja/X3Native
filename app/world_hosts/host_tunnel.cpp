@@ -1634,6 +1634,18 @@ int hostTunnel(HostContext& hc) {
         const char* shotPumpEnv = std::getenv("X3_SHOT_PUMP");
         const bool shotPump      = shotPumpEnv && shotPumpEnv[0] != '0';
         const bool shotPumpHoldE = shotPumpEnv && shotPumpEnv[0] == '2';
+        if (shotPump) {
+            // STAGE THE TANK, or the proof photographs the wrong state: a
+            // factory-fresh tank is FULL, so the honest prompt under the canopy
+            // is "TANK FULL" and neither the E-REFUEL hint nor the flow can
+            // ever appear in the still (the first proof run showed exactly
+            // that). This is the SAME state the console command `fuel 24`
+            // leaves a player in — litres set, gauge armed — staged through the
+            // same public FuelTank, and then update()/drawPumpPrompt/
+            // drawFuelBar below run unmodified.
+            gasStations.fuel().litres = gasStations.fuel().capacityL * 0.35f;
+            gasStations.fuel().armed  = true;
+        }
 
         auto settleAndGrab = [&](const float cam[5], const std::string& out) -> bool {
             // The streamer only enqueues the full ring on a focus-tile crossing

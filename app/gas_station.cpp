@@ -26,6 +26,23 @@ namespace {
 // and published to the asset store. Relative to convertedGlbRoot().
 constexpr const char* kStationGlb = "GasStation/gas_station_mega.glb";
 
+// The WALK-UP pump — Leartes "Miami Vice City" SM_Gaspump (same tool,
+// build_miami_pump: LOD0-only, BC/N/ORM injected, 0.508 x 1.799 x 0.842 m,
+// origin at the base). The Mega station's baked pumps carry the mid-shot;
+// this is the unit that holds up at arm's length.
+constexpr const char* kPumpGlb = "GasStation/gas_pump_miami.glb";
+// Where it stands, MEASURED station-local (tools/_w5_parts.py over the
+// recentred station GLB): each island kerb is 1.6 x 0.3 x 4.0 m; the baked
+// pump body occupies Z -0.75..0.13 and the canopy column Z -1.93..-1.52, so
+// the FREE kerb is the Z 0.30..1.69 end. The Miami pump stands there at
+// Z 0.95, yawed +90 deg so its wide face serves the drive lane, base on the
+// island's own measured kerb top.
+struct PumpSpot { float lx, kerbTopY; };
+constexpr PumpSpot kPumpSpots[3] = { {-8.295f, 0.75f}, {-0.725f, 0.74f},
+                                     { 5.855f, 0.73f} };
+constexpr float kPumpLocalZ = 0.95f;
+constexpr float kPumpHalfX = 0.254f, kPumpH = 1.799f, kPumpHalfZ = 0.421f;
+
 // PAD CARVE — four parallel corridors across the lot, spines 11 m apart with a
 // 6 m flat half-width each, so their flats abut and the union covers the whole
 // 43 m width. ONE wide corridor would not do: a TerrainCorridor lowers the
@@ -621,6 +638,55 @@ GasStationBuildResult GasStationWorld::build(Scene& scene,
                 s.x,  s.padY + kPaveProud + 0.015f, s.z, 1.0f
             };
             if (mounted && m_art->addGlbInstance(kStationGlb, T)) ++out.structures;
+
+            // The walk-up pumps, one per island's free kerb end. Collision is
+            // a 10-triangle box per pump rather than a CPU read of the whole
+            // LOD0 (the kerb + baked-pump colliders already deny the space to
+            // wheels; the box is for the player on foot, and 90 tris world-
+            // wide does that without feeding the broadphase ~10k tris a pump).
+            {
+                MeshBuf pumpCol;
+                for (const PumpSpot& ps : kPumpSpots) {
+                    const float P[16] = {
+                        dz,   0.0f, -dx,  0.0f,   // pump +X -> station -Z
+                        0.0f, 1.0f, 0.0f, 0.0f,
+                        dx,   0.0f, dz,   0.0f,   // pump +Z -> station +X (the lane)
+                        s.x + dx * ps.lx - dz * kPumpLocalZ,
+                        s.padY + kPaveProud + 0.015f + ps.kerbTopY,
+                        s.z + dz * ps.lx + dx * kPumpLocalZ, 1.0f
+                    };
+                    if (mounted && m_art->addGlbInstance(kPumpGlb, P)) ++out.structures;
+                    auto WP = [&](float px, float py, float pz, float o[3]) {
+                        o[0] = P[0]*px + P[4]*py + P[8]*pz  + P[12];
+                        o[1] = P[1]*px + P[5]*py + P[9]*pz  + P[13];
+                        o[2] = P[2]*px + P[6]*py + P[10]*pz + P[14];
+                    };
+                    // Outward-wound box faces (Jolt culls back faces): four
+                    // sides + top, no bottom (it stands on the kerb).
+                    const float hx = kPumpHalfX, h = kPumpH, hz = kPumpHalfZ;
+                    float a[3], b[3], c[3], d[3];
+                    WP( hx,0, hz,a); WP( hx,0,-hz,b); WP( hx,h,-hz,c); WP( hx,h, hz,d);
+                    pumpCol.quad(a,b,c,d, 1.0f);                        // +X
+                    WP(-hx,0,-hz,a); WP(-hx,0, hz,b); WP(-hx,h, hz,c); WP(-hx,h,-hz,d);
+                    pumpCol.quad(a,b,c,d, 1.0f);                        // -X
+                    WP(-hx,0, hz,a); WP( hx,0, hz,b); WP( hx,h, hz,c); WP(-hx,h, hz,d);
+                    pumpCol.quad(a,b,c,d, 1.0f);                        // +Z
+                    WP( hx,0,-hz,a); WP(-hx,0,-hz,b); WP(-hx,h,-hz,c); WP( hx,h,-hz,d);
+                    pumpCol.quad(a,b,c,d, 1.0f);                        // -Z
+                    WP(-hx,h, hz,a); WP( hx,h, hz,b); WP( hx,h,-hz,c); WP(-hx,h,-hz,d);
+                    pumpCol.quad(a,b,c,d, 1.0f);                        // top
+                }
+                if (!pumpCol.empty()) {
+                    std::vector<float> cv; cv.reserve(pumpCol.v.size() * 3);
+                    for (const auto& vv : pumpCol.v) {
+                        cv.push_back(vv.pos[0]); cv.push_back(vv.pos[1]);
+                        cv.push_back(vv.pos[2]);
+                    }
+                    phys.addStaticMesh(cv.data(), (uint32_t)(cv.size() / 3),
+                                       pumpCol.i.data(), (uint32_t)pumpCol.i.size());
+                    out.colliderTris += (uint32_t)(pumpCol.i.size() / 3);
+                }
+            }
 
             if (cpu.ok) {
                 for (const GlbPrimitive& p : cpu.prims) {
