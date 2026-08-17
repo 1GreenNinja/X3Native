@@ -2154,6 +2154,19 @@ void VulkanRenderDevice::prepareFrameData() {
             // LYING SNOW (setSnowCover): 0 leaves the terrain snow band exactly
             // as it was before this lane existed -- altitude-only, no weather.
             sc.precip   = glm::vec4(m_snowCover, 0.0f, 0.0f, 0.0f);
+            // CLOUD SHADOWS (task #27): project the sky.frag cloud deck onto
+            // the ground. Rides the CACHED sky params (same cover, same drift
+            // clock the sky UBO gets at its own fill site below), so the shade
+            // on the road always sweeps with the deck overhead — paired values
+            // are one value. Strength 0.85, not 1.0: a cumulus core kills the
+            // direct sun but the host's global cover dim (host weather ticks
+            // scale sunIntensity with cover) already carries part of that
+            // energy loss, and the remaining 15% keeps the dapple from reading
+            // as a hole in the terrain. Gate shut (all zero) when no sky or no
+            // cover -> indoor worlds and clear days byte-identical.
+            const bool cloudsOn = m_sky.enabled && m_sky.cloud > 0.001f;
+            sc.cloudShadow = glm::vec4(cloudsOn ? 0.85f : 0.0f,
+                                       m_sky.cloud, m_skyTime, 0.0f);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }

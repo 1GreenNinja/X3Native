@@ -2889,6 +2889,14 @@ private:
         // mesh.frag gate never opens (dry worlds byte-identical).
         glm::vec4 wetness;      // x = amount, y = porosity, z = puddles, w = min roughness
         glm::vec4 precip;       // x = lying-snow cover 0..1, yzw reserved
+        // CLOUD SHADOWS (task #27; mesh.frag `cloudShad` — keep in sync): the
+        // ground shade of the sky.frag cloud deck. x = strength (0 = gate
+        // shut -> dry/indoor worlds byte-identical), y = cover
+        // (SkyParams::cloud), z = sky time (m_skyTime, the shared drift
+        // clock), w = reserved. Filled from the CACHED sky params — no new
+        // host API: a host that pushes clouds into the sky gets their shade
+        // on the ground for free (NO_SLOP rule 6: defaults ON).
+        glm::vec4 cloudShadow;
     };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.

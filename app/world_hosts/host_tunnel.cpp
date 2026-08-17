@@ -621,6 +621,13 @@ int hostTunnel(HostContext& hc) {
         sp.sunIntensity = 1.0f; sp.haze = 0.35f; sp.exposure = 1.0f;
         // Scattered fair-weather cumulus. 0 would be the old clear sky exactly.
         sp.cloud = 0.42f;
+        // X3_CLOUD: dev override for the NO-WEATHER sky's cover (0..1) — the
+        // A/B knob the cloud-pass perf receipts are measured with (0 = the
+        // clear-sky baseline, cloud pass + ground shade both gate out) and the
+        // way to shoot a specific deck without waiting on the scheduler. With
+        // X3_WEATHER on, the weather tick owns cover and this is ignored.
+        if (const char* cv = std::getenv("X3_CLOUD"))
+            sp.cloud = std::min(1.0f, std::max(0.0f, (float)std::atof(cv)));
         device->setSkyParams(sp);
     }
     device->setCameraFar(4000.0f);
@@ -1312,6 +1319,7 @@ int hostTunnel(HostContext& hc) {
             // The streamer only enqueues the full ring on a focus-tile crossing
             // (host_cliffs.cpp's trick): nudge the focus on frame 1, then hold.
             const int kFrames = 200;
+            float perfGpuSum = 0.0f; int perfGpuN = 0;   // [cloud-perf] receipt
             for (int i = 0; i < kFrames; ++i) {
                 glfwPollEvents();
                 const float fx = (i == 1) ? cam[0] + 40.0f : cam[0];
@@ -1323,6 +1331,7 @@ int hostTunnel(HostContext& hc) {
                 // boats/fish so the capture proves the LIVING river.
                 riverWaterClock += dt;
                 applyRiverWater(riverWaterClock);
+                device->setSkyTime(riverWaterClock);   // cloud drift (see the interactive loop)
                 riverLife.prePhysics(dt);
                 if (shotTick) shotTick(dt);   // staged swimmer BEFORE the step
                 phys->step(dt);
@@ -1372,6 +1381,19 @@ int hostTunnel(HostContext& hc) {
                 }
 
                 device->endFrame(frame);
+                // PERF RECEIPT: average the settled tail (the first ~2/3 of the
+                // loop is streaming/warmup). gpuFrameMs is the device's own
+                // timestamp-query number, a few frames delayed — irrelevant to
+                // an average. This is the number the cloud-pass budget gate
+                // (< 10% frame time) is measured against, via an X3_CLOUD=0 A/B.
+                if (i >= kFrames - 60) { perfGpuSum += device->stats().gpuFrameMs; ++perfGpuN; }
+            }
+            if (perfGpuN > 0) {
+                char pb[160];
+                std::snprintf(pb, sizeof(pb),
+                              "[cloud-perf] %s: gpu=%.3f ms (avg of last %d settle frames)",
+                              out.c_str(), perfGpuSum / perfGpuN, perfGpuN);
+                x3::logInfo(pb);
             }
             const bool wrote = device->captureFrame(out.c_str());
             if (wrote) x3::logInfo("--world tunnel: wrote " + out);
@@ -1406,6 +1428,14 @@ int hostTunnel(HostContext& hc) {
         } else {
             float cam[5]; tunnel.showcaseCamera(route, 0, cam);
             if (hc.shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = hc.shotCam[k];
+            {   // Log the resolved camera (parity with the multi-shot branch): a
+                // custom --shot-cam is DERIVED from this print, not eyeballed
+                // (ENGINE_GOTCHAS 4.1 — derive cameras from data).
+                char cb[192];
+                std::snprintf(cb, sizeof(cb), "--world tunnel: shot cam=(%.1f, %.1f, %.1f) yaw=%.3f pitch=%.3f",
+                              cam[0], cam[1], cam[2], cam[3], cam[4]);
+                x3::logInfo(cb);
+            }
             const std::string out = screenshot ? screenshotPath : std::string("w_tunnel.png");
             ok = settleAndGrab(cam, out);
         }
@@ -2140,6 +2170,11 @@ int hostTunnel(HostContext& hc) {
         // One lambda with the headless path — same tone, same clock shape.
         riverWaterClock += fdt;
         applyRiverWater(riverWaterClock);
+        // THE WIND. The sky UBO's time lane (setSkyTime -> sky.params.z) is the
+        // drift clock for the cloud deck AND its ground shade (both sample
+        // kCloudDrift * t in inc/sky_clouds.glsl). This world never set it, so
+        // the deck hung frozen. Same clock the river uses, one line.
+        device->setSkyTime(riverWaterClock);
         if (weatherOn) {
             weather.tick(fdt);
             // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the

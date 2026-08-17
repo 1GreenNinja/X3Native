@@ -134,6 +134,12 @@ layout(set = 3, binding = 1) uniform SsaoControl {
     // same reason terrainNrm was: glass.frag declares this buffer only as far as
     // `caustics` and must stay a valid std140 prefix.
     vec4 precip;      // x = snow cover, yzw = reserved
+    // ---- CLOUD SHADOWS (task #27; SsaoControl::cloudShadow in
+    // VulkanRenderDevice_internal.h — keep in sync). The ground shade of the
+    // sky.frag cloud deck: x = strength (0 = gate shut -> byte-identical),
+    // y = cover (SkyParams::cloud), z = sky time (s, the drift clock),
+    // w = reserved. Consumed via inc/sky_clouds.glsl cloudShadowFactor().
+    vec4 cloudShad;
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
@@ -249,6 +255,12 @@ const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white su
 #include "inc/mesh_normalmap.glsl"   // perturbNormal: derivative-TBN normal mapping
 #include "inc/mesh_wetness.glsl"   // rain wetness: darken/smooth/F0 + exposure & pooling  [LANE: wetness]
 
+// CLOUD SHADOWS (task #27): the SAME density field sky.frag draws overhead,
+// projected onto the ground along the sun. 3 octaves, not the sky's 5 — the
+// projected shade is soft-edged and the last two octaves are sub-shadow detail.
+#define CLOUD_FBM_OCTAVES 3
+#include "inc/sky_clouds.glsl"   // shared deck density + cloudShadowFactor  [task #27]
+
 void main() {
     // GLASS meshes are NOT shaded by the opaque pass — they are drawn in the
     // dedicated transparent glass pass (glass.frag). Discarding here keeps glass
@@ -338,6 +350,16 @@ void main() {
     if (ssao.rtsh0.x >= 0.5 && ndl > 0.0 && shadow > 0.001)
         shadow = min(shadow, rtshSunVisibility(vWorldPos, rtshNg, kSunDir, rtshSeed));
 #endif
+    // CLOUD SHADOWS (task #27): dim the DIRECT sun by the cloud deck overhead —
+    // the same density field sky.frag draws, projected along the sun direction,
+    // wind-scrolled by the same drift clock. Multiplies `shadow` so every sun
+    // term downstream (BRDF, foliage wrap/translucency, clearcoat) shades under
+    // a cloud, while ambient stays — cloud shade outdoors is skylight, not
+    // darkness. Gate: cloudShad.x is 0 unless a sky with cover is active, so
+    // indoor worlds and clear days never spend a cycle here.
+    if (ssao.cloudShad.x > 0.0)
+        shadow *= cloudShadowFactor(vWorldPos, kSunDir, ssao.cloudShad.y,
+                                    ssao.cloudShad.z, ssao.cloudShad.x);
     vec3  ambient = cam.ambientCount.rgb;
     float up = N.y * 0.5 + 0.5;                 // 0 = facing down, 1 = facing up
     float ao = 1.0;
