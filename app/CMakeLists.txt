@@ -68,6 +68,7 @@ add_library(x3app SHARED
     # W-FOREST — the sketch's brown regions: area forests, two-tier draw
     forest.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
+    summit_lot.cpp      # the parking lot at the top of the summit spur
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
     rifthub.cpp

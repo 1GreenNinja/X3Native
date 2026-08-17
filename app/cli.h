@@ -39,6 +39,10 @@ struct CliOptions {
          // FIELD level (the natural hillside must bury the roadway). See
          // app/tunnel_corridor.h.
          testTunnelDrive = false,
+         // --test-summitlot: the SUMMIT PARKING LOT gate — the pad at the top
+         // of the summit spur is carved, level, on the peak, and drivable
+         // into. See app/summit_lot.h.
+         testSummitLot = false,
          // --test-tunnelmouth: the TUNNEL-MOUTH gate. Asserts no ground ever
          // stands on the roadway (the defect fix/tunnel-mouth closed), that
          // the backfill lid clears the shell and meets the untouched terrain
