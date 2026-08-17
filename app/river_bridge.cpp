@@ -309,10 +309,17 @@ RiverBridgeBuildResult buildRiverBridge(const RiverBridgePlan& p, Scene& scene,
         for (float s = -p.abutS + 3.0f; s <= p.abutS + 0.01f; s += 3.0f) {
             const float s1 = std::min(s, p.abutS);
             float a[3], b[3], c[3], d[3];
-            // running surface (asphalt)
+            // running surface (asphalt).
+            // WINDING: d,c,b,a — the normal must point UP. As a,b,c,d this
+            // quad faced DOWN, which produced Tim's exact double bug: "The
+            // Bridge renders from below but not above! and.. ou fall
+            // through!!!" — backface culling hid the deck from above, and the
+            // wheel raycasts (which cull back faces in Jolt) sailed through
+            // the same inverted triangles, because the collider shares this
+            // very index buffer. One winding, both symptoms.
             pt(prevS, -w, p.deckY, a); pt(s1, -w, p.deckY, b);
             pt(s1,  w, p.deckY, c);    pt(prevS, w, p.deckY, d);
-            deckTop.quad(a, b, c, d);
+            deckTop.quad(d, c, b, a);
             // fascia edges (0.35 m of slab side)
             for (int side = -1; side <= 1; side += 2) {
                 pt(prevS, w*side, p.deckY, a); pt(s1, w*side, p.deckY, b);

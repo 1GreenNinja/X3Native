@@ -1503,7 +1503,7 @@ int hostTunnel(HostContext& hc) {
         // Live trims for Jake's placement, so a wrong-facing or sunk rig is a
         // console line to diagnose instead of a rebuild: degrees added to his
         // travel yaw, metres added to his measured ground compensation.
-        con->registerCVar("wx_precip_mult", "1.6",
+        con->registerCVar("wx_precip_mult", "2.4",
             "precipitation density multiplier (raises how much of the particle pool a given rain/snow state uses)");
         con->registerCVar("jake_yaw", "0", "Jake facing trim, degrees (rig-forward correction)");
         con->registerCVar("jake_y",   "0", "Jake height trim, metres (on top of the measured armature offset)");
@@ -1673,6 +1673,13 @@ int hostTunnel(HostContext& hc) {
             // overcast sky is actually overcast instead of clear-with-fog.
             sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
             sp.exposure = ws.sky.exposure + storm.flash();
+            if (ws.state == x3::game::WeatherState::Storm) {
+                // A storm is not 'cloudy with effects' — the deck goes heavy
+                // and the light DIES, which is also what makes every lightning
+                // flash read (contrast is the flash's whole currency).
+                sp.cloud    = std::max(sp.cloud, 0.94f);
+                sp.exposure = ws.sky.exposure * 0.52f + storm.flash() * 1.35f;
+            }
             device->setSkyParams(sp);
 
             // Wet ground for the renderer. Lying SNOW suppresses the wet look
@@ -1985,7 +1992,7 @@ int hostTunnel(HostContext& hc) {
             {
                 const bool wantNos = kd(GLFW_KEY_LEFT_SHIFT) && in.throttle > 0.1f;
                 nosActive = wantNos && nosTank > 0.02f;
-                nosTank += nosActive ? -fdt / 4.0f : fdt / 16.0f;
+                nosTank += nosActive ? -fdt / 15.0f : fdt / 20.0f;   // 15 s bottle (Tim), ~20 s recharge
                 nosTank = std::min(1.0f, std::max(0.0f, nosTank));
             }
             // T toggles TRACTION CONTROL (Tim asked for an off switch). Edge
