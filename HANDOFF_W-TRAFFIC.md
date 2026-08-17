@@ -244,3 +244,91 @@ and no PNG. Retrying succeeded immediately.
 * Store-served GLBs, `*.pre-fetch.bak` and `assets_staging/` deliberately left untracked.
 * Junk removed from the inherited tree: `dev/null/` (a stray POSIX redirect made a real
   directory on Windows), `build_log.txt`, `galleries_tmp.json`.
+
+---
+
+# W-TRAFFIC2 (2026-08-17) — life on the freeway
+
+Owner: "Traffic!!!! However... we need some that honks.. some that
+accelerates... a radar speed sign... cops... and some different colors on the
+cars.. Also.. some different performance profiles on the cars and trucks.. Oh
+and switch lanes!" + jerk drivers + breakdowns with a TOWBOOK tow truck + black
+NSX Type S. Then, parked on the freeway watching traffic close on him: "what do
+you think is about to happen, and what do we not have wired!" and "there is
+also no cOLLISION factor for any of those cars!"
+
+## Gates: `--test-traffic` 11/11 -> 31/31. All seven sibling suites green.
+roadnetwork 58 · terraincorridor 16 · tunnelmouth 8/8 · riverbridge 12 ·
+interchange 10 · worldmap 43/43 · vehicle 10. Boot: 0 [ERROR] on every run.
+
+New gates: T6/T6b lane changes + the 2-D no-overlap invariant (78,375
+merge-tick samples, 1,805 lane changes, ZERO overlapping pairs on a 300-car
+road at 3x chaos) · T7/T7b profiles ordered + character mix in band · T8 horns
+rate-limited · T9/T9b breakdown parks off the running lanes and the tow clears
+it · T10/T10b the radar reads the player's speed · T11a-d the PLAYER as an
+obstacle · T12a-e THE COLLISION PATH, against a real Jolt world.
+
+## THE PERF NUMBER, same camera, this build
+    traffic OFF  0.818 ms  1222 fps    810 k tris
+    traffic ON   1.711 ms   585 fps  3,498 k tris  (300 cars)
+= 2.98 us per car, against the 3.08 us/car the previous pass measured. Adding
+the player projection, lane-change deliberation, merges, roles, horns, brake
+lights and the sign did NOT make the frame worse: every O(n^2) scan became a
+bounded walk over a per-carriageway index sorted by s (m_order[]), which paid
+for the new work. Task #39 (distance LOD for traffic) is still the one real
+lever and is still unclaimed — 9 k tris for a car 40 px tall at 400 m.
+
+## CAPTURE LEVERS (all default OFF; the gameplay path is unchanged)
+* `X3_TRAFFIC_PRESIM=<sec>` — fast-forward the sim before the shutter. The
+  capture settle is 200 frames = 3.3 s and the events worth photographing (a
+  tow arriving, a patrol lighting up) take 30-200 s. Gotcha 4.1b's ECHO_SHOT_T
+  lever, same reasoning. Its focus is QUANTISED to a 250 m grid so a probe run
+  and the shot aimed at what it found simulate the same freeway — without that
+  the population is a function of the camera and every data-derived camera
+  points at an empty lane.
+* `[traffic-shot]` lines — printed after a presim: paste-ready `--shot-cam`
+  aimed at the live cop / merger / breakdown / tow / truck / sign, LED by the
+  settle duration so the camera looks where the subject WILL be (a car at
+  30 m/s is 100 m down the road by the shutter).
+* `X3_TRAFFIC_PARK=<cw>,<laneF>,<s>` — park a virtual stopped vehicle (with a
+  visible stand-in) and feed it to the sim as the player. The capture path
+  makes the CAMERA the player, so this is the only way to photograph traffic
+  reacting to a stopped car from anywhere except inside it.
+* `X3_TRAFFIC_COPS` / `_BREAKDOWN` / `_CHAOS` / `X3_RADAR_MPH`.
+
+## Captures (shots_traffic2/, all eyes-on at full res)
+| file | what it proves |
+|---|---|
+| 08_radar_88_over.png | THE SIGN: "YOUR SPEED / 88" in red (over the 70 limit), dark-glass panel, on the verge, facing the traffic it reads |
+| 11_merge_around.png | a car going AROUND the parked obstacle, in the next lane |
+| 10_parked_brakelights.png | the parked obstacle with traffic dealing with it (22 braking with lights lit, 15 within 160 m — the log line carries the numbers a still cannot) |
+| 05_cop_lights.png | a patrol car with the POLICE wordmark legible on the door |
+| 09_truck_right.png | a semi holding the outermost running lane |
+| 03_drive_colors.png | drive height, 300 cars, mixed paint, the black supercar |
+| 06_lane_change.png / 08_tow_towbook.png | the merge and the recovery truck |
+| perf_off.png / perf_on.png | the A/B above |
+
+## OPEN / NEXT
+* **A real police car and tow truck exist in the catalog and were NOT taken.**
+  `unitypackage_index.py` (built this session, 914 packages, catalog at
+  docs/design/ASSET_CATALOG.json — 17 MB, NOT committed) finds "HEAVY POLICE
+  CAR" (148 MB, 19 meshes, modular body/doors/wheels/lights, CACHED-ONLY) and
+  "Low Poly 3D Garbage & Tow Trucks" (CACHED-ONLY). Both need extracting from
+  the Unity download cache first. Today the cop is an E30 in patrol white with
+  the real RCC light bar and a POLICE door plate; the tow is the box truck in
+  recovery amber with beacons and a TOWBOOK plate.
+* **There is NO NSX and no mid-engine supercar mesh in the entire 914-package
+  library** (searched by name and by a filename sweep for
+  supercar/lambo/ferrari/mclaren/exotic — one engine WAV, no meshes). The
+  Skyline holds the ClsSuper slot in black and is labelled "NSX-SUB" in the
+  boot log. CTR.glb is the only true rear-engine car on the box and was
+  rejected on measurement: 155k tris against the roster's 9k average.
+* **A driver standing by the broken-down car** was scoped out (it needs the
+  crowd/anim rig) — the breakdown ships with hazards + the tow.
+* **Pursuit AI is deliberately out of scope.** `onCopWouldPursue()` is the
+  seam, called the moment a patrol lights up, and it says so in the log.
+* **Ramps**: traffic.h's closing block is the spec for routing onto the Stack.
+  The lane coordinate is already continuous and the merge controller already
+  moves cars between lateral offsets with a measured gap check; what is missing
+  is a route graph, ramp splines with gore/nose marks, an exit decision far
+  enough upstream, merge priority, and cross-path overlap near junctions.
