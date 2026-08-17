@@ -159,7 +159,11 @@ def turbulence_layer(rpm, n_gen, rng):
     hi = 0.3 + 0.7 * (rpm / 7000.0)
     return (resonant_bandpass(noise, SR, center_hz=250, q=0.7, gain=1.0)
             + resonant_bandpass(noise, SR, center_hz=1200, q=0.6, gain=0.5 + 0.3 * hi)
-            + resonant_bandpass(noise, SR, center_hz=3600, q=0.6, gain=0.15 + 0.45 * hi))
+            + resonant_bandpass(noise, SR, center_hz=3600, q=0.6, gain=0.06 + 0.16 * hi))   # static fix: was 0.15+0.45*hi — hiss
+
+
+def hf_gain(sig, lp):
+    return sig - lp    # content above the one-pole corner
 
 
 def build_point(rpm, *, overrun, rng):
@@ -187,19 +191,18 @@ def build_point(rpm, *, overrun, rng):
     # Tone pass: organic keeps the low-mid body but hands the top end to the
     # synth harmonics + turbulence (the recording HAS no top end to give —
     # 90% of its energy sits below 100 Hz; that was the muffle).
-    w_org, w_syn, w_nz = (0.34, 0.30, 0.36) if high else (0.44, 0.26, 0.30)
-    sig = (org / rms(org) * np.sqrt(w_org)
-           + syn / rms(syn) * np.sqrt(w_syn)
-           + nz / rms(nz) * np.sqrt(w_nz))
-    # PRESENCE TILT (tone pass): +4.5 dB high shelf above ~700 Hz, one-pole.
-    # Clears the 'blown through something' veil without touching the body.
+    w_org, w_syn, w_nz = (0.42, 0.38, 0.20) if high else (0.50, 0.32, 0.18)   # static fix: noise back down, brightness from harmonics
+    # PRESENCE TILT on the HARMONIC content only (static fix): shelving the
+    # full mix also shelved the noise into hiss. Brightness must come from
+    # the engine's own harmonics; the turbulence stays a low bed.
+    harm = org / rms(org) * np.sqrt(w_org) + syn / rms(syn) * np.sqrt(w_syn)
     a = float(np.exp(-2.0 * np.pi * 700.0 / SR))
-    lp = np.empty_like(sig); acc = 0.0
-    for i in range(len(sig)):
-        acc = a * acc + (1.0 - a) * sig[i]
+    lp = np.empty_like(harm); acc = 0.0
+    for i in range(len(harm)):
+        acc = a * acc + (1.0 - a) * harm[i]
         lp[i] = acc
-    hf = sig - lp                      # the content above the shelf corner
-    sig = sig + 0.68 * hf              # +4.5 dB shelf
+    harm = harm + 0.55 * hf_gain(harm, lp)     # +3.8 dB shelf, harmonics only
+    sig = harm + nz / rms(nz) * np.sqrt(w_nz)
     sig = sig / rms(sig) * 0.22        # re-normalize family level
 
     # SLOW PSEUDO-RANDOM PULSE-LEVEL VARIATION on the WHOLE mix (~1-2 dB):
@@ -214,19 +217,19 @@ def build_point(rpm, *, overrun, rng):
         # half-order, every one exactly loop-periodic, neighbours beating.
         k_half = n_cycles // 2
         am = np.zeros(n_gen)
-        for dk, depth in ((0, 0.30), (-1, 0.16), (+1, 0.14), (-2, 0.09), (+2, 0.07)):
+        for dk, depth in ((0, 0.14), (-1, 0.08), (+1, 0.07), (-2, 0.05), (+2, 0.04)):   # BRRAAHPP fix: mutter, not bark
             am += depth * np.sin(2 * np.pi * (k_half + dk) / loop_s * t + rng.uniform(0, 2 * np.pi))
         sig *= 1.0 + np.clip(am, -0.85, 0.85)
 
         # CRACKLE: unburnt-mixture pops, kept clear of the crossfade region.
-        n_crackle = rng.poisson((6.0 + 18.0 * rpm / 7000.0) * loop_s)
+        n_crackle = rng.poisson((2.5 + 8.0 * rpm / 7000.0) * loop_s)   # BRRAAHPP fix: sparser
         ref = rms(sig)
         for _ in range(n_crackle):
             dur = int(SR * rng.uniform(0.0015, 0.005))
             pos = int(rng.uniform(xfade_n, loop_len - dur - 1))
             burst = rng.standard_normal(dur) * np.exp(-np.arange(dur) / (0.25 * dur + 1))
-            burst = resonant_bandpass(burst, SR, center_hz=rng.uniform(1200, 4200), q=1.2, gain=1.0)
-            sig[pos:pos + dur] += burst * ref * rng.uniform(1.2, 3.0)
+            burst = resonant_bandpass(burst, SR, center_hz=rng.uniform(700, 2200), q=1.2, gain=1.0)
+            sig[pos:pos + dur] += burst * ref * rng.uniform(0.5, 1.2)   # BRRAAHPP fix: quieter, rounder pops
 
     sig /= np.max(np.abs(sig)) + 1e-9
     return close_loop(sig, loop_len, xfade_n)
