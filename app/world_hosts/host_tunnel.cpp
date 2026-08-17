@@ -1922,6 +1922,31 @@ int hostTunnel(HostContext& hc) {
             }
         }
 
+        // ---- JAKE PUSHES THE CAR (Tim: "when jake gets out, he should be
+        // able to push the car out of such a situation"). Hold F beside the
+        // car: the handbrake releases and a steady ~4 kN shove is applied at
+        // ground height toward wherever Jake faces the car from — enough to
+        // roll a 1,083 kg car out of a wedge (rolling resistance is ~150 N),
+        // nowhere near enough to launch it. Physically honest: one determined
+        // human genuinely can push a 993.
+        bool pushing = false;
+        float pushDir[3] = { 0, 0, 0 };
+        if (!driving && footSpawned && carBuilt && kd(GLFW_KEY_F)) {
+            float vp[3]; car.chassisPos(vp);
+            const x3::phys::Vec3 ft = onFoot.feet();
+            const float pdx = vp[0] - ft.x, pdz = vp[2] - ft.z;
+            const float d2 = pdx * pdx + pdz * pdz;
+            if (d2 < 3.5f * 3.5f && d2 > 0.01f) {
+                const float inv = 1.0f / std::sqrt(d2);
+                pushing = true;
+                pushDir[0] = pdx * inv; pushDir[2] = pdz * inv;
+            }
+        }
+        if (pushing)
+            phys->applyImpulse(car.chassis(),
+                x3::phys::Vec3{ pushDir[0] * 4000.0f * fdt, 0.0f,
+                                pushDir[2] * 4000.0f * fdt });
+
         x3::phys::VehicleInput in;
         // A PARKED CAR STAYS PARKED — and a car you STEP OUT OF stops. The
         // handbrake alone locks only the rears, so getting out at speed sent
@@ -1930,10 +1955,13 @@ int hostTunnel(HostContext& hc) {
         // on all four until it is actually stationary; then the handbrake
         // holds it and the engine sits at idle (throttle zero IS idle — the
         // audio follows effectiveThrottle, which is unconditionally zeroed).
+        // EXCEPT while Jake pushes: a push against the parking brake is a
+        // push against a wall, so the brake lifts for exactly as long as F
+        // is held in range.
         if (!driving) {
             in = x3::phys::VehicleInput{};
-            in.handBrake = 1.0f;
-            if (std::fabs(car.forwardSpeed()) > 0.4f) in.brake = 1.0f;
+            in.handBrake = pushing ? 0.0f : 1.0f;
+            if (!pushing && std::fabs(car.forwardSpeed()) > 0.4f) in.brake = 1.0f;
         }
         else if (carBuilt) {
             in.throttle = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
@@ -2426,8 +2454,9 @@ int hostTunnel(HostContext& hc) {
                 if (driving) prompt = "E  GET OUT";
                 else if (footSpawned) {
                     const float dxc = cx - parkedAt[0], dzc = cz - parkedAt[2];
-                    prompt = (dxc*dxc + dzc*dzc <= 16.0f) ? "E  GET IN"
-                                                          : "WALK BACK TO THE CAR TO DRIVE";
+                    prompt = (dxc*dxc + dzc*dzc <= 16.0f)
+                                 ? (pushing ? "PUSHING..." : "E  GET IN    F  PUSH")
+                                 : "WALK BACK TO THE CAR TO DRIVE";
                 }
                 if (prompt && hw2 && hh2) {
                     const float px = std::floor((float)hh2 * 0.026f);
