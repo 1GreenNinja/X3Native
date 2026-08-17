@@ -156,52 +156,58 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // panels part along X UNDER the rim ends), hazard yellow with a faint self-glow so
     // it reads in the cell's pooled shadow. The status light sits on the -Z rim corner:
     // RED while locked, flipped GREEN by tick() the frame the hatch unlocks/opens.
+    // R8 (owner review 2026-08-16: "a trap door frame in the middle of the cell? That
+    // is pure 3 year old block crayon slop"): the raised hazard-YELLOW curb rim +
+    // glowing status CUBE are gone. A maintenance hatch is MACHINED INTO the deck, not
+    // placed on it: the read is now a thin, near-flush, dark-gunmetal frame trim — two
+    // nested low rings (outer 8 mm, inner 16 mm proud: a stepped chamfer profile) with
+    // the floor-textured panels continuing the deck inside it, so the hatch is
+    // discovered by its clean machined seam line, not by a painted block. The status
+    // LENS survives (gameplay: tick() flips it red -> green on unlock) but is a small
+    // recessed dot sunk into the trim ring corner, not a glowing brick.
     {
-        const float ho   = kCellHatchHalf;          // opening half-extent
-        const float curbW = 0.09f;                  // rim thickness (out from the opening)
-        const float curbH = 0.045f;                 // raised lip height above the floor
-        // Curb center: base 5 mm above the floor plane (no coplanar z-fight with the
-        // floor slab or the flush panels sliding underneath), top at ~floor + 0.095.
-        const float y     = cellCenter.y + curbH + 0.005f;
-        // Hazard AMBER, not toy yellow: desaturated warm base + a restrained glow so
-        // the rim reads as painted metal catching light, not an emissive plastic bar.
-        // R7 (review shots): the near curb still BLEW OUT butter-yellow under the cell
-        // pools while the far curbs sat unlit — an asymmetric one-glowing-bar read.
-        // Darker base + near-off glow; the dedicated hatch downlight (cell_dressing)
-        // now carries an even read across all four curbs.
-        const float yellow[4] = { 0.40f, 0.29f, 0.06f, 1.0f };
-        const float glow[4]   = { 0.12f, 0.085f, 0.012f, 0.14f };
-        auto curb = [&](float hx, float hz, float ox, float oz) {
-            x3::prims::PrimMesh geo = x3::prims::makeBox(hx, curbH, hz, 0, 0, 0, 1.0f);
+        const float ho    = kCellHatchHalf;         // opening half-extent
+        // Dark worn gunmetal, no glow: the frame catches the hatch downlight
+        // (cell_dressing) and reads as metal; discovery comes from the seam geometry.
+        const float steel[4] = { 0.105f, 0.110f, 0.120f, 1.0f };
+        auto ring = [&](float hx, float hz, float ox, float oz, float h) {
+            x3::prims::PrimMesh geo = x3::prims::makeBox(hx, h, hz, 0, 0, 0, 1.0f);
             Entity e;
             e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                        geo.index.data(), (uint32_t)geo.index.size());
-            e.baseColor[0]=yellow[0]; e.baseColor[1]=yellow[1]; e.baseColor[2]=yellow[2]; e.baseColor[3]=1.0f;
-            e.emissive[0]=glow[0]; e.emissive[1]=glow[1]; e.emissive[2]=glow[2]; e.emissive[3]=glow[3];
+            e.baseColor[0]=steel[0]; e.baseColor[1]=steel[1]; e.baseColor[2]=steel[2]; e.baseColor[3]=1.0f;
             e.tag = (uint32_t)Tag::Prop;
-            e.transform[12]=hatchCenter.x+ox; e.transform[13]=y; e.transform[14]=hatchCenter.z+oz;
+            // Base 5 mm above the floor plane (never coplanar with the slab top or the
+            // panels sliding underneath).
+            e.transform[12]=hatchCenter.x+ox; e.transform[13]=cellCenter.y+h+0.005f;
+            e.transform[14]=hatchCenter.z+oz;
             scene.add(e);
         };
-        // Two long rims along X (the +/-Z sides, spanning the full opening + corners),
-        // two short rims along Z (the +/-X sides, between them).
-        curb(ho + curbW, curbW, 0.0f, -(ho + curbW * 0.5f) - 0.0f);
-        curb(ho + curbW, curbW, 0.0f,  (ho + curbW * 0.5f) + 0.0f);
-        curb(curbW, ho, -(ho + curbW * 0.5f), 0.0f);
-        curb(curbW, ho,  (ho + curbW * 0.5f), 0.0f);
-        // STATUS LIGHT: a small lens on the -X/-Z rim corner. Starts locked-RED.
+        // A full ring = two long bars along X (+/-Z sides, spanning the corners) + two
+        // short bars along Z between them. Outer ring: wide + almost flush (the frame
+        // plate let into the deck). Inner ring: narrower + a step taller (the seat lip
+        // the lid closes onto) — the step is the machined chamfer read.
+        auto fullRing = [&](float inner, float w, float h) {
+            ring(inner + w, w * 0.5f, 0.0f, -(inner + w * 0.5f), h);
+            ring(inner + w, w * 0.5f, 0.0f,  (inner + w * 0.5f), h);
+            ring(w * 0.5f, inner, -(inner + w * 0.5f), 0.0f, h);
+            ring(w * 0.5f, inner,  (inner + w * 0.5f), 0.0f, h);
+        };
+        fullRing(ho + 0.05f, 0.07f, 0.008f);        // outer frame plate, 8 mm proud
+        fullRing(ho,         0.05f, 0.016f);        // inner seat lip, 16 mm proud
+        // STATUS LENS: a low 4 cm dot recessed into the +Z trim bar's -X corner (faces
+        // the room; the -Z corner is occluded by the code console's foot). Same
+        // entity contract as before — tick() flips emissive red -> green.
         {
-            // R7: 0.055 -> 0.085 half-extent + hotter lens — unreadable from spawn range.
-            x3::prims::PrimMesh geo = x3::prims::makeBox(0.085f, 0.035f, 0.085f, 0, 0, 0, 1.0f);
+            x3::prims::PrimMesh geo = x3::prims::makeBox(0.040f, 0.014f, 0.040f, 0, 0, 0, 1.0f);
             Entity e;
             e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                        geo.index.data(), (uint32_t)geo.index.size());
             e.baseColor[0]=0.12f; e.baseColor[1]=0.05f; e.baseColor[2]=0.05f; e.baseColor[3]=1.0f;
-            e.emissive[0]=1.0f; e.emissive[1]=0.08f; e.emissive[2]=0.05f; e.emissive[3]=2.8f;  // locked RED
+            e.emissive[0]=1.0f; e.emissive[1]=0.08f; e.emissive[2]=0.05f; e.emissive[3]=0.9f;  // locked RED
             e.tag = (uint32_t)Tag::Prop;
-            // R7: on the -X/+Z corner — the -Z corner sits at the code console's foot,
-            // occluded from every approach (bed, door, terminal). +Z faces the room.
-            e.transform[12]=hatchCenter.x-(ho+curbW*0.5f); e.transform[13]=cellCenter.y+2.0f*curbH+0.03f;
-            e.transform[14]=hatchCenter.z+(ho+curbW*0.5f);
+            e.transform[12]=hatchCenter.x-(ho+0.02f); e.transform[13]=cellCenter.y+0.030f;
+            e.transform[14]=hatchCenter.z+(ho+0.085f);
             m_statusEnt = scene.add(e);
         }
     }
