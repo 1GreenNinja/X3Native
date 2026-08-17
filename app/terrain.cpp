@@ -483,6 +483,16 @@ x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
 
 // LOD by center-to-camera distance. Thresholds scale with tile size so the
 // scheme is resolution-independent. Near = Full, mid = Half, far = Quarter.
+// 9-point corridor-touch test for a tile footprint (corners, edge midpoints,
+// center). 32 m tiles vs ~27 m corridors: if any sample is inside, pin.
+bool tileTouchesCorridor(float ox, float oz, float size) {
+    for (int j = 0; j <= 2; ++j)
+        for (int i = 0; i <= 2; ++i)
+            if (terrainCorridorContains(ox + size * 0.5f * i, oz + size * 0.5f * j))
+                return true;
+    return false;
+}
+
 TerrainLod lodForDist(const TerrainConfig& cfg, float dist) {
     const float nearD = cfg.tileSize * 2.5f;
     const float midD  = cfg.tileSize * 6.0f;
@@ -1461,6 +1471,7 @@ void Terrain::build(Scene& scene, x3::rhi::IRenderDevice& device,
             t.originZ = m_worldMinZ + gz * m_cfg.tileSize;
             t.centerX = t.originX + m_cfg.tileSize * 0.5f;
             t.centerZ = t.originZ + m_cfg.tileSize * 0.5f;
+            t.corridorPin = tileTouchesCorridor(t.originX, t.originZ, m_cfg.tileSize);
 
             for (int l = 0; l < (int)TerrainLod::Count; ++l) {
                 buildTileMeshAbs(m_cfg, t.originX, t.originZ, (TerrainLod)l, verts, idx);
@@ -1521,7 +1532,8 @@ uint32_t Terrain::updateLod(Scene& scene, float camX, float camZ) {
     for (auto& t : m_tiles) {
         const float dx = t.centerX - camX, dz = t.centerZ - camZ;
         const float dist = std::sqrt(dx * dx + dz * dz);
-        const TerrainLod want = lodForDist(m_cfg, dist);
+        TerrainLod want = lodForDist(m_cfg, dist);
+        if (t.corridorPin) want = TerrainLod::Full;   // the seam fix
         if (want != t.activeLod) {
             t.activeLod = want;
             if (t.entityId != kNoLink && t.entityId < scene.size())
@@ -1699,6 +1711,7 @@ void TerrainStreamer::upload(Scene& scene, x3::rhi::IRenderDevice& device,
     TerrainTile& t = *tile;
     t.gx = r.gx; t.gz = r.gz;
     t.originX = r.originX; t.originZ = r.originZ;
+    t.corridorPin = tileTouchesCorridor(t.originX, t.originZ, m_cfg.tileSize);   // seam fix
     t.centerX = r.centerX; t.centerZ = r.centerZ;
     t.minY = r.minY; t.maxY = r.maxY;
 
@@ -1895,7 +1908,8 @@ uint32_t TerrainStreamer::update(Scene& scene, x3::rhi::IRenderDevice& device,
         TerrainTile& t = *kv.second;
         const float dx = t.centerX - focusX, dz = t.centerZ - focusZ;
         const float dist = std::sqrt(dx * dx + dz * dz);
-        const TerrainLod want = lodForDist(m_cfg, dist);
+        TerrainLod want = lodForDist(m_cfg, dist);
+        if (t.corridorPin) want = TerrainLod::Full;   // the seam fix
         if (want != t.activeLod) {
             t.activeLod = want;
             if (t.entityId != kNoLink && t.entityId < scene.size())

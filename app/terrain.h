@@ -387,6 +387,12 @@ struct TerrainTile {
     x3::phys::BodyId    body;                  // static collision (LOD0 triangles)
     uint32_t            entityId = kNoLink;    // scene entity drawing the active LOD
     TerrainLod          activeLod = TerrainLod::Full;
+    // THE SEAM FIX: tiles touching a corridor are PINNED to full LOD. Coarse
+    // triangles spanning the corridor edge interpolate bank->road and slice a
+    // grass wedge up through the pavement (the owner's diagonal seam). The
+    // verts were honest; the interpolation was the knife. Roads are where the
+    // player looks — full res there is the cheapest correctness on offer.
+    bool corridorPin = false;
 };
 
 // ---------------------------------------------------------------------------
