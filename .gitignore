@@ -114,6 +114,12 @@ assets/converted_glb/ShowRoom_Vol30/*
 # Performance-shop build save (per-machine player state)
 vehbuild.json
 assets/surface_library/
+# W-STATIONS (Lane 5): the gas-station structure is STORE-SERVED, like every
+# other big converted GLB - assets/manifest.json carries its sha and
+# `python tools/asset_store.py fetch --all` materialises it. Committing it
+# here is the exact mistake ENGINE_GOTCHAS 2.5 records (W3-2 had to be
+# git rm --cached'd back out).
+assets/converted_glb/GasStation/
 assets/converted_glb/Detention/
 # mines lane (2026-08-03): Armory mine kit � asset-store distributed (manifest.json),
 # never LFS (the LFS budget is exhausted fleet-wide; see the weapon-viewmodel note below).
@@ -160,3 +166,9 @@ assets/rigged_glb/BossBreederQueen_anim.glb
 assets/rigged_glb/Oracle_anim.glb
 assets/rigged_glb/AnnaBodySuit_anim.glb
 assets/rigged_glb/SalvariPrincess_anim.glb
+
+# agent scratch (per-worktree handoff notes, never mainline)
+HANDOFF.md
+
+# the asset catalog JSON is a 17 MB rebuildable index (tools/unitypackage_index.py)
+docs/design/ASSET_CATALOG.json

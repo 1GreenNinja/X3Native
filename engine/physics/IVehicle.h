@@ -304,6 +304,24 @@ struct WheeledTuning {
     // Brake torque (Nm, all wheels; hand-braked wheels keep their 2.5x lock factor).
     // <= 0 leaves brakes.
     float brakeTorque     = 0.0f;
+    // AERO DOWNFORCE scale (the spoiler/wing). The controller applies
+    //   F = downforce * m*g * min(0.35 * (v/31.3 m/s)^2, 1.10)
+    // along the chassis's -up every pre-step, at a point slightly BEHIND the
+    // center of mass (a rear wing loads the driven axle) — see the DOWNFORCE
+    // block in JoltVehicle.cpp preStep (paired constants live there, NO_SLOP
+    // rule 4). 1 = stock (~0.35x weight at 70 mph, capped at 1.10x weight),
+    // 0 = no aero, 2 = double. Mass-relative, so car_mass retunes keep the
+    // same character. Sentinel: < 0 leaves the current scale (0 is a real
+    // value — "spoiler off" — so the usual <=0-leaves rule can't apply).
+    // Console: `car_downforce`.
+    float downforce       = -1.0f;
+    // ROLL-RATE DAMPING (N*m*s/rad about the chassis forward axis), applied
+    // only while >= 3 wheels have ground contact (never fights an airborne
+    // car). The flip-resistance tool that is SAFE at 60 Hz — stiffer
+    // anti-roll bars are NOT (>= 15 kN/m the solver pumps the roll mode and
+    // flips the car; see WheeledVehicleDesc::antiRollFront). Sentinel: < 0
+    // leaves; 0 disables. Console: `car_rolldamp`.
+    float rollDamp        = -1.0f;
 };
 
 // Per-wheel render state (for drawing the wheel meshes at the right place). The
@@ -374,6 +392,15 @@ public:
     // caps at speed (owner receipt 2026-08-16: nitrous moved 121 -> 123 mph
     // and plateaued — only a measured force answers WHY). 0 for non-wheeled.
     virtual float driveForce() const { return 0.0f; }
+
+    // ---- BUOYANCY-only: move the water surface under this hull. ----
+    // BuoyancyDesc::seaLevel is ONE flat plane, fixed at build. A hull on a
+    // RIVER floats on a surface that descends downstream (and rises in rain),
+    // so the host re-feeds the LOCAL level here every step — the same level
+    // the water shader draws and worldWaterLevelAt reports, so a boat can
+    // never float above or sink under the visible surface (X3Native task #32,
+    // ONE water truth). Returns false for non-buoyancy controllers (default).
+    virtual bool setSeaLevel(float y) { (void)y; return false; }
 
     // Apply a live performance tuning (see WheeledTuning). Mutates the running
     // Jolt engine/wheel settings + the chassis mass IN PLACE — no constraint

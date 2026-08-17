@@ -30,6 +30,18 @@
       "source_note": "F3: hospital cot for the canon detention cell (textures injected)"
     },
     {
+      "repo_path": "assets/converted_glb/GasStation/gas_pump_miami.glb",
+      "sha256": "8ed7f9aaf3b39c125c624a7b90f9c07ea52e787b819696156a9e1444b680a43c",
+      "size": 4442444,
+      "source_note": "W-STATIONS Lane 5: Leartes Miami Vice City SM_Gaspump, LOD0 + BC/N/ORM via tools/w5_build_station_glb.py build_miami_pump (licensed pack, \\p13700\\G)"
+    },
+    {
+      "repo_path": "assets/converted_glb/GasStation/gas_station_mega.glb",
+      "sha256": "340b39b4a1d90dbeb72b3c837c1a1cd47111de8ac157db55460fbf37230c4a8b",
+      "size": 1700448,
+      "source_note": "W-STATIONS Lane 5: Mega Open World City Pack Fuel_Station_Model, textured via tools/w5_build_station_glb.py (licensed Unity pack, D:/Assets)"
+    },
+    {
       "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Ceiling_A.glb",
       "sha256": "a4f5d80cb143aff31d1aa11be6b8c9218b305ad64289d518c11398b7796e10bd",
       "size": 7188348,
@@ -306,6 +318,132 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse01.glb",
+      "sha256": "b0e37c841b954ebfb03aeb2a6d03ff0d06aea805e5d42e8ae21a805f6a104d9a",
+      "size": 13278756,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse02.glb",
+      "sha256": "5f7a95bb55264833825b1267254f518410ae652f45cf2207173edc3bce940d00",
+      "size": 12226996,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse03.glb",
+      "sha256": "5d4d8fa22cb3eb6b21ee2002cae87dd0d8ad46f4dbaabeaf83bac77e8642e305",
+      "size": 14610324,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse04.glb",
+      "sha256": "aaaa34fdc1aa55cef419dbaf7407aa41d3c577bf7749da56ac5fe9c83bf6e6a6",
+      "size": 13982976,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_StockageWood_01a.glb",
+      "sha256": "9a523284fd3a9edb4e2c232eb0443537da5f3a6d50973843dbec847c4859f6a4",
+      "size": 462132,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_StoneHouse01_JustBuilding.glb",
+      "sha256": "a3f754570776bd0ba774c12d96b37e73ce3d5fa052e818a51ed9c39238c22252",
+      "size": 13684324,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_StoneHouse01_WithSetDressing.glb",
+      "sha256": "9ff7cfae56e6ea40cdc2ba4d2c3d8c54003d346badd427f22b4282b92bf480f6",
+      "size": 21103424,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_StoneHouse02.glb",
+      "sha256": "bdfc50beffc777a8083c1e555a168e4767dc0ae3730568d514aeafca4eff5b8f",
+      "size": 12506088,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01a.glb",
+      "sha256": "a55c87e4d1d0c79a0c46ce4642c0865241ae9b4dd202f89e1cc78a959933dedc",
+      "size": 567008,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01c.glb",
+      "sha256": "f328aac8c8174a66d764f9f68142bf2273da4caa1492de57cbd377449a89095f",
+      "size": 772604,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01e.glb",
+      "sha256": "995d3d34428f223ad1f4dca556f0c6aa8f755a1ca23dc713df34741f3092c21a",
+      "size": 933908,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01f.glb",
+      "sha256": "db3df894d1109c5df2be8bef9dc2f3298d67ca24d0fe5fbfc69347934a15b69f",
+      "size": 1037824,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_WoodCart_01a.glb",
+      "sha256": "d5c7b83892fac7e2b239fa5e8a4a959430dce68bd2574282654057de7a8c21e2",
+      "size": 801664,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_WoodCart_02a.glb",
+      "sha256": "fb0f551539695aff5bd83ee3cbd1662f0adde98e4108cc512446d2b2e8ed4e1e",
+      "size": 876884,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_WoodLightTorch_01a.glb",
+      "sha256": "326b49685564ad1e589aa66bfb220864d7e16512fbb6d068505374b35cb9d3b8",
+      "size": 296532,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_WoodLightTorch_01b.glb",
+      "sha256": "25efa57c67c7faef9169570897071c993b4900ac7a9fe263592e6ab17f9f9ad9",
+      "size": 296428,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_WoodStorage_01b.glb",
+      "sha256": "2cd9ef10cd0c55163a33505958cdba9718acbe7aea39234f9927dc40b4a6507d",
+      "size": 1090392,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_WoodStorage_01c.glb",
+      "sha256": "60bc5ff8f9b124e66033ea5a09e0c1406ee3d28ab47e90634503d2654551f74a",
+      "size": 924440,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_WoodenHouse01_JustBuilding.glb",
+      "sha256": "da9b4d6a115bee7880f6272ef150d2e35a0df963fe2946027e26f63183ed509c",
+      "size": 10526028,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_WoodenHouse02.glb",
+      "sha256": "43a10d374aef4058d69c320f77ef5aa212bb83892ed7f99862d42cf751dc4620",
+      "size": 9186040,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Town/PF_WoodenHouse03.glb",
+      "sha256": "ba784a16bdc46232c5773493477b057ce837cfdfea31b00debd0d8b2a281807b",
+      "size": 11400584,
+      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+    },
+    {
       "repo_path": "assets/converted_glb/Vehicles/CTR.glb",
       "sha256": "68b2ed68ba6258f33c2bf760879ad740e22d6034fdd9cdaccaa820b6e563b1af",
       "size": 4722024,
@@ -364,6 +502,30 @@
       "sha256": "6fafa2b87ffb734ce7c310757bbf45179c94684a9fe54f09412f2e56b3699323",
       "size": 2102456,
       "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/OldVan.glb",
+      "sha256": "40f15ddf6cacf6cb804133b4c3be35191854995d57ea9165f6858b31899c31f9",
+      "size": 3149000,
+      "source_note": "W-TRAFFIC roster: armory finds, draco-decoded via tools/traffic_decode_batch.py (npx @gltf-transform/cli copy); audited textured + metre-scale by tools/traffic_roster_audit.py"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/Pickup2_URP.glb",
+      "sha256": "708ac260c23b676e52fa676e8c0d1359ff7c8f9f69b1e08593289b266a3f7646",
+      "size": 5548440,
+      "source_note": "W-TRAFFIC roster: armory finds, draco-decoded via tools/traffic_decode_batch.py (npx @gltf-transform/cli copy); audited textured + metre-scale by tools/traffic_roster_audit.py"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/Sedan_Car3.glb",
+      "sha256": "32483b48ee8fdfaba4b262ea60cb30006c9db72f370d7ead7d6fcd721ba331a4",
+      "size": 3622160,
+      "source_note": "W-TRAFFIC roster: armory finds, draco-decoded via tools/traffic_decode_batch.py (npx @gltf-transform/cli copy); audited textured + metre-scale by tools/traffic_roster_audit.py"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/Sedan_Car4.glb",
+      "sha256": "eef866bad2374a62d5f3468985f257ec40a35a9414bbb19d0840b34d210fefb0",
+      "size": 3680372,
+      "source_note": "W-TRAFFIC roster: armory finds, draco-decoded via tools/traffic_decode_batch.py (npx @gltf-transform/cli copy); audited textured + metre-scale by tools/traffic_roster_audit.py"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Truck.glb",

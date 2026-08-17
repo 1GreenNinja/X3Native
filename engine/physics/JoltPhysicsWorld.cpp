@@ -442,6 +442,65 @@ public:
         return createBody(res.Get(), pos, mass, layer);
     }
 
+    // ---- KINEMATIC bodies (W-TRAFFIC; see IPhysicsWorld.h) -----------------
+    BodyId addKinematicBox(Vec3 halfExtents, Vec3 pos, Layer layer) override {
+        JPH::Vec3 he(halfExtents.x, halfExtents.y, halfExtents.z);
+        float minHe = std::min({ he.GetX(), he.GetY(), he.GetZ() });
+        float conv = std::min(0.05f, minHe * 0.1f);
+        JPH::BoxShapeSettings ss(he, conv);
+        ss.SetEmbedded();
+        auto res = ss.Create();
+        if (res.HasError()) {
+            x3::logError(std::string("[phys] kinematic box: ") + res.GetError().c_str());
+            return {};
+        }
+        JPH::BodyInterface& bi = m_system->GetBodyInterface();
+        JPH::BodyCreationSettings bcs(res.Get(), toRJ(pos), JPH::Quat::sIdentity(),
+                                      JPH::EMotionType::Kinematic, toObjLayer(layer));
+        // makeBodyDynamic() flips this body live (the traffic-car "goes loose on
+        // hard impact" path) — Jolt only allows SetMotionType on bodies created
+        // with the flag, and a dynamic body needs mass properties, so both are
+        // staged here. The 1400 kg default is only a placeholder inertia basis;
+        // makeBodyDynamic rescales to the caller's mass.
+        bcs.mAllowDynamicOrKinematic = true;
+        bcs.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+        bcs.mMassPropertiesOverride.mMass = 1400.0f;
+        JPH::Body* body = bi.CreateBody(bcs);
+        if (!body) { x3::logError("[phys] kinematic CreateBody failed (body limit?)"); return {}; }
+        bi.AddBody(body->GetID(), JPH::EActivation::Activate);
+        uint32_t id = m_nextId++;
+        m_bodies[id] = body->GetID();
+        m_idOfBody[body->GetID().GetIndexAndSequenceNumber()] = id;
+        m_layerOf[id] = layer;
+        return BodyId{ id };
+    }
+
+    void moveKinematic(BodyId id, Vec3 targetPos, const float targetQuat[4], float dt) override {
+        if (dt <= 0.0f || !targetQuat) return;
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return;
+        JPH::Quat q(targetQuat[0], targetQuat[1], targetQuat[2], targetQuat[3]);
+        if (q.LengthSq() < 1e-12f) q = JPH::Quat::sIdentity();
+        else                       q = q.Normalized();
+        // MoveKinematic derives the velocities that reach the target over dt —
+        // the whole reason these bodies aren't SetPosition-teleported statics.
+        m_system->GetBodyInterface().MoveKinematic(it->second, toRJ(targetPos), q, dt);
+    }
+
+    bool makeBodyDynamic(BodyId id, float mass) override {
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end() || mass <= 0.0f) return false;
+        const JPH::BodyLockInterfaceNoLock& bli = m_system->GetBodyLockInterfaceNoLock();
+        JPH::Body* b = bli.TryGetBody(it->second);
+        if (!b || b->IsStatic() || !b->GetMotionProperties()) return false;
+        JPH::MassProperties mp = b->GetShape()->GetMassProperties();
+        mp.ScaleToMass(mass);
+        b->GetMotionProperties()->SetMassProperties(JPH::EAllowedDOFs::All, mp);
+        m_system->GetBodyInterface().SetMotionType(it->second, JPH::EMotionType::Dynamic,
+                                                   JPH::EActivation::Activate);
+        return true;
+    }
+
     void removeBody(BodyId id) override {
         auto it = m_bodies.find(id.id);
         if (it == m_bodies.end()) {

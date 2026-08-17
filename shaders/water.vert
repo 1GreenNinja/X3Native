@@ -38,6 +38,16 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     // x = clarity (0 = legacy opaque; fragment-stage alpha) — declared here so
     // the block layout matches the fragment stage's.
     vec4  p4;
+    // RIVER MODE (task #32 — one water truth). x = riverNodeCount (0 = the
+    // historic flat sea, byte-identical), y = riverHalfWidth (m).
+    vec4  riverInfo;
+    // xy = ocean basin centre (world XZ), z = basin radius (0 = no sea
+    // fallback), w = oceanLevel (sea surface Y the estuary hands off to).
+    vec4  riverBasin;
+    // Per node: x = world x, y = world z, z = waterY. The SAME node table the
+    // terrain carve and worldWaterLevelAt interpolate — the drawn plane can
+    // no longer stand above the carved water table downstream.
+    vec4  riverNodes[20];
 } u;
 
 layout(location = 0) in vec2 inGrid;   // patch coord in [-1,1]
@@ -45,6 +55,10 @@ layout(location = 0) in vec2 inGrid;   // patch coord in [-1,1]
 layout(location = 0) out vec3 vWorldPos;   // displaced world position
 layout(location = 1) out vec3 vNormal;     // analytic surface normal
 layout(location = 2) out vec2 vGrid;       // [-1,1] patch coord (edge fade)
+// River-mode coverage: 1 = water here, fading to 0 across the channel's
+// waterline (fragment multiplies alpha; <= 0 discards). Always 1 in legacy
+// flat-sea mode so every existing world renders byte-identically.
+layout(location = 3) out float vMask;
 
 // One Gerstner wave: displaces a flat point p (XZ) and accumulates the analytic
 // partial derivatives needed to build the surface normal. Direction d is a unit
@@ -87,6 +101,51 @@ void main() {
     vec2 center = floor(u.camPos.xz / snap) * snap;
     vec2 basePos = center + inGrid * halfExt;  // flat world XZ before waves
 
+    // ---- RIVER MODE (task #32): the surface level FOLLOWS the channel. ----
+    // Closest approach to the node polyline (the CPU polyClosest, in GLSL):
+    // the per-node waterY interpolated at the closest point is the local
+    // level — the same answer worldWaterLevelAt gives, so the drawn plane
+    // and the query are ONE truth. Outside halfWidth the surface fades out
+    // (the waterline), except inside the ocean basin disc where the level
+    // hands off to the sea instead (the estuary reaches open water).
+    float mask = 1.0;
+    int rn = int(u.riverInfo.x + 0.5);
+    if (rn >= 2) {
+        float hw = max(u.riverInfo.y, 1.0);
+        float best = 1e30;
+        float lvl  = u.riverNodes[0].z;
+        for (int i = 0; i + 1 < rn; ++i) {
+            vec2  a  = u.riverNodes[i].xy;
+            vec2  b  = u.riverNodes[i + 1].xy;
+            vec2  ab = b - a;
+            float l2 = max(dot(ab, ab), 1e-6);
+            float t  = clamp(dot(basePos - a, ab) / l2, 0.0, 1.0);
+            vec2  dp = basePos - (a + ab * t);
+            float d2 = dot(dp, dp);
+            if (d2 < best) {
+                best = d2;
+                lvl  = mix(u.riverNodes[i].z, u.riverNodes[i + 1].z, t);
+            }
+        }
+        float d = sqrt(best);
+        vec2  bp = basePos - u.riverBasin.xy;
+        bool  inBasin = (u.riverBasin.z > 0.0) &&
+                        (dot(bp, bp) < u.riverBasin.z * u.riverBasin.z);
+        if (inBasin) {
+            // Estuary handoff: river level (rides ~0.1 proud) feathers into
+            // the sea surface past the channel edge; the whole basin disc is
+            // sea — terrain above oceanLevel clips it into the shoreline.
+            seaLevel = mix(lvl, u.riverBasin.w,
+                           smoothstep(hw - 6.0, hw + 14.0, d));
+        } else {
+            seaLevel = lvl;
+            // The waterline: fade out across the last 2 m to the ribbon edge
+            // (the banks cross the level between ~27 and ~34 m out, so this
+            // edge is normally already clipped underground by the depth test).
+            mask = 1.0 - smoothstep(hw - 1.5, hw + 0.5, d);
+        }
+    }
+
     // --- Sum a few Gerstner waves (varied dir/length/amp). The largest wave uses
     // baseLen; successive waves shorten + steepen for chop. Each wave's per-crest
     // steepness Q is normalized by (w*A*numWaves) so the surface never loops. ---
@@ -123,5 +182,6 @@ void main() {
     vWorldPos = worldPos;
     vNormal   = nrm;
     vGrid     = inGrid;
+    vMask     = mask;
     gl_Position = u.viewProj * vec4(worldPos, 1.0);
 }

@@ -2523,13 +2523,6 @@ struct RibbonMesh {
     bool empty() const { return i.empty(); }
 };
 
-// Sit the pavement just above the carve floor. The carve cuts to
-// (datum - kRoadFloorClear), so this puts the driving surface back AT the datum
-// with a hair of clearance -- the same trick as the tunnel slab, and
-// deliberately 0.02 m rather than the 0.14 m that had Tim's tunnel road
-// standing 1.18 ft proud of its own shoulder.
-constexpr float kPaveProud = 0.02f;
-
 } // namespace
 
 // ---------------------------------------------------------------------------

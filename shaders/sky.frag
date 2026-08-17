@@ -38,58 +38,19 @@ layout(location = 0) out vec4 outColor;
 // CLOUDS — a lit layer at altitude, not a texture on a dome.
 //
 // THE ONE DECISION THAT MATTERS: the view ray is intersected with a horizontal
-// PLANE at kCloudAlt and the noise is sampled at that world position. That is
-// what makes clouds behave: overhead they are broad and slow, toward the
-// horizon they compress and crowd together because the ray grazes the plane at
-// a shallow angle. Sampling noise by DIRECTION instead — the obvious shortcut —
-// gives a bowl of cotton wool that slides with the camera and never reads as
-// distance. Perspective is the whole effect.
+// PLANE at kCloudPlaneAlt and the noise is sampled at that world position.
+// That is what makes clouds behave: overhead they are broad and slow, toward
+// the horizon they compress and crowd together because the ray grazes the
+// plane at a shallow angle. Perspective is the whole effect.
 //
-// Everything else serves that:
-//   * fBm with a DOMAIN WARP so the shapes are billowed rather than griddy.
-//     Plain fBm reads as static; warping the sample point by another fBm is
-//     what turns blobs into something with flow in it.
-//   * A COVERAGE THRESHOLD, not a fog. Real fair-weather sky is mostly blue
-//     with distinct clouds in it, so the noise is remapped through a smoothstep
-//     whose floor rises with the cover parameter. Low cover = separate cumulus
-//     with blue between them; high cover = they merge into overcast.
-//   * SUN-SIDE SILVERING. A cloud is lit from one side: the density GRADIENT
-//     along the sun direction drives a bright rim, so the edge facing the sun
-//     glows and the far side stays grey-blue. Without this clouds are flat
-//     stickers, and no amount of noise detail fixes that.
-//   * HORIZON FADE. The layer dissolves into the haze band near the horizon so
-//     there is no hard line where the plane runs out.
+// The density function itself lives in inc/sky_clouds.glsl and is SHARED with
+// mesh.frag's ground cloud-shadows (task #27) — one function, one scale, one
+// drift, so the shade on the road sweeps with the deck overhead. That file
+// also carries the receipt for the "angular shard" defect this block replaced
+// (a sin()-based hash whose GPU precision collapse rendered every noise cell
+// as a flat hard-edged rectangle).
 // ===========================================================================
-
-float cloudHash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-}
-
-float cloudNoise(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);          // smoothstep interpolant
-    return mix(mix(cloudHash(i + vec2(0,0)), cloudHash(i + vec2(1,0)), u.x),
-               mix(cloudHash(i + vec2(0,1)), cloudHash(i + vec2(1,1)), u.x), u.y);
-}
-
-float cloudFbm(vec2 p) {
-    float a = 0.5, sum = 0.0;
-    for (int k = 0; k < 5; ++k) { sum += a * cloudNoise(p); p *= 2.03; a *= 0.5; }
-    return sum;
-}
-
-// Density in [0,1] at a world XZ on the cloud plane.
-float cloudDensity(vec2 wp, float cover, float t) {
-    vec2 drift = vec2(t * 0.006, t * 0.0022);          // slow, and not axis-aligned
-    vec2 p = wp * 0.00055 + drift;
-    // Domain warp: displace the sample by a coarser fBm. This is the difference
-    // between "noise" and "weather".
-    vec2 w = vec2(cloudFbm(p * 0.5 + 17.3), cloudFbm(p * 0.5 - 9.1));
-    float d = cloudFbm(p + (w - 0.5) * 1.6);
-    // Coverage: raise the floor with `cover` so low cover leaves real blue gaps.
-    float lo = mix(0.62, 0.24, clamp(cover, 0.0, 1.0));
-    return smoothstep(lo, lo + 0.22, d);
-}
+#include "inc/sky_clouds.glsl"
 
 
 // ---- Procedural starfield. Additive + gated to dark skies, so it is INVISIBLE by
@@ -284,35 +245,65 @@ void main() {
     // ---- CLOUDS: composited over the sky, under the sun disk. ---------------
     // Placed BEFORE the sun disk so the disk still burns through in front of a
     // thin edge, and AFTER the stars so a night sky keeps its clouds dark.
+    // cloudOcc is this pixel's deck opacity: the sun disk/glow below multiply
+    // by (1 - cloudOcc), so a thin edge lets the disk burn through while a
+    // storm deck CRUSHES it — a 4x-intensity disk punching a clean hole
+    // through a near-black overcast was the tell that the deck was a sticker.
+    float cloudOcc = 0.0;
     {
         float cover = clamp(sky.params.w, 0.0, 1.0);
         // haze < 0.5 shades toward deep space; no clouds out there.
         float atmo  = clamp(haze * 2.0, 0.0, 1.0);
-        if (cover > 0.001 && atmo > 0.001 && up > 0.0) {
-            const float kCloudAlt = 1400.0;                 // ~4,600 ft
-            float distToPlane = kCloudAlt / max(up, 0.02);   // ray -> plane
+        if (cover > 0.001 && atmo > 0.001 && up > 0.005) {
+            float distToPlane = kCloudPlaneAlt / max(up, 0.02);   // ray -> plane
             vec2  wp = sky.camPos.xz + dir.xz * distToPlane;
             float t  = sky.params.z;
 
-            float d = cloudDensity(wp, cover, t);
+            // Detail falls with DISTANCE: past a few km a noise cell is under a
+            // pixel and the high octaves alias into horizon static, so the far
+            // field keeps only the broad shapes (fractional-octave fade).
+            float oct = mix(2.0, float(CLOUD_FBM_OCTAVES),
+                            exp(-distToPlane * 0.00010));
+            float d = cloudCoverAt(wp, cover, t, oct);
 
-            // SUN-SIDE SILVERING from the density gradient along the sun's XZ
-            // heading: the edge facing the sun lights up, the far side does not.
-            vec2  sunXZ = normalize(sunDir.xz + vec2(1e-4));
-            float dAhead = cloudDensity(wp + sunXZ * 900.0, cover, t);
-            float rim    = clamp((d - dAhead) * 2.2, 0.0, 1.0);
+            if (d > 0.0005) {
+                // SUN-SIDE SILVERING from the density gradient along the sun's
+                // XZ heading: the edge facing the sun lights up, the far side
+                // stays body-coloured.
+                vec2  sunXZ = normalize(sunDir.xz + vec2(1e-4));
+                float dSun  = cloudCoverAt(wp + sunXZ * 750.0, cover, t, oct);
+                float rim   = clamp((d - dSun) * 2.6, 0.0, 1.0);
 
-            // Body colour: cool grey-white, warmed toward the sun's own colour.
-            vec3 lit   = mix(vec3(0.62, 0.66, 0.74), sky.sunColor.rgb * 1.15, 0.35);
-            vec3 shade = vec3(0.30, 0.33, 0.40);
-            float sunAlign = pow(max(dot(dir, sunDir), 0.0), 6.0);
-            vec3 cloudCol = mix(shade, lit, 0.35 + 0.65 * rim) + sunRGB * sunAlign * 0.55 * rim;
+                // GLOOM: fair-weather decks are white; past broken cover the
+                // deck darkens toward a storm base. Tim's storm spec: "Lots of
+                // dark clouds", bases near-black under heavy rain — the host
+                // pins cover >= 0.94 in a storm, which lands gloom ~1 here.
+                float gloom = smoothstep(0.55, 0.95, cover);
 
-            // Fade into the horizon haze, and ease in from the zenith so the
-            // layer has no hard edge where the plane runs out.
-            float horizonFade = smoothstep(0.02, 0.22, up);
-            float alpha = d * horizonFade * atmo;
-            col = mix(col, cloudCol, clamp(alpha, 0.0, 1.0));
+                // A cloud is lit from ABOVE: seen from underneath, the thicker
+                // the column the darker the base. baseDark is that thickness.
+                float baseDark = smoothstep(0.06, 0.80, d);
+                float sunI = clamp(sky.sunColor.a, 0.0, 1.5);
+                vec3 lit   = mix(vec3(0.88, 0.90, 0.95), sunRGB, 0.30)
+                           * mix(1.0, 0.42, gloom) * (0.55 + 0.45 * sunI);
+                vec3 shade = mix(vec3(0.44, 0.48, 0.56),   // fair cumulus base
+                                 vec3(0.105, 0.11, 0.135), // storm base: near-black
+                                 gloom);
+                vec3 cloudCol = mix(lit, shade, baseDark);
+                // Silver rim + forward scatter around the sun — daylight only
+                // (a storm deck has no silver to give).
+                cloudCol += sunRGB * rim * 0.40 * (1.0 - gloom) * (1.0 - 0.6 * baseDark);
+                float sunAlign = pow(max(dot(dir, sunDir), 0.0), 6.0);
+                cloudCol += sunRGB * sunAlign * 0.35 * (1.0 - gloom) * (1.0 - baseDark);
+
+                // OPTICAL alpha (1 - exp(-tau)): thin edges feather out instead
+                // of clipping — this curve is PAIRED with cloudShadowFactor's in
+                // inc/sky_clouds.glsl. Fade into the haze band at the horizon.
+                float alphaOpt    = 1.0 - exp(-d * 5.0);
+                float horizonFade = smoothstep(0.02, 0.16, up);
+                cloudOcc = clamp(alphaOpt * horizonFade * atmo, 0.0, 1.0);
+                col = mix(col, cloudCol, cloudOcc);
+            }
         }
     }
 
@@ -323,13 +314,13 @@ void main() {
     // toward the horizon (more aerosol path) for a believable late-day flare.
     float glow = pow(max(cosAngle, 0.0), 8.0)  * 0.20
                + pow(max(cosAngle, 0.0), 256.0) * 0.55;
-    col += sunRGB * glow * sunI;
+    col += sunRGB * glow * sunI * (1.0 - cloudOcc);
     // Sharp disk: a small angular cap (~0.5 deg) with a soft antialiased edge.
     // cos(0.5deg) ~ 0.99996; widen slightly so it reads on a 720p capture.
     float diskInner = 0.99986;   // ~0.95 deg
     float diskOuter = 0.99965;   // soft outer falloff
     float disk = smoothstep(diskOuter, diskInner, cosAngle);
-    col += sunRGB * disk * (4.0 * sunI);
+    col += sunRGB * disk * (4.0 * sunI) * (1.0 - cloudOcc);
 
     // ---- Below-horizon: ease into a muted ground tint so down-views aren't black.
     // The earth tone follows the AEROSOL HAZE: hazy daylight keeps the original

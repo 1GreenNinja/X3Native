@@ -840,9 +840,10 @@ void unregisterTunnelLightSource(const TunnelCorridorWorld* t) {
     v.erase(std::remove(v.begin(), v.end(), t), v.end());
 }
 
-uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3]) {
+uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3],
+                            const x3::rhi::PointLight* extra, uint32_t extraCount) {
     const auto& v = liveTunnels();
-    if (v.empty()) return 0;
+    if (v.empty() && extraCount == 0) return 0;
 
     // Gather with the squared distance to the camera. Squared: the ordering is
     // identical and it avoids a sqrt per light per frame.
@@ -857,19 +858,23 @@ uint32_t uploadTunnelLights(x3::rhi::IRenderDevice& device, const float camPos[3
             pool.push_back({ dx*dx + dy*dy + dz*dz, l });
         }
     }
-    if (pool.empty()) return 0;
+    if (pool.empty() && extraCount == 0) return 0;
 
     const uint32_t k = (uint32_t)std::min<size_t>(pool.size(), kMaxTunnelLightsInFlight);
     // partial_sort, not sort: we need the nearest K in order, not all of them.
-    std::partial_sort(pool.begin(), pool.begin() + k, pool.end(),
-                      [](const Scored& a, const Scored& b) { return a.d2 < b.d2; });
+    if (k > 0)
+        std::partial_sort(pool.begin(), pool.begin() + k, pool.end(),
+                          [](const Scored& a, const Scored& b) { return a.d2 < b.d2; });
 
     static std::vector<x3::rhi::PointLight> out;
     out.clear();
-    out.reserve(k);
+    out.reserve(k + extraCount);
+    // Transients FIRST (weapons task): a muzzle flash must survive even when
+    // the tunnel pool alone already fills the K budget.
+    for (uint32_t i = 0; i < extraCount; ++i) out.push_back(extra[i]);
     for (uint32_t i = 0; i < k; ++i) out.push_back(pool[i].l);
-    device.setPointLights(out.data(), k);
-    return k;
+    device.setPointLights(out.data(), (uint32_t)out.size());
+    return (uint32_t)out.size();
 }
 
 const TunnelRoute* registerTunnelCorridorFor(const TunnelSpec& spec) {

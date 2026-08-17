@@ -323,6 +323,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.jakeShot = true; o.worldMode = "tunnel"; o.screenshot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.jakeShotDir = argv[++i];
         }
+        else if (a == "--screenshot-town") {                                      // W-TOWN mountain-town proof set
+            o.townShot = true; o.worldMode = "tunnel"; o.screenshot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.townShotDir = argv[++i];
+        }
         else if (a == "--test-clubnpcs") o.testClubNpcs = true;
         else if (a == "--test-jukebox") o.testJukebox = true;
         else if (a == "--test-listen") o.testListen = true;
@@ -370,6 +374,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-routeframe") o.testRouteFrame = true;
         else if (a == "--test-roadnetwork") o.testRoadNetwork = true;
         else if (a == "--test-riverbridge") o.testRiverBridge = true;
+        else if (a == "--test-traffic") o.testTraffic = true;
+        else if (a == "--test-gasstation") o.testGasStation = true;
         else if (a == "--screenshot-editor") {
             o.editorShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.editorShotPath = argv[++i];

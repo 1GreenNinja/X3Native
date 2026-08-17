@@ -649,6 +649,170 @@ bool runRiverBridgeSelfTest() {
           rr.road.maxFloatM <= 8.0f,
           "RB6 the approaches reach the deck at grade", d);
 
+    // =======================================================================
+    // THE STATION SWEEP (W-WATER, task #32). RB5 above proves the levee holds
+    // for 500 ft around the crossing — but the FLOOD that started this lane
+    // was 300 m downstream of it: the drawn Gerstner plane was FLAT at the
+    // bridge's waterY while the channel descends ~1.2 m per node, so far from
+    // the bridge the painted surface stood over the banks and a bench shipped
+    // submerged at (-340, 11, -468). A gate that only looks at the bridge
+    // cannot see that. RB8-RB10 walk the WHOLE carved run.
+    // =======================================================================
+
+    // The DRAWN surface, computed the way water.vert computes it: closest
+    // approach to the node polyline the host feeds the shader
+    // (worldRiverRisenNodes — the risen table under rain), lerping waterY
+    // along the closest segment. This is deliberately an INDEPENDENT
+    // re-implementation of the query: if the drawn plane and worldWaterLevelAt
+    // ever split again (the whole defect), RB10 catches it.
+    auto drawnSurface = [](const WorldRiverNode* rn, uint32_t n,
+                           float x, float z, float& outDist) {
+        float best = 1e30f, lvl = n ? rn[0].waterY : 0.0f;
+        for (uint32_t i = 0; i + 1 < n; ++i) {
+            const float ax = rn[i].x,   az = rn[i].z;
+            const float bx = rn[i+1].x, bz = rn[i+1].z;
+            const float ex = bx - ax,   ez = bz - az;
+            const float l2 = std::max(ex*ex + ez*ez, 1e-6f);
+            float t = ((x - ax) * ex + (z - az) * ez) / l2;
+            t = std::clamp(t, 0.0f, 1.0f);
+            const float dx = x - (ax + ex * t), dz = z - (az + ez * t);
+            const float d2 = dx*dx + dz*dz;
+            if (d2 < best) { best = d2; lvl = rn[i].waterY + (rn[i+1].waterY - rn[i].waterY) * t; }
+        }
+        outDist = std::sqrt(best);
+        return lvl;
+    };
+
+    // Walk the carved run and report, per station, how much freeboard the bank
+    // crest has over the DRAWN water. Returns the worst (smallest) margin and
+    // logs the worst station. `label` names the weather state.
+    auto sweep = [&](const char* label, float& worstOut,
+                     float& worstX, float& worstZ, float& worstWY) {
+        WorldRiverNode risen[64];
+        const uint32_t n = worldRiverRisenNodes(risen, 64);
+        const uint32_t carve = std::min(worldRiverCarveCount(), n);
+        worstOut = 1e9f; worstX = worstZ = worstWY = 0.0f;
+        uint32_t stations = 0;
+        for (uint32_t i = 0; i + 1 < carve; ++i) {
+            float tx = risen[i+1].x - risen[i].x, tz = risen[i+1].z - risen[i].z;
+            const float segLen = std::sqrt(tx*tx + tz*tz);
+            if (segLen < 1e-3f) continue;
+            tx /= segLen; tz /= segLen;
+            const float px = -tz, pz = tx;          // left-hand normal
+            for (float s = 0.0f; s < segLen; s += 15.0f) {
+                const float cx = risen[i].x + tx * s, cz = risen[i].z + tz * s;
+                float dist = 0.0f;
+                const float wy = drawnSurface(risen, n, cx, cz, dist);
+                if (dist > kWorldRiverHalfWidth) continue;   // shader draws nothing here
+                // THE ESTUARY IS NOT A RIVER. Inside the ocean basin disc the
+                // shader hands the level off to the sea (water.vert's inBasin
+                // branch) and the basin floor is 190 ft down — there are no
+                // banks to hold, and grading the sea by a river's rule would
+                // fail every station. The sweep gates the reach the shader
+                // draws as RIVER; the sea is the ocean pass's business.
+                {
+                    const float bx = cx - kWorldOceanBasinX, bz = cz - kWorldOceanBasinZ;
+                    if (bx*bx + bz*bz < kWorldOceanBasinR * kWorldOceanBasinR) continue;
+                }
+                ++stations;
+                for (int side = -1; side <= 1; side += 2) {
+                    // The bank: highest ground over the levee band just
+                    // outside the ribbon. Water standing above THIS is water
+                    // on dry land.
+                    float crest = -1e9f;
+                    for (float l = kWorldRiverHalfWidth + 0.5f;
+                         l <= kWorldRiverHalfWidth + 26.0f; l += 2.5f)
+                        crest = std::max(crest,
+                            terrainHeightAtWorld(cx + px * l * side, cz + pz * l * side));
+                    if (crest - wy < worstOut) {
+                        worstOut = crest - wy; worstX = cx; worstZ = cz; worstWY = wy;
+                    }
+                }
+            }
+        }
+        x3::logInfo("[riverbridge] sweep(" + std::string(label) + "): " +
+                    std::to_string(stations) + " stations over " +
+                    std::to_string(carve) + " carved nodes; worst bank freeboard " +
+                    std::to_string(worstOut * kMToFt) + " ft at (" +
+                    std::to_string(worstX) + ", " + std::to_string(worstZ) +
+                    "), water Y " + std::to_string(worstWY));
+    };
+
+    // RB8 — DRY WEATHER: nowhere on the carved run does the drawn water stand
+    // above its bank crest. (Under the old flat plane this failed downstream.)
+    float dryWorst = 0, dwx = 0, dwz = 0, dwy = 0;
+    {
+        setWorldRiverRainRise(0.0f);
+        sweep("dry", dryWorst, dwx, dwz, dwy);
+        std::snprintf(d, sizeof(d),
+                      "worst bank freeboard %.2f ft at (%.0f, %.0f)",
+                      dryWorst * kMToFt, dwx, dwz);
+        check(dryWorst > 0.0f, "RB8 the drawn river stays inside its banks, whole run", d);
+    }
+
+    // RB9 — FULL STORM: the runoff rise is VISIBLE and still bounded by the
+    // banks. Both halves matter — a rise nobody can see is not a feature, and
+    // a rise that tops a bank is a flood. The rise is measured AT THE CROSSING
+    // (where the player stands and the captures are framed), not at the worst
+    // dry station: the cap is per-node freeboard, so the tightest bank on the
+    // run is exactly where the river is SUPPOSED to barely move.
+    {
+        setWorldRiverRainRise(0.0f);
+        const float dryAtBridge = worldWaterLevelAt(p.cx, p.cz);
+        setWorldRiverRainRise(kWorldRiverRainRiseMax);
+        const float rise = worldWaterLevelAt(p.cx, p.cz) - dryAtBridge;
+        float wetWorst = 0, wx = 0, wz = 0, wwy = 0;
+        sweep("storm", wetWorst, wx, wz, wwy);
+        std::snprintf(d, sizeof(d),
+                      "river up %.2f ft at the crossing, worst bank freeboard still "
+                      "%.2f ft at (%.0f, %.0f)",
+                      rise * kMToFt, wetWorst * kMToFt, wx, wz);
+        check(rise > 0.15f && wetWorst > 0.0f,
+              "RB9 heavy rain swells the river VISIBLY and never tops a bank", d);
+        setWorldRiverRainRise(0.0f);
+        (void)dwy;
+    }
+
+    // RB10 — ONE TRUTH (the lane's whole point): the surface the shader draws
+    // and the level worldWaterLevelAt reports are the same number everywhere
+    // inside the reach, dry AND swollen. The submerged bench happened because
+    // these two disagreed by 0.26 m only 32 m from the bridge.
+    {
+        float worst = 0.0f, wx = 0, wz = 0;
+        for (int pass = 0; pass < 2; ++pass) {
+            setWorldRiverRainRise(pass ? kWorldRiverRainRiseMax : 0.0f);
+            WorldRiverNode risen[64];
+            const uint32_t n = worldRiverRisenNodes(risen, 64);
+            const uint32_t carve = std::min(worldRiverCarveCount(), n);
+            for (uint32_t i = 0; i + 1 < carve; ++i) {
+                float tx = risen[i+1].x - risen[i].x, tz = risen[i+1].z - risen[i].z;
+                const float segLen = std::sqrt(tx*tx + tz*tz);
+                if (segLen < 1e-3f) continue;
+                tx /= segLen; tz /= segLen;
+                const float px = -tz, pz = tx;
+                for (float s = 0.0f; s < segLen; s += 12.0f)
+                    for (float l = -30.0f; l <= 30.0f; l += 10.0f) {
+                        const float cx = risen[i].x + tx * s + px * l;
+                        const float cz = risen[i].z + tz * s + pz * l;
+                        float dist = 0.0f;
+                        const float drawn = drawnSurface(risen, n, cx, cz, dist);
+                        if (dist > kWorldRiverHalfWidth) continue;
+                        const float q = worldWaterLevelAt(cx, cz);
+                        if (q <= kWorldWaterDry + 1.0f) continue;
+                        if (std::fabs(drawn - q) > worst) {
+                            worst = std::fabs(drawn - q); wx = cx; wz = cz;
+                        }
+                    }
+            }
+        }
+        setWorldRiverRainRise(0.0f);
+        std::snprintf(d, sizeof(d),
+                      "largest drawn-vs-query disagreement %.4f m at (%.0f, %.0f)",
+                      worst, wx, wz);
+        check(worst < 0.01f,
+              "RB10 the drawn surface and worldWaterLevelAt are ONE truth", d);
+    }
+
     // RB7 — determinism: re-register, the carved field answers identically
     // along the whole road.
     {

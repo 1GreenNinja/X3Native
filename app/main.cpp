@@ -359,6 +359,8 @@ int x3AppMain(int argc, char** argv) {
         _tf.testRouteFrame = o.testRouteFrame;
         _tf.testRoadNetwork = o.testRoadNetwork;
         _tf.testRiverBridge = o.testRiverBridge;
+        _tf.testTraffic = o.testTraffic;
+    _tf.testGasStation = o.testGasStation;
         _tf.testTunnelDrive = o.testTunnelDrive;
         _tf.testStreaming = o.testStreaming;
         _tf.testWorldStream = o.testWorldStream;
@@ -859,6 +861,7 @@ int x3AppMain(int argc, char** argv) {
         _hc.complexShot      = o.complexShot;      _hc.complexShotDir   = o.complexShotDir;
         _hc.tunnelShot       = o.tunnelShot;       _hc.tunnelShotDir    = o.tunnelShotDir;
         _hc.jakeShot         = o.jakeShot;         _hc.jakeShotDir      = o.jakeShotDir;
+        _hc.townShot         = o.townShot;         _hc.townShotDir      = o.townShotDir;
         // THE A/B SWITCHES HAVE TO BE SET BEFORE THE DISPATCH. These were only
         // assigned further down, in the block feeding the DEFAULT host — i.e.
         // after dispatchScreenshotHosts() had already returned. Every screenshot
