@@ -15,6 +15,7 @@
 #include "../terrain.h"
 #include "../tunnel_corridor.h"
 #include "../road_trees.h"
+#include "../town.h"
 #include "../forest.h"                   // W-FOREST — the sketch's brown regions
 #include "../tunnel_fitout.h"
 #include "../tunnel_rooms.h"
@@ -832,7 +833,53 @@ int hostTunnel(HostContext& hc) {
         // applyRiverWater's seaLevel; see RoadTrees::build minBenchY).
         const float benchDryY = (riverOn && riverRoad.plan.ok)
                               ? riverRoad.plan.waterY + 0.3f : -1.0e9f;
-        trees.build(*device, route, camKeepOut, benchDryY);
+        trees.build(*device, route, camKeepOut, benchDryY, phys.get());
+    }
+
+    // ==== THE SMALL MOUNTAIN TOWN (W-TOWN) ==================================
+    // ROAD_NETWORK_SKETCH_V2.png's brown "Small Mountain Town" hangs off a
+    // yellow ladder-switchback road, and ROAD_NETWORK_PLAN.md:701 already named
+    // the site: "Town 2 — the climb foot, where the inner tour meets the summit
+    // road." The SUMMIT SPUR is that ladder — the network's only switchback
+    // climb — so main street is laid along its lowest, gentlest reach.
+    // DEFAULT ON for the world it was built for (NO_SLOP rule 6); X3_TOWN=0
+    // is the door for turning it OFF, not the door it lives behind.
+    // Built AFTER the ribbons so terrainHeightAtWorld returns the carved field
+    // and the pavement it fronts already exists.
+    x3::game::Town town;
+    bool townOn = false;
+    // --screenshot-town's dusk gate. The settle loop re-pushes SkyParams every
+    // frame when weather is on, so a one-shot setSkyParams before the grab
+    // would be overwritten sixty times before the capture — the flag is read
+    // INSIDE the loop instead.
+    bool townDusk = false;
+    {
+        const char* e = std::getenv("X3_TOWN");
+        townOn = summitSpur.built && !(e && e[0] == '0');
+        if (townOn) {
+            x3::game::Town::Config tc;
+            tc.street  = &summitSpur.spec;
+            tc.streetY = &summitSpur.roadY;
+            tc.startU  = 70.0f;
+            tc.endU    = 760.0f;
+            // The junction mouth owns the bottom of the spur; nothing stands
+            // in it (kJunctionSetbackM + the merge fillets).
+            tc.keepOut.push_back({ summitSpur.jct.jx, summitSpur.jct.jz,
+                                   x3::game::kJunctionSetbackM });
+            townOn = town.build(scene, *device, *phys, tc);
+            if (townOn) {
+                town.spawnPedestrians(*device, *phys);
+                // The tunnel's own fixtures plus the town's lamps and lit
+                // windows — ONE setPointLights call owns the array, so the
+                // town's have to join the tunnel's rather than replace them.
+                std::vector<x3::rhi::PointLight> pl = tunnel.lights();
+                pl.insert(pl.end(), town.lights().begin(), town.lights().end());
+                device->setPointLights(pl.data(), (uint32_t)pl.size());
+            }
+        } else if (!summitSpur.built) {
+            x3::logWarn("--world tunnel: no summit spur -> no mountain town "
+                        "(the town rides the spur; see app/town.h)");
+        }
     }
 
     // THE FORESTS — the owner's brown map regions (ROAD_NETWORK_SKETCH_V2.png:
@@ -1674,11 +1721,34 @@ int hostTunnel(HostContext& hc) {
                                   skyVisibleAt(*phys, cam[0], cam[1], cam[2], route.dirX, route.dirZ));
                 }
 
+                if (townDusk) {
+                    // Sun on the horizon, warm and low, sky dimmed: the town's
+                    // windows and lamps become the light in the frame, which is
+                    // the whole point of the gate.
+                    x3::rhi::IRenderDevice::SkyParams dsp{};
+                    dsp.enabled  = true;
+                    dsp.sunDir[0] = -0.94f; dsp.sunDir[1] = 0.055f; dsp.sunDir[2] = -0.33f;
+                    dsp.cloud    = 0.35f;
+                    dsp.exposure = 0.55f;
+                    device->setSkyParams(dsp);
+                }
+
+                // THE TOWN WALKS IN CAPTURES TOO. ENGINE_GOTCHAS 4.4 is right
+                // that a still cannot PROVE motion — but a still of six
+                // unticked characters is worse than no still: an AnimatedCharacter
+                // that never had update() called is a bind-pose statue, which is
+                // exactly the T-pose defect NO_SLOP rule 1 catalogues. The settle
+                // loop is a separate loop from the interactive one (the weather
+                // and the river both learned this the expensive way, three
+                // comments up), so the walk has to be wired into it explicitly.
+                if (townOn) town.update(dt, *phys, *device, cam[0], cam[2]);
+
                 if (i == kFrames - 1) device->armCapture(out.c_str());
                 auto frame = device->beginFrame();
                 if (frame.valid) {
                     scene.render(*device, frame);
                     trees.draw(*device, frame);
+                    if (townOn) town.draw(*device, frame);
                     // forests: camera fwd = (cos yaw, 0, sin yaw) — gotcha 4.1
                     forests.draw(*device, frame, cam,
                                  std::cos(cam[3]), std::sin(cam[3]));
@@ -1755,6 +1825,48 @@ int hostTunnel(HostContext& hc) {
                 x3::logInfo(cb);
                 ok = settleAndGrab(cam, path) && ok;
             }
+        } else if (hc.townShot) {
+            // ==== --screenshot-town: the W-TOWN eye gate ====================
+            // Five stills the lane is judged on. Every camera is DERIVED from
+            // the town's own placement data (Town::showcaseCamera) rather than
+            // typed in — ENGINE_GOTCHAS 4.1's rule, learned from cameras
+            // embedded in walls.
+            const std::string tdir = hc.townShotDir;
+            fs::create_directories(tdir, ec);
+            if (!townOn) {
+                x3::logError("--screenshot-town: no town was built (see the "
+                             "summit-spur log above) — nothing to capture");
+                ok = false;
+            }
+            static const char* const kTownShotName[x3::game::Town::kShots] = {
+                "01_main_street", "02_shop_front", "03_pedestrians",
+                "04_dusk_windows", "05_from_the_valley",
+            };
+            for (int sIdx = 0; townOn && sIdx < x3::game::Town::kShots; ++sIdx) {
+                float cam[5];
+                if (!town.showcaseCamera(sIdx, cam)) {
+                    x3::logError(std::string("--screenshot-town: no camera for shot ")
+                                 + kTownShotName[sIdx]);
+                    ok = false;
+                    continue;
+                }
+                // Shot 3 is the DUSK gate: drop the sun to the horizon and dim
+                // the sky so the shop windows are the light in the frame. The
+                // settle loop re-pushes its own SkyParams every frame when
+                // weather is on, so the dusk sky has to be re-armed per frame;
+                // that is what the townDusk flag below does.
+                townDusk = (sIdx == 3);
+                char path[512];
+                std::snprintf(path, sizeof(path), "%s/%s.png", tdir.c_str(),
+                              kTownShotName[sIdx]);
+                char cb[256];
+                std::snprintf(cb, sizeof(cb),
+                              "--screenshot-town: %s cam=(%.1f, %.1f, %.1f) yaw=%.3f pitch=%.3f",
+                              kTownShotName[sIdx], cam[0], cam[1], cam[2], cam[3], cam[4]);
+                x3::logInfo(cb);
+                ok = settleAndGrab(cam, path) && ok;
+            }
+            townDusk = false;
         } else if (!hc.jakeShot) {
             float cam[5]; tunnel.showcaseCamera(route, 0, cam);
             if (hc.shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = hc.shotCam[k];
@@ -2372,6 +2484,7 @@ int hostTunnel(HostContext& hc) {
 
         if (carBuilt) car.shutdown();
         trees.shutdown(*device);
+        if (townOn) town.shutdown(*device);
         forests.shutdown(*device);
         phys->setContactCallback(nullptr, nullptr);   // trafficCtx dies with this scope
         traffic.shutdown(phys.get());
@@ -3652,10 +3765,16 @@ int hostTunnel(HostContext& hc) {
                 audio->setReverbParams(0.3f + 2.2f * (1.0f - skyVis),
                                        0.05f + 0.40f * (1.0f - skyVis));
         }
+        // The town's pedestrians walk their sidewalk loop. Gated on camera
+        // distance INSIDE Town::update (kPedActiveM) — outside it the terrain
+        // tiles under their feet are not resident and the walk is a free-fall.
+        if (townOn) town.update(fdt, *phys, *device, cx, cz);
+
         auto frame = device->beginFrame();
         if (frame.valid) {
             scene.render(*device, frame);
             trees.draw(*device, frame);
+            if (townOn) town.draw(*device, frame);
             {   // forests: prune by the live camera (fwd = cos/sin yaw, 4.1)
                 const float fcam[3] = { cx, cy, cz };
                 forests.draw(*device, frame, fcam,
@@ -4200,6 +4319,7 @@ int hostTunnel(HostContext& hc) {
     riverLife.shutdown(audioOn ? audio.get() : nullptr);   // outboard loops + hulls
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     trees.shutdown(*device);
+    if (townOn) town.shutdown(*device);
     forests.shutdown(*device);
     tunnel.shutdown(*device, *phys);
     for (auto& w : tourBores) w->shutdown(*device, *phys);
