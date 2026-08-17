@@ -37,6 +37,10 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     // far-ocean mesh beyond this finite patch hands us the colour that mesh
     // renders as, so the patch edge dissolves into it instead of into the sky.
     vec4  p3;
+    // x = clarity (WaterParams::clarity): 0 = the historic OPAQUE surface
+    // (alpha 1 -> src*1+dst*0, byte-identical through the enabled blend);
+    // >0 = face-on shallow water goes translucent over the lit scene beneath.
+    vec4  p4;
 } u;
 
 // Scene depth buffer (the SSAO depth pre-pass output). Sampled as data (R32F via
@@ -149,7 +153,11 @@ void main() {
         color = body * (0.45 + 0.55 * max(sunDir.y, 0.0)) + skyThrough * window;
         float depthFade = clamp(length(u.camPos.xyz - vWorldPos) / 60.0, 0.0, 1.0);
         color = mix(color, u.deepColor.rgb, depthFade);   // far water goes dark, not sky
-        outColor = vec4(color, 1.0);
+        // Clarity from below: the Snell window overhead turns translucent so a
+        // submerged swimmer sees light (and anything crossing the surface)
+        // through it; the far, oblique surface stays a closed green lid.
+        float aUnder = 1.0 - u.p4.x * 0.55 * window * (1.0 - depthFade);
+        outColor = vec4(color, aUnder);
         return;
     }
 
@@ -184,5 +192,14 @@ void main() {
     vec3 fadeTarget = mix(horizonSky, edgeTarget, edgeShare);
     color = mix(color, fadeTarget, fog);
 
-    outColor = vec4(color, 1.0);
+    // ---- CLARITY (u.p4.x): face-on SHALLOW water is translucent over the lit
+    // scene beneath (the bed, the fish, a swimmer's body); opacity returns
+    // with water depth (the same depthT the refraction gradient uses), at
+    // grazing angles (fres -> the surface is a mirror there anyway), under the
+    // sun glint (foam-bright pixels must not thin out), and into the horizon
+    // fog. clarity 0 => alpha 1 everywhere — the historic opaque surface,
+    // byte-identical through the enabled blend (src*1 + dst*0).
+    float seeThrough = u.p4.x * (1.0 - fres) * (1.0 - depthT);
+    float alpha = clamp(1.0 - seeThrough + spec * u.p1.z * 0.25 + fog, 0.0, 1.0);
+    outColor = vec4(color, alpha);
 }

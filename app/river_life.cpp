@@ -129,7 +129,16 @@ bool RiverLife::build(Scene& scene, x3::rhi::IRenderDevice& device,
             sd.speed   = fishSpecies(p.sp).speed;
             fc.schools.push_back(sd);
         }
-        m_fish.setWaterQuery([](float x, float z) { return worldWaterLevelAt(x, z); });
+        // The VISIBLE surface, not the spline's: this host draws ONE flat
+        // Gerstner plane at the bridge's waterY, while the real river level
+        // rises ~1.2 m per chain node upstream. A fish riding the LOCAL level
+        // there would cruise in the air above the drawn surface — so the feed
+        // is clamped to the plane. (Downstream the local level is lower, so
+        // fish are under the plane either way; dry stays dry — min keeps the
+        // sentinel.)
+        const float planeY = m_waterY;
+        m_fish.setWaterQuery([planeY](float x, float z) {
+            return std::min(worldWaterLevelAt(x, z), planeY); });
         m_fish.setBedQuery([](float x, float z) { return terrainHeightAtWorld(x, z); });
         m_fish.setModelDir(riggedGlbRoot());
         m_fish.build(fc, scene, device);
@@ -155,12 +164,13 @@ bool RiverLife::build(Scene& scene, x3::rhi::IRenderDevice& device,
     for (int side = 0; side < 2; ++side) {
         const int step = side == 0 ? -1 : +1;        // 0 = upstream, 1 = downstream
         Boat b;
-        // Level bound 1.5 m: the reach descends ~1.2 m per chain node here, and
-        // the 5.5 m (18 ft) channel leaves a ~3.4 m draft margin under the flat
-        // plane even at the lane's far end — the bound is about the HULL
-        // sitting visibly ON the drawn surface, not about grounding.
-        pointAlongReach(nodes, rn, nearest, step,  45.0f, m_waterY, 1.5f, b.ax, b.az);
-        pointAlongReach(nodes, rn, nearest, step, 190.0f, m_waterY, 1.5f, b.bx, b.bz);
+        // Level bound 2.5 m: the reach descends ~1.2-1.7 m per chain node here
+        // (a 1.5 m bound killed the upstream lane at its FIRST node), and the
+        // 5.5 m (18 ft) channel keeps ~3 m of water under the flat plane even
+        // at the lane's far end — the bound is about the HULL sitting visibly
+        // ON the drawn surface inside the carved walls, not about grounding.
+        pointAlongReach(nodes, rn, nearest, step,  45.0f, m_waterY, 2.5f, b.ax, b.az);
+        pointAlongReach(nodes, rn, nearest, step, 190.0f, m_waterY, 2.5f, b.bx, b.bz);
         const float laneLen = std::sqrt((b.bx - b.ax) * (b.bx - b.ax) +
                                         (b.bz - b.az) * (b.bz - b.az));
         if (laneLen < 30.0f) {
@@ -221,6 +231,27 @@ bool RiverLife::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_foamOut.reserve(m_puffs.size());
     m_sprayOut.reserve(m_puffs.size());
 
+    // The SPEEDBOAT skin's shared art: one unit cube + four solid tints
+    // (hull white, trim red, glass smoke, motor black). No boat GLB exists in
+    // any mounted pack (checked), so the hull look is composed from parts on
+    // the live physics transform — same doctrine as the graybox car, one step
+    // dressier.
+    m_phys = &phys;
+    if (!m_boats.empty()) {
+        std::vector<x3::rhi::MeshVertex> cv; std::vector<uint32_t> ci;
+        x3::prims::makeCube(0.5f, cv, ci);
+        m_boatCube = device.createMesh(cv.data(), (uint32_t)cv.size(),
+                                       ci.data(), (uint32_t)ci.size());
+        auto tHull  = x3::prims::makeSolidRGBA(8, 226, 229, 233);
+        auto tTrim  = x3::prims::makeSolidRGBA(8, 158, 28, 36);
+        auto tGlass = x3::prims::makeSolidRGBA(8, 26, 34, 44);
+        auto tMotor = x3::prims::makeSolidRGBA(8, 22, 24, 26);
+        m_texHull  = device.createTexture(tHull.data(), 8, 8, true);
+        m_texTrim  = device.createTexture(tTrim.data(), 8, 8, true);
+        m_texGlass = device.createTexture(tGlass.data(), 8, 8, true);
+        m_texMotor = device.createTexture(tMotor.data(), 8, 8, true);
+    }
+
     m_built = true;
     x3::logInfo("[river-life] built: " + std::to_string(m_boats.size()) +
                 " speedboat(s) on the reach, water Y " + std::to_string(m_waterY));
@@ -256,6 +287,7 @@ void RiverLife::prePhysics(float dt) {
         // spinning out; full send down the lane.
         const float ahead = std::max(0.0f, std::cos(err));
         in.throttle = (dist < 26.0f ? 0.45f : 0.85f) * (0.35f + 0.65f * ahead);
+        b.throttle = in.throttle;
         b.demo.setInput(in);
         b.demo.preStep(dt);
     }
@@ -297,11 +329,24 @@ void RiverLife::postPhysics(float dt, Scene& scene, x3::rhi::IRenderDevice& devi
             b.driver->update(dt, scene, phys, b.driver->pos());
         }
 
-        // ---- WAKE: stern foam + bow spray while under way. ------------------
+        // ---- SPEEDBOAT thrust boost. BoatDemo's stock propThrust equals its
+        // own linear drag at ~1.4 m/s — a putt-putt. Rather than fork the
+        // proven demo hull, shove it from the host side through the same
+        // public applyImpulse seam Jake's car-push uses: throttle-scaled,
+        // along the flattened hull forward, cut off at planing speed (the
+        // drag model above that is untouched, so it still settles honestly).
         const float speed = b.demo.controller()
                           ? std::fabs(b.demo.controller()->forwardSpeed()) : 0.0f;
+        if (b.throttle > 0.05f && speed < 10.5f && hp[1] < m_waterY + 0.4f) {
+            const float kBoostN = 110000.0f;   // ~10 m/s against the 2.5/s drag
+            phys.applyImpulse(b.demo.hull(),
+                x3::phys::Vec3{ fx * kBoostN * b.throttle * dt, 0.0f,
+                                fz * kBoostN * b.throttle * dt });
+        }
+
+        // ---- WAKE: stern foam + bow spray while under way. ------------------
         if (speed > 1.6f) {
-            b.wakeAcc += dt * std::min(30.0f, 8.0f + speed * 2.2f);
+            b.wakeAcc += dt * std::min(44.0f, 14.0f + speed * 3.0f);
             while (b.wakeAcc >= 1.0f) {
                 b.wakeAcc -= 1.0f;
                 m_rng = m_rng * 1664525u + 1013904223u;
@@ -313,12 +358,13 @@ void RiverLife::postPhysics(float dt, Scene& scene, x3::rhi::IRenderDevice& devi
                 m_puffNext = (m_puffNext + 1) % (uint32_t)m_puffs.size();
                 p.x = hp[0] - fx * 3.1f + (-fz) * r0 * 1.2f;
                 p.z = hp[2] - fz * 3.1f + ( fx) * r0 * 1.2f;
-                p.y = m_waterY + 0.06f;
+                p.y = m_waterY + 0.15f;   // crest level: foam rides ON the chop,
+                                          // not half-drowned in the troughs
                 p.vx = -fx * (0.8f + speed * 0.10f) + (-fz) * r0 * 2.2f;
                 p.vz = -fz * (0.8f + speed * 0.10f) + ( fx) * r0 * 2.2f;
                 p.vy = 0.25f + 0.3f * std::fabs(r1);
-                p.age = 0.0f; p.life = 1.5f + 0.5f * std::fabs(r0);
-                p.size0 = 0.30f + 0.12f * std::fabs(r1);
+                p.age = 0.0f; p.life = 2.2f + 0.6f * std::fabs(r0);
+                p.size0 = 0.45f + 0.18f * std::fabs(r1);
                 p.spray = false;
                 // Bow spray: every other puff, off the chine, additive sparkle.
                 if (((m_puffNext) & 1u) == 0u) {
@@ -327,7 +373,7 @@ void RiverLife::postPhysics(float dt, Scene& scene, x3::rhi::IRenderDevice& devi
                     const float sideSign = (r1 > 0.0f) ? 1.0f : -1.0f;
                     s.x = hp[0] + fx * 2.6f + (-fz) * sideSign * 1.4f;
                     s.z = hp[2] + fz * 2.6f + ( fx) * sideSign * 1.4f;
-                    s.y = m_waterY + 0.12f;
+                    s.y = m_waterY + 0.20f;
                     s.vx = fx * speed * 0.25f + (-fz) * sideSign * (1.5f + r0);
                     s.vz = fz * speed * 0.25f + ( fx) * sideSign * (1.5f + r0);
                     s.vy = 1.6f + std::fabs(r0) * 1.2f;
@@ -365,12 +411,66 @@ void RiverLife::postPhysics(float dt, Scene& scene, x3::rhi::IRenderDevice& devi
     m_fish.update(dt, scene, focus);
 }
 
+// One composed speedboat: white planing hull, raked bow, smoked windscreen,
+// red gunwale stripes, black outboard — every part a tinted unit cube on the
+// hull's live rotation. Local frame: -Z bow, +Z stern (CONVENTIONS §3).
+void RiverLife::drawBoatSkin(x3::rhi::IRenderDevice& device,
+                             const x3::rhi::FrameContext& frame,
+                             const float hp[3], const float q[4]) {
+    // Quaternion (x,y,z,w) -> rotation columns.
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    const float R[9] = {
+        1 - 2*(y*y + z*z), 2*(x*y + z*w),     2*(x*z - y*w),
+        2*(x*y - z*w),     1 - 2*(x*x + z*z), 2*(y*z + x*w),
+        2*(x*z + y*w),     2*(y*z - x*w),     1 - 2*(x*x + y*y)
+    };
+    const float white[4] = { 1, 1, 1, 1 };
+    auto part = [&](float lx, float ly, float lz, float sx, float sy, float sz,
+                    float pitch, x3::rhi::TextureHandle tex) {
+        // Local pitch about X (raked bow / windscreen), then scale, then the
+        // hull rotation, then translate: world = T * Rq * (T_local * Rx * S).
+        const float cp = std::cos(pitch), sp = std::sin(pitch);
+        // Basis columns of Rx*S in local space.
+        const float bx[3] = { sx, 0, 0 };
+        const float by[3] = { 0, sy * cp, sy * sp };
+        const float bz[3] = { 0, -sz * sp, sz * cp };
+        auto rot = [&](const float v[3], float out[3]) {
+            out[0] = R[0]*v[0] + R[3]*v[1] + R[6]*v[2];
+            out[1] = R[1]*v[0] + R[4]*v[1] + R[7]*v[2];
+            out[2] = R[2]*v[0] + R[5]*v[1] + R[8]*v[2];
+        };
+        float cX[3], cY[3], cZ[3], off[3];
+        rot(bx, cX); rot(by, cY); rot(bz, cZ);
+        const float l[3] = { lx, ly, lz };
+        rot(l, off);
+        const float world[16] = {
+            cX[0], cX[1], cX[2], 0.0f,
+            cY[0], cY[1], cY[2], 0.0f,
+            cZ[0], cZ[1], cZ[2], 0.0f,
+            hp[0] + off[0], hp[1] + off[1], hp[2] + off[2], 1.0f
+        };
+        device.drawMesh(frame, m_boatCube, tex, white, world);
+    };
+    part(0.0f, 0.05f,  0.45f, 2.70f, 1.00f, 4.90f, 0.0f,  m_texHull);   // main hull
+    part(0.0f, 0.18f, -2.45f, 2.10f, 0.80f, 2.00f, 0.20f, m_texHull);   // raked bow
+    part(-1.32f, 0.48f, 0.30f, 0.14f, 0.22f, 4.60f, 0.0f, m_texTrim);   // port stripe
+    part( 1.32f, 0.48f, 0.30f, 0.14f, 0.22f, 4.60f, 0.0f, m_texTrim);   // stbd stripe
+    part(0.0f, 0.92f, -0.70f, 1.90f, 0.60f, 0.14f, 0.38f, m_texGlass);  // windscreen
+    part(0.0f, 0.70f,  3.10f, 0.50f, 0.90f, 0.55f, 0.0f,  m_texMotor);  // outboard
+}
+
 void RiverLife::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                        const Scene& scene) {
     if (!m_built) return;
     for (Boat& b : m_boats) {
         if (!b.ok) continue;
-        b.demo.render(frame);
+        if (m_phys && m_boatCube.valid()) {
+            float hp[3]; b.demo.hullPos(hp);
+            float q[4];  m_phys->getBodyRotation(b.demo.hull(), q);
+            drawBoatSkin(device, frame, hp, q);
+        } else {
+            b.demo.render(frame);        // graybox fallback (art unavailable)
+        }
         if (b.driver) b.driver->drawMonster(device, frame, scene);
     }
     // Wake particles: foam is ALPHA (translucent whitewater), spray ADDITIVE
@@ -389,8 +489,8 @@ void RiverLife::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameConte
             m_sprayOut.push_back(pi);
         } else {
             pi.size = p.size0 * (1.0f + 2.6f * t);
-            pi.color[0] = 0.78f; pi.color[1] = 0.84f; pi.color[2] = 0.86f;
-            pi.color[3] = 0.42f * (1.0f - t) * (1.0f - t);
+            pi.color[0] = 0.88f; pi.color[1] = 0.93f; pi.color[2] = 0.95f;
+            pi.color[3] = 0.80f * (1.0f - t) * (1.0f - t);
             m_foamOut.push_back(pi);
         }
     }
@@ -403,6 +503,14 @@ void RiverLife::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameConte
 }
 
 void RiverLife::shutdown(x3::audio::IAudioSystem* audio) {
+    for (uint32_t i = 0; i < (uint32_t)m_boats.size(); ++i) {
+        if (!m_boats[i].ok) continue;
+        float hp[3]; m_boats[i].demo.hullPos(hp);
+        x3::logInfo("[river-life] boat " + std::to_string(i) + " final (" +
+                    std::to_string(hp[0]) + ", " + std::to_string(hp[1]) + ", " +
+                    std::to_string(hp[2]) + ") speed " +
+                    std::to_string(boatSpeed(i)) + " m/s");
+    }
     for (Boat& b : m_boats) {
         if (audio && b.loop.valid()) audio->stopLoop(b.loop);
         b.demo.shutdown();

@@ -2374,6 +2374,9 @@ void VulkanRenderDevice::prepareFrameData() {
             const bool hasHorizon = m_water.horizonColor[0] >= 0.0f;
             w.p3 = glm::vec4(m_water.horizonColor[0], m_water.horizonColor[1],
                              m_water.horizonColor[2], hasHorizon ? 1.0f : 0.0f);
+            // Clarity (see WaterParams::clarity): 0 keeps the historic opaque
+            // surface byte-identical (alpha 1 through the enabled blend).
+            w.p4 = glm::vec4(m_water.clarity, 0.0f, 0.0f, 0.0f);
             std::memcpy(m_waterUboMapped[m_frameIdx], &w, sizeof(WaterUBO));
         }
 

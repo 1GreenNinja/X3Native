@@ -82,10 +82,16 @@ public:
     bool     built() const { return m_built; }
     uint32_t fishCount() const { return m_fish.fishCount(); }
     uint32_t schoolCount() const { return m_fish.schoolCount(); }
+    // Live fish state (proof-shot rigs aim at the DRIFTED school centers).
+    const FishSystem& fish() const { return m_fish; }
     uint32_t boatCount() const { return (uint32_t)m_boats.size(); }
     // Hull world position of boat `i` (bounds/eye-gate checks).
     void     boatPos(uint32_t i, float out[3]) const;
     float    boatSpeed(uint32_t i) const;
+    // Hull heading (radians, atan2 convention) — proof-shot lead prediction.
+    float    boatHeading(uint32_t i) const {
+        return i < m_boats.size() ? m_boats[i].heading : 0.0f;
+    }
 
 private:
     struct Boat {
@@ -98,6 +104,7 @@ private:
         // attitude each postPhysics; prev value feeds the PD's yaw-rate term.
         float heading = 0.0f, headingPrev = 0.0f;
         bool  haveHeading = false;
+        float throttle = 0.0f;         // last commanded throttle (thrust boost)
         std::unique_ptr<MonsterSystem> driver;
         x3::audio::LoopHandle loop{};
         float pitch = 1.0f;            // per-boat detune on the shared loop
@@ -113,11 +120,21 @@ private:
     };
 
     bool        m_built = false;
+    x3::phys::IPhysicsWorld* m_phys = nullptr;   // for hull attitude in render()
     FishSystem  m_fish;
     std::vector<Boat> m_boats;
     std::vector<Puff> m_puffs;         // fixed pool, round-robin reuse
     uint32_t    m_puffNext = 0;
     std::vector<x3::rhi::IRenderDevice::ParticleInstance> m_foamOut, m_sprayOut;
+    // Procedural SPEEDBOAT skin (no boat GLB exists in the pack): a composed
+    // set of tinted boxes — hull, raked bow, windscreen, side stripes, an
+    // outboard block — drawn on the physics hull's live transform in place of
+    // BoatDemo's brown graybox. One shared unit cube + tiny solid textures.
+    x3::rhi::MeshHandle    m_boatCube{};
+    x3::rhi::TextureHandle m_texHull{}, m_texTrim{}, m_texGlass{}, m_texMotor{};
+    void drawBoatSkin(x3::rhi::IRenderDevice& device,
+                      const x3::rhi::FrameContext& frame,
+                      const float hullPos[3], const float hullQ[4]);
     x3::audio::SoundHandle m_outboardSnd{};
     float       m_waterY = 0.0f;       // the plan's waterY (== rendered plane)
     uint32_t    m_rng = 0x51CA7Eu;
