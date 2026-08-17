@@ -1836,6 +1836,13 @@ int hostTunnel(HostContext& hc) {
             // overcast sky is actually overcast instead of clear-with-fog.
             sp.cloud    = 0.15f + 0.85f * ws.fogDensity;
             sp.exposure = ws.sky.exposure + storm.flash();
+            // CLOUDS COST LIGHT (Tim: "Do we have real clouds that obscure
+            // and dim the sun? The ground is way too sunny"). The deck was
+            // visual-only — full sun through 94% overcast. Sun intensity now
+            // falls with cover (an overcast day keeps ~35% direct light) and
+            // the light goes flat (ambient-heavy) the way an overcast sky
+            // actually lights the ground.
+            sp.sunIntensity = sp.sunIntensity * (1.0f - 0.65f * std::min(1.0f, sp.cloud));
             if (ws.state == x3::game::WeatherState::Storm) {
                 // A storm is not 'cloudy with effects' — the deck goes heavy
                 // and the light DIES, which is also what makes every lightning
