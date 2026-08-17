@@ -32,6 +32,21 @@ void MapCamera::jumpTo(float wx, float wz, float s) {
     anchorActive = false;
 }
 
+// Screen-pixel vector -> world-metre vector at an explicit scale, carrying
+// BOTH the north-up flip and the current rotation — the ONE inverse the
+// anchor/drag math below must share with pxToWorld (they used to re-derive it
+// inline with the pre-flip sign and NO rotation term: the M5 anchored-zoom
+// invariant broke the moment the flip landed, and wheel-zoom while rotated
+// had always drifted the anchored point).
+void MapCamera::screenVecToWorldVec(float dxPx, float dyPx, float s,
+                                    float& wdx, float& wdz) const {
+    const float rx = dxPx / s, ry = -dyPx / s;   // north-up: screen down = south
+    if (rot == 0.0f) { wdx = rx; wdz = ry; return; }
+    const float c = std::cos(rot), sn = std::sin(rot);
+    wdx = rx * c + ry * sn;
+    wdz = -rx * sn + ry * c;
+}
+
 void MapCamera::zoomAt(float pxX, float pxY, float wheelSteps) {
     if (wheelSteps == 0.0f) return;
     const float ns = std::clamp(tScale * std::pow(kWheelStepMul, wheelSteps),
@@ -44,13 +59,17 @@ void MapCamera::zoomAt(float pxX, float pxY, float wheelSteps) {
     anchorPx = pxX; anchorPy = pxY;
     anchorActive = true;
     tScale = ns;
-    tCx = anchorWx - (anchorPx - vw * 0.5f) / ns;
-    tCz = anchorWz - (anchorPy - vh * 0.5f) / ns;
+    float wox, woz;
+    screenVecToWorldVec(anchorPx - vw * 0.5f, anchorPy - vh * 0.5f, ns, wox, woz);
+    tCx = anchorWx - wox;
+    tCz = anchorWz - woz;
 }
 
 void MapCamera::panPixels(float dxPx, float dyPx) {
     // Drag pan is IMMEDIATE (the map sticks to the cursor); targets follow.
-    cx -= dxPx / scale; cz -= dyPx / scale;
+    float wdx, wdz;
+    screenVecToWorldVec(dxPx, dyPx, scale, wdx, wdz);
+    cx -= wdx; cz -= wdz;
     tCx = cx; tCz = cz;
     anchorActive = false;
 }
@@ -90,11 +109,15 @@ void MapCamera::update(float dt) {
     if (anchorActive) {
         // Hold the anchored world point exactly under the anchor pixel through
         // the zoom (the invariant the self-test asserts), at EVERY intermediate
-        // scale — not just at convergence.
-        cx = anchorWx - (anchorPx - vw * 0.5f) / scale;
-        cz = anchorWz - (anchorPy - vh * 0.5f) / scale;
-        tCx = anchorWx - (anchorPx - vw * 0.5f) / tScale;
-        tCz = anchorWz - (anchorPy - vh * 0.5f) / tScale;
+        // scale — not just at convergence. Through screenVecToWorldVec so the
+        // hold survives the north-up flip AND any Q/E rotation (see its note).
+        float wox, woz;
+        screenVecToWorldVec(anchorPx - vw * 0.5f, anchorPy - vh * 0.5f, scale, wox, woz);
+        cx = anchorWx - wox;
+        cz = anchorWz - woz;
+        screenVecToWorldVec(anchorPx - vw * 0.5f, anchorPy - vh * 0.5f, tScale, wox, woz);
+        tCx = anchorWx - wox;
+        tCz = anchorWz - woz;
         if (scale == tScale) anchorActive = false;
     } else {
         const float ap = 1.0f - std::exp(-kPanLerpRate * dt);
@@ -105,20 +128,28 @@ void MapCamera::update(float dt) {
     }
 }
 
+// NORTH-UP (W-MAP v3, eyes-on receipt): +Z is world north and screen Y grows
+// DOWN, so the screen-Y term is NEGATED — before this, every road-world map
+// drew SOUTH-UP and the (truthful) compass rose put "N" at the BOTTOM of the
+// ring, which reads as a bug next to every GTA-convention map on earth. The
+// three transforms below and pxToWorld's inverse carry the flip TOGETHER
+// (rule 4) — flipping one without the others mirrors clicks/waypoints/labels
+// against the drawn world.
 void MapCamera::worldToPx(float wx, float wz, float& pxX, float& pxY) const {
     const float dx = wx - cx, dz = wz - cz;
-    if (rot == 0.0f) {   // the original, exact fast path — every rot==0 caller/self-test
+    if (rot == 0.0f) {   // exact fast path — every rot==0 caller/self-test
         pxX = vw * 0.5f + dx * scale;
-        pxY = vh * 0.5f + dz * scale;
+        pxY = vh * 0.5f - dz * scale;
         return;
     }
     const float c = std::cos(rot), s = std::sin(rot);
     pxX = vw * 0.5f + (dx * c - dz * s) * scale;
-    pxY = vh * 0.5f + (dx * s + dz * c) * scale;
+    pxY = vh * 0.5f - (dx * s + dz * c) * scale;
 }
 
 void MapCamera::pxToWorld(float pxX, float pxY, float& wx, float& wz) const {
-    const float rx = (pxX - vw * 0.5f) / scale, ry = (pxY - vh * 0.5f) / scale;
+    // ry pre-negated: screen down = world SOUTH (see the north-up note above).
+    const float rx = (pxX - vw * 0.5f) / scale, ry = (vh * 0.5f - pxY) / scale;
     if (rot == 0.0f) { wx = cx + rx; wz = cz + ry; return; }
     // Inverse rotation: worldVec = Rot(rot)^T * screenVec (Rot is orthonormal).
     const float c = std::cos(rot), s = std::sin(rot);
@@ -127,10 +158,10 @@ void MapCamera::pxToWorld(float pxX, float pxY, float& wx, float& wz) const {
 }
 
 void MapCamera::worldDirToScreenDir(float dx, float dz, float& sx, float& sy) const {
-    if (rot == 0.0f) { sx = dx; sy = dz; return; }
+    if (rot == 0.0f) { sx = dx; sy = -dz; return; }
     const float c = std::cos(rot), s = std::sin(rot);
     sx = dx * c - dz * s;
-    sy = dx * s + dz * c;
+    sy = -(dx * s + dz * c);
 }
 
 bool MapCamera::settled(float scaleEps, float panEpsM) const {
@@ -1012,18 +1043,29 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
     if (!modal) {
         if (in.wheel != 0.0f) m_cam.zoomAt(in.mouseX, in.mouseY, in.wheel);
         // WASD pan: constant SCREEN speed (700 px/s) -> world meters by scale.
-        const float panPx = 700.0f * dt / m_cam.scale;
-        if (in.keyW) m_cam.panWorld(0.0f, -panPx);
-        if (in.keyS) m_cam.panWorld(0.0f,  panPx);
-        if (in.keyA) m_cam.panWorld(-panPx, 0.0f);
-        if (in.keyD) m_cam.panWorld( panPx, 0.0f);
+        // WASD pans SCREEN-relative (W = whatever is up on screen right now),
+        // through the same inverse the drag/anchor math uses — so it stays
+        // truthful under the north-up flip and under Q/E rotation (world-axis
+        // pans used to go diagonal the moment the map was spun).
+        const float panRatePx = 700.0f * dt;
+        float pwx = 0.0f, pwz = 0.0f;
+        if (in.keyW) pwz -= panRatePx;
+        if (in.keyS) pwz += panRatePx;
+        if (in.keyA) pwx -= panRatePx;
+        if (in.keyD) pwx += panRatePx;
+        if (pwx != 0.0f || pwz != 0.0f) {
+            float wdx, wdz;
+            m_cam.screenVecToWorldVec(pwx, pwz, m_cam.scale, wdx, wdz);
+            m_cam.panWorld(wdx, wdz);
+        }
         // MAP ROTATION (Q/E, W-MAP v3): constant angular rate, held not edge —
-        // same feel as WASD pan. Q counter-clockwise, E clockwise (screen +Y
-        // is world +Z per worldToPx, so a positive angle here IS clockwise
-        // as drawn).
+        // same feel as WASD pan. Q counter-clockwise, E clockwise AS DRAWN
+        // (north-up flipped worldToPx's screen Y, which mirrors the drawn
+        // spin — a positive angle now draws counter-clockwise, so the signs
+        // here flipped WITH it; see the north-up note above worldToPx).
         const float rotRate = 1.6f;   // rad/s
-        if (in.keyQ) m_cam.rotateBy(-rotRate * dt);
-        if (in.keyE) m_cam.rotateBy( rotRate * dt);
+        if (in.keyQ) m_cam.rotateBy( rotRate * dt);
+        if (in.keyE) m_cam.rotateBy(-rotRate * dt);
         // Drag pan vs click (click = press+release with < 5 px of travel).
         if (in.mouseDown) {
             if (!m_dragging) { m_dragging = true; m_dragMoved = 0.0f; }
@@ -1227,7 +1269,13 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
     // same stamped-quad technique the road polylines use for a line.
     {
         float px, py; m_cam.worldToPx(in.playerX, in.playerZ, px, py);
-        const float hx = std::cos(in.playerYaw), hz = std::sin(in.playerYaw);
+        // Heading through worldDirToScreenDir — the SAME transform every road
+        // gets — so the arrow stays truthful under Q/E rotation AND the
+        // north-up flip (it used to convert yaw to screen space raw, which
+        // ignored both: rotate the map and the arrow kept pointing at its
+        // unrotated heading).
+        float hx, hz;
+        m_cam.worldDirToScreenDir(std::cos(in.playerYaw), std::sin(in.playerYaw), hx, hz);
         const float ux = -hz, uz = hx;   // perpendicular (left/right of heading)
 
         const float discR = 13.0f;
@@ -1260,7 +1308,8 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
         const float cone[4] = { 0.6f, 0.9f, 1.0f, 0.20f };
         for (int side = -1; side <= 1; side += 2) {
             const float a = in.playerYaw + 0.42f * (float)side;
-            const float dx = std::cos(a), dz = std::sin(a);
+            float dx, dz;   // same transform as the arrow above
+            m_cam.worldDirToScreenDir(std::cos(a), std::sin(a), dx, dz);
             for (int s = 3; s < 16; ++s)
                 ui.quad(px + dx * s * 2.4f - 1, py + dz * s * 2.4f - 1, 2, 2, cone);
         }

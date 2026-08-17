@@ -236,6 +236,55 @@ static std::vector<x3::game::WeaponDef> tunnelRifleRoster() {
     return { w };
 }
 
+// WORLD POIs on the full map (W-MAP v3, task #22): boxed glyph + name for
+// every x3::worldpoi registry entry, projected through the SAME MapCamera the
+// road network just drew with. ONE function, TWO callers (the interactive
+// map and the proof-set mapShot path) — these were two hand-kept copies until
+// the label-declutter pass below made the duplication a rule-1 violation.
+// DECLUTTER: icons always draw; a NAME is skipped when its text box would
+// overlap one already placed this frame (receipt: the two river-bridge
+// landings sit ~2 abutments apart and their labels smashed into one smear at
+// world-overview zoom — see the pre-fix 01_overview capture).
+static void drawWorldPois(x3::ui::UiContext& ui, const x3::game::MapCamera& cam) {
+    struct Box { float x0, y0, x1, y1; };
+    std::vector<Box> placed;
+    for (const x3::worldpoi::MapPoi& p : x3::worldpoi::allMapPois()) {
+        float ppx, ppy2; cam.worldToPx(p.x, p.z, ppx, ppy2);
+        if (ppx < -40 || ppy2 < -40 || ppx > cam.vw + 40 || ppy2 > cam.vh + 40) continue;
+        const char* glyph = "*";
+        float col[4] = { 0.85f, 0.90f, 0.95f, 0.95f };
+        using Icon = x3::worldpoi::MapPoi::Icon;
+        switch (p.icon) {
+            case Icon::Town:    glyph = "T"; col[0]=0.95f; col[1]=0.85f; col[2]=0.45f; break;
+            case Icon::Fuel:    glyph = "F"; col[0]=1.00f; col[1]=0.55f; col[2]=0.25f; break;
+            case Icon::Factory: glyph = "I"; col[0]=0.55f; col[1]=0.80f; col[2]=0.55f; break;
+            case Icon::Shop:    glyph = "$"; col[0]=1.00f; col[1]=0.80f; col[2]=0.30f; break;
+            case Icon::Parking: glyph = "P"; col[0]=0.60f; col[1]=0.75f; col[2]=0.92f; break;
+            case Icon::Bridge:  glyph = "X"; col[0]=0.40f; col[1]=0.88f; col[2]=0.98f; break;
+        }
+        const float s = 13.0f;
+        const float bg[4] = { 0.02f, 0.05f, 0.08f, 0.85f };
+        ui.quad(ppx - s * 0.5f, ppy2 - s * 0.5f, s, s, bg);
+        ui.quad(ppx - s * 0.5f, ppy2 - s * 0.5f, s, 1.5f, col);
+        ui.quad(ppx - s * 0.5f, ppy2 + s * 0.5f - 1.5f, s, 1.5f, col);
+        ui.quad(ppx - s * 0.5f, ppy2 - s * 0.5f, 1.5f, s, col);
+        ui.quad(ppx + s * 0.5f - 1.5f, ppy2 - s * 0.5f, 1.5f, s, col);
+        ui.textCentered(glyph, ppx, ppy2 - s * 0.36f, s * 0.75f, col,
+                        x3::ui::UiContext::FontRole::HudMono);
+        const float nameW = x3::ui::UiContext::textWidth(
+            x3::ui::UiContext::FontRole::Menu, p.name.c_str(), 13.0f);
+        Box b{ ppx + s, ppy2 - 8.0f, ppx + s + nameW, ppy2 + 8.0f };
+        bool clash = false;
+        for (const Box& q : placed)
+            if (b.x0 < q.x1 && q.x0 < b.x1 && b.y0 < q.y1 && q.y0 < b.y1) { clash = true; break; }
+        if (clash) continue;   // icon stays; the name yields to the earlier one
+        placed.push_back(b);
+        const float lbl[4] = { 0.92f, 0.97f, 1.0f, 0.95f };
+        ui.text(p.name.c_str(), ppx + s, ppy2 - 7.0f, 13.0f, lbl,
+                x3::ui::UiContext::FontRole::Menu);
+    }
+}
+
 int hostTunnel(HostContext& hc) {
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
@@ -2975,39 +3024,9 @@ int hostTunnel(HostContext& hc) {
                         msi.playerYaw = std::atan2(route.dirZ, route.dirX);
                         msi.locationName = "TUNNEL RIDGE - ROAD NETWORK";
                         mapShotWm.drawScreen(mapShotUi, *device, f, msi, mapShotFlags, 0.0f);
-                        // WORLD POIs (W-MAP v3): same icon+name draw the
-                        // interactive host does, proof-set copy (see the
-                        // marker duplication above for why this path
-                        // doesn't share code with the interactive block).
-                        for (const x3::worldpoi::MapPoi& p : x3::worldpoi::allMapPois()) {
-                            float ppx, ppy2; mapShotWm.camera().worldToPx(p.x, p.z, ppx, ppy2);
-                            if (ppx < -40 || ppy2 < -40 ||
-                                ppx > mapShotWm.camera().vw + 40 || ppy2 > mapShotWm.camera().vh + 40)
-                                continue;
-                            const char* glyph = "*";
-                            float col[4] = { 0.85f, 0.90f, 0.95f, 0.95f };
-                            using Icon = x3::worldpoi::MapPoi::Icon;
-                            switch (p.icon) {
-                                case Icon::Town:    glyph = "T"; col[0]=0.95f; col[1]=0.85f; col[2]=0.45f; break;
-                                case Icon::Fuel:    glyph = "F"; col[0]=1.00f; col[1]=0.55f; col[2]=0.25f; break;
-                                case Icon::Factory: glyph = "I"; col[0]=0.55f; col[1]=0.80f; col[2]=0.55f; break;
-                                case Icon::Shop:    glyph = "$"; col[0]=1.00f; col[1]=0.80f; col[2]=0.30f; break;
-                                case Icon::Parking: glyph = "P"; col[0]=0.60f; col[1]=0.75f; col[2]=0.92f; break;
-                                case Icon::Bridge:  glyph = "X"; col[0]=0.40f; col[1]=0.88f; col[2]=0.98f; break;
-                            }
-                            const float s = 13.0f;
-                            const float bg[4] = { 0.02f, 0.05f, 0.08f, 0.85f };
-                            mapShotUi.quad(ppx - s * 0.5f, ppy2 - s * 0.5f, s, s, bg);
-                            mapShotUi.quad(ppx - s * 0.5f, ppy2 - s * 0.5f, s, 1.5f, col);
-                            mapShotUi.quad(ppx - s * 0.5f, ppy2 + s * 0.5f - 1.5f, s, 1.5f, col);
-                            mapShotUi.quad(ppx - s * 0.5f, ppy2 - s * 0.5f, 1.5f, s, col);
-                            mapShotUi.quad(ppx + s * 0.5f - 1.5f, ppy2 - s * 0.5f, 1.5f, s, col);
-                            mapShotUi.textCentered(glyph, ppx, ppy2 - s * 0.36f, s * 0.75f, col,
-                                                   x3::ui::UiContext::FontRole::HudMono);
-                            const float lbl[4] = { 0.92f, 0.97f, 1.0f, 0.95f };
-                            mapShotUi.text(p.name.c_str(), ppx + s, ppy2 - 7.0f, 13.0f, lbl,
-                                          x3::ui::UiContext::FontRole::Menu);
-                        }
+                        // WORLD POIs (W-MAP v3): the SAME drawWorldPois the
+                        // interactive map calls — one function, both paths.
+                        drawWorldPois(mapShotUi, mapShotWm.camera());
                         mapShotUi.end();
                     }
                     device->endFrame(f);
@@ -3096,27 +3115,26 @@ int hostTunnel(HostContext& hc) {
         // camera, so the darker ground / cased roads / brighter river / POI
         // edge arrows are all an eyes-on check, not an assertion.
         if (carBuilt) {
-            x3::logInfo("[wmap-debug] 10_minimap: checkpoint A (entering block)");
             const std::string path = "shots_wmap/10_minimap.png";
             float vp2[3]; car.chassisPos(vp2);
-            x3::logInfo("[wmap-debug] 10_minimap: checkpoint B (chassisPos done)");
             for (int i = 0; i < 3; ++i) {
                 glfwPollEvents();
                 device->setCamera(vp2[0], vp2[1] + 1.6f, vp2[2],
                                   std::atan2(route.dirZ, route.dirX), -0.05f, 68.0f);
                 if (i == 2) device->armCapture(path.c_str());
                 auto f = device->beginFrame();
-                x3::logInfo("[wmap-debug] 10_minimap: checkpoint C i=" + std::to_string(i) +
-                            " valid=" + std::to_string(f.valid));
                 if (f.valid) {
                     scene.render(*device, f);
-                    x3::logInfo("[wmap-debug] checkpoint D (scene.render done)");
                     car.render(f);
-                    x3::logInfo("[wmap-debug] checkpoint E (car.render done)");
-                    int fbw3 = 0, fbh3 = 0; glfwGetFramebufferSize(window, &fbw3, &fbh3);
-                    x3::logInfo("[wmap-debug] checkpoint E1 (fbsize " + std::to_string(fbw3) +
-                                "x" + std::to_string(fbh3) + ")");
-                    const float fw3 = (float)fbw3, fh3 = (float)fbh3;
+                    // THE PREDECESSOR'S CRASH, found by checkpoint bisect:
+                    // --screenshot mode is HEADLESS (main.cpp: `headless =
+                    // ... || o.screenshot`), so hc.window is NULL here and
+                    // glfwGetFramebufferSize(window, ...) segfaulted (exit
+                    // 139) after checkpoint E on every proof run. This block
+                    // uses the HostContext resolution instead — the SAME W/H
+                    // the map proof set above already uses for exactly this
+                    // reason (its fbw2 = (int)W).
+                    const float fw3 = (float)W, fh3 = (float)H;
                     const float mmR = 0.16f * fh3;
                     const float mmCx = fw3 - mmR - 16.0f;
                     const float mmCy = mmR + 52.0f;
@@ -3124,7 +3142,6 @@ int hostTunnel(HostContext& hc) {
                     const float mmScale = mmR / mmRange;
                     const float bgq[4] = { 0.015f, 0.025f, 0.045f, 0.66f };
                     device->drawHudQuad(f, mmCx - mmR, mmCy - mmR, mmR * 2.0f, mmR * 2.0f, bgq);
-                    x3::logInfo("[wmap-debug] checkpoint E2 (first drawHudQuad done)");
                     const float rim[4] = { 0.55f, 0.65f, 0.75f, 0.55f };
                     device->drawHudQuad(f, mmCx - mmR, mmCy - mmR, mmR * 2.0f, 2.0f, rim);
                     device->drawHudQuad(f, mmCx - mmR, mmCy + mmR - 2.0f, mmR * 2.0f, 2.0f, rim);
@@ -3140,10 +3157,9 @@ int hostTunnel(HostContext& hc) {
                             const float px2 = ax + (bx2-ax)*t2, pz2 = az + (bz2-az)*t2;
                             if (px2*px2 + pz2*pz2 > mmRange*mmRange) continue;
                             device->drawHudQuad(f, mmCx + px2 * mmScale - px * 0.5f,
-                                                mmCy + pz2 * mmScale - px * 0.5f, px, px, col);
+                                                mmCy - pz2 * mmScale - px * 0.5f, px, px, col);   // north-up: -z (see MapCamera)
                         }
                     };
-                    x3::logInfo("[wmap-debug] checkpoint E3 (rim quads done)");
                     {
                         uint32_t nR = 0;
                         const x3::game::WorldRiverNode* rn = x3::game::worldRiverNodes(nR);
@@ -3152,7 +3168,6 @@ int hostTunnel(HostContext& hc) {
                             mmStampLine(rn[i2].x - vp2[0], rn[i2].z - vp2[2],
                                         rn[i2+1].x - vp2[0], rn[i2+1].z - vp2[2], 5.5f, wcol, false);
                     }
-                    x3::logInfo("[wmap-debug] checkpoint E4 (river done)");
                     const float casingc[4] = { 0.03f, 0.04f, 0.06f, 0.85f };
                     const float roadc[4]   = { 0.97f, 0.98f, 1.00f, 1.00f };
                     for (int pass = 0; pass < 2; ++pass) {
@@ -3169,26 +3184,24 @@ int hostTunnel(HostContext& hc) {
                             }
                         }
                     }
-                    x3::logInfo("[wmap-debug] checkpoint F (roads done)");
                     float cq2[4]; phys->getBodyRotation(car.chassis(), cq2);
                     float mfw[3], mup[3];
                     x3::game::vehcam::hullAxes(cq2, mfw, mup);
                     const float blip[4] = { 1.0f, 0.35f, 0.25f, 1.0f };
                     device->drawHudQuad(f, mmCx - 3.5f, mmCy - 3.5f, 7.0f, 7.0f, blip);
                     device->drawHudQuad(f, mmCx + mfw[0] * 11.0f - 2.0f,
-                                        mmCy + mfw[2] * 11.0f - 2.0f, 4.0f, 4.0f, blip);
-                    x3::logInfo("[wmap-debug] checkpoint G (heading tick done)");
+                                        mmCy - mfw[2] * 11.0f - 2.0f, 4.0f, 4.0f, blip);  // north-up: -z
                     for (const x3::worldpoi::MapPoi& p : x3::worldpoi::allMapPois()) {
                         const float rx = p.x - vp2[0], rz = p.z - vp2[2];
                         const float d = std::sqrt(rx * rx + rz * rz);
                         const float poiCol[4] = { 0.95f, 0.85f, 0.35f, 1.0f };
                         if (d <= mmRange) {
                             device->drawHudQuad(f, mmCx + rx * mmScale - 3.0f,
-                                                mmCy + rz * mmScale - 3.0f, 6.0f, 6.0f, poiCol);
+                                                mmCy - rz * mmScale - 3.0f, 6.0f, 6.0f, poiCol);  // north-up: -z
                             continue;
                         }
                         if (d < 1e-3f) continue;
-                        const float ux = rx / d, uz = rz / d;
+                        const float ux = rx / d, uz = -rz / d;   // SCREEN dir: north-up flips z
                         const float ex = mmCx + ux * (mmR - 9.0f), ey = mmCy + uz * (mmR - 9.0f);
                         const float wx0 = -uz, wz0 = ux;
                         for (int r2 = 0; r2 <= 5; ++r2) {
@@ -3203,12 +3216,9 @@ int hostTunnel(HostContext& hc) {
                             }
                         }
                     }
-                    x3::logInfo("[wmap-debug] checkpoint H (POI arrows done)");
                 }
                 device->endFrame(f);
-                x3::logInfo("[wmap-debug] checkpoint I (endFrame done) i=" + std::to_string(i));
             }
-            x3::logInfo("[wmap-debug] checkpoint J (loop done, about to captureFrame)");
             const bool wrote = device->captureFrame(path.c_str());
             if (wrote) x3::logInfo("[tunnel] map/HUD proof: wrote " + path);
             else       x3::logError("[tunnel] map/HUD proof: capture FAILED " + path);
@@ -5003,7 +5013,7 @@ int hostTunnel(HostContext& hc) {
                         const float px2 = ax + (bx2-ax)*t2, pz2 = az + (bz2-az)*t2;
                         if (px2*px2 + pz2*pz2 > mmRange*mmRange) continue;
                         device->drawHudQuad(frame, mmCx + px2 * mmScale - px * 0.5f,
-                                            mmCy + pz2 * mmScale - px * 0.5f, px, px, col);
+                                            mmCy - pz2 * mmScale - px * 0.5f, px, px, col);   // north-up: -z (see MapCamera)
                     }
                 };
                 // WATER first (under the roads): the river's own working chain,
@@ -5047,7 +5057,7 @@ int hostTunnel(HostContext& hc) {
                 const float blip[4] = { 1.0f, 0.35f, 0.25f, 1.0f };
                 device->drawHudQuad(frame, mmCx - 3.5f, mmCy - 3.5f, 7.0f, 7.0f, blip);
                 device->drawHudQuad(frame, mmCx + mfw[0] * 11.0f - 2.0f,
-                                    mmCy + mfw[2] * 11.0f - 2.0f, 4.0f, 4.0f, blip);
+                                    mmCy - mfw[2] * 11.0f - 2.0f, 4.0f, 4.0f, blip);  // north-up: -z
                 // ---- POI EDGE-CLAMPED ARROWS (W-MAP v3): registered world
                 // POIs inside range draw as a small dot; outside range, clamp
                 // to the minimap's edge along the bearing to it and draw as a
@@ -5059,11 +5069,11 @@ int hostTunnel(HostContext& hc) {
                     const float poiCol[4] = { 0.95f, 0.85f, 0.35f, 1.0f };
                     if (d <= mmRange) {
                         device->drawHudQuad(frame, mmCx + rx * mmScale - 3.0f,
-                                            mmCy + rz * mmScale - 3.0f, 6.0f, 6.0f, poiCol);
+                                            mmCy - rz * mmScale - 3.0f, 6.0f, 6.0f, poiCol);  // north-up: -z
                         continue;
                     }
                     if (d < 1e-3f) continue;
-                    const float ux = rx / d, uz = rz / d;
+                    const float ux = rx / d, uz = -rz / d;   // SCREEN dir: north-up flips z
                     const float ex = mmCx + ux * (mmR - 9.0f), ey = mmCy + uz * (mmR - 9.0f);
                     // Small wedge pointing along (ux,uz), stamped as rows of
                     // axis-aligned quads across the width (the HUD layer's own
@@ -5188,34 +5198,7 @@ int hostTunnel(HostContext& hc) {
             // hundreds, so always-on stays readable). Drawn AFTER drawScreen
             // so it projects through the SAME rotated/panned/zoomed camera
             // the road network and compass just drew with.
-            for (const x3::worldpoi::MapPoi& p : x3::worldpoi::allMapPois()) {
-                float ppx, ppy2; wmap.camera().worldToPx(p.x, p.z, ppx, ppy2);
-                if (ppx < -40 || ppy2 < -40 ||
-                    ppx > wmap.camera().vw + 40 || ppy2 > wmap.camera().vh + 40) continue;
-                const char* glyph = "*";
-                float col[4] = { 0.85f, 0.90f, 0.95f, 0.95f };
-                using Icon = x3::worldpoi::MapPoi::Icon;
-                switch (p.icon) {
-                    case Icon::Town:    glyph = "T"; col[0]=0.95f; col[1]=0.85f; col[2]=0.45f; break;
-                    case Icon::Fuel:    glyph = "F"; col[0]=1.00f; col[1]=0.55f; col[2]=0.25f; break;
-                    case Icon::Factory: glyph = "I"; col[0]=0.55f; col[1]=0.80f; col[2]=0.55f; break;
-                    case Icon::Shop:    glyph = "$"; col[0]=1.00f; col[1]=0.80f; col[2]=0.30f; break;
-                    case Icon::Parking: glyph = "P"; col[0]=0.60f; col[1]=0.75f; col[2]=0.92f; break;
-                    case Icon::Bridge:  glyph = "X"; col[0]=0.40f; col[1]=0.88f; col[2]=0.98f; break;
-                }
-                const float s = 13.0f;
-                const float bg[4] = { 0.02f, 0.05f, 0.08f, 0.85f };
-                wmapUi.quad(ppx - s * 0.5f, ppy2 - s * 0.5f, s, s, bg);
-                wmapUi.quad(ppx - s * 0.5f, ppy2 - s * 0.5f, s, 1.5f, col);
-                wmapUi.quad(ppx - s * 0.5f, ppy2 + s * 0.5f - 1.5f, s, 1.5f, col);
-                wmapUi.quad(ppx - s * 0.5f, ppy2 - s * 0.5f, 1.5f, s, col);
-                wmapUi.quad(ppx + s * 0.5f - 1.5f, ppy2 - s * 0.5f, 1.5f, s, col);
-                wmapUi.textCentered(glyph, ppx, ppy2 - s * 0.36f, s * 0.75f, col,
-                                    x3::ui::UiContext::FontRole::HudMono);
-                const float lbl[4] = { 0.92f, 0.97f, 1.0f, 0.95f };
-                wmapUi.text(p.name.c_str(), ppx + s, ppy2 - 7.0f, 13.0f, lbl,
-                           x3::ui::UiContext::FontRole::Menu);
-            }
+            drawWorldPois(wmapUi, wmap.camera());
             wmapUi.end();
             prevMapLmb = lmb;
         } else {

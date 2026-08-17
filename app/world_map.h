@@ -83,6 +83,12 @@ struct MapCamera {
     // rotation worldToPx applies (no translation/scale) — how the compass
     // rose places its N/E/S/W letters so they stay truthful as the map spins.
     void worldDirToScreenDir(float dx, float dz, float& sx, float& sy) const;
+    // Screen-pixel vector -> world-metre vector at scale `s` (the shared
+    // inverse the anchor/drag/WASD math uses — see the .cpp note; it carries
+    // the north-up flip and the rotation so those paths can never drift from
+    // pxToWorld again).
+    void screenVecToWorldVec(float dxPx, float dyPx, float s,
+                             float& wdx, float& wdz) const;
     bool settled(float scaleEps = 1e-3f, float panEpsM = 1e-2f) const;
 };
 
