@@ -128,7 +128,13 @@ struct WorldRiverNode { float x, z, waterY; };
 const WorldRiverNode* worldRiverNodes(uint32_t& count);   // full ribbon polyline
 uint32_t worldRiverCarveCount();                          // leading nodes that carve
 constexpr float kWorldRiverHalfWidth = 34.0f;             // water ribbon half-width (m)
-constexpr float kWorldRiverBedDrop   = 3.2f;              // bed depth below waterY (m)
+// Bank-shelf bed depth below waterY (m) — the shallows a wader stands on.
+constexpr float kWorldRiverBedDrop   = 3.2f;
+// MID-CHANNEL bed depth below waterY (m) — the deep cut down the spine (owner:
+// "TWICE or THREE TIMES AS DEEP"; 2.5x the shelf). Feathers back to the shelf
+// by ~26 m out; waterline, levee and crests unchanged. See terrain.cpp's river
+// carve.
+constexpr float kWorldRiverMidDrop   = 8.0f;
 
 // ---------------------------------------------------------------------------
 // W10 (SWIMMING) — the world WATER SURFACE query. Pure, like the placement API

@@ -31,7 +31,7 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     vec4  shallowColor;
     vec4  p0;   // x=seaLevel, y=time, z=amplitude, w=steepness
     vec4  p1;   // x=baseWavelength, y=speed, z=specular, w=fresnelBase
-    vec4  p2;   // x=patchHalfExtent, y=1/screenW, z=1/screenH, w=reserved
+    vec4  p2;   // x=patchHalfExtent, y=1/screenW, z=1/screenH, w=camera far plane (0 => legacy 200)
     // xyz = far-ocean handoff colour (linear); w = 1 when supplied, else 0.
     // See IRenderDevice::WaterParams::horizonColor — a world that draws its own
     // far-ocean mesh beyond this finite patch hands us the colour that mesh
@@ -72,10 +72,15 @@ vec3 skyColor(vec3 dir, vec3 sunDir) {
 
 // Reconstruct linear eye-space distance from a [0,1] clip depth (Vulkan reverse-Y
 // perspective with near/far below). Returns +distance in front of the camera.
+// THE FAR PLANE IS LIVE (u.p2.w): the depth-based refraction gradient was
+// silently wrong in every world that calls setCameraFar (the tunnel host runs
+// far=4000; hardcoding 200 here made waterDepth garbage — the whole river read
+// as one flat tint, the owner's "its only a surface level texture" verdict).
+// p2.w == 0 keeps the historic 200 for any caller that predates the plumb.
 const float kNear = 0.1;
-const float kFar  = 200.0;
 float linearizeDepth(float d) {
     // d in [0,1], GLM_FORCE_DEPTH_ZERO_TO_ONE perspective.
+    float kFar = (u.p2.w > 0.0) ? u.p2.w : 200.0;
     return (kNear * kFar) / (kFar - d * (kFar - kNear));
 }
 
@@ -126,6 +131,27 @@ void main() {
     // A touch of diffuse sun on the body so deep water isn't flat/dead.
     float ndl = max(dot(N, sunDir), 0.0);
     color += refractCol * ndl * 0.15;
+
+    // --- UNDERSIDE VIEW (swimmer / riverbed camera below the plane). Seen from
+    // below, dot(N,V) < 0 clamps to 0, Schlick goes to 1, and the surface
+    // rendered as a PURE SKY MIRROR — the owner's "blinding white sheet" from
+    // the dry riverbed. Physically the underside is the water column's own
+    // absorbed light (dark green) with the bright refracted sun cone (Snell's
+    // window) overhead. Cheap version: deep/shallow body color, a dimmed
+    // sky term only near the up direction (the Snell window), glint killed.
+    // Gated on camera-below-plane so every above-water frame is byte-identical.
+    if (u.camPos.y < u.p0.x) {
+        vec3 body = mix(u.deepColor.rgb, u.shallowColor.rgb, 0.30);
+        // View ray from the camera to this fragment is -V; looking UP at the
+        // surface means (-V).y > 0. (V itself points DOWN toward the camera.)
+        float window = pow(max(-V.y, 0.0), 3.0);    // looking up -> brighter
+        vec3 skyThrough = skyColor(vec3(0.0, 1.0, 0.0), sunDir) * 0.35;
+        color = body * (0.45 + 0.55 * max(sunDir.y, 0.0)) + skyThrough * window;
+        float depthFade = clamp(length(u.camPos.xyz - vWorldPos) / 60.0, 0.0, 1.0);
+        color = mix(color, u.deepColor.rgb, depthFade);   // far water goes dark, not sky
+        outColor = vec4(color, 1.0);
+        return;
+    }
 
     // --- Horizon fog: blend the far water into the sky so the sea meets the sky
     // with no hard seam. Fades with view distance + as the patch reaches its edge. ---

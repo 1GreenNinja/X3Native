@@ -23,6 +23,7 @@
 #include <memory>
 #include "../road_network.h"
 #include "../river_bridge.h"
+#include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
 #include "../vehicle.h"
 #include "../mesh_prims.h"
 #include "../asset_root.h"
@@ -906,6 +907,14 @@ int hostTunnel(HostContext& hc) {
     float jakePrevFeet[3] = { 0, 0, 0 };
 
     x3::game::Player onFoot;
+    // W10 SWIMMING, wired (owner: "we need water.. you can swim in"). The
+    // Player has carried the full swim state machine since W10 — buoyancy
+    // spring, swim-along-look, Space-up/Ctrl-down, enter/exit hysteresis — it
+    // just never got a water feed in THIS host, so Jake hiked the riverbed
+    // dry under the water table. One line turns it on: the same
+    // worldWaterLevelAt the canon host passes.
+    onFoot.setWaterQuery([](float x, float z) {
+        return x3::game::worldWaterLevelAt(x, z); });
     bool  driving      = true;
     bool  footSpawned  = false;
     float parkedAt[3]  = { 0, 0, 0 };   // where the car was left, for the re-entry prompt
@@ -1128,6 +1137,46 @@ int hostTunnel(HostContext& hc) {
         texNos    = loadPng("gauge_nos.png");   // 32-state curved fill atlas (8x4)
     }
 
+    // ==== RIVER LIFE (W-RIVER): fish + two AI speedboats on the bridge reach.
+    // Everything reused: FishSystem, BoatDemo, the crowd-skin driver pattern,
+    // submitParticles wakes, startLoop3D outboards. See app/river_life.h.
+    x3::game::RiverLife riverLife;
+    if (riverOn && riverRoad.plan.ok)
+        riverLife.build(scene, *device, *phys,
+                        audioOn ? audio.get() : nullptr, riverRoad.plan);
+
+    // THE RIVER HOLDS WATER — one lambda, BOTH render paths. The water pass
+    // used to be armed only inside the interactive loop, so every headless
+    // capture (the proof shots included) rendered a dry river: the gate was
+    // fine, the pass was never enabled on that path at all. Tone per the
+    // owner's eyes-on: "too bright... reject from echo harbor" — a river under
+    // this sun is dark blue-green with a modest glint, so deep/shallow go
+    // darker+greener than the sea defaults, specular drops 12->5 and the
+    // fresnel floor 0.02->0.012 (less sky mirror face-on). Caustics ride along
+    // (the canon undersea pass) so the deepened bed reads THROUGH the surface.
+    auto applyRiverWater = [&](float t) {
+        if (!(riverOn && riverRoad.plan.ok)) return;
+        x3::rhi::IRenderDevice::WaterParams wpr{};
+        wpr.enabled   = true;
+        wpr.seaLevel  = riverRoad.plan.waterY;
+        wpr.time      = t;
+        wpr.amplitude = 0.24f;          // a river swell, not an ocean
+        wpr.steepness = 0.35f;
+        wpr.waveLength= 9.0f;
+        wpr.speed     = 0.8f;
+        wpr.deepColor[0]    = 0.008f; wpr.deepColor[1]    = 0.030f; wpr.deepColor[2]    = 0.038f;
+        wpr.shallowColor[0] = 0.050f; wpr.shallowColor[1] = 0.150f; wpr.shallowColor[2] = 0.140f;
+        wpr.specular  = 5.0f;
+        wpr.fresnel   = 0.012f;
+        wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
+        device->setWaterParams(wpr);
+        x3::rhi::IRenderDevice::CausticsParams cp{};
+        cp.enabled = true; cp.waterY = riverRoad.plan.waterY;
+        cp.time = t; cp.intensity = 0.85f;
+        device->setCaustics(cp);
+    };
+    float riverWaterClock = 0.0f;
+
     phys->optimizeBroadphase();
 
     const float dt = 1.0f / 60.0f;
@@ -1147,7 +1196,18 @@ int hostTunnel(HostContext& hc) {
                 glfwPollEvents();
                 const float fx = (i == 1) ? cam[0] + 40.0f : cam[0];
                 streamer.update(scene, *device, *phys, fx, cam[2]);
+                // THE RIVER HOLDS WATER IN CAPTURES TOO. This settle loop never
+                // armed the water pass (it lived only in the interactive loop),
+                // which is why every proof shot showed a dry river no matter
+                // what the runtime gate said. Same lambda, same tone, plus the
+                // boats/fish so the capture proves the LIVING river.
+                riverWaterClock += dt;
+                applyRiverWater(riverWaterClock);
+                riverLife.prePhysics(dt);
                 phys->step(dt);
+                riverLife.postPhysics(dt, scene, *device, *phys,
+                                      audioOn ? audio.get() : nullptr,
+                                      x3::phys::Vec3{ cam[0], cam[1], cam[2] });
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 68.0f);
 
                 // THE CAPTURE LOOP NEEDS THE WEATHER TOO. This settle loop is
@@ -1184,6 +1244,7 @@ int hostTunnel(HostContext& hc) {
                 if (frame.valid) {
                     scene.render(*device, frame);
                     if (carBuilt) car.render(frame);
+                    riverLife.render(*device, frame, scene);
                     if (weatherOn) precip.submit(*device, frame);
                 }
 
@@ -1379,6 +1440,7 @@ int hostTunnel(HostContext& hc) {
         }
 
         if (carBuilt) car.shutdown();
+        riverLife.shutdown(audioOn ? audio.get() : nullptr);
         tunnel.shutdown(*device, *phys);
         for (auto& w : tourBores) w->shutdown(*device, *phys);
         // Shared across every bore, so it is released ONCE here rather than by
@@ -1684,6 +1746,7 @@ int hostTunnel(HostContext& hc) {
             if (pf.valid) {
                 scene.render(*device, pf);
                 if (carBuilt) car.render(pf);
+                riverLife.render(*device, pf, scene);   // boats stay visible paused
                 shell.draw(pf, fdt);
             }
             device->endFrame(pf);
@@ -1696,20 +1759,9 @@ int hostTunnel(HostContext& hc) {
         // is the most interesting thing the model does and nobody is going to
         // sit through twenty-four hours to watch the desert cool off.
         // ---- THE RIVER HAS WATER (Tim: "Can we pour the water in now").
-        if (riverOn && riverRoad.plan.ok) {
-            static float waterClock = 0.0f;
-            waterClock += fdt;
-            x3::rhi::IRenderDevice::WaterParams wpr{};
-            wpr.enabled   = true;
-            wpr.seaLevel  = riverRoad.plan.waterY;
-            wpr.time      = waterClock;
-            wpr.amplitude = 0.28f;          // a river swell, not an ocean
-            wpr.steepness = 0.35f;
-            wpr.waveLength= 9.0f;
-            wpr.speed     = 0.8f;
-            wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
-            device->setWaterParams(wpr);
-        }
+        // One lambda with the headless path — same tone, same clock shape.
+        riverWaterClock += fdt;
+        applyRiverWater(riverWaterClock);
         if (weatherOn) {
             weather.tick(fdt);
             // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
@@ -1986,6 +2038,10 @@ int hostTunnel(HostContext& hc) {
             pin.jumpPressed = spaceNow && !spaceWas;
             pin.jumpHeld    = spaceNow;
             spaceWas = spaceNow;
+            // W10 swim channels: Space held strokes UP (jumpHeld above), Ctrl/C
+            // held dives. Only read while the swim state is active, so dry-land
+            // movement is untouched.
+            pin.diveHeld = kd(GLFW_KEY_LEFT_CONTROL) || kd(GLFW_KEY_C);
             pin.lookDX = ddx; pin.lookDY = ddy;
             onFoot.update(pin, fdt, *phys);
 
@@ -2140,6 +2196,7 @@ int hostTunnel(HostContext& hc) {
         float vp[3] = { startPos[0], startPos[1], startPos[2] };
         if (carBuilt) car.chassisPos(vp);
         streamer.update(scene, *device, *phys, vp[0], vp[2]);
+        riverLife.prePhysics(fdt);            // boat autopilot BEFORE the step
         phys->step(fdt);
         if (carBuilt) car.postStep(fdt);
         // RE-SAMPLE THE CHASE TARGET AFTER THE STEP.
@@ -2156,6 +2213,16 @@ int hostTunnel(HostContext& hc) {
         // needs the current pose.
         if (carBuilt) car.chassisPos(vp);
         scene.update(*phys);
+        // River life AFTER scene.update (the monster-prop draw contract): boat
+        // postStep, driver pose-follow, fish sim, wakes, outboard emitters.
+        // Focus = whoever the player currently is (car or Jake) so the schools
+        // gate on the real viewpoint.
+        {
+            x3::phys::Vec3 lifeFocus{ vp[0], vp[1], vp[2] };
+            if (!driving && footSpawned) lifeFocus = onFoot.feet();
+            riverLife.postPhysics(fdt, scene, *device, *phys,
+                                  audioOn ? audio.get() : nullptr, lifeFocus);
+        }
 
         // ---- ENGINE NOTE: re-pitch from live RPM, and move the emitter ------
         // pitch tracks RPM across the powerband; vol fades in off idle so a
@@ -2403,6 +2470,29 @@ int hostTunnel(HostContext& hc) {
             } else {
                 device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
             }
+            // UNDERWATER TINT (cheap: the engine's own Beer-Lambert fog pass;
+            // full underwater rendering is another lane's task). The moment
+            // the CAMERA is below the water surface at its own (x,z), the
+            // world greens out over ~18 m instead of rendering dry air with a
+            // white ceiling. Edge-triggered so the fog lever stays free.
+            {
+                const float wSurf = x3::game::worldWaterLevelAt(cx, cz);
+                const bool under = (wSurf > x3::game::kWorldWaterDry + 1.0f) &&
+                                   (cy < wSurf - 0.05f);
+                static bool wasUnder = false;
+                if (under != wasUnder) {
+                    wasUnder = under;
+                    x3::rhi::IRenderDevice::FogParams fp{};
+                    if (under) {
+                        fp.enabled  = true;
+                        fp.color[0] = 0.010f; fp.color[1] = 0.045f; fp.color[2] = 0.055f;
+                        fp.density  = 0.055f;      // ~18 m of green visibility
+                        fp.start    = 0.15f;
+                        fp.maxOpacity = 0.96f;
+                    }
+                    device->setFog(fp);
+                }
+            }
             // Sky visibility does double duty: precipitation gating AND the
             // room-reverb estimate (SND-OPUS item: the tunnel bore should
             // ECHO). One probe, two consumers — zero new raycast kinds.
@@ -2419,7 +2509,11 @@ int hostTunnel(HostContext& hc) {
                                        0.05f + 0.40f * (1.0f - skyVis));
         }
         auto frame = device->beginFrame();
-        if (frame.valid) { scene.render(*device, frame); if (carBuilt) car.render(frame); }
+        if (frame.valid) {
+            scene.render(*device, frame);
+            if (carBuilt) car.render(frame);
+            riverLife.render(*device, frame, scene);   // boats + drivers + wakes
+        }
 
         // ---- WHEEL-SPIN FX: spawn skid marks + smoke when the rears slip ----
         if (frame.valid && carBuilt) {
@@ -2867,6 +2961,7 @@ int hostTunnel(HostContext& hc) {
     }
 
     if (audioOn) engineNote.shutdown();          // bank voices before the mixer dies
+    riverLife.shutdown(audioOn ? audio.get() : nullptr);   // outboard loops + hulls
     wmap.shutdown(*device);                      // no tiles baked here, but symmetric
     tunnel.shutdown(*device, *phys);
     for (auto& w : tourBores) w->shutdown(*device, *phys);
