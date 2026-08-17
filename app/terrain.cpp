@@ -780,13 +780,21 @@ const RangeDef kRanges[kRangeCount] = {
     {  9200.0f, -2000.0f,  9200.0f,  2500.0f, 550.0f, 2300.0f, 460.0f, 2.0f, 45.0f,   0.0f }, // E volcanic
     { -2800.0f, -9000.0f,  3500.0f, -9000.0f, 500.0f, 2100.0f, 230.0f, 1.1f,  0.0f, 195.0f }, // S mesa
     { -8600.0f, -2000.0f, -8600.0f,  1800.0f, 600.0f, 2400.0f, 320.0f, 1.3f,  0.0f,   0.0f }, // W crystal hills
-    // TUNNEL RIDGE. The four ranges above sit 8-9 km out, so the corridor route
-    // at (-592,-352) bored through the BASE rolling field (heightScale 55 m) —
-    // which is why the worst soil cover over the shell was only 2.46 m. A freeway
-    // tunnel needs a mountain. Runs PERPENDICULAR to the route heading so the bore
-    // crosses it square, and is short enough that outW does not reach the
-    // Scrapyard City pad at (-600,500).
-    {  -753.0f,  -740.0f,  -431.0f,    36.0f, 110.0f,  240.0f, 285.0f, 2.5f, 58.0f,   0.0f }, // tunnel ridge
+    // TUNNEL RIDGE — the sketch's LARGE MOUNTAIN (ROAD_NETWORK_SKETCH.png, NW
+    // massif; route-spec law). The four ranges above sit 8-9 km out, so the
+    // corridor route at (-592,-352) bored through the BASE rolling field
+    // (heightScale 55 m) — which is why the worst soil cover over the shell was
+    // only 2.46 m. A freeway tunnel needs a mountain. Runs PERPENDICULAR to the
+    // route heading so the bore crosses it square, and is short enough that
+    // outW does not reach the Scrapyard City pad at (-600,500) — outW is the
+    // pad-clearance cap (spine end (-431,36) to pad centre is 494 m; pad r 250),
+    // so TALLER comes from amp, not footprint.
+    // amp 285 -> 460 (owner, 2026-08-16: "The mountain in that scene should be
+    // taller"; measured natural summit went 168 m -> 262 m over the bore —
+    // the M-gates re-derive the cut-and-cover from the field, so the bore,
+    // backfill lid and 4.5% road profile adapt at boot). ridgeExp 2.5 -> 2.3
+    // widens the crest mass a touch so the raise reads as a massif, not a spike.
+    {  -753.0f,  -740.0f,  -431.0f,    36.0f, 110.0f,  240.0f, 460.0f, 2.3f, 64.0f,   0.0f }, // tunnel ridge / Large Mountain
 };
 
 // Flat pads: blend the field toward padY inside r, fully the field by r*1.7.
@@ -1172,10 +1180,24 @@ float mountainHeight(float x, float z, uint32_t seed) {
             // slope and only the upper massif breaks into benches.
             if (hm > kBluffStart) {
                 const float up01 = clampf01((hm - kBluffStart) / kBluffFull);
-                const float band = hm / kBluffBandH;
+                // SCALE-VARIED STRATA (owner 2026-08-16: "stepped bluffs").
+                // A fixed 26 m band spacing benched every face at the same
+                // vertical rhythm, which is the tell of a machined terrace, not
+                // strata. Real bed thickness varies ACROSS a massif (thin
+                // shales here, massive sandstone there), so the band height is
+                // modulated ~19..33 m by a ~1 km-wavelength noise — locally
+                // coherent (one face keeps one rhythm; sstep continuity in f is
+                // untouched), globally varied (no two shoulders band alike).
+                // Same field also wanders the band PHASE (hm/bandH shifts with
+                // bandH), so shelf lines are not world-height contours. Pure in
+                // (x,z,seed): the corridor refine and every carve sit on top of
+                // this bit-stably, exactly as before.
+                const float sv    = fbm(x, z, 0.0011f, 2, seed + 15000u + (uint32_t)i * 389u);
+                const float bandH = kBluffBandH * (0.72f + 0.56f * sv);
+                const float band = hm / bandH;
                 const float f    = band - std::floor(band);
                 const float shaped = sstep(0.42f, 0.92f, f);
-                hm += kBluffBandH * (shaped - f) * kBluffStrength * up01 * mask;
+                hm += bandH * (shaped - f) * kBluffStrength * up01 * mask;
             }
         }
         if (r.capY > 0.0f && hm > r.capY) hm = r.capY;           // mesa flat tops

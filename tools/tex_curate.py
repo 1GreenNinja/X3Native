@@ -96,9 +96,14 @@ SETS = {
 # scatter not surface). Seam check: opposite-edge delta ~= interior delta for
 # all five (worst lgp3_clay3 top/bottom 18.2 vs 7.4 interior — acceptable at
 # splat tiling scales).
-UNIST = r"Z:\UniStorm - Volumetric Clouds Sky Modular Weather and Cloud Shadows\UniStorm Weather System\Textures\Terrain"
-TDPA  = r"Z:\Top Down Post Apocalyptic Pack\Top_Down_Post-Apocalyptic_Pack\Textures\Terrain"
-LGP3Z = r"Z:\Landscape Ground Pack 3 Desert Dry Land Beach Sea Islands Coast\NatureManufacture Assets\Coast Environment\Ground\Textures"
+# Z: was a mapped drive letter for \\p13700\G\Assets and is not mapped on
+# every box (W-MOUNTAIN 2026-08-16: terrain_rock_dark's manifest entry pointed
+# at store bytes that were never published because the curate ran on a box
+# where Z: resolved; on this one it didn't). UNC is the stable name.
+FLEET = r"\\p13700\G\Assets"
+UNIST = os.path.join(FLEET, r"UniStorm - Volumetric Clouds Sky Modular Weather and Cloud Shadows\UniStorm Weather System\Textures\Terrain")
+TDPA  = os.path.join(FLEET, r"Top Down Post Apocalyptic Pack\Top_Down_Post-Apocalyptic_Pack\Textures\Terrain")
+LGP3Z = os.path.join(FLEET, r"Landscape Ground Pack 3 Desert Dry Land Beach Sea Islands Coast\NatureManufacture Assets\Coast Environment\Ground\Textures")
 
 # name -> (albedo path, normal-or-bump path or None, metal, rough)
 SETS_EXPLICIT = {

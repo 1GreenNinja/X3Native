@@ -655,17 +655,29 @@ void deriveRoute(const RouteSeed& seed, TunnelRoute& route, TerrainCorridor& c) 
     // the roadway. Monotone (depths only rise), so it converges — in practice in
     // one or two passes — and it is deterministic, which is what makes the
     // result survive a regenerated height field with no hand-placed fudge.
+    // Walk DENSER than the self-check that grades it (0.5 m stations, 13 lats
+    // over ±road width there), and demand a small negative margin. The old walk
+    // (1.0 m / 9 lats / worst <= 0.0) proved "clear" only on ITS lattice: the
+    // North Massif Tunnel shipped a -0.07 m hairline at s=156 that the
+    // W-MOUNTAIN scale-varied bluff strata flipped to +0.08 m — 8 cm of rock
+    // lip standing on the roadway BETWEEN the walk's samples, found by the
+    // check and never by the guarantee. 0.5 m x 19 lats is a superset of the
+    // check's lattice (plus the 0.9 m shoulder margin), and the -0.05 m
+    // epsilon means a between-samples bump needs a >5 cm crest in <1 m of
+    // ground — not something the km-scale fbm fields produce — before it can
+    // stand on the road again.
+    constexpr float kCloseEps = 0.05f;   // converge to 5 cm BELOW the floor
     for (int pass = 0; pass < 8; ++pass) {
         std::vector<float> add((size_t)kRouteNodes, 0.0f);
         float worst = -1e9f;
-        for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 1.0f) {
+        for (float s = 0.0f; s <= route.totalLen + 0.01f; s += 0.5f) {
             const float floorWant = route.roadYAt(s) - kFloorClear;
-            for (int k = -4; k <= 4; ++k) {
-                const float lat = (float)k * (kTcRoadHalfWidth + 0.9f) / 4.0f;
+            for (int k = -9; k <= 9; ++k) {
+                const float lat = (float)k * (kTcRoadHalfWidth + 0.9f) / 9.0f;
                 float qx = 0.0f, qz = 0.0f;
                 route.worldAt(s, lat, qx, qz);
                 const float h = tunnelNaturalHeightAt(qx, qz) - terrainCorridorDepthAt(c, qx, qz);
-                const float over = h - floorWant;
+                const float over = h - floorWant + kCloseEps;
                 if (over > worst) worst = over;
                 if (over <= 0.0f) continue;
                 const int i0 = clampi((int)std::floor(s / ds), 0, kRouteNodes - 1);
@@ -3072,10 +3084,24 @@ void TunnelCorridorWorld::showcaseCamera(const TunnelRoute& route, int which, fl
         // Framed so the lid can actually be JUDGED: 190 m up and 300 m back put
         // the whole ridge inside a few pixels and showed nothing but streamer
         // LOD. 85 m up, 210 m back, pitched into the hill.
+        //
+        // TERRAIN-CLAMPED (W-MOUNTAIN 2026-08-16): "+85 m over the road" was a
+        // constant tuned against the 162 m ridge; the owner's raise put the
+        // flank at this station well above it and the frame was a rock-texture
+        // close-up FROM INSIDE THE HILL (shots_mountain/04_saddle, first
+        // pass). The eye height now rides the measured ground at the camera's
+        // own footprint, and the pitch is re-aimed at the lid over mid-bore
+        // instead of a canned angle, so the pose composes at ANY massif height.
         const float mid = (route.boreS0 + route.boreS1) * 0.5f;
         float p[3]; route.posAt(std::max(0.0f, mid - 210.0f), p);
         cam[0] = p[0]; cam[1] = p[1] + 85.0f; cam[2] = p[2];
-        cam[3] = yawFwd; cam[4] = -0.30f;
+        const float camGround = terrainHeightAtWorld(cam[0], cam[2]);
+        if (cam[1] < camGround + 30.0f) cam[1] = camGround + 30.0f;
+        float t[3]; route.posAt(mid, t);
+        t[1] = terrainHeightAtWorld(t[0], t[2]) + 10.0f;     // the lid itself
+        const float dx = t[0]-cam[0], dy = t[1]-cam[1], dz = t[2]-cam[2];
+        const float hl = std::sqrt(dx*dx + dz*dz);
+        cam[3] = yawFwd; cam[4] = std::atan2(dy, std::max(1.0f, hl));
         return;
     }
     if (which == 4) {
@@ -3273,6 +3299,25 @@ bool runTunnelMouthSelfTest() {
                       worstGrade * 100.0f, kTcMaxGrade * 100.0f, maxCut);
         check(worstGrade <= kTcMaxGrade * 1.02f && maxCut > 5.0f,
               "M5 the graded road still respects kTcMaxGrade", d);
+    }
+
+    // ---- [diag] THE LARGE MOUNTAIN'S NATURAL SUMMIT (not a gate). The owner
+    // tunes this massif by eye ("taller... bluish dark cliffs.. stepped
+    // bluffs"); this prints the measured summit so a raise lands in the
+    // receipts as a NUMBER (rule 9), not a vibe. Scans the ridge band's bbox
+    // (kRanges tunnel ridge, spine (-753,-740)->(-431,36), outW 240) on the
+    // NATURAL field (corridor delta backed out).
+    {
+        float top = -1e9f, tx = 0.0f, tz = 0.0f;
+        for (float sz = -1000.0f; sz <= 300.0f; sz += 6.0f)
+            for (float sx = -1020.0f; sx <= -170.0f; sx += 6.0f) {
+                const float h = terrainHeightAtWorld(sx, sz) - terrainCorridorDelta(sx, sz);
+                if (h > top) { top = h; tx = sx; tz = sz; }
+            }
+        std::snprintf(d, sizeof(d),
+                      "[diag] Large Mountain natural summit %.1f m (%.0f ft) at (%.0f, %.0f)",
+                      top, top * 3.28084f, tx, tz);
+        x3::logInfo(d);
     }
 
     // ---- M6: REGENERATION PROOF. Re-derive the whole construction on other
