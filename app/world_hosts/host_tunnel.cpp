@@ -2538,7 +2538,16 @@ int hostTunnel(HostContext& hc) {
             // pace is nauseating. Both modes still land on ONE setCamera, so the
             // precipitation volume and the sky-visibility ray follow the eye
             // without a second code path to keep in step.
-            if (!driving && footSpawned) {
+            // NOCLIP (D-CONSOLE fold): seed the freefly from wherever the chase/
+            // on-foot camera currently sits, then let it take over the actual
+            // setCamera calls below. `noclip` detaches fully — the car keeps
+            // driving/parked and Jake keeps standing wherever he was, but
+            // neither one drives the VIEW while it is active. `noclip 0`
+            // returns to exactly this chase-cam code, unmodified.
+            shell.trackCamera(cx, cy, cz, camYaw, camPitch);
+            if (shell.overrideCamera(fdt, (!driving && footSpawned) ? 74.0f : fovNow)) {
+                shell.flyCamPose(cx, cy, cz, camYaw, camPitch);   // keep precip/audio probes with the free cam
+            } else if (!driving && footSpawned) {
                 float ex, ey, ez, fyaw = 0.0f, fpit = 0.0f;
                 onFoot.camera(ex, ey, ez, fyaw, fpit);
                 camYaw = fyaw; camPitch = fpit;

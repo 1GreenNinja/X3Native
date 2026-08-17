@@ -283,6 +283,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testJobs = o.testJobs;
         _tf.testAsset = o.testAsset;
         _tf.testConsole = o.testConsole;
+        _tf.testEngineConsole = o.testEngineConsole;
         _tf.testPhysics = o.testPhysics;
         _tf.testPhysJoint = o.testPhysJoint;
         _tf.testRagdoll = o.testRagdoll;

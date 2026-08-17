@@ -29,7 +29,7 @@ namespace x3::apphost {
 // locals 1:1 (same names) so population is a verbatim assignment list.
 struct TestFlags {
     // --- self-tests (return runX()?0:1) ---
-    bool testJobs = false, testAsset = false, testConsole = false, testPhysics = false;
+    bool testJobs = false, testAsset = false, testConsole = false, testEngineConsole = false, testPhysics = false;
     bool testPhysJoint = false, testRagdoll = false, testGltf = false, testPlayer = false;
     bool testInteract = false, testPhysprops = false, testRagdollSkin = false;
     bool testDoors = false;       // --test-doors (door-mesh swap: ease/dt/variants/passability/audio)

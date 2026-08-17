@@ -709,7 +709,15 @@ int hostDrive(HostContext& hc) {
                     ? std::clamp(kBank * in.steer * speedFactor, -kMaxBank, kMaxBank) : 0.0f;
                 camBank += (bankTarget - camBank) * std::min(1.0f, kBankLerp * fdt);
             }
-            if (bankActive) {
+            // NOCLIP (D-CONSOLE fold): seed the freefly from wherever this frame's
+            // chase/bank/fly/boat camera would have landed, then let it take the
+            // ACTUAL setCamera(Basis) call. The car/boat/plane keep simulating
+            // (untouched) — only the VIEW detaches. `noclip 0` returns to exactly
+            // the branch chain below, unmodified.
+            shell.trackCamera(cx, cy, cz, viewYaw, viewPitch);
+            if (shell.overrideCamera(fdt, fovNow)) {
+                // handled — HostShell called device->setCamera() itself.
+            } else if (bankActive) {
                 // fwd = the SAME forward the old setCamera implied from yaw/pitch.
                 const float cyaw = std::cos(viewYaw), syaw = std::sin(viewYaw);
                 const float cpit = std::cos(viewPitch), spit = std::sin(viewPitch);

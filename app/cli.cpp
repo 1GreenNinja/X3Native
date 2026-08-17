@@ -119,6 +119,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-jobs") o.testJobs = true;
         else if (a == "--test-asset") o.testAsset = true;
         else if (a == "--test-console") o.testConsole = true;
+        else if (a == "--test-engineconsole") o.testEngineConsole = true;   // D-CONSOLE: shared registry + noclip + help self-test
         else if (a == "--test-physics") o.testPhysics = true;
         else if (a == "--test-gltf") o.testGltf = true;
         else if (a == "--test-player") o.testPlayer = true;
