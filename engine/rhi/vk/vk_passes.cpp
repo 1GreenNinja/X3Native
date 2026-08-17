@@ -2394,7 +2394,8 @@ void VulkanRenderDevice::prepareFrameData() {
                              m_water.horizonColor[2], hasHorizon ? 1.0f : 0.0f);
             // Clarity (see WaterParams::clarity): 0 keeps the historic opaque
             // surface byte-identical (alpha 1 through the enabled blend).
-            w.p4 = glm::vec4(m_water.clarity, 0.0f, 0.0f, 0.0f);
+            // p4.y = foam (0 = off, legacy byte-identical — see water.frag).
+            w.p4 = glm::vec4(m_water.clarity, m_water.foam, 0.0f, 0.0f);
             // RIVER MODE (task #32 — one water truth): count 0 = legacy flat
             // sea, byte-identical. See WaterParams::riverNodes.
             const uint32_t rn = std::min(m_water.riverNodeCount,
@@ -2402,6 +2403,12 @@ void VulkanRenderDevice::prepareFrameData() {
             w.riverInfo  = glm::vec4((float)rn, m_water.riverHalfWidth, 0.0f, 0.0f);
             w.riverBasin = glm::vec4(m_water.basinCenter[0], m_water.basinCenter[1],
                                      m_water.basinRadius, m_water.oceanLevel);
+            // Shoreline table (W-UNDERRIVER): count 0 = legacy full-disc sea.
+            const uint32_t sn = std::min(m_water.shoreSectorCount,
+                                         WaterParams::kShoreSectors);
+            w.shoreInfo = glm::vec4((float)sn, m_water.shoreFade, 0.0f, 0.0f);
+            for (uint32_t i = 0; i < sn; ++i)
+                w.shoreRadii[i >> 2][i & 3] = m_water.shoreRadii[i];
             for (uint32_t i = 0; i < rn; ++i)
                 w.riverNodes[i] = glm::vec4(m_water.riverNodes[i][0],
                                             m_water.riverNodes[i][1],

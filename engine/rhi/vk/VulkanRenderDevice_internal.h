@@ -3067,10 +3067,15 @@ private:
         // xy=ocean basin centre (world XZ), z=basin radius (0 = no sea
         // fallback), w=oceanLevel (the sea surface Y the estuary hands off to).
         glm::vec4 riverBasin;     // 224
+        // Shoreline table (W-UNDERRIVER): x=sector count (0 = legacy full
+        // disc), y=fade width (m). Radii packed 4 per vec4, sector i at
+        // [i>>2][i&3]. See WaterParams::shoreRadii + water.vert.
+        glm::vec4 shoreInfo;      // 240
+        glm::vec4 shoreRadii[64]; // 256 (256 radii, 4 per vec4)
         // Per node: x=world x, y=world z, z=waterY (w unused). Count above.
-        glm::vec4 riverNodes[20]; // 240
+        glm::vec4 riverNodes[20]; // 1280
     };
-    static_assert(sizeof(WaterUBO) == 560, "WaterUBO must match the std140 layout in water.{vert,frag}");
+    static_assert(sizeof(WaterUBO) == 1600, "WaterUBO must match the std140 layout in water.{vert,frag}");
     WaterParams m_water{};   // cached tunables (setWaterParams)
     // Unit-patch grid mesh (vec2 grid coord per vertex), built once at init.
     VkBuffer      m_waterVbo = VK_NULL_HANDLE; VmaAllocation m_waterVboAlloc = nullptr;

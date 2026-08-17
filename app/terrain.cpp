@@ -1926,6 +1926,50 @@ float worldWaterLevelAt(float x, float z) {
 }
 
 // ---------------------------------------------------------------------------
+// THE SHORELINE TABLE (W-UNDERRIVER) — see terrain.h. Marches each sector's
+// ray inward from the basin rim over the SAME terrainHeightAtWorld field the
+// query above tests; the first sample below kWorldSeaLevel (ignoring the
+// river channel's estuary notch) is the shoreline, biased kShoreBiasM out so
+// the drawn skirt dies under the beach sand, never short of the waterline.
+// Sector angle convention is PAIRED with water.vert's decode.
+// ---------------------------------------------------------------------------
+uint32_t worldOceanShoreTable(float* outRadii, uint32_t maxSectors) {
+    if (!outRadii || maxSectors == 0) return 0;
+    const uint32_t n = maxSectors;
+    const RiverChain& rc = riverChain();
+    constexpr float kStep = 2.0f;                 // march resolution (m)
+    // One ray per sector's angle. The coast is an fbm line, so a sector's
+    // stored radius is the MAX over supersampled rays across its span (the
+    // shader lerps sector centres): the residual error is a few metres of
+    // OVERDRAW that dies under the beach — never a strip of undrawn sea
+    // (RB12 measured 97 m of coast cut off at 64 sectors without this).
+    constexpr int kSuper = 4;                     // rays per sector
+    auto rayShore = [&](float ang) {
+        const float dx = std::cos(ang), dz = std::sin(ang);
+        for (float r = kWorldOceanBasinR - kStep; r > 0.0f; r -= kStep) {
+            const float x = kBasinCx + dx * r, z = kBasinCz + dz * r;
+            if (terrainHeightAtWorld(x, z) >= kWorldSeaLevel) continue;
+            float d, w;
+            polyClosest(rc.x, rc.z, rc.w, rc.n, x, z, d, w);
+            if (d <= kWorldRiverHalfWidth + 8.0f) continue;   // estuary notch
+            return std::min(r + kShoreBiasM, kWorldOceanBasinR);
+        }
+        return 0.0f;
+    };
+    const float sector = 6.28318530718f / (float)n;
+    for (uint32_t i = 0; i < n; ++i) {
+        const float ang = (((float)i / (float)n) - 0.5f) * 6.28318530718f;
+        float shore = 0.0f;
+        for (int s = 0; s < kSuper; ++s) {
+            const float off = ((float)s / (float)(kSuper - 1) - 0.5f) * sector;
+            shore = std::max(shore, rayShore(ang + off));
+        }
+        outRadii[i] = shore;
+    }
+    return n;
+}
+
+// ---------------------------------------------------------------------------
 // Placement API — the single canonical world config + the height/normal/place
 // helpers the 14900k anchors buildings (the Spire) + the cliffside pad with.
 // The config is the engine TerrainConfig defaults (matching what `--world

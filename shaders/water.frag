@@ -40,6 +40,9 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     // x = clarity (WaterParams::clarity): 0 = the historic OPAQUE surface
     // (alpha 1 -> src*1+dst*0, byte-identical through the enabled blend);
     // >0 = face-on shallow water goes translucent over the lit scene beneath.
+    // y = foam (WaterParams::foam): 0 = off (legacy, byte-identical); >0
+    // scales CONTACT FOAM where the water thins onto banks/rocks/hulls (the
+    // scene-depth trick below) + CREST FOAM where the Gerstner lift tops out.
     vec4  p4;
     // RIVER MODE (task #32) — consumed by the vertex stage (level-follow +
     // coverage mask); declared here so the block layouts match. In river mode
@@ -47,6 +50,10 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     // worldWaterLevelAt(cam)), so the underside-view gate below stays honest.
     vec4  riverInfo;
     vec4  riverBasin;
+    // Shoreline table (W-UNDERRIVER) — consumed by the vertex stage; declared
+    // so the block layouts match. See water.vert.
+    vec4  shoreInfo;
+    vec4  shoreRadii[64];
     vec4  riverNodes[20];
 } u;
 
@@ -60,6 +67,8 @@ layout(location = 2) in vec2 vGrid;
 // River-mode coverage (1 everywhere in legacy flat-sea mode — alpha * 1.0 is
 // byte-identical). Fades to 0 across the channel waterline; <= 0 is dry land.
 layout(location = 3) in float vMask;
+// Raw Gerstner lift (m) — crest-foam driver (only read when u.p4.y > 0).
+layout(location = 4) in float vCrest;
 
 layout(location = 0) out vec4 outColor;
 
@@ -175,6 +184,32 @@ void main() {
         return;
     }
 
+    // ---- FOAM (u.p4.y — the owner: "alive.. pulsing... writhing.. foaming
+    // if needed"). Two sources, both physical:
+    //   * CONTACT foam — where the water column thins to nothing against the
+    //     scene (bank waterlines, rocks breaking the surface, a hull, a
+    //     swimmer): waterDepth from the SAME scene-depth reconstruction the
+    //     refraction gradient uses, so foam hugs every intersection with no
+    //     extra geometry knowledge.
+    //   * CREST foam — the Gerstner lift near the top of its travel whips
+    //     white (only meaningful at ocean amplitudes; a calm river's crests
+    //     stay under the threshold and its foam lives at the banks).
+    // Both writhe under two scrolling interference noises. Lit by sun height
+    // (night foam is grey, not glowing — ACES law, this is NOT emissive).
+    // p4.y == 0 skips everything: legacy worlds byte-identical.
+    float foamAmt = 0.0;
+    if (u.p4.y > 0.0) {
+        float contactF = 1.0 - smoothstep(0.04, 1.05, waterDepth);
+        float crestF   = smoothstep(0.62, 1.0, vCrest / max(u.p0.z * 1.35, 1e-3));
+        float n1 = sin(rp.x * 0.83 + time * 1.9) * cos(rp.y * 1.07 - time * 1.6);
+        float n2 = sin((rp.x - rp.y) * 2.61 + time * 2.7)
+                 * sin((rp.x + rp.y * 0.7) * 1.31 - time * 1.2);
+        float writhe = clamp(0.58 + 0.30 * n1 + 0.24 * n2, 0.0, 1.0);
+        foamAmt = clamp((contactF + crestF * 0.8) * writhe * u.p4.y, 0.0, 1.0);
+        vec3 foamCol = vec3(0.82, 0.87, 0.90) * (0.30 + 0.70 * max(sunDir.y, 0.0));
+        color = mix(color, foamCol, foamAmt);
+    }
+
     // --- Horizon fog: blend the far water into the sky so the sea meets the sky
     // with no hard seam. Fades with view distance + as the patch reaches its edge. ---
     float viewDist = length(u.camPos.xyz - vWorldPos);
@@ -214,6 +249,9 @@ void main() {
     // fog. clarity 0 => alpha 1 everywhere — the historic opaque surface,
     // byte-identical through the enabled blend (src*1 + dst*0).
     float seeThrough = u.p4.x * (1.0 - fres) * (1.0 - depthT);
-    float alpha = clamp(1.0 - seeThrough + spec * u.p1.z * 0.25 + fog, 0.0, 1.0);
+    // Foam closes the surface back up (churned water is opaque white, and a
+    // see-through foam patch would read as soap scum on glass).
+    float alpha = clamp(1.0 - seeThrough + spec * u.p1.z * 0.25 + fog + foamAmt,
+                        0.0, 1.0);
     outColor = vec4(color, alpha * vMask);
 }

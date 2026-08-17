@@ -163,6 +163,30 @@ constexpr float kWorldOceanBasinZ = -1350.0f;
 constexpr float kWorldOceanBasinR = 950.0f;
 
 // ---------------------------------------------------------------------------
+// THE SHORELINE TABLE (W-UNDERRIVER — water only IN bodies of water).
+// worldWaterLevelAt says the sea exists only where the basin bowl is genuinely
+// below kWorldSeaLevel — but the DRAWN sea used to cover the whole 950 m disc,
+// which put a sheet of water under the dry beach ring and under every rim hill
+// the disc overlaps (the owner, noclip: "we do indeed have water underground").
+// This fills outRadii[i] (i < maxSectors, up to WaterParams::kShoreSectors)
+// with the OUTERMOST radius per angular sector at which the terrain is below
+// kWorldSeaLevel — marched inward from the rim over the SAME
+// terrainHeightAtWorld field the water query tests, +kShoreBiasM outward so
+// the drawn edge always dies under the beach, never short of the waterline.
+// Points within (kWorldRiverHalfWidth + 8) of the river chain are ignored
+// (the estuary notch carves below sea level OUTSIDE the true shoreline; that
+// water is the channel mask's business, not the shore's).
+// Sector i's angle is ((i / n) - 0.5) * 2*pi from basin centre — PAIRED with
+// water.vert's sector decode (a change to one IS a change to both).
+// Consumers: host_tunnel's applyRiverWater (feeds WaterParams::shoreRadii)
+// and river_bridge's RB11 gate (asserts drawn coverage == model coverage).
+// Returns the sector count written. NOT cached — callers cache; the answer
+// depends on registered corridors, so compute it after world build.
+// ---------------------------------------------------------------------------
+constexpr float kShoreBiasM = 6.0f;
+uint32_t worldOceanShoreTable(float* outRadii, uint32_t maxSectors);
+
+// ---------------------------------------------------------------------------
 // RAIN RUNOFF (W-WATER, task #23) — the river runs HIGH in heavy rain.
 // The host's weather tick feeds the (smoothed) rise in metres; BOTH truths
 // consume it through the same node table: worldWaterLevelAt adds the risen

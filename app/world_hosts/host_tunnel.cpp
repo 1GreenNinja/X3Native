@@ -1872,6 +1872,27 @@ int hostTunnel(HostContext& hc) {
             wpr.basinCenter[1] = x3::game::kWorldOceanBasinZ;
             wpr.basinRadius    = x3::game::kWorldOceanBasinR;
             wpr.oceanLevel     = x3::game::kWorldSeaLevel;
+            // THE SHORELINE TABLE (W-UNDERRIVER): without it the shader draws
+            // the sea across the whole basin disc — under the dry beach ring
+            // and the rim hills too (the owner, noclip: "we do indeed have
+            // water underground"). Computed ONCE from the same height field
+            // worldWaterLevelAt tests (terrain.cpp worldOceanShoreTable),
+            // lazily here so every road corridor is already registered.
+            // RB11 (river_bridge.cpp) gates drawn-vs-model coverage map-wide.
+            {
+                static const std::vector<float> kShore = [] {
+                    std::vector<float> r(WP::kShoreSectors, 0.0f);
+                    x3::game::worldOceanShoreTable(r.data(), WP::kShoreSectors);
+                    return r;
+                }();
+                wpr.shoreSectorCount = WP::kShoreSectors;
+                std::memcpy(wpr.shoreRadii, kShore.data(),
+                            sizeof(float) * WP::kShoreSectors);
+            }
+            // FOAM (the owner: "alive.. pulsing... writhing.. foaming if
+            // needed"): contact foam hugs the banks, rocks and anything
+            // breaking the surface; whitecaps stay quiet at this amplitude.
+            wpr.foam = 0.85f;
         }
         // seaLevel carries the LOCAL level at the focus (underside-view gate +
         // caustics plane); dry land falls back to the bridge's level.
