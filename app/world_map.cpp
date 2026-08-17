@@ -394,6 +394,67 @@ void bakeTerrainTilePixels(std::vector<uint8_t>& outRgba, uint32_t res,
     }
 }
 
+// Road network -> tile pixels. See the header for WHY this exists (the HUD
+// quad ring cannot hold the whole network at overview zoom). Casing first,
+// bright core second, exactly drawRouteOverlays' figure-ground; dash phase is
+// tracked in METRES here (the tile is world-space) where the per-frame pass
+// tracks screen px.
+void overlayRoadsOntoTilePixels(std::vector<uint8_t>& rgba, uint32_t res,
+                                float wx0, float wz0, float wx1, float wz1,
+                                const std::vector<MapRouteOverlay>& routes) {
+    if (res == 0 || rgba.size() < (size_t)res * res * 4 || wx1 <= wx0 || wz1 <= wz0) return;
+    const float ppmX = (float)res / (wx1 - wx0), ppmZ = (float)res / (wz1 - wz0);
+    const float ppm  = 0.5f * (ppmX + ppmZ);   // brush radius scale (tile is ~square)
+    // PAIRED with drawRouteOverlays' casingCol/coreCol (world_map.cpp) — the
+    // baked layer hands off to the per-frame layer at kRouteOverlayMinScale
+    // and the two must not visibly differ at the seam.
+    const uint8_t casing8[3] = { 9, 11, 17 };      // 0.035/0.045/0.065
+    const uint8_t core8[3]   = { 237, 240, 230 };  // 0.93/0.94/0.90
+    auto stamp = [&](float pxc, float pzc, float rPx, const uint8_t c[3]) {
+        const int xa = std::max(0, (int)std::floor(pxc - rPx));
+        const int xb = std::min((int)res - 1, (int)std::ceil(pxc + rPx));
+        const int za = std::max(0, (int)std::floor(pzc - rPx));
+        const int zb = std::min((int)res - 1, (int)std::ceil(pzc + rPx));
+        const float r2 = rPx * rPx;
+        for (int z = za; z <= zb; ++z)
+            for (int x = xa; x <= xb; ++x) {
+                const float dx = (float)x + 0.5f - pxc, dz = (float)z + 0.5f - pzc;
+                if (dx * dx + dz * dz > r2) continue;
+                uint8_t* d = rgba.data() + ((size_t)z * res + x) * 4;
+                d[0] = c[0]; d[1] = c[1]; d[2] = c[2]; d[3] = 255;
+            }
+    };
+    for (int pass = 0; pass < 2; ++pass) {
+        for (const MapRouteOverlay& r : routes) {
+            const size_t n = std::min(r.x.size(), r.z.size());
+            if (n < 2) continue;
+            const bool major = r.name == "INNER TOUR" || r.name == "OUTER TOUR";
+            const float weight = major ? 1.6f : 1.0f;
+            // True width in tile px, floored so no road ever bakes sub-pixel
+            // (a 26.8 m street is ~1.3 px on the 1024 tile — invisible).
+            const float coreR = std::max(r.widthM * ppm, 2.0f) * 0.5f * weight;
+            const float rPx   = (pass == 0) ? coreR + 1.2f : coreR;
+            const uint8_t* c  = (pass == 0) ? casing8 : core8;
+            float distM = 0.0f;               // along-route metres — the dash phase
+            for (size_t i = 0; i + 1 < n; ++i) {
+                const float ax = r.x[i], az = r.z[i], bx = r.x[i + 1], bz = r.z[i + 1];
+                const float segM = std::sqrt((bx - ax) * (bx - ax) + (bz - az) * (bz - az));
+                const float stepM = std::max(rPx * 0.7f / ppm, 1.0f);   // px-tracked step
+                const int steps = std::max(1, (int)(segM / stepM));
+                for (int k = 0; k <= steps; ++k) {
+                    const float t = (float)k / (float)steps;
+                    if (r.dashed) {   // ~90 m on / 60 m off, phased by arc length
+                        if (std::fmod(distM + t * segM, 150.0f) > 90.0f) continue;
+                    }
+                    const float wx = ax + (bx - ax) * t, wz = az + (bz - az) * t;
+                    stamp((wx - wx0) * ppmX, (wz - wz0) * ppmZ, rPx, c);
+                }
+                distM += segM;
+            }
+        }
+    }
+}
+
 uint32_t bakeEntityTilePixels(const Scene& scene, x3::rhi::IRenderDevice& device,
                               const std::vector<uint32_t>& entities,
                               std::vector<uint8_t>& outRgba, uint32_t res,
@@ -511,6 +572,7 @@ void WorldMapSystem::shutdown(x3::rhi::IRenderDevice& device) {
         if (rt.tile.baked && rt.tile.tex.valid()) { device.destroyTexture(rt.tile.tex); rt.tile = MapTile{}; }
     m_regionTiles.clear();
     if (m_terrainTile.baked && m_terrainTile.tex.valid()) { device.destroyTexture(m_terrainTile.tex); m_terrainTile = MapTile{}; }
+    if (m_terrainRoadsTile.baked && m_terrainRoadsTile.tex.valid()) { device.destroyTexture(m_terrainRoadsTile.tex); m_terrainRoadsTile = MapTile{}; }
 }
 
 void WorldMapSystem::discoveryTick(StoryFlags& flags, float px, float py, float pz) {
@@ -630,15 +692,27 @@ const MapTile* WorldMapSystem::ensureTerrainTile(x3::rhi::IRenderDevice& device)
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<uint8_t> px;
     bakeTerrainTilePixels(px, res, x0, z0, x1, z1);
+    // TWO textures from the ONE height pass (that pass is the cost — res^2
+    // terrainHeightAtWorld queries): the plain terrain underlay for zoomed-in
+    // views where drawRouteOverlays draws the roads crisp at true width, and
+    // a copy WITH the network baked in for world-overview zoom, where the
+    // per-frame pass cannot fit the whole network in the HUD quad ring (see
+    // overlayRoadsOntoTilePixels' header comment — this was the owner's
+    // "can't see ANYTHING" blank overview).
+    std::vector<uint8_t> pxRoads = px;
+    overlayRoadsOntoTilePixels(pxRoads, res, x0, z0, x1, z1, m_routes);
     const auto t1 = std::chrono::steady_clock::now();
     const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     m_terrainTile.tex = device.createTexture(px.data(), res, res, /*srgb=*/false);
     m_terrainTile.wx0 = x0; m_terrainTile.wz0 = z0; m_terrainTile.wx1 = x1; m_terrainTile.wz1 = z1;
     m_terrainTile.res = res;
     m_terrainTile.baked = m_terrainTile.tex.valid();
+    m_terrainRoadsTile = m_terrainTile;   // same rect/res
+    m_terrainRoadsTile.tex = device.createTexture(pxRoads.data(), res, res, /*srgb=*/false);
+    m_terrainRoadsTile.baked = m_terrainRoadsTile.tex.valid();
     char b[192];
     std::snprintf(b, sizeof(b),
-        "[worldmap] terrain underlay baked %ux%u (covers %.0f x %.0f m) in %.2f ms",
+        "[worldmap] terrain underlay baked %ux%u x2 (plain + roads, covers %.0f x %.0f m) in %.2f ms",
         res, res, x1 - x0, z1 - z0, ms);
     x3::logInfo(b);
     return m_terrainTile.baked ? &m_terrainTile : nullptr;
@@ -647,6 +721,9 @@ const MapTile* WorldMapSystem::ensureTerrainTile(x3::rhi::IRenderDevice& device)
 void WorldMapSystem::invalidateTerrainTile(x3::rhi::IRenderDevice& device) {
     if (m_terrainTile.baked && m_terrainTile.tex.valid()) device.destroyTexture(m_terrainTile.tex);
     m_terrainTile = MapTile{};
+    if (m_terrainRoadsTile.baked && m_terrainRoadsTile.tex.valid())
+        device.destroyTexture(m_terrainRoadsTile.tex);
+    m_terrainRoadsTile = MapTile{};
 }
 
 void WorldMapSystem::invalidateSpireTiles(x3::rhi::IRenderDevice& device) {
@@ -739,11 +816,26 @@ void WorldMapSystem::drawPoiIcon(x3::ui::UiContext& ui, const MapPoi& poi, float
 // below (the guard rail, not the expected case).
 void WorldMapSystem::drawRouteOverlays(x3::ui::UiContext& ui, float W, float H) const {
     if (m_routes.empty()) return;
+    // HANDOFF (W-MAP v3): below this scale the BAKED terrain+roads tile is the
+    // road layer (drawScreen picks it with the same constant) and this pass
+    // draws NOTHING. Receipt for why stamping can't cover the overview: the
+    // device HUD ring is kMaxHudVerts=24576 -> 4096 quads for the ENTIRE HUD
+    // frame; the old shared 4200-stamp budget alone overran it, so at world
+    // overview the casing pass ate the ring and the bright cores — and every
+    // layer drawn after (labels, markers, compass, the PLAYER) — silently
+    // vanished. That was the owner's "I just cant see ANYTHING on the MAP".
+    if (m_cam.scale < kRouteOverlayMinScale) return;
     const float margin = 32.0f;
-    int stampsLeft = 4200;
     const float casingCol[4] = { 0.035f, 0.045f, 0.065f, 0.95f };  // near-black outline
     const float coreCol[4]   = { 0.93f,  0.94f,  0.90f,  1.00f };  // bright near-white asphalt
-    for (int pass = 0; pass < 2 && stampsLeft > 0; ++pass) {
+    // PAIRED with overlayRoadsOntoTilePixels' casing8/core8 — the baked layer
+    // below the handoff scale must not visibly differ from this one.
+    // PER-PASS budgets (not shared): if the visible subset ever exceeds them,
+    // the CORE still draws — losing casing degrades to thinner-looking roads,
+    // losing core erased the network. 2 x 1400 quads = 16.8k verts, leaving
+    // ~8k of the 24576-vert ring for everything drawn after this pass.
+    for (int pass = 0; pass < 2; ++pass) {
+        int stampsLeft = 1400;
         const float* col = (pass == 0) ? casingCol : coreCol;
         for (const MapRouteOverlay& r : m_routes) {
             const size_t n = std::min(r.x.size(), r.z.size());
@@ -1008,14 +1100,38 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
     // dashed reaches read against real elevation. Deliberately low-contrast
     // (see bakeTerrainTilePixels) so the roads drawn next stay the map's
     // brightest layer.
-    if (const MapTile* tt = ensureTerrainTile(device)) {
-        float tx0, ty0, tx1, ty1;
-        m_cam.worldToPx(tt->wx0, tt->wz0, tx0, ty0);
-        m_cam.worldToPx(tt->wx1, tt->wz1, tx1, ty1);
-        if (!(tx1 < -64 || ty1 < -64 || tx0 > W + 64 || ty0 > H + 64)) {
-            const float full[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-            device.drawHudImage(frame, tt->tex, tx0, ty0, tx1 - tx0, ty1 - ty0, full);
+    // ROTATION-AWARE tile blit: run all four world corners through worldToPx
+    // (the SAME rotation every polyline gets) and draw via drawHudImageQuad —
+    // an axis-aligned drawHudImage under Q/E rotation smeared the terrain into
+    // a vertical band while the roads rotated correctly (receipt: the pre-fix
+    // shots_wmap/06b). rot==0 keeps the exact old two-corner rect path.
+    auto blitTile = [&](const MapTile& t, const float col[4]) {
+        float txa, tya, txb, tyb, txc, tyc, txd, tyd;   // TL,TR,BR,BL in world
+        m_cam.worldToPx(t.wx0, t.wz0, txa, tya);
+        m_cam.worldToPx(t.wx1, t.wz0, txb, tyb);
+        m_cam.worldToPx(t.wx1, t.wz1, txc, tyc);
+        m_cam.worldToPx(t.wx0, t.wz1, txd, tyd);
+        const float lo = -64.0f;
+        if ((txa < lo && txb < lo && txc < lo && txd < lo) ||
+            (tya < lo && tyb < lo && tyc < lo && tyd < lo) ||
+            (txa > W - lo && txb > W - lo && txc > W - lo && txd > W - lo) ||
+            (tya > H - lo && tyb > H - lo && tyc > H - lo && tyd > H - lo)) return;
+        if (m_cam.rot == 0.0f) {
+            device.drawHudImage(frame, t.tex, txa, tya, txc - txa, tyc - tya, col);
+        } else {
+            const float xy[8] = { txa, tya, txb, tyb, txc, tyc, txd, tyd };
+            device.drawHudImageQuad(frame, t.tex, xy, col);
         }
+    };
+    if (const MapTile* tt = ensureTerrainTile(device)) {
+        // Below the handoff scale the tile WITH the baked road network is the
+        // road layer (the quad ring can't hold the whole network — see
+        // overlayRoadsOntoTilePixels); above it the plain tile goes under
+        // drawRouteOverlays' crisp true-width pass. Same constant both sites.
+        if (m_cam.scale < kRouteOverlayMinScale && m_terrainRoadsTile.baked)
+            tt = &m_terrainRoadsTile;
+        const float full[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        blitTile(*tt, full);
     }
 
     // ---- Route overlays: the road network (road worlds; empty elsewhere).
@@ -1025,14 +1141,9 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
 
     // ---- Tiles: regions (fogged when unseen), then the Spire's selected floor.
     auto drawTile = [&](const MapTile& t, bool seen) {
-        float px0, py0, px1, py1;
-        m_cam.worldToPx(t.wx0, t.wz0, px0, py0);
-        m_cam.worldToPx(t.wx1, t.wz1, px1, py1);
-        if (px1 < -64 || py1 < -64 || px0 > W + 64 || py0 > H + 64) return;
         const float lit[4]  = { 1.0f, 1.0f, 1.0f, 0.96f };
         const float fog[4]  = { 0.42f, 0.47f, 0.54f, 0.22f };
-        device.drawHudImage(frame, t.tex, px0, py0, px1 - px0, py1 - py0,
-                            seen ? lit : fog);
+        blitTile(t, seen ? lit : fog);   // rotation-aware (see blitTile above)
     };
     for (const RegionTileEntry& rt : m_regionTiles)
         if (rt.tile.baked) drawTile(rt.tile, flags.has(regionSeenFlag(rt.id)));
@@ -1494,6 +1605,39 @@ bool runWorldMapSelfTest() {
         } else {
             check(false, "M9 region graph failed to load");
         }
+    }
+
+    // ---- M10: road-network bake into a terrain tile (W-MAP v3). ------------
+    // Pure-CPU: fill a synthetic ground, stamp one solid + one dashed route,
+    // assert bright core on the centreline, dark casing just outside it, an
+    // untouched ground pixel away from any road, and a real gap mid-dash.
+    {
+        const uint32_t res = 64;                     // covers (-128..128)^2 m
+        std::vector<uint8_t> px((size_t)res * res * 4);
+        for (size_t i = 0; i < px.size(); i += 4) { px[i] = 50; px[i+1] = 60; px[i+2] = 50; px[i+3] = 255; }
+        std::vector<MapRouteOverlay> routes(2);
+        routes[0].name = "TEST SOLID";  routes[0].x = { -100.0f, 100.0f }; routes[0].z = { 0.0f, 0.0f };
+        routes[1].name = "TEST DASHED"; routes[1].dashed = true;
+        routes[1].x = { -100.0f, 100.0f }; routes[1].z = { 50.0f, 50.0f };
+        overlayRoadsOntoTilePixels(px, res, -128.0f, -128.0f, 128.0f, 128.0f, routes);
+        auto at = [&](float wx, float wz) {
+            const int x = (int)((wx + 128.0f) / 256.0f * (float)res);
+            const int y = (int)((wz + 128.0f) / 256.0f * (float)res);
+            return px.data() + ((size_t)y * res + x) * 4;
+        };
+        const uint8_t* core = at(0.0f, 0.0f);
+        check(core[0] > 200 && core[1] > 200, "M10 road core bakes bright on the centreline");
+        const uint8_t* casing = at(0.0f, 15.0f);     // outside the ~13 m core, inside the casing
+        check(casing[0] < 25 && casing[2] < 30, "M10b dark casing just outside the core");
+        const uint8_t* ground = at(0.0f, -80.0f);
+        check(ground[0] == 50 && ground[1] == 60, "M10c ground untouched away from roads");
+        // Dash phase: 90 m on / 60 m off from the route start (x=-100) — the
+        // off-window (90..150 m along = x in -10..50) leaves x=20 unpainted
+        // even counting the brush radius from both flanking on-windows.
+        const uint8_t* gap = at(20.0f, 50.0f);
+        const uint8_t* dashOn = at(-50.0f, 50.0f);   // 50 m along: inside the first on-window
+        check(dashOn[0] > 200, "M10d dashed route paints its on-window");
+        check(gap[0] == 50 && gap[1] == 60, "M10e dashed route leaves a real gap mid-dash");
     }
 
     x3::logInfo("worldmap: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");

@@ -202,6 +202,21 @@ void bakeFloorTilePixels(const CanonFloor& floor, std::vector<uint8_t>& outRgba,
 void bakeTerrainTilePixels(std::vector<uint8_t>& outRgba, uint32_t res,
                            float wx0, float wz0, float wx1, float wz1);
 
+// Stamp the road network INTO an already-baked terrain tile buffer (casing +
+// bright core, dashed bores, same palette as drawRouteOverlays — the two are
+// PAIRED, see the color constants at both sites). Why baked at all when
+// drawRouteOverlays exists: the per-frame HUD path stamps quads into the
+// device's ~4096-quad/frame vertex ring, and the WHOLE 46-mile network at
+// world-overview zoom needs more stamps than the ring holds — the casing pass
+// ate the budget and the bright cores silently vanished, which is exactly the
+// owner's "I just cant see ANYTHING on the MAP" blank-network overview.
+// Texture pixels cost no ring space, so the baked layer carries the network at
+// low zoom; drawRouteOverlays takes over above kRouteOverlayMinScale where the
+// visible (bounded) subset fits the ring and draws crisper at true width.
+void overlayRoadsOntoTilePixels(std::vector<uint8_t>& rgba, uint32_t res,
+                                float wx0, float wz0, float wx1, float wz1,
+                                const std::vector<MapRouteOverlay>& routes);
+
 // Rasterize live scene entities (a region's ownership ledger) by their world
 // AABBs (meshBounds x transform): height-banded tint (low = dark floor teal,
 // tall = bright wall cyan), painter's order by top Y, 1px darker rim. Entities
@@ -253,6 +268,14 @@ public:
     // Returns null until setRouteOverlays has real geometry.
     const MapTile* ensureTerrainTile(x3::rhi::IRenderDevice& device);
     void invalidateTerrainTile(x3::rhi::IRenderDevice& device);
+
+    // Below this camera scale (px per metre) the BAKED terrain+roads tile
+    // carries the road network and drawRouteOverlays draws nothing; at or
+    // above it the per-frame overlay pass draws the (bounded) visible subset
+    // crisp at true width. One constant, two consumers — drawScreen's tile
+    // pick and drawRouteOverlays' early-out MUST agree or the network
+    // double-draws (halo) or vanishes at the boundary.
+    static constexpr float kRouteOverlayMinScale = 0.20f;
 
     // ---- Fast travel (host polls after drawScreen) -------------------------
     bool travelRequested() const { return m_travelRequested; }
@@ -355,6 +378,9 @@ private:
     std::vector<MapRouteOverlay> m_routes;   // road-network worlds (else empty)
     std::vector<MapMarker>       m_markers;  // portals / garage / landmarks (else empty)
     MapTile m_terrainTile;                   // road-network underlay (see ensureTerrainTile)
+    MapTile m_terrainRoadsTile;              // same tile WITH the network baked in — drawn
+                                             // below kRouteOverlayMinScale (one height pass
+                                             // bakes both; see ensureTerrainTile)
 
     Waypoint m_waypoint;
     bool m_open = false;

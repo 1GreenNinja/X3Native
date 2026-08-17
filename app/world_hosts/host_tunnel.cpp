@@ -1012,6 +1012,22 @@ int hostTunnel(HostContext& hc) {
         }
     }
 
+    // ---- MAP POIs for the landed lanes (W-MAP v3, task #22) ----------------
+    // The SEVEN_LANE_PLAN contract had lanes 4/5 registering their own POIs;
+    // they merged without the calls, so the host registers them here FROM THE
+    // SAME OBJECTS that place the world geometry (town.centerX/Z is the street
+    // datum anchor town.h documents as "the MapPoi anchor"; each station site
+    // is the forecourt origin its structures are placed from) — positions
+    // cannot drift from the buildings (NO_SLOP rule 4).
+    {
+        if (townOn)
+            x3::worldpoi::registerMapPoi("Mountain Town", town.centerX(), town.centerZ(),
+                                         x3::worldpoi::MapPoi::Town);
+        for (const x3::game::GasStationSite& s : gasStations.sites())
+            if (s.ok)
+                x3::worldpoi::registerMapPoi(s.name, s.x, s.z, x3::worldpoi::MapPoi::Fuel);
+    }
+
     // THE FORESTS — the owner's brown map regions (ROAD_NETWORK_SKETCH_V2.png:
     // "This Color is All Forest"): north belt, centre-north patch, NE corner,
     // the southern countryside belt walling the tour ("Tthick woods on much of
@@ -2874,7 +2890,7 @@ int hostTunnel(HostContext& hc) {
 
             x3::game::WorldMapSystem mapShotWm;
             mapShotWm.init("", "");
-            mapShotWm.setRouteOverlays(mapRoutes);   // copy: mapRoutes isn't read again below
+            mapShotWm.setRouteOverlays(mapRoutes);   // copy: the interactive path re-stages it
 
             // Portal + garage markers — same lookup the interactive wiring uses.
             {
@@ -3098,6 +3114,8 @@ int hostTunnel(HostContext& hc) {
                     car.render(f);
                     x3::logInfo("[wmap-debug] checkpoint E (car.render done)");
                     int fbw3 = 0, fbh3 = 0; glfwGetFramebufferSize(window, &fbw3, &fbh3);
+                    x3::logInfo("[wmap-debug] checkpoint E1 (fbsize " + std::to_string(fbw3) +
+                                "x" + std::to_string(fbh3) + ")");
                     const float fw3 = (float)fbw3, fh3 = (float)fbh3;
                     const float mmR = 0.16f * fh3;
                     const float mmCx = fw3 - mmR - 16.0f;
@@ -3106,6 +3124,7 @@ int hostTunnel(HostContext& hc) {
                     const float mmScale = mmR / mmRange;
                     const float bgq[4] = { 0.015f, 0.025f, 0.045f, 0.66f };
                     device->drawHudQuad(f, mmCx - mmR, mmCy - mmR, mmR * 2.0f, mmR * 2.0f, bgq);
+                    x3::logInfo("[wmap-debug] checkpoint E2 (first drawHudQuad done)");
                     const float rim[4] = { 0.55f, 0.65f, 0.75f, 0.55f };
                     device->drawHudQuad(f, mmCx - mmR, mmCy - mmR, mmR * 2.0f, 2.0f, rim);
                     device->drawHudQuad(f, mmCx - mmR, mmCy + mmR - 2.0f, mmR * 2.0f, 2.0f, rim);
@@ -3124,6 +3143,7 @@ int hostTunnel(HostContext& hc) {
                                                 mmCy + pz2 * mmScale - px * 0.5f, px, px, col);
                         }
                     };
+                    x3::logInfo("[wmap-debug] checkpoint E3 (rim quads done)");
                     {
                         uint32_t nR = 0;
                         const x3::game::WorldRiverNode* rn = x3::game::worldRiverNodes(nR);
@@ -3132,6 +3152,7 @@ int hostTunnel(HostContext& hc) {
                             mmStampLine(rn[i2].x - vp2[0], rn[i2].z - vp2[2],
                                         rn[i2+1].x - vp2[0], rn[i2+1].z - vp2[2], 5.5f, wcol, false);
                     }
+                    x3::logInfo("[wmap-debug] checkpoint E4 (river done)");
                     const float casingc[4] = { 0.03f, 0.04f, 0.06f, 0.85f };
                     const float roadc[4]   = { 0.97f, 0.98f, 1.00f, 1.00f };
                     for (int pass = 0; pass < 2; ++pass) {
@@ -3259,7 +3280,16 @@ int hostTunnel(HostContext& hc) {
     // road-network overlays staged at boot are the map.
     x3::game::WorldMapSystem wmap;
     wmap.init("", "");                       // empty POI/floor set, logged, not fatal
-    wmap.setRouteOverlays(std::move(mapRoutes));
+    // COPY, not move (W-MAP v3 bug receipt): this used to std::move(mapRoutes)
+    // while the LIVE minimap's road pass further down still iterated
+    // `mapRoutes` — a moved-from, EMPTY vector. Result: the in-game minimap
+    // drew water and the car blip but ZERO roads (the proof-set minimap shot
+    // reads the vector BEFORE this line on its early-return path, so every
+    // capture showed roads while the owner's live minimap showed none —
+    // "MINIMAP????? MAP???"). The minimap now reads wmap.routeOverlays(), the
+    // ONE owner; the copy here is belt-and-braces so no future reader of
+    // mapRoutes can strike the same trap.
+    wmap.setRouteOverlays(mapRoutes);
     // ---- MAP MARKERS: the tunnel mouths + the LNSS garage ------------------
     // Not a POI-table entry (no discovery gating — a road world has no
     // StoryFlags fog to lift), just a point label the map always draws. The
@@ -4996,7 +5026,10 @@ int hostTunnel(HostContext& hc) {
                 for (int pass = 0; pass < 2; ++pass) {
                     const float wpx = (pass == 0) ? 6.4f : 4.4f;   // casing wider than core
                     const float* col = (pass == 0) ? casingc : roadc;
-                    for (const auto& o : mapRoutes) {
+                    // wmap owns the route list (see the setRouteOverlays
+                    // receipt above — iterating `mapRoutes` here read a
+                    // moved-from vector for a whole release: NO minimap roads).
+                    for (const auto& o : wmap.routeOverlays()) {
                         const size_t n = std::min(o.x.size(), o.z.size());
                         for (size_t i2 = 0; i2 + 1 < n; ++i2) {
                             const float ax = o.x[i2] - vp[0],    az = o.z[i2] - vp[2];
