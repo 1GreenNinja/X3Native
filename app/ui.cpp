@@ -53,6 +53,9 @@ void UiContext::begin(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
 
     m_widgetIndex     = 0;
     m_mouseMovedFocus = false;
+    // The pointer goes back to nobody as soon as the button is up (see
+    // m_dragWidget in ui.h — sliderEx's drag capture).
+    if (!m_in.mouseDown) m_dragWidget = -1;
 }
 
 void UiContext::end() {
@@ -254,6 +257,83 @@ bool UiContext::slider(const char* label, float& value, float x, float y, float 
     if (nv < 0.0f) nv = 0.0f; if (nv > 1.0f) nv = 1.0f;
     if (nv != v) { value = nv; changed = true; }
     return changed;
+}
+
+bool UiContext::sliderEx(const char* label, float& value, float minV, float maxV,
+                         float step, const char* readout, float x, float y,
+                         float w, float h) {
+    const int idx = m_widgetIndex++;
+
+    const bool hovered = pointIn(x, y, w, h);
+    // DRAG CAPTURE: the press inside the row claims the pointer; the claim
+    // survives until mouseDown goes false (cleared in begin()). Without it a
+    // drag dies the instant the cursor leaves a 34 px row, which is the first
+    // thing a hand does when it pulls RAIN from 0 to 10.
+    if (hovered && m_in.mousePressed && m_dragWidget < 0) m_dragWidget = idx;
+    const bool dragging = (m_dragWidget == idx);
+    if (hovered || dragging) { m_focus = idx; m_mouseMovedFocus = true; }
+    const bool hot = (m_focus == idx);
+
+    if (maxV <= minV) maxV = minV + 1.0f;
+    if (step <= 0.0f) step = (maxV - minV) / 20.0f;
+    float v = value;
+    if (v < minV) v = minV; if (v > maxV) v = maxV;
+    const float t01 = (v - minV) / (maxV - minV);
+
+    // Row background (matches slider/toggle/button look).
+    quad(x, y, w, h, hot ? kColBtnHot : kColBtn);
+    if (hot) {
+        const float t = 2.0f;
+        quad(x, y, w, t, kColBtnEdge);
+        quad(x, y + h - t, w, t, kColBtnEdge);
+    }
+
+    // Left: the label.
+    const float px = h * 0.42f;
+    const float ty = y + (h - px) * 0.5f;
+    text(label, x + 14.0f, ty, px, hot ? kColText : kColTextDim);
+
+    // Right: the caller-formatted readout (mono, so digits don't dance while
+    // dragging). Wider than slider()'s percent cell — readouts carry words.
+    const float roW = 132.0f;
+    const float roPx = h * 0.38f;
+    if (readout)
+        textCentered(readout, x + w - roW * 0.5f - 10.0f, y + (h - roPx) * 0.5f,
+                     roPx, kColText, FontRole::HudMono);
+
+    // Track between the label and the readout.
+    const float labelW = 150.0f;
+    const float trackX = x + labelW;
+    const float trackR = x + w - roW - 16.0f;
+    const float trackW = std::max(8.0f, trackR - trackX);
+    const float trackH = std::max(4.0f, h * 0.16f);
+    const float trackY = y + (h - trackH) * 0.5f;
+
+    quad(trackX, trackY, trackW, trackH, kColTrack);
+    quad(trackX, trackY, trackW * t01, trackH, kColOn);
+    const float knobW = 10.0f, knobH = h * 0.55f;
+    const float knobX = trackX + trackW * t01 - knobW * 0.5f;
+    const float knobY = y + (h - knobH) * 0.5f;
+    quad(knobX, knobY, knobW, knobH, kColBtnEdge);
+
+    // ---- Interaction: drag snaps to `step`; keys nudge by one step ----------
+    // `dragging || (hovered && ...)`: the second half is the FIRST frame of a
+    // press whose mousePressed edge the caller never raised (the staged capture
+    // holds the button down across every settle frame), so a held cursor still
+    // reads as a drag.
+    float nv = v;
+    if ((dragging || hovered) && m_in.mouseDown) {
+        float t = (m_in.mouseX - trackX) / trackW;
+        if (t < 0.0f) t = 0.0f; if (t > 1.0f) t = 1.0f;
+        nv = minV + std::round(t * (maxV - minV) / step) * step;
+    }
+    if (hot) {
+        if (m_in.navLeft)  nv -= step;
+        if (m_in.navRight) nv += step;
+    }
+    if (nv < minV) nv = minV; if (nv > maxV) nv = maxV;
+    if (nv != v) { value = nv; return true; }
+    return false;
 }
 
 // ===========================================================================
@@ -596,7 +676,7 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
 // ===========================================================================
 // PauseMenu
 // ===========================================================================
-GameState PauseMenu::update(UiContext& ui, PauseAction& outAction, bool showEditor) {
+GameState PauseMenu::update(UiContext& ui, PauseAction& outAction, const PauseRows& rows) {
     outAction = PauseAction::None;
     const float w = (float)ui.screenW();
     const float h = (float)ui.screenH();
@@ -607,45 +687,73 @@ GameState PauseMenu::update(UiContext& ui, PauseAction& outAction, bool showEdit
     const float dim[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
     ui.quad(0, 0, w, h, dim);
 
-    // Panel (RESUME / TRAVEL / SAVE / LOAD / SETTINGS / QUIT = 6 buttons).
     const float pw = std::min(420.0f, w * 0.6f);
-    const float ph = std::min(560.0f, h * 0.86f);
     const float px = cx - pw * 0.5f;
-    const float py = h * 0.5f - ph * 0.5f;
+    const float titlePx = std::max(24.0f, pw / 14.0f);
+
+    // PANEL HEIGHT, PINNED TO THE OLD NUMBER. The screen used to be a fixed
+    // 560 px box holding the campaign's six rows, with the row height derived
+    // FROM the box — so a seventh row overflowed it. Row height and gap still
+    // come off that reference box (they must not move), but the box now grows
+    // by exactly one row pitch per extra row. For the 6-row campaign set the
+    // arithmetic below cancels back to `refPh` EXACTLY, so the campaign pause
+    // screen is pixel-identical to what --screenshot-menu has always captured.
+    const float refPh = std::min(560.0f, h * 0.86f);
+    const float bh    = std::max(38.0f, refPh * 0.115f);
+    const float gap   = bh * 0.26f;
+    const float headH = 24.0f + titlePx + 22.0f;
+    const float footH = refPh - (headH + 6.0f * bh + 5.0f * gap);  // today's leftover
+    const int   n     = std::max(1, rows.count());
+    // A hint line needs its own band under the last row, or it prints across
+    // the panel's bottom edge. The campaign passes no hint, so its panel keeps
+    // exactly the leftover above and does not move.
+    const float hintPx  = std::max(11.0f, h * 0.015f);
+    const float hintBand = rows.hint ? hintPx + 14.0f : 0.0f;
+    const float ph    = headH + (float)n * bh + (float)(n - 1) * gap + footH + hintBand;
+    const float py    = h * 0.5f - ph * 0.5f;
     ui.panel(px, py, pw, ph, kColPanel);
 
-    const float titlePx = std::max(24.0f, pw / 14.0f);
     const float titleCol[4] = { 0.40f, 0.88f, 1.0f, 1.0f };
     ui.textCentered("PAUSED", cx, py + 24.0f, titlePx, titleCol, UiContext::FontRole::Title);
 
     const float bw = pw - 48.0f;
-    const float bh = std::max(38.0f, ph * 0.115f);
-    const float gap = bh * 0.26f;
-    float by = py + 24.0f + titlePx + 22.0f;
-
+    float by = py + headH;
     GameState next = GameState::Paused;
-    if (ui.button("RESUME", px + 24.0f, by, bw, bh))        next = GameState::Playing;
-    by += bh + gap;
+    // ONE fixed row order. The campaign subset of it is byte-for-byte the
+    // order the screen has always drawn; the world-host rows slot in where
+    // they belong rather than being a second menu.
+    auto row = [&](bool show, const char* label) {
+        if (!show) return false;
+        const bool hit = ui.button(label, px + 24.0f, by, bw, bh);
+        by += bh + gap;
+        return hit;
+    };
+
+    if (row(rows.resume,        "RESUME"))              next = GameState::Playing;
+    // The live tuning surfaces (tunnel/world hosts). They close the menu and
+    // resume the sim — the panels are meant to be used WHILE you drive.
+    if (row(rows.weatherPanel,  "WEATHER PANEL   (F4)")) outAction = PauseAction::WeatherPanel;
+    if (row(rows.lightingPanel, "LIGHTING PANEL  (F5)")) outAction = PauseAction::LightingPanel;
     // TRAVEL: the world / place selection menu — every place in the game, and an
     // honest word about how each one is reached. (Also on F6 in the canon loop.)
-    if (ui.button("TRAVEL / WORLDS", px + 24.0f, by, bw, bh)) outAction = PauseAction::Worlds;
-    by += bh + gap;
-    if (ui.button("SAVE CHECKPOINT", px + 24.0f, by, bw, bh)) outAction = PauseAction::Save;
-    by += bh + gap;
-    if (ui.button("LOAD CHECKPOINT", px + 24.0f, by, bw, bh)) outAction = PauseAction::Load;
-    by += bh + gap;
-    if (ui.button("SETTINGS", px + 24.0f, by, bw, bh))      next = GameState::Settings;
-    by += bh + gap;
+    if (row(rows.travel,        "TRAVEL / WORLDS"))     outAction = PauseAction::Worlds;
+    if (row(rows.save,          "SAVE CHECKPOINT"))     outAction = PauseAction::Save;
+    if (row(rows.load,          "LOAD CHECKPOINT"))     outAction = PauseAction::Load;
+    if (row(rows.settings,      "SETTINGS"))            next = GameState::Settings;
+    if (row(rows.worldMap,      "WORLD MAP       (M)")) outAction = PauseAction::WorldMap;
+    if (row(rows.console,       "CONSOLE         (~)")) outAction = PauseAction::Console;
     // LEVEL EDITOR — DEV ONLY (cvar ui_editor). Most players never need to edit a level,
     // so the row simply does not exist for them; and the editor's ImGui context is not
     // even created until this is picked (the host lazy-inits it), so a normal run pays
     // nothing for a tool it never opens.
-    if (showEditor) {
-        if (ui.button("LEVEL EDITOR", px + 24.0f, by, bw, bh)) outAction = PauseAction::Editor;
-        by += bh + gap;
-    }
-    if (ui.button("QUIT TO MENU", px + 24.0f, by, bw, bh))  next = GameState::MainMenu;
+    if (row(rows.editor,        "LEVEL EDITOR"))        outAction = PauseAction::Editor;
+    if (row(rows.quitToMenu,    "QUIT TO MENU"))        next = GameState::MainMenu;
+    if (row(rows.quitToDesktop, "QUIT TO DESKTOP"))     outAction = PauseAction::QuitToDesktop;
 
+    if (rows.hint) {
+        const float hintCol[4] = { 0.55f, 0.58f, 0.64f, 1.0f };
+        ui.textCentered(rows.hint, cx, by - gap + 12.0f, hintPx, hintCol);
+    }
     return next;
 }
 
@@ -721,14 +829,20 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
     // ---- Audio rows: Music on/off (toggle) + Music & SFX volume (0..1 sliders).
     // The host pushes these to the audio system live (setMusicEnabled / setMusicVolume
     // / setMasterSfxVolume) whenever outChanged fires. ----
-    if (ui.toggle("Music",        model.musicOn, rx, ry, rw, rh)) { model.musicOn = !model.musicOn; outChanged = true; } ry += rh + gap;
-    if (ui.slider("Music Volume", model.musicVol, rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
-    if (ui.slider("SFX Volume",   model.sfxVol,   rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
+    // Row-visibility gates (SettingsModel::show*): all default TRUE, so the
+    // campaign screen and --test-ui's row-index math are byte-identical; a
+    // world host without an audio system / spaceflight / settings file hides
+    // the rows that would otherwise be dead knobs (NO_SLOP rule 6).
+    if (model.showAudio) {
+        if (ui.toggle("Music",        model.musicOn, rx, ry, rw, rh)) { model.musicOn = !model.musicOn; outChanged = true; } ry += rh + gap;
+        if (ui.slider("Music Volume", model.musicVol, rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
+        if (ui.slider("SFX Volume",   model.sfxVol,   rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
+    }
 
     // Flight Mode row: label left + a CYCLE button right (Arcade -> Assist ->
     // Loose -> back). The host bridges model.flightMode to the space-pilot's
     // shared flight-mode latch and persists it (see UiController / app_run).
-    {
+    if (model.showFlightMode) {
         static const char* kFmNames[3] = { "ARCADE", "ASSIST", "LOOSE" };
         int fmIdx = model.flightMode; if (fmIdx < 0 || fmIdx > 2) fmIdx = 0;
         const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
@@ -738,14 +852,14 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
             model.flightMode = (fmIdx + 1) % 3;
             outChanged = true;
         }
+        ry += rh + gap;
     }
-    ry += rh + gap;
 
     // ---- ADVANCED (dev) group: a collapsed header row + its nested rows. The
     // header composes label-left / button-right like the Flight Mode row above.
     // Collapsed by default, so the shipping panel reads exactly as before; the
     // nested rows only consume focus slots + vertical space while open. ----
-    {
+    if (model.showAdvanced) {
         const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
         ui.label("Advanced", rx + 4.0f, ry + (rh - notePx) * 0.5f, notePx, kColText);
         const float abw = std::min(190.0f, rw * 0.46f);
@@ -779,7 +893,8 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
         const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
         ui.label(resBuf, rx + 4.0f, ry + (rh - notePx) * 0.5f, notePx, kColText);
         const float sdw = std::min(190.0f, rw * 0.46f);
-        if (ui.button("SET DEFAULT", rx + rw - sdw, ry, sdw, rh)) {
+        if (model.showSetDefault &&
+            ui.button("SET DEFAULT", rx + rw - sdw, ry, sdw, rh)) {
             model.width = dw; model.height = dh;   // capture the current window size
             model.saveDefault = true;              // host persists it as the new default
             outChanged = true;

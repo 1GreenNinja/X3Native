@@ -816,6 +816,18 @@ void VulkanRenderDevice::setReflectionParams(const ReflectionParams& pIn) {
 
 void VulkanRenderDevice::setDdgiParams(const DdgiParams& pIn) {
         DdgiParams p = pIn; m_cvarOv.apply(p);   // CLI --set latch
+        // SCROLLING VOLUME (W-MENU): an EXPLICIT origin/size that differs from
+        // the cached one re-fits the probe grid. Without this, a streamed open
+        // world could only ever light the first ~240 m box the auto-fit chose
+        // at enable time — the host re-centers the explicit volume on the car
+        // as it drives, and the warm-up CMA ramp reconverges in a handful of
+        // frames. Auto-fit pushes (size 0) NEVER invalidate here, so the
+        // periodic cvar-sync pushes from world_host_common.h cannot thrash it.
+        if (p.sizeX > 0.0f && p.sizeY > 0.0f && p.sizeZ > 0.0f &&
+            (p.originX != m_ddgi.originX || p.originY != m_ddgi.originY ||
+             p.originZ != m_ddgi.originZ || p.sizeX != m_ddgi.sizeX ||
+             p.sizeY != m_ddgi.sizeY || p.sizeZ != m_ddgi.sizeZ))
+            m_ddgiVolumeValid = false;
         // Cache a snapshot (re-applied each frame, like setRtaoParams). The DDGI
         // chain is built LAZILY on first activation (a run that never enables
         // r_ddgi pays zero init cost) and requires ray-query + position-fetch
