@@ -87,11 +87,26 @@ float cloudCoverAt(vec2 worldXZ, float cover, float t, float octaves) {
                   cloudFbm(p * 0.5 - 9.1,  octaves));
     float d  = cloudFbm(p + (w - 0.5) * 1.6, octaves);
     // Threshold CALIBRATED against the normalized field, numerically (see
-    // shots_clouds/verify_new_field.py): solved lo per cover for the target
-    // sky-fraction ladder (0.42 -> ~47% scattered cumulus, 0.66 -> ~80%
-    // broken overcast, 0.94 -> ~97% storm deck), then fit. Quadratic because
-    // the required curve steepens at high cover — a linear mix leaves the
-    // storm deck full of holes.
+    // shots_clouds/verify_new_field.py). Quadratic because the required curve
+    // steepens at high cover — a linear mix leaves the storm deck full of holes.
+    //
+    // WHAT IT ACTUALLY MEASURES, both ways, because an earlier version of this
+    // comment quoted one target ladder (0.42 -> ~47%) that matched NEITHER and
+    // sent the next reader hunting a bug that was not there (NO_SLOP 4 — these
+    // numbers are paired with verify_new_field.py and with the capture round,
+    // so they get written down as measured, not as aimed for):
+    //
+    //   cover                       0.42    0.66    0.94
+    //   deck fraction, TOP-DOWN     0.317   0.688   0.985   (d > 0.02 over an
+    //     8 km patch — verify_new_field.py, the shadow-casting footprint)
+    //   sky fraction, AS RENDERED   0.395     —     0.658 @ 0.70  (pixels that
+    //     differ from the cover-0 frame at the same cam — shots_clouds/
+    //     fair_02_sky.png vs perf_base_sky.png, overcast_01_sky.png)
+    //
+    // The rendered number is the larger of the two and that is geometry, not
+    // disagreement: a near-horizontal view ray crosses far more of the deck
+    // plane per pixel than a top-down sample does. Rendered coverage tracks the
+    // `cover` knob very nearly 1:1, which is the property that matters.
     float c  = clamp(cover, 0.0, 1.0);
     float lo = 0.66 - 0.20 * c - 0.29 * c * c;
     return smoothstep(lo, lo + 0.30, d);

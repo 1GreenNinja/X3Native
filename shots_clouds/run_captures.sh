@@ -61,7 +61,11 @@ shoot() { # $1 out-name  $2 extra args  $3 log-name
 # Sky, pointed AWAY from the massif (yaw 2.749 aims straight at it, and the
 # ce48e2b3 merge raised that ridge to a 289 m summit — the old SKYCAM is now
 # two thirds mountain, which is no way to judge a sky).
-SKYCAM="--shot-cam -301.9,17.6,-472.2,-0.393,0.30"
+# ...and lifted to 45 m with a 0.48 pitch. At eye height the frame is a road
+# cutting and W-FOREST's new trees with a sliver of sky over them, which judges
+# a cloud layer about as well as a keyhole. 45 m clears the embankment; 0.48 rad
+# puts the horizon on the bottom edge and gives the deck the whole frame.
+SKYCAM="--shot-cam -301.9,45,-472.2,-0.393,0.48"
 UPCAM="--shot-cam -301.9,17.6,-472.2,2.749,1.45"
 WIDECAM="--shot-cam 400,800,-800,-0.130,-0.767"    # the whole valley: many cloud cells
 
@@ -81,7 +85,7 @@ shoot fair_03_up.png  "$UPCAM"  fair_up
 # Cloud shadows on the ground. All four stand clear of the horizon-ring hole
 # (see the cam-choice block above); shadows_01 is the LOW one, because the
 # owner drives at eye height and that is where a moving shade has to read.
-shoot shadows_01.png  "--shot-cam 690,26,-690,-0.385,-0.10"       shadows_a
+shoot shadows_01.png  "--shot-cam 690,120,-690,-0.385,-0.30"      shadows_a
 shoot shadows_02.png  "--shot-cam 1150,220,-1150,-0.385,-0.42"    shadows_b
 shoot shadows_03_blob.png "--shot-cam 700,350,-700,-0.385,-0.550" shadows_blob
 shoot shadows_04_wide.png "$WIDECAM"                              shadows_wide
