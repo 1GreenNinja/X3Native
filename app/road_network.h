@@ -76,6 +76,18 @@ struct RoadSpec {
     // tenth of g — the car stays loaded. The summit spur runs looser (its
     // design speed is a mountain switchback's, not a freeway's).
     float maxGradeRate = 5.0e-4f;
+    // HORIZONTAL FLOW (the "sharp points" fix). Wave-2 bounded the VERTICAL
+    // rate of change; nothing bounded the HORIZONTAL one, so a route sampled
+    // at ~61 m facets — an 11.7 deg corner at every node of a 300 m arc reads
+    // as a chain of kinks at speed. smoothHorizontalCurves() (called by every
+    // route producer, before grading) Catmull-Rom-subdivides the polyline
+    // until no node deflects more than maxDeflectionDeg, then eases any bend
+    // tighter than minTurnRadiusM — the class floor: a freeway never asks for
+    // a corner a freeway cannot take, while the range circuit's ~68 m hairpin
+    // sits ABOVE its 60 m floor and is deliberately kept. X3_NO_HCURVE=1
+    // skips the pass (the A/B instrument, mirroring X3_NO_VCURVE).
+    float minTurnRadiusM   = 200.0f;   // class floor: bends tighter get eased
+    float maxDeflectionDeg = 3.0f;     // max heading change per node after smoothing
     std::vector<float> x, z;     // centreline nodes, world (same length, >= 2)
 
     // THE SPAN GAP (bores + bridges). A gap is a run of nodes [i0..i1] whose
@@ -124,6 +136,60 @@ struct RoadBuildResult {
     float    maxGradeRatePre  = 0.0f;
     float    maxGradeRatePost = 0.0f;
 };
+
+// ---------------------------------------------------------------------------
+// HORIZONTAL CURVE SMOOTHING — the "sharp points" fix (see RoadSpec fields).
+//
+// Catmull-Rom SUBDIVISION, not relocation: every existing node keeps its
+// exact position (so pinned junction nodes, portal chord ends and route ends
+// are preserved by construction), and new nodes are inserted on the C1 spline
+// through them until no node deflects more than spec.maxDeflectionDeg.
+// Adaptive: straights get nothing, curves get refined — the node budget goes
+// where the curvature is. Then a MINIMUM-RADIUS pass eases any bend tighter
+// than spec.minTurnRadiusM (locked nodes never move; the ring seam stays
+// welded). Deterministic. X3_NO_HCURVE=1 skips both passes — the A/B
+// instrument, mirroring X3_NO_VCURVE — and nothing else should ever set it.
+//
+// `lockMask` (optional, sized to s.x): nonzero nodes are LAW — never moved by
+// the easing pass, and segments between two consecutive locked nodes are kept
+// STRAIGHT (subdivided linearly, not splined). makeOuterTour uses it for its
+// bore chords: a tunnel's spine is straight, so the road polyline through the
+// gap must stay on the chord.
+// ---------------------------------------------------------------------------
+struct HorizontalSmoothResult {
+    uint32_t nodesBefore = 0, nodesAfter = 0;
+    float    maxDeflBeforeDeg = 0.0f;   // worst per-node heading change, raw
+    float    maxDeflAfterDeg  = 0.0f;   // ... after subdivision + easing
+    float    minRadiusAfterM  = 0.0f;   // tightest surviving bend (curved nodes)
+    uint32_t easedNodes       = 0;      // nodes the radius-floor pass moved
+    bool     skipped          = false;  // X3_NO_HCURVE=1
+    // old node index -> new node index (subdivision only inserts, so every
+    // original node survives). Gap/pin bookkeeping remaps through this.
+    std::vector<uint32_t> newIndexOfOld;
+};
+HorizontalSmoothResult smoothHorizontalCurves(RoadSpec& s,
+                                              const std::vector<uint8_t>* lockMask = nullptr);
+
+// Measure the horizontal flow of a spec, for the gates: worst per-node
+// deflection (degrees) skipping gap reaches, their edge nodes and the open
+// ends; optionally the tightest discrete curve radius over genuinely curved
+// nodes (deflection > 0.25 deg).
+float measureMaxDeflectionDeg(const RoadSpec& s, float* minRadiusM = nullptr);
+
+// ---------------------------------------------------------------------------
+// JUNCTION EXCLUSION ZONES — Tim, pinned against a skirt wall at a junction:
+// "INTERSECTIONS NEED TO NOT HAVE RAILINGS.. AND THEY NEED SWOOPING CURVES
+// FROM BOTH WAYS." Every junction (mouth centre AND branch end) is noted in a
+// module registry when its junction box registers; barrier planning of BOTH
+// types refuses to place anything within kJunctionBarrierClearM of a noted
+// point, and the ribbon's prism skirt feathers down to a drivable batter
+// through the same zone. Cleared alongside the corridor registry in tests.
+// ---------------------------------------------------------------------------
+constexpr float kJunctionBarrierClearM = 45.0f;
+void     noteRoadJunction(float x, float z);
+void     clearRoadJunctions();
+uint32_t roadJunctionCount();
+float    distToNearestRoadJunction(float x, float z);   // 1e9 if none noted
 
 // Grade the route against the natural height field and register it as chained
 // corridors. Returns what was built; ok == false if the registry is full or the
@@ -241,21 +307,31 @@ struct RoadRibbonResult {
     uint32_t meshCount = 0;
     uint32_t quadCount = 0;
     float    lengthM   = 0.0f;
-    // BARRIERS (Tim: "We really need BARRIERS."): guardrail runs placed
-    // automatically wherever the ground beyond the apron falls > 2 m within
-    // 6 m laterally. Count + the smallest drop actually railed, for the gate.
+    // BARRIERS (Tim: "We really need BARRIERS." / "thick concrete barriers to
+    // not go off in the ditch"): placed automatically from the drop test 6 m
+    // beyond the apron. Drop > 2 m earns the W-beam guardrail (taller
+    // protection); a ditch-depth drop (0.6–2 m) earns a continuous CONCRETE
+    // JERSEY BARRIER — classic F-shape, ~0.81 m tall on a 0.6 m base, cement
+    // set, full collision. Counts + drop extremes, for the gates.
     uint32_t railSegments = 0;
     float    railMinDropM = 0.0f;
+    uint32_t jerseySegments = 0;
+    float    jerseyMinDropM = 0.0f;
 };
 
-// PURE barrier planning — which segments of a route earn a guardrail, per
-// side, from the drop-off test alone. Exposed separately so the self-test can
-// gate barrier placement without a render device: bit0 = left rail, bit1 =
-// right rail, one entry per SEGMENT (spec node i -> i+1).
+// PURE barrier planning — which segments of a route earn a barrier, per side,
+// from the drop-off test alone. Exposed separately so the self-test can gate
+// placement without a render device. Per SEGMENT (spec node i -> i+1):
+// bit0 = left W-beam, bit1 = right W-beam, bit2 = left jersey, bit3 = right
+// jersey. Drop > 2 m rails; 0.6–2 m (the ditch band) gets the jersey wall;
+// segments within kJunctionBarrierClearM of a noted junction get NOTHING —
+// an intersection needs its mouths open, not railed shut.
 struct BarrierPlan {
     std::vector<uint8_t> mask;
-    uint32_t railSegments = 0;   // total railed (side,segment) pairs
-    float    minDropM = 0.0f;    // smallest drop among railed segments
+    uint32_t railSegments = 0;    // total W-beam (side,segment) pairs
+    float    minDropM = 0.0f;     // smallest drop among railed segments
+    uint32_t jerseySegments = 0;  // total jersey (side,segment) pairs
+    float    jerseyMinDropM = 0.0f, jerseyMaxDropM = 0.0f;
 };
 BarrierPlan planRoadBarriers(const RoadSpec& spec, const std::vector<float>* roadY);
 
