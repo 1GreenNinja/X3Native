@@ -1,311 +1,588 @@
 #!/usr/bin/env python3
-"""W-TOWN asset pipeline: armory prefabs -> assets/converted_glb/Town/.
+"""W-TOWN asset pipeline: the Small Mountain Town kit -> assets/converted_glb/Town/.
 
-WHY THIS EXISTS (the receipt, NO_SLOP rule 10)
-----------------------------------------------
-The Small Mountain Town is built from the HouseForge kit in Tim's armory
-(``D:/Assets/_glb/prefab_buildings/HouseForge``) — whole, curated, PBR-textured
-BUILDINGS rather than modular wall panels, which is what
-``.claude/skills/x3native-environments`` means by mining a pack for curation
-instead of scattering a lattice.
+WHY THIS FILE WAS REWRITTEN (the receipt, NO_SLOP rule 10)
+----------------------------------------------------------
+Round one built the town out of the armory's **HouseForge** kit and the result
+was eyes-on WRONG: `docs/screenshots/town/02_shop_front.png` shows a dark,
+spiky, broken silhouette, because that kit is authored as COLLAPSED RUINS.
+`docs/design/TOWN_ASSET_SCOUT.md` reached the same verdict independently. The
+geometry, textures, scale and grounding were all correct — the *kit* was a
+ruined-settlement kit. So the kit is swapped and the placer is untouched.
 
-Those armory GLBs are baked "WebP+Draco, node-safe optimized"
-(``D:/Assets/_glb/prefab_buildings/PREFAB_MANIFEST.md``). Both encodings are a
-problem for X3Native, and only one of them is obvious:
+THE NEW KIT, and why it is the right one
+----------------------------------------
+Everything structural now comes from ONE pack — the licensed
+`Complete Racing Game URP All in One` (`\\p13700\\G\\Assets\\...`). One pack means
+one register: it was authored for a DRIVING game, so the town reads as a place
+on this world's road network rather than as a medieval village that a freeway
+happens to pass.
 
-* ``KHR_draco_mesh_compression`` — the engine DOES decode this
-  (``engine/asset/ModelLoader.cpp`` links draco), but a decoded file removes a
-  whole class of doubt and costs nothing at runtime.
-* ``EXT_texture_webp`` — **there is no WebP decoder anywhere in the tree.**
-  ``grep -rn "webp" engine/ app/`` returns nothing but this file's siblings.
-  Every one of these prefabs would therefore have loaded with zero textures and
-  rendered flat grey: NO_SLOP rule 3, "no untextured stand-ins in a shipped
-  build". Caught by inspecting the GLB, not by shipping it.
+* **Houses** — `Models/Level_Design/Models/Red_House/HighPoly/House_1..4.fbx`.
+  Clean, whole, pitched-roof houses, 15-37 m wide, 9-25.7 m tall: exactly the
+  massing a mountain main street wants.
+* **Street lamp** — `Light 2/Light_2.fbx` (7.2 m, its own diffuse + normal).
+  Replaces round one's medieval torches.
+* **Road signs** — `Billboards/Billboard_1..2.fbx` (2.3-2.4 m).
+* **Fence** — `Red_House/HighPoly/Wood_Fence.fbx`.
+* Benches (`nature/SM_*Bench*`) and the parked fleet (`Vehicles/`) are already
+  in-tree and unchanged.
 
-``gltf-transform copy`` strips draco cleanly. Its ``png`` command FAILS on these
-files (libvips: ``value "32" ... invalid for property 'space' of type
-'VipsInterpretation'``), so the image pass is done here with Pillow.
+TWO TRAPS THIS TOOL EXISTS TO DEFUSE
+------------------------------------
+1. **The pack ships NO Unity material metadata.** `find ... -name '*.mat'`
+   returns 0 across the whole pack, and there are no `.meta` files either, so
+   `tools/convert_unity_pack.py`'s GUID->texture resolution has nothing to
+   resolve. FBX2glTF therefore writes **1x1 white placeholder PNGs** for every
+   texture slot ("Warning: could not find a image file for texture"). Shipping
+   that is a flat-grey town — NO_SLOP rule 3. **This tool injects the pack's
+   real textures by MATERIAL NAME** (the `PAINTS` table below), which is what
+   the artist's own naming makes unambiguous: material `Wall` wants `Wall.tif`,
+   `Roof` wants `Roof_*.tif`, `Base` wants `Brick.tif`.
+2. **stb_image cannot read TIFF.** `engine/asset/ModelLoader.cpp:639` decodes
+   embedded images with `stbi_load_from_memory`, and three of the pack's four
+   wall/roof albedos are `.tif`. They are transcoded to JPEG here. (The same
+   check is why the loader can never be handed WebP — there is no WebP decoder
+   anywhere in the tree, which is what bit round one's armory GLBs.)
+
+WHY THE PAINT VARIANTS
+----------------------
+Four house meshes is thin for a 17-plot street, and repeating a mesh is the
+"uniform lattice" the x3native-environments skill forbids. The pack's own UVs
+are authored to TILE (`Wall` spans u -6.7..7.7), so the same shell takes a
+different real photographic siding convincingly. Each mesh is therefore baked
+in two paints — RED clapboard (`Wall.tif`) with scalloped shingle, and WHITE
+clapboard (`Wood.jpg`) with plank roof — giving 8 distinct facades from 4
+shells, every one carrying a real photograph. That is variety by material,
+which is how a real street of the same builder's houses actually looks.
 
 USAGE
 -----
-    python tools/town_assets.py convert     # armory -> assets/converted_glb/Town
-    python tools/town_assets.py report      # the measured table app/town.cpp holds
+    python tools/town_assets.py convert    # pack -> assets/converted_glb/Town
+    python tools/town_assets.py report     # the measured table app/town.cpp holds
+    python tools/town_assets.py verify     # assert nothing unreadable shipped
 
-``report`` prints, per prefab, the numbers ``kAssets[]`` in ``app/town.cpp``
-carries: bbox centre in asset space (these prefabs are NOT centred on their
-origin), footprint half extents, the vertical span about the origin plane (loY
-is negative — the kit ships a foundation below the ground-floor origin), and
-the MEASURED front direction, taken as bbox-centre -> named ``SM_*_Door*`` node.
-X3_WORLD_RULES rule 0 says verify, never assume; rule 3 says orientation is
-documented per asset. This is that verification and that document, and
-``docs/design/TOWN_MANIFEST.md`` repeats it in prose. If the kit is re-baked,
-re-run ``report`` and update the table — PAIRED VALUES ARE ONE VALUE
-(NO_SLOP rule 4).
+`report` prints, per asset, the numbers `kAssets[]` in `app/town.cpp` carries:
+bbox centre in asset space, footprint half extents, the vertical span about the
+origin plane, and the MEASURED front. X3_WORLD_RULES rule 0 says verify, never
+assume; rule 3 says orientation is documented per asset. **If the kit is
+re-baked, re-run `report` and update the table — PAIRED VALUES ARE ONE VALUE
+(NO_SLOP rule 4).**
 
-Deps: Pillow, numpy, and node/npx for @gltf-transform/cli.
+THE FRONT IS MEASURED, NOT GUESSED. These meshes carry no door *nodes* (round
+one's HouseForge kit did), but they carry door *materials* — `Door`,
+`Door_2`, `Door_Garage`. The front is the horizontal direction from the bbox
+centre to the **centroid of the door material's triangles**. For `House_2`,
+which has no door material, it is the centroid of the `Glass` material (its
+glazing is all on one elevation). Both are printed by `report` and repeated in
+`docs/design/TOWN_MANIFEST.md`.
+
+Deps: Pillow, numpy; `D:/GameDev/tools/FBX2glTF.exe`.
+AFTER RUNNING: `python tools/asset_store.py publish assets/converted_glb/Town`
+— store-served, never git-committed (docs/ENGINE_GOTCHAS.md gotcha 2.5).
 """
 from __future__ import annotations
 
-import glob
-import io
 import json
 import math
 import os
 import struct
 import subprocess
 import sys
+from io import BytesIO
 
-SRC = r"D:/Assets/_glb/prefab_buildings/HouseForge"
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "assets", "converted_glb", "Town")
+import numpy as np
+from PIL import Image
+
+PACK = r"\\p13700\G\Assets\Complete Racing Game URP All in One\Racing_Game\Models\Level_Design\Models"
+FBX2GLTF = r"D:\GameDev\tools\FBX2glTF.exe"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(ROOT, "assets", "converted_glb", "Town")
 STAGE = os.path.join(os.environ.get("TEMP", "/tmp"), "x3_town_stage")
 
-# The curated selection. PF_PrimitiveHouse01/02 are DELIBERATELY absent: their
-# one untextured material is a wall / roof end, and a 0.8-grey slab facing main
-# street is NO_SLOP rule 3 in the flesh. 03/04's untextured material is a roof
-# overhang — small, high, and patched by app/town.cpp's MaterialOverride.
-PREFABS = [
-    "PF_StoneHouse01_JustBuilding", "PF_StoneHouse01_WithSetDressing",
-    "PF_StoneHouse02",
-    "PF_WoodenHouse01_JustBuilding", "PF_WoodenHouse02", "PF_WoodenHouse03",
-    "PF_PrimitiveHouse01", "PF_PrimitiveHouse02",
-    "PF_PrimitiveHouse03", "PF_PrimitiveHouse04",
-    "PF_StorageMarket_01a", "PF_StorageMarket_01c",
-    "PF_StorageMarket_01e", "PF_StorageMarket_01f",
-    "PF_WoodCart_01a", "PF_WoodCart_02a",
-    "PF_WoodLightTorch_01a", "PF_WoodLightTorch_01b",
-    "PF_WoodStorage_01b", "PF_WoodStorage_01c", "PF_StockageWood_01a",
+RH = os.path.join(PACK, "Red_House", "HighPoly")
+RHT = os.path.join(RH, "Textures")
+BLD = os.path.join(PACK, "Buildings", "map")
+
+MAX_DIM = 1024   # VRAM sanity; the pack's albedos are 512-1024 already.
+
+# ---------------------------------------------------------------------------
+# THE PAINT TABLE — material name -> what that material actually is.
+#
+# `tex`   a source image, injected as the baseColorTexture (tiling REPEAT; the
+#         pack's UVs run well outside 0..1 and are authored for it).
+# `color` a baseColorFactor for materials that legitimately have no albedo map:
+#         glass (a window's albedo IS its tint) and the degenerate-UV `Metal`
+#         slot, whose UVs collapse to a point so no texture could ever show.
+# `mr`    (metallic, roughness). X3_WORLD_RULES rule 5: never ship metallic 1.0
+#         without an environment to reflect or it renders BLACK, so the metal
+#         trim is clamped to 0.55.
+# ---------------------------------------------------------------------------
+GLASS = {"color": [0.022, 0.030, 0.038, 1.0], "mr": (0.0, 0.14)}
+METAL = {"color": [0.42, 0.44, 0.46, 1.0], "mr": (0.55, 0.42)}
+
+PAINTS = {
+    # variant suffix -> {material name -> spec}
+    "Red": {
+        "Wall":        {"tex": os.path.join(RHT, "Wall.tif"),   "mr": (0.0, 0.82)},
+        "Base":        {"tex": os.path.join(RHT, "Brick.tif"),  "mr": (0.0, 0.90)},
+        "Roof":        {"tex": os.path.join(RHT, "Roof_2.tif"), "mr": (0.0, 0.85)},
+        "Frame":       {"tex": os.path.join(RHT, "Wood.jpg"),   "mr": (0.0, 0.70)},
+        "Door":        {"tex": os.path.join(RHT, "Wood.jpg"),   "mr": (0.0, 0.62)},
+        "Door_2":      {"tex": os.path.join(RHT, "Wood.jpg"),   "mr": (0.0, 0.62)},
+        "Door_Garage": {"tex": os.path.join(RHT, "Wood.jpg"),   "mr": (0.0, 0.62)},
+        "Glass":       GLASS,
+        "Metal":       METAL,
+    },
+    "White": {
+        "Wall":        {"tex": os.path.join(RHT, "Wood.jpg"),   "mr": (0.0, 0.78)},
+        "Base":        {"tex": os.path.join(RHT, "Brick.tif"),  "mr": (0.0, 0.90)},
+        "Roof":        {"tex": os.path.join(RHT, "Roof_1.tif"), "mr": (0.0, 0.86)},
+        "Frame":       {"tex": os.path.join(RHT, "Wall.tif"),   "mr": (0.0, 0.70)},
+        "Door":        {"tex": os.path.join(RHT, "Wall.tif"),   "mr": (0.0, 0.62)},
+        "Door_2":      {"tex": os.path.join(RHT, "Wall.tif"),   "mr": (0.0, 0.62)},
+        "Door_Garage": {"tex": os.path.join(RHT, "Wall.tif"),   "mr": (0.0, 0.62)},
+        "Glass":       GLASS,
+        "Metal":       METAL,
+    },
+}
+
+# Props: one paint each, no variants.
+PROP_PAINT = {
+    "Wood":          {"tex": os.path.join(RHT, "Wood.jpg"),  "mr": (0.0, 0.75)},
+    # Light_2 ships its own diffuse + normal beside the FBX.
+    "Holder":        {"tex": os.path.join(PACK, "Light 2", "Light_2_Diffuse.png"), "mr": (0.30, 0.55)},
+    "Metal":         METAL,
+    # The lamp head and the sign's lightbox: a warm near-white the town's own
+    # emissive pass lifts at dusk (town.cpp owns the glow; a baked-bright albedo
+    # here would clip under ACES per X3_WORLD_RULES rule 5).
+    "Light":         {"color": [0.86, 0.82, 0.70, 1.0], "mr": (0.0, 0.45)},
+    "Cement":        {"tex": os.path.join(BLD, "TCom_Roads0059_1_seamless_M.jpg"), "mr": (0.0, 0.93)},
+    "Billboard":     {"tex": os.path.join(PACK, "Billboards", "Materials", "Billboard_1.png"), "mr": (0.0, 0.55)},
+    "Red_Billboard": {"tex": os.path.join(PACK, "Billboards", "Materials", "Billboard_2.png"), "mr": (0.0, 0.55)},
+    "White_Plastic": {"color": [0.80, 0.80, 0.78, 1.0], "mr": (0.0, 0.55)},
+}
+
+# source FBX (relative to PACK) -> [(output name, paint set)]
+BUILDINGS = [
+    ("Red_House/HighPoly/House_1.fbx", [("House_1_Red", "Red"), ("House_1_White", "White")]),
+    ("Red_House/HighPoly/House_2.fbx", [("House_2_Red", "Red"), ("House_2_White", "White")]),
+    ("Red_House/HighPoly/House_3.fbx", [("House_3_Red", "Red"), ("House_3_White", "White")]),
+    ("Red_House/HighPoly/House_4.fbx", [("House_4_Red", "Red"), ("House_4_White", "White")]),
+]
+PROPS = [
+    ("Red_House/HighPoly/Wood_Fence.fbx", "Wood_Fence"),
+    ("Light 2/Light_2.fbx",               "Light_2"),
+    ("Billboards/Billboard_1.fbx",        "Billboard_1"),
+    ("Billboards/Billboard_2.fbx",        "Billboard_2"),
 ]
 
-MAX_DIM = 1024   # VRAM: a 23-material building at 4K is ~1 GB of atlas
+# THE FRONT REFERENCE, in priority TIERS. The first tier a mesh actually has
+# wins; lower tiers are ignored even if present.
+#
+# The tiers are not cosmetic. `House_3`'s `Door` slot is NOT a door: its UVs run
+# u -5.15..6.15, i.e. it is a TILING surface (a clad wall), and averaging it in
+# dragged the measured front round to the blank flank — caught by rendering the
+# result and looking at it (X3_WORLD_RULES rule 0), not by reading the name.
+# `Door_Garage` / `Door_2` have 0..1 UVs and are genuinely single openings.
+FRONT_TIERS = (
+    ("Door_Garage", "Door_2"),   # a real, single, unwrapped opening
+    ("Door",),                   # only when nothing better exists
+    ("Glass",),                  # last resort; see FRONT_OVERRIDE
+)
+
+# EYES-ON OVERRIDES (X3_WORLD_RULES rule 0 — the render is the arbiter).
+# `House_2` has no door material at all, so the Glass tier fired and returned
+# -121.1 deg. Rendering the mesh at 0/90/180/270 showed the actual entrance —
+# a centred door with a porch step — on the 180 deg elevation; -121 deg is a
+# blank gable. The measurement is kept honest by naming what overrode it.
+FRONT_OVERRIDE = {
+    "House_2": (180.0, "no door material; entrance identified by ortho render at 0/90/180/270"),
+}
 
 
-# --------------------------------------------------------------------------- glb io
-def read_glb(p):
-    with open(p, "rb") as f:
-        magic, _ver, total = struct.unpack("<4sII", f.read(12))
-        if magic != b"glTF":
-            raise ValueError(f"{p}: not a GLB")
-        js, bin_ = None, b""
-        while f.tell() < total:
-            ln, ty = struct.unpack("<I4s", f.read(8))
-            data = f.read(ln)
-            if ty == b"JSON":
-                js = json.loads(data)
-            elif ty == b"BIN\x00":
-                bin_ = data
-        return js, bin_
+# ---------------------------------------------------------------------------
+# GLB read / write
+# ---------------------------------------------------------------------------
+def load_glb(path):
+    with open(path, "rb") as f:
+        magic, _ver, _len = struct.unpack("<III", f.read(12))
+        assert magic == 0x46546C67, f"not a GLB: {path}"
+        clen, ctype = struct.unpack("<II", f.read(8))
+        assert ctype == 0x4E4F534A, "expected JSON chunk"
+        gltf = json.loads(f.read(clen))
+        blen, btype = struct.unpack("<II", f.read(8))
+        assert btype == 0x004E4942, "expected BIN chunk"
+        bin_ = bytearray(f.read(blen))
+    return gltf, bin_
 
 
-def write_glb(p, js, bin_):
-    jb = json.dumps(js, separators=(",", ":")).encode("utf-8")
-    jb += b" " * ((4 - len(jb) % 4) % 4)
-    bb = bin_ + b"\x00" * ((4 - len(bin_) % 4) % 4)
-    total = 12 + 8 + len(jb) + (8 + len(bb) if bb else 0)
-    with open(p, "wb") as f:
-        f.write(struct.pack("<4sII", b"glTF", 2, total))
-        f.write(struct.pack("<I4s", len(jb), b"JSON"))
-        f.write(jb)
-        if bb:
-            f.write(struct.pack("<I4s", len(bb), b"BIN\x00"))
-            f.write(bb)
+def save_glb(path, gltf, bin_):
+    while len(bin_) % 4:
+        bin_.append(0)
+    gltf.setdefault("buffers", [{}])
+    gltf["buffers"][0] = {"byteLength": len(bin_)}
+    js = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    while len(js) % 4:
+        js += b" "
+    total = 12 + 8 + len(js) + 8 + len(bin_)
+    with open(path, "wb") as f:
+        f.write(struct.pack("<III", 0x46546C67, 2, total))
+        f.write(struct.pack("<II", len(js), 0x4E4F534A)); f.write(js)
+        f.write(struct.pack("<II", len(bin_), 0x004E4942)); f.write(bytes(bin_))
 
 
-def unwebp(path):
-    """Transcode EXT_texture_webp images to PNG (alpha) / JPEG (opaque)."""
-    from PIL import Image
-    js, bin_ = read_glb(path)
-    if "EXT_texture_webp" not in (js.get("extensionsUsed") or []):
-        return "no webp"
+def add_image(gltf, bin_, raw, mime):
+    """Append image bytes as a bufferView; return the new image index."""
+    while len(bin_) % 4:
+        bin_.append(0)
+    off = len(bin_)
+    bin_ += raw
+    gltf.setdefault("bufferViews", []).append({"buffer": 0, "byteOffset": off, "byteLength": len(raw)})
+    gltf.setdefault("images", []).append({"bufferView": len(gltf["bufferViews"]) - 1, "mimeType": mime})
+    return len(gltf["images"]) - 1
 
-    views = js.get("bufferViews", [])
-    out = bytearray()
-    newviews = []
 
-    def add_view(payload):
-        while len(out) % 4:
-            out.append(0)
-        off = len(out)
-        out.extend(payload)
-        newviews.append({"buffer": 0, "byteOffset": off, "byteLength": len(payload)})
-        return len(newviews) - 1
+def encode_texture(path):
+    """Load any source image (incl. TIFF, which stb_image CANNOT read) and
+    return (bytes, mime) the engine's stb_image decoder can definitely open."""
+    im = Image.open(path)
+    im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+    if max(im.size) > MAX_DIM:
+        s = MAX_DIM / max(im.size)
+        im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
+    buf = BytesIO()
+    if im.mode == "RGBA":
+        im.save(buf, "PNG", optimize=True)
+        return buf.getvalue(), "image/png"
+    im.save(buf, "JPEG", quality=90)
+    return buf.getvalue(), "image/jpeg"
 
-    imgviews = {im["bufferView"] for im in js.get("images", []) if "bufferView" in im}
-    remap = {}
-    for i, v in enumerate(views):
-        if i in imgviews:
+
+def repaint(gltf, bin_, paint, label):
+    """Point every material at its real texture / authored constants."""
+    cache = {}
+    # One REPEAT sampler for everything: the pack's UVs tile well outside 0..1
+    # and CLAMP would smear the edge texel across a whole wall.
+    gltf.setdefault("samplers", [])
+    gltf["samplers"].append({"wrapS": 10497, "wrapT": 10497, "magFilter": 9729, "minFilter": 9987})
+    samp = len(gltf["samplers"]) - 1
+    missing = []
+    for mat in gltf.get("materials", []):
+        name = mat.get("name", "")
+        spec = paint.get(name)
+        if spec is None:
+            missing.append(name)
             continue
-        off = v.get("byteOffset", 0)
-        ni = add_view(bin_[off:off + v["byteLength"]])
-        for k in ("byteStride", "target"):
-            if k in v:
-                newviews[ni][k] = v[k]
-        remap[i] = ni
-
-    for im in js.get("images", []):
-        v = views[im["bufferView"]]
-        off = v.get("byteOffset", 0)
-        img = Image.open(io.BytesIO(bin_[off:off + v["byteLength"]]))
-        img.load()
-        if max(img.size) > MAX_DIM:
-            sc = MAX_DIM / max(img.size)
-            img = img.resize((max(1, int(img.width * sc)), max(1, int(img.height * sc))),
-                             Image.LANCZOS)
-        alpha = img.mode in ("RGBA", "LA") and img.getextrema()[-1][0] < 255
-        buf = io.BytesIO()
-        if alpha:
-            img.convert("RGBA").save(buf, "PNG", optimize=True)
-            im["mimeType"] = "image/png"
+        pbr = mat.setdefault("pbrMetallicRoughness", {})
+        met, rough = spec.get("mr", (0.0, 0.8))
+        pbr["metallicFactor"] = met
+        pbr["roughnessFactor"] = rough
+        if "tex" in spec:
+            src = spec["tex"]
+            if src not in cache:
+                if not os.path.exists(src):
+                    raise SystemExit(f"[town] MISSING SOURCE TEXTURE {src} (for material {name})")
+                raw, mime = encode_texture(src)
+                img = add_image(gltf, bin_, raw, mime)
+                gltf.setdefault("textures", []).append({"source": img, "sampler": samp})
+                cache[src] = len(gltf["textures"]) - 1
+            pbr["baseColorTexture"] = {"index": cache[src], "texCoord": 0}
+            pbr["baseColorFactor"] = [1.0, 1.0, 1.0, 1.0]
         else:
-            img.convert("RGB").save(buf, "JPEG", quality=90)
-            im["mimeType"] = "image/jpeg"
-        im["bufferView"] = add_view(buf.getvalue())
-
-    for a in js.get("accessors", []):
-        if "bufferView" in a:
-            a["bufferView"] = remap[a["bufferView"]]
-        sp = a.get("sparse")
-        if sp:
-            for k in ("indices", "values"):
-                if k in sp:
-                    sp[k]["bufferView"] = remap[sp[k]["bufferView"]]
-
-    for t in js.get("textures", []):
-        ext = t.get("extensions", {}).pop("EXT_texture_webp", None)
-        if ext:
-            t["source"] = ext["source"]
-        if not t.get("extensions"):
-            t.pop("extensions", None)
-    for key in ("extensionsUsed", "extensionsRequired"):
-        if key in js:
-            js[key] = [e for e in js[key] if e != "EXT_texture_webp"]
-            if not js[key]:
-                del js[key]
-
-    js["bufferViews"] = newviews
-    js["buffers"] = [{"byteLength": len(out)}]
-    write_glb(path, js, bytes(out))
-    return f"{len(js.get('images', []))} images"
+            pbr.pop("baseColorTexture", None)
+            pbr["baseColorFactor"] = spec["color"]
+    if missing:
+        print(f"    ! {label}: NO PAINT for materials {missing} — they keep FBX2glTF's "
+              f"1x1 placeholder. Add them to PAINTS or the town ships grey (NO_SLOP rule 3).")
+    return missing
 
 
-# --------------------------------------------------------------------------- convert
-def convert():
-    os.makedirs(OUT, exist_ok=True)
+def strip_placeholders(gltf):
+    """Drop FBX2glTF's 1x1 white data-URI images once real ones are bound.
+    Leaving them costs nothing at runtime but `verify` asserts on them, because
+    a 1x1 white image left BOUND is precisely the untextured-stand-in defect."""
+    used = set()
+    for t in gltf.get("textures", []):
+        used.add(t.get("source"))
+    for i, im in enumerate(gltf.get("images", [])):
+        if i not in used and str(im.get("uri", "")).startswith("data:"):
+            im["uri"] = ""  # unreferenced; keep the index stable
+    return gltf
+
+
+# ---------------------------------------------------------------------------
+# measurement (X3_WORLD_RULES rule 0)
+# ---------------------------------------------------------------------------
+def read_accessor(gltf, bin_, idx):
+    a = gltf["accessors"][idx]
+    bv = gltf["bufferViews"][a["bufferView"]]
+    ncomp = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[a["type"]]
+    dt = {5126: np.float32, 5123: np.uint16, 5125: np.uint32, 5121: np.uint8}[a["componentType"]]
+    off = bv.get("byteOffset", 0) + a.get("byteOffset", 0)
+    arr = np.frombuffer(bytes(bin_), dtype=dt, count=a["count"] * ncomp, offset=off)
+    return arr.reshape(-1, ncomp) if ncomp > 1 else arr
+
+
+def measure(path):
+    gltf, bin_ = load_glb(path)
+    lo = np.array([9e9] * 3); hi = np.array([-9e9] * 3)
+    tiers = [[] for _ in FRONT_TIERS]
+    for mesh in gltf.get("meshes", []):
+        for pr in mesh["primitives"]:
+            pos = read_accessor(gltf, bin_, pr["attributes"]["POSITION"])
+            lo = np.minimum(lo, pos.min(0)); hi = np.maximum(hi, pos.max(0))
+            mi = pr.get("material")
+            nm = gltf["materials"][mi].get("name", "") if mi is not None else ""
+            for t, names in enumerate(FRONT_TIERS):
+                if nm in names:
+                    tiers[t].append(pos.mean(0))
+    ctr = (lo + hi) * 0.5
+    ref, src = [], "none"
+    for t, got in enumerate(tiers):
+        if got:
+            ref, src = got, "/".join(FRONT_TIERS[t])
+            break
+    frontDeg = 0.0
+    if ref:
+        c = np.mean(ref, axis=0)
+        dx, dz = float(c[0] - ctr[0]), float(c[2] - ctr[2])
+        if abs(dx) + abs(dz) > 1e-4:
+            # engine yaw, AXES LAW: 0 = -Z
+            frontDeg = math.degrees(math.atan2(-dx, -dz))
+    stem = os.path.basename(path)[:-4]
+    for key, (deg, why) in FRONT_OVERRIDE.items():
+        if stem.startswith(key):
+            frontDeg, src = deg, "EYES-ON: " + why
+            break
+    panes = measure_panes(gltf, bin_, ctr, lo, frontDeg)
+    return dict(lo=lo, hi=hi, ctr=ctr, frontDeg=frontDeg, src=src, panes=panes)
+
+
+MAX_PANES = 3
+
+
+def measure_panes(gltf, bin_, ctr, lo, frontDeg):
+    """WHERE THE LIT WINDOWS ACTUALLY ARE — measured per WINDOW, not averaged.
+
+    Round one placed its two dusk panes at hard-coded storey heights (2.35 m and
+    5.20 m above ground) because the HouseForge kit modelled no glazing to
+    measure. This kit does: every house carries its glazing as a separate
+    `Glass` material, so the lit panes can go exactly where the artist put the
+    windows.
+
+    THE FIRST ATTEMPT AVERAGED, AND THAT WAS WRONG — visibly so. Taking the
+    centroid of a whole storey's glass puts the pane on the blank wall BETWEEN
+    two windows; the capture showed exactly that, two grey cards stuck to the
+    clapboard of the square's hero. So the glass is split into CONNECTED
+    COMPONENTS — individual windows — and the biggest few are returned with
+    their own centre AND their own size, so the emissive quad covers a real
+    opening and is invisible against the dark glass when unlit.
+
+    Returns up to MAX_PANES (height, along, depth, halfW, halfH) in the front
+    frame:
+        along  = horizontal axis parallel to the front wall
+        height = metres above the bbox BOTTOM (what the placer grounds on)
+        depth  = metres from the bbox CENTRE along the front normal
+
+    DEPTH IS MEASURED FOR THE SAME REASON THE REST IS. The first version pushed
+    every pane out to the bbox support plane, on the assumption that the front
+    face of the bounding box IS the front wall. It is not: these houses have
+    EAVES, and the roof overhangs the wall by up to 2.7 m, so the panes hung in
+    mid-air a couple of metres proud of the clapboard — which is what the
+    capture showed. The glass knows where the wall is; ask it.
+    """
+    fx, fz = -math.sin(math.radians(frontDeg)), -math.cos(math.radians(frontDeg))
+    ax, az = -fz, fx                      # along-wall axis
+    pts = []
+    for mesh in gltf.get("meshes", []):
+        for pr in mesh["primitives"]:
+            mi = pr.get("material")
+            if mi is None or gltf["materials"][mi].get("name") != "Glass":
+                continue
+            pos = read_accessor(gltf, bin_, pr["attributes"]["POSITION"])
+            idx = read_accessor(gltf, bin_, pr["indices"]).reshape(-1) if "indices" in pr else None
+            tri = pos[idx].reshape(-1, 3, 3) if idx is not None else pos.reshape(-1, 3, 3)
+            for c in tri.mean(axis=1):
+                dx, dz = float(c[0] - ctr[0]), float(c[2] - ctr[2])
+                pts.append((dx * fx + dz * fz, dx * ax + dz * az, float(c[1] - lo[1])))
+    if not pts:
+        return []
+    P = np.array(pts)
+
+    def area(c):
+        return (max(c[:, 1].max() - c[:, 1].min(), 0.05)
+                * max(c[:, 2].max() - c[:, 2].min(), 0.05))
+
+    def windows_at(depth_tol):
+        """Cluster the glass within `depth_tol` of the front-most surface."""
+        F = P[P[:, 0] >= P[:, 0].max() - depth_tol]
+        if len(F) == 0:
+            return []
+        # Connected components in the (along, height) plane = one window each.
+        # EPS 1.0 m is MEASURED, not picked: this kit's windows are MULLIONED,
+        # glazed as grids of ~0.74 x 0.22 m sub-panes about 0.8 m apart, so a
+        # tighter epsilon returns 67 single mullions instead of 5 windows —
+        # which is exactly what the first attempt did. 1.0 m spans a mullion
+        # gap and still leaves the blank wall between two windows uncrossed.
+        EPS = 1.0
+        n = len(F); seen = np.zeros(n, bool); comps = []
+        plane = F[:, 1:3]
+        for i in range(n):
+            if seen[i]:
+                continue
+            stack = [i]; seen[i] = True; grp = [i]
+            while stack:
+                k = stack.pop()
+                d2 = ((plane - plane[k]) ** 2).sum(1)
+                for j in np.nonzero((d2 < EPS * EPS) & ~seen)[0]:
+                    seen[j] = True; stack.append(int(j)); grp.append(int(j))
+            comps.append(F[grp])
+        return sorted((c for c in comps if area(c) > 0.4), key=area, reverse=True)
+
+    # The depth tolerance has to ADAPT. A house whose front wall is square to
+    # the measured front direction puts all its street glass at one depth; one
+    # whose front is a diagonal (House_1's front is 101.9 deg) spreads it over
+    # metres, and a fixed 2 m window found only 8 of its triangles. Widen until
+    # at least two windows appear, then stop — the narrowest tolerance that
+    # answers is the one least likely to have swept in the side elevation.
+    comps = []
+    for tol in (1.5, 2.5, 4.0, 6.5):
+        comps = windows_at(tol)
+        if len(comps) >= 2:
+            break
+    out = []
+    for c in comps[:MAX_PANES]:
+        hw = min(max((c[:, 1].max() - c[:, 1].min()) * 0.5, 0.4), 2.2)
+        hh = min(max((c[:, 2].max() - c[:, 2].min()) * 0.5, 0.4), 1.8)
+        out.append((round(float(c[:, 2].mean()), 2), round(float(c[:, 1].mean()), 2),
+                    round(float(c[:, 0].mean()), 2),
+                    round(float(hw), 2), round(float(hh), 2)))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# subcommands
+# ---------------------------------------------------------------------------
+def fbx_to_glb(rel, stem):
     os.makedirs(STAGE, exist_ok=True)
-    bad = 0
-    for n in PREFABS:
-        src = os.path.join(SRC, n + ".glb")
-        if not os.path.exists(src):
-            print("MISSING", src)
-            bad += 1
-            continue
-        mid = os.path.join(STAGE, n + ".mid.glb")
-        dst = os.path.join(OUT, n + ".glb")
-        r = subprocess.run(f'npx --yes @gltf-transform/cli copy "{src}" "{mid}"',
-                           shell=True, capture_output=True, text=True)
-        if r.returncode != 0:
-            print("DRACO DECODE FAILED", n, (r.stderr or "")[-300:])
-            bad += 1
-            continue
-        with open(mid, "rb") as a, open(dst, "wb") as b:
+    src = os.path.join(PACK, rel.replace("/", os.sep))
+    if not os.path.exists(src):
+        raise SystemExit(f"[town] missing source FBX: {src}")
+    local = os.path.join(STAGE, os.path.basename(src))
+    if not os.path.exists(local) or os.path.getmtime(local) < os.path.getmtime(src):
+        with open(src, "rb") as a, open(local, "wb") as b:
             b.write(a.read())
-        print(f"{n:40s} {unwebp(dst):>14s}  {os.path.getsize(dst) // 1024:6d} KB")
-    verify()
-    return bad
+    out = os.path.join(STAGE, stem + ".raw.glb")
+    r = subprocess.run([FBX2GLTF, "-b", "-i", local, "-o", out],
+                       capture_output=True, text=True)
+    if not os.path.exists(out):
+        raise SystemExit(f"[town] FBX2glTF failed for {rel}:\n{r.stdout}\n{r.stderr}")
+    return out
 
 
-def verify():
-    """Every shipped GLB must require NO extension the engine cannot read."""
-    fail = 0
-    for p in sorted(glob.glob(OUT + "/*.glb")):
-        js, _ = read_glb(p)
-        req = js.get("extensionsRequired", [])
-        mimes = sorted({i.get("mimeType", "?") for i in js.get("images", [])})
-        if req or any(m not in ("image/png", "image/jpeg") for m in mimes):
-            print(f"  FAIL {os.path.basename(p)}: requires {req}, mimes {mimes}")
-            fail += 1
-    print(f"verify: {fail} file(s) still carry an extension/mime the loader cannot read")
-    return fail
+def cmd_convert():
+    os.makedirs(OUT, exist_ok=True)
+    problems = []
+    for rel, variants in BUILDINGS:
+        raw = fbx_to_glb(rel, os.path.basename(rel)[:-4])
+        for name, paintkey in variants:
+            gltf, bin_ = load_glb(raw)
+            miss = repaint(gltf, bin_, PAINTS[paintkey], name)
+            problems += [(name, m) for m in miss]
+            strip_placeholders(gltf)
+            dst = os.path.join(OUT, name + ".glb")
+            save_glb(dst, gltf, bin_)
+            print(f"  {name:18s} {os.path.getsize(dst)//1024:6d} KB  paint={paintkey}")
+    for rel, name in PROPS:
+        raw = fbx_to_glb(rel, name)
+        gltf, bin_ = load_glb(raw)
+        miss = repaint(gltf, bin_, PROP_PAINT, name)
+        problems += [(name, m) for m in miss]
+        strip_placeholders(gltf)
+        dst = os.path.join(OUT, name + ".glb")
+        save_glb(dst, gltf, bin_)
+        print(f"  {name:18s} {os.path.getsize(dst)//1024:6d} KB  prop")
+    if problems:
+        print("\n  UNPAINTED MATERIALS (NO_SLOP rule 3 risk):")
+        for n, m in problems:
+            print(f"    {n}: {m}")
+    print(f"\n[town] wrote {OUT}")
 
 
-# --------------------------------------------------------------------------- report
-def _trs(n):
-    import numpy as np
-    if "matrix" in n:
-        return np.array(n["matrix"], float).reshape(4, 4).T
-    M = np.eye(4)
-    s = n.get("scale", [1, 1, 1])
-    r = n.get("rotation", [0, 0, 0, 1])
-    t = n.get("translation", [0, 0, 0])
-    x, y, z, w = r
-    M[:3, :3] = np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ]) @ np.diag(s)
-    M[:3, 3] = t
-    return M
-
-
-def report():
-    import numpy as np
-    print("// name, cx, cz, hx, hz, loY, hiY, frontDeg   |  untextured materials")
-    for p in sorted(glob.glob(OUT + "/*.glb")):
-        js, _ = read_glb(p)
-        parts = []
-
-        def walk(ni, M):
-            n = js["nodes"][ni]
-            W = M @ _trs(n)
-            if "mesh" in n:
-                lo = np.array([1e30] * 3)
-                hi = np.array([-1e30] * 3)
-                for pr in js["meshes"][n["mesh"]]["primitives"]:
-                    ai = pr.get("attributes", {}).get("POSITION")
-                    if ai is None:
-                        continue
-                    a = js["accessors"][ai]
-                    if "min" not in a:
-                        continue
-                    for cx in (a["min"][0], a["max"][0]):
-                        for cy in (a["min"][1], a["max"][1]):
-                            for cz in (a["min"][2], a["max"][2]):
-                                v = W @ np.array([cx, cy, cz, 1.0])
-                                lo = np.minimum(lo, v[:3])
-                                hi = np.maximum(hi, v[:3])
-                if lo[0] < 1e29:
-                    parts.append((n.get("name", ""), (lo + hi) * 0.5, lo, hi))
-            for c in n.get("children", []):
-                walk(c, W)
-
-        for sc in js.get("scenes", [{}]):
-            for ni in sc.get("nodes", []):
-                walk(ni, np.eye(4))
-        if not parts:
+def cmd_report():
+    rows = []
+    for f in sorted(os.listdir(OUT)):
+        if not f.endswith(".glb"):
             continue
-        lo = np.min([q[2] for q in parts], axis=0)
-        hi = np.max([q[3] for q in parts], axis=0)
-        ctr = (lo + hi) * 0.5
-        half = (hi - lo) * 0.5
-        doors = [q for q in parts if "door" in q[0].lower()]
-        if doors:
-            v = max((q[1] - ctr for q in doors),
-                    key=lambda a: a[0] * a[0] + a[2] * a[2])
-            front = math.degrees(math.atan2(-v[0], -v[2]))
-        else:
-            front = 0.0
-        untex = [m.get("name", "?") for m in js.get("materials", [])
-                 if "baseColorTexture" not in m.get("pbrMetallicRoughness", {})]
-        print(f'    {{ "Town/{os.path.basename(p)}", {ctr[0]:7.2f}f, {ctr[2]:7.2f}f, '
-              f'{half[0]:6.2f}f, {half[2]:6.2f}f, {lo[1]:6.2f}f, {hi[1]:6.2f}f, '
-              f'{front:7.1f}f }},   // {",".join(untex) or "fully textured"}')
+        m = measure(os.path.join(OUT, f))
+        lo, hi, ctr = m["lo"], m["hi"], m["ctr"]
+        rows.append((f[:-4], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2],
+                     ctr[0], ctr[2], (hi[0] - lo[0]) * 0.5, (hi[2] - lo[2]) * 0.5,
+                     lo[1], hi[1], m["frontDeg"], m["src"]))
+    print(f"{'asset':22s} {'W':>7s}{'H':>7s}{'D':>7s} | {'cx':>7s}{'cz':>7s}{'hx':>7s}{'hz':>7s}"
+          f"{'loY':>7s}{'hiY':>7s} {'front':>8s}  ref")
+    for r in rows:
+        print(f"{r[0]:22s} {r[1]:7.2f}{r[2]:7.2f}{r[3]:7.2f} | {r[4]:7.2f}{r[5]:7.2f}"
+              f"{r[6]:7.2f}{r[7]:7.2f}{r[8]:7.2f}{r[9]:7.2f} {r[10]:8.1f}  {r[11]}")
+    print("\n// paste into kAssets[] in app/town.cpp")
+    print("// { glb, cx,cz, hx,hz, loY,hiY, frontDeg, { {y,along,depth,halfW,halfH} x3 } }")
+    for r in rows:
+        m = measure(os.path.join(OUT, r[0] + ".glb"))
+        p = list(m["panes"]) + [(0.0, 0.0, 0.0, 0.0, 0.0)] * (MAX_PANES - len(m["panes"]))
+        pad = " " * max(0, 26 - len(r[0]))
+        panes = ", ".join(
+            f"{{{q[0]:6.2f}f,{q[1]:7.2f}f,{q[2]:7.2f}f,{q[3]:5.2f}f,{q[4]:5.2f}f}}" for q in p)
+        print(f'    {{ "Town/{r[0]}.glb",{pad} {r[4]:7.2f}f,{r[5]:7.2f}f,'
+              f'{r[6]:7.2f}f,{r[7]:7.2f}f,{r[8]:6.2f}f,{r[9]:7.2f}f,{r[10]:8.1f}f,\n'
+              f'      {{ {panes} }} }},')
+
+
+def cmd_verify():
+    """Assert the shipped kit carries nothing the engine cannot read, and that
+    no material is left on a placeholder. This is the gate that would have
+    caught round one's WebP, and it now also catches TIFF and 1x1 whites."""
+    ok = True
+    stb_ok = {"image/png", "image/jpeg"}
+    for f in sorted(os.listdir(OUT)):
+        if not f.endswith(".glb"):
+            continue
+        gltf, bin_ = load_glb(os.path.join(OUT, f))
+        for ext in gltf.get("extensionsRequired", []):
+            print(f"  FAIL {f}: extensionsRequired {ext}"); ok = False
+        bound = {t.get("source") for t in gltf.get("textures", [])}
+        for i, im in enumerate(gltf.get("images", [])):
+            if i not in bound:
+                continue
+            mime = im.get("mimeType", "")
+            if im.get("bufferView") is None:
+                print(f"  FAIL {f}: bound image {i} has no bufferView"); ok = False
+                continue
+            if mime not in stb_ok:
+                print(f"  FAIL {f}: bound image {i} mime {mime!r} (stb_image reads PNG/JPEG only)"); ok = False
+            bv = gltf["bufferViews"][im["bufferView"]]
+            raw = bytes(bin_[bv["byteOffset"]:bv["byteOffset"] + bv["byteLength"]])
+            w, h = Image.open(BytesIO(raw)).size
+            if w <= 2 and h <= 2:
+                print(f"  FAIL {f}: bound image {i} is {w}x{h} — a placeholder (NO_SLOP rule 3)"); ok = False
+        for mat in gltf.get("materials", []):
+            pbr = mat.get("pbrMetallicRoughness", {})
+            if pbr.get("metallicFactor", 1.0) >= 0.9 and "metallicRoughnessTexture" not in pbr:
+                print(f"  FAIL {f}: material {mat.get('name')} metallic>=0.9 untextured "
+                      f"(X3_WORLD_RULES rule 5 — renders BLACK)"); ok = False
+        print(f"  {'ok  ' if ok else '    '}{f}: {len(gltf.get('materials', []))} materials, "
+              f"{len(bound)} bound textures")
+    print("\n[town] verify", "GREEN" if ok else "RED")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "convert"
     if cmd == "convert":
-        sys.exit(1 if convert() else 0)
+        cmd_convert()
+    elif cmd == "report":
+        cmd_report()
     elif cmd == "verify":
-        sys.exit(1 if verify() else 0)
+        sys.exit(cmd_verify())
     else:
-        report()
+        raise SystemExit(__doc__)
