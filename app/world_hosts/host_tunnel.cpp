@@ -787,11 +787,10 @@ int hostTunnel(HostContext& hc) {
             float cam[5]; tunnel.showcaseCamera(route, i, cam);
             camKeepOut.push_back({ cam[0], cam[2], 12.0f });
         }
-        // Benches never seat below the DRAWN river plane (PAIRED with
-        // applyRiverWater's seaLevel; see RoadTrees::build minBenchY).
-        const float benchDryY = (riverOn && riverRoad.plan.ok)
-                              ? riverRoad.plan.waterY + 0.3f : -1.0e9f;
-        trees.build(*device, route, camKeepOut, benchDryY);
+        // The minBenchY shim (drawn-plane level) is GONE: the drawn river now
+        // follows the same worldWaterLevelAt table (task #32 — one truth), so
+        // RoadTrees' own water-table check is the drawn waterline.
+        trees.build(*device, route, camKeepOut);
     }
 
     // THE FORESTS — the owner's brown map regions (ROAD_NETWORK_SKETCH_V2.png:
@@ -982,31 +981,21 @@ int hostTunnel(HostContext& hc) {
     // just never got a water feed in THIS host, so Jake hiked the riverbed
     // dry under the water table.
     //
-    // THE FEED IS THE SURFACE HE CAN SEE. This host draws ONE flat Gerstner
-    // plane at the bridge plan's waterY, while worldWaterLevelAt reports the
-    // spline's sloping level — 0.26 m below the plane a mere 32 m downstream.
-    // Fed the spline, he treads with his head under the drawn surface. So
-    // inside the bridge reach the PLANE owns the answer; beyond it (and in
-    // the ocean) the spline query stands. Same clamp the fish got.
-    {
-        const bool  rOn = riverOn && riverRoad.plan.ok;
-        const float rcx = rOn ? riverRoad.plan.cx : 0.0f;
-        const float rcz = rOn ? riverRoad.plan.cz : 0.0f;
-        const float rwy = rOn ? riverRoad.plan.waterY : 0.0f;
-        // The +0.35 m bias: the Player's buoyancy rests the EYE just above the
-        // fed surface, which leaves the drawn head bobbing right AT the
-        // waterline — reading as submerged whenever a crest rolls through. A
-        // treading human rides higher than his eye line; reporting the surface
-        // a hand-span HIGH makes the buoyancy lift him that much further, so
-        // head + shoulders clear the drawn plane.
-        onFoot.setWaterQuery([rOn, rcx, rcz, rwy](float x, float z) {
-            const float w = x3::game::worldWaterLevelAt(x, z);
-            if (!rOn || w <= x3::game::kWorldWaterDry + 1.0f) return w;
-            const float dx = x - rcx, dz = z - rcz;
-            if (dx * dx + dz * dz < 260.0f * 260.0f) return rwy + 0.35f;
-            return w;
-        });
-    }
+    // THE FEED IS THE SURFACE HE CAN SEE — and since task #32 the drawn
+    // surface IS worldWaterLevelAt (the water shader steps the plane down the
+    // channel from the same node table), so the old bridge-reach clamp to the
+    // flat plane is deleted. What stays is the +0.35 m presentation bias: the
+    // Player's buoyancy rests the EYE just above the fed surface, which
+    // leaves the drawn head bobbing right AT the waterline — reading as
+    // submerged whenever a crest rolls through. A treading human rides higher
+    // than his eye line; reporting the surface a hand-span HIGH makes the
+    // buoyancy lift him that much further, so head + shoulders clear the
+    // drawn crests.
+    onFoot.setWaterQuery([](float x, float z) {
+        const float w = x3::game::worldWaterLevelAt(x, z);
+        if (w <= x3::game::kWorldWaterDry + 1.0f) return w;
+        return w + 0.35f;
+    });
     bool  driving      = true;
     bool  footSpawned  = false;
     float parkedAt[3]  = { 0, 0, 0 };   // where the car was left, for the re-entry prompt
@@ -1298,11 +1287,41 @@ int hostTunnel(HostContext& hc) {
     // darker+greener than the sea defaults, specular drops 12->5 and the
     // fresnel floor 0.02->0.012 (less sky mirror face-on). Caustics ride along
     // (the canon undersea pass) so the deepened bed reads THROUGH the surface.
-    auto applyRiverWater = [&](float t) {
+    // (fx, fz) = this frame's focus (camera/player/car XZ): river mode feeds
+    // the LOCAL water level there into seaLevel (the shader's underside-view
+    // gate) and the caustics plane — the flat bridge-level plane is gone.
+    auto applyRiverWater = [&](float t, float fx, float fz) {
         if (!(riverOn && riverRoad.plan.ok)) return;
         x3::rhi::IRenderDevice::WaterParams wpr{};
         wpr.enabled   = true;
-        wpr.seaLevel  = riverRoad.plan.waterY;
+        // ONE WATER TRUTH (task #32): the drawn surface follows the SAME node
+        // table worldWaterLevelAt interpolates — stepped down the channel per
+        // vertex in water.vert, estuary handed off to the real sea. The old
+        // single flat plane at plan.waterY stood ~1.2 m/chain-node above the
+        // carved table downstream and climbed the banks (receipt: the bench
+        // that shipped submerged at (-340,11,-468) while PASSING the
+        // worldWaterLevelAt+0.5 check).
+        {
+            using WP = x3::rhi::IRenderDevice::WaterParams;
+            x3::game::WorldRiverNode rn[WP::kMaxRiverNodes];
+            const uint32_t n = x3::game::worldRiverRisenNodes(rn, WP::kMaxRiverNodes);
+            wpr.riverNodeCount = n;
+            for (uint32_t i = 0; i < n; ++i) {
+                wpr.riverNodes[i][0] = rn[i].x;
+                wpr.riverNodes[i][1] = rn[i].z;
+                wpr.riverNodes[i][2] = rn[i].waterY;
+            }
+            wpr.riverHalfWidth = x3::game::kWorldRiverHalfWidth;
+            wpr.basinCenter[0] = x3::game::kWorldOceanBasinX;
+            wpr.basinCenter[1] = x3::game::kWorldOceanBasinZ;
+            wpr.basinRadius    = x3::game::kWorldOceanBasinR;
+            wpr.oceanLevel     = x3::game::kWorldSeaLevel;
+        }
+        // seaLevel carries the LOCAL level at the focus (underside-view gate +
+        // caustics plane); dry land falls back to the bridge's level.
+        const float lw = x3::game::worldWaterLevelAt(fx, fz);
+        wpr.seaLevel  = (lw > x3::game::kWorldWaterDry + 1.0f)
+                      ? lw : riverRoad.plan.waterY;
         wpr.time      = t;
         wpr.amplitude = 0.16f;          // a river swell, not an ocean — and low
                                         // enough that a treading head clears
@@ -1321,11 +1340,32 @@ int hostTunnel(HostContext& hc) {
         wpr.sunDir[0] = 0.35f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.18f;
         device->setWaterParams(wpr);
         x3::rhi::IRenderDevice::CausticsParams cp{};
-        cp.enabled = true; cp.waterY = riverRoad.plan.waterY;
+        cp.enabled = true; cp.waterY = wpr.seaLevel;   // local level, not the flat plane
         cp.time = t; cp.intensity = 0.85f;
         device->setCaustics(cp);
     };
     float riverWaterClock = 0.0f;
+
+    // ==== RAIN RUNOFF (W-WATER, task #23): heavy rain swells the river. ====
+    // Owner's scale is rain 0-10; WeatherSample::precipitation is 0-1, so
+    // "rain >= 6" = precipitation >= 0.6. At the threshold the reach rises a
+    // visible 0.3 m, scaling to kWorldRiverRainRiseMax (0.9 m) in a full
+    // storm — and terrain.cpp caps the rise per node at 60% of the levee
+    // freeboard, so the swollen river NEVER tops a levee. The level eases in
+    // and out (a river lags its rain); both the drawn surface and
+    // worldWaterLevelAt consume the same setWorldRiverRainRise state, so swim
+    // physics, fish and the visible water rise together (one truth, rule 4).
+    float riverRainRise = 0.0f;
+    auto tickRiverRise = [&](float d, float precip, bool snow) {
+        if (!(riverOn && riverRoad.plan.ok)) return;
+        const float target = (!snow && precip >= 0.6f)
+            ? 0.3f + (x3::game::kWorldRiverRainRiseMax - 0.3f)
+                     * std::min(1.0f, (precip - 0.6f) / 0.4f)
+            : 0.0f;
+        const float step = 0.06f * d;              // ~15 s swell, same ebb
+        riverRainRise += std::clamp(target - riverRainRise, -step, step);
+        x3::game::setWorldRiverRainRise(riverRainRise);
+    };
 
     phys->optimizeBroadphase();
 
@@ -1363,7 +1403,7 @@ int hostTunnel(HostContext& hc) {
                 // what the runtime gate said. Same lambda, same tone, plus the
                 // boats/fish so the capture proves the LIVING river.
                 riverWaterClock += dt;
-                applyRiverWater(riverWaterClock);
+                applyRiverWater(riverWaterClock, cam[0], cam[2]);
                 riverLife.prePhysics(dt);
                 if (shotTick) shotTick(dt);   // staged swimmer BEFORE the step
                 phys->step(dt);
@@ -1381,6 +1421,7 @@ int hostTunnel(HostContext& hc) {
                     weather.tick(dt);
                     const x3::game::WeatherSample& ws = weather.sample();
                     wetness.tick(dt, ws.precipitation, ws.tempC, ws.snowfall);
+                    tickRiverRise(dt, ws.precipitation, ws.snowfall);
                     storm.tick(dt, ws.state == x3::game::WeatherState::Storm ? ws.hazardLevel : 0.0f,
                                nullptr, cam[0], cam[1], cam[2]);
                     x3::rhi::IRenderDevice::SkyParams sp = ws.sky;
@@ -2285,7 +2326,16 @@ int hostTunnel(HostContext& hc) {
         // ---- THE RIVER HAS WATER (Tim: "Can we pour the water in now").
         // One lambda with the headless path — same tone, same clock shape.
         riverWaterClock += fdt;
-        applyRiverWater(riverWaterClock);
+        {
+            // Focus = whoever the camera is following this frame.
+            float wfx = startPos[0], wfz = startPos[2];
+            if (driving && carBuilt) {
+                float cp[3]; car.chassisPos(cp); wfx = cp[0]; wfz = cp[2];
+            } else if (footSpawned) {
+                const x3::phys::Vec3 ft = onFoot.feet(); wfx = ft.x; wfz = ft.z;
+            }
+            applyRiverWater(riverWaterClock, wfx, wfz);
+        }
         if (weatherOn) {
             weather.tick(fdt);
             // The clock RUNS, but wx_hour re-seeds it -- so you can jump to the
@@ -2300,6 +2350,7 @@ int hostTunnel(HostContext& hc) {
 
             const x3::game::WeatherSample& ws = weather.sample();
             wetness.tick(fdt, ws.precipitation, ws.tempC, ws.snowfall);
+            tickRiverRise(fdt, ws.precipitation, ws.snowfall);
 
             // Lightning only under an actual storm; hazardLevel already carries
             // "how bad", so intensity comes free and correct.

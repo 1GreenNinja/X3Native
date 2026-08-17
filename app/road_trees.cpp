@@ -91,7 +91,7 @@ struct Lcg {
 } // anonymous namespace
 
 bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
-                      const std::vector<KeepOut>& keepOut, float minBenchY) {
+                      const std::vector<KeepOut>& keepOut) {
     if (m_built) return m_trees > 0;
     m_built = true;
 
@@ -282,13 +282,14 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
                             }
                             if (hMax - hMin > 0.22f) continue;
                             ty = (hMax + hMin) * 0.5f;
-                            if (ty < worldWaterLevelAt(bx, bz) + 0.5f) continue;
-                            // The DRAWN river plane is a separate truth from
-                            // worldWaterLevelAt (task #32): the first bench
-                            // shipped SUBMERGED despite passing the
-                            // water-table check. The host feeds the plane
-                            // level in as minBenchY.
-                            if (ty < minBenchY) continue;
+                            // Since task #32 the drawn river surface IS the
+                            // worldWaterLevelAt table (the minBenchY shim is
+                            // deleted). A bench also clears the rain-runoff
+                            // head-room so a storm-swollen river never laps a
+                            // seat (rain rise is bounded by
+                            // kWorldRiverRainRiseMax; see terrain.h).
+                            if (ty < worldWaterLevelAt(bx, bz) + 0.5f
+                                     + kWorldRiverRainRiseMax) continue;
                             if (ty < route.roadYAt(bs) - 3.0f) continue;
                             ok = true;
                             break;

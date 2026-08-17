@@ -811,8 +811,12 @@ const PadDef kPads[4] = {
     { -200.0f, 350.0f, 150.0f, 17.0f },   // Industrial Zone
 };
 
-// Ocean basin (matches app/ocean_base.cpp kBaseCx/kBaseCz).
-constexpr float kBasinCx = 1100.0f, kBasinCz = -1350.0f;
+// Ocean basin (matches app/ocean_base.cpp kBaseCx/kBaseCz). Aliased to the
+// exported terrain.h kWorldOceanBasin* (PAIRED — the water shader's river
+// mode renders the sea from the exported copy).
+constexpr float kBasinCx = kWorldOceanBasinX, kBasinCz = kWorldOceanBasinZ;
+static_assert(kWorldOceanBasinR == 950.0f,
+              "basin radius is used inline below (950) — keep the pair");
 
 // ===========================================================================
 // W9 — AUTHORED LANDFORM DRAMA (Tim, 2026-07-09: "steeper local features —
@@ -1616,16 +1620,52 @@ const WorldRiverNode* worldRiverNodes(uint32_t& count) {
 uint32_t worldRiverCarveCount() { return (uint32_t)riverChain().carveN; }
 
 // ---------------------------------------------------------------------------
+// RAIN RUNOFF (W-WATER, task #23) — see terrain.h. One rise value, one cap
+// formula, consumed by BOTH truths (the query below and the drawn surface via
+// worldRiverRisenNodes) so they can never drift (NO_SLOP rule 4).
+// ---------------------------------------------------------------------------
+namespace { float g_riverRainRise = 0.0f; }
+
+void setWorldRiverRainRise(float riseM) {
+    g_riverRainRise = std::min(std::max(riseM, 0.0f), kWorldRiverRainRiseMax);
+}
+float worldRiverRainRise() { return g_riverRainRise; }
+
+// Per-node levee-freeboard cap: the swollen river never tops a levee.
+static inline float riverRiseCapped(float rise, float crestC) {
+    return std::min(rise, 0.6f * crestC);
+}
+
+uint32_t worldRiverRisenNodes(WorldRiverNode* out, uint32_t maxN) {
+    const RiverChain& rc = riverChain();
+    const uint32_t n = std::min((uint32_t)rc.n, maxN);
+    for (uint32_t i = 0; i < n; ++i)
+        out[i] = { rc.x[i], rc.z[i],
+                   rc.w[i] + riverRiseCapped(g_riverRainRise, rc.c[i]) };
+    return n;
+}
+
+// ---------------------------------------------------------------------------
 // W10 (SWIMMING) — worldWaterLevelAt. Pure; see terrain.h. River first (its
 // ribbon rides 0.1 m proud of the sea where they overlap at the estuary, so
 // the river answer wins there, matching the visuals), then the ocean basin.
 // ---------------------------------------------------------------------------
 float worldWaterLevelAt(float x, float z) {
     // RIVER: closest approach to the SAME working chain the carve + ribbon use
-    // (full chain incl. the estuary tail nodes that only carry water).
+    // (full chain incl. the estuary tail nodes that only carry water). Under
+    // rain runoff the PER-NODE risen level is interpolated (identical node
+    // math to the drawn surface's worldRiverRisenNodes — one truth); rise 0
+    // takes the original path bit-for-bit.
     const RiverChain& rc = riverChain();
     float d, w;
-    polyClosest(rc.x, rc.z, rc.w, rc.n, x, z, d, w);
+    if (g_riverRainRise > 0.0f) {
+        float wr[RiverChain::kMax];
+        for (int i = 0; i < rc.n; ++i)
+            wr[i] = rc.w[i] + riverRiseCapped(g_riverRainRise, rc.c[i]);
+        polyClosest(rc.x, rc.z, wr, rc.n, x, z, d, w);
+    } else {
+        polyClosest(rc.x, rc.z, rc.w, rc.n, x, z, d, w);
+    }
     if (d <= kWorldRiverHalfWidth) return w;
     // OCEAN: inside the offshore basin's influence ring AND the terrain bowl is
     // actually below the sea surface there (the -6 shore ring stays dry beach).
