@@ -157,6 +157,49 @@ vec2 stochOffset(vec2 v) {          // per-lattice-vertex random translation
     return fract(vec2(thash(v), thash(v + 17.31)));
 }
 
+// ===========================================================================
+// FOOTPRINT ANTI-SHIMMER (outdoor-polish lane; ssao.terrainMat.x).
+//
+// THE DEFECT, stated precisely. The mip chain filters what is INSIDE each tap.
+// It does nothing at all for the WEIGHTS BETWEEN taps, and the hex-lattice
+// blend above computes those weights analytically, per pixel, from a lattice
+// whose period is 1/(kDetailScale*kStochLattice) ~= 15.9 WORLD METRES.
+//
+// At the range the owner is looking (the massif sits 7-10 km out) one 720p
+// pixel spans several metres of ground -- comparable to, or wider than, that
+// lattice cell. Adjacent pixels therefore land in DIFFERENT lattice triangles
+// with different random offsets, and a sub-texel camera move re-rolls which
+// triangle each pixel lands in. That is a per-frame re-roll of a
+// full-contrast 3-way blend: it SPARKLES, and no amount of anisotropy or mip
+// bias can touch it, because the aliasing is in the blend, not the fetch.
+//
+// The fix is the one the technique's own premise implies: the stochastic
+// offset exists ONLY to hide a visible 5.56 m repeat. Once a pixel is wider
+// than the repeat there is no repeat left to hide, so fade back to the plain,
+// un-offset, lattice-independent tap. Continuous (a lerp), free where it
+// matters (the near-field branch below takes exactly the old three taps), and
+// CHEAPER at distance (one tap instead of three).
+//
+// Returns 1 = full stochastic blend (near), 0 = plain single tap (far).
+// `ddx/ddy` are the UV-cycle derivatives already computed by every caller.
+float stochBlend(vec2 ddx, vec2 ddy) {
+    // Pixel footprint measured in LATTICE CELLS. kStochLattice converts
+    // uv-cycles to lattice units, which is the unit the aliasing lives in.
+    float latFp = max(length(ddx), length(ddy)) * kStochLattice;
+    // Below ~1/8 cell per pixel the lattice is comfortably resolved; past ~0.6
+    // it is being point-sampled and every weight is noise.
+    float fade = smoothstep(0.12, 0.60, latFp);
+    return mix(1.0, 1.0 - fade, clamp(ssao.terrainMat.x, 0.0, 1.0));
+}
+
+// Same footprint metric expressed in WORLD METRES per pixel, for the callers
+// that need to fade something whose scale is authored in world units (the
+// splat-mask noise, the normal relief). `wpos` must come from a varying, so
+// this may only be called in uniform control flow.
+float terrainFootprintM(vec3 wpos) {
+    return max(length(dFdx(wpos)), length(dFdy(wpos)));
+}
+
 // Resolve the lattice ONCE for a uv: the three neighbouring vertices' random
 // translations + their sharpened barycentric weights. Split out of stochSample so
 // the NORMAL map can be fetched at literally the same three offsets with the same
@@ -181,12 +224,27 @@ void stochLattice(vec2 uv, out vec2 o1, out vec2 o2, out vec2 o3, out vec3 w) {
     o1 = stochOffset(v1); o2 = stochOffset(v2); o3 = stochOffset(v3);
 }
 
+// textureGrad carries EXPLICIT gradients, so unlike texture()/dFdx it is legal
+// in non-uniform control flow — which is what lets the three branches below
+// exist at all. b == 1 takes literally the old three taps (byte-identical, and
+// the only path r_terrainaa 0 can reach); b == 0 takes ONE.
 vec3 stochSample(uint idx, vec2 uv, vec2 ddx, vec2 ddy) {
+    float b = stochBlend(ddx, ddy);
+    if (b >= 0.998) {
+        vec2 o1, o2, o3; vec3 w;
+        stochLattice(uv, o1, o2, o3, w);
+        return textureGrad(textures[nonuniformEXT(idx)], uv + o1, ddx, ddy).rgb * w.x
+             + textureGrad(textures[nonuniformEXT(idx)], uv + o2, ddx, ddy).rgb * w.y
+             + textureGrad(textures[nonuniformEXT(idx)], uv + o3, ddx, ddy).rgb * w.z;
+    }
+    vec3 plain = textureGrad(textures[nonuniformEXT(idx)], uv, ddx, ddy).rgb;
+    if (b <= 0.002) return plain;
     vec2 o1, o2, o3; vec3 w;
     stochLattice(uv, o1, o2, o3, w);
-    return textureGrad(textures[nonuniformEXT(idx)], uv + o1, ddx, ddy).rgb * w.x
-         + textureGrad(textures[nonuniformEXT(idx)], uv + o2, ddx, ddy).rgb * w.y
-         + textureGrad(textures[nonuniformEXT(idx)], uv + o3, ddx, ddy).rgb * w.z;
+    vec3 stoch = textureGrad(textures[nonuniformEXT(idx)], uv + o1, ddx, ddy).rgb * w.x
+               + textureGrad(textures[nonuniformEXT(idx)], uv + o2, ddx, ddy).rgb * w.y
+               + textureGrad(textures[nonuniformEXT(idx)], uv + o3, ddx, ddy).rgb * w.z;
+    return mix(plain, stoch, b);
 }
 
 // The same three taps, read as a TANGENT-SPACE normal. Decoded to [-1,1] per tap
@@ -196,11 +254,27 @@ vec3 stochSample(uint idx, vec2 uv, vec2 ddx, vec2 ddy) {
 // albedo: the offset is discontinuous at a lattice edge, and an implicit
 // derivative would pick a different mip on adjacent pixels.
 vec3 stochNormalTS(uint idx, vec2 uv, vec2 ddx, vec2 ddy) {
-    vec2 o1, o2, o3; vec3 w;
-    stochLattice(uv, o1, o2, o3, w);
-    vec3 t = textureGrad(textures[nonuniformEXT(idx)], uv + o1, ddx, ddy).xyz * w.x
-           + textureGrad(textures[nonuniformEXT(idx)], uv + o2, ddx, ddy).xyz * w.y
-           + textureGrad(textures[nonuniformEXT(idx)], uv + o3, ddx, ddy).xyz * w.z;
+    float b = stochBlend(ddx, ddy);
+    vec3 t;
+    if (b >= 0.998) {
+        vec2 o1, o2, o3; vec3 w;
+        stochLattice(uv, o1, o2, o3, w);
+        t = textureGrad(textures[nonuniformEXT(idx)], uv + o1, ddx, ddy).xyz * w.x
+          + textureGrad(textures[nonuniformEXT(idx)], uv + o2, ddx, ddy).xyz * w.y
+          + textureGrad(textures[nonuniformEXT(idx)], uv + o3, ddx, ddy).xyz * w.z;
+    } else {
+        vec3 plain = textureGrad(textures[nonuniformEXT(idx)], uv, ddx, ddy).xyz;
+        if (b <= 0.002) {
+            t = plain;
+        } else {
+            vec2 o1, o2, o3; vec3 w;
+            stochLattice(uv, o1, o2, o3, w);
+            vec3 s = textureGrad(textures[nonuniformEXT(idx)], uv + o1, ddx, ddy).xyz * w.x
+                   + textureGrad(textures[nonuniformEXT(idx)], uv + o2, ddx, ddy).xyz * w.y
+                   + textureGrad(textures[nonuniformEXT(idx)], uv + o3, ddx, ddy).xyz * w.z;
+            t = mix(plain, s, b);
+        }
+    }
     t = t * 2.0 - 1.0;
     t.y *= kTerrainNormalG;
     t.xy *= kTerrainNormalStrength;
@@ -291,14 +365,60 @@ struct TerrainSplat {
     float hN;                 // noise-jittered height, shared with the alpine band
 };
 
-TerrainSplat terrainSplatWeights(vec3 wpos, vec3 wn) {
+// How much of a world-space detail term of wavelength `wlM` survives at a pixel
+// footprint of `fpM` metres. A term whose wavelength is under a couple of pixels
+// contributes nothing but per-frame noise: it cannot be SEEN as structure, only
+// as sparkle, so it is faded out rather than point-sampled. Gated by
+// ssao.terrainMat.x so r_terrainaa 0 returns 1.0 and the historical math runs.
+float terrainDetailFade(float fpM, float wlM) {
+    float f = 1.0 - smoothstep(wlM * 0.10, wlM * 0.45, fpM);
+    return mix(1.0, f, clamp(ssao.terrainMat.x, 0.0, 1.0));
+}
+
+// How much of the tangent-space normal relief survives at this footprint.
+// 1 = the authored relief, 0 = the geometry normal alone. Shared by
+// terrainNormal() (which blends the normal) and terrainSurface() (which converts
+// the lost normal variance into roughness), so the two can never disagree.
+// The 6.0 m "wavelength" puts terrainDetailFade's band at 0.60 .. 2.70 m/pixel.
+float terrainReliefAmount(float fpM) { return terrainDetailFade(fpM, 6.0); }
+
+// ===========================================================================
+// AUTHORED PER-BAND SURFACE (ssao.terrainMat.y/.z/.w).
+//
+// Terrain used ONE flat dielectric roughness -- 0.5 -- for grass, cliff rock,
+// snow and sand alike, because mesh.frag's untextured path has a single
+// constant and terrain has no MR map. Grass and a wind-packed snow crust do not
+// return light the same way, and the difference is most of what "reads real" at
+// a low sun. These are the dials; retune HERE, one place, not per call site.
+//
+//   rough : GGX perceptual roughness. Lower = tighter, brighter highlight.
+//   spec  : scale on the dielectric F0 (0.04). >1 = a wetter/harder mineral
+//           surface, <1 = a dusty one that barely returns a specular lobe.
+//
+// SAND is the owner's calibration band ("hard baked sand shimmering in the
+// evening glow"): ssao.terrainMat.z crossfades it between MATTE and a glossy
+// hardpan that throws a real grazing glint. That is a deliberate MATERIAL
+// sparkle, which is exactly why the footprint aliasing had to be fixed first --
+// otherwise there is no way to tell the intended glint from the broken one.
+const float kRoughGrass = 0.88, kSpecGrass = 0.55;   // soft, near-lambertian
+const float kRoughRock  = 0.74, kSpecRock  = 1.00;   // stone: a real, broad lobe
+const float kRoughSnow  = 0.52, kSpecSnow  = 1.25;   // crusted facets glint
+const float kRoughSandM = 0.82, kSpecSandM = 0.45;   // MATTE loose sand
+const float kRoughSandS = 0.30, kSpecSandS = 1.55;   // SPARKLE: baked hardpan
+
+struct TerrainSurface { float rough; float spec; };
+
+TerrainSplat terrainSplatWeights(vec3 wpos, vec3 wn, float fpM) {
     TerrainSplat s;
     float h     = wpos.y;
     float slope = clamp(wn.y, 0.0, 1.0);     // 1 = flat ground, 0 = vertical
 
     // A bit of world noise to wobble the band boundaries so they don't read as
-    // perfectly horizontal contour lines.
-    float n   = tnoise(wpos.xz * kMacroScale) - 0.5;   // [-0.5,0.5]
+    // perfectly horizontal contour lines. FADED WITH FOOTPRINT: at 8 km a pixel
+    // spans several metres, so a metre-scale wobble on a band EDGE is a
+    // per-frame coin flip between two materials -- the band edge crawls.
+    float n   = (tnoise(wpos.xz * kMacroScale) - 0.5)
+              * terrainDetailFade(fpM, 1.0 / kMacroScale);   // ~83 m wavelength
     float hN  = h + n * 6.0;                            // height jittered by noise
     s.hN = hN;                                          // published for terrainAlbedo
 
@@ -350,8 +470,14 @@ TerrainSplat terrainSplatWeights(vec3 wpos, vec3 wn) {
     // below learned the hard way. Adding noise to the RESULT would sprinkle
     // snow onto ground nowhere near the line; moving the height the band is
     // measured at keeps deep valleys bare and high peaks white by construction.
-    float snowCoarse = tnoise(wpos.xz * (kMacroScale * 0.35)) - 0.5;
-    float snowFine   = tnoise(wpos.xz * (kMacroScale * 3.00)) - 0.5;
+    // Both octaves fade with the pixel footprint (see terrainDetailFade): the
+    // FINE one (~28 m) is the first thing to go sub-pixel on a distant massif,
+    // and it is the loudest shimmer term on the snowline because it modulates a
+    // full-contrast white/rock edge.
+    float snowCoarse = (tnoise(wpos.xz * (kMacroScale * 0.35)) - 0.5)
+                     * terrainDetailFade(fpM, 1.0 / (kMacroScale * 0.35));   // ~238 m
+    float snowFine   = (tnoise(wpos.xz * (kMacroScale * 3.00)) - 0.5)
+                     * terrainDetailFade(fpM, 1.0 / (kMacroScale * 3.00));   // ~28 m
     // Fade the raggedness as cover rises: the line is only ragged while it is
     // marginal. Under a full fall there is no edge left to be ragged.
     float ragged = 1.0 - 0.6 * snowW;
@@ -385,6 +511,43 @@ TerrainSplat terrainSplatWeights(vec3 wpos, vec3 wn) {
     return s;
 }
 
+// Blend the band table with EXACTLY the weights terrainAlbedo uses, in the same
+// order, so a rock face's colour never arrives with the grass's gloss.
+TerrainSurface terrainSurface(vec3 wpos, vec3 wn) {
+    float fpM = terrainFootprintM(wpos);
+    TerrainSplat s = terrainSplatWeights(wpos, wn, fpM);
+
+    float sparkle = clamp(ssao.terrainMat.z, 0.0, 1.0);
+    float rSand = mix(kRoughSandM, kRoughSandS, sparkle);
+    float sSand = mix(kSpecSandM,  kSpecSandS,  sparkle);
+
+    float r = kRoughGrass, sp = kSpecGrass;
+    r  = mix(r,  rSand,      s.sand);
+    sp = mix(sp, sSand,      s.sand);
+    r  = mix(r,  kRoughRock, s.alpine * 0.9);
+    sp = mix(sp, kSpecRock,  s.alpine * 0.9);
+    r  = mix(r,  kRoughSnow, s.snow);
+    sp = mix(sp, kSpecSnow,  s.snow);
+    float rockW = s.rock * (1.0 - s.snow * 0.55);
+    r  = mix(r,  kRoughRock, rockW);
+    sp = mix(sp, kSpecRock,  rockW);
+
+    // SPECULAR ANTI-ALIASING. Where the relief has been faded out (see
+    // terrainReliefAmount) the surface has lost normal VARIANCE it used to
+    // scatter with. Putting that variance back as roughness is the standard
+    // normal-variance -> roughness conversion, and it is what stops a distant
+    // slope from turning into a field of pinpoint highlights the moment its
+    // bumps stop resolving. Deliberately UNCONDITIONAL on sparkle: the sand
+    // glint is a NEAR-field look and must not survive to 8 km either.
+    float lost = 1.0 - terrainReliefAmount(fpM);
+    r = mix(r, max(r, 0.85), lost);
+
+    TerrainSurface o;
+    o.rough = clamp(r * max(ssao.terrainMat.w, 0.05), 0.045, 1.0);
+    o.spec  = sp;
+    return o;
+}
+
 // Procedural height+slope splat. Returns the blended terrain albedo in linear-ish
 // sRGB (the detail textures are stored sRGB so the array already linearises them).
 vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
@@ -405,7 +568,7 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
                    | (((pack.x >> 12) & 0xFu) << 4)
                    |  ((pack.y >> 28) & 0xFu);      // 0 = no high set registered
 
-    TerrainSplat s = terrainSplatWeights(wpos, wn);
+    TerrainSplat s = terrainSplatWeights(wpos, wn, terrainFootprintM(wpos));
 
     // ---- Base sample the four materials (world-space UVs) ----
     vec3 grass = detailXZ(grassIdx, wpos.xz);
@@ -506,7 +669,21 @@ vec3 terrainNormal(vec3 wpos, vec3 wn, uvec2 nrmPack) {
     uint sandN  = nrmPack.y & 0xFFFFu;
     if ((grassN | rockN | snowN | sandN) == 0u) return wn;
 
-    TerrainSplat s = terrainSplatWeights(wpos, wn);
+    // RELIEF FADE (ssao.terrainMat.x). The normal maps are sub-metre bakes. Past
+    // ~1 m per pixel their structure cannot be RESOLVED, only sampled -- and a
+    // per-frame-resampled normal feeding a specular lobe is precisely the
+    // "mountain sparkles" report. Fade the relief back to the geometry normal
+    // over the footprint band; the mountain keeps its SHAPE (geometry + splat)
+    // and loses only detail the pixel was never wide enough to show. The SAME
+    // fade raises roughness in terrainSurface() below, so the energy the flattened
+    // normal stops scattering is put back as a broader lobe rather than lost.
+    //
+    // NO EARLY-OUT HERE, deliberately: every dFdx below must stay in uniform
+    // control flow, so the fade is applied as a blend at the very end instead.
+    float fpM    = terrainFootprintM(wpos);
+    float relief = terrainReliefAmount(fpM);
+
+    TerrainSplat s = terrainSplatWeights(wpos, wn, fpM);
 
     // Derivatives for the shared top-down projection, hoisted OUT of every
     // branch below (dFdx in non-uniform control flow is undefined) — the same
@@ -542,6 +719,15 @@ vec3 terrainNormal(vec3 wpos, vec3 wn, uvec2 nrmPack) {
     // A degenerate blend (opposing layers cancelling) would normalize to noise;
     // fall back to the geometry normal rather than shade from garbage.
     float len = length(N);
-    return (len > 1e-4) ? N / len : wn;
+    N = (len > 1e-4) ? N / len : wn;
+    // ...then fade the whole relief toward the geometry normal by footprint.
+    // The >= 0.9995 early-out RETURNS N untouched rather than running a no-op
+    // mix + renormalize through it: that keeps r_terrainaa 0 (and every
+    // near-field fragment) BIT-identical, which a redundant normalize would not.
+    // Safe as a branch — no derivative is taken past this point.
+    if (relief >= 0.9995) return N;
+    N = mix(wn, N, relief);
+    float len2 = length(N);
+    return (len2 > 1e-4) ? N / len2 : wn;
 }
 #endif  // X3_MESH_TERRAIN_GLSL

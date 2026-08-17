@@ -288,6 +288,14 @@ public:
         float blend       = 0.12f;   // cross-fade band width, as a fraction of a slice
         float forwardBias = 0.0f;    // LEGACY-path forward push along the camera axis (m)
         bool  debug       = false;   // step visibility per cascade so bands are visible
+        // r_shadowsnap: quantise the LEGACY (r_csm 0) camera-following box's
+        // centre to the world-anchored shadow-texel lattice. The legacy box slid
+        // continuously with the camera, so every shadow edge crawled frame to
+        // frame — read as SHIMMER at range, where one texel spans several pixels
+        // of silhouette. Cascades have always snapped; this gives the one box the
+        // legacy path draws the same treatment. false = the historical unsnapped
+        // box, bit-for-bit. Independent of `enabled`.
+        bool  snapLegacy  = true;
     };
     virtual void setCsmParams(const CsmParams&) {}
 
@@ -397,6 +405,37 @@ public:
     // watching the white come down the range is the effect. 0 (the default)
     // leaves the permanent altitude-only snow cap exactly as it was.
     virtual void setSnowCover(float) {}
+
+    // ---- TERRAIN MATERIAL + TEMPORAL STABILITY (outdoor-polish lane) --------
+    // Two problems, one uniform, because they are the same problem seen twice:
+    // what the ground DOES with light, and what it does with light when a pixel
+    // is wider than the detail it is showing.
+    //
+    // `antiAlias` — at range one screen pixel spans several METRES of ground.
+    //   That is wider than the stochastic-tiling hex lattice (~16 m) and the
+    //   fine splat-mask noise (~28 m), so their per-pixel weights alias no
+    //   matter how complete the mip chain is: the taps are filtered, the
+    //   WEIGHTS BETWEEN THEM are not. Sub-pixel camera motion then re-rolls
+    //   them and the mountain sparkles. This fades those terms — and the normal
+    //   relief, whose detail is likewise below the footprint — out with
+    //   distance. 0 = the historical (aliasing) math, exactly.
+    //
+    // `perBand` — terrain used ONE flat dielectric roughness (0.5) for grass,
+    //   cliff, snow and sand alike. This blends in an authored per-band
+    //   roughness/specular instead. 0 = that flat 0.5, exactly.
+    //
+    // `sparkle` — the owner's calibration: hard-baked sand should GLINT in a low
+    //   evening sun (1) or stay matte (0). It is a MATERIAL property, not an
+    //   aliasing artefact — which is the whole point of fixing the aliasing
+    //   first, so a deliberate sparkle can be told apart from a broken one.
+    struct TerrainMatParams {
+        float antiAlias   = 1.0f;   // 0 = historical, 1 = full footprint fade
+        float perBand     = 1.0f;   // 0 = flat dielectric 0.5, 1 = authored bands
+        float sparkle     = 1.0f;   // sand-band gloss 0..1
+        float roughScale  = 1.0f;   // multiplier on the authored band roughness
+    };
+    virtual void setTerrainMaterial(const TerrainMatParams&) {}
+
     // Filmic grade + split-tone + vignette in the composite pass, master-lerped by
     // `strength` (0 = bit-identical passthrough — the shader never enters the block).
     struct GradeParams {
