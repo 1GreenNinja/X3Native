@@ -1728,8 +1728,14 @@ int hostTunnel(HostContext& hc) {
                     // the camera position and draws the REAL prompt + gauge
                     // through gas_station.h's shared renderers.
                     if (shotPump) {
+                        // =2: hold E only over the LAST 90 settle frames. Held
+                        // for all 200 the pump moves 200/60*22 = 73 L — more
+                        // than the whole tank — so the still lands on TANK
+                        // FULL every time; 90 frames moves ~33 L from the
+                        // staged 35% and the capture catches the flow mid-fill.
+                        const bool holdE = shotPumpHoldE && i >= kFrames - 90;
                         gasStations.update(1.0f / 60.0f, cam[0], cam[2], 0.0f,
-                                           0.0f, shotPumpHoldE);
+                                           0.0f, holdE);
                         x3::game::drawPumpPrompt(*device, frame, gasStations.prompt());
                         uint32_t phw = 0, phh = 0; device->hudSize(phw, phh);
                         float pR = 0.0f, pgx = 0.0f, pgy = 0.0f;
