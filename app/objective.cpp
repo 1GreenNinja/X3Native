@@ -2,6 +2,7 @@
 //
 // Clean-room: built from the IRenderDevice interface + std only.
 #include "objective.h"
+#include "hud_panel.h"   // the ONE rounded dark-translucent HUD panel primitive
 
 #include "engine/core/x3_log.h"
 
@@ -64,10 +65,25 @@ void ObjectiveSystem::drawCurrent(x3::rhi::IRenderDevice& device,
                                   const x3::rhi::FrameContext& frame) const {
     const std::string& label = currentLabel();
     if (label.empty()) return;
-    // Top-left, just under the FPS meter line. White text, 16 px glyphs.
-    const float color[4] = { 1.0f, 0.93f, 0.55f, 1.0f };  // warm objective-yellow
-    const std::string line = "OBJECTIVE: " + label;
-    device.drawHudText(frame, line.c_str(), 8.0f, 64.0f, 16.0f, color);
+    // Top-LEFT, just under the FPS meter line, on a rounded dark translucent
+    // panel with a cyan accent (feat/hud-restyle): the raw yellow line used to
+    // wash out completely on white terrain. Light header + warm objective-yellow
+    // body over dark glass reads at any vantage.
+    const float x = kHudMargin, y = 4.0f + 26.0f + kHudGap;   // clear the FPS chip
+    const float hdrPx = 12.0f, bodyPx = 16.0f;
+    const float hdrCol[4]  = { 0.32f, 0.86f, 1.0f, 0.95f };   // cyan header
+    const float bodyCol[4] = { 1.0f, 0.93f, 0.55f, 1.0f };    // warm objective-yellow
+    const float hdrW  = device.textAdvance(x3::rhi::FontRole::Menu, "OBJECTIVE", hdrPx);
+    const float bodyW = device.textAdvance(x3::rhi::FontRole::Console, label.c_str(), bodyPx);
+    // Height from TRUE line heights (hudLineH) — a cap-height advance overprints.
+    const float panelW = (hdrW > bodyW ? hdrW : bodyW) + kHudPadX * 2.0f + 4.0f;
+    const float panelH = kHudPadY * 2.0f + hudLineH(hdrPx) + hudLineH(bodyPx);
+    hudPanel(device, frame, x, y, panelW, panelH, kHudPanelRadius,
+             nullptr, kHudAccentCyan);
+    device.drawHudTextF(frame, x3::rhi::FontRole::Menu, "OBJECTIVE",
+                        x + kHudPadX + 4.0f, y + kHudPadY, hdrPx, hdrCol);
+    device.drawHudText(frame, label.c_str(),
+                       x + kHudPadX + 4.0f, y + kHudPadY + hudLineH(hdrPx), bodyPx, bodyCol);
 }
 
 // ===========================================================================

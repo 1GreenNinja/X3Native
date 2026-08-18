@@ -1,5 +1,6 @@
 // CHAT-TREE DIALOG RUNNER — implementation. See chat_tree.h.
 #include "chat_tree.h"
+#include "hud_panel.h"   // the ONE rounded dark-translucent HUD panel primitive
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -511,11 +512,11 @@ void drawChatTreeUi(x3::rhi::IRenderDevice& device,
     const float boxX = cx - boxW * 0.5f;
     const float boxY = (hudH > 0) ? (float)hudH - boxH - 64.0f : 540.0f;
 
-    // The npc_dialog panel look (translucent navy + cyan rim).
-    const float panel[4]  = { 0.05f, 0.07f, 0.12f, 0.82f };
-    const float border[4] = { 0.40f, 0.78f, 1.0f, 0.85f };
-    device.drawHudQuad(frame, boxX - 3.0f, boxY - 3.0f, boxW + 6.0f, boxH + 6.0f, border);
-    device.drawHudQuad(frame, boxX, boxY, boxW, boxH, panel);
+    // The npc_dialog panel look, on the ONE rounded primitive (hud_panel.h):
+    // dark translucent glass + cyan accent bar.
+    const float panel[4] = { 0.04f, 0.055f, 0.085f, 0.84f };
+    x3::game::hudPanel(device, frame, boxX, boxY, boxW, boxH,
+                       x3::game::kHudPanelRadius, panel, x3::game::kHudAccentCyan);
 
     // Speaker label (warm rose for her, cool cyan for "YOU").
     const bool isYou = (speaker == "YOU");
