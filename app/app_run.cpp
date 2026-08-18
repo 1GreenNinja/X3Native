@@ -110,6 +110,7 @@
 #include "terrain.h"
 #include "fx.h"
 #include "hud.h"
+#include "hud_panel.h"                       // rounded dark HUD panel + prompt chips (feat/hud-restyle)
 #include "ui.h"                              // GENERAL game-UI: menus + production HUD + --test-ui
 #include "loading_screen.h"                  // EFLZ boot/world-load screen + --test-loading (Task #49)
 #include "save.h"                            // GENERAL versioned checkpoint save/load + --test-saveload
@@ -6742,16 +6743,11 @@ int runDefaultHost(HostContext& hc) {
                 // exactly where the live loop's bark sits (center, 62% down).
                 if (!stairDemoBark.empty()) {
                     const float sdPx = 22.0f;
-                    const float sdW  = device->textAdvance(x3::rhi::FontRole::Menu,
-                                                           stairDemoBark.c_str(), sdPx);
-                    const float sdX  = 640.0f - sdW * 0.5f;
-                    const float sdY  = 720.0f * 0.62f;
-                    const float sdSh[4]  = { 0.0f, 0.0f, 0.0f, 0.7f };
-                    const float sdCol[4] = { 1.34f, 0.80f, 0.22f, 1.0f };   // amber
-                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu,
-                                         stairDemoBark.c_str(), sdX + 1.5f, sdY + 1.5f, sdPx, sdSh);
-                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu,
-                                         stairDemoBark.c_str(), sdX, sdY, sdPx, sdCol);
+                    const float sdCol[4] = { 1.0f, 0.80f, 0.28f, 1.0f };   // amber
+                    // Rounded dark chip — same dress as the live bark (hud_panel.h).
+                    x3::game::hudPromptChip(*device, frame, stairDemoBark.c_str(),
+                                            640.0f, 720.0f * 0.62f - 6.0f, sdPx, sdCol,
+                                            1.0f, x3::game::kHudAccentAmber);
                 }
                 // W-MENU (X3_WORLD_MENU=1): the world/place directory over the still,
                 // fed by the SAME reachability resolver the live menu uses — so what the
@@ -6780,19 +6776,17 @@ int runDefaultHost(HostContext& hc) {
                     const std::string& vhint = worldCars.prompt();
                     uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                     const float hsz = 18.0f;
-                    const float adv = device->textAdvance(x3::rhi::FontRole::Menu,
-                                                          vhint.c_str(), hsz);
-                    const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                    const float hcx = (hw > 0) ? hw * 0.5f : 640.0f;
                     const float hy = (hh > 0) ? hh * 0.84f : 500.0f;
                     const bool hacking = vhint.rfind("HACKING", 0) == 0 ||
                                          vhint.rfind("LOCKED", 0) == 0;
-                    const float vcol[4]    = { 1.0f, hacking ? 0.55f : 0.82f,
-                                               hacking ? 0.35f : 0.45f, 0.9f };
-                    const float vshadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
-                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
-                                         hx + 1.5f, hy + 1.5f, hsz, vshadow);
-                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
-                                         hx, hy, hsz, vcol);
+                    const float vcol[4] = { 1.0f, hacking ? 0.55f : 0.82f,
+                                            hacking ? 0.35f : 0.45f, 1.0f };
+                    // Rounded dark chip — SAME dress as the live loop (hud_panel.h).
+                    x3::game::hudPromptChip(*device, frame, vhint.c_str(), hcx, hy - 6.0f,
+                                            hsz, vcol, 0.95f,
+                                            hacking ? x3::game::kHudAccentRed
+                                                    : x3::game::kHudAccentAmber);
                 }
                 // CROWD CHATTER bubbles over the vantage — same rules as the
                 // live loop (range/LOS/PVS/cap), so a --shot-chatter capture is
@@ -6923,6 +6917,22 @@ int runDefaultHost(HostContext& hc) {
             // Font role sampler: Playing state draws an (empty) HUD; the sampler text
             // below renders every FontRole over the scene with nothing obscuring it.
             demoUi.setState(x3::ui::GameState::Playing);
+        } else if (uiDemoScreen == "console") {
+            // Dev-console capture: open it and seed a little scrollback so the
+            // terminal-green-on-black-glass treatment can actually be LOOKED at
+            // (it is otherwise only visible with a keyboard in hand).
+            demoUi.setState(x3::ui::GameState::Playing);
+            console->print("X3 console ready. Type 'help' for commands.");
+            console->print("r_exposure 0.5");
+            console->print("[cvar] r_exposure = 0.5");
+            console->print("noclip");
+            console->print("[noclip] freefly camera ON");
+            hud.toggleConsole();
+        } else if (uiDemoScreen == "hud" || uiDemoScreen == "hudwhite") {
+            // HUD layout proof still (feat/hud-restyle): Playing state + a fully
+            // populated HudModel below — long 3-line objective, enemies chip, HP,
+            // ammo — so panel sizing/stacking is verifiable at any resolution.
+            demoUi.setState(x3::ui::GameState::Playing);
         } else {
             // MainMenu: hover START so it reads as focused.
             const float mbh = std::max(44.0f, mh * 0.075f);
@@ -6953,6 +6963,27 @@ int runDefaultHost(HostContext& hc) {
                     device->hudSize(mcw, mch);
                     hm.dispW = (int)mcw; hm.dispH = (int)mch;
                 }
+                // --ui-demo hud: populate the full production-HUD model with a
+                // deliberately LONG objective (forces a 3-line wrap) so multi-line
+                // layout + panel sizing is provable from a headless still.
+                // "hudwhite": the WORST-CASE legibility vantage — a full-screen
+                // white wash standing in for the white terrain Tim's objective
+                // text washed out against. If the HUD reads here it reads
+                // anywhere; nothing brighter than white exists.
+                if (uiDemoScreen == "hudwhite") {
+                    const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                    device->drawHudQuad(frame, 0.0f, 0.0f,
+                                        (float)kHeadlessW, (float)kHeadlessH, white);
+                }
+                if (uiDemoScreen == "hud" || uiDemoScreen == "hudwhite") {
+                    hm.hp = 62; hm.maxHp = 100;
+                    hm.weapon = "pistol";
+                    hm.ammoInMag = 12; hm.ammoReserve = 72;
+                    hm.enemiesRemaining = 7;
+                    hm.showCrosshair = true;
+                    hm.objective = "Fight down the spire - save the captives, "
+                                   "reach Martinez in the flooded lower galleries";
+                }
                 demoUi.update(uin, *device, frame, hm, dt);
                 // --ui-demo fonts: a role sampler so every FontRole is eyeballable in
                 // one still (Title/Menu proportional, News/Console/Enemy). Each line
@@ -6978,6 +7009,10 @@ int runDefaultHost(HostContext& hc) {
                     row(FR::News,  "AREA CLEAR", grn, 30.0f);
                     row(FR::Console, "Console/HudMono: Roboto Mono  HP 100  37 / 120", grn, 24.0f);
                 }
+                // Dev console last (it sits on top of everything, as in the game).
+                // dt*4 so the slide-down finishes inside the settle loop.
+                if (uiDemoScreen == "console")
+                    hud.drawConsole(*device, frame, *console, dt * 4.0f);
             }
             device->endFrame(frame);
         }
@@ -11945,8 +11980,10 @@ int runDefaultHost(HostContext& hc) {
                     uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
                     const std::string kpPrompt = keypad.prompt();
                     const float kpCol[4] = { 1.0f, 0.82f, 0.18f, 1.0f };
-                    device->drawHudText(frame, kpPrompt.c_str(),
-                                        (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
+                    // Rounded dark chip, centered above the crosshair (hud_panel.h).
+                    x3::game::hudPromptChip(*device, frame, kpPrompt.c_str(),
+                                            (float)hudW * 0.5f, (float)hudH * 0.5f - 78.0f,
+                                            20.0f, kpCol, 1.0f, x3::game::kHudAccentAmber);
                 }
                 // CELL HOLO-TERMINAL readout: LARGE high-contrast on-glass text drawn
                 // over the projected hologram panel (worldToScreen anchor). The boot
@@ -11993,11 +12030,10 @@ int runDefaultHost(HostContext& hc) {
                             a = 0.30f + 0.70f * a;                   // soft floor so it reads at reach edge
                             const char* label = doorOpen ? "[E] Close" : "[E] Open";
                             const float sz = 18.0f;   // readable prompt (was 2.4 = microscopic)
-                            const float tx = sx - 46.0f, ty = sy;
-                            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
-                            const float col[4]    = { 0.66f, 0.92f, 1.0f, a };   // cyan-white
-                            device->drawHudText(frame, label, tx + 1.5f, ty + 1.5f, sz, shadow);
-                            device->drawHudText(frame, label, tx, ty, sz, col);
+                            const float col[4]    = { 0.72f, 0.94f, 1.0f, 1.0f };   // cyan-white
+                            // Rounded dark chip, fading with distance (hud_panel.h).
+                            x3::game::hudPromptChip(*device, frame, label, sx, sy - 6.0f,
+                                                    sz, col, a);
                         }
                     }
                 }
@@ -12008,12 +12044,13 @@ int runDefaultHost(HostContext& hc) {
                     player.camera(pex, pey, pez, pyaw, ppitch);
                     if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
                     auto floatPrompt = [&](const x3::phys::Vec3& at, const char* label, float xoff) {
+                        (void)xoff;   // chips self-center on the anchor
                         float sx = 0.0f, sy = 0.0f;
                         if (!device->worldToScreen(at.x, at.y, at.z, sx, sy)) return;
-                        const float col[4]    = { 0.66f, 0.92f, 1.0f, 0.95f };
-                        const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
-                        device->drawHudText(frame, label, sx - xoff + 1.5f, sy + 1.5f, 18.0f, shadow);
-                        device->drawHudText(frame, label, sx - xoff, sy, 18.0f, col);
+                        const float col[4] = { 0.72f, 0.94f, 1.0f, 1.0f };
+                        // Rounded dark chip centered on the world anchor (hud_panel.h).
+                        x3::game::hudPromptChip(*device, frame, label, sx, sy - 6.0f,
+                                                18.0f, col, 0.95f);
                     };
                     // Elevator: within ~4 m of the cab. Show a STATUS-AWARE prompt so the
                     // player understands the lift — current floor + what E will do (call
@@ -12062,13 +12099,12 @@ int runDefaultHost(HostContext& hc) {
                         if (!rp.empty()) {
                             uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                             const float hsz = 18.0f;
-                            const float adv = device->textAdvance(x3::rhi::FontRole::Menu, rp.c_str(), hsz);
-                            const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                            const float hcx = (hw > 0) ? hw * 0.5f : 640.0f;
                             const float hy = (hh > 0) ? hh * 0.84f : 500.0f;
-                            const float col[4]    = { 0.55f, 0.86f, 1.0f, 0.92f };
-                            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
-                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, rp.c_str(), hx + 1.5f, hy + 1.5f, hsz, shadow);
-                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, rp.c_str(), hx, hy, hsz, col);
+                            const float col[4] = { 0.62f, 0.90f, 1.0f, 1.0f };
+                            // Rounded dark chip, bottom-center (hud_panel.h).
+                            x3::game::hudPromptChip(*device, frame, rp.c_str(), hcx, hy - 6.0f,
+                                                    hsz, col, 0.95f, x3::game::kHudAccentCyan);
                         }
                     }
                     // Cell HoloTerminal: within ~3 m of its anchor. Playtest fix (PB
@@ -12082,13 +12118,12 @@ int runDefaultHost(HostContext& hc) {
                             uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                             const char* hint = "[E] Use Terminal";
                             const float hsz = 18.0f;
-                            const float adv = device->textAdvance(x3::rhi::FontRole::Menu, hint, hsz);
-                            const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                            const float hcx = (hw > 0) ? hw * 0.5f : 640.0f;
                             const float hy = (hh > 0) ? hh * 0.88f : 520.0f;   // bottom-center
-                            const float col[4]    = { 0.66f, 0.92f, 1.0f, 0.85f };
-                            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
-                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx + 1.5f, hy + 1.5f, hsz, shadow);
-                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx, hy, hsz, col);
+                            const float col[4] = { 0.72f, 0.94f, 1.0f, 1.0f };
+                            // Rounded dark chip (the wash-out poster child) — hud_panel.h.
+                            x3::game::hudPromptChip(*device, frame, hint, hcx, hy - 6.0f,
+                                                    hsz, col, 0.9f);
                         }
                     }
                     // WORLD CARS hint line (bottom-center, the terminal-hint
@@ -12099,20 +12134,18 @@ int runDefaultHost(HostContext& hc) {
                         const std::string& vhint = worldCars.prompt();
                         uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                         const float hsz = 18.0f;
-                        const float adv = device->textAdvance(x3::rhi::FontRole::Menu,
-                                                              vhint.c_str(), hsz);
-                        const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                        const float hcx = (hw > 0) ? hw * 0.5f : 640.0f;
                         const float hy = (hh > 0) ? hh * 0.84f : 500.0f;  // above the terminal line
                         // Amber for the machine, red-leaning while a hack runs.
                         const bool hacking = vhint.rfind("HACKING", 0) == 0 ||
                                              vhint.rfind("LOCKED", 0) == 0;
-                        const float col[4]    = { 1.0f, hacking ? 0.55f : 0.82f,
-                                                  hacking ? 0.35f : 0.45f, 0.9f };
-                        const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
-                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
-                                             hx + 1.5f, hy + 1.5f, hsz, shadow);
-                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, vhint.c_str(),
-                                             hx, hy, hsz, col);
+                        const float col[4] = { 1.0f, hacking ? 0.55f : 0.82f,
+                                               hacking ? 0.35f : 0.45f, 1.0f };
+                        // Rounded dark chip, amber/red accent to match (hud_panel.h).
+                        x3::game::hudPromptChip(*device, frame, vhint.c_str(), hcx, hy - 6.0f,
+                                                hsz, col, 0.95f,
+                                                hacking ? x3::game::kHudAccentRed
+                                                        : x3::game::kHudAccentAmber);
                     }
                 }
                 // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.
@@ -12142,10 +12175,10 @@ int runDefaultHost(HostContext& hc) {
                                 float a = 1.0f - (std::sqrt(ddx*ddx + ddz*ddz) - 2.0f);
                                 if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
                                 a = 0.35f + 0.65f * a;
-                                const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
-                                const float col[4]    = { 1.0f, 0.72f, 0.84f, a };
-                                device->drawHudText(frame, "[E] Talk", sx - 40.0f + 1.5f, sy + 1.5f, 18.0f, shadow);
-                                device->drawHudText(frame, "[E] Talk", sx - 40.0f, sy, 18.0f, col);
+                                const float col[4] = { 1.0f, 0.76f, 0.86f, 1.0f };
+                                // Rounded dark chip, warm rose (a person) — hud_panel.h.
+                                x3::game::hudPromptChip(*device, frame, "[E] Talk", sx, sy - 6.0f,
+                                                        18.0f, col, a, x3::game::kHudAccentRose);
                             }
                         }
                     }
@@ -12161,10 +12194,11 @@ int runDefaultHost(HostContext& hc) {
                         const float boxH = 118.0f;
                         const float boxX = cx - boxW * 0.5f;
                         const float boxY = (hudH > 0) ? hudH - 190.0f : 540.0f;
-                        const float panel[4]  = { 0.05f, 0.07f, 0.12f, 0.82f };
-                        const float border[4] = { 0.40f, 0.78f, 1.0f, 0.85f };   // cyan rim
-                        device->drawHudQuad(frame, boxX - 3.0f, boxY - 3.0f, boxW + 6.0f, boxH + 6.0f, border);
-                        device->drawHudQuad(frame, boxX, boxY, boxW, boxH, panel);
+                        // Rounded dark glass + cyan accent bar (the ONE primitive).
+                        const float panel[4] = { 0.04f, 0.055f, 0.085f, 0.84f };
+                        x3::game::hudPanel(*device, frame, boxX, boxY, boxW, boxH,
+                                           x3::game::kHudPanelRadius, panel,
+                                           x3::game::kHudAccentCyan);
                         // Speaker name (warm tint for her, cool for the player "YOU").
                         const bool isYou = (speaker == "YOU");
                         const float namePx = 26.0f;
@@ -12205,11 +12239,10 @@ int runDefaultHost(HostContext& hc) {
                                 if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
                                 a = 0.35f + 0.65f * a;
                                 const float sz = 18.0f;   // readable prompt (was 2.4 = microscopic)
-                                const float tx = sx - 40.0f, ty = sy;
-                                const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
-                                const float col[4]    = { 1.0f, 0.72f, 0.84f, a };   // warm rose (a person, not a door)
-                                device->drawHudText(frame, "[E] Talk", tx + 1.5f, ty + 1.5f, sz, shadow);
-                                device->drawHudText(frame, "[E] Talk", tx, ty, sz, col);
+                                const float col[4] = { 1.0f, 0.76f, 0.86f, 1.0f };   // warm rose (a person, not a door)
+                                // Rounded dark chip, rose accent — hud_panel.h.
+                                x3::game::hudPromptChip(*device, frame, "[E] Talk", sx, sy - 6.0f,
+                                                        sz, col, a, x3::game::kHudAccentRose);
                             }
                         }
                     }
@@ -12218,15 +12251,13 @@ int runDefaultHost(HostContext& hc) {
                     if (npcBarkTimer > 0.0f && !npcBarkText.empty()) {
                         float a = npcBarkTimer; if (a > 1.0f) a = 1.0f;   // fade in last second
                         const float barkPx = 22.0f;
-                        const float bw = device->textAdvance(x3::rhi::FontRole::Menu, npcBarkText.c_str(), barkPx);
-                        const float bx = ((hudW > 0) ? hudW * 0.5f : 640.0f) - bw * 0.5f;
+                        const float bcx = (hudW > 0) ? hudW * 0.5f : 640.0f;
                         const float by = (hudH > 0) ? hudH * 0.62f : 420.0f;
-                        const float bshadow[4] = { 0.0f, 0.0f, 0.0f, 0.7f * a };
-                        const float bcol[4]    = { 1.0f, 0.72f, 0.84f, a };
-                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(),
-                                             bx + 1.5f, by + 1.5f, barkPx, bshadow);
-                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(),
-                                             bx, by, barkPx, bcol);
+                        const float bcol[4] = { 1.0f, 0.76f, 0.86f, 1.0f };
+                        // Rounded dark chip, rose accent, fading out (hud_panel.h).
+                        x3::game::hudPromptChip(*device, frame, npcBarkText.c_str(),
+                                                bcx, by - 6.0f, barkPx, bcol, a,
+                                                x3::game::kHudAccentRose);
                     }
 
                     // ---- W9-1: the desc-mechanics status tag (held items + active
@@ -12237,15 +12268,12 @@ int runDefaultHost(HostContext& hc) {
                         const std::string tag = descMech.hudStatusLine();
                         if (!tag.empty()) {
                             const float tagPx = 16.0f;
-                            const float tw = device->textAdvance(x3::rhi::FontRole::Menu, tag.c_str(), tagPx);
-                            const float tx = ((hudW > 0) ? hudW * 0.5f : 640.0f) - tw * 0.5f;
-                            const float ty = (hudH > 0) ? hudH - 46.0f : 660.0f;
-                            const float tsh[4] = { 0.0f, 0.0f, 0.0f, 0.65f };
-                            const float tcl[4] = { 0.62f, 0.88f, 0.95f, 0.9f };   // instrument cyan
-                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, tag.c_str(),
-                                                 tx + 1.5f, ty + 1.5f, tagPx, tsh);
-                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, tag.c_str(),
-                                                 tx, ty, tagPx, tcl);
+                            const float tcx = (hudW > 0) ? hudW * 0.5f : 640.0f;
+                            const float ty = (hudH > 0) ? hudH - 52.0f : 660.0f;
+                            const float tcl[4] = { 0.66f, 0.90f, 0.96f, 1.0f };   // instrument cyan
+                            // Rounded dark status chip (hud_panel.h).
+                            x3::game::hudPromptChip(*device, frame, tag.c_str(),
+                                                    tcx, ty, tagPx, tcl, 0.92f);
                         }
                     }
 
@@ -12281,13 +12309,24 @@ int runDefaultHost(HostContext& hc) {
                     if (awakenTimer > 0.0f) {
                         awakenTimer -= dt;
                         uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
-                        const float tx = (hw > 0) ? hw * 0.5f - 250.0f : 380.0f;
-                        const float ty = (hh > 0) ? hh * 0.30f : 200.0f;
+                        const float apx = 14.0f;                               // readable mono
                         const float term[4] = { 0.20f, 1.00f, 0.55f, 1.0f };   // terminal green
                         const float warn[4] = { 1.00f, 0.40f, 0.25f, 1.0f };   // failing = red
-                        device->drawHudText(frame, "SUBJECT: JAKE    STATUS: AUGMENTED", tx, ty,         2.4f, term);
-                        device->drawHudText(frame, "MUSCULOSKELETAL OUTPUT: +400%",      tx, ty + 34.0f, 2.4f, term);
-                        device->drawHudText(frame, "RESTRAINT INTEGRITY: FAILING",       tx, ty + 68.0f, 2.4f, warn);
+                        const char* aw0 = "SUBJECT: JAKE    STATUS: AUGMENTED";
+                        const char* aw1 = "MUSCULOSKELETAL OUTPUT: +400%";
+                        const char* aw2 = "RESTRAINT INTEGRITY: FAILING";
+                        const float awW = device->textAdvance(x3::rhi::FontRole::Console, aw0, apx);
+                        const float tx = ((hw > 0) ? hw * 0.5f : 640.0f) - awW * 0.5f;
+                        const float ty = (hh > 0) ? hh * 0.30f : 200.0f;
+                        // Terminal readout on rounded black glass, green accent —
+                        // the HoloPanel language (hud_panel.h).
+                        x3::game::hudPanel(*device, frame, tx - 16.0f, ty - 12.0f,
+                                           awW + 32.0f, apx * 3.0f + 20.0f * 2.0f + 24.0f,
+                                           x3::game::kHudPanelRadius, nullptr,
+                                           x3::game::kHudAccentGreen);
+                        device->drawHudText(frame, aw0, tx, ty,                        apx, term);
+                        device->drawHudText(frame, aw1, tx, ty + apx + 20.0f,          apx, term);
+                        device->drawHudText(frame, aw2, tx, ty + (apx + 20.0f) * 2.0f, apx, warn);
                     }
                 }
                 // Phase 2b: boss "PHASE 2!/PHASE 3!" flash near the top.
@@ -12318,28 +12357,32 @@ int runDefaultHost(HostContext& hc) {
                     // (the fight only reads once it has been engaged — HP < full).
                     if (cf.bossAlive() && cf.bossHpFrac() < 0.999f) {
                         const std::string line = cf.hudLabel();
-                        const float scale = 3.0f;
-                        const float bw = line.size() * scale * 6.0f;
-                        const float px = (hw > 0) ? (hw * 0.5f - bw * 0.5f) : 420.0f;
+                        const float cpx = (hw > 0) ? hw * 0.5f : 640.0f;
                         const float py = (hh > 0) ? (hh * 0.08f) : 60.0f;
                         const float col[4] = { 0.62f, 0.90f, 1.0f, 1.0f };
-                        device->drawHudText(frame, line.c_str(), px, py, scale, col);
+                        // Top-center boss chip (hud_panel.h; was 3px raw text).
+                        x3::game::hudPromptChip(*device, frame, line.c_str(),
+                                                cpx, py, 16.0f, col, 0.95f,
+                                                x3::game::kHudAccentCyan);
                     }
                     // "[E] BREAK SARAH'S NEURAL COLLAR" prompt while in reach.
                     const std::string cp = topFloors.collarPrompt(camPos);
                     if (!cp.empty()) {
-                        const float scale = 3.0f;
-                        const float bw = cp.size() * scale * 6.0f;
-                        const float px = (hw > 0) ? (hw * 0.5f - bw * 0.5f) : 420.0f;
+                        const float cpx = (hw > 0) ? hw * 0.5f : 640.0f;
                         const float py = (hh > 0) ? (hh * 0.62f) : 380.0f;
-                        const float warn[4] = { 1.0f, 0.45f, 0.35f, 1.0f };
-                        device->drawHudText(frame, cp.c_str(), px, py, scale, warn);
+                        const float warn[4] = { 1.0f, 0.55f, 0.45f, 1.0f };
+                        // Interaction chip, red accent (hud_panel.h; was 3px raw text).
+                        x3::game::hudPromptChip(*device, frame, cp.c_str(),
+                                                cpx, py, 18.0f, warn, 0.95f,
+                                                x3::game::kHudAccentRed);
                     }
                 }
                 // F2 rescue timers (spec §5): stacked, below the objective line.
                 if (!terrainWorld) {
                     const auto rows = game.rescue().hudTimers();
-                    float ry = 96.0f;
+                    // LEFT STACK, below the objective panel region: rounded chips
+                    // with a state-tinted accent (hud_panel.h; was 2px raw text).
+                    float ry = 190.0f;
                     for (const auto& row : rows) {
                         const int total = (int)(row.seconds + 0.5f);
                         const int mm = total / 60, ss = total % 60;
@@ -12347,10 +12390,16 @@ int runDefaultHost(HostContext& hc) {
                         std::snprintf(buf, sizeof(buf), "RESCUE %s  %d:%02d",
                                       row.name.c_str(), mm, ss);
                         float col[4];
-                        if (row.urgent) { col[0]=1.0f; col[1]=0.25f; col[2]=0.20f; col[3]=1.0f; }
-                        else            { col[0]=0.55f; col[1]=0.85f; col[2]=1.0f; col[3]=1.0f; }
-                        device->drawHudText(frame, buf, 24.0f, ry, 2.0f, col);
-                        ry += 28.0f;
+                        if (row.urgent) { col[0]=1.0f; col[1]=0.35f; col[2]=0.30f; col[3]=1.0f; }
+                        else            { col[0]=0.62f; col[1]=0.88f; col[2]=1.0f; col[3]=1.0f; }
+                        const float rpx = 14.0f;
+                        const float rw = device->textAdvance(x3::rhi::FontRole::Console, buf, rpx);
+                        x3::game::hudPanel(*device, frame, 16.0f, ry, rw + 26.0f, rpx + 12.0f,
+                                           6.0f, nullptr,
+                                           row.urgent ? x3::game::kHudAccentRed
+                                                      : x3::game::kHudAccentCyan);
+                        device->drawHudText(frame, buf, 16.0f + 14.0f, ry + 6.0f, rpx, col);
+                        ry += rpx + 20.0f;
                     }
                 }
             }

@@ -3,6 +3,7 @@
 // Clean-room: built only from the public IRenderDevice + IConsole interfaces.
 // No id Tech / RBDOOM source consulted.
 #include "hud.h"
+#include "hud_panel.h"   // the ONE rounded dark-translucent panel primitive
 #include "alert.h"   // alertLevelName (the LIVING-WORLD alert indicator)
 #include "engine/rhi/Visibility.h"   // unified vis stats block (vis-unify)
 #include "engine/core/x3_cpuzones.h"  // LANE 6: r_passdump / r_passtimers control block
@@ -181,7 +182,10 @@ void Hud::drawFps(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& f
 
     const float white[4] = { 0.85f, 1.0f, 0.85f, 1.0f };
     const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.7f };
-    // 1px drop shadow for legibility over bright scene pixels.
+    // Rounded dark chip so the meter reads over bright scene pixels (white
+    // terrain washed raw HUD text out — hud_panel.h is the one primitive).
+    const float tw = (float)std::char_traits<char>::length(buf) * kGlyphPx;
+    hudPanel(device, frame, 4.0f, 4.0f, tw + 12.0f, kGlyphPx + 10.0f, 6.0f);
     device.drawHudText(frame, buf, 9.0f, 9.0f, kGlyphPx, shadow);
     device.drawHudText(frame, buf, 8.0f, 8.0f, kGlyphPx, white);
 }
@@ -250,13 +254,13 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     size_t widest = 0;
     for (int i = 0; i < lineCount; ++i) widest = std::max(widest, std::char_traits<char>::length(lines[i]));
     const float panelW = widest * glyph + pad * 2.0f;
-    const float panelH = lineCount * (glyph * 1.5f) + pad * 2.0f;
+    const float panelH = lineCount * hudLineH(glyph) + pad * 2.0f;
     const float x0 = (w > 0) ? ((float)w - panelW - 8.0f) : 8.0f;
     const float y0 = 8.0f;
 
-    // Backing plate for legibility over bright scene pixels.
-    const float plate[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
-    device.drawHudQuad(frame, x0, y0, panelW, panelH, plate);
+    // Backing plate for legibility over bright scene pixels (rounded primitive).
+    const float plate[4] = { 0.01f, 0.02f, 0.03f, 0.66f };
+    hudPanel(device, frame, x0, y0, panelW, panelH, kHudPanelRadius, plate);
 
     const float white[4]  = { 0.85f, 1.0f, 0.85f, 1.0f };
     const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.8f };
@@ -265,7 +269,9 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
         const float tx = x0 + pad;
         device.drawHudText(frame, lines[i], tx + 1.0f, ty + 1.0f, glyph, shadow);
         device.drawHudText(frame, lines[i], tx, ty, glyph, white);
-        ty += glyph + 2.0f;
+        ty += hudLineH(glyph);   // was glyph+2: the panel was sized 1.5x but the
+                                 // rows advanced 1.14x, so the block sat high in
+                                 // its own plate with a dead band at the bottom.
     }
 }
 
@@ -301,13 +307,12 @@ void Hud::drawHealth(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     const float barW = 260.0f, barH = 20.0f;
     const float x = 16.0f;
     const float y = (float)h - barH - 16.0f;
-    const float border = 2.0f;
 
-    // Backing plate (dark) + inner empty track.
-    const float plate[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
+    // Backing panel (rounded dark glass, bar + HP readout on one plate) + track.
     const float track[4] = { 0.10f, 0.10f, 0.12f, 0.85f };
-    device.drawHudQuad(frame, x - border, y - border,
-                       barW + 2 * border, barH + 2 * border, plate);
+    const float hpTextW = device.textAdvance(x3::rhi::FontRole::Console, "HP 000", kGlyphPx);
+    hudPanel(device, frame, x - 8.0f, y - 9.0f,
+             barW + hpTextW + 30.0f, barH + 18.0f, kHudPanelRadius);
     device.drawHudQuad(frame, x, y, barW, barH, track);
 
     // Fill: green when healthy, amber mid, red when low.
@@ -511,8 +516,7 @@ void Hud::drawAlert(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     const float rowW = 4.0f * pipW + 3.0f * gap;
     const float x0 = (float)w - rowW - 16.0f;
     const float y0 = 14.0f;
-    const float plate[4] = { 0.0f, 0.0f, 0.0f, 0.45f };
-    device.drawHudQuad(frame, x0 - 6.0f, y0 - 4.0f, rowW + 12.0f, pipH + 22.0f, plate);
+    hudPanel(device, frame, x0 - 8.0f, y0 - 5.0f, rowW + 16.0f, pipH + 24.0f, 6.0f);
     for (int k = 0; k < 4; ++k) {
         const bool on = (k < level);
         const float c[4] = { on ? r * pulse : 0.25f,
@@ -551,7 +555,7 @@ void Hud::drawVigilBark(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     // speaks). A dark plate keeps him readable over any scene.
     const float px = std::max(12.0f, (float)h * 0.020f);   // glyph size scales with res
     const float pad = px * 0.9f;
-    const float lineH = px * 1.4f;
+    const float lineH = hudLineH(px);   // TRUE leading (1.4x still kissed descenders)
     const float maxTextW = (float)w * 0.70f;               // wrap to 70% of the screen
 
     // Word-wrap "VIGIL: <text>" to maxTextW using the proportional Menu atlas.
@@ -582,12 +586,11 @@ void Hud::drawVigilBark(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     const float blockH = lineH * (float)lines.size();
     const float x0 = ((float)w - blockW) * 0.5f;
     const float y0 = (float)h * 0.70f;
-    const float plate[4] = { 0.02f, 0.02f, 0.03f, 0.62f * alpha };
-    device.drawHudQuad(frame, x0 - pad, y0 - pad * 0.6f,
-                       blockW + pad * 2.0f, blockH + pad * 1.2f, plate);
-    // A thin orange accent bar on the left edge — his "signal".
-    const float bar[4] = { 1.0f, 0.60f, 0.16f, 0.9f * alpha };
-    device.drawHudQuad(frame, x0 - pad, y0 - pad * 0.6f, 3.0f, blockH + pad * 1.2f, bar);
+    // Rounded dark plate + his orange "signal" accent bar (the one primitive).
+    const float bar[4] = { 1.0f, 0.60f, 0.16f, 0.9f };
+    hudPanel(device, frame, x0 - pad, y0 - pad * 0.6f,
+             blockW + pad * 2.0f, blockH + pad * 1.2f, kHudPanelRadius,
+             nullptr, bar, alpha);
 
     // The text: label row hotter, body rows slightly dimmer; drop shadow for punch.
     const float col[4] = { 1.0f, 0.68f, 0.26f, 0.98f * alpha };
@@ -626,16 +629,23 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     const float eased = smoothstep01(m_consoleAnim);
     const float top = -panelH + eased * panelH;   // lerp(-panelH, 0, eased)
 
-    // Background panel + a bright bottom edge separator (offset by the slide).
-    const float panel[4] = { 0.02f, 0.03f, 0.06f, 0.85f };
-    const float edge[4]  = { 0.2f, 0.7f, 1.0f, 0.9f };
-    device.drawHudQuad(frame, 0.0f, top, (float)w, panelH, panel);
-    device.drawHudQuad(frame, 0.0f, top + panelH - 2.0f, (float)w, 2.0f, edge);
+    // TERMINAL GREEN ON BLACK GLASS (Tim: "the bright green text, I like it").
+    // The console is the HoloPanel design language turned into a dev surface:
+    // a rounded dark slab (square top edge — it slides from the screen edge)
+    // with glowing green monospace, like a terminal built into the world.
+    const float panel[4] = { 0.004f, 0.018f, 0.009f, 0.80f };   // near-black green glass
+    const float edge[4]  = { 0.30f, 1.0f, 0.50f, 0.95f };       // terminal-green separator
+    hudPanel(device, frame, 0.0f, top, (float)w, panelH, kHudPanelRadius,
+             panel, nullptr, 1.0f, /*topEdge=*/false,
+             /*roundTop=*/false, /*roundBottom=*/true);
+    device.drawHudQuad(frame, kHudPanelRadius, top + panelH - 2.0f,
+                       (float)w - kHudPanelRadius * 2.0f, 2.0f, edge);
 
     // Input line near the bottom of the (slid) panel — offset by the full line height
     // (not just the glyph size) so the text clears the bright bottom-edge separator.
+    // The prompt line is the HOTTEST green on the slab.
     const float inputY = top + panelH - pad - lineH;
-    const float inText[4] = { 1.0f, 1.0f, 0.6f, 1.0f };
+    const float inText[4] = { 0.55f, 1.0f, 0.62f, 1.0f };   // BRIGHT prompt green
     std::string inLine = "] " + m_input + "_";   // blinking-ish caret marker
     device.drawHudText(frame, inLine.c_str(), pad, inputY, kGlyphPx, inText);
 
@@ -645,7 +655,10 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     // is line (size-1 - scroll). Clamp the offset to the scrollable range here,
     // where the panel height (hence how many rows fit) is known.
     const auto& lines = console.outputLines();
-    const float outText[4] = { 0.8f, 0.85f, 0.8f, 1.0f };
+    // Scrollback greens: the newest line bright, older lines dimming toward the
+    // top — the phosphor-terminal read (per-line color is free; same draw path).
+    const float outNew[4] = { 0.50f, 1.00f, 0.58f, 1.0f };
+    const float outOld[4] = { 0.34f, 0.74f, 0.42f, 1.0f };
     const int total    = (int)lines.size();
     const int visRows  = std::max(1, (int)((inputY - (top + pad)) / lineH));
     const int maxScroll = std::max(0, total - visRows);
@@ -655,13 +668,19 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     // A subtle "▲ more" marker at the top-right while scrolled off the bottom, so
     // the player knows there's live text below the current view.
     if (m_consoleScroll > 0) {
-        const float mk[4] = { 0.5f, 0.75f, 1.0f, 0.9f };
+        const float mk[4] = { 0.55f, 1.0f, 0.60f, 0.9f };
         device.drawHudText(frame, "^ scrollback", (float)w - 130.0f, top + pad, kGlyphPx, mk);
     }
 
     float y = inputY - lineH;
-    for (int i = (total - 1) - m_consoleScroll; i >= 0 && y > top + pad - lineH; --i) {
-        device.drawHudText(frame, lines[(size_t)i].c_str(), pad, y, kGlyphPx, outText);
+    const int newest = (total - 1) - m_consoleScroll;
+    for (int i = newest; i >= 0 && y > top + pad - lineH; --i) {
+        // Newest visible row bright, the two above it mid, the rest dim.
+        const int age = newest - i;
+        float col[4];
+        const float t = (age <= 0) ? 1.0f : (age <= 2 ? 0.55f : 0.0f);
+        for (int c = 0; c < 4; ++c) col[c] = outOld[c] + (outNew[c] - outOld[c]) * t;
+        device.drawHudText(frame, lines[(size_t)i].c_str(), pad, y, kGlyphPx, col);
         y -= lineH;
     }
 }

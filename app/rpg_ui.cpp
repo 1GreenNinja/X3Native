@@ -1,5 +1,6 @@
 // RPG SCREENS (W9-3) — see rpg_ui.h.
 #include "rpg_ui.h"
+#include "hud_panel.h"   // shared HUD spacing scale (kHudPadX/Y, kHudGap)
 
 #include <algorithm>
 #include <cctype>
@@ -15,7 +16,9 @@ using FontRole = x3::rhi::FontRole;
 
 // ---- palette ---------------------------------------------------------------
 static const float kBackdrop[4]   = { 0.015f, 0.025f, 0.045f, 0.86f };
-static const float kPanel[4]      = { 0.05f, 0.08f, 0.12f, 0.92f };
+// NEAR-BLACK GLASS, matching the HUD panel language (hud_panel.h) — this used
+// to be a light grey card, which is exactly what Tim called out.
+static const float kPanel[4]      = { 0.010f, 0.016f, 0.024f, 0.76f };
 static const float kCell[4]       = { 0.09f, 0.13f, 0.18f, 0.95f };
 static const float kCellSel[4]    = { 0.14f, 0.24f, 0.34f, 0.98f };
 static const float kCellEdge[4]   = { 0.25f, 0.55f, 0.75f, 1.0f };
@@ -430,9 +433,16 @@ void RpgUi::drawHudChip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             std::snprintf(pts, sizeof(pts), "+%d PT [K]", prog.skillPoints());
             const float ptsPx = 12.0f;
             const float ptsW  = UiContext::textWidth(FontRole::HudMono, pts, ptsPx);
-            const float chipW = ptsW + 16.0f;
-            ui.panel(lvX, chipY - 22.0f, chipW, 18.0f, kPanel);
-            ui.text(pts, lvX + 8.0f, chipY - 19.0f, ptsPx, kWarnCol, FontRole::HudMono);
+            // REAL CLEARANCE (Tim): the mini-chip used to sit 22 px above the LV
+            // row — 18 px tall, so a 4 px slit — and the two read as one smeared
+            // block. Give it a full chip height + the standard gap so it floats
+            // clearly above the LV/BACKPACK row.
+            const float chipW = ptsW + kHudPadX * 2.0f;
+            const float ptsH  = ptsPx + kHudPadY;
+            const float ptsY  = chipY - ptsH - kHudGap;
+            ui.panel(lvX, ptsY, chipW, ptsH, kPanel);
+            ui.text(pts, lvX + kHudPadX, ptsY + kHudPadY * 0.5f, ptsPx, kWarnCol,
+                    FontRole::HudMono);
         }
     }
 
