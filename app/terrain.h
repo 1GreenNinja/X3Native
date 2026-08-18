@@ -314,6 +314,10 @@ constexpr float kURBedHalfW    = 4.5f;    // wet channel floor half-width
 constexpr float kURShelfHalfW  = 12.0f;   // rock-beach shelf out to here (walkable)
 constexpr float kURWallOutW    = 44.0f;   // walls ease to natural country by here
 constexpr float kURShelfLift   = 0.45f;   // beach height ABOVE the water surface
+// How proud the drawn rock-beach apron rides over the carved shelf. Small on
+// purpose: it is a skin over the collision surface, and every centimetre here
+// is a centimetre the player's boots stand below what they can see.
+constexpr float kURApronLift   = 0.28f;
 // The derivation's budget. The wall limit is not a preference: it is how steep
 // a face the wall band may climb out of the trench at, and with the band fixed
 // it is what bounds the trench's depth (see the mechanism note above). Gate U7

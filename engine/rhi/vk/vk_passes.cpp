@@ -2424,7 +2424,10 @@ void VulkanRenderDevice::prepareFrameData() {
             // Clarity (see WaterParams::clarity): 0 keeps the historic opaque
             // surface byte-identical (alpha 1 through the enabled blend).
             // p4.y = foam (0 = off, legacy byte-identical — see water.frag).
-            w.p4 = glm::vec4(m_water.clarity, m_water.foam, 0.0f, 0.0f);
+            // p4.z = enclosed (0 = legacy: the analytic sky is the reflection
+            // and the fade target; 1 = under a roof, horizonColor replaces it).
+            w.p4 = glm::vec4(m_water.clarity, m_water.foam,
+                             std::clamp(m_water.enclosed, 0.0f, 1.0f), 0.0f);
             // RIVER MODE (task #32 — one water truth): count 0 = legacy flat
             // sea, byte-identical. See WaterParams::riverNodes.
             const uint32_t rn = std::min(m_water.riverNodeCount,
