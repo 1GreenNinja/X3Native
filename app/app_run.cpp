@@ -790,6 +790,73 @@ const char* const kDefaultHostWorldModes[] = {
 };
 } // namespace
 
+// ===========================================================================
+// THE PLAYER'S FLASHLIGHT — ONE definition, fed to BOTH the live loop and the
+// --screenshot settle loop (fix/flashlight-feel, 2026-08-18).
+//
+// Tim, live: "it now projects a PURE BRIGHT CIRCLE with sharp edges.. not like
+// a game flashlight at all".
+//
+// WHAT MADE THE CIRCLE SHARP. The torch was an OMNI BULB floating 2 m in front
+// of the player's face, because x3::rhi::PointLight had no direction and no
+// cone — nothing in this engine could describe a beam. So the disc was never a
+// beam at all: it was inverse-square times N.L on whatever surface the bulb
+// happened to be near. Face a wall and that bulb sits ~1 m off it, where
+// 3.30 / (d^2 + 1) lands far above the tonemapper's shoulder while the falloff
+// is barely a metre wide. Everything inside clipped to the SAME white, so the
+// gradient disappeared and the only edge left in the image was the CLIP
+// CONTOUR — a hard circle. No intensity tune could ever have fixed that.
+//
+// WHAT IT IS NOW. A parabolic reflector at the EYE: a tight warm KEY plus a
+// wide dim SPILL, both real spot cones (see spotCone() in
+// shaders/inc/mesh_lighting.glsl). Their sum is hotspot -> corona -> darkness,
+// a gradient with no edge anywhere in it; the penumbra is a squared smoothstep
+// so the spill leaves with zero slope; the whole beam length now reads the
+// bounded inverse square because the source no longer sits 2 m downrange.
+//
+// `legacy` (r_torchlegacy 1) rebuilds the OLD omni pair EXACTLY, so the before/
+// after is one cvar and every historical frame is reproducible.
+// ===========================================================================
+void buildTorchLights(bool legacy,
+                      float ex, float ey, float ez,      // eye
+                      float fx, float fy, float fz,      // unit forward
+                      x3::rhi::PointLight& key,
+                      x3::rhi::PointLight& spill) {
+    key = x3::rhi::PointLight{};
+    spill = x3::rhi::PointLight{};
+    if (legacy) {
+        // The 2026-07-12 torch, byte for byte: two omni bulbs downrange.
+        key.pos[0] = ex + fx * 2.0f; key.pos[1] = ey + fy * 2.0f; key.pos[2] = ez + fz * 2.0f;
+        key.range  = 20.0f;
+        key.color[0] = 3.30f; key.color[1] = 3.10f; key.color[2] = 2.75f;
+        spill.pos[0] = ex + fx * 0.3f; spill.pos[1] = ey + fy * 0.3f; spill.pos[2] = ez + fz * 0.3f;
+        spill.range  = 8.0f;
+        spill.color[0] = 1.70f; spill.color[1] = 1.60f; spill.color[2] = 1.40f;
+        return;
+    }
+    // Warmer than the old 1.00/0.94/0.83 — an incandescent torch, not an LED panel.
+    const float kR = 1.00f, kG = 0.88f, kB = 0.72f;
+    // KEY — the hotspot. 3.70 over 28 m against the old 3.30 over 20 m: the cone
+    // is what buys that headroom. The old bulb sat 2 m DOWNRANGE, so a wall 2.5 m
+    // ahead was HALF A METRE from the source and took 3.30/(0.25+1) = 2.6 -- deep
+    // into the tonemapper's shoulder, which is why it flattened. From the EYE the
+    // same wall is 2.35 m out and takes 3.70/(5.5+1) = 0.57, comfortably under it,
+    // while 10 m downrange reads ~0.036 instead of ~0.01. A BIGGER number, a DARKER
+    // near field, and about three times the usable throw -- all of it bought by
+    // moving the source back to the eye and putting a cone on it.
+    key.pos[0] = ex + fx * 0.15f; key.pos[1] = ey + fy * 0.15f; key.pos[2] = ez + fz * 0.15f;
+    key.range  = 28.0f;
+    key.color[0] = 3.70f * kR; key.color[1] = 3.70f * kG; key.color[2] = 3.70f * kB;
+    key.setSpot(fx, fy, fz, 13.0f, 28.0f);
+    // SPILL — the wide dim corona, and what keeps the near field (barrels,
+    // enemies, the held weapon) off pure black. A flashlight should never leave
+    // what is right in front of you unreadable.
+    spill.pos[0] = ex + fx * 0.10f; spill.pos[1] = ey + fy * 0.10f; spill.pos[2] = ez + fz * 0.10f;
+    spill.range  = 12.0f;
+    spill.color[0] = 0.95f * kR; spill.color[1] = 0.95f * kG; spill.color[2] = 0.95f * kB;
+    spill.setSpot(fx, fy, fz, 18.0f, 50.0f);
+}
+
 const char* const* defaultHostWorldModes(unsigned& count) {
     count = (unsigned)(sizeof(kDefaultHostWorldModes) / sizeof(kDefaultHostWorldModes[0]));
     return kDefaultHostWorldModes;
@@ -6285,6 +6352,25 @@ int runDefaultHost(HostContext& hc) {
                     cl.insert(cl.begin(), key);
                     cl.insert(cl.begin(), plate);
                 }
+                // THE PLAYER'S FLASHLIGHT in the capture (fix/flashlight-feel,
+                // 2026-08-18). The settle loop NEVER fed the torch — `--screenshot
+                // --flashlight-off` was a no-op, which is why every lighting audit
+                // in docs/screenshots/lighting_audit is honestly torch-free, and it
+                // is also why the torch could regress to a hard white disc without a
+                // single capture catching it. It is reviewable now: opt-in only
+                // (`--flashlight-on` / `r_flashlight 1`), and since the torch DEFAULTS
+                // OFF every pre-existing capture recipe still photographs exactly the
+                // room's own practicals, byte for byte.
+                if ((console->getInt("r_flashlight") != 0 || hc.flashlightOn) && !hc.flashlightOff) {
+                    const float cp = std::cos(ssPitch);
+                    x3::rhi::PointLight key{}, spill{};
+                    buildTorchLights(console->getInt("r_torchlegacy") != 0,
+                                     ssEye.x, ssEye.y, ssEye.z,
+                                     cp * std::cos(ssYaw), std::sin(ssPitch), cp * std::sin(ssYaw),
+                                     key, spill);
+                    cl.insert(cl.begin(), spill);
+                    cl.insert(cl.begin(), key);
+                }
                 // UNDERWATER DIVER'S LIGHT in the capture — mirrors the live-loop
                 // diver's lamp (see the fl merge) so an underwater --shot-cam shows
                 // exactly what the player sees while submerged. Gated on the shot
@@ -8131,7 +8217,20 @@ int runDefaultHost(HostContext& hc) {
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
     bool noclip = false;
-    bool flashlight = !hc.flashlightOff;   // player-following light (L toggles) — default ON for the dark halls
+    // FLASHLIGHT DEFAULT — OFF (2026-08-18, Tim live: "the Flashlight defaults to
+    // ON.. I would like it OFF by default"). --flashlight-on (or `r_flashlight 1`
+    // at the console) asks for it; L toggles it in game either way. The old
+    // --flashlight-off is now redundant but still honored, so every capture recipe
+    // and script that passes it keeps working.
+    bool flashlight = hc.flashlightOn && !hc.flashlightOff;
+    if (flashlight) console->set("r_flashlight", "1");
+    // The cvar is an EDGE-triggered master, not a per-frame clamp. It used to read
+    // `if (r_flashlight == 0) flashlight = false;` every frame, which was harmless
+    // only while the default was 1 — with the default now 0 that line would have
+    // pinned the torch off forever and broken the L key. Tracking the last value
+    // and reacting to CHANGES keeps `r_flashlight 0` working exactly as the
+    // lighting audits use it, and makes `r_flashlight 1` turn the torch on.
+    int  prevFlashCvar = console->getInt("r_flashlight");
     bool prevL = false;
     float flyX = L1.spawn.x, flyY = 1.7f, flyZ = L1.spawn.z, flyYaw = 0.0f, flyPitch = 0.0f;
 
@@ -9742,9 +9841,13 @@ int runDefaultHost(HostContext& hc) {
             if (lNow && !prevL) { flashlight = !flashlight;
                                   x3::logInfo(flashlight ? "flashlight ON" : "flashlight OFF"); }
             prevL = lNow;
-            // r_flashlight 0 forces the torch OFF (headless lighting audits: a room must
-            // be judged on its OWN practicals, never on the light riding the camera).
-            if (console->getInt("r_flashlight") == 0) flashlight = false;
+            // r_flashlight drives the torch on any CHANGE (see prevFlashCvar): 0 is the
+            // headless lighting audit's switch — a room must be judged on its OWN
+            // practicals, never on the light riding the camera — and 1 turns it on.
+            {
+                const int fcv = console->getInt("r_flashlight");
+                if (fcv != prevFlashCvar) { flashlight = (fcv != 0); prevFlashCvar = fcv; }
+            }
             // B4: nearest-to-eye, not first-in-array (see nearestFixtures above). This is
             // what actually turns the legacy tower's ceiling fixtures back on.
             //
@@ -9805,18 +9908,20 @@ int runDefaultHost(HostContext& hc) {
                 // over 8 m (was 13). That now sits at PARITY with a room's own key fixture
                 // (the cell tube is 3.30 @ 6.2, level-1 fixtures run 3.6-4.2) — it reads as
                 // a directed beam layered ON the practicals instead of erasing them.
-                x3::rhi::PointLight pl{};
-                pl.pos[0] = camX + fX * 2.0f; pl.pos[1] = camY + fY * 2.0f; pl.pos[2] = camZ + fZ * 2.0f;
-                pl.range  = 20.0f;   // big soft circle; point attenuation gives the SOFT edge
-                pl.color[0] = 3.30f; pl.color[1] = 3.10f; pl.color[2] = 2.75f;  // warm-white torch
+                // ---- 2026-08-18: IT WAS NEVER A BEAM ---------------------------------
+                // Tim, live: "a PURE BRIGHT CIRCLE with sharp edges.. not like a game
+                // flashlight at all". It never was one — with no cone in the light
+                // struct this was an omni bulb 2 m downrange, and the "edge" was the
+                // tonemapper's clip contour. The whole diagnosis, the numbers and the
+                // r_torchlegacy A/B live on buildTorchLights() above.
+                // buildTorchLights() above this function is the ONE definition of the
+                // torch; the --screenshot settle loop calls the same thing, so what a
+                // capture shows is what the player sees. r_torchlegacy 1 restores the
+                // old omni pair for a one-cvar before/after.
+                x3::rhi::PointLight pl{}, eyePl{};
+                buildTorchLights(console->getInt("r_torchlegacy") != 0,
+                                 camX, camY, camZ, fX, fY, fZ, pl, eyePl);
                 fl.insert(fl.begin(), pl);
-                // Near light AT the eye so things RIGHT in front of you (barrels, enemies,
-                // the held weapon) are still lit — a flashlight should never leave the near
-                // field black. Smaller range, same warm-white.
-                x3::rhi::PointLight eyePl{};
-                eyePl.pos[0] = camX + fX * 0.3f; eyePl.pos[1] = camY + fY * 0.3f; eyePl.pos[2] = camZ + fZ * 0.3f;
-                eyePl.range  = 8.0f;
-                eyePl.color[0] = 1.70f; eyePl.color[1] = 1.60f; eyePl.color[2] = 1.40f;
                 fl.insert(fl.begin(), eyePl);
                 torch.push_back(eyePl); torch.push_back(pl);   // survives the rift/club takeover
             }

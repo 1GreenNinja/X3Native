@@ -48,7 +48,8 @@ layout(std430, set = 1, binding = 2) readonly buffer VisibleIdx {
 // sun lightViewProj, then the point-light header + array. See mesh.frag / FrameUBO.
 struct PointLight {
     vec4 posRange;   // xyz = world position, w = range
-    vec4 colorPad;   // rgb = color * intensity, a = unused
+    vec4 colorPad;   // rgb = color * intensity, a = cos(inner half-angle)
+    vec4 dirCone;    // xyz = spot axis (all-zero = OMNI), w = cos(outer half-angle)
 };
 const int kMaxPointLights = 64;
 layout(set = 1, binding = 1) uniform Camera {

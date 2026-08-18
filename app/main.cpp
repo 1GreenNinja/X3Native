@@ -817,6 +817,7 @@ int x3AppMain(int argc, char** argv) {
         _hc.screenshotSettle = o.screenshotSettle;
         _hc.shotCamOverride  = o.shotCamOverride;
         _hc.flashlightOff    = o.flashlightOff;
+        _hc.flashlightOn     = o.flashlightOn;
         for (int _k = 0; _k < 5; ++_k) _hc.shotCam[_k] = o.shotCam[_k];
         _hc.stressCount      = o.stressCount;
         _hc.bench            = o.bench;

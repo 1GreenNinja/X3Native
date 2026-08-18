@@ -611,12 +611,16 @@ private:
     static constexpr uint32_t kMaxPointLights = 64;
 
     // One GPU point light row (matches the GLSL std140 PointLight in mesh.frag).
-    // std140 packs each as two vec4s: (pos.xyz, range) + (color.rgb, _pad) = 32 B.
+    // THREE vec4s = 48 B since fix/flashlight-feel gave the light a spot cone:
+    // (pos.xyz, range) + (color.rgb, cosInner) + (dir.xyz, cosOuter). dir == 0
+    // means OMNI and the shader's cone factor collapses to a literal 1.0, so
+    // every pre-existing fixture keeps its exact former output.
     struct GpuPointLight {
         glm::vec4 posRange;     // xyz = world pos, w = range (meters)
-        glm::vec4 colorPad;     // rgb = linear color * intensity, a = unused
+        glm::vec4 colorPad;     // rgb = linear color * intensity, a = cos(inner half-angle)
+        glm::vec4 dirCone;      // xyz = spot axis (0 = omni),     w = cos(outer half-angle)
     };
-    static_assert(sizeof(GpuPointLight) == 32, "GpuPointLight must be two vec4 (std140)");
+    static_assert(sizeof(GpuPointLight) == 48, "GpuPointLight must be three vec4 (std140)");
 
     // Per-frame UBO (matches shaders/mesh.{vert,frag} + shadow.vert). The camera
     // viewProj + the sun's lightViewProj (perf-stack E), plus the forward point-
@@ -642,7 +646,7 @@ private:
         glm::vec4 clusterGrid;       // x = gridX, y = gridY, z = gridZ, w = max lights per froxel
         glm::vec4 clusterSlice;      // x = sliceScale, y = sliceBias, z = froxel count, w = reserved
     };
-    static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 32 + 32 + 64,
+    static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 48 + 32 + 64,
                   "FrameUBO must match the std140 layout in mesh.frag");
 
     // ---- Analytic sky UBO (open-world track, task A) -----------------------
@@ -2232,7 +2236,7 @@ private:
         glm::vec4  params;           // x = hystIrr, y = lightCount, z = bounceGain, w = hystVis
         GpuPointLight lights[kMaxPointLights];
     };
-    static_assert(sizeof(DdgiUBO) == 16 * 9 + kMaxPointLights * 32, "DdgiUBO std140 layout");
+    static_assert(sizeof(DdgiUBO) == 16 * 9 + kMaxPointLights * 48, "DdgiUBO std140 layout");
     VkBuffer m_ddgiUboBuf[kFramesInFlight] = {}; VmaAllocation m_ddgiUboAlloc[kFramesInFlight] = {}; void* m_ddgiUboMapped[kFramesInFlight] = {};
     // SSBO row of each draw record this frame (TLAS instanceCustomIndex source —
     // the grouped SSBO write order differs from the draw-record order).

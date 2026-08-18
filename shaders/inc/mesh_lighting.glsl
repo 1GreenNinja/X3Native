@@ -41,6 +41,48 @@ float pointAtten(float dist, float range) {
 }
 
 // ---------------------------------------------------------------------------
+// SPOT CONE (fix/flashlight-feel, 2026-08-18).
+//
+// THE DEFECT THIS EXISTS TO FIX. Every light in this engine was OMNI. The
+// player's flashlight was therefore a bare bulb hanging 2 m in front of the
+// camera, and the only thing that made it look like a beam was inverse-square
+// plus N.L. Point that at a wall a metre away and the core lands far above the
+// tonemapper's shoulder while the falloff is only ~1 m wide: everything inside
+// clips to the SAME pure white, so the gradient disappears and what survives is
+// a flat disc whose rim is the clip contour, not a light edge. Tim's report --
+// "a PURE BRIGHT CIRCLE with sharp edges" -- is a picture of exactly that.
+//
+// A real luminaire has a HOTSPOT and a SPILL: full output inside the inner
+// half-angle, a penumbra that rolls off to nothing at the outer half-angle.
+// That penumbra is the soft edge, and it is what no amount of intensity tuning
+// could ever produce out of an omni light.
+//
+//   dirCone.xyz : the spot axis, unit length. ALL-ZERO = omni; the function
+//                 returns a literal 1.0 and the light renders exactly as it
+//                 always did. That is what keeps every existing fixture in the
+//                 game bit-for-bit unchanged.
+//   dirCone.w   : cos(outer half-angle) -- beyond this, dark.
+//   colorPad.a  : cos(inner half-angle) -- inside this, full.
+//
+// `L` is the UNIT vector from the SURFACE toward the LIGHT, which is what every
+// call site already has; the light shines along -L toward the surface.
+//
+// The ramp is smoothstep on the cosine and then SQUARED. Squaring matters: a
+// bare linear (or even smoothstep) cosine ramp still meets the dark at a
+// visible crease, while the squared curve leaves with zero slope and the spill
+// dissolves. Same family as the cos^3 taper the street lamps took on
+// fix/outdoor-polish -- soft at BOTH ends, no edge in between.
+// ---------------------------------------------------------------------------
+float spotCone(vec4 dirCone, float cosInner, vec3 L) {
+    if (dot(dirCone.xyz, dirCone.xyz) < 0.25) return 1.0;   // omni light
+    float cd    = dot(dirCone.xyz, -L);                     // cos(angle off axis)
+    float denom = max(cosInner - dirCone.w, 1.0e-4);
+    float t     = clamp((cd - dirCone.w) / denom, 0.0, 1.0);
+    t = t * t * (3.0 - 2.0 * t);                            // smoothstep penumbra
+    return t * t;                                           // squared: zero slope at the rim
+}
+
+// ---------------------------------------------------------------------------
 // Cluster resources. Declared here (not in the orchestrator) so glass.frag picks
 // them up from the same include and the two shaders can never disagree about the
 // binding numbers. Both live on the per-frame set 1, next to the object SSBO and
@@ -57,7 +99,8 @@ float pointAtten(float dist, float range) {
 // ---------------------------------------------------------------------------
 struct ClusterLight {
     vec4 posRange;   // xyz = world position, w = range (metres)
-    vec4 colorPad;   // rgb = linear color * intensity, a = unused
+    vec4 colorPad;   // rgb = linear color * intensity, a = cos(inner half-angle)
+    vec4 dirCone;    // xyz = spot axis (all-zero = OMNI),  w = cos(outer half-angle)
 };
 layout(std430, set = 1, binding = 3) readonly buffer SceneLights {
     ClusterLight lights[];
@@ -129,6 +172,7 @@ ClusterLight x3Light(int i) {
         ClusterLight L;
         L.posRange = cam.lights[i].posRange;
         L.colorPad = cam.lights[i].colorPad;
+        L.dirCone  = cam.lights[i].dirCone;
         return L;
     }
     uint c      = x3ClusterOfFragment();

@@ -282,6 +282,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-canonvehicle") o.testCanonVehicle = true;
         else if (a == "--shot-drive") o.shotDrive = true;
         else if (a == "--flashlight-off") o.flashlightOff = true;
+        else if (a == "--flashlight-on")  o.flashlightOn  = true;
         else if (a == "--dusk") o.duskSky = true;
         else if (a == "--day") o.daySky = true;
         else if (a == "--shot-chatter") {

@@ -39,6 +39,7 @@ layout(set = 0, binding = 2, rg16f)   uniform image2D visAtlas;
 struct PointLight {
     vec4 posRange;
     vec4 colorPad;
+    vec4 dirCone;
 };
 const int kMaxPointLights = 64;
 layout(set = 0, binding = 3) uniform Ddgi {

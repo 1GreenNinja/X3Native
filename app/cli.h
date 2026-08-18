@@ -935,6 +935,13 @@ struct CliOptions {
     // gate: capture every room with it off, or you are grading the flashlight, not the
     // room. Default false -> zero change to normal play.
     bool        flashlightOff = false;
+    // --flashlight-on: start with the torch ON. Since 2026-08-18 the flashlight
+    // DEFAULTS OFF (Tim, live: "the Flashlight defaults to ON.. I would like it
+    // OFF by default"), so --flashlight-off is now a no-op kept for every script
+    // and capture recipe that already passes it, and THIS is the flag that asks
+    // for a lit torch without typing `r_flashlight 1` at the console. L still
+    // toggles either way.
+    bool        flashlightOn  = false;
     // FX demo (--fx-demo): in --screenshot mode, spawn a combat particle/decal burst
     // (muzzle flash + impact sparks + dust + a scorch decal) a couple meters in front
     // of the screenshot camera each settle frame so the capture clearly shows the new
