@@ -1105,6 +1105,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         sp.zenith[0]=0.0012f; sp.zenith[1]=0.0012f; sp.zenith[2]=0.0035f;
         sp.horizon[0]=0.0018f; sp.horizon[1]=0.0022f; sp.horizon[2]=0.0050f;
         hc.device->setSkyParams(sp);
+        // SPACE AMBIENT (owner, live 2026-08-17: "space is too bright, washed out
+        // flat"). The sky was near-black but the ambient was never lowered, so the
+        // engine default (0.42,0.44,0.50) flooded the hulls with fill and killed the
+        // sun's directional contrast. Near-black cool fill: the star is the key, the
+        // dark side goes dark, the hull reads as a solid mass instead of a decal.
+        hc.device->setAmbient(0.008f, 0.008f, 0.015f);
     };
     // The star: living-surface core (bake as baseColor AND emissive) + corona.
     auto drawStar = [&](const x3::rhi::FrameContext& frame) {
