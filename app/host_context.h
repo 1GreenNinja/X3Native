@@ -85,6 +85,10 @@ struct HostContext {
 
     // ---- Per-host screenshot proof flags + paths (showroom family etc.) ----
     bool        carShot = false;            std::string carShotDir;
+    // --car <id>: which app/car_roster.h CarSpec the player drives and the
+    // showcase poses. Default "gbx" (see CliOptions::carId — PAIRED, change
+    // both). Hosts resolve it with x3::game::carSpecById(carId.c_str()).
+    std::string carId = "gbx";
     bool        upperShot = false;          std::string upperShotDir;   // R-5: floors 2-7 proof
     // door-mesh swap: the repeatable DOOR visual gate (per-floor leaf/frame/signage,
     // closed + mid-slide + open, head-on at a real cut doorway on each floor).

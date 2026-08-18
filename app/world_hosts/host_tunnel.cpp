@@ -1591,6 +1591,9 @@ int hostTunnel(HostContext& hc) {
     // chooser is the one that gets looked at.
     struct FleetCar { const char* file; const char* name; };
     static const FleetCar kFleet[] = {
+        // The GBX COUPE leads the row: it is the hero car (--car gbx, the
+        // default) and the first bay is the one that gets looked at.
+        { "Vehicles/GBX_Coupe.glb", "GBX COUPE" },
         { "Vehicles/E46_New.glb", "E46 SPORT"   },
         { "Vehicles/CTR.glb",     "CTR"         },
         { "Vehicles/M3_E36.glb",  "M3 E36"      },
@@ -1772,6 +1775,10 @@ int hostTunnel(HostContext& hc) {
 
     // ==== STEP 4 — the car, on the road, outside the entrance ================
     x3::game::DriveDemo car;
+    // WHICH CAR (--car <id>, app/car_roster.h). Must be set BEFORE build(): the
+    // stations/box/mass are baked into the Jolt rig there.
+    const x3::game::CarSpec& carSpec = x3::game::carSpecById(hc.carId.c_str());
+    car.setSpec(carSpec);
     // SPAWN ON TOP OF THE ROAD (Tim, after landing on the dirt BESIDE it):
     // terrain height is right except where the vertical-curve pass floats the
     // ribbon above the graded field (sags float up to ~5 m). The rule, done
@@ -1815,7 +1822,17 @@ int hostTunnel(HostContext& hc) {
         // comes back when it has had the convert_car_glb material pass and its
         // own wheel stations; until then the hero must be the car that is
         // actually finished.
-        car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
+        //
+        // "ITS OWN WHEEL STATIONS" IS NOW A SOLVED PROBLEM (W-HEROCAR,
+        // 2026-08-17). app/car_roster.h carries per-car stations/box/mass/skin
+        // numbers and DriveDemo::setSpec applies them at build time, so a second
+        // hero car no longer sits mis-scaled over CTR-position wheels. The
+        // default is the GBX COUPE — the same pack-mining discipline this
+        // comment block preaches, applied to a 654 MB package that had never
+        // been extracted. `--car ctr` brings the incumbent straight back.
+        const bool sk = car.skin(*device, x3::game::convertedGlbRoot(), carSpec.glb);
+        x3::logInfo(std::string("[tunnel] hero car: ") + carSpec.name + " (" + carSpec.glb +
+                    ") skin " + (sk ? "ON" : "ABSENT - graybox"));
         // E46_New is the INTERIOR car: Seats, Dashboard, SteeringWheel,
         // Interior, GearHandle and a pair of emissive Needle_KM / Needle_RPM
         // gauges. Same Wheel_FL/FR/RL/RR names and the same misspelled `Buttom`
