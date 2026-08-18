@@ -636,6 +636,12 @@
       "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
     },
     {
+      "repo_path": "assets/converted_glb/Vehicles/GBX_Coupe.glb",
+      "sha256": "e5b4c65060f42cabe3f1123db07bdb6da6c7ab4ac89a7eb66db29defcc1a1bbe",
+      "size": 13892252,
+      "source_note": "HDRP GBX COUPE Free Update pack -> hero car LOD0 (tools/build_gbx_hero_car.py): 243k tris, black clearcoat paint, Wheel_FL/FR/RL/RR spin nodes, origin on the contact plane"
+    },
+    {
       "repo_path": "assets/converted_glb/Vehicles/Jeep.glb",
       "sha256": "282524ec8fac0793bbe7b36fdffa440051e9da3a3453675eeaad1f1ba0a505ce",
       "size": 1117180,
