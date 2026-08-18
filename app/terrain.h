@@ -234,8 +234,9 @@ float worldRiverRainRise();
 //     from the spine height — w[i] <= (min pre-UR ground across the whole
 //     +-kURWallOutW band of the segments touching node i) - kURCoverMin — so
 //     no probe anywhere in the corridor can be under water and above ground;
-//   * gate U7 asserts cover <= kURCoverMax, i.e. the route stays inside what
-//     the mechanism can build. A route that fails U7 gets MOVED, not forced.
+//   * gate U7 asserts the steepest trench WALL is no steeper than
+//     kURWallMaxDeg, i.e. the route stays inside what the mechanism can build.
+//     A route that fails U7 gets MOVED, not forced.
 //
 // THE WATER TABLE IS DERIVED, NOT GUESSED: head at bandFloor-kURHeadCover (a
 // sealed spring under the NW country), then a strictly descending walk
@@ -296,9 +297,10 @@ constexpr float kURBedHalfW    = 4.5f;    // wet channel floor half-width
 constexpr float kURShelfHalfW  = 12.0f;   // rock-beach shelf out to here (walkable)
 constexpr float kURWallOutW    = 44.0f;   // walls ease to natural country by here
 constexpr float kURShelfLift   = 0.45f;   // beach height ABOVE the water surface
-// The derivation's budget. kURCoverMax is not a preference: it is the deepest
-// trench the 32 m wall band can climb out of at the canyon pass's wall angle
-// (see the mechanism note above). Gate U7 enforces it against the ROUTE.
+// The derivation's budget. The wall limit is not a preference: it is how steep
+// a face the wall band may climb out of the trench at, and with the band fixed
+// it is what bounds the trench's depth (see the mechanism note above). Gate U7
+// enforces it against the ROUTE.
 constexpr float kURCoverMin    = 8.0f;    // rock over the water, minimum
 constexpr float kURWallMaxDeg  = 60.0f;   // ... and the steepest wall the band
                                           // may climb out at — the CANYON PASS's

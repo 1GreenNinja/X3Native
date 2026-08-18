@@ -29,8 +29,11 @@ shot 12_rushing_water " -1121.0,1.5,541.0,-2.011,-0.20"
 shot 13_cavern_wide " -985.0,12.0,45.0,-1.816,-0.10"
 
 # E — THE GORGE. The last 120 m runs open to the sky; the plunge pool at
-#     (-1090,-700) seen from outside, in daylight.
-shot 14_gorge_portal " -1090.0,14.0,-790.0,1.571,-0.12"
+#     (-1090,-700) w=-5.32, seen from the rim. The rim camera is 60 m east of
+#     the portal node — past kURWallOutW, so it stands on UNCARVED country at
+#     ~21 m (scan) rather than inside the hillside, which is where the first
+#     draft of this camera was.
+shot 14_gorge_portal " -1030.0,22.7,-700.0,3.1416,-0.436"
 
 # F — FROM ABOVE. The lid must read as country, not as a 1.8 km scar.
 shot 15_vault_from_above " -1040.0,260.0,480.0,-1.586,-0.55"
