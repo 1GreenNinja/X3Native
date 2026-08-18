@@ -235,14 +235,20 @@ void emitParapets(MeshBuf& conc, const StackDeckRun& r) {
             deckPt(s[i],   latIn,  ay0, aI0); deckPt(s[i],   latIn,  ay1, aI1);
             deckPt(s[i+1], latIn,  by0, bI0); deckPt(s[i+1], latIn,  by1, bI1);
             const float vs = (s[i+1].u - s[i].u) / 4.0f;
+            // WINDING, derived not guessed: MeshBuf::quad takes n = (b-a) x
+            // (d-a), so the outer face wants (b-a) along the tangent and
+            // (d-a) up on the +lat side and the mirror on the -lat side. The
+            // CAP is the one that does NOT mirror — up is up on both edges —
+            // and writing it symmetrically with the faces put both caps
+            // face-down, i.e. invisible from the deck you are driving on.
             if (side > 0) {
-                conc.quad(aO0, bO0, bO1, aO1, 1.0f, vs);
-                conc.quad(bI0, aI0, aI1, bI1, 1.0f, vs);
-                conc.quad(aI1, bI1, bO1, aO1, 1.0f, vs);
+                conc.quad(aO0, bO0, bO1, aO1, 1.0f, vs);   // outer face
+                conc.quad(bI0, aI0, aI1, bI1, 1.0f, vs);   // inner face
+                conc.quad(aO1, bO1, bI1, aI1, 1.0f, vs);   // cap, up
             } else {
                 conc.quad(bO0, aO0, aO1, bO1, 1.0f, vs);
                 conc.quad(aI0, bI0, bI1, aI1, 1.0f, vs);
-                conc.quad(bI1, aI1, aO1, bO1, 1.0f, vs);
+                conc.quad(aI1, bI1, bO1, aO1, 1.0f, vs);   // cap, up
             }
         }
         for (int e = 0; e < 2; ++e) {
@@ -251,7 +257,9 @@ void emitParapets(MeshBuf& conc, const StackDeckRun& r) {
             float p0[3], p1[3], p2[3], p3[3];
             deckPt(st, latOut, y0, p0); deckPt(st, latIn, y0, p1);
             deckPt(st, latIn,  y1, p2); deckPt(st, latOut, y1, p3);
-            conc.quad(p0, p1, p2, p3);
+            // the nose at the start of the run faces BACK along the deck
+            if (e == 0) conc.quad(p1, p0, p3, p2);
+            else        conc.quad(p0, p1, p2, p3);
         }
     }
 }
@@ -1495,7 +1503,11 @@ StackBuildResult buildStack(const StackResult& st, Scene& scene,
             // the taper runs from the terminal AWAY along the gore direction
             const float dirSign = (goreDirX * mtx + goreDirZ * mtz) >= 0.0f ? 1.0f : -1.0f;
             auto edgePair = [&](float t, float o0[3], float o1[3]) {
-                const float s = -(1.0f - t) * kGoreTaperM * dirSign;
+                // t == 1 is the ramp terminal, t == 0 the gore nose, and the
+                // nose lies `taper` metres along the mainline IN the gore
+                // direction — hence + dirSign, not minus. (An exit taper runs
+                // back upstream; an entry taper runs on downstream.)
+                const float s = (1.0f - t) * kGoreTaperM * dirSign;
                 const float bx = termX + mtx * s, bz = termZ + mtz * s;
                 float by = datumNear(mainSpec, mainY, bx, bz);
                 float mh = mp.empty() ? kFwyMedianMinHalfM
@@ -1514,7 +1526,9 @@ StackBuildResult buildStack(const StackResult& st, Scene& scene,
                 float a0[3], a1[3], b0[3], b1[3];
                 edgePair(t0, a0, a1);
                 edgePair(t1, b0, b1);
-                if (side * dirSign > 0.0f) deckA.quad(a0, a1, b1, b0, 1.0f, 4.0f);
+                // n = (b-a) x (d-a) works out to -side*dirSign*(+Y), so the
+                // up-facing winding flips with the PRODUCT of the two signs.
+                if (side * dirSign < 0.0f) deckA.quad(a0, a1, b1, b0, 1.0f, 4.0f);
                 else                       deckA.quad(b0, b1, a1, a0, 1.0f, 4.0f);
             }
         };

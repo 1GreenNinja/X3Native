@@ -872,6 +872,25 @@ int hostTunnel(HostContext& hc) {
                 if (interchange.ramp[q].built)
                     addSpec(interchange.ramp[q].spec, "");   // ramps: unlabeled
         }
+        if (stackOn) {
+            // The crossing freeway splits at its ONE deck gap like any other
+            // structure. The FLYOVERS do not: their profile is carried as one
+            // Gap PER SEGMENT (app/stack.h), so feeding them to addSpec would
+            // stage several hundred two-point dashes per ramp and turn the map
+            // into confetti. A flyover is one continuous elevated ribbon and
+            // draws as one.
+            addSpec(stack.bSpec, "THE STACK");
+            for (int q = 0; q < 4; ++q) {
+                const auto& rp = stack.ramp[q];
+                if (!rp.built || rp.spec.x.size() < 2) continue;
+                x3::game::MapRouteOverlay o;
+                o.name = ""; o.dashed = true;      // elevated, like a deck reach
+                for (size_t k = 0; k < rp.spec.x.size(); ++k) {
+                    o.x.push_back(rp.spec.x[k]); o.z.push_back(rp.spec.z[k]);
+                }
+                mapRoutes.push_back(std::move(o));
+            }
+        }
         char mb[128];
         std::snprintf(mb, sizeof(mb), "[tunnel] map: %u road overlay polyline(s) staged",
                       (uint32_t)mapRoutes.size());
