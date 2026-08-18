@@ -1531,8 +1531,13 @@ int hostTunnel(HostContext& hc) {
     // already in the height field (terrain.cpp carves it from the same
     // derived table worldWaterLevelAt answers), so swimming, CONTACT LAW and
     // the streamer all work down there for free; this builds the rock vault,
-    // the luminescent rushing water and the cavern light. DEFAULT ON;
-    // X3_UNDERRIVER=0 is the off door (NO_SLOP rule 6).
+    // the luminescent rushing water, the mist and the cavern light. DEFAULT
+    // ON; X3_UNDERRIVER=0 is the off door (NO_SLOP rule 6) — note it turns off
+    // the DRAWN cavern only. The trench is a landform: it is carved by
+    // terrain.cpp for every caller, and worldWaterLevelAt answers from the same
+    // table, so the flag cannot desync the model from the map. With it off you
+    // get the open cut and its water and no lid, which is what you want when
+    // you are photographing the carve itself.
     x3::game::UndergroundRiver underRiver;
     {
         const char* e = std::getenv("X3_UNDERRIVER");

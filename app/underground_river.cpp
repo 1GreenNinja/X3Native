@@ -196,7 +196,10 @@ UndergroundRiver::Result UndergroundRiver::build(
                     v.pos[0] = vx;
                     v.pos[1] = terrainHeightAtWorld(vx, vz) + 0.07f;
                     v.pos[2] = vz;
-                    v.normal[0] = 0.0f; v.normal[1] = 1.0f; v.normal[2] = 0.0f;
+                    // The apron climbs the trench wall's toe, which is a ~56
+                    // deg face — a flat +Y normal there would shade the wall
+                    // like a floor. Take the field's own normal.
+                    terrainNormalAtWorld(vx, vz, v.normal);
                     v.uv[0] = s * 0.14f; v.uv[1] = lat * 0.14f;   // world-scaled
                     m.v.push_back(v);
                 }
@@ -237,7 +240,16 @@ UndergroundRiver::Result UndergroundRiver::build(
         n.halfWidth = uc.hw[ni] + (uc.hw[std::min(ni + 1, uc.n - 1)] - uc.hw[ni]) * t;
         n.rush = uc.rush[ni] + (uc.rush[std::min(ni + 1, uc.n - 1)] - uc.rush[ni]) * t;
         n.pool = (t < 0.5f ? uc.pool[ni] : uc.pool[std::min(ni + 1, uc.n - 1)]);
-        n.emissive = 0.30f + 0.25f * n.rush + (n.pool ? 0.10f : 0.0f);
+        // The ribbon is SELF-LUMINESCENT because there is no sun down here —
+        // but the last reach is the open gorge, where there is. Fade the glow
+        // out as the lid ends or the plunge pool reads as a neon strip lying
+        // in daylight.
+        const float openT = std::clamp((s - (vaultEnd - 40.0f)) /
+                                       std::max(total - (vaultEnd - 40.0f), 1.0f),
+                                       0.0f, 1.0f);
+        const float daylight = openT * openT * (3.0f - 2.0f * openT);
+        n.emissive = (0.30f + 0.25f * n.rush + (n.pool ? 0.10f : 0.0f))
+                   * (1.0f - 0.92f * daylight);
         wn.push_back(n);
     }
     r.waterSegs = m_water.build(scene, device, wn, outLights);
