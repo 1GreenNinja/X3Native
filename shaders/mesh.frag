@@ -217,6 +217,12 @@ layout(location = 11) flat in uint vDetailPacked;     // HDRP micro-detail: (uvS
 // scale for the room-dressing kit props (0 = no clamp -> treat as 1.0). See the
 // BLACK-PROP FIX in the PBR path below + IRenderDevice::drawMeshPBR(metallicScale).
 layout(location = 12) flat in vec4 vGlassParams;
+// Location 13 is glass.frag's tint. On the OPAQUE path there is no glass state,
+// so .xy carry the glTF metallic/roughness SCALAR FACTORS instead (see the PBR
+// branch). mesh.vert already writes this varying, so declaring it here only
+// completes an interface that was half-wired; mesh_probe.vert writes vec4(1.0),
+// which is the identity for both factors.
+layout(location = 13) flat in vec4 vGlassTint;
 
 layout(location = 0) out vec4 outColor;
 
@@ -523,8 +529,21 @@ void main() {
         // that actually catches the room + flashlight lighting in BOTH gameplay and the
         // capture rig. 0 = untouched (every non-dressing draw -> byte-identical shading).
         float mrClamp  = vGlassParams.w > 0.0 ? vGlassParams.w : 1.0;
-        float metallic = mr.b * mrClamp;
-        float pRough   = clamp(mr.g - detSmoothAdj * 0.4, 0.045, 1.0);  // perceptual roughness (for IBL) + detail-smoothness nudge
+        // glTF pbrMetallicRoughness SCALAR FACTORS (spec: metallic = mrTex.b *
+        // metallicFactor, roughness = mrTex.g * roughnessFactor). They ride the
+        // opaque path's dead glassTint.xy; 0.0 there means a caller that predates
+        // the lane, and the glTF default for both factors is 1.0, so that legacy
+        // record shades EXACTLY as it did before.
+        //
+        // WHY THIS MATTERS: bindless slot 0 is the built-in 1x1 WHITE, so a
+        // material with NO MR texture reads mr = (1,1,1) -> metallic 1, roughness
+        // 1. Every untextured material in the game was therefore a fully-rough
+        // full metal no matter what it authored. E30.glb's M_Body asks for
+        // metallic 0.8 / roughness 0.4 and got 1.0/1.0 — a chalky ghost car.
+        float metFac   = vGlassTint.x > 0.0 ? vGlassTint.x : 1.0;
+        float rghFac   = vGlassTint.y > 0.0 ? vGlassTint.y : 1.0;
+        float metallic = mr.b * metFac * mrClamp;
+        float pRough   = clamp(mr.g * rghFac - detSmoothAdj * 0.4, 0.045, 1.0);  // perceptual roughness (for IBL) + detail-smoothness nudge
         vec3  F0       = mix(vec3(0.04), albedo.rgb, metallic);
         // RAIN WETNESS. Ordered deliberately: F0 is built from the DRY albedo
         // (so a metal keeps its own tint), then the film darkens/smooths/raises

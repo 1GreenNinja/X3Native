@@ -1339,6 +1339,8 @@ bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[
         d.detailUvScale = mat.detailUvScale;
         d.clearcoat      = mat.clearcoat;
         d.clearcoatRough = mat.clearcoatRough;
+        d.metallicFactor  = mat.metallic;    // glTF spec: these MULTIPLY the MR
+        d.roughnessFactor = mat.roughness;   // texture. Parsed at load; now delivered.
     }
     for (int i = 0; i < 16; ++i) d.nodeTransform[i] = nodeWorld[i];
     // SKINNED primitives: strip the mesh-node world SCALE. Per the glTF spec a

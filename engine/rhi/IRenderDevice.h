@@ -750,7 +750,15 @@ public:
                                       float /*metallicScale*/ = 1.0f,
                                       // FOLIAGE (>0): mesh.frag wraps the diffuse + adds warm
                                       // back-translucency so the sun glows through canopies.
-                                      float /*foliage*/ = 0.0f) {
+                                      float /*foliage*/ = 0.0f,
+                                      // glTF pbrMetallicRoughness SCALAR FACTORS — per spec they
+                                      // MULTIPLY the MR texture. A material with no MR map samples
+                                      // bindless slot 0 (1x1 WHITE) and would otherwise be pinned at
+                                      // metallic=1 roughness=1 regardless of what it authored. 1.0
+                                      // is the glTF default AND the legacy behaviour, so all 72
+                                      // existing call sites shade byte-identically.
+                                      float /*metallicFactor*/  = 1.0f,
+                                      float /*roughnessFactor*/ = 1.0f) {
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
     }
 
