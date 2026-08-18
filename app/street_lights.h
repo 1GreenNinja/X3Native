@@ -77,13 +77,18 @@ public:
         // TERRAIN ignores pooled point lights — A/B proven at 8x intensity,
         // black ground either way — so the disc must carry the night read).
         float discMul   = 1.0f;
+        // Per-lamp emissive scale = this lamp's pooled intensity over its zone's
+        // nominal. Applied to the cone/head/pool/source glow so a lamp's VISUAL
+        // brightness tracks the light it actually casts (a mismatch between the
+        // two is half of what read as "fake" in the parking-lot shots).
+        float emisMul   = 1.0f;
         // Flicker state machine (deterministic xorshift stream, dt-scaled).
         float    t = 0.0f, next = 0.0f, period = 0.1f, phase = 0.0f;
         bool     burst = false, on = true;
         uint32_t rng = 1;
         // Scene entities the flicker animates (generation-checked: a region
         // evict recycles slots, so stale handles must die, not scribble).
-        SceneHandle coneEnt, headEnt, discEnt;
+        SceneHandle coneEnt, headEnt, discEnt, glowEnt;
     };
 
     // Region-owned CITY lamps: the district street grids + the dock work
@@ -172,6 +177,10 @@ private:
         // so no unreferenced mesh ever escapes the region ledger.
         x3::rhi::MeshHandle    cone[(uint32_t)Zone::Count];
         x3::rhi::MeshHandle    disc;       // unit ground-pool disc (+Y, scaled in XZ)
+        // SOURCE GLOW: a small unit sphere hung at the luminaire aperture and
+        // driven above the bloom threshold, so the fixture BLOOMS like a real
+        // light in a dusk frame instead of being a flat emissive housing box.
+        x3::rhi::MeshHandle    glowSphere;
         x3::rhi::TextureHandle coneGrad;   // axial falloff bake
         x3::rhi::TextureHandle discGrad;   // radial falloff bake
     };

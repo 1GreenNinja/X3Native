@@ -87,13 +87,17 @@ inline void applyOutdoorCsm(const HostContext& hc, x3::rhi::IRenderDevice& devic
     c.blend       = (float)std::atof(cv("r_csm_blend", "0.12").c_str());
     c.forwardBias = (float)std::atof(cv("r_shadowforward", "0").c_str());
     c.debug       = cv("r_csm_debug", "0") != "0";
+    // LEGACY-BOX TEXEL SNAP. Read HERE too, because this call is the last writer
+    // of CsmParams on an outdoor host — dropping it would silently reset the
+    // field to its struct default on exactly the worlds that need it.
+    c.snapLegacy  = cv("r_shadowsnap", "1") != "0";
     device.setCsmParams(c);
     // --set AUDIT: this function IS the r_csm* consumer for outdoor hosts, so the
     // names it reads are applied — claim them or dispatchWorldHost would report
     // them as silently ignored. (An INDOOR host never calls this, and then
     // `--set r_csm 1` genuinely IS ignored — and now says so.)
     for (const char* n : { "r_csm", "r_csm_lambda", "r_csm_dist", "r_csm_blend",
-                           "r_shadowforward", "r_csm_debug" }) {
+                           "r_shadowforward", "r_csm_debug", "r_shadowsnap" }) {
         for (const auto& kv : hc.cliCVars) if (kv.first == n) claimHostCVar(n);
     }
     x3::logInfo(std::string("[csm] --world ") + who + ": cascades " +
@@ -225,6 +229,27 @@ inline void applyHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDevice& 
     ovF("r_metalambient",   ov.metalAmbient);
     ovB("r_clusterlights",  ov.clusterLights);
 
+    // ---- TERRAIN MATERIAL + FOOTPRINT ANTI-SHIMMER (outdoor-polish lane) ----
+    // ABOVE the ov.active early-out, and with NO latch fields, both on purpose:
+    //   * above, because these four are the only knobs a run might pass ALONE
+    //     (`--screenshot-city --set r_terrainaa 0` is the whole A/B), and the
+    //     early-out below would silently swallow such a run — the exact failure
+    //     this file exists to kill;
+    //   * no latch, because unlike every group above NO host calls
+    //     setTerrainMaterial itself, so there is nothing to be undone by.
+    {
+        const bool anyTerrain = take("r_terrainaa") | take("r_terrainmat")
+                              | take("r_terrain_sparkle") | take("r_terrain_rough");
+        if (anyTerrain) {
+            x3::rhi::IRenderDevice::TerrainMatParams tm{};
+            tm.antiAlias  = (float)i("r_terrainaa",  "1");
+            tm.perBand    = (float)i("r_terrainmat", "1");
+            tm.sparkle    = f("r_terrain_sparkle",   "1");
+            tm.roughScale = f("r_terrain_rough",     "1");
+            device.setTerrainMaterial(tm);
+        }
+    }
+
     if (!ov.active) return;   // nothing this layer owns was passed: touch nothing
 
     // LAYER 2 — arm the latch for the rest of the run (survives every later
@@ -326,6 +351,7 @@ inline void applyHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDevice& 
     }
     if (has("r_metalambient"))  device.setMetalAmbient(f("r_metalambient", "1"));
     if (has("r_clusterlights")) device.setClusterLights(i("r_clusterlights", "0") != 0);
+
 }
 
 // ===========================================================================
@@ -385,6 +411,8 @@ inline size_t hashLiveHostCVars(const x3::con::IConsole& console) {
         "r_ddgi", "r_ddgi_debug", "r_ddgi_rays", "r_ddgi_intensity",
         "r_ddgi_nx", "r_ddgi_ny", "r_ddgi_nz", "r_ddgi_hyst",
         "r_csm", "r_csm_lambda", "r_csm_dist", "r_csm_blend", "r_shadowforward", "r_csm_debug",
+        "r_shadowsnap",
+        "r_terrainaa", "r_terrainmat", "r_terrain_sparkle", "r_terrain_rough",
     };
     std::hash<std::string> hasher;
     size_t acc = 0;
@@ -450,7 +478,13 @@ inline void pushLiveHostCVarsToDevice(const x3::con::IConsole& console, x3::rhi:
     x3::rhi::IRenderDevice::CsmParams cs{};
     cs.enabled = b("r_csm"); cs.lambda = f("r_csm_lambda"); cs.distance = f("r_csm_dist");
     cs.blend = f("r_csm_blend"); cs.forwardBias = f("r_shadowforward"); cs.debug = b("r_csm_debug");
+    cs.snapLegacy = b("r_shadowsnap");
     device.setCsmParams(cs);
+
+    x3::rhi::IRenderDevice::TerrainMatParams tm{};
+    tm.antiAlias = (float)i("r_terrainaa"); tm.perBand = (float)i("r_terrainmat");
+    tm.sparkle = f("r_terrain_sparkle");    tm.roughScale = f("r_terrain_rough");
+    device.setTerrainMaterial(tm);
 }
 
 // Call EVERY FRAME from an interactive host with a live console (HostShell

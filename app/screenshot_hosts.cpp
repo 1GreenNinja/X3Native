@@ -2818,6 +2818,57 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
             shot(nm, 1, 0.12f, camX, camY, camZ, yaw, -0.22f, 70.0f, 14);
         }
 
+        // ---- (b2) TRANSLATION BURST — the SHADOW-SWIM measurement -------------
+        // (outdoor-polish lane, 2026-08-17. Tim, live at the city street at dusk:
+        // "mountain is shimmering".)
+        //
+        // The pan above sweeps YAW, which the bounding-SPHERE fit already makes
+        // rotation-invariant — so it cannot see the defect the interior-shadows
+        // lane filed: the LEGACY box (r_csm 0, which is what every world without
+        // an explicit `applyOutdoorCsm` renders) is locked to the camera and was
+        // never snapped, so pure TRANSLATION slid it sub-texel every frame and
+        // every shadow edge in the frame crawled.
+        //
+        // This burst is therefore the honest instrument: 8 frames, the camera
+        // stepped a FRACTION OF A SHADOW TEXEL each time (the legacy box is
+        // 90 m over 2048 texels = 4.4 cm/texel; 1.2 cm/frame is well inside one),
+        // at r_csm 0 with the snap OFF and then ON. Consecutive frames are diffed
+        // offline: a stationary shadow map means the only differing pixels are
+        // the ones the camera move itself uncovers.
+        //
+        // r_csm 1 is captured too, as the control that was ALREADY snapped — it
+        // should show no change between snap 0 and snap 1, because the cascade
+        // path never went through the legacy box at all.
+        {
+            const float texel = (2.0f * 45.0f) / 2048.0f;      // legacy box texel, m
+            const float step  = texel * 0.27f;                 // ~1.2 cm: sub-texel
+            struct Burst { const char* tag; int csm; const char* snap; };
+            const Burst kB[] = {
+                { "swim_csm0_snap0", 0, "0" },   // the defect, isolated
+                { "swim_csm0_snap1", 0, "1" },   // the fix
+                { "swim_csm1_snap1", 1, "1" },   // control: cascades already snapped
+            };
+            for (const Burst& b : kB) {
+                console->set("r_shadowsnap", b.snap);
+                for (int i = 0; i < 8; ++i) {
+                    // Step ACROSS the view axis so the camera translates without
+                    // changing what is on screen more than a pixel or two.
+                    const float d  = (float)i * step;
+                    const float cx = camX + sunUX * d, cz = camZ + sunUZ * d;
+                    char nm[80]; std::snprintf(nm, sizeof(nm), "%s_%d.png", b.tag, i);
+                    shot(nm, b.csm, 0.12f, cx, camY, cz, kYawPlusZ, -0.22f, 70.0f, 10);
+                }
+            }
+            console->set("r_shadowsnap", "1");
+            char sb[224];
+            std::snprintf(sb, sizeof(sb),
+                "--screenshot-csm: swim burst = 8 frames x %.4f m steps (legacy shadow "
+                "texel = %.4f m, so every step is %.0f%% of ONE texel) at r_csm 0 with "
+                "r_shadowsnap 0 then 1, plus the r_csm 1 control",
+                (double)step, (double)texel, (double)(step / texel * 100.0f));
+            x3::logInfo(sb);
+        }
+
         // ---- (c) CASCADE BOUNDARY: blend band vs a hard line ------------------
         // A shallow, high framing so the cascade-0/1 split (~17 m) and 1/2 (~40 m)
         // both cross the frame. The no-blend variant is the control.
@@ -3021,6 +3072,190 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
             const float vy = x3::game::terrainHeightAtWorld(vx, vz) + 110.0f;   // aerial
             const float vYaw = std::atan2(8300.0f - vz, 300.0f - vx);   // toward the spine mid
             wrote &= shotAt(vx, vz, vx, vy, vz, vYaw, -0.05f, suffixed("_range"));
+        }
+
+        // ====================================================================
+        // OUTDOOR-POLISH LANE (2026-08-17). Tim, live at the city street at
+        // dusk: "mountain is shimmering".
+        //
+        // Two products here, and they are deliberately separate:
+        //
+        //  (1) THE SHIMMER MEASUREMENT. A burst of frames at the Northern-Range
+        //      vantage with the camera stepped a FRACTION OF A PIXEL's worth of
+        //      world each time. At 7-9 km one 720p pixel spans metres of ground,
+        //      so a step this small changes what should be visible by nothing at
+        //      all — every pixel that flips between consecutive frames is
+        //      aliasing, not content. Captured with r_terrainaa 0 (the
+        //      historical math) and 1 (the footprint fade), so the two bursts
+        //      diff against each other and the number is the whole claim.
+        //
+        //  (2) TIM'S CALIBRATION PAIR. He may WANT a grazing sparkle -- "hard
+        //      baked sand shimmering in the evening glow" is a look, not a bug.
+        //      So the anti-aliasing above is shipped ON regardless (aliasing is
+        //      never the way to get it) and the MATERIAL sparkle is offered as
+        //      an A/B for him to pick: sparkle_on vs sparkle_matte, same frame,
+        //      same low evening sun, only r_terrain_sparkle differing.
+        // ====================================================================
+        {
+            // THE VANTAGE IS THE WHOLE MEASUREMENT, so it is chosen to match the
+            // report rather than to flatter the fix. The `_range` shot above is
+            // taken from the foothills, ~1.5 km out, where the massif fills the
+            // frame — at that range a pixel is centimetres of ground, every
+            // detail term is comfortably resolved, and the footprint fade
+            // correctly does NOTHING (measured: 16246 vs 16204 flips, i.e. no
+            // change, which is the right answer for that framing).
+            //
+            // Tim is looking at the mountain from the CITY. The northern range
+            // spine sits near (300, 8300) and the districts are around z=500, so
+            // his sightline is 7-8 km — where one 720p pixel spans ~7 m of
+            // mountain and the sub-pixel terms alias. This camera reproduces
+            // that: on the plain south of the range, looking north at it.
+            const float vx = 700.0f, vz = 1100.0f;
+            const float vy = x3::game::terrainHeightAtWorld(vx, vz) + 42.0f;
+            const float vYaw = std::atan2(8300.0f - vz, 300.0f - vx);
+
+            // ---- ISOLATE THE MEASUREMENT ---------------------------------
+            // TAA, SSAO and SSGI are all TEMPORAL or NOISE-SEEDED, and each one
+            // re-rolls per frame: TAA alone jitters the projection on a Halton
+            // sequence and resolves against a reprojected history, which changes
+            // a large fraction of every pixel on ANY camera move. Measured with
+            // them on, the terrain A/B came out flat (821.8 vs 856.2 flips) not
+            // because the fix does nothing but because the instrument was
+            // reading three other things that are louder. The csm suite turns
+            // exactly these three off for exactly this reason; this does the
+            // same, and restores them straight after so the shots that follow
+            // are the shipped configuration.
+            {
+                x3::rhi::IRenderDevice::PostFXParams px{};
+                px.taa = false; px.velocity = false;
+                device->setPostFX(px);
+                x3::rhi::IRenderDevice::SsaoParams sq{}; sq.enabled = false;
+                device->setSsaoParams(sq);
+                x3::rhi::IRenderDevice::GiParams gq{}; gq.enabled = false;
+                device->setGiParams(gq);
+                x3::logInfo("--screenshot-terrain: shimmer burst runs with TAA/SSAO/SSGI OFF "
+                            "so the only temporal signal left is the terrain shading itself");
+            }
+
+            // Park the streamer on the vantage and let residency settle ONCE,
+            // so the bursts below differ only by the camera nudge (a streaming
+            // event mid-burst would show up as "shimmer" and be a lie).
+            for (int i = 0; i < 170; ++i) {
+                glfwPollEvents();
+                tphys->step(dt);
+                streamer.update(tscene, *device, *tphys, (i == 1) ? vx + 40.0f : vx, vz);
+                device->setCamera(vx, vy, vz, vYaw, -0.05f, 70.0f);
+                auto frame = device->beginFrame();
+                if (frame.valid) tscene.render(*device, frame);
+                device->endFrame(frame);
+            }
+
+            auto burstShot = [&](const std::string& path, float cx, float cy, float cz,
+                                 float yaw, float pitch) {
+                for (int i = 0; i < 8; ++i) {   // short: residency is already settled
+                    glfwPollEvents();
+                    streamer.update(tscene, *device, *tphys, vx, vz);
+                    device->setCamera(cx, cy, cz, yaw, pitch, 70.0f);
+                    if (i == 7) device->armCapture(path.c_str());
+                    auto frame = device->beginFrame();
+                    if (frame.valid) tscene.render(*device, frame);
+                    device->endFrame(frame);
+                }
+                if (!device->captureFrame(path.c_str()))
+                    x3::logError("--screenshot-terrain: capture FAILED for " + path);
+            };
+
+            // ---- (1) the shimmer burst -----------------------------------
+            // Step size: the massif is ~7.2 km away, so at 70 deg over 1280 px
+            // one pixel is ~7 m of mountain. 0.35 m per step is 5% of a pixel —
+            // far below anything that could legitimately change it. (The NEAR
+            // ground under the camera does move by a real amount at that step,
+            // which is why the diff is read on a crop of the distant range and
+            // not on the whole frame; see the lane README.)
+            const float kStep = 0.35f;
+            for (int aa = 0; aa <= 1; ++aa) {
+                x3::rhi::IRenderDevice::TerrainMatParams tm{};
+                tm.antiAlias = (float)aa;   // 0 = historical, 1 = footprint fade
+                device->setTerrainMaterial(tm);
+                for (int i = 0; i < 6; ++i) {
+                    char nm[32]; std::snprintf(nm, sizeof(nm), "_shimmer_aa%d_%d", aa, i);
+                    burstShot(suffixed(nm), vx + (float)i * kStep, vy, vz, vYaw, -0.05f);
+                }
+            }
+            {
+                char b[240];
+                std::snprintf(b, sizeof(b),
+                    "--screenshot-terrain: shimmer burst = 6 frames x %.2f m camera steps at "
+                    "the Northern Range vantage (~7.5 km, so ~7 m of mountain per pixel: each "
+                    "step is ~5%% of ONE pixel), captured at r_terrainaa 0 then 1",
+                    (double)kStep);
+                x3::logInfo(b);
+            }
+
+            // ---- (2) Tim's sparkle calibration, in a LOW EVENING SUN -------
+            // The band that can sparkle is sand, and sand lives at the shore
+            // basin (mesh_terrain.glsl kShoreXZ / terrain.cpp kBasinCx,Cz), so
+            // the pair is shot there rather than on the snowline. A grazing sun
+            // just above the horizon is the whole condition being calibrated.
+            {
+                // SHIPPED post is restored FIRST: Tim is judging a LOOK here,
+                // not measuring a signal, so he must see the frame the game
+                // actually renders — TAA, SSAO and SSGI all back on.
+                device->setPostFX(x3::rhi::IRenderDevice::PostFXParams{});
+                device->setSsaoParams(x3::rhi::IRenderDevice::SsaoParams{});
+                device->setGiParams(x3::rhi::IRenderDevice::GiParams{});
+
+                x3::rhi::IRenderDevice::SkyParams ev = sp;
+                ev.sunDir[0] = 0.86f; ev.sunDir[1] = 0.16f; ev.sunDir[2] = 0.48f;   // ~9 deg
+                ev.sunColor[0] = 1.0f; ev.sunColor[1] = 0.72f; ev.sunColor[2] = 0.42f;
+                ev.sunIntensity = 1.35f; ev.haze = 0.62f;
+                device->setSkyParams(ev);
+                device->setAmbient(0.20f, 0.19f, 0.24f);
+
+                const float sx = 1100.0f, sz = -1150.0f;     // on the beach band
+                const float sy = x3::game::terrainHeightAtWorld(sx, sz) + 3.2f;
+                // Look INTO the low sun across the sand: a grazing glint only
+                // exists near the specular direction, so any other framing would
+                // decide the A/B by not showing the effect at all.
+                const float sYaw2 = std::atan2(0.48f, 0.86f);
+                for (int i = 0; i < 300; ++i) {   // relocate residency to the shore
+                    glfwPollEvents();
+                    tphys->step(dt);
+                    streamer.update(tscene, *device, *tphys, (i == 1) ? sx + 40.0f : sx, sz);
+                    device->setCamera(sx, sy, sz, sYaw2, -0.05f, 70.0f);
+                    auto frame = device->beginFrame();
+                    if (frame.valid) tscene.render(*device, frame);
+                    device->endFrame(frame);
+                }
+                const char* kTag[2] = { "_sparkle_matte", "_sparkle_on" };
+                for (int s = 0; s <= 1; ++s) {
+                    x3::rhi::IRenderDevice::TerrainMatParams tm{};
+                    tm.antiAlias = 1.0f;         // the fix stays ON in BOTH: the
+                    tm.perBand   = 1.0f;         // choice is a MATERIAL choice.
+                    tm.sparkle   = (float)s;
+                    device->setTerrainMaterial(tm);
+                    for (int i = 0; i < 24; ++i) {
+                        glfwPollEvents();
+                        streamer.update(tscene, *device, *tphys, sx, sz);
+                        device->setCamera(sx, sy, sz, sYaw2, -0.05f, 70.0f);
+                        if (i == 23) device->armCapture(suffixed(kTag[s]).c_str());
+                        auto frame = device->beginFrame();
+                        if (frame.valid) tscene.render(*device, frame);
+                        device->endFrame(frame);
+                    }
+                    if (device->captureFrame(suffixed(kTag[s]).c_str()))
+                        x3::logInfo("--screenshot-terrain: wrote " + suffixed(kTag[s]));
+                }
+                x3::logInfo("--screenshot-terrain: sparkle pair shot at the shore band under a "
+                            "~9 deg evening sun; r_terrainaa 1 in BOTH (the anti-aliasing is not "
+                            "the thing being chosen -- the sand's roughness/specular is)");
+            }
+            // Leave the device on the shipped defaults for anything after this.
+            device->setTerrainMaterial(x3::rhi::IRenderDevice::TerrainMatParams{});
+            device->setSkyParams(sp);
+            device->setPostFX(x3::rhi::IRenderDevice::PostFXParams{});
+            device->setSsaoParams(x3::rhi::IRenderDevice::SsaoParams{});
+            device->setGiParams(x3::rhi::IRenderDevice::GiParams{});
         }
 
         // Tear down the streamer (destroys resident meshes + bodies) before the

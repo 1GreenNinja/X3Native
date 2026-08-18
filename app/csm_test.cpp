@@ -20,6 +20,12 @@
 //       and r_shadowforward 0 leaves the box centre bit-identical to the camera
 //   C6  per-cascade bias actually varies with cascade (a constant bias cannot
 //       serve a 4x+ texel range)
+//   C8  the LEGACY single box's texel snap (csm::legacySnapCenter): sub-texel
+//       camera motion does not move it, a one-texel move moves it by exactly one
+//       texel, the lattice is world-anchored over hundreds of metres, the snap
+//       never displaces the box by more than a texel, and it is not a no-op.
+//       This is the outdoor-polish lane's fix for the shadow SWIM the
+//       interior-shadows lane filed (docs/screenshots/cell_shadows/README.md).
 //   C7  NEGATIVE CONTROL: the naive fit (extent from a light-space AABB of the
 //       frustum corners, no texel snapping) FAILS C3 and C4. This proves C3/C4
 //       are real assertions and not tautologies. It is the bar the terrain-
@@ -30,7 +36,9 @@
 #include "../engine/rhi/Csm.h"
 #include "../engine/core/x3_log.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
 
 namespace x3::game {
@@ -293,6 +301,126 @@ void testLegacyBitExact() {
           "C5 r_shadowforward > 0 actually slides the box forward (interim is live)");
 }
 
+// ---- C8: the LEGACY box's texel snap (outdoor-polish lane) -----------------
+// The interior-shadows lane filed the legacy 45 m box as CAMERA-LOCKED and
+// UNSNAPPED, and its C7 negative control already documents what that produces:
+// a box whose origin slides with every sub-texel camera move, so every shadow
+// edge in the frame crawls. csm::legacySnapCenter is the fix; these are its
+// POSITIVE tests, written to the same shape as C3 so the two read as one story.
+//
+// C7 stays exactly as it was: it is the negative control for the CASCADE fit
+// (computeNaive), which is still deliberately unsnapped. This lane did not
+// weaken it — it added the legacy path's own pair of assertions beside it.
+void testLegacySnap() {
+    const glm::vec3 sun = glm::normalize(glm::vec3(0.4f, 1.0f, 0.3f));
+    const float ortho = 45.0f;
+    const uint32_t dim = 2048;
+    const float texel = (2.0f * ortho) / (float)dim;   // 0.0439 m at the shipped size
+    const glm::mat4 rot = csm::lightRotation(sun);
+
+    // THE TEST CAMERA IS PLACED AT THE CENTRE OF ITS TEXEL CELL, on purpose.
+    // Snapping is a floor(), so a camera sitting a hair inside a cell boundary
+    // legitimately JUMPS one texel on a small move — that is the quantiser
+    // working, not swimming. Asserting "does not move" from an arbitrary point
+    // would therefore be asserting luck. Centring the start makes the sub-texel
+    // sweep below unambiguous: every step of up to 0.42 texel stays inside the
+    // cell, so any movement at all is a real failure.
+    const glm::vec3 rawCam(120.0f, 30.0f, -85.0f);
+    const glm::vec3 rawLS = glm::vec3(rot * glm::vec4(rawCam, 1.0f));
+    const glm::vec3 cenLS((std::floor(rawLS.x / texel) + 0.5f) * texel,
+                          (std::floor(rawLS.y / texel) + 0.5f) * texel,
+                          (std::floor(rawLS.z / texel) + 0.5f) * texel);
+    const glm::vec3 camPos = glm::vec3(glm::inverse(rot) * glm::vec4(cenLS, 1.0f));
+
+    const glm::vec3 base = csm::legacySnapCenter(camPos, sun, ortho, dim);
+
+    // --- sub-texel translation: the snapped centre must NOT move at all -------
+    // Swept over a range of sub-texel steps AND directions, not one sample: a
+    // single step can sit just inside one lattice cell and pass on a function
+    // that only half works.
+    const glm::vec3 dirs[4] = {
+        glm::normalize(glm::vec3( 1.0f,  0.3f, -0.7f)),
+        glm::normalize(glm::vec3(-0.4f,  0.0f,  0.9f)),
+        glm::normalize(glm::vec3( 0.0f,  1.0f,  0.0f)),
+        glm::normalize(glm::vec3( 0.6f, -0.5f,  0.6f)),
+    };
+    bool subStable = true;
+    float worstSub = 0.0f;
+    for (const glm::vec3& d : dirs)
+        for (int k = 1; k <= 6; ++k) {
+            const float f = (float)k * 0.07f;   // 0.07 .. 0.42 of a texel
+            const glm::vec3 s = csm::legacySnapCenter(camPos + d * (texel * f),
+                                                      sun, ortho, dim);
+            worstSub = std::max(worstSub, glm::length(s - base));
+            if (glm::length(s - base) > 1e-4f) subStable = false;
+        }
+    check(subStable,
+          "C8 LEGACY box: sub-texel camera moves (24 of them, 4 directions x 6 "
+          "magnitudes under one texel of " + f2s(texel) + " m) do NOT move the "
+          "snapped centre at all — worst drift " + f2s(worstSub) + " m. This is "
+          "the shadow SWIM the owner read as shimmer.");
+
+    // The same move WITHOUT the snap moves the box by the full amount. Without
+    // this the assertion above would pass on a function that returned a constant.
+    check(glm::length((camPos + dirs[0] * (texel * 0.07f)) - camPos) > texel * 0.03f,
+          "C8 NEGATIVE CONTROL: the UNSNAPPED centre (the camera itself) DOES move "
+          "on the smallest of those sub-texel steps");
+
+    // --- one-texel translation: exactly one texel of light-space X ------------
+    const glm::vec3 lsX(rot[0][0], rot[1][0], rot[2][0]);   // light X in world
+    const glm::vec3 one = csm::legacySnapCenter(camPos + lsX * texel, sun, ortho, dim);
+    const glm::vec3 dLS = glm::vec3(rot * glm::vec4(one - base, 0.0f));
+    check(std::fabs(dLS.x - texel) < texel * 1e-3f && std::fabs(dLS.y) < texel * 1e-3f,
+          "C8 LEGACY box: a one-texel camera move advances the snapped centre by "
+          "EXACTLY one texel along light X and zero along light Y");
+
+    // --- the snap never displaces the box by more than one texel --------------
+    // It must not be possible for the snap to slide the shadowed region off the
+    // camera: the legacy box has no padding, so a displacement larger than a
+    // texel would leave a sliver of the near field unshadowed.
+    float worst = 0.0f;
+    for (int i = 0; i < 64; ++i) {
+        const float a = (float)i * 0.0982f;
+        const glm::vec3 p = camPos + glm::vec3(std::cos(a), 0.37f * std::sin(a * 1.7f),
+                                               std::sin(a)) * (texel * (float)i * 0.31f);
+        worst = std::max(worst, glm::length(csm::legacySnapCenter(p, sun, ortho, dim) - p));
+    }
+    // sqrt(3), not 1: all THREE light-space axes are floor-quantised, so each
+    // contributes up to one texel and the worst case is the diagonal of one
+    // texel cube. That is ~7.6 cm against a 90 m box.
+    check(worst < texel * 1.74f,
+          "C8 the snap displaces the legacy box by at most one texel per axis "
+          "(worst " + f2s(worst) + " m vs texel " + f2s(texel) + " m; the bound is "
+          "sqrt(3) texels because all three light-space axes are snapped)");
+
+    // --- the snapped centre is a LATTICE point, and the lattice is WORLD-fixed -
+    // Two cameras 500 m apart must land on the same grid, or the "world-anchored"
+    // claim is empty and the box would still crawl on a long drive.
+    const glm::vec3 far0 = csm::legacySnapCenter(camPos + glm::vec3(500.0f, 0.0f, -300.0f),
+                                                 sun, ortho, dim);
+    const glm::vec3 aLS = glm::vec3(rot * glm::vec4(base, 1.0f));
+    const glm::vec3 bLS = glm::vec3(rot * glm::vec4(far0, 1.0f));
+    const float rx = std::fabs(std::remainder(bLS.x - aLS.x, texel));
+    const float ry = std::fabs(std::remainder(bLS.y - aLS.y, texel));
+    check(rx < texel * 1e-2f && ry < texel * 1e-2f,
+          "C8 the texel lattice is WORLD-anchored: a centre 580 m away lands on the "
+          "same grid (residual " + f2s(rx) + " / " + f2s(ry) + " m)");
+
+    // --- r_shadowsnap 0 is still the historical box ---------------------------
+    // The snap lives at the CALL SITE; the matrix builder is untouched. C5 above
+    // already proves that builder is bit-exact, so this asserts the other half:
+    // feeding it the raw camera reproduces the historical centre exactly.
+    const glm::mat4 hist = csm::legacyOrthoViewProj(camPos, sun, ortho, 80.0f);
+    const glm::mat4 snap = csm::legacyOrthoViewProj(base,   sun, ortho, 80.0f);
+    bool differ = false;
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            if (hist[c][r] != snap[c][r]) differ = true;
+    check(differ,
+          "C8 the snap actually CHANGES the matrix (so r_shadowsnap 0 vs 1 is a "
+          "real A/B, not a no-op that would make C8 vacuous)");
+}
+
 // ---- C6: per-cascade bias --------------------------------------------------
 void testBias() {
     const csm::Result r = csm::compute(baseParams());
@@ -356,6 +484,7 @@ bool runCsmSelfTest() {
     testContainment();
     testStabilityAndRotation();
     testLegacyBitExact();
+    testLegacySnap();
     testBias();
     testNegativeControl();
 

@@ -727,6 +727,17 @@ void VulkanRenderDevice::setWetness(const WetnessParams& w) { m_wetness = w; }
 void VulkanRenderDevice::setSnowCover(float cover) {
     m_snowCover = cover < 0.0f ? 0.0f : (cover > 1.0f ? 1.0f : cover);
 }
+// Terrain material + temporal stability (outdoor-polish lane). Clamped here
+// because the cvar sync hub re-pushes this every frame from strings a user can
+// type: a negative roughness scale or a >1 blend must degrade, not explode.
+void VulkanRenderDevice::setTerrainMaterial(const TerrainMatParams& t) {
+    auto sat = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+    m_terrainMat.antiAlias  = sat(t.antiAlias);
+    m_terrainMat.perBand    = sat(t.perBand);
+    m_terrainMat.sparkle    = sat(t.sparkle);
+    m_terrainMat.roughScale = (t.roughScale < 0.05f) ? 0.05f
+                            : (t.roughScale > 4.0f ? 4.0f : t.roughScale);
+}
 
 void VulkanRenderDevice::setMetalAmbient(float sIn) {
         const float s = m_cvarOv.applyMetalAmbient(sIn);   // CLI --set latch
@@ -782,6 +793,8 @@ void VulkanRenderDevice::setCsmParams(const CsmParams& p) {
         const float fwdMax = kShadowOrtho;
         m_shadowForward = (p.forwardBias < -fwdMax) ? -fwdMax
                         : (p.forwardBias >  fwdMax) ?  fwdMax : p.forwardBias;
+        // Legacy-box texel snap (r_shadowsnap). No clamping to do — it is a gate.
+        m_shadowSnap = p.snapLegacy;
     }
 
 void VulkanRenderDevice::setIblProbe(bool enable) {

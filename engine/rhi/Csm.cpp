@@ -48,6 +48,39 @@ glm::mat4 lightRotation(const glm::vec3& sunDirNorm) {
     return glm::lookAt(glm::vec3(0.0f), -sunDirNorm, upPick);
 }
 
+glm::vec3 legacySnapCenter(const glm::vec3& center, const glm::vec3& sunDirNorm,
+                           float ortho, uint32_t shadowDim) {
+    const float dim = (float)std::max(1u, shadowDim);
+    // World meters per shadow texel across the legacy box's 2*ortho extent.
+    const float texel = (2.0f * std::max(ortho, 1e-4f)) / dim;
+    if (!(texel > 0.0f)) return center;
+
+    // Into the WORLD-ANCHORED light frame (a pure rotation about the origin —
+    // see lightRotation's note: snapping in a frame that itself slid with the
+    // camera would snap nothing).
+    const glm::mat4 rot = lightRotation(sunDirNorm);
+    glm::vec3 cLS = glm::vec3(rot * glm::vec4(center, 1.0f));
+
+    // Quantise ALL THREE light-space axes, not just the two that span the map.
+    //
+    // X and Y are the ones that matter for swim — they ARE the texel grid. Z is
+    // snapped too, and that is a choice this lane's own C8 test forced: an
+    // unsnapped Z leaves the box sliding along the SUN axis on every sub-texel
+    // camera move, so "the box holds still" would be true of the lattice and
+    // false of the box, and the stability property could not be stated without a
+    // caveat. Snapping it costs nothing real (the depth range is
+    // +-kShadowDepthHalf = 80 m against a ~4 cm quantum here) and buys a shadow
+    // map that is bit-stable, depth included, under sub-texel motion — which is
+    // exactly the claim the fix should be able to make.
+    cLS.x = std::floor(cLS.x / texel) * texel;
+    cLS.y = std::floor(cLS.y / texel) * texel;
+    cLS.z = std::floor(cLS.z / texel) * texel;
+
+    // Back to world. `rot` is a rigid rotation, so its inverse is its transpose;
+    // glm::inverse on the mat4 is exact enough here and keeps the intent plain.
+    return glm::vec3(glm::inverse(rot) * glm::vec4(cLS, 1.0f));
+}
+
 namespace {
 
 // Bounding SPHERE of the frustum slice [n, f], expressed as (distance along the

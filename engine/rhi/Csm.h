@@ -141,4 +141,33 @@ glm::mat4 legacyOrthoViewProj(const glm::vec3& center, const glm::vec3& sunDirNo
 // (snapping in a frame that itself slid with the camera would snap nothing).
 glm::mat4 lightRotation(const glm::vec3& sunDirNorm);
 
+// ---------------------------------------------------------------------------
+// TEXEL SNAP FOR THE **LEGACY** SINGLE-CASCADE BOX (the outdoor-polish lane).
+//
+// THE DEFECT: legacyOrthoViewProj() centres its 2*ortho box on whatever centre
+// it is handed, and computeLightViewProj() hands it the CAMERA POSITION. The box
+// therefore slides continuously with the camera and the shadow map re-rasterizes
+// against a lattice that moves by a fraction of a texel every frame. Every
+// shadow edge in the frame then crawls — the classic "shadow swim", and the
+// mountain-scale version of it is read as SHIMMER because at 8 km one shadow
+// texel spans several screen pixels' worth of silhouette.
+//
+// THE FIX (the same one csm::compute() already applies per cascade, applied to
+// the one box the legacy path draws): quantise the box CENTRE, expressed in the
+// world-anchored light-space frame, to whole shadow-map texels. Because
+// lightRotation() is anchored at the world origin, that lattice is fixed in the
+// world: sub-texel camera motion leaves the box exactly where it was, so each
+// texel keeps covering the same patch of world and edges hold still.
+//
+// DELIBERATELY A SEPARATE FUNCTION, NOT A CHANGE TO legacyOrthoViewProj():
+// --test-csm's C5 asserts that matrix is bit-identical to the historical
+// expression, and the md5/screenshot gates rest on it. Snapping the CENTRE at
+// the call site leaves the matrix builder untouched, so `r_shadowsnap 0`
+// reproduces every existing capture byte-for-byte.
+//
+// `shadowDim` is the square shadow-map resolution; the quantum is one texel of
+// the 2*ortho box, i.e. (2*ortho)/shadowDim world meters.
+glm::vec3 legacySnapCenter(const glm::vec3& center, const glm::vec3& sunDirNorm,
+                           float ortho, uint32_t shadowDim);
+
 } // namespace x3::csm
