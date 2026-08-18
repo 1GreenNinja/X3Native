@@ -80,6 +80,7 @@ add_library(x3app SHARED
     forest.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
     interchange.cpp     # the diamond interchange — the first structural grade split
+    stack.cpp           # THE MEGA STACK — four-level directional interchange (I-17/I-10)
     traffic.cpp         # W-TRAFFIC — AI traffic on the 16-lane freeway
     summit_lot.cpp      # the parking lot at the top of the summit spur
     ridge_road.cpp      # the dirt road along the tops, lot -> the bore's massif

@@ -119,6 +119,7 @@
 #include "ridge_road.h"        // x3::game::runRidgeRoadSelfTest (--test-ridgeroad)
 #include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
 #include "interchange.h"       // x3::game::runInterchangeSelfTest (--test-interchange)
+#include "stack.h"             // x3::game::runStackSelfTest (--test-stack)
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
 #include "underground_river.h" // x3::game::UndergroundRiver::runSelfTest (--test-underriver)
 #include "traffic.h"           // x3::game::runTrafficSelfTest (--test-traffic)
@@ -781,6 +782,12 @@ int dispatchTests(const TestFlags& tf) {
                     "clearance over every lane, ramps at grade both ends, no median "
                     "crossover inside a ramp pair, no jointed bends)...");
         return x3::game::runInterchangeSelfTest() ? 0 : 1;
+    }
+    if (tf.testStack) {
+        x3::logInfo("running MEGA STACK self-test (four levels, clearance at "
+                    "every crossing, high-speed arcs, parapet continuity, "
+                    "piers clear of traffic, determinism)...");
+        return x3::game::runStackSelfTest() ? 0 : 1;
     }
     if (tf.testRouteFrame) {
         x3::logInfo("running ROUTE FRAME self-test (polyline frame: straight unchanged, "
