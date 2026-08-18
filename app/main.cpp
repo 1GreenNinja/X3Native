@@ -321,7 +321,6 @@ int x3AppMain(int argc, char** argv) {
         _tf.testLevelLint = o.testLevelLint;
         _tf.testPropClip = o.testPropClip;
         _tf.testCanonPlay = o.testCanonPlay;
-        _tf.testGrounding = o.testGrounding;
         _tf.testStairNav = o.testStairNav;
         _tf.testGoldenPath = o.testGoldenPath;
         _tf.testOpening = o.testOpening;

@@ -318,10 +318,12 @@ static bool runFilmicMathSelfTest() {
 
 int dispatchTests(const TestFlags& tf) {
     // CHARACTER GROUNDING GATE — "character feet can NOT enter the floor unless
-    // its water, sand, or lava" (Tim). Reads the inline global rather than a
-    // TestFlags field; see the note in test_registry.h for why.
-    if (g_testGrounding) {
-        x3::logInfo("running character-grounding self-test (--test-grounding)...");
+    // its water, sand, or lava" (Tim). Two lanes plumbed --test-grounding
+    // independently — the inline global (see the note in test_registry.h) and a
+    // TestFlags field — and a merge that keeps only one of them silently stops
+    // running the gate. That has already happened twice. Accept EITHER.
+    if (g_testGrounding || tf.testGrounding) {
+        x3::logInfo("running the character-grounding GATE (feet vs support surface + the ward tableau, app/grounding.h)...");
         return x3::game::runGroundingSelfTest() ? 0 : 1;
     }
     // Headless self-tests (no window / Vulkan needed)
@@ -491,10 +493,6 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running skinned death-ragdoll (TASK#12) self-test...");
         return x3::game::runDeathRagdollSelfTest() ? 0 : 1;
     }
-    if (tf.testGrounding) {
-        x3::logInfo("running grounding self-test (feet-in-floor law + the ward tableau)...");
-        return x3::game::runGroundingSelfTest() ? 0 : 1;
-    }
     if (tf.testAudio) {
         x3::logInfo("running audio (M9) self-test...");
         return x3::audio::runAudioSelfTest() ? 0 : 1;
@@ -526,10 +524,6 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
         return x3::game::runCanonPlaySelfTest() ? 0 : 1;
-    }
-    if (tf.testGrounding) {
-        x3::logInfo("running the character-grounding GATE (feet vs support surface, app/grounding.h)...");
-        return x3::game::runGroundingSelfTest() ? 0 : 1;
     }
     if (tf.testStairNav) {
         x3::logInfo("running the STAIR-NAV self-test (S1-S5: chain vs geometry, 4.5 seal, F1->F3 climb)...");

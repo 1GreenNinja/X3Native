@@ -41,13 +41,12 @@ struct TestFlags {
     bool testDescentFall = false;   // --test-descentfall (fall shaft + dark room + keypad + elevator)
     bool testCaveAtmos = false;     // --test-caveatmos (crystal-only + beat pulse + fog cave atmosphere)
     bool testEcsRender = false, testPickup = false, testCombat = false, testDeathRagdoll = false;
-    bool testGrounding = false;
+    bool testGrounding = false;   // --test-grounding (character feet vs support surface, app/grounding.h)
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
     bool testKeypad = false;      // --test-keypad (realistic high-poly access keypad, KP1-KP6)
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testPropClip = false;    // --test-propclip (GATE A ext: dressing prop AABB vs room bounds)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
-    bool testGrounding = false;   // --test-grounding (character feet vs support surface, app/grounding.h)
     bool testStairNav = false;   // feat/stair-nav: enemy stairwell pathing (S1-S5)
     bool testFilmic = false;      // --test-filmic (composite filmic block: CPU-mirror identity probe)
     bool testGoldenPath = false;
