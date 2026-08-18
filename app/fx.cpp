@@ -5,8 +5,11 @@
 #include "fx.h"
 #include "mesh_prims.h"
 
+#include "engine/core/IConsole.h"   // applyWeaponFxCVars (w_* live weapon-FX tuning)
+
 #include <cmath>
 #include <cstdlib>   // std::rand / RAND_MAX (jagged lightning bolt jitter)
+#include <string>
 
 namespace x3::game {
 
@@ -123,6 +126,24 @@ void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to, W
     t.age  = 0.0f;        // Lightning bolt grows from the muzzle over time
     t.width = widthOverride;
     t.kind = kind;
+    // BULLET STREAK (Tim live-play 2026-08-16: the pistol drew "a phaser beam like
+    // primitive line" — the full-length 0.12 s ribbon). On-foot hitscan bullets
+    // (every kind except Lightning; ship bolts pass widthOverride > 0 and keep
+    // their space-combat read) now render as a SHORT TRAVELLING window of the ray
+    // (see draw()), so rapid fire reads as a stream of bullets. The tracer must
+    // live until the streak's TAIL clears the endpoint: (dist + len) / speed,
+    // bounded to 1.5 s so a mis-set cvar can never pin slots. PRESENTATION ONLY —
+    // the hitscan ray already resolved before this call; damage timing unchanged.
+    if (kind != WeaponFxKind::Lightning && widthOverride <= 0.0f) {
+        const float dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const FxTuning& tun = fxTuning();
+        const float spd = (tun.tracerSpeed > 1.0f) ? tun.tracerSpeed : 1.0f;
+        float life = (dist + tun.tracerLen) / spd;
+        if (life < 0.03f) life = 0.03f;       // point-blank still flashes a frame or two
+        if (life > 1.5f)  life = 1.5f;        // bound the pool occupancy
+        t.life = life;
+    }
     // The beam rides the shooter's velocity (see addTracer's note in fx.h): zero
     // for every on-foot caller, the ship's velocity for space combat.
     t.vel  = carrierVel ? *carrierVel : x3::phys::Vec3{ 0.0f, 0.0f, 0.0f };
@@ -145,47 +166,9 @@ void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to, W
 // Colors are LINEAR HDR — additive sparks/muzzle use >1 intensity so they feed
 // the renderer's bloom chain. Sizes are billboard half-extents in meters.
 // ---------------------------------------------------------------------------
-// Per-kind muzzle-flash tuning. Returns a tint (linear HDR), per-spark count + size
-// + speed multipliers, and a soft-flash tint/scale, so each weapon's flash reads
-// distinctly. Default/Pistol keep the original hot-orange ballistic look.
-namespace {
-struct MuzzleStyle {
-    float sparkR, sparkG, sparkB;     // spark tint (linear HDR -> bloom)
-    float flashR, flashG, flashB;     // soft-flash sprite tint
-    int   sparkCount;                 // number of cone sparks
-    float sizeMul;                    // spark + flash size multiplier
-    float speedMul;                   // spark cone speed multiplier
-    float coneJitter;                 // lateral spark spread (m/s)
-    float flashSize;                  // soft-flash half-extent (m) at birth
-};
-MuzzleStyle muzzleStyleFor(WeaponFxKind k) {
-    switch (k) {
-        case WeaponFxKind::Smg:       // leaner/cooler, many small fast sparks
-            return { 4.5f, 3.0f, 1.2f,  5.5f, 3.8f, 1.8f, 12, 0.8f, 1.15f, 2.0f, 0.22f };
-        case WeaponFxKind::Shotgun:   // WIDE fat boom: big flash, broad spray
-            return { 6.0f, 3.6f, 1.0f,  7.5f, 4.6f, 1.6f, 16, 1.6f, 1.0f,  3.6f, 0.52f };
-        case WeaponFxKind::Chaingun:  // hot + extra-sparky (busy auto roar)
-            return { 6.0f, 3.0f, 0.7f,  7.0f, 4.0f, 1.2f, 18, 0.95f,1.25f, 2.6f, 0.30f };
-        case WeaponFxKind::Plasma:    // BLUE energy: soft round flash, no metal sparks
-            return { 0.8f, 2.4f, 6.0f,  1.2f, 3.0f, 7.0f,  8, 1.2f, 0.85f, 1.4f, 0.40f };
-        case WeaponFxKind::Lightning: // electric crackle: LIGHT BLUE, twitchy fast (blue-forward,
-                                      // fewer/smaller sparks so the muzzle doesn't read as white dots)
-            return { 1.8f, 4.0f, 7.2f,  2.0f, 4.5f, 7.5f, 9, 0.55f, 1.5f,  3.2f, 0.26f };
-        case WeaponFxKind::Flame:     // IGNITION CONE: a fat orange flash + slower, wide,
-                                      // larger tongues leaving the nozzle (fuel catching,
-                                      // not a gunshot crack)
-            return { 5.0f, 2.0f, 0.45f, 6.0f, 2.6f, 0.7f, 14, 1.5f, 0.75f, 2.8f, 0.34f };
-        case WeaponFxKind::Frost:     // icy discharge: cyan-white, small tight cone
-            return { 1.5f, 3.5f, 6.5f,  2.0f, 4.2f, 7.0f,  8, 0.9f, 0.9f,  1.6f, 0.30f };
-        case WeaponFxKind::Napalm:    // heavy launcher pop (rocket-class, warmer)
-            return { 5.5f, 2.4f, 0.6f,  6.5f, 3.2f, 1.0f, 12, 1.3f, 1.0f,  2.4f, 0.40f };
-        case WeaponFxKind::Pistol:
-        case WeaponFxKind::Default:
-        default:                      // original hot orange-white ballistic look
-            return { 5.0f, 3.2f, 1.0f,  6.0f, 4.0f, 1.6f, 10, 1.0f, 1.0f,  2.0f, 0.28f };
-    }
-}
-} // namespace
+// Per-kind muzzle-flash tuning: MuzzleStyle / muzzleStyleFor moved to fx.h
+// (weapons-tuning lane) so --test-weapons can assert the flashScale rows —
+// Lightning 0.05 (Tim's 95% flare cut) and Pistol 0.5 live THERE, not here.
 
 void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir) {
     spawnMuzzleFlash(pos, dir, WeaponFxKind::Default);
@@ -195,6 +178,11 @@ void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3&
                                 WeaponFxKind kind) {
     x3::phys::Vec3 d = normalize(dir);
     const MuzzleStyle st = muzzleStyleFor(kind);
+    // Overall muzzle-flash SIZE scale: the per-kind flashScale ROW (Lightning 0.05 =
+    // Tim's 95% flare cut, Pistol 0.5) times the LIVE per-kind w_flash_<kind> cvar
+    // (weapons-tuning menu; default 1). Scales the spark + flash billboard sizes —
+    // additive accumulation means perceived flare energy falls with the SQUARE.
+    const float fscale = st.flashScale * fxTuning().flashKind[(int)kind % kWeaponFxKindCount];
     const bool isLightning = (kind == WeaponFxKind::Lightning);
     // LIGHTNING (director note): the bolt "travels too fast" — slow the visible
     // effect by ~39% (x0.61). The only per-frame "motion" the eye reads at the
@@ -211,8 +199,8 @@ void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3&
                                 d.y * speed + frandSym() * st.coneJitter * speedScale,
                                 d.z * speed + frandSym() * st.coneJitter * speedScale };
         p.life = p.maxLife = 0.06f + frand() * 0.06f;
-        p.size0 = (0.10f + frand() * 0.05f) * st.sizeMul;
-        p.size1 = 0.02f * st.sizeMul;
+        p.size0 = (0.10f + frand() * 0.05f) * st.sizeMul * fscale;
+        p.size1 = 0.02f * st.sizeMul * fscale;
         p.r = st.sparkR; p.g = st.sparkG; p.b = st.sparkB;   // per-weapon tint
         p.a0 = 1.0f;
         p.gravity = 0.0f; p.drag = 6.0f; p.additive = true;
@@ -225,7 +213,7 @@ void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3&
         Particle flash;
         flash.pos = pos;
         flash.life = flash.maxLife = 0.05f;
-        flash.size0 = st.flashSize; flash.size1 = st.flashSize * 0.36f;
+        flash.size0 = st.flashSize * fscale; flash.size1 = st.flashSize * 0.36f * fscale;
         flash.r = st.flashR; flash.g = st.flashG; flash.b = st.flashB;
         flash.a0 = 1.0f; flash.additive = true;
         spawnParticle(flash);
@@ -1507,23 +1495,45 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
             // Real arcs pulse in INTENSITY, not just in shape — vary brightness per
             // re-roll instead of holding one steady value.
             const float flicker = 0.78f + 0.42f * unitFromHash(hash32(boltSeed ^ 0xA5A5A5A5u));
-            float coreThick  = kLightningCoreThick * (0.85f + 0.25f * k);
+            // w_lightning_thickness (Tim: "lightning thickness needs to be a slider"):
+            // live scale on the core; the glow corona tracks at its fixed ~2.13x ratio
+            // inside drawBoltSegment, so the whole arc fattens/thins coherently.
+            float coreThick  = kLightningCoreThick * fxTuning().lightningThickness *
+                               (0.85f + 0.25f * k);
             float brightness = (0.75f + 0.35f * k) * flicker;
             drawLightningBolt(device, frame, t.from, tip, eyePos, coreThick, boltSeed, brightness);
+        } else if (t.width > 0.0f) {
+            // SHIP-SCALE bolt: full-length ribbon, HDR-hot so it BLOOMS as an
+            // energy bolt under the space exposure (the 1.0-range on-foot tint
+            // reads olive). Taper the width as it fades for a fast-streak feel.
+            const float hot[4] = { 3.2f, 2.9f, 1.3f, 1.0f };
+            float width = t.width * (0.5f + 0.5f * k);
+            drawTracerBillboard(device, frame, t.from, t.to, eyePos, width, hot);
         } else {
-            // Camera-facing ribbon (playtest "square rod" fix): a thin flat streak
-            // that always faces the eye instead of drawBeam's world-fixed square
-            // cross-section box. Taper the width as it fades for a fast-streak feel.
-            const float baseW = (t.width > 0.0f) ? t.width : kTracerThickness;
-            float width = baseW * (0.5f + 0.5f * k);
-            if (t.width > 0.0f) {
-                // SHIP-SCALE bolt: HDR-hot so it BLOOMS as an energy bolt under
-                // the space exposure (the 1.0-range on-foot tint reads olive).
-                const float hot[4] = { 3.2f, 2.9f, 1.3f, 1.0f };
-                drawTracerBillboard(device, frame, t.from, t.to, eyePos, width, hot);
-            } else {
-                drawTracerBillboard(device, frame, t.from, t.to, eyePos, width, tracerColor);
-            }
+            // BULLET STREAK (Tim: the pistol's full-length line read as "a phaser
+            // beam"). Draw only a SHORT TRAVELLING WINDOW of the ray: the head runs
+            // muzzle->hit at w_tracer_speed, trailing w_tracer_len of bright ribbon
+            // behind it, so rapid fire reads as a stream of bullets leaving the gun.
+            // dt-correct: driven by t.age (accumulated dt in update()), never by
+            // frame count. addTracer sized t.life so the tail clears the endpoint.
+            const FxTuning& tun = fxTuning();
+            x3::phys::Vec3 seg{ t.to.x - t.from.x, t.to.y - t.from.y, t.to.z - t.from.z };
+            const float fullLen = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
+            if (fullLen < 1e-4f) continue;
+            float head = tun.tracerSpeed * t.age;
+            float tail = head - tun.tracerLen;
+            if (tail < 0.0f) tail = 0.0f;
+            if (head > fullLen) head = fullLen;
+            if (tail >= head) continue;   // streak has fully passed the hit point
+            const float inv = 1.0f / fullLen;
+            const x3::phys::Vec3 a{ t.from.x + seg.x * (tail * inv),
+                                    t.from.y + seg.y * (tail * inv),
+                                    t.from.z + seg.z * (tail * inv) };
+            const x3::phys::Vec3 b{ t.from.x + seg.x * (head * inv),
+                                    t.from.y + seg.y * (head * inv),
+                                    t.from.z + seg.z * (head * inv) };
+            // Constant width — a bullet in flight doesn't fade or fatten.
+            drawTracerBillboard(device, frame, a, b, eyePos, kTracerThickness, tracerColor);
         }
     }
 
@@ -1539,7 +1549,8 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
                             a.base.z + a.dir.z * reach };
         const uint32_t bucket = (uint32_t)((a.maxLife - a.life) / 0.03f);   // ~33 re-rolls/s
         drawLightningBolt(device, frame, a.base, tip, eyePos,
-                          kLightningCoreThick * 0.5f, a.seed ^ bucket, 0.85f * k);
+                          kLightningCoreThick * fxTuning().lightningThickness * 0.5f,
+                          a.seed ^ bucket, 0.85f * k);
     }
 
     // ---- FLAME LICKS: velocity-stretched emissive fire tongues. --------------
@@ -1607,6 +1618,53 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
         float m[16];
         composeTRS3(m, right, up, back, s, s, s, m_muzzlePos);   // det +1 (was -1: forward)
         device.drawMesh(frame, m_box, x3::rhi::TextureHandle{}, muzzleColor, m);
+    }
+}
+
+// ===========================================================================
+// LIVE WEAPON-FX TUNING (weapons-tuning lane) — the w_* cvar -> FxTuning sync.
+//
+// Tim, from live play: "lightning thickness needs to be a slider in the weapons
+// menu ... with a test button that continuously shoots lightning for each
+// weapon". The dials live HERE (one mutable singleton read by the FX paths) and
+// are written each frame from the console, so typing a value in the dev shell
+// applies on the NEXT frame with no restart, no re-fire, no rebuild.
+//
+// A cvar that is not registered on the caller's console reads as an empty
+// string; that leaves the current value untouched (a bare --world host without
+// the engine cvar catalog keeps the shipped defaults, byte-identical).
+// ===========================================================================
+FxTuning& fxTuning() {
+    static FxTuning s;   // process-wide; defaults == the shipped look
+    return s;
+}
+
+namespace {
+// Read one float cvar into `dst`, clamped to [lo,hi]. Missing/blank cvar (a
+// console without the catalog) leaves `dst` alone.
+void syncCVar(const x3::con::IConsole& c, const char* name, float& dst, float lo, float hi) {
+    const std::string s = c.getString(name);
+    if (s.empty()) return;
+    float v = 0.0f;
+    try { v = std::stof(s); } catch (...) { return; }
+    dst = (v < lo) ? lo : (v > hi ? hi : v);
+}
+} // namespace
+
+void applyWeaponFxCVars(const x3::con::IConsole& console) {
+    FxTuning& t = fxTuning();
+    // Range rationale: 0.1x is a hairline thread, 8x is a fat plasma rope — both
+    // ends still render (no divide-by-zero, no pathological overdraw).
+    syncCVar(console, "w_lightning_thickness", t.lightningThickness, 0.1f,  8.0f);
+    syncCVar(console, "w_tracer_len",          t.tracerLen,          0.1f, 60.0f);
+    syncCVar(console, "w_tracer_speed",        t.tracerSpeed,        5.0f, 2000.0f);
+    for (int k = 0; k < kWeaponFxKindCount; ++k) {
+        const char* n = weaponFxKindName(k);
+        if (!n) continue;
+        // Upper bound 20: the LIGHTNING row ships at 0.05, so 20 is exactly the
+        // pre-cut legacy flare — the A/B "before" frame is expressible from the
+        // shipped binary instead of needing an old build to photograph.
+        syncCVar(console, (std::string("w_flash_") + n).c_str(), t.flashKind[k], 0.0f, 20.0f);
     }
 }
 
