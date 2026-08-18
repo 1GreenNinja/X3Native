@@ -1195,67 +1195,130 @@ namespace { thread_local bool g_skipUnderRiver = false; }
 // so this IS x3::game::worldUnderRiverChain, not a shadowing local.
 } // namespace (internal helpers)
 
+float worldCarveGuardAt(float x, float z) {
+    return facilityGuard(x, z) * contentGuard(x, z);
+}
+
+float worldPreUnderRiverHeight(float x, float z) {
+    const bool prev = g_skipUnderRiver;
+    g_skipUnderRiver = true;                      // authoredLandforms skips the UR carve
+    const float h = terrainHeightAtWorld(x, z) - terrainCorridorDelta(x, z);
+    g_skipUnderRiver = prev;
+    return h;
+}
+
 const UnderRiverChain& worldUnderRiverChain() {
     static const UnderRiverChain kChain = [] {
         UnderRiverChain c;
-        // Authored route + per-node character (drops/pools/widths — the map
-        // block in terrain.h names every clearance).
-        struct N { float x, z, drop, rush, hw, bed; bool pool; };
+        // THE ROUTE — every node read off X3_UR_SCAN's measured grid of the
+        // west valley (terrain.h's mechanism note says why it is not the
+        // massif). Only WIDTH is authored here: the depth profile and the
+        // whitewater are derived below from the ground itself.
+        struct N { float x, z, hw, bed; bool pool; };
         const N kN[] = {
-            { -1040.0f, 1080.0f, 0.0f, 0.0f, 5.5f, 2.0f, false },  // 0 head grotto
-            { -1075.0f,  860.0f, 0.0f, 0.0f, 5.5f, 2.0f, false },
-            { -1090.0f,  560.0f, 0.0f, 0.0f, 5.5f, 2.0f, false },
-            { -1055.0f,  300.0f, 0.0f, 0.2f, 5.5f, 2.0f, false },
-            {  -960.0f,   60.0f, 2.5f, 1.0f, 5.0f, 2.2f, false },  // 4 DROP 1
-            {  -905.0f,  -60.0f, 0.0f, 0.5f, 5.5f, 2.0f, false },
-            {  -700.0f, -140.0f, 0.0f, 0.0f, 9.0f, 3.5f, true  },  // 6 cavern pool
-            {  -640.0f, -260.0f, 2.5f, 1.0f, 5.0f, 2.2f, false },  // 7 DROP 2
-            {  -580.0f, -360.0f, 0.0f, 0.4f, 5.5f, 2.0f, false },
-            {  -520.0f, -420.0f, 0.0f, 0.0f, 5.5f, 2.0f, false },
-            // The tail rides the massif's east flank down to the CANYON MOUTH
-            // (C0 is at (-140,-520)) — north of the R1 ravine the whole way
-            // (R1 head (-410,-455): a tail through there floated water over
-            // R1's own cut — measured, node 11 of the first table). The
-            // sketch's exit south: the river surfaces where the canyon
-            // begins, and the canyon carries it away.
-            {  -480.0f, -430.0f, 1.5f, 0.8f, 5.0f, 2.2f, false },  // 10 gorge steps
-            {  -370.0f, -420.0f, 0.0f, 0.4f, 5.5f, 2.0f, false },
-            {  -265.0f, -465.0f, 1.0f, 0.8f, 5.0f, 2.2f, false },  // 12 last drop
-            {  -190.0f, -490.0f, 0.0f, 0.3f, 9.0f, 3.5f, true  },  // 13 plunge pool
+            { -1020.0f, 1090.0f, 5.5f, 2.0f, false },  //  0 head grotto (spring)
+            { -1045.0f,  900.0f, 5.5f, 2.0f, false },
+            // Nodes 2-5 stand off the WEST side of Scrapyard City's keep-out
+            // ring (pad (-600,500) r250 -> guard zero out to r*1.7=425, full
+            // only past 485) by 485 + the BAND half-width, not by 485: the
+            // guard applies to every metre the trench digs, not to the spine.
+            // The first west-valley route cleared the ring at the spine and
+            // U8 still read 0.243 at its band edge; U3 read a 25.7 m un-carved
+            // "bed" where the guard had quietly zeroed the trench while the
+            // water table still said wet.
+            { -1100.0f,  720.0f, 9.0f, 3.5f, true  },  //  2 the upper pool
+            { -1135.0f,  540.0f, 5.5f, 2.0f, false },
+            { -1125.0f,  400.0f, 5.0f, 2.2f, false },  //  4 the shallow-roof step
+            { -1075.0f,  230.0f, 5.5f, 2.0f, false },
+            {  -990.0f,   40.0f, 9.5f, 3.5f, true  },  //  6 THE GREAT HALL pool
+            // ... and nodes 7-9 stand the same band clearance off the WEST
+            // OUTPOST's camp ring at (-880,-320).
+            { -1035.0f, -140.0f, 5.5f, 2.0f, false },
+            { -1110.0f, -290.0f, 5.0f, 2.2f, false },
+            { -1090.0f, -450.0f, 5.5f, 2.0f, false },
+            { -1070.0f, -600.0f, 5.0f, 2.2f, false },  // 10 the gorge steps
+            { -1090.0f, -700.0f, 9.0f, 3.5f, true  },  // 11 plunge pool, OPEN sky
         };
         c.n = (int)(sizeof(kN) / sizeof(kN[0]));
         float total = 0.0f;
         for (int i = 0; i < c.n; ++i) {
             c.x[i] = kN[i].x; c.z[i] = kN[i].z;
             c.hw[i] = kN[i].hw; c.bedDrop[i] = kN[i].bed;
-            c.rush[i] = kN[i].rush; c.pool[i] = kN[i].pool;
+            c.pool[i] = kN[i].pool;
             if (i > 0) {
                 const float dx = c.x[i] - c.x[i-1], dz = c.z[i] - c.z[i-1];
                 total += std::sqrt(dx * dx + dz * dz);
             }
             c.cum[i] = total;
         }
-        // Naturals: pre-corridor, pre-UR (the flag guards re-entry).
-        g_skipUnderRiver = true;
+        // Naturals at the spine (reporting), pre-corridor and pre-UR.
         for (int i = 0; i < c.n; ++i)
-            c.natural[i] = terrainHeightAtWorld(c.x[i], c.z[i])
-                         - terrainCorridorDelta(c.x[i], c.z[i]);
-        g_skipUnderRiver = false;
-        // The derived table: head 8 m under its ground (a sealed spring), a
-        // guaranteed overall fall, authored drops, never above ground, and
-        // strictly descending whatever the country does.
-        float extra = 0.0f;
-        for (int i = 0; i < c.n; ++i) extra += kN[i].drop;
-        const float headY   = c.natural[0] - 8.0f;
-        const float portalY = std::min(c.natural[c.n-1] - 1.2f,
-                                       headY - 0.0045f * total - extra);
-        float dsum = 0.0f;
-        for (int i = 0; i < c.n; ++i) {
-            dsum += kN[i].drop;
-            c.w[i] = headY + (portalY + extra - headY) * (c.cum[i] / total) - dsum;
-            c.w[i] = std::min(c.w[i], c.natural[i] - 1.0f);
-            if (i > 0) c.w[i] = std::min(c.w[i], c.w[i-1] - 0.25f);
+            c.natural[i] = worldPreUnderRiverHeight(c.x[i], c.z[i]);
+
+        // THE MEASURED BAND FLOOR. For every SEGMENT, the lowest pre-UR ground
+        // anywhere in the corridor it carves (stations along it x lateral
+        // offsets out to the wall band). Capping BOTH endpoints of a segment
+        // at its own minimum is what makes the guarantee hold everywhere and
+        // not just at nodes: w is linear and descending between endpoints, so
+        // w(s) <= w[i] <= segMin - cover <= ground(s) - cover for all s.
+        float segMin[UnderRiverChain::kMax] = {};
+        float segMax[UnderRiverChain::kMax] = {};
+        for (int i = 0; i + 1 < c.n; ++i) {
+            const float dx = c.x[i+1] - c.x[i], dz = c.z[i+1] - c.z[i];
+            const float len = std::sqrt(dx * dx + dz * dz);
+            const float ux = dx / len, uz = dz / len;
+            const float px = -uz, pz = ux;
+            float m = 1e9f, mx = -1e9f;
+            const int steps = std::max(2, (int)(len / 10.0f) + 1);
+            for (int s = 0; s < steps; ++s) {
+                const float t = (float)s / (float)(steps - 1);
+                const float cx = c.x[i] + dx * t, cz = c.z[i] + dz * t;
+                for (int k = -4; k <= 4; ++k) {
+                    const float lat = (float)k * (kURWallOutW / 4.0f);
+                    const float g = worldPreUnderRiverHeight(cx + px * lat,
+                                                             cz + pz * lat);
+                    m = std::min(m, g); mx = std::max(mx, g);
+                }
+            }
+            segMin[i] = m; segMax[i] = mx;
         }
+        for (int i = 0; i < c.n; ++i) {
+            const int a = std::max(i - 1, 0), b = std::min(i, c.n - 2);
+            c.floorMin[i] = std::min(segMin[a], segMin[b]);
+            c.floorMax[i] = std::max(segMax[a], segMax[b]);
+        }
+        // THE DESCENDING WALK. The head is a sealed spring; every node after
+        // it is the lower of "as deep as the roof demands" and "at least
+        // kURMinFall below the node above".
+        c.w[0] = c.floorMin[0] - kURHeadCover;
+        for (int i = 1; i < c.n; ++i) {
+            const float len = c.cum[i] - c.cum[i-1];
+            c.w[i] = std::min(c.floorMin[i] - kURCoverMin,
+                              c.w[i-1] - kURMinFall * len);
+        }
+        // RUSH IS DERIVED, NOT AUTHORED: the gradient the country forced on
+        // the water IS the whitewater. Pools are still water whatever the
+        // reach does either side of them.
+        for (int i = 0; i < c.n; ++i) {
+            // The STEEPER of the two reaches meeting here, not their average —
+            // a centred difference smears a genuine step over 400 m of run and
+            // reports a gentle river where the water is actually falling.
+            float grade = 0.0f;
+            if (i > 0) grade = std::max(grade, (c.w[i-1] - c.w[i]) /
+                                        std::max(c.cum[i] - c.cum[i-1], 1.0f));
+            if (i + 1 < c.n) grade = std::max(grade, (c.w[i] - c.w[i+1]) /
+                                        std::max(c.cum[i+1] - c.cum[i], 1.0f));
+            c.rush[i] = c.pool[i] ? 0.0f
+                      : std::clamp(grade / kURRushGrade, 0.0f, 1.0f);
+        }
+        // The carve/query box, derived from the route (see UnderRiverChain).
+        c.bx0 = c.bz0 =  1e9f; c.bx1 = c.bz1 = -1e9f;
+        for (int i = 0; i < c.n; ++i) {
+            c.bx0 = std::min(c.bx0, c.x[i]); c.bx1 = std::max(c.bx1, c.x[i]);
+            c.bz0 = std::min(c.bz0, c.z[i]); c.bz1 = std::max(c.bz1, c.z[i]);
+        }
+        const float pad = kURWallOutW + 8.0f;
+        c.bx0 -= pad; c.bx1 += pad; c.bz0 -= pad; c.bz1 += pad;
         return c;
     }();
     return kChain;
@@ -1324,19 +1387,24 @@ float authoredLandforms(float h, float x, float z) {
     // natural lerp would let the floor breach the waterline between nodes.
     // g_skipUnderRiver guards the chain derivation's own sampling (the flag
     // is checked BEFORE the chain static so derivation can never re-enter).
-    if (!g_skipUnderRiver &&
-        x > -1160.0f && x < -140.0f && z > -540.0f && z < 1150.0f) {
+    // NOTE the short-circuit ORDER: g_skipUnderRiver is tested BEFORE
+    // worldUnderRiverChain() is touched, because the chain's own initializer
+    // samples this function (with the flag set) to measure its band floor.
+    // Reversing these two would be recursive static init.
+    if (!g_skipUnderRiver) {
         const UnderRiverChain& uc = worldUnderRiverChain();
-        float d, w, bed;
-        polyClosest(uc.x, uc.z, uc.w, uc.n, x, z, d, w, uc.bedDrop, &bed);
-        if (d < kURWallOutW) {
-            const float g = facilityGuard(x, z) * contentGuard(x, z);
-            // bed -> rock-beach shelf -> walls easing to the natural country.
-            const float t1 = sstep(kURBedHalfW, kURBedHalfW + 3.5f, d);
-            const float t2 = sstep(kURShelfHalfW, kURWallOutW, d);
-            const float inner = (w - bed) + ((w + kURShelfLift) - (w - bed)) * t1;
-            const float target = inner + (h - inner) * t2;
-            if (target < h) h += (target - h) * g;
+        if (uc.n >= 2 && x > uc.bx0 && x < uc.bx1 && z > uc.bz0 && z < uc.bz1) {
+            float d, w, bed;
+            polyClosest(uc.x, uc.z, uc.w, uc.n, x, z, d, w, uc.bedDrop, &bed);
+            if (d < kURWallOutW) {
+                const float g = facilityGuard(x, z) * contentGuard(x, z);
+                // bed -> rock-beach shelf -> walls easing to the natural country.
+                const float t1 = sstep(kURBedHalfW, kURBedHalfW + 3.5f, d);
+                const float t2 = sstep(kURShelfHalfW, kURWallOutW, d);
+                const float inner = (w - bed) + ((w + kURShelfLift) - (w - bed)) * t1;
+                const float target = inner + (h - inner) * t2;
+                if (target < h) h += (target - h) * g;
+            }
         }
     }
 
@@ -2024,8 +2092,7 @@ float worldWaterLevelAt(float x, float z) {
     // CONTACT LAW, fish and the visible water can never disagree down here.
     {
         const UnderRiverChain& uc = worldUnderRiverChain();
-        if (uc.n >= 2 &&
-            x > -1160.0f && x < -140.0f && z > -540.0f && z < 1150.0f) {
+        if (uc.n >= 2 && x > uc.bx0 && x < uc.bx1 && z > uc.bz0 && z < uc.bz1) {
             float du, wu, hwu;
             polyClosest(uc.x, uc.z, uc.w, uc.n, x, z, du, wu, uc.hw, &hwu);
             if (du <= hwu) return wu;

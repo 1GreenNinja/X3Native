@@ -216,24 +216,42 @@ float worldRiverRainRise();
 // cavern floor, so streaming, collision, CONTACT LAW and worldWaterLevelAt
 // all keep working untouched.
 //
-// THE WATER TABLE IS DERIVED, NOT GUESSED (NO_SLOP rule 9): node waterY ramps
-// from natural(head)-8 (the spring grotto under the future NW lake site) down
-// to natural(portal)-1.2 (the plunge pool where it surfaces beside the R1
-// ravine that already feeds the canyon), with authored whitewater DROPS
-// subtracted, clamped under the PRE-CORRIDOR natural ground everywhere, and
-// re-monotonized — so the run descends strictly whatever the fbm country
-// does. Sampling skips the UR carve itself (no self-reference) and subtracts
-// corridor deltas (roads may or may not be registered yet — the table must
-// not depend on registration order).
+// WHAT CUT-AND-COVER CAN AND CANNOT EXPRESS — the measured law of this
+// feature, paid for once (NO_SLOP rule 9/10). The trench's walls have to
+// CLIMB from the beach shelf back to the natural country inside the wall band
+// (kURShelfHalfW -> kURWallOutW). So the cavern's height IS its cover, and the
+// cover is bounded by band * tan(slope): with a 32 m band at the canyon pass's
+// own ~50-60 deg wall vocabulary that is ~36 m, no more. The FIRST authored
+// route was drawn off the map and never measured; --test-underriver's scan
+// then read 228 m of massif over its middle nodes (x -800..-350, z +100..-900
+// is a 200-270 m block). Cut-and-cover under that is not a cavern, it is a
+// 200 m slot with a lid on top — and where the same route crossed LOW country
+// its water sat 7.9 m ABOVE the ground 8 m off the spine, which is JOB 1's own
+// defect (water outside a body of water) reintroduced underground. Hence:
+//   * the route follows the WEST VALLEY, west of the massif, picked node by
+//     node off X3_UR_SCAN's measured grid, never over it;
+//   * the water table is derived from the MEASURED CORRIDOR BAND FLOOR, not
+//     from the spine height — w[i] <= (min pre-UR ground across the whole
+//     +-kURWallOutW band of the segments touching node i) - kURCoverMin — so
+//     no probe anywhere in the corridor can be under water and above ground;
+//   * gate U7 asserts cover <= kURCoverMax, i.e. the route stays inside what
+//     the mechanism can build. A route that fails U7 gets MOVED, not forced.
 //
-// Route (authored, world XZ): head grotto (-1040,1080) at the future lake's
-// outlet -> S under the west country -> UNDER THE BLUFF PLATEAU (the +20 m
-// high ground west of x=-450 — the map's "under the mountain" reach, nodes
-// 4..8) -> a cavern pool -> two whitewater drops -> a stepped gorge opening
-// to daylight -> plunge pool at (-445,-455), 35 m from the R1 ravine head
-// whose authored job is already "feeds the canyon off the bluff's south
-// shoulder". Clearances: Scrapyard pad guard 493 m, West Outpost >= 245 m,
-// facility keep-out >= 280 m, canyon spine >= 270 m.
+// THE WATER TABLE IS DERIVED, NOT GUESSED: head at bandFloor-kURHeadCover (a
+// sealed spring under the NW country), then a strictly descending walk
+// w[i] = min(bandFloor[i]-kURCoverMin, w[i-1]-kURMinFall*len) — so the river
+// falls exactly as much as the country makes it fall, and RUSH (whitewater) is
+// DERIVED from that gradient instead of being authored: where the roof forces
+// the water down fast, it churns. Sampling uses worldPreUnderRiverHeight (skips
+// this carve — no self-reference — and subtracts corridor deltas so the table
+// cannot depend on road-registration order).
+//
+// Route (authored XZ, every node read off the scan): head grotto (-1020,1090)
+// in the NW country -> S down the west valley -> the GREAT HALL pool at
+// (-990,10) where the flank stands ~43 m over the water -> W around the West
+// Outpost's keep-out -> the stepped gorge -> plunge pool at (-1090,-700),
+// open to the sky. Clearances (all measured, gate U8): Scrapyard City pad
+// guard, West Outpost, the facility box, and the 250 m massif itself.
 // ===========================================================================
 struct UnderRiverChain {
     static constexpr int kMax = 16;
@@ -246,17 +264,54 @@ struct UnderRiverChain {
     float rush[kMax] = {};     // whitewater factor 0..1 (drops)
     bool  pool[kMax] = {};
     float cum[kMax] = {};      // along-chain length (m)
+    float floorMin[kMax] = {}; // MEASURED min pre-UR ground across the corridor
+                               // band around this node (the table's real input)
+    float floorMax[kMax] = {}; // ... and the HIGHEST ground in the same band —
+                               // the trench wall actually has to climb to THAT,
+                               // so it, not floorMin, is what gate U7 budgets.
+    // The carve/query bounding box, DERIVED from the route (route + band +
+    // margin). One owner: authoredLandforms and worldWaterLevelAt both read
+    // it, so a route edit can never leave a stale hand-typed box behind
+    // (NO_SLOP rule 4 — this pair used to be two hardcoded literals).
+    float bx0 = 0, bx1 = 0, bz0 = 0, bz1 = 0;
 };
 const UnderRiverChain& worldUnderRiverChain();
+// The country BEFORE this river's own trench and before any road corridor —
+// the field the route, the water table and the COVER gate are all measured
+// against. Without it the derivation would read its own carve (cover 0
+// everywhere) and the route could never be checked.
+float worldPreUnderRiverHeight(float x, float z);
+// The authored-landform CARVE GUARD at (x,z): 1 where a cut may be dug, 0
+// inside the facility box and the city-pad / outpost keep-out rings, and a
+// ramp between. EVERY authored cut (canyon, ravines, river, this river) is
+// multiplied by it. Exported because a cut whose spine strays into a guard is
+// silently NOT DUG while every other system still believes it was — the
+// underground river's first route lost three nodes to Scrapyard City's ring
+// and left its water table hanging in mid-air over un-carved ground. Gate on
+// it (--test-underriver U8) rather than rediscovering that.
+float worldCarveGuardAt(float x, float z);
 // Carve geometry (PAIRED with the carve in terrain.cpp authoredLandforms and
 // the vault/selftest in app/underground_river.cpp):
 constexpr float kURBedHalfW    = 4.5f;    // wet channel floor half-width
 constexpr float kURShelfHalfW  = 12.0f;   // rock-beach shelf out to here (walkable)
-constexpr float kURWallOutW    = 24.0f;   // walls ease to natural country by here
+constexpr float kURWallOutW    = 44.0f;   // walls ease to natural country by here
 constexpr float kURShelfLift   = 0.45f;   // beach height ABOVE the water surface
+// The derivation's budget. kURCoverMax is not a preference: it is the deepest
+// trench the 32 m wall band can climb out of at the canyon pass's wall angle
+// (see the mechanism note above). Gate U7 enforces it against the ROUTE.
+constexpr float kURCoverMin    = 8.0f;    // rock over the water, minimum
+constexpr float kURWallMaxDeg  = 60.0f;   // ... and the steepest wall the band
+                                          // may climb out at — the CANYON PASS's
+                                          // own figure (terrain.cpp: "walls over
+                                          // 15 m (~60 deg at full depth)"), so
+                                          // this river's trench is no steeper
+                                          // than a cut the world already ships.
+constexpr float kURHeadCover   = 10.0f;   // the sealed spring at the head
+constexpr float kURMinFall     = 0.004f;  // m of fall per m of run, minimum
+constexpr float kURRushGrade   = 0.030f;  // gradient that reads as full whitewater
 // The gorge: the trench's last reach before the plunge pool runs OPEN to the
 // sky (no vault) — the river steps down into daylight.
-constexpr float kURGorgeLen    = 90.0f;
+constexpr float kURGorgeLen    = 120.0f;
 // Fill `out` with the working chain's nodes at the CURRENT risen level (the
 // same per-node cap worldWaterLevelAt applies). Returns the node count
 // (<= maxN). This is the array the drawn river surface renders from.

@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace x3::game {
@@ -68,20 +70,21 @@ UndergroundRiver::Result UndergroundRiver::build(
     const SurfaceSet& innerS = surf.get(device, "cv_rock_wet");    // cave rock, wet
     const SurfaceSet& outerS = surf.get(device, "terrain_rock");   // dry country rock
 
-    // ---- THE VAULT: ring-stitched arch strips, head -> gorge mouth. -------
-    // Feet planted INTO the trench walls (buried, no daylight seam), crown
-    // riding just above the pre-carve natural ground so the hill closes.
+    // ---- THE VAULT: the LID that puts the hillside back. ------------------
+    // Cut-and-cover's cover. The trench carve pulled the country down to the
+    // water; this restores the surface it removed, so from outside the hill is
+    // shut and from inside the void between carved floor and restored surface
+    // IS the cavern — a lens, tallest over the channel, closing to nothing at
+    // the band edge. That is why every lid vertex SAMPLES
+    // worldPreUnderRiverHeight (the ground before this trench existed) rather
+    // than arching between two feet: the first build arched from foot to foot
+    // through a single crown, which on the west valley's sloped flanks bulged
+    // the crown up to 15 m above the hillside it was supposed to hide.
     const float vaultEnd = total - kURGorgeLen;
     const ChainWalk walk(uc);
-    constexpr int   kAcross = 9;       // ring verts across the arch
-    constexpr float kStep = 12.0f;     // ring spacing (m)
-    // Feet OUTSIDE the wall band (kURWallOutW = 24): planted into the natural
-    // country and buried, so the lid spans the whole trench mouth. The first
-    // build put them 15 m out at a floor-derived height — on the deep massif
-    // reaches (natural 200+ m) that left a ring of open sky between vault
-    // edge and trench rim, and the "vault" floated mid-slot (measured, U3's
-    // first run + eyes-on reasoning). Feet now SAMPLE the built terrain.
-    constexpr float kFootOut = 26.0f;
+    constexpr int   kAcross = 13;      // ring verts across the lid
+    constexpr float kStep = 10.0f;     // ring spacing (m)
+    const float kFootOut = kURWallOutW + 2.0f;   // feet just outside the carve
     auto buildStrip = [&](float s0, float s1, bool inner) {
         CpuMesh m;
         const int rings = std::max(2, (int)((s1 - s0) / kStep) + 1);
@@ -90,33 +93,41 @@ UndergroundRiver::Result UndergroundRiver::build(
             float cx, cz, w, nat, dx, dz;
             walk.at(s, cx, cz, w, nat, dx, dz);
             const float px = -dz, pz = dx;
-            const float footYL = terrainHeightAtWorld(cx - px * kFootOut,
-                                                      cz - pz * kFootOut) - 1.2f;
-            const float footYR = terrainHeightAtWorld(cx + px * kFootOut,
-                                                      cz + pz * kFootOut) - 1.2f;
-            const float crownY = std::max(nat, std::max(footYL, footYR)) + 1.5f;
             for (int k = 0; k < kAcross; ++k) {
                 const float u = (float)k / (float)(kAcross - 1);   // 0..1 across
-                const float lat = (u * 2.0f - 1.0f) * kFootOut;    // -26..26
-                // Arch from buried foot to buried foot through the crown.
-                const float baseY = footYL + (footYR - footYL) * u;
-                const float arch = std::sin(u * 3.14159265f);
-                float y = baseY + (crownY - baseY) * arch;
-                // Rocky displacement (kept off the feet so they stay buried).
-                const float j = (k == 0 || k == kAcross - 1) ? 0.0f
-                              : rj(s * 0.13f + (inner ? 3.7f : 9.1f), (float)k * 2.1f);
-                y += j * 1.1f;
-                const float latJ = lat + ((k == 0 || k == kAcross - 1) ? 0.0f
-                                          : rj((float)k * 5.3f, s * 0.21f) * 1.4f);
+                const float lat = (u * 2.0f - 1.0f) * kFootOut;
+                const bool  foot = (k == 0 || k == kAcross - 1);
+                // Lateral jitter first: the lid is sampled AT the jittered
+                // point, so a rough edge still lands on the real ground.
+                const float latJ = lat + (foot ? 0.0f
+                                        : rj((float)k * 5.3f, s * 0.21f) * 1.6f);
+                const float vx = cx + px * latJ, vz = cz + pz * latJ;
+                const float ground = worldPreUnderRiverHeight(vx, vz);
+                float y;
+                if (foot) {
+                    y = ground - 1.4f;                 // tucked under the country
+                } else if (inner) {
+                    // A ROUGH ROCK CEILING: displacement only ever hangs DOWN
+                    // into the void (never up through the hill), and only where
+                    // the void is tall enough to take it.
+                    const float room = std::max(ground - (w + kURShelfLift), 0.0f);
+                    const float amp  = std::min(2.6f, room * 0.12f)
+                                     * std::sin(u * 3.14159265f);
+                    y = ground - 0.30f - (rj(s * 0.13f + 3.7f, (float)k * 2.1f)
+                                          * 0.5f + 0.5f) * amp;
+                } else {
+                    y = ground + 0.35f                 // outer skin rides proud
+                      + rj(s * 0.13f + 9.1f, (float)k * 2.1f) * 0.28f;
+                }
                 x3::rhi::MeshVertex v{};
-                v.pos[0] = cx + px * latJ;
-                v.pos[1] = y + (inner ? 0.0f : 0.55f);   // outer skin rides proud
-                v.pos[2] = cz + pz * latJ;
+                v.pos[0] = vx;
+                v.pos[1] = y;
+                v.pos[2] = vz;
                 // Inner face lights from below (normal down-ish), outer from
                 // above; exact normals matter less than orientation down here.
                 v.normal[0] = 0.0f; v.normal[1] = inner ? -1.0f : 1.0f; v.normal[2] = 0.0f;
                 v.uv[0] = s * 0.11f;                    // ~0.11 tiles/m along
-                v.uv[1] = u * 3.4f;                     // across the arch
+                v.uv[1] = u * 4.6f;                     // across the lid
                 m.v.push_back(v);
             }
         }
@@ -216,6 +227,37 @@ bool UndergroundRiver::runSelfTest() {
     };
 
     const UnderRiverChain& uc = worldUnderRiverChain();
+
+    // ROUTE SCAN (X3_UR_SCAN=1) — the pre-corridor country the route is picked
+    // ON (NO_SLOP rule 9: the first authored route was drawn from the map and
+    // measured 228 m of massif over nodes 7-8, which cut-and-cover cannot
+    // express; every node below is now chosen off THIS grid). Diagnostic only.
+    if (const char* sc = std::getenv("X3_UR_SCAN"); sc && sc[0]) {
+        float x0 = -1200, x1 = -100, z0 = -600, z1 = 1150, st = 50;
+        std::sscanf(sc, "%f,%f,%f,%f,%f", &x0, &x1, &z0, &z1, &st);
+        std::snprintf(d, sizeof(d),
+                      "[underriver] SCAN pre-UR ground: x %.0f..%.0f (columns) "
+                      "z %.0f..%.0f, step %.0f", x0, x1, z0, z1, st);
+        x3::logInfo(d);
+        { std::string hdr = "        ";
+          char cell[16];
+          for (float x = x0; x <= x1; x += st) {
+              std::snprintf(cell, sizeof(cell), "%5.0f", x); hdr += cell; }
+          x3::logInfo("[underriver] x=  " + hdr); }
+        for (float z = z1; z >= z0; z -= st) {
+            std::string row;
+            char cell[16];
+            std::snprintf(cell, sizeof(cell), "z%+6.0f:", z);
+            row = cell;
+            for (float x = x0; x <= x1; x += st) {
+                std::snprintf(cell, sizeof(cell), "%5.0f",
+                              worldPreUnderRiverHeight(x, z));
+                row += cell;
+            }
+            x3::logInfo("[underriver] " + row);
+        }
+    }
+
     // The measured table, printed whole — the numbers this lane is tuned by.
     for (int i = 0; i < uc.n; ++i) {
         std::snprintf(d, sizeof(d),
@@ -304,15 +346,66 @@ bool UndergroundRiver::runSelfTest() {
         check(worst < 0.01f && wetShelf == 0, "U4 the query and the table are ONE truth", d);
     }
 
-    // U5 — whitewater + pools exist as authored (the rushing-water read).
+    // U5 — the owner's RUSHING WATER is really in the table. rush is derived
+    // from the gradient the country forces (terrain.h), so this gate is a
+    // statement about the ROUTE: it must actually fall somewhere, not glide.
     {
-        int rushN = 0, poolN = 0;
+        int rushN = 0, poolN = 0; float maxRush = 0.0f;
         for (int i = 0; i < uc.n; ++i) {
-            if (uc.rush[i] >= 0.8f) ++rushN;
+            if (uc.rush[i] >= 0.55f) ++rushN;
+            maxRush = std::max(maxRush, uc.rush[i]);
             if (uc.pool[i]) ++poolN;
         }
-        std::snprintf(d, sizeof(d), "%d full-rush drops, %d pools", rushN, poolN);
-        check(rushN >= 2 && poolN >= 2, "U5 drops and pools are in the table", d);
+        std::snprintf(d, sizeof(d), "%d rushing reaches (max rush %.2f), %d pools",
+                      rushN, maxRush, poolN);
+        check(rushN >= 2 && maxRush >= 0.9f && poolN >= 2,
+              "U5 the run rushes at the steps and stills at the pools", d);
+    }
+
+    // U7 — THE COVER BUDGET. Cut-and-cover's walls have to climb out of the
+    // trench inside the wall band; cover IS the cavern's height and is bounded
+    // by what that band can carry (terrain.h's mechanism note). A route that
+    // busts this gets MOVED — forcing it is how you get a 200 m slot.
+    {
+        float wall = 0.0f, minCover = 1e9f; int atWall = -1, atMin = -1;
+        for (int i = 0; i < uc.n; ++i) {
+            const float cov = uc.floorMin[i] - uc.w[i];       // roof over the water
+            const float wal = uc.floorMax[i] - uc.w[i];       // the climb out
+            if (wal > wall) { wall = wal; atWall = i; }
+            if (cov < minCover) { minCover = cov; atMin = i; }
+        }
+        const float deg = std::atan(wall / (kURWallOutW - kURShelfHalfW))
+                        * 57.2957795f;
+        std::snprintf(d, sizeof(d),
+            "thinnest roof %.1f m (node %d); tallest trench wall %.1f m (node %d) "
+            "over the %.0f m band = %.1f deg (limit %.0f)",
+            minCover, atMin, wall, atWall, kURWallOutW - kURShelfHalfW,
+            deg, kURWallMaxDeg);
+        check(deg <= kURWallMaxDeg && minCover >= kURCoverMin - 0.01f,
+              "U7 the route stays inside what cut-and-cover can build", d);
+    }
+
+    // U8 — THE CARVE GUARD. Every authored cut is multiplied by the facility /
+    // city-pad / outpost guard, so a spine that strays into one is NOT DUG
+    // while worldWaterLevelAt still reports wet — water hanging in mid-air
+    // over solid ground, which is JOB 1's defect reintroduced underground.
+    // Measured across the WHOLE band, not just the spine.
+    {
+        const ChainWalk walk(uc);
+        float worst = 1.0f, wx = 0, wz = 0;
+        for (float s = 0.0f; s <= uc.cum[uc.n - 1]; s += 12.0f) {
+            float cx, cz, w, nat, dx, dz; walk.at(s, cx, cz, w, nat, dx, dz);
+            const float px = -dz, pz = dx;
+            for (int k = -3; k <= 3; ++k) {
+                const float lat = (float)k * (kURWallOutW / 3.0f);
+                const float g = worldCarveGuardAt(cx + px * lat, cz + pz * lat);
+                if (g < worst) { worst = g; wx = cx + px * lat; wz = cz + pz * lat; }
+            }
+        }
+        std::snprintf(d, sizeof(d),
+                      "weakest carve guard across the corridor %.3f at (%.0f, %.0f)",
+                      worst, wx, wz);
+        check(worst >= 0.999f, "U8 the whole corridor is allowed to be dug", d);
     }
 
     // U6 — determinism: a second read of the chain is bit-identical (the
