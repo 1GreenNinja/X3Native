@@ -103,6 +103,13 @@ UndergroundRiver::Result UndergroundRiver::build(
                                         : rj((float)k * 5.3f, s * 0.21f) * 1.6f);
                 const float vx = cx + px * latJ, vz = cz + pz * latJ;
                 const float ground = worldPreUnderRiverHeight(vx, vz);
+                // EVERY offset tapers to nothing at the rim (sin over the
+                // span). The carve already eases back to the natural country
+                // by kURWallOutW, so a lid that stayed a constant 0.35 m proud
+                // would draw a 1.7 km rock lip along both edges of the
+                // corridor; converging both skins onto the ground there closes
+                // the lens instead, and the feet tuck the seam under.
+                const float archT = std::sin(u * 3.14159265f);
                 float y;
                 if (foot) {
                     y = ground - 1.4f;                 // tucked under the country
@@ -111,13 +118,12 @@ UndergroundRiver::Result UndergroundRiver::build(
                     // into the void (never up through the hill), and only where
                     // the void is tall enough to take it.
                     const float room = std::max(ground - (w + kURShelfLift), 0.0f);
-                    const float amp  = std::min(2.6f, room * 0.12f)
-                                     * std::sin(u * 3.14159265f);
-                    y = ground - 0.30f - (rj(s * 0.13f + 3.7f, (float)k * 2.1f)
-                                          * 0.5f + 0.5f) * amp;
+                    const float amp  = std::min(2.6f, room * 0.12f) * archT;
+                    y = ground - 0.30f * archT
+                      - (rj(s * 0.13f + 3.7f, (float)k * 2.1f) * 0.5f + 0.5f) * amp;
                 } else {
-                    y = ground + 0.35f                 // outer skin rides proud
-                      + rj(s * 0.13f + 9.1f, (float)k * 2.1f) * 0.28f;
+                    y = ground + (0.35f + rj(s * 0.13f + 9.1f, (float)k * 2.1f)
+                                          * 0.28f) * archT;
                 }
                 x3::rhi::MeshVertex v{};
                 v.pos[0] = vx;
