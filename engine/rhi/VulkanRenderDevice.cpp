@@ -24,6 +24,18 @@ IRenderDevice* createRenderDevice() { return new VulkanRenderDevice(); }
 
 bool VulkanRenderDevice::init(const DeviceDesc& desc) {
         m_vsync = desc.vsync;
+        // MULTI-INSTANCE LANE: X3_PRESENTMODE=auto|fifo|mailbox|immediate|relaxed
+        // (or 0..4). Read HERE, before the first createSwapchain(), because the
+        // console does not exist yet at boot and the gate/measurement harnesses
+        // need to pin a mode from the environment without a code change.
+        if (const char* pm = std::getenv("X3_PRESENTMODE")) {
+            const std::string v(pm);
+            if      (v == "fifo"      || v == "1") m_presentPref = 1;
+            else if (v == "mailbox"   || v == "2") m_presentPref = 2;
+            else if (v == "immediate" || v == "3") m_presentPref = 3;
+            else if (v == "relaxed"   || v == "4") m_presentPref = 4;
+            else                                   m_presentPref = 0;
+        }
         m_headless = desc.headless;
         // SSAA (headless only): render at outW*ssaa x outH*ssaa, box-downscale on capture.
         m_ssaa  = (m_headless && desc.ssaa > 1) ? desc.ssaa : 1;
@@ -615,6 +627,39 @@ void VulkanRenderDevice::setVsync(bool enabled) {
         if (!m_headless) m_needsRecreate = true;
     }
 
+bool VulkanRenderDevice::iblBakeDueThisFrame() {
+        // MULTI-INSTANCE LANE (Bug 2) — see the m_iblRateHz comment block in
+        // VulkanRenderDevice_internal.h for the measurement that motivated this.
+        if (!m_iblReady || !m_iblDirty) return false;
+        if (!m_iblRateEnvRead) {
+            m_iblRateEnvRead = true;
+            if (const char* e = std::getenv("X3_IBLRATE")) m_iblRateHz = (float)std::atof(e);
+        }
+        // The FIRST bake is never throttled: mesh.frag set 4 must be pointed at a
+        // real environment before anything is drawn, and rate<=0 restores the
+        // historical every-frame behaviour exactly.
+        if (!m_iblBaked || m_iblRateHz <= 0.0f) return true;
+        if (!m_iblHaveLastBake) return true;
+        const double sinceMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - m_iblLastBake).count();
+        return sinceMs >= (1000.0 / (double)m_iblRateHz);
+    }
+
+void VulkanRenderDevice::setIblRate(float hz) {
+        if (hz < 0.0f) hz = 0.0f;
+        m_iblRateEnvRead = true;   // an explicit set wins over X3_IBLRATE
+        m_iblRateHz = hz;
+    }
+
+void VulkanRenderDevice::setPresentMode(int mode) {
+        // MULTI-INSTANCE LANE. Same shape as setVsync above: record the wish, flag
+        // a recreate, and let createSwapchain() resolve it (and log what it got).
+        if (mode < 0 || mode > 4) mode = 0;
+        if (mode == m_presentPref) return;
+        m_presentPref = mode;
+        if (!m_headless) m_needsRecreate = true;
+    }
+
 void VulkanRenderDevice::setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) {
         m_camPos = glm::vec3(x, y, z);
         m_camYaw = yaw; m_camPitch = pitch; m_camFov = fovDeg;
@@ -1006,7 +1051,8 @@ FrameContext VulkanRenderDevice::beginFrame() {
         if (m_headless && m_offscreenColorImg == VK_NULL_HANDLE) return fc;
 
         auto& fr = m_frames[m_frameIdx];
-        vkWaitForFences(m_dev.device, 1, &fr.inFlight, VK_TRUE, UINT64_MAX);
+        { X3_CPU_ZONE(Z_FenceWait);
+          vkWaitForFences(m_dev.device, 1, &fr.inFlight, VK_TRUE, UINT64_MAX); }
 
         // Retire any deferred buffer frees whose referencing frames have now
         // completed (fix 2: promoting a mesh to dynamic queues its old vbo here).
@@ -1064,6 +1110,7 @@ FrameContext VulkanRenderDevice::beginFrame() {
         // not signalled/waited (endFrame() submits with no wait semaphore headless).
         uint32_t imageIndex = 0;
         if (!m_headless) {
+            X3_CPU_ZONE(Z_Acquire);
             VkResult acq = vkAcquireNextImageKHR(m_dev.device, m_swapchain, UINT64_MAX,
                                                  fr.imageAvailable, VK_NULL_HANDLE, &imageIndex);
             if (acq == VK_ERROR_OUT_OF_DATE_KHR) { m_needsRecreate = true; return fc; }
@@ -1198,16 +1245,26 @@ void VulkanRenderDevice::endFrame(const FrameContext& fc) {
         // ===================================================================
         prepareFrameData();  // fill camera/light/sky UBO + SSBO + indirect (data only)
 
-        // ---- IBL rebake (default ON): if the sky changed (or first frame), rebuild
-        // the irradiance/prefilter cubes from the analytic sky on a one-time submit
-        // (its own fence) that completes BEFORE this frame's command buffer runs, so
-        // mesh.frag set 4 samples a valid environment. Cheap + rare (only on sky
-        // change), so per-frame cost is just the three texture fetches in the shader.
-        if (m_iblReady && m_iblDirty) {
+        // ---- IBL rebake: if the sky changed (or first frame), rebuild the
+        // irradiance/prefilter cubes from the analytic sky on a one-time submit
+        // (its own fence) that completes BEFORE this frame's command buffer runs,
+        // so mesh.frag set 4 samples a valid environment.
+        //
+        // The comment that used to sit here said "cheap + rare (only on sky
+        // change)". It was neither, and that mistaken belief is the whole of Bug 2:
+        // a world with a live time-of-day clock changes SkyParams every frame, so
+        // this blocking submit+fence ran every frame — 5.6 ms of a 10.1 ms frame
+        // solo, 32.4 ms of a 43.9 ms frame with a second X3Engine process up.
+        // iblBakeDueThisFrame() rate-limits it (r_iblrate, default 10 Hz); the
+        // dirty flag is NOT cleared when we skip, so no sky change is ever lost.
+        if (iblBakeDueThisFrame()) {
+            X3_CPU_ZONE(Z_IblBake);
             m_iblBakedThisFrame = true;
             const bool firstBake = !m_iblBaked;
             const auto tb0 = std::chrono::steady_clock::now();
             regenIblFromSky();
+            m_iblLastBake = std::chrono::steady_clock::now();
+            m_iblHaveLastBake = true;
             if (firstBake) {     // boot receipt only; later sky-change rebakes stay quiet
                 char bb[96];
                 std::snprintf(bb, sizeof(bb), "[boot] ibl first bake: %.1f ms (incl. pending upload retire)",
@@ -1243,6 +1300,7 @@ void VulkanRenderDevice::endFrame(const FrameContext& fc) {
         const bool audioWant = m_audioRaysWantFrames > 0;
         if (m_audioRaysWantFrames > 0) --m_audioRaysWantFrames;
         if (m_rtSupported && (m_rtao.enabled || reflRtWant || ddgiWant || rtshWant || audioWant)) {
+            X3_CPU_ZONE(Z_RtGate);
             const bool coreReady = m_rtao.enabled ? ensureRtaoReady() : ensureRtCore();
             if (coreReady && buildRtSceneAS() && m_rt.lastInstanceCount() > 0) {
                 if (m_rtao.enabled) {
@@ -1382,6 +1440,7 @@ void VulkanRenderDevice::endFrame(const FrameContext& fc) {
             present.pSwapchains = &m_swapchain;
             present.pImageIndices = &imageIndex;
             X3_CPU_ZONE(Z_Submit);
+            X3_CPU_ZONE(Z_Present);
             VkResult pr = vkQueuePresentKHR(m_gfxQueue, &present);
             if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) m_needsRecreate = true;
         }
@@ -1624,6 +1683,24 @@ void VulkanRenderDevice::logPerfBreakdown(const char* why) {
                 const double ms = x3::perf::ticksToMs(m_perfCpuTicks[subs[si]]) * invC;
                 std::snprintf(b, sizeof(b), "[perf]   %-20s %8.3f ms          (inside cpu.rt_as_build)",
                               x3::perf::zoneName(subs[si]), ms);
+                logInfo(b);
+            }
+        }
+        // PRESENT SPLIT (multi-instance lane): the three blocking waits, named.
+        // wait.fence + wait.acquire live inside cpu.beginframe; wait.present lives
+        // inside cpu.submit_present. Nested, so NOT summed into the partition.
+        {
+            const uint32_t waits[] = { x3::perf::Z_FenceWait, x3::perf::Z_Acquire,
+                                       x3::perf::Z_Present,
+                                       x3::perf::Z_IblBake, x3::perf::Z_RtGate };
+            const char* parent[] = { "(inside cpu.beginframe)", "(inside cpu.beginframe)",
+                                     "(inside cpu.submit_present)",
+                                     "(inside cpu.endframe_rest)", "(inside cpu.endframe_rest)" };
+            for (uint32_t wi = 0; wi < 5; ++wi) {
+                const double ms = x3::perf::ticksToMs(m_perfCpuTicks[waits[wi]]) * invC;
+                std::snprintf(b, sizeof(b), "[perf]   %-20s %8.3f ms  %5.1f%%   %s",
+                              x3::perf::zoneName(waits[wi]), ms,
+                              frameCpu > 0.0 ? 100.0 * ms / frameCpu : 0.0, parent[wi]);
                 logInfo(b);
             }
         }

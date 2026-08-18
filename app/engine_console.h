@@ -74,6 +74,28 @@ void registerEngineConsoleCommands(x3::con::IConsole& console, GLFWwindow* windo
 void registerEngineConsole(x3::con::IConsole& console, GLFWwindow* window,
                            const EngineConsoleHooks& hooks);
 
+// ---- MULTI-INSTANCE LANE (Bug 2) -------------------------------------------
+// Register `r_presentmode` + `r_bgfps` on a console that does NOT go through
+// registerEngineConsoleCVars (the bespoke world hosts register their own
+// r_maxfps and never call the shared catalog). Call once per console.
+void registerMultiInstanceCVars(x3::con::IConsole& console);
+
+// Resolve `r_presentmode` (auto|fifo|mailbox|immediate|relaxed, or 0..4) to the
+// IRenderDevice::setPresentMode enum. Returns 0 (auto) for anything unknown.
+int presentModeFromCVar(x3::con::IConsole& console);
+
+// THE FRAME CAP, focus-aware. Replaces the copy-pasted r_maxfps sleep/spin block
+// in the window loops.
+//
+// WHY: two X3Engine windows rendering flat out do not politely halve — they
+// collapse, because each keeps a full frame of GPU work and blocking submits in
+// flight for a window nobody is looking at. Every shipped game solves this the
+// same way: the unfocused instance stops asking. When `window` is NOT focused
+// the effective cap becomes `r_bgfps` (0 = no background cap = the historical
+// behaviour); focused, it is `r_maxfps`, unchanged. `prevTime` is the caller's
+// per-loop cursor in glfwGetTime() seconds. A null window counts as focused.
+void paceFrame(x3::con::IConsole& console, GLFWwindow* window, double& prevTime);
+
 // Headless self-test (--test-engineconsole): registers the shared set with a
 // stub hook set (real noclip only, everything else absent -> "campaign only"
 // stubs), then execs r_exposure / noclip / help and asserts none of it

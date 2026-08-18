@@ -62,6 +62,7 @@
 #include "../vehparts.h"               // NFS LAYER: the parts catalog + the build
 #include "../perfshop.h"               // NFS LAYER: the dormant performance shop, live
 #include "../hud.h"                    // ENGINE CONSOLE: D6 IConsole + Hud drop-down front-end
+#include "../engine_console.h"         // MULTI-INSTANCE LANE: r_presentmode / r_bgfps + paceFrame
 #include "engine/core/IConsole.h"
 #include "engine/core/x3_cpuzones.h"  // LANE 6 REPLAY: host frame-span CPU zones (splits cpu.host_outside)
 #include <string>
@@ -3096,6 +3097,9 @@ int hostEchotropolis(HostContext& hc) {
     // Type `r_maxfps 120`, `r_ddgi 0`, `r_taa 0`, etc. Synced to the device
     // every frame below; applyAtmosphere stays the single setPostFX writer.
     console->registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    // MULTI-INSTANCE LANE (Bug 2): r_presentmode + r_bgfps. This host registers
+    // its own catalog rather than the shared one, so it asks for them by name.
+    x3::game::registerMultiInstanceCVars(*console);
     console->registerCVar("ws_budget", "2.0", "world-streaming main-thread budget per frame (ms)");
     console->registerCVar("r_exposure", "1.0", "whole-scene brightness (pre-tonemap exposure multiplier; live)");
     console->registerCVar("r_tonemap",        "1",    "tonemap operator: 1 = ACES filmic (default), 0 = passthrough clamp (debug A/B)");
@@ -3198,6 +3202,10 @@ int hostEchotropolis(HostContext& hc) {
         ao.rays     = std::clamp(ci("r_rtao_rays"), 1, 32);
         ao.strength = cf("r_rtao_strength");
         device->setRtaoParams(ao);
+        // MULTI-INSTANCE LANE: live present-mode switch (no-op when unchanged) +
+        // the IBL rebake rate limit that closed Bug 2.
+        device->setPresentMode(x3::game::presentModeFromCVar(*console));
+        device->setIblRate(cf("r_iblrate"));
         x3::rhi::IRenderDevice::ReflectionParams rf{};
         rf.ssr        = ci("r_ssr") != 0;
         rf.rtFallback = ci("r_rtreflections") != 0;
@@ -5074,18 +5082,11 @@ int hostEchotropolis(HostContext& hc) {
             // so a binding frame cap would inflate the CPU frame time and land in the
             // host residual. This row MUST read ~0 for a breakdown to be believed.
             X3_HOST_ZONE(Z_HostFrameCap);
-            const float maxfps = (float)std::atof(console->getString("r_maxfps").c_str());
-            if (maxfps > 0.0f) {
-                const double target = frameCapPrev + 1.0 / (double)maxfps;
-                double nowc = glfwGetTime();
-                if (nowc < target) {
-                    const double remain = target - nowc;
-                    if (remain > 0.002)
-                        std::this_thread::sleep_for(std::chrono::duration<double>(remain - 0.001));
-                    while (glfwGetTime() < target) { /* short spin to the deadline */ }
-                }
-            }
-            frameCapPrev = glfwGetTime();
+            // MULTI-INSTANCE LANE (Bug 2): same sleep/spin as before, moved into
+            // x3::game::paceFrame() and given ONE new behaviour — an UNFOCUSED
+            // window caps at `r_bgfps` instead of `r_maxfps`, so a background
+            // instance releases the GPU to the window the owner is playing in.
+            x3::game::paceFrame(*console, window, frameCapPrev);
         }
 
         // FPS: log once per second.

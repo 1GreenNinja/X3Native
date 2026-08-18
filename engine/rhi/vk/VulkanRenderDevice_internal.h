@@ -169,6 +169,8 @@ public:
     void onResize(uint32_t w, uint32_t h) override;
 
     void setVsync(bool enabled) override;
+    void setPresentMode(int mode) override;
+    void setIblRate(float hz) override;
 
     void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) override;
     void setCameraBasis(float x, float y, float z,
@@ -2445,6 +2447,33 @@ private:
     bool m_iblReady = false;          // all resources created (mesh.frag may sample)
     bool m_iblBaked = false;          // a valid environment was baked at least once
     bool m_iblDirty = true;           // sky changed -> rebake on next frame prep
+    // ---- IBL REBAKE RATE LIMIT (multi-instance lane, Bug 2) -----------------
+    // regenIblFromSky() is a BLOCKING oneTimeSubmit: record, submit to the
+    // graphics queue, vkWaitForFences(UINT64_MAX). The code that guards it was
+    // written believing a sky change is "rare (sky change only)" — and it IS, in
+    // a level with a static sky. Any world with a live time-of-day clock nudges
+    // SkyParams EVERY FRAME, so setSky() marked the probe dirty every frame and
+    // the frame took a full blocking GPU round-trip every frame.
+    //
+    // Measured (echotropolis, RTX 5090): end.ibl_bake = 5.6 ms of a 10.1 ms frame
+    // SOLO (55.7 %). With a second X3Engine process running it became 32.4 ms of
+    // a 43.9 ms frame (73.7 %) — because a blocking fence wait does not just cost
+    // your own GPU work, it queues behind the OTHER process's frame too. THAT is
+    // the multi-instance collapse: not present, not acquire (both ~0.005 ms), but
+    // a per-frame synchronous submit amplified ~6x by cross-process scheduling.
+    //
+    // The fix is not to make the wait smarter, it is to stop doing it 100x a
+    // second. The IBL is low-frequency lighting; a sunset does not need 100 Hz.
+    // r_iblrate = max bakes per second (0 = every frame, the old behaviour).
+    float m_iblRateHz = 10.0f;
+    bool  m_iblRateEnvRead = false;
+    std::chrono::steady_clock::time_point m_iblLastBake{};
+    bool  m_iblHaveLastBake = false;
+    // True when the probe is dirty AND the rate limit allows a bake THIS frame.
+    // Both consumers (the endFrame bake site and the GPU-cull fallback in
+    // prepareFrameData) must agree, or the cull path would fall back on frames
+    // that never bake.
+    bool iblBakeDueThisFrame();
     // Env (intermediate) cube: captured analytic sky, full mip chain for prefilter.
     VkImage     m_iblEnvImg = VK_NULL_HANDLE;  VmaAllocation m_iblEnvAlloc = nullptr;
     VkImageView m_iblEnvCubeView = VK_NULL_HANDLE;            // CUBE view (all mips) for sampling
@@ -3429,6 +3458,10 @@ private:
     bool     m_tlasDbReceiptLogged = false;  // one-shot TLAS double-buffer proof line (#5)
 
     bool m_vsync = true;
+    // MULTI-INSTANCE LANE: explicit present-mode override (see IRenderDevice::
+    // setPresentMode). 0 = auto = the historical vsync ? FIFO : MAILBOX pick.
+    int  m_presentPref = 0;
+    bool m_presentReceiptLogged = false;   // one line per swapchain build
     bool m_needsRecreate = false;
     uint32_t m_width = 0, m_height = 0;
     uint32_t m_ssaa = 1, m_outW = 0, m_outH = 0;   // SSAA: m_width = m_outW*ssaa; downscale on capture

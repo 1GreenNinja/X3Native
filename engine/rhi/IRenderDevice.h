@@ -236,6 +236,25 @@ public:
     // is unchanged. Additive: the interactive windowed path is otherwise unchanged.
     virtual void setVsync(bool enabled) = 0;
 
+    // MULTI-INSTANCE LANE: the swapchain present mode, EXPLICIT and overridable.
+    // setVsync only ever picks between FIFO (on) and MAILBOX (off) and neither is
+    // right for every situation — FIFO queues two composited windows behind the
+    // SAME DWM vblank, MAILBOX keeps a full-rate render running for frames the
+    // compositor throws away. This exposes the choice (cvar `r_presentmode`,
+    // env X3_PRESENTMODE).
+    //   0 = auto (historical: vsync ? FIFO : MAILBOX)
+    //   1 = FIFO   2 = MAILBOX   3 = IMMEDIATE   4 = FIFO_RELAXED
+    // Unsupported modes fall back to FIFO (the one mode the spec guarantees).
+    // No-op headless / when unchanged; otherwise flags a swapchain recreate.
+    virtual void setPresentMode(int mode) { (void)mode; }
+
+    // MULTI-INSTANCE LANE: max IBL probe rebakes per second (cvar `r_iblrate`,
+    // env X3_IBLRATE). The rebake is a BLOCKING submit+fence and a live
+    // time-of-day sky marks the probe dirty every frame, which made it the single
+    // largest item in the frame (55 % solo, 74 % with a second process running).
+    // 0 = rebake on every dirty frame (the historical behaviour). Default 10 Hz.
+    virtual void setIblRate(float hz) { (void)hz; }
+
     // Camera (FPS-style). Angles in radians. The device builds view+proj.
     // forward = (cos(pitch)*cos(yaw), sin(pitch), cos(pitch)*sin(yaw)).
     virtual void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) = 0;
