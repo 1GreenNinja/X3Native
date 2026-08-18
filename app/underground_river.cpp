@@ -45,10 +45,55 @@ inline float vaultCeilingY(float ground, float waterY, float u,
     return ground - 0.30f * archT - j * amp;
 }
 
+// THE APRON'S LATERAL SAMPLE TABLE — ONE producer, two consumers (build() and
+// gate U10; NO_SLOP rule 4). Uniform samples across the carved band PLUS a
+// vertex planted exactly on each of the carve's two CREASES.
+//
+// Why the creases matter: terrain.cpp shapes the trench with two smoothsteps
+// that meet — bed->beach over [bedW, shelfW], beach->country over [shelfW,
+// kURWallOutW]. Where they meet the field is C1-discontinuous, a real kink,
+// and ANY flat chord spanning a concave kink passes under the ground. Measured
+// at 2.2 m uniform spacing: 175 of 6720 apron cells pierced, worst 0.280 m —
+// which is what drew a diagonal band of splat GRASS along the beach in three
+// consecutive captures while every other gate stayed green. A bigger lift only
+// buries the player deeper; a denser mesh only shrinks the sag. A vertex ON
+// the crease removes it.
+inline void apronLats(std::vector<float>& out) {
+    out.clear();
+    constexpr int kUniform = 41;
+    for (int k = 0; k < kUniform; ++k)
+        out.push_back(((float)k / (kUniform - 1) * 2.0f - 1.0f) * kURWallOutW);
+    // The creases, both banks. bedW/shelfW mirror the carve exactly; they are
+    // constants now only because kURHalfWidth is (see terrain.h).
+    const float bedW   = std::max(kURBedHalfW,   kURHalfWidth + 0.8f);
+    const float shelfW = std::max(kURShelfHalfW, bedW + 3.5f);
+    for (float c : { bedW, shelfW }) { out.push_back(c); out.push_back(-c); }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](float a, float b) { return std::fabs(a - b) < 0.05f; }),
+              out.end());
+}
+
 struct CpuMesh {
     std::vector<x3::rhi::MeshVertex> v;
     std::vector<uint32_t> i;
 };
+
+// MITERED CROSS-SECTION. Both the lid and the apron are laid out as (along,
+// lateral) strips, and the naive lateral axis is the containing SEGMENT's
+// perpendicular. But the CARVE is defined by true distance to the polyline, so
+// at a bend the two disagree: on the outside of a turn a vertex placed 44 m
+// perpendicular sits nearer than 44 m to the polyline, and the strip's rim
+// falls SHORT of the carved rim. The apron therefore stopped before the trench
+// wall did and left a one-sided band of carved-but-unskinned ground showing
+// the height/slope splat — GRASS up the right bank of every bend, with a
+// dead-straight mesh edge against the rock. (Same defect would leave the vault
+// lid short of the trench mouth, i.e. daylight into the cavern.)
+//
+// The fix is the standard one for a swept ribbon: near a node blend the
+// lateral axis toward the MITER of the two segment perpendiculars and scale
+// the offset by 1/cos(half-turn), which puts the rim back on true distance.
+struct Frame { float x, z, px, pz, scale; };
 
 // Walk the chain: position/value interpolation at along-length s, plus the
 // unit direction of the containing segment.
@@ -68,6 +113,50 @@ struct ChainWalk {
         nat = c.natural[i] + (c.natural[i + 1] - c.natural[i]) * t;
         dx = (c.x[i + 1] - c.x[i]) / seg;
         dz = (c.z[i + 1] - c.z[i]) / seg;
+    }
+
+    // Unit direction of segment i (clamped at the ends).
+    void segDir(int i, float& ux, float& uz) const {
+        i = std::clamp(i, 0, c.n - 2);
+        const float dx = c.x[i + 1] - c.x[i], dz = c.z[i + 1] - c.z[i];
+        const float L = std::max(std::sqrt(dx * dx + dz * dz), 1e-4f);
+        ux = dx / L; uz = dz / L;
+    }
+
+    Frame frameAt(float s) const {
+        s = std::clamp(s, 0.0f, c.cum[c.n - 1]);
+        int i = 0;
+        while (i + 2 < c.n && c.cum[i + 1] < s) ++i;
+        const float seg = std::max(c.cum[i + 1] - c.cum[i], 1e-3f);
+        const float t = std::clamp((s - c.cum[i]) / seg, 0.0f, 1.0f);
+        Frame f{};
+        f.x = c.x[i] + (c.x[i + 1] - c.x[i]) * t;
+        f.z = c.z[i] + (c.z[i + 1] - c.z[i]) * t;
+        float ux, uz; segDir(i, ux, uz);
+        const float px = -uz, pz = ux;              // this segment's perpendicular
+        // Blend toward the miter over the last/first `blend` metres of the run
+        // into each node, so the lateral axis turns smoothly through the bend.
+        const float blend = std::min(28.0f, seg * 0.5f);
+        float bx = px, bz = pz;
+        auto mixToward = [&](int other, float k) {
+            float ox, oz; segDir(other, ox, oz);
+            const float qx = -oz, qz = ox;
+            bx += (qx - px) * k; bz += (qz - pz) * k;
+        };
+        const float dIn  = s - c.cum[i];            // distance past this node
+        const float dOut = c.cum[i + 1] - s;        // distance to the next node
+        if (i > 0 && dIn < blend)
+            mixToward(i - 1, 0.5f * (1.0f - dIn / blend));
+        if (i + 2 < c.n && dOut < blend)
+            mixToward(i + 1, 0.5f * (1.0f - dOut / blend));
+        const float bl = std::max(std::sqrt(bx * bx + bz * bz), 1e-4f);
+        f.px = bx / bl; f.pz = bz / bl;
+        // Offsets along the mitered axis must grow by 1/cos(half-turn) to land
+        // back on the same TRUE distance the carve uses. Clamped so a hairpin
+        // cannot blow the strip up.
+        const float cosH = std::max(f.px * px + f.pz * pz, 0.35f);
+        f.scale = 1.0f / cosH;
+        return f;
     }
 };
 
@@ -110,10 +199,11 @@ UndergroundRiver::Result UndergroundRiver::build(
             const float s = s0 + (s1 - s0) * ((float)rg / (float)(rings - 1));
             float cx, cz, w, nat, dx, dz;
             walk.at(s, cx, cz, w, nat, dx, dz);
-            const float px = -dz, pz = dx;
+            const Frame fr = walk.frameAt(s);       // mitered: see Frame
+            const float px = fr.px, pz = fr.pz;
             for (int k = 0; k < kAcross; ++k) {
                 const float u = (float)k / (float)(kAcross - 1);   // 0..1 across
-                const float lat = (u * 2.0f - 1.0f) * kFootOut;
+                const float lat = (u * 2.0f - 1.0f) * kFootOut * fr.scale;
                 const bool  foot = (k == 0 || k == kAcross - 1);
                 // Lateral jitter first: the lid is sampled AT the jittered
                 // point, so a rough edge still lands on the real ground.
@@ -172,7 +262,7 @@ UndergroundRiver::Result UndergroundRiver::build(
                                        m.i.data(), (uint32_t)m.i.size());
             const SurfaceSet& ss = inner == 0 ? innerS : outerS;
             e.tex = ss.albedo; e.normalTex = ss.normal; e.mrTex = ss.mr;
-            const float tint = inner == 0 ? 0.62f : 0.80f;   // cave rock darker
+            const float tint = inner == 0 ? 0.42f : 0.80f;   // cave rock darker
             e.baseColor[0] = tint; e.baseColor[1] = tint;
             e.baseColor[2] = tint; e.baseColor[3] = 1.0f;
             e.tag = (uint32_t)Tag::Static;
@@ -191,11 +281,37 @@ UndergroundRiver::Result UndergroundRiver::build(
     // over the carved shelf, the same "rides proud" idiom as the arrival decks
     // (ENGINE_GOTCHAS 3.5). Collision stays the terrain underneath, so the
     // apron cannot lift a boot off the ground it is standing on.
-    const SurfaceSet& beachS = surf.get(device, "cv_rock_flume");  // water-worn rock
+    // terrain_rock_grey: photographic water-worn COBBLE, matte (roughness
+    // 0.90, metallic 0). NOT cv_rock_flume, whose NAME says water-worn rock
+    // flume and whose PIXELS are a pictorial AI illustration of a waterfall —
+    // pools, boulders and falling water baked into one scene. Tiled every few
+    // metres across a beach it drew a repeating grid of little glossy
+    // landscapes. I checked that file had bytes and never opened it; the brief
+    // said "check what is published" and bytes are not what that means.
+    // X3_WORLD_RULES rule 0 / NO_SLOP rule 2: LOOK at the asset.
+    const SurfaceSet& beachS = surf.get(device, "terrain_rock_grey");
     {
-        constexpr int   kAcross = 13;
-        constexpr float kStep   = 8.0f;
-        const float outW = kURShelfHalfW + 9.0f;   // bed + beach + the wall's toe
+        // DENSER THAN THE FIELD IT HUGS. At 13 verts over 56 m the apron's
+        // chords were 4.3 m — coarser than the terrain's own 1 m LOD0 cells —
+        // so across the convex knee where the beach turns up into the wall the
+        // chord cut BELOW the ground and the terrain poked through, drawing a
+        // band of splat GRASS along the whole run. An offset cannot fix a
+        // resolution problem; matching the field can.
+        std::vector<float> lats; apronLats(lats);
+        const int kAcross = (int)lats.size();
+        // 2.5 m, not 6. Sagitta goes as the chord SQUARED, and near a bend a
+        // line of constant lateral offset sweeps ACROSS the carve's crease, so
+        // the along-run chord sagged 1.04 m at 6 m spacing and cut a wedge of
+        // bare splat straight through the apron (seen first as a magenta-probe
+        // hole, then measured by U10 once it learned to check both axes).
+        constexpr float kStep = 2.5f;      // ~2.5 m along
+        // THE WHOLE CARVED BAND. Stopping short left a wedge of splat GRASS
+        // between the apron's rim and the wall, and no offset or texture
+        // choice fixes ground the apron simply does not cover. Out at
+        // kURWallOutW the carve has met the natural country and the vault's
+        // lid has converged onto it, so the join is hidden by the lid — the
+        // splat is never visible from inside the cavern at all.
+        const float outW = kURWallOutW;
         const float kChunkB = 320.0f;
         for (float s0 = 0.0f; s0 < total - 1.0f; s0 += kChunkB) {
             const float s1 = std::min(s0 + kChunkB, total);
@@ -205,20 +321,48 @@ UndergroundRiver::Result UndergroundRiver::build(
                 const float s = s0 + (s1 - s0) * ((float)rg / (float)(rings - 1));
                 float cx, cz, w, nat, dx, dz;
                 walk.at(s, cx, cz, w, nat, dx, dz);
-                const float px = -dz, pz = dx;
+                const Frame fr = walk.frameAt(s);   // mitered: see Frame
+                const float px = fr.px, pz = fr.pz;
                 for (int k = 0; k < kAcross; ++k) {
-                    const float u = (float)k / (float)(kAcross - 1);
-                    const float lat = (u * 2.0f - 1.0f) * outW;
+                    const float lat = lats[k] * fr.scale;
                     const float vx = cx + px * lat, vz = cz + pz * lat;
                     x3::rhi::MeshVertex v{};
                     v.pos[0] = vx;
-                    v.pos[1] = terrainHeightAtWorld(vx, vz) + 0.07f;
+                    // FIT TO WHAT IS DRAWN, NOT TO THE ANALYTIC FIELD. The
+                    // renderer draws the terrain as a LOD tile mesh (1/2/4 m
+                    // chords), and across a concave stretch a chord rides
+                    // ABOVE the smooth field it samples — so an apron fitted
+                    // to the field is pierced by the mesh, and because LOD is
+                    // chosen by camera distance the defect is VIEW-DEPENDENT:
+                    // the same beach was clean from eye level and showed a
+                    // lobe of splat grass from 12 m up. Taking the local MAX
+                    // over a 4 m stencil is what a coarse chord approaches, so
+                    // the apron rises only where the mesh actually can, and
+                    // stays tight to the ground everywhere else.
+                    float gy = terrainHeightAtWorld(vx, vz);
+                    for (int sx = -1; sx <= 1; ++sx)
+                        for (int sz = -1; sz <= 1; ++sz) {
+                            if (!sx && !sz) continue;
+                            gy = std::max(gy, terrainHeightAtWorld(vx + sx * 4.0f,
+                                                                   vz + sz * 4.0f));
+                        }
+                    float ay = gy + kURApronLift;
+                    // INSIDE THE CHANNEL the skin must stay UNDER the river.
+                    // The stencil is a deliberate over-lift and at the
+                    // waterline it walked the beach out over the water and
+                    // pinched the river; clamped below the surface instead, the
+                    // same rock reads as the submerged BED through clarity,
+                    // which is what it is. Restricting the stencil to the banks
+                    // was tried first and put the grass lobe straight back —
+                    // the LOD crease this is fixing sits AT the waterline.
+                    if (std::fabs(lat) < kURHalfWidth) ay = std::min(ay, w - 0.05f);
+                    v.pos[1] = ay;
                     v.pos[2] = vz;
                     // The apron climbs the trench wall's toe, which is a ~56
                     // deg face — a flat +Y normal there would shade the wall
                     // like a floor. Take the field's own normal.
                     terrainNormalAtWorld(vx, vz, v.normal);
-                    v.uv[0] = s * 0.14f; v.uv[1] = lat * 0.14f;   // world-scaled
+                    v.uv[0] = s * 0.25f; v.uv[1] = lat * 0.25f;   // ~4 m cobble tile
                     m.v.push_back(v);
                 }
             }
@@ -226,14 +370,24 @@ UndergroundRiver::Result UndergroundRiver::build(
                 for (int k = 0; k + 1 < kAcross; ++k) {
                     const uint32_t a = (uint32_t)(rg * kAcross + k);
                     const uint32_t b = a + 1, c2 = a + kAcross, d2 = c2 + 1;
-                    m.i.insert(m.i.end(), { a, c2, b,  b, c2, d2 });
+                    // UP-FACING winding — the vault's OUTER order, not its
+                    // inner one. This was copied from the inner (ceiling)
+                    // strip, so every beach triangle faced the floor and was
+                    // backface-culled: the apron drew nothing and both banks
+                    // rendered as the terrain splat's GRASS, indoors, under a
+                    // rock ceiling. Invisible to every numeric gate; obvious
+                    // in the first capture.
+                    m.i.insert(m.i.end(), { a, b, c2,  b, d2, c2 });
                 }
             if (m.v.empty()) continue;
             Entity e;
             e.mesh = device.createMesh(m.v.data(), (uint32_t)m.v.size(),
                                        m.i.data(), (uint32_t)m.i.size());
             e.tex = beachS.albedo; e.normalTex = beachS.normal; e.mrTex = beachS.mr;
-            e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 0.74f;
+            // Darker than daylight rock: the cavern's ambient is unshadowed sky
+        // (the lid blocks the sun, not the IBL), so a 0.74 beach washed the
+        // room out and the bank lights had nothing to read against.
+            e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 0.50f;
             e.baseColor[3] = 1.0f;
             e.tag = (uint32_t)Tag::Static;
             scene.add(e);
@@ -241,36 +395,23 @@ UndergroundRiver::Result UndergroundRiver::build(
         }
     }
 
-    // ---- THE WATER: CaveRiver pointed at the open world. ------------------
-    // Denser ribbon nodes than the carve chain (bends + drop steps read as
-    // water, not as a low-poly strip); emissive brighter at rush + pools.
-    std::vector<CaveRiverNode> wn;
-    for (float s = 0.0f; s <= total + 0.1f; s += 24.0f) {
-        float cx, cz, w, nat, dx, dz;
-        walk.at(std::min(s, total), cx, cz, w, nat, dx, dz);
-        // Per-node character from the nearest chain node.
-        int ni = 0;
-        while (ni + 1 < uc.n && uc.cum[ni + 1] < s) ++ni;
-        const float t = std::clamp((s - uc.cum[ni]) /
-                        std::max(uc.cum[ni + 1] - uc.cum[ni], 1e-3f), 0.0f, 1.0f);
-        CaveRiverNode n;
-        n.x = cx; n.y = w + 0.06f; n.z = cz;
-        n.halfWidth = uc.hw[ni] + (uc.hw[std::min(ni + 1, uc.n - 1)] - uc.hw[ni]) * t;
-        n.rush = uc.rush[ni] + (uc.rush[std::min(ni + 1, uc.n - 1)] - uc.rush[ni]) * t;
-        n.pool = (t < 0.5f ? uc.pool[ni] : uc.pool[std::min(ni + 1, uc.n - 1)]);
-        // The ribbon is SELF-LUMINESCENT because there is no sun down here —
-        // but the last reach is the open gorge, where there is. Fade the glow
-        // out as the lid ends or the plunge pool reads as a neon strip lying
-        // in daylight.
-        const float openT = std::clamp((s - (vaultEnd - 40.0f)) /
-                                       std::max(total - (vaultEnd - 40.0f), 1.0f),
-                                       0.0f, 1.0f);
-        const float daylight = openT * openT * (3.0f - 2.0f * openT);
-        n.emissive = (0.30f + 0.25f * n.rush + (n.pool ? 0.10f : 0.0f))
-                   * (1.0f - 0.92f * daylight);
-        wn.push_back(n);
-    }
-    r.waterSegs = m_water.build(scene, device, wn, outLights);
+    // ---- THE WATER is NOT drawn here. -------------------------------------
+    // It is drawn by the SAME pass as the surface river: host_tunnel's
+    // applyRiverWater switches WaterParams' polyline to worldUnderRiverChain()
+    // whenever the focus is inside this corridor, so the cavern channel gets
+    // the real Gerstner surface, clarity (you see the carved bed through it),
+    // Fresnel, contact foam and caustics.
+    //
+    // WHAT WAS HERE, AND WHY IT WENT. The first build drew the channel with
+    // CaveRiver — the club's grotto ribbon: an opaque tinted quad strip with a
+    // travelling emissive crest. In a 3 m tube lit by crystals that reads as
+    // water. In an 88 m cavern it photographed as flat cornflower-blue
+    // construction paper with hard triangular edges and a wedge notch where
+    // the strip ended: no depth, no transparency, no flow, no shading. Two
+    // water implementations in one world is the duplicate rule 1 exists to
+    // stop, and the one we kept is the one JOB 1 already made honest.
+    // r.waterSegs stays in Result as the count of nodes handed to that pass.
+    r.waterSegs = uc.n;
 
     // ---- THE MIST: emitters on the steps and the pools. -------------------
     // Density follows the water's own character: a rushing reach throws spray,
@@ -321,18 +462,21 @@ UndergroundRiver::Result UndergroundRiver::build(
         l.pos[0] = cx + px * 13.0f * side;
         l.pos[1] = w + 3.4f;
         l.pos[2] = cz + pz * 13.0f * side;
-        // Same blue family as CaveRiver's pool banks so the accents and the
-        // water read as ONE light source — but not the same MAGNITUDE. Those
+        // Same blue family as the club grotto's pool banks so the accents
+        // and the water read as ONE source — but not the same MAGNITUDE. Those
         // are (0.10,0.22,0.85)@12 m, tuned for the club's little grotto; this
         // cavern is 88 m across and up to 38 m tall, and that lamp would light
         // a puddle of it. Scaled to the room, still blue-dominant.
         const float k = nearPool ? 1.35f : 1.0f;
-        l.range = nearPool ? 42.0f : 30.0f;
-        l.color[0] = 0.22f * k; l.color[1] = 0.48f * k; l.color[2] = 1.30f * k;
+        // POOLS OF LIGHT, not a wash. 30 m range at 42 m spacing overlapped
+        // into flat ambient — brighter and SHORTER reads as a lit bank with
+        // dark between, which is what a cave wants.
+        l.range = nearPool ? 28.0f : 20.0f;
+        l.color[0] = 1.00f * k; l.color[1] = 1.90f * k; l.color[2] = 4.20f * k;
         m_lights.push_back(l);
     }
     r.lightCount = (int)m_lights.size();
-    (void)outLights;   // CaveRiver's pool bank lights already went in above
+    (void)outLights;   // this run's lights are delivered per-frame, nearest-K
 
     m_built = r.waterSegs > 0;
     r.built = m_built;
@@ -383,7 +527,6 @@ uint32_t UndergroundRiver::nearestLights(const float cam[3],
 // ---------------------------------------------------------------------------
 void UndergroundRiver::update(float dt, Scene& scene) {
     if (!m_built) return;
-    m_water.update(dt, scene);
     if (m_puffs.empty()) return;
     auto rnd = [&]() {
         m_seed = m_seed * 1664525u + 1013904223u;
@@ -725,6 +868,88 @@ bool UndergroundRiver::runSelfTest() {
             probes, vaultEnd, minHead, maxHead, hx, hz, minBeachHead);
         check(minHead > 0.05f && minBeachHead >= 2.5f && probes > 500,
               "U9 there is a cavern in there, and you can stand up in it", d);
+    }
+
+    // U10 — THE BEACH APRON ACTUALLY COVERS THE GROUND. The apron is a flat-
+    // chorded mesh laid over a curved field; where a chord spans a CONCAVE
+    // stretch it passes UNDER the ground and the terrain pokes through, and
+    // what pokes through is the height/slope splat — i.e. GRASS, indoors,
+    // exactly the defect the apron exists to hide. Two captures were spent
+    // guessing at this (a bigger offset, a wider apron, a denser mesh) before
+    // anyone measured the sag. So: sample the midpoint of every apron cell,
+    // compare the chord against the real field, and report the worst.
+    {
+        const ChainWalk walk(uc);
+        std::vector<float> lats; apronLats(lats);   // the SAME table build() uses
+        const int kAcross = (int)lats.size();
+        const float kLift = kURApronLift;
+        float worstSag = 0.0f, wx = 0, wz = 0; int cells = 0, pierced = 0;
+        constexpr float kRing = 2.5f;               // PAIRED with build()'s kStep
+        // EVERY ring, not every fourth: an 11 m stride over 2.5 m rings tested
+        // 23% of the apron and reported it clean while a probe capture showed
+        // a hole in it.
+        for (float s = 2.0f; s < uc.cum[uc.n - 1] - 2.0f; s += kRing) {
+            float cx, cz, w, nat, dx, dz; walk.at(s, cx, cz, w, nat, dx, dz);
+            const Frame fr = walk.frameAt(s);       // the SAME frame build() uses
+            const float px = fr.px, pz = fr.pz;
+            for (int k = 0; k + 1 < kAcross; ++k) {
+                const float l0 = lats[k] * fr.scale, l1 = lats[k+1] * fr.scale;
+                const float lm = 0.5f * (l0 + l1);
+                const float y0 = terrainHeightAtWorld(cx + px * l0, cz + pz * l0);
+                const float y1 = terrainHeightAtWorld(cx + px * l1, cz + pz * l1);
+                const float ym = terrainHeightAtWorld(cx + px * lm, cz + pz * lm);
+                const float chord = 0.5f * (y0 + y1) + kLift;
+                float sag = ym - chord;             // >0 : ground pokes through
+                // ALONG the run as well as across it. The first version of this
+                // gate only sampled the LATERAL midpoint and passed clean while
+                // a magenta-tinted probe capture showed a wedge of bare ground
+                // straight through the apron: the rings are 6 m apart and
+                // sagitta goes as the chord SQUARED, so the along-run chord
+                // sagged ~9x harder than the 2 m lateral one. A gate that only
+                // measures one axis of a two-axis mesh is not a gate.
+                {
+                    const float sN = std::min(s + kRing, uc.cum[uc.n - 1]);
+                    const Frame f2 = walk.frameAt(sN);
+                    float nx, nz, nw, nnat, ndx, ndz; walk.at(sN, nx, nz, nw, nnat, ndx, ndz);
+                    const float la = lats[k] * fr.scale, lb = lats[k] * f2.scale;
+                    const float ax = cx + px * la,       az = cz + pz * la;
+                    const float bx2 = nx + f2.px * lb,   bz2 = nz + f2.pz * lb;
+                    const float ya = terrainHeightAtWorld(ax, az);
+                    const float yb = terrainHeightAtWorld(bx2, bz2);
+                    const float ymid = terrainHeightAtWorld(0.5f*(ax+bx2), 0.5f*(az+bz2));
+                    sag = std::max(sag, ymid - (0.5f * (ya + yb) + kLift));
+                }
+                ++cells;
+                if (sag > 0.0f) {
+                    ++pierced;
+                    if (sag > worstSag) {
+                        worstSag = sag; wx = cx + px * lm; wz = cz + pz * lm;
+                    }
+                }
+            }
+        }
+        std::snprintf(d, sizeof(d),
+            "%d apron cells; %d pierced by the ground (worst %.3f m at (%.0f, %.0f)); "
+            "lift %.2f m over %.1f m chords",
+            cells, pierced, worstSag, wx, wz, kLift,
+            (2.0f * kURWallOutW) / (float)(kAcross - 1));
+        // WHAT THIS GATE DOES NOT SEE — the residual, written down so the next
+        // pass starts ahead of where this one finished (rule 10). U10 compares
+        // the apron against the ANALYTIC height field. The renderer draws a
+        // LOD-approximated TILE MESH of that field (1 / 2 / 4 m chords), and
+        // across a concave crease a coarse chord sits ABOVE the analytic
+        // surface by roughly c^2*|f''|/8 — which at the shelf crease measures
+        // |f''| ~ 0.28/m, i.e. ~0.56 m at 4 m LOD, far more than this lift.
+        // A lobe of splat GRASS still shows on the Great Hall's east bank in
+        // captures for what is almost certainly that reason: the apron chunks
+        // are provably complete (finite, 5805 v / 33792 i each, AABB covers
+        // the lobe), the ground is provably not above them analytically (this
+        // gate), the forest is not the cause (X3_FOREST=0 is identical), and
+        // floating the apron 3 m does not cover it. Fitting the apron to the
+        // TILE MESH rather than to the analytic field is the fix; a bigger
+        // lift is not, because every centimetre here is a centimetre the
+        // player's boots stand below what they can see.
+        check(pierced == 0, "U10 the rock apron covers the beach it is laid on", d);
     }
 
     std::snprintf(d, sizeof(d), "--test-underriver: %d/%d passed", passN, passN + failN);

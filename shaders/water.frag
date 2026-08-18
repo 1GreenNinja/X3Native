@@ -93,6 +93,17 @@ vec3 skyColor(vec3 dir, vec3 sunDir) {
     return max(col, vec3(0.0));
 }
 
+// THE SKY THIS WATER CAN ACTUALLY SEE. p4.z (WaterParams::enclosed) is 0 for
+// open water — the analytic sky above, byte-for-byte the historic term. At 1
+// the water is under a roof and there is no sky: the reflection and the fade
+// both hand off to horizonColor (p3.rgb) instead. Without this a cave river
+// mirrors a bright daylight sky and photographs as crumpled chrome foil.
+vec3 skyOrRoof(vec3 dir, vec3 sunDir) {
+    float enc = clamp(u.p4.z, 0.0, 1.0);
+    if (enc <= 0.0) return skyColor(dir, sunDir);
+    return mix(skyColor(dir, sunDir), u.p3.rgb, enc);
+}
+
 // Reconstruct linear eye-space distance from a [0,1] clip depth (Vulkan reverse-Y
 // perspective with near/far below). Returns +distance in front of the camera.
 // THE FAR PLANE IS LIVE (u.p2.w): the depth-based refraction gradient was
@@ -143,7 +154,7 @@ void main() {
     // --- Reflection: analytic sky in the mirror direction. ---
     vec3 R = reflect(-V, N);
     R.y = max(R.y, 0.02);              // never sample below the horizon (no black)
-    vec3 reflectCol = skyColor(normalize(R), sunDir);
+    vec3 reflectCol = skyOrRoof(normalize(R), sunDir);
 
     // --- Fresnel (Schlick) blend: face-on -> refraction, grazing -> reflection. ---
     float base = clamp(u.p1.w, 0.0, 1.0);
@@ -153,7 +164,8 @@ void main() {
     // --- Sun glint: sharp Blinn-Phong-ish specular toward the sun (HDR; bloom). ---
     vec3 H = normalize(sunDir + V);
     float spec = pow(max(dot(N, H), 0.0), 220.0);
-    color += vec3(1.0, 0.96, 0.88) * spec * u.p1.z;
+    // The glint is a SUN glint; under a roof there is no sun to glint at.
+    color += vec3(1.0, 0.96, 0.88) * spec * u.p1.z * (1.0 - clamp(u.p4.z, 0.0, 1.0));
 
     // A touch of diffuse sun on the body so deep water isn't flat/dead.
     float ndl = max(dot(N, sunDir), 0.0);
@@ -208,7 +220,10 @@ void main() {
                  * sin((rp.x + rp.y * 0.7) * 1.31 - time * 1.2);
         float writhe = clamp(0.50 + 0.30 * n1 + 0.24 * n2, 0.0, 1.0);
         foamAmt = clamp((contactF + crestF * 0.6) * writhe * u.p4.y, 0.0, 1.0);
-        vec3 foamCol = vec3(0.82, 0.87, 0.90) * (0.30 + 0.70 * max(sunDir.y, 0.0));
+        // Enclosed foam is lit by the room, not by the sky overhead.
+        float foamLit = mix(0.30 + 0.70 * max(sunDir.y, 0.0), 0.42,
+                            clamp(u.p4.z, 0.0, 1.0));
+        vec3 foamCol = vec3(0.82, 0.87, 0.90) * foamLit;
         color = mix(color, foamCol, foamAmt);
     }
 
@@ -232,7 +247,7 @@ void main() {
     float edgeFade = mix(smoothstep(0.82, 1.0,   edge),
                          smoothstep(0.35, 0.995, edge), u.p3.w);
     float fog = max(distFog, edgeFade);
-    vec3 horizonSky = skyColor(normalize(vWorldPos - u.camPos.xyz + vec3(0.0, 0.0, 0.0)), sunDir);
+    vec3 horizonSky = skyOrRoof(normalize(vWorldPos - u.camPos.xyz + vec3(0.0, 0.0, 0.0)), sunDir);
     // FADE TARGET. Historic behavior (p3.w == 0): the analytic sky, so the sea
     // melts into the sky at the horizon with no seam. When the host supplies a
     // far-ocean handoff colour (p3.w == 1) the EDGE fades into that instead, so

@@ -1240,6 +1240,20 @@ public:
         // what makes a river read as WATER instead of a painted ribbon: the
         // shoreline shows its bed, and life under the surface is visible.
         float clarity = 0.0f;
+        // ENCLOSED WATER (0..1; default 0 = every existing world unchanged,
+        // byte-for-byte). This surface reflects an ANALYTIC SKY — a fixed
+        // bright blue-white gradient plus a sun disk — computed in the mirror
+        // direction, and Schlick drives that to a full mirror at grazing
+        // angles. Under a roof there is no sky to mirror, so the same shader
+        // that makes a river beautiful in daylight turns a cave river into
+        // crumpled chrome foil (measured: the underground river's first pass
+        // through this path). At 1 the sky term is replaced by horizonColor
+        // wherever it is sampled — the reflection AND the distance/edge fade —
+        // and the sun glint and the foam's sun-brightening are wound out with
+        // it, so the water is lit by the room instead of by a sky it cannot
+        // see. horizonColor is therefore doing exactly what it already meant:
+        // "what this water sees out there instead of sky".
+        float enclosed = 0.0f;
         // ---- RIVER MODE (task #32 — ONE water truth) -----------------------
         // riverNodeCount == 0 (the default) keeps the historic FLAT plane at
         // `seaLevel`, byte-identical for every ocean world. When >= 2, the

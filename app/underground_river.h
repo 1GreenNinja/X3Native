@@ -23,20 +23,21 @@
 //     carved shelf. The shelf itself is height field and stays the collision
 //     surface; the apron exists because the terrain splat picks its material
 //     from height + slope and would paint a flat lowland shelf GRASS, indoors.
-//   * THE WATER — the CaveRiver machinery (app/cave_river.h) pointed at the
-//     open world: a self-luminescent ribbon (there is no sun down here, and
-//     the glow fades out where the gorge opens to one), pools that breathe,
-//     and CaveRiverNode::rush whitewater wherever the DERIVED gradient says
-//     the river is falling.
+//   * THE WATER — drawn NOT here but by host_tunnel's applyRiverWater, which
+//     switches WaterParams' polyline to worldUnderRiverChain() whenever the
+//     focus is in this corridor. The cavern channel therefore gets the very
+//     same Gerstner surface, clarity, Fresnel, contact foam and caustics as
+//     the surface river — ONE water implementation in the world, and the one
+//     JOB 1 already made honest. (It was a CaveRiver ribbon first; in an 88 m
+//     cavern that photographed as flat blue construction paper.)
 //   * THE MIST — spray off the steps, cold breath on the pools.
 //
-// Reuse ledger (NO_SLOP rule 1): water = CaveRiver (extended, not forked);
+// Reuse ledger (NO_SLOP rule 1): water = the engine's own water pass;
 // carve = the authored-landforms river pattern; mist = RiverLife's wake-puff
 // system through the same submitParticles pass; rock = the surface library's
 // published sets, checked for real bytes before use.
 
 #include "scene.h"
-#include "cave_river.h"
 #include "surface_library.h"
 #include "engine/rhi/IRenderDevice.h"
 
@@ -50,7 +51,7 @@ public:
         bool  built = false;
         int   vaultChunks = 0;     // rock vault entities
         int   beachChunks = 0;     // rock-beach apron entities
-        int   waterSegs   = 0;     // CaveRiver ribbon segments
+        int   waterSegs   = 0;     // chain nodes handed to the water pass
         int   lightCount  = 0;     // lights appended
         int   mistSources = 0;     // rush/pool emitters
         float portalX = 0.0f, portalZ = 0.0f;   // where the river surfaces
@@ -58,8 +59,8 @@ public:
 
     // Build vault + beaches + water + mist + lights from
     // worldUnderRiverChain(). `surf` may be null (a local library is mounted).
-    // outLights receives CaveRiver's POOL BANK lights only — the cavern's own
-    // accents are delivered per-frame instead (see nearestLights).
+    // outLights is unused: the cavern's accents are delivered per-frame,
+    // nearest-K, instead (see nearestLights).
     Result build(Scene& scene, x3::rhi::IRenderDevice& device,
                  SurfaceLibrary* surf,
                  std::vector<x3::rhi::PointLight>* outLights);
@@ -113,7 +114,6 @@ private:
         float age = 0, life = 1, size0 = 1.0f;
         bool  spray = false;            // additive droplet vs alpha haze
     };
-    CaveRiver m_water;
     std::vector<x3::rhi::PointLight> m_lights;   // the whole run's accents
     std::vector<MistSource> m_mist;
     std::vector<Puff>       m_puffs;    // fixed pool, round-robin reuse

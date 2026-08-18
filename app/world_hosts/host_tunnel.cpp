@@ -1535,6 +1535,25 @@ int hostTunnel(HostContext& hc) {
         // RoadTrees' own water-table check IS the drawn waterline. `phys` stays
         // — that is the trunk collision the owner asked for, unrelated to the
         // shim that shared the call.
+        // AND OUT OF THE CAVERN. The underground river's carve pulls the
+        // ground down to the water; a placer that only knows the height field
+        // plants on that floor, i.e. INSIDE the cavern. A tree grew in the
+        // Great Hall exactly this way and only a capture caught it — every
+        // numeric gate was green. Discs down the whole run, band + margin.
+        {
+            const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
+            for (int i = 0; i + 1 < uc.n; ++i) {
+                const float sx = uc.x[i], sz = uc.z[i];
+                const float ex = uc.x[i+1], ez = uc.z[i+1];
+                const float len = std::sqrt((ex-sx)*(ex-sx) + (ez-sz)*(ez-sz));
+                const int steps = std::max(1, (int)(len / 40.0f));
+                for (int k = 0; k <= steps; ++k) {
+                    const float u = (float)k / (float)steps;
+                    camKeepOut.push_back({ sx + (ex-sx) * u, sz + (ez-sz) * u,
+                                           x3::game::kURWallOutW + 10.0f });
+                }
+            }
+        }
         trees.build(*device, route, camKeepOut, -1.0e9f, phys.get());
     }
 
@@ -1650,12 +1669,35 @@ int hostTunnel(HostContext& hc) {
             // crossing the trench would be a real defect — log the deepest
             // foreign lowering along the spine so it cannot hide.
             {
+                // Sample the WHOLE BAND, not just the spine. A corridor that
+                // RAISES ground anywhere the lid or the apron is laid changes
+                // the field those meshes were fitted to; on the spine alone
+                // this probe read clean while an embankment stood proud of the
+                // beach apron and showed splat through it.
                 const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
                 float worst = 0.0f, wx = 0.0f, wz = 0.0f;
-                for (int i = 0; i < uc.n; ++i) {
-                    const float dCa = x3::game::terrainCorridorDelta(uc.x[i], uc.z[i]);
-                    if (dCa < worst) { worst = dCa; wx = uc.x[i]; wz = uc.z[i]; }
+                float most = 0.0f, mx = 0.0f, mz = 0.0f;
+                for (int i = 0; i + 1 < uc.n; ++i) {
+                    const float sx = uc.x[i], sz = uc.z[i];
+                    const float ex = uc.x[i+1], ez = uc.z[i+1];
+                    const float len = std::sqrt((ex-sx)*(ex-sx) + (ez-sz)*(ez-sz));
+                    const float ux = (ex-sx)/len, uz = (ez-sz)/len;
+                    const float px = -uz, pz = ux;
+                    for (float t = 0.0f; t <= len; t += 10.0f)
+                        for (int k = -4; k <= 4; ++k) {
+                            const float lat = (float)k * (x3::game::kURWallOutW / 4.0f);
+                            const float qx = sx + ux*t + px*lat;
+                            const float qz = sz + uz*t + pz*lat;
+                            const float dCa = x3::game::terrainCorridorDelta(qx, qz);
+                            if (dCa < worst) { worst = dCa; wx = qx; wz = qz; }
+                            if (dCa > most)  { most  = dCa; mx = qx; mz = qz; }
+                        }
                 }
+                if (most > 0.05f)
+                    x3::logWarn("[under-river] a registered corridor RAISES the corridor by "
+                                + std::to_string(most) + " m at ("
+                                + std::to_string(mx) + ", " + std::to_string(mz)
+                                + ") — the lid/apron were fitted to a field without it");
                 if (worst < -0.05f)
                     x3::logWarn("[under-river] a registered corridor lowers the spine by "
                                 + std::to_string(-worst) + " m at ("
@@ -2514,7 +2556,16 @@ int hostTunnel(HostContext& hc) {
     // the LOCAL water level there into seaLevel (the shader's underside-view
     // gate) and the caustics plane — the flat bridge-level plane is gone.
     auto applyRiverWater = [&](float t, float fx, float fz) {
-        if (!(riverOn && riverRoad.plan.ok)) return;
+        // THE CAVERN IS A BODY OF WATER TOO. When the focus is inside the
+        // underground river's corridor the SAME pass draws THAT channel: same
+        // Gerstner surface, same clarity, same foam, same caustics. It used to
+        // be a CaveRiver ribbon and photographed as flat blue paper — see
+        // app/underground_river.h. The two channels are 1.5 km apart and the
+        // patch is 480 m, so they can never both be near the camera; one
+        // polyline is enough and the switch cannot pop.
+        const float focus3[3] = { fx, 0.0f, fz };
+        const bool inCavern = x3::game::UndergroundRiver::insideCorridor(focus3);
+        if (!inCavern && !(riverOn && riverRoad.plan.ok)) return;
         x3::rhi::IRenderDevice::WaterParams wpr{};
         wpr.enabled   = true;
         // ONE WATER TRUTH (task #32): the drawn surface follows the SAME node
@@ -2524,7 +2575,31 @@ int hostTunnel(HostContext& hc) {
         // carved table downstream and climbed the banks (receipt: the bench
         // that shipped submerged at (-340,11,-468) while PASSING the
         // worldWaterLevelAt+0.5 check).
-        {
+        if (inCavern) {
+            using WP = x3::rhi::IRenderDevice::WaterParams;
+            const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
+            const uint32_t n = std::min<uint32_t>((uint32_t)uc.n, WP::kMaxRiverNodes);
+            wpr.riverNodeCount = n;
+            for (uint32_t i = 0; i < n; ++i) {
+                wpr.riverNodes[i][0] = uc.x[i];
+                wpr.riverNodes[i][1] = uc.z[i];
+                wpr.riverNodes[i][2] = uc.w[i];
+            }
+            // ONE number shared with worldWaterLevelAt's wet test (terrain.h
+            // kURHalfWidth says why it is a constant), so drawn coverage and
+            // the model cannot disagree down here either.
+            wpr.riverHalfWidth = x3::game::kURHalfWidth;
+            // No ocean disc and no shoreline table underground: basinRadius 0
+            // switches the estuary hand-off off entirely, which is what stops
+            // the sea being drawn through a hill 3 km away.
+            wpr.basinRadius    = 0.0f;
+            // RUSHING WATER — but foam is a MASK strength, not a quantity of
+            // whitewater. At 1.0 with a sun overhead the first capture came
+            // back as white bands across the whole channel; the churn belongs
+            // to the spray particles at the steps, and this is just the lace
+            // where the water meets the rock.
+            wpr.foam = 0.45f;
+        } else {
             using WP = x3::rhi::IRenderDevice::WaterParams;
             x3::game::WorldRiverNode rn[WP::kMaxRiverNodes];
             const uint32_t n = x3::game::worldRiverRisenNodes(rn, WP::kMaxRiverNodes);
@@ -2573,8 +2648,31 @@ int hostTunnel(HostContext& hc) {
         // seaLevel carries the LOCAL level at the focus (underside-view gate +
         // caustics plane); dry land falls back to the bridge's level.
         const float lw = x3::game::worldWaterLevelAt(fx, fz);
-        wpr.seaLevel  = (lw > x3::game::kWorldWaterDry + 1.0f)
-                      ? lw : riverRoad.plan.waterY;
+        if (lw > x3::game::kWorldWaterDry + 1.0f) {
+            wpr.seaLevel = lw;
+        } else if (inCavern) {
+            // DRY FOCUS INSIDE THE CAVERN. seaLevel drives the underside-view
+            // gate and the caustics plane, and the old fallback was the SURFACE
+            // river's level — 1.5 km away and ~13 m ABOVE the cavern's own
+            // water. Standing on a cavern beach (a dry query) therefore told
+            // the shader the camera was submerged in a river it was nowhere
+            // near. Fall back to THIS chain's own interpolated level instead.
+            const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
+            float best = uc.w[0], bd2 = 1e18f;
+            for (int i = 0; i + 1 < uc.n; ++i) {
+                const float ax = uc.x[i], az = uc.z[i];
+                const float bx = uc.x[i+1], bz = uc.z[i+1];
+                const float ex = bx - ax, ez = bz - az;
+                const float L2 = std::max(ex*ex + ez*ez, 1e-4f);
+                const float t = std::clamp(((fx-ax)*ex + (fz-az)*ez) / L2, 0.0f, 1.0f);
+                const float qx = ax + ex*t, qz = az + ez*t;
+                const float d2 = (fx-qx)*(fx-qx) + (fz-qz)*(fz-qz);
+                if (d2 < bd2) { bd2 = d2; best = uc.w[i] + (uc.w[i+1]-uc.w[i])*t; }
+            }
+            wpr.seaLevel = best;
+        } else {
+            wpr.seaLevel = riverRoad.plan.waterY;
+        }
         wpr.time      = t;
         wpr.amplitude = 0.16f;          // a river swell, not an ocean — and low
                                         // enough that a treading head clears
@@ -2593,6 +2691,37 @@ int hostTunnel(HostContext& hc) {
         // W-NIGHT: the river glints to the LIVE luminary (sun by day, moon at
         // night), not to a phantom 14:00 sun that set hours ago.
         wpr.sunDir[0] = todSunDir[0]; wpr.sunDir[1] = todSunDir[1]; wpr.sunDir[2] = todSunDir[2];
+        if (inCavern) {
+            // There is no sun down here, so a surface tuned to glint at one
+            // renders as a black hole in the floor. The cavern's luminary is
+            // the run's own bank lights: a steep overhead direction with a
+            // soft, wide highlight, a cooler and slightly lifted shallow tint
+            // so the carved bed reads THROUGH the water, and a choppier,
+            // quicker swell for water that is actually falling.
+            // ENCLOSED: no sky to mirror. Without this the surface reflects
+            // the analytic daylight sky (a fixed bright gradient plus a sun
+            // disk, driven to a full mirror at grazing angles by Schlick) and
+            // the cave river photographed as crumpled chrome foil. enclosed=1
+            // hands the reflection AND the distance/edge fade to horizonColor
+            // and winds the sun glint out — so the water is lit by the room.
+            wpr.enclosed = 1.0f;
+            // What it sees instead of sky: the wet rock of its own vault.
+            wpr.horizonColor[0] = 0.016f;
+            wpr.horizonColor[1] = 0.022f;
+            wpr.horizonColor[2] = 0.030f;
+            wpr.sunDir[0] = 0.12f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.10f;
+            wpr.specular  = 0.0f;    // wound out by `enclosed` anyway; say it
+            wpr.fresnel   = 0.020f;
+            wpr.clarity   = 0.78f;   // you should SEE the carved bed
+            // A river swell, not a storm. 0.26/0.55 over a 5.5 m wavelength
+            // pinched the Gerstner crests into shards in the first capture.
+            wpr.amplitude = 0.11f;
+            wpr.steepness = 0.30f;
+            wpr.waveLength= 7.0f;
+            wpr.speed     = 1.5f;
+            wpr.deepColor[0]    = 0.010f; wpr.deepColor[1] = 0.030f; wpr.deepColor[2] = 0.044f;
+            wpr.shallowColor[0] = 0.055f; wpr.shallowColor[1]= 0.150f; wpr.shallowColor[2]= 0.185f;
+        }
         device->setWaterParams(wpr);
         x3::rhi::IRenderDevice::CausticsParams cp{};
         cp.enabled = true; cp.waterY = wpr.seaLevel;   // local level, not the flat plane
