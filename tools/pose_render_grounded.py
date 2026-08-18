@@ -56,7 +56,13 @@ floor.data.materials.append(mat)
 # every clip shot identically) is unchanged, only the framing scales.
 EYE = float(os.environ.get("X3QA_EYE", "1.0"))
 DIST = float(os.environ.get("X3QA_DIST", "3.4"))
-AZ = math.radians(22.0)          # slight 3/4 so the pose reads; still a level cam
+# Slight 3/4 by default so the pose reads; still a level cam. Overridable because a
+# FOLD is invisible head-on: a pose that reaches straight toward the camera projects
+# onto almost nothing, so "hands planted a metre in front of her" and "hands at her
+# hips" render nearly identically at AZ=22. X3QA_AZ=90 shoots the profile that
+# actually shows a bend. The grounded METHOD (floor at z=0, ZERO pitch, every clip
+# shot identically) is unchanged - only the yaw moves.
+AZ = math.radians(float(os.environ.get("X3QA_AZ", "22.0")))
 cam_data = bpy.data.cameras.new("Cam"); cam_data.lens = 50
 cam = bpy.data.objects.new("Cam", cam_data)
 bpy.context.collection.objects.link(cam)

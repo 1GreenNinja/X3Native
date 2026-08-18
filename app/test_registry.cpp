@@ -491,6 +491,10 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running skinned death-ragdoll (TASK#12) self-test...");
         return x3::game::runDeathRagdollSelfTest() ? 0 : 1;
     }
+    if (tf.testGrounding) {
+        x3::logInfo("running grounding self-test (feet-in-floor law + the ward tableau)...");
+        return x3::game::runGroundingSelfTest() ? 0 : 1;
+    }
     if (tf.testAudio) {
         x3::logInfo("running audio (M9) self-test...");
         return x3::audio::runAudioSelfTest() ? 0 : 1;

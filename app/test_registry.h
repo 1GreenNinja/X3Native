@@ -41,6 +41,7 @@ struct TestFlags {
     bool testDescentFall = false;   // --test-descentfall (fall shaft + dark room + keypad + elevator)
     bool testCaveAtmos = false;     // --test-caveatmos (crystal-only + beat pulse + fog cave atmosphere)
     bool testEcsRender = false, testPickup = false, testCombat = false, testDeathRagdoll = false;
+    bool testGrounding = false;
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
     bool testKeypad = false;      // --test-keypad (realistic high-poly access keypad, KP1-KP6)
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)

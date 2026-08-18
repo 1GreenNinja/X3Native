@@ -195,4 +195,36 @@ private:
 // device init instead of running serially on the main thread (task #4).
 std::vector<std::string> recipeSurfaceSets();
 
+// ---------------------------------------------------------------------------
+// THE WARD INSTRUMENT CART — the F2 assault tableau's anchor prop.
+//
+// The ward recipe drops a Crate Short "instrument cart" at this XZ (see the
+// `z == ZMedical && nameHas("Ward ")` branch in room_dressing.cpp). The captive
+// and her attacker are staged AGAINST that cart, which means canon_play.cpp has
+// to know exactly where it is — and it cannot find out by asking the world:
+// dressing props carry NO physics body at all (room_dressing.cpp never touches
+// IPhysicsWorld), so a raycast under the cart reports the FLOOR, not the cart. An
+// author who probes for it gets a confident, wrong answer.
+//
+// So the position is stated ONCE, here, and both the recipe that builds the cart
+// and the scene that stages against it read this function. They cannot drift:
+// move the cart and the tableau moves with it.
+//
+// `topY` is the surface a hand rests on: floor + the recipe's 0.25 m lift + the
+// Crate Short's own 0.600 m height. It is the number the bent-over pose is
+// authored against (tools/bentover_bake.py takes it as `supportY`).
+// ---------------------------------------------------------------------------
+struct WardCart {
+    float x = 0.0f, z = 0.0f;   // world XZ of the cart's centre
+    float topY = 0.0f;          // world Y of its top face
+};
+
+inline WardCart wardCartAnchor(const CanonRoom& r, float floorY) {
+    WardCart c;
+    c.x    = r.cx + r.w * 0.28f;
+    c.z    = r.cz - r.d * 0.22f;
+    c.topY = floorY + 0.25f + 0.600f;
+    return c;
+}
+
 } // namespace x3::game

@@ -1329,8 +1329,16 @@ bool RoomDressing::build(x3::rhi::IRenderDevice& device,
                 addLight(cx0 - 3.0f, fY + 2.2f, cz0 - 2.2f, 2.6f, 0.30f, 1.05f, 0.35f);
             } else if (z == ZMedical && nameHas("Ward ")) {
                 // Ward density: instrument cart + a recessed vent (the cot/bin come
-                // from the zone recipe).
-                crateSm(cx0 + r.w * 0.28f, cz0 - r.d * 0.22f, 0.25f, tClinic, 0.02f);
+                // from the zone recipe). The cart's XZ now comes from
+                // wardCartAnchor() instead of being spelled out here, because
+                // canon_play.cpp stages the assault tableau against this exact prop
+                // and the two must not be able to drift apart (room_dressing.h
+                // explains why the scene cannot simply look the cart up in the
+                // physics world).
+                {
+                    const WardCart wc = wardCartAnchor(r, fY);
+                    crateSm(wc.x, wc.z, 0.25f, tClinic, 0.02f);
+                }
                 ventHi(0.30f);
             } else if (nameHas("Pharmacy")) {
                 // "Medical supplies. Antidote components."

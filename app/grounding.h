@@ -777,6 +777,71 @@ inline bool runGroundingSelfTest() {
                "G12 the apron is CONCRETE: on it holds, 5 cm into it FIRES");
     }
 
+    // ---- G13: THE WARD ASSAULT TABLEAU — a PAIR, anchored to a prop ----------
+    // G11 proves one authored character does not climb onto furniture. This proves
+    // the thing the F2 ward actually stages: TWO characters posed against the same
+    // prop, where the prop is the thing one of them is bent over. The playtest
+    // defect was exactly this shape — the captive standing on top of the cart like
+    // a pedestal, her attacker face to face with her — so the invariants are
+    // asserted rather than eyeballed:
+    //   * BOTH participants stand on the room floor, never on the cart;
+    //   * her hands, at the pose's authored height, meet the cart TOP;
+    //   * they are far enough apart that two heads cannot occupy one space;
+    //   * they face the SAME way (across the cart), never at each other — which is
+    //     what makes the nose-clip impossible instead of merely unlikely.
+    {
+        const float floorY   = 0.15f;                 // the proud interior slab
+        const float cartTopY = floorY + 0.25f + 0.600f;   // recipe lift + Crate Short
+        const x3::phys::BodyId cart = physics->addBox(
+            x3::phys::Vec3{ 0.335f, 0.30f, 0.335f },
+            x3::phys::Vec3{ 3.0f, floorY + 0.25f + 0.30f, 3.0f },
+            0.0f, x3::phys::Layer::Static);
+        physics->optimizeBroadphase();
+
+        // Staged the way canon_play.cpp stages it: she stands 0.62 m off the cart
+        // centre, he stands 1.05 m behind her, both on the same heading.
+        const float standoff = 0.62f, contact = 1.05f;
+        const x3::phys::Vec3 capWanted{ 3.0f + standoff, floorY, 3.0f };
+        const x3::phys::Vec3 atkWanted{ 3.0f + standoff + contact, floorY, 3.0f };
+        const x3::phys::Vec3 cap = groundSceneCharacter(*physics, capWanted, 0.0f,
+                                                        "G13/captive", "grounding.h:G13");
+        const x3::phys::Vec3 atk = groundSceneCharacter(*physics, atkWanted, 0.0f,
+                                                        "G13/attacker", "grounding.h:G13");
+        gcheck(approx(cap.y, floorY, 0.02f),
+               "G13 the captive stands on the ROOM FLOOR (0.150), not on the cart");
+        gcheck(approx(atk.y, floorY, 0.02f),
+               "G13 her attacker stands on the ROOM FLOOR (0.150) too");
+        gcheck(cap.y < cartTopY - 0.5f,
+               "G13 neither participant is anywhere near the cart TOP (0.850)");
+
+        // The pose plants her hands at 0.85 m above her own feet; that has to be
+        // the cart's top face, or she is groping air / reaching through the prop.
+        const float handY = cap.y + 0.85f;
+        gcheck(approx(handY, cartTopY, 0.03f),
+               "G13 her hands (feet + 0.85) land ON the cart top — the pose's support contract");
+
+        // Contact distance: close enough to read as a struggle, far enough that two
+        // 0.4 m-radius humanoids cannot merge (which is how faces ended up clipping).
+        const float dx = atk.x - cap.x, dz = atk.z - cap.z;
+        const float sep = std::sqrt(dx * dx + dz * dz);
+        gcheck(sep >= 0.80f && sep <= 1.40f,
+               "G13 attacker stands at a struggle contact distance behind her (0.8-1.4 m)");
+
+        // FACING: both headings point across the cart, i.e. she is turned AWAY from
+        // him. Two participants facing each OTHER would dot to about -1.
+        const float hx = 3.0f - cap.x, hz = 3.0f - cap.z;      // captive -> cart
+        const float hl = std::sqrt(hx * hx + hz * hz);
+        const float ax = cap.x - atk.x, az = cap.z - atk.z;    // attacker -> captive
+        const float al = std::sqrt(ax * ax + az * az);
+        const float dot = (hl > 1e-4f && al > 1e-4f)
+                        ? ((hx / hl) * (ax / al) + (hz / hl) * (az / al)) : 0.0f;
+        gcheck(dot > 0.9f,
+               "G13 captive and attacker face the SAME way (across the cart) — never nose to nose");
+
+        physics->removeBody(cart);
+        physics->optimizeBroadphase();
+    }
+
     physics->shutdown();
     x3::logInfo("[grounding-test] " + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
