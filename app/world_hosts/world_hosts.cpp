@@ -61,7 +61,13 @@ const HostRoute kHostRoutes[] = {
     { "strata",            hostStrata          },
     { "elevator-showcase", hostElevator        },
     { "rifthub",           hostRifthub         },
-    { "echotropolis",      hostEchotropolis    },
+    // ECHO HARBOR. `echoharbor` is CANONICAL (owner 2026-08-18: "Echo Harbor
+    // should Not be called echotropolis"); `echotropolis` is the PERMANENT
+    // legacy alias — ~350 references across 74 files type it. Same host, same
+    // deal as ship-interior above; destinations.cpp carries the reasoned
+    // exclusion and D12 asserts the alias never quietly dies.
+    { "echoharbor",        hostEchoHarbor      },
+    { "echotropolis",      hostEchoHarbor      },   // alias flag, same host
     { "gallery",           hostGallery         },
     { "tunnel",            hostTunnel          },   // terrain-corridor bore demo
     { "mines",             hostMines           },   // mine-entrance showcase (inspx/mines)
@@ -82,8 +88,9 @@ const char* const kHostRouteFlags[kHostRouteCount] = {
     kHostRoutes[21].flag, kHostRoutes[22].flag, kHostRoutes[23].flag,
     kHostRoutes[24].flag, kHostRoutes[25].flag, kHostRoutes[26].flag,
     kHostRoutes[27].flag, kHostRoutes[28].flag, kHostRoutes[29].flag,
+    kHostRoutes[30].flag,
 };
-static_assert(kHostRouteCount == 30, "update kHostRouteFlags when adding a route");
+static_assert(kHostRouteCount == 31, "update kHostRouteFlags when adding a route");
 
 } // namespace
 

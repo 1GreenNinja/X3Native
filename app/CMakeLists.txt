@@ -33,7 +33,7 @@ add_library(x3app SHARED
     # #28 deep monolith split — extracted self-contained --world hosts
     world_hosts/world_hosts.cpp
     world_hosts/host_shell.cpp
-    world_hosts/host_echotropolis.cpp
+    world_hosts/host_echoharbor.cpp
     # LIFT A (ported from the echotropolis lineage, branch inspx/city-blocks):
     # the EchoRoads procedural ROAD GRAPH + geometry. Free-standing — the only
     # dependency that did not already exist on this lineage is the sibling

@@ -1,11 +1,20 @@
-// --world echotropolis host — F1 P1 app skeleton (Echotropolis: the island in 3D).
+// --world echoharbor host — F1 P1 app skeleton (Echo Harbor: the island in 3D).
+//
+// THE FLAG IS `echoharbor`. `--world echotropolis` is a PERMANENT alias — the
+// internal id this world shipped under for months, still typed by ~350 script,
+// recipe, doc and session-note references that must never break. Both flags
+// route HERE (two rows in world_hosts.cpp's kHostRoutes; the alias is a
+// reasoned kRegistryExclusions entry in app/destinations.cpp). The runtime log
+// lines below still print the `--world echotropolis:` prefix ON PURPOSE:
+// scripts/echo_stream_ab.ps1 parses that exact string out of the log, so the
+// prefix is a wire format, not a label.
 //
 // The strategic ORBIT camera over an open sea. This is a pure CONSUMER of the
 // engine: analytic sky (setSkyParams via TimeOfDay), the Gerstner ocean
 // (setWaterParams — a device-internal 240m patch that re-centers under the camera
 // each frame, so it reads as an infinite sea), and the FPS camera primitive
 // (setCamera). P2: the authored island lands as a baked GLB (EnvArtSystem, see
-// the island block in hostEchotropolis). P3: a live TimeOfDay cycle drives sky/
+// the island block in hostEchoHarbor). P3: a live TimeOfDay cycle drives sky/
 // sun/ambient/water through the art bible's four canonical times (golden/dusk/
 // night/noon — keys 1-4, T pauses, ECHO_TOD pins headless captures). Modeled on host_valley.cpp for the
 // scene/teardown lifecycle, but there is no physics/streamer here — water and sky
@@ -323,7 +332,7 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     // ☀ SUN RADIANCE. sky.sunLight defaults to 1.0 and this world never set it, so
     // daylight was no brighter than the ambient floor. Drive it with the day ramp.
     // ⚠ This is a CONTRAST improvement, NOT the "flat towers / no shadows" fix — that
-    // was the SUN ELEVATION (see todCfg.middayElevation in hostEchotropolis, and the
+    // was the SUN ELEVATION (see todCfg.middayElevation in hostEchoHarbor, and the
     // cosE reconstruction in app/tod.cpp). Measured at golden, aerial cam, ratio of
     // fully-lit to fully-shadowed pixels at equal N.L: sunLight 0/0.5/1/2.3/40 ->
     // 1.04 / 1.27 / 1.42 / 1.71 / 1.58 (40 loses to tonemap clipping). The reason
@@ -908,7 +917,7 @@ void drawTalkBubble(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
 
 } // namespace
 
-int hostEchotropolis(HostContext& hc) {
+int hostEchoHarbor(HostContext& hc) {
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
     const bool headless = hc.headless;
