@@ -4,6 +4,8 @@
 // IPhysicsWorld + Scene interfaces only. No purchased C# copied; no id Tech /
 // RBDOOM source consulted.
 #include "monster.h"
+#include "canon_aliens.h"   // --test-enemy-scale sweeps the canon-alien roster too
+#include "pack_spiders.h"   // ...and the pack arachnids
 #include "grounding.h"   // THE GROUNDING RULE: feet may not enter a solid surface
 #include "combat_log.h"
 #include "mesh_prims.h"
@@ -85,6 +87,32 @@ namespace {
 constexpr float kRealModelScale = 0.5f;
 constexpr float kBoxModelScale  = 1.0f;
 
+// THE BODY-SIZE BAND (fix/spawn-anomalies). The legal world size of an enemy
+// BODY, in metres, measured on its LARGEST axis span. Keyed on the largest axis
+// and not on height because a body may legitimately be FLAT — a hovering drone
+// is 0.54 m tall and 1.88 m across — while a genuinely broken one (the 30 cm
+// doll Tim found in the spire) is small in EVERY direction.
+//
+// Deliberately wide: a safety floor/ceiling, not a design constraint. A 0.6 m
+// skitterer and a 3 m apex boss are both legal and are left EXACTLY as authored;
+// this only ever fires on art or a rig that has genuinely collapsed or exploded.
+// Exposed to the sweep test via enemyHeightBand() so the runtime guard and the
+// assertion can never drift apart.
+constexpr float kMinEnemyHeight = 0.55f;
+// The CEILING is asymmetric with the floor, deliberately.
+//   * A body that came out TINY is never intentional. Nobody authors a 3 cm
+//     enemy; a tiny result always means collapsed art, a collapsed rig, or a
+//     scale applied to the wrong units. The floor therefore applies to EVERY
+//     enemy, authored scale or not — that is the mini-guy fix.
+//   * A body that came out HUGE frequently IS intentional. canon_45's apex
+//     predator is authored at 3.0x (a 5.4 m monster, on purpose) and the
+//     seafloor squid at 10x. Policing those would be this guard inventing
+//     design opinions it has no business having. So the ceiling applies only to
+//     an AUTO-scaled body — the fallback path, where no one chose a size — which
+//     is exactly the contract the original giant-enemy guard shipped with.
+constexpr float kMaxAutoBodySize = 5.00f;
+constexpr float kFitEnemyHeight = 1.80f;   // where a corrected body is re-seated
+
 // Collision box half-extents (meters) for the Enemy-layer body. Sized to a rough
 // crawler footprint: ~1.0 m wide/deep, ~0.8 m tall. Used for BOTH the real GLB
 // (the model is drawn over this volume) and the fallback box (which also renders
@@ -131,6 +159,147 @@ bool invertAffineUniform(const float m[16], float out[16]) {
     out[14] = -(out[2]*tx + out[6]*ty + out[10]*tz);
     out[15] = 1.0f;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// ART EXTENT along the model's UP axis, in MODEL units, with the glTF node
+// hierarchy applied (the same walk makeDrawables() does). This is the honest
+// measure of "how tall is the thing we actually draw" for BOTH rigged and
+// unrigged models — unlike the posed BONE span, which only exists for skinned
+// rigs (bones also stop short of the crown, so a bone span systematically
+// under-reads a body). A model whose GLB bakes its scale into node transforms
+// (the converted packs do) is measured correctly here and NOT by a raw basePos
+// sweep, which is why grounding.h's modelBindExtentY is not reused.
+//
+// `zUp` selects the model-space axis that becomes world up after m_modelFixup:
+// Z for the Z-up-converted character GLBs (standUpZtoY), Y otherwise.
+// Extents of a model's drawn geometry. `lo`/`hi` are along the UP axis (the
+// height the player reads); `maxExtent` is the largest of the three axis spans —
+// the dimension the sanity guard keys on, because a body can be legitimately
+// FLAT (a hovering drone is 0.54 m tall and 1.88 m across) while a truly broken
+// one is small in EVERY direction.
+struct ArtUpExtent {
+    float lo = 0.0f, hi = 0.0f;
+    float maxExtent = 0.0f;
+    bool  ok = false;
+};
+
+// Per-node world matrices (column-major), mirroring makeDrawables()'s walk.
+void resolveNodeWorlds(const x3::asset::Model& m, std::vector<float>& world) {
+    const size_t nn = m.nodes.size();
+    world.assign(nn * 16, 0.0f);
+    std::vector<uint8_t> done(nn, 0u);
+    for (size_t i = 0; i < nn; ++i) {
+        if (done[i]) continue;
+        // Walk to the root collecting the ancestor chain, then compose downward.
+        std::vector<size_t> chain;
+        for (int cur = (int)i; cur >= 0 && (size_t)cur < nn && !done[(size_t)cur]
+                               && chain.size() < nn; cur = m.nodes[(size_t)cur].parent)
+            chain.push_back((size_t)cur);
+        for (size_t k = chain.size(); k-- > 0; ) {
+            const size_t ni = chain[k];
+            const int    p  = m.nodes[ni].parent;
+            if (p >= 0 && (size_t)p < nn && done[(size_t)p])
+                x3::asset::mulMat4(&world[(size_t)p * 16], m.nodes[ni].localTransform,
+                                   &world[ni * 16]);
+            else
+                std::memcpy(&world[ni * 16], m.nodes[ni].localTransform, sizeof(float) * 16);
+            done[ni] = 1u;
+        }
+    }
+}
+
+// UNSKINNED art extent along the model's up axis, node transforms included. For
+// a STATIC mesh this IS the rendered size. It is NOT valid for a skinned mesh:
+// the rebuilt (_anim.glb) rigs author their bind vertices in a ~0.02 m skin
+// space that the joint matrices scale up ~100x, so a bind-vertex sweep of one
+// reads 2 cm for a 1.9 m body. Skinned rigs go through posedUpExtent instead.
+//
+// `zUp` selects the model-space axis that becomes world up after m_modelFixup:
+// Z for the Z-up-converted character GLBs (standUpZtoY), Y otherwise.
+ArtUpExtent staticArtUpExtent(const x3::asset::Model& m, bool zUp) {
+    ArtUpExtent e;
+    const int a = zUp ? 2 : 1;                    // model-space up component
+    float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
+    std::vector<float> world;
+    resolveNodeWorlds(m, world);
+    auto sweepBox = [&](const float* M, const x3::asset::MeshPrimitive& p) {
+        if (!p.hasBBox) return;
+        for (int c = 0; c < 8; ++c) {
+            const float x = (c & 1) ? p.bboxMax[0] : p.bboxMin[0];
+            const float y = (c & 2) ? p.bboxMax[1] : p.bboxMin[1];
+            const float z = (c & 4) ? p.bboxMax[2] : p.bboxMin[2];
+            for (int k = 0; k < 3; ++k) {
+                const float w = M[k] * x + M[4 + k] * y + M[8 + k] * z + M[12 + k];
+                if (w < mn[k]) mn[k] = w;
+                if (w > mx[k]) mx[k] = w;
+            }
+        }
+        e.ok = true;
+    };
+    bool anyNodeMesh = false;
+    for (size_t i = 0; i < m.nodes.size(); ++i) {
+        if (m.nodes[i].meshIndex < 0) continue;
+        for (const auto& p : m.primitives) {
+            if (p.nonVisual) continue;   // hull / reduced LOD: never the drawn body
+            if ((int)p.meshIndex == m.nodes[i].meshIndex) { sweepBox(&world[i * 16], p); anyNodeMesh = true; }
+        }
+    }
+    if (!anyNodeMesh) {                            // node-less model: identity transform
+        static const float I[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        for (const auto& p : m.primitives) { if (p.nonVisual) continue; sweepBox(I, p); }
+    }
+    if (!e.ok) return e;
+    e.lo = mn[a]; e.hi = mx[a];
+    for (int k = 0; k < 3; ++k) e.maxExtent = std::max(e.maxExtent, mx[k] - mn[k]);
+    return e;
+}
+
+// SKINNED extent: the extent of the ACTUAL POSED VERTICES along the up axis,
+// computed from the skinning palette exactly as the CPU skinner does
+// (v' = sum_j w_j * palette[j] * v). This is the only honest measure of a rigged
+// body, and the only one that sees a DEGENERATE RIG: canon_saurian_anim.glb
+// carries real-scale (2.18 m) bind vertices on a collapsed skeleton, so its art
+// bbox reads a healthy 2.18 m while the thing on screen is a few centimetres.
+ArtUpExtent posedUpExtent(const x3::asset::Model& m, const x3::anim::Skinner& sk,
+                          uint32_t clip, bool zUp) {
+    ArtUpExtent e;
+    if (!sk.valid()) return e;
+    std::vector<float> pal;
+    const uint32_t joints = sk.computePalette(m, clip, 0.0f, pal);
+    if (joints == 0 || pal.size() < (size_t)joints * 16) return e;
+    const int a = zUp ? 2 : 1;
+    float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
+    for (const auto& p : m.primitives) {
+        if (p.nonVisual) continue;       // hull / reduced LOD: never the drawn body
+        if (!p.skinned || p.basePos.empty()) continue;
+        const size_t vcount = p.basePos.size() / 3;
+        for (size_t v = 0; v < vcount; ++v) {
+            const float x = p.basePos[v*3+0], y = p.basePos[v*3+1], z = p.basePos[v*3+2];
+            float acc[3] = { 0.0f, 0.0f, 0.0f }, wsum = 0.0f;
+            for (int k = 0; k < 4; ++k) {
+                const float w = p.jointWt[v*4+k];
+                if (w <= 0.0f) continue;
+                const uint32_t j = p.jointIdx[v*4+k];
+                if (j >= joints) continue;
+                const float* M = &pal[(size_t)j * 16];
+                for (int c = 0; c < 3; ++c)
+                    acc[c] += w * (M[c] * x + M[4 + c] * y + M[8 + c] * z + M[12 + c]);
+                wsum += w;
+            }
+            if (wsum <= 1e-6f) continue;           // unweighted vertex — ignore
+            for (int c = 0; c < 3; ++c) {          // renormalize (glTF allows w != 1)
+                const float w = acc[c] / wsum;
+                if (w < mn[c]) mn[c] = w;
+                if (w > mx[c]) mx[c] = w;
+            }
+            e.ok = true;
+        }
+    }
+    if (!e.ok) return e;
+    e.lo = mn[a]; e.hi = mx[a];
+    for (int k = 0; k < 3; ++k) e.maxExtent = std::max(e.maxExtent, mx[k] - mn[k]);
+    return e;
 }
 
 // ---------------------------------------------------------------------------
@@ -522,44 +691,110 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // bigger than a basic enemy while reusing the same crawler GLB.
     if (tuning.modelScale > 0.0f) m_modelScale = tuning.modelScale;
 
-    // ---- STEP 3: SKELETON-FIT SCALE CHECK (Tim playtest: enemies rendered ~2x
-    // player height because monster.cpp lacked the toe->head fit thirdperson.cpp
-    // does at ~line 191). Read the posed bone span (naming-AGNOSTIC: min..max over
-    // ALL joints along the up axis — Z for Z-up-converted GLBs, else Y) and compute
-    // the height this enemy WOULD render at. If a NON-authored (auto-scaled) enemy
-    // would render pathologically giant/tiny (the bug), CORRECT it to ~human 1.8 m;
-    // otherwise leave the scale exactly as-is. Enemies with an explicit
-    // tuning.modelScale (bosses, deliberate sizing) are NEVER touched — so this is a
-    // pure safety guard that fixes the giant bug without regressing correct models
-    // or fighting per-enemy tuning (incl. the parallel humanoid-rig session). ----
-    if (m_animActive && m_skinner.valid() && m_skinner.nodeCount() > 0) {
-        const int upIdx = tuning.standUpZtoY ? 14 : 13;   // col-major translation Z/Y
-        float lo = 1e30f, hi = -1e30f;
-        for (uint32_t n = 0; n < m_skinner.nodeCount(); ++n) {
-            float bm[16];
-            if (m_skinner.boneGlobal(n, bm)) {
-                const float v = bm[upIdx];
-                if (v < lo) lo = v;
-                if (v > hi) hi = v;
+    // ======================================================================
+    // THE BODY-SIZE LAW  (fix/spawn-anomalies, 2026-08-17)
+    // ======================================================================
+    // Tim playtest 2026-08-16, red-lit spire (ENEMIES: 11): a COMPLETE tiny
+    // humanoid, ~30 cm tall, floating in mid-air between a full-size guard's
+    // legs. An enemy shipped at a fraction of its species' size and NOTHING in
+    // the engine noticed.
+    //
+    // The predecessor of this block (STEP 3 "skeleton-fit") was written for the
+    // opposite defect (2x-giant enemies) and had three holes, each of which is
+    // exactly the tiny-body case:
+    //
+    //   HOLE 1 — it only ran for `m_animActive && m_skinner.valid()`. Every
+    //     UNSKINNED enemy (the static Drone.glb fallback, any pack mesh with no
+    //     skin, any rig whose clips failed to bind) skipped it entirely and
+    //     rendered at kRealModelScale (0.5) x whatever the art happened to be.
+    //   HOLE 2 — it early-outed on `span > 0.2f`. A DEGENERATE RIG — one whose
+    //     posed skeleton has collapsed to a few centimetres — produces a span
+    //     UNDER that threshold, so the one guard that existed to catch a tiny
+    //     body declined to look at the tiniest bodies of all. This is the
+    //     shipped mini-guy: canon_saurian_anim.glb carries healthy 2.18 m bind
+    //     vertices on a collapsed skeleton (the systemic Meshy rig fault, see
+    //     the fix/saurian-meshy-rig lane), so it measures fine by every other
+    //     means and renders as a doll.
+    //   HOLE 3 — it never corrected an AUTHORED scale. An authored multiplier
+    //     over degenerate art is still a broken body; 1.10 x collapsed is
+    //     collapsed.
+    //
+    // It also measured a PROXY (the bone span), which under-reads a body since
+    // bones stop short of the crown. So: measure what is actually DRAWN, by the
+    // path that art class is actually drawn through.
+    //
+    //   SKINNED + posed  -> the extent of the POSED VERTICES, computed from the
+    //                       skinning palette exactly as the CPU skinner does.
+    //                       (A bind-vertex sweep is meaningless here: the
+    //                       rebuilt _anim.glb rigs author bind space at ~0.02 m
+    //                       and let the joint matrices scale it up ~100x.)
+    //   UNSKINNED        -> the vertex bounding box through the node transforms.
+    //                       (Needs MeshPrimitive::bboxMin/Max, added with this
+    //                       change — the loader retains CPU positions for
+    //                       skinned primitives ONLY, so before it there was no
+    //                       way to measure a static model at all.)
+    //
+    // Then ONE band check over the real height, applied unconditionally. The
+    // band (kMinEnemyHeight..kMaxEnemyHeight) is deliberately wide — a 0.75 m
+    // skitterer and a 3.2 m apex are both legal — because it is a sanity floor,
+    // not a design constraint. Everything inside it is left EXACTLY as authored.
+    // --test-enemy-scale asserts every live roster row lands inside it.
+    {
+        ArtUpExtent  e;
+        const char*  how = "";
+        if (m_animActive && m_skinner.valid() && m_skinner.nodeCount() > 0) {
+            const uint32_t clip = (m_idleClip >= 0) ? (uint32_t)m_idleClip : 0u;
+            e   = posedUpExtent(m_model, m_skinner, clip, tuning.standUpZtoY);
+            how = "posed-rig";
+            if (!e.ok) {   // no CPU skin data (GPU-skin path): fall back to the bone span
+                const int upIdx = tuning.standUpZtoY ? 14 : 13;   // col-major translation Z/Y
+                float lo = 1e30f, hi = -1e30f;
+                for (uint32_t n = 0; n < m_skinner.nodeCount(); ++n) {
+                    float bm[16];
+                    if (m_skinner.boneGlobal(n, bm)) {
+                        const float v = bm[upIdx];
+                        if (v < lo) lo = v;
+                        if (v > hi) hi = v;
+                    }
+                }
+                if (hi > lo) { e.lo = lo; e.hi = hi; e.ok = true; how = "bone-span"; }
             }
+        } else {
+            e   = staticArtUpExtent(m_model, tuning.standUpZtoY);
+            how = "static-art";
         }
-        const float span = hi - lo;
-        if (span > 0.2f) {
-            const float renderedH = span * m_modelScale;
-            const bool  authored  = (tuning.modelScale > 0.0f);
-            if (!authored && (renderedH < 1.0f || renderedH > 2.8f)) {
-                const float fit = 1.8f / span;
-                x3::logWarn("[monster] skeleton-fit CORRECTED " + modelFile +
-                            ": bone span=" + std::to_string(span) +
-                            "m rendered=" + std::to_string(renderedH) +
-                            "m (giant/tiny) -> scale " + std::to_string(m_modelScale) +
-                            " => " + std::to_string(fit) + " (target 1.8m)");
-                m_modelScale = fit;
+        if (e.ok && m_usingReal) {
+            m_artSpan      = e.hi - e.lo;                 // up-axis span (the HEIGHT)
+            m_visualHeight = m_artSpan * m_modelScale;
+            m_bodySize = e.maxExtent * m_modelScale;             // largest drawn dimension
+            const float bodySize = m_bodySize;
+            const bool  authored = (tuning.modelScale > 0.0f);
+            if (e.maxExtent <= 1e-5f) {
+                x3::logWarn("[monster] body-size UNMEASURABLE " + modelFile + " (" + how +
+                            ") — scale left at " + std::to_string(m_modelScale));
+                m_visualHeight = 0.0f;
+            } else if (bodySize < kMinEnemyHeight ||
+                       (!authored && bodySize > kMaxAutoBodySize)) {
+                const float fit = kFitEnemyHeight / e.maxExtent;
+                x3::logWarn("[monster] body-size CORRECTED " + modelFile + " (" + how +
+                            "): body=" + std::to_string(bodySize) +
+                            "m (h=" + std::to_string(m_visualHeight) +
+                            "m) " + (bodySize < kMinEnemyHeight ? "below floor "
+                                                                : "above auto ceiling ") +
+                            std::to_string(bodySize < kMinEnemyHeight ? kMinEnemyHeight
+                                                                      : kMaxAutoBodySize) +
+                            "m -> scale " +
+                            std::to_string(m_modelScale) + " => " + std::to_string(fit) +
+                            (authored ? "  (AUTHORED scale overridden: art/rig collapsed)"
+                                      : "  (auto scale refit)"));
+                m_modelScale   = fit;
+                m_visualHeight = m_artSpan * m_modelScale;
+                m_bodySize     = e.maxExtent * m_modelScale;
             } else {
-                x3::logInfo("[monster] skeleton-fit OK " + modelFile +
-                            ": bone span=" + std::to_string(span) +
-                            "m rendered=" + std::to_string(renderedH) + "m" +
-                            (authored ? " (authored scale kept)" : " (within human band)"));
+                x3::logInfo("[monster] body-size OK " + modelFile + " (" + how +
+                            "): body=" + std::to_string(bodySize) +
+                            "m h=" + std::to_string(m_visualHeight) + "m" +
+                            (authored ? " (authored scale kept)" : ""));
             }
         }
     }
@@ -588,6 +823,110 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
                            : x3::game::artLowestBelowOrigin(m_model, m_modelScale);
         m_pos = x3::game::groundCharacter(physics, m_pos, artDip, modelFile.c_str(),
                                           "monster.cpp MonsterSystem::buildMonsterTuned");
+    }
+
+    // ======================================================================
+    // THE HOVER RULE — a flyer's placement is a placement too.
+    // ======================================================================
+    // Tim playtest 2026-08-16, cell block: a white low-poly wedge — read as a
+    // stray "delta-wing ship" — embedded in a cell-block DOOR HEADER at about
+    // (4.6, 1.9, 43), and again mid-hall. It is no ship and no marker mesh: it
+    // is a BlueSynth combat drone. Characters/Drone.glb is a near-white
+    // 1.88 x 1.88 x 0.54 m low-poly shell, and 1.9 m is EXACTLY its hover
+    // height (kDroneHoverY 1.8 + the 0.12 m idle bob) — so a drone whose
+    // authored XZ happens to lie under a lintel floats half-inside it, and the
+    // half sticking out reads as a white paper plane wedged in the header.
+    //
+    // ROOT CAUSE: the grounding rule above exempts flyers ("FLYERS ARE EXEMPT
+    // and always will be"), and the exemption was read as "a flyer needs no
+    // placement check at all". So `m_pos.y += kDroneHoverY` (see above) is the
+    // ONLY thing that ever positions a hovering body, and it is blind: it never
+    // asks what is at that height. Every ground character in the game is probed
+    // against the surface under it; a flyer was probed against nothing.
+    //
+    // THE RULE, for every flyer everywhere: a hovering body owns the air it is
+    // drawn in. Probe the column at its XZ — floor below, ceiling/lintel above —
+    // and seat the hover inside the clear gap with the body's own half-height as
+    // margin. If the column cannot hold it (a doorway header, a duct run), step
+    // to the first clear candidate around the authored spot, exactly the
+    // pattern canonPickupSpotClear() uses for a blocked pickup. The authored
+    // position always stays candidate #1, so a drone in open air never moves.
+    if (m_flyer && !tuning.skipGrounding) {
+        // Half-height of the drawn body, floored so an unmeasured model still
+        // reserves a sane bubble. The drone is flat: this is ~0.3 m, not 0.9.
+        const float halfH = std::max(0.30f, (m_visualHeight > 0.0f ? m_visualHeight : 0.6f) * 0.5f);
+        const float halfW = std::max(0.40f, m_bodySize * 0.5f);
+        const float kProbeUp = 6.0f, kProbeDown = 8.0f;
+        const float kGap     = 0.10f;      // clearance to keep off floor + ceiling
+
+        // Try the authored XZ first, then a ring of lateral steps at increasing
+        // radius. Returns the seated Y for a column that can hold the body, or a
+        // negative sentinel when the column is too tight.
+        auto seatIn = [&](float px, float pz, float& outY) -> bool {
+            const x3::phys::Vec3 at{ px, m_pos.y, pz };
+            const x3::phys::RayHit up =
+                physics.rayCastStrict(at, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f }, kProbeUp,
+                                      x3::phys::Layer::Static);
+            const x3::phys::RayHit dn =
+                physics.rayCastStrict(at, x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, kProbeDown,
+                                      x3::phys::Layer::Static);
+            if (!dn.hit) return false;                 // no floor under it: not a room
+            const float floorY = dn.point.y;
+            const float ceilY  = up.hit ? up.point.y : (floorY + kProbeUp);
+            const float clear  = ceilY - floorY;
+            if (clear < 2.0f * halfH + 2.0f * kGap) return false;   // column too tight
+            // Prefer the authored hover height; clamp it into the clear band.
+            float y = m_pos.y;
+            const float lo = floorY + halfH + kGap, hi = ceilY - halfH - kGap;
+            if (y < lo) y = lo;
+            if (y > hi) y = hi;
+            // A body whose own bubble still intersects something laterally at that
+            // height is not seated (the lintel case: clear column, blocked side).
+            const x3::phys::Vec3 c{ px, y, pz };
+            const x3::phys::Vec3 dirs[4] = { { 1,0,0 }, { -1,0,0 }, { 0,0,1 }, { 0,0,-1 } };
+            for (const x3::phys::Vec3& d : dirs)
+                if (physics.rayCastStrict(c, d, halfW, x3::phys::Layer::Static).hit) return false;
+            outY = y;
+            return true;
+        };
+
+        float seatY = m_pos.y;
+        bool  ok    = seatIn(m_pos.x, m_pos.z, seatY);
+        if (!ok) {
+            // Step out in a ring. 8 headings x 3 radii — near-field first, so a
+            // drone under a header slides just clear of the jamb, not across the room.
+            const float rad[3] = { 0.8f, 1.6f, 2.6f };
+            for (int r = 0; r < 3 && !ok; ++r) {
+                for (int a = 0; a < 8 && !ok; ++a) {
+                    const float th = (float)a * (2.0f * 3.14159265358979323846f / 8.0f);
+                    const float cx2 = m_pos.x + std::cos(th) * rad[r];
+                    const float cz2 = m_pos.z + std::sin(th) * rad[r];
+                    if (seatIn(cx2, cz2, seatY)) {
+                        x3::logWarn("[monster] hover-clear MOVED " + modelFile +
+                                    ": (" + std::to_string(m_pos.x) + ", " +
+                                    std::to_string(m_pos.y) + ", " + std::to_string(m_pos.z) +
+                                    ") was blocked -> (" + std::to_string(cx2) + ", " +
+                                    std::to_string(seatY) + ", " + std::to_string(cz2) + ")");
+                        m_pos.x = cx2; m_pos.z = cz2;
+                        ok = true;
+                    }
+                }
+            }
+        }
+        if (ok) {
+            if (std::fabs(seatY - m_pos.y) > 1e-3f)
+                x3::logInfo("[monster] hover-clear seated " + modelFile + ": y " +
+                            std::to_string(m_pos.y) + " -> " + std::to_string(seatY));
+            m_pos.y = seatY;
+            m_hoverSeated = true;
+        } else {
+            // Nowhere clear within reach. Say so LOUDLY rather than ship a drone
+            // inside a wall — this is the line that would have caught the header.
+            x3::logWarn("[monster] hover-clear FAILED " + modelFile + " at (" +
+                        std::to_string(m_pos.x) + ", " + std::to_string(m_pos.y) + ", " +
+                        std::to_string(m_pos.z) + "): no clear column within 2.6 m — "
+                        "the authored flyer spawn is inside geometry");
+        }
     }
 
     // ---- Enemy-layer collision body for the shoot raycast. mass 0 -> Static
@@ -4709,6 +5048,205 @@ bool sameStats(const MonsterSystem::Tuning& a, const MonsterSystem::Tuning& b) {
 }
 
 } // namespace
+
+// ===========================================================================
+// --test-enemy-scale: THE BODY-SIZE SWEEP.
+//
+// Tim playtest 2026-08-16, red-lit spire: a ~30 cm humanoid floating in mid-air
+// between a full-size guard's legs. One enemy shipped at a fraction of its
+// species' size and nothing in the engine noticed, because the only size guard
+// that existed ran on a proxy measurement, for skinned rigs only, and declined
+// to look at spans under 0.2 m — i.e. it was blind to exactly the tiny bodies it
+// was there to catch (see THE BODY-SIZE LAW in buildMonsterTuned).
+//
+// This is the assertion that closes the class. It BUILDS every enemy row the
+// game can spawn — the data-driven Act-1 bestiary, the Act-1 mid-bosses, the
+// Act-2 surface roster, the Act-2 bosses, the canon-alien roster, and the pack
+// arachnids — through the real buildMonsterTuned() path on a headless device,
+// and asserts each one:
+//   (S1) MEASURES at all (a body whose size cannot be determined is a body that
+//        can silently ship at any size);
+//   (S2) lands inside the sane body-size band, with a boss's largest phase
+//        growth multiplier applied (the biggest that row ever renders);
+//   (S3) has a HEIGHT that reads as a body — nothing shorter than a knee.
+// Plus two control cases proving the runtime guard is live, not decorative:
+//   (S4) deliberately degenerate art (a 0.02x authored scale over a real rig) is
+//        CAUGHT and refit into the band rather than shipped;
+//   (S5) a legitimately FLAT body (the hovering drone: 0.54 m tall, 1.88 m
+//        across) is left EXACTLY as authored — the guard keys on the largest
+//        axis, so it must not "correct" a drone into a 3 m saucer.
+// No window / Vulkan. Mirrors the other self-tests.
+// ===========================================================================
+namespace {
+
+int es_pass = 0, es_fail = 0;
+void escheck(bool cond, const std::string& name) {
+    if (cond) { ++es_pass; x3::logInfo("[enemy-scale] PASS " + name); }
+    else      { ++es_fail; x3::logError("[enemy-scale] FAIL " + name); }
+}
+
+// Flat ground so a ground enemy's grounding probe has a surface to seat on and a
+// flyer's hover column has a floor under it.
+x3::phys::BodyId esGround(x3::phys::IPhysicsWorld& w, float half) {
+    float v[] = { -half,0,-half,  half,0,-half,  half,0,half,  -half,0,half };
+    uint32_t idx[] = { 0,2,1, 0,3,2 };
+    return w.addStaticMesh(v, 4, idx, 6);
+}
+
+// Build one row and report what it would RENDER at.
+struct EsResult { float body = 0.0f, height = 0.0f; bool real = false; };
+
+EsResult esMeasure(const MonsterSystem::Tuning& t, HeadlessDevice& device) {
+    std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+    w->init(); esGround(*w, 60.0f);
+    Scene scene; MonsterSystem m;
+    m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                        x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, t);
+    EsResult r;
+    r.real   = m.usingRealModel();
+    r.body   = m.bodySize();
+    r.height = m.visualHeight();
+    w->shutdown();
+    return r;
+}
+
+// One roster row under test: a label + its tuning + the largest phase growth it
+// can reach (1.0 for anything that is not a phase-scaling boss).
+struct EsRow { std::string label; MonsterSystem::Tuning t; float phaseMul; };
+
+void esCollect(std::vector<EsRow>& out) {
+    auto biggestPhase = [](const MonsterSystem::Tuning& t) {
+        return std::max(1.0f, std::max(t.phase2ScaleMul, t.phase3ScaleMul));
+    };
+    auto add = [&](const std::string& tag, const MonsterSystem::Tuning& t) {
+        out.push_back({ tag, t, biggestPhase(t) });
+    };
+    for (uint32_t i = 0; i < (uint32_t)EnemyType::Count; ++i) {
+        const EnemyType e = (EnemyType)i;
+        add(std::string("bestiary/") + enemyTypeName(e), tuningFor(e));
+    }
+    for (uint32_t i = 0; i < (uint32_t)BossType::Count; ++i) {
+        const BossType b = (BossType)i;
+        add(std::string("boss/") + bossTypeName(b), bossTuning(b));
+    }
+    for (uint32_t i = 0; i < (uint32_t)Act2EnemyType::Count; ++i) {
+        const Act2EnemyType e = (Act2EnemyType)i;
+        add(std::string("act2/") + act2EnemyTypeName(e), act2EnemyTuning(e));
+    }
+    for (uint32_t i = 0; i < (uint32_t)Act2BossType::Count; ++i) {
+        const Act2BossType b = (Act2BossType)i;
+        add(std::string("act2boss/") + act2BossTypeName(b), act2BossTuning(b));
+    }
+    for (uint32_t i = 0; i < (uint32_t)CanonAlien::Count; ++i) {
+        const CanonAlien c = (CanonAlien)i;
+        add(std::string("canon/") + canonAlienTypeName(c), canonAlienTuning(c));
+    }
+    for (uint32_t i = 0; i < (uint32_t)PackSpider::Count; ++i) {
+        const PackSpider sp = (PackSpider)i;
+        add(std::string("spider/") + packSpiderTypeName(sp), packSpiderTuning(sp));
+    }
+}
+
+} // namespace
+
+bool runEnemyScaleSelfTest() {
+    es_pass = es_fail = 0;
+    HeadlessDevice device;
+    float bandMin = 0.0f, bandMax = 0.0f, bandFit = 0.0f;
+    enemyHeightBand(bandMin, bandMax, bandFit);
+
+    std::vector<EsRow> rows;
+    esCollect(rows);
+    x3::logInfo("[enemy-scale] sweeping " + std::to_string(rows.size()) +
+                " live enemy rows against body band [" + std::to_string(bandMin) +
+                ", " + std::to_string(bandMax) + "] m");
+
+    // The second invariant, orthogonal to the band: PROPORTION. A body may be
+    // legitimately low-slung — a tarantula is 0.24 m tall and 1.13 m across, a
+    // hovering drone 0.54 m over 1.88 m — so an absolute height floor would be a
+    // lie about those species. What is NEVER legitimate is a body that has
+    // COLLAPSED toward a wafer relative to its own footprint: that is the
+    // signature of a broken rig or a bad export, and it is the one failure mode
+    // the largest-axis band in S2 cannot see (a model can stay 1.5 m wide while
+    // its height goes to nothing). The lowest real row in the game sits at 0.21;
+    // 0.12 keeps honest margin under it and still catches a collapse.
+    constexpr float kMinHeightRatio = 0.12f;
+
+    int measured = 0, inBand = 0, tallEnough = 0, skippedNoArt = 0;
+    for (const EsRow& r : rows) {
+        const EsResult m = esMeasure(r.t, device);
+        if (!m.real) {   // GLB absent on this machine -> procedural box, nothing to judge
+            ++skippedNoArt;
+            x3::logInfo("[enemy-scale] " + r.label + ": no real model (fallback box) — skipped");
+            continue;
+        }
+        const float body = m.body   * r.phaseMul;
+        const float hgt  = m.height * r.phaseMul;
+        const bool  okMeasured = body > 1e-4f;
+        // The floor binds every row; the ceiling binds only AUTO-scaled rows (an
+        // authored 3x apex is a design act, not a defect — see kMaxAutoBodySize).
+        const bool  authored   = (r.t.modelScale > 0.0f);
+        const bool  okBand     = okMeasured && body >= bandMin &&
+                                 (authored || body <= bandMax);
+        const bool  okHeight   = okMeasured && (hgt / body) >= kMinHeightRatio;
+        if (okMeasured) ++measured;
+        if (okBand)     ++inBand;
+        if (okHeight)   ++tallEnough;
+        x3::logInfo("[enemy-scale] " + r.label + ": body=" + std::to_string(body) +
+                    "m height=" + std::to_string(hgt) + "m phaseMul=" +
+                    std::to_string(r.phaseMul) +
+                    ((okBand && okHeight) ? "  [OK]" : "  [OUT OF BAND]"));
+    }
+    const int judged = (int)rows.size() - skippedNoArt;
+
+    escheck(judged > 0, "S0 the sweep found real art for at least one row");
+    escheck(measured == judged,
+            "S1 every live enemy row MEASURES (body size is knowable, not assumed)");
+    escheck(inBand == judged,
+            "S2 every live enemy row clears the body-size FLOOR (and every auto-scaled "
+            "row the ceiling), phase growth included");
+    escheck(tallEnough == judged,
+            "S3 no live enemy row has COLLAPSED to a wafer (height is a sane fraction "
+            "of its own footprint — the broken-rig signature S2 cannot see)");
+
+    // ---- (S4) CONTROL: the guard must FIRE on degenerate art. Take a real,
+    // known-good rig and author a pathological 0.02x scale on it — the shape of
+    // the shipped bug. The runtime must refuse it and refit into the band.
+    {
+        MonsterSystem::Tuning t = tuningFor(EnemyType::DominionTrooper);
+        t.modelScale = 0.02f;                       // ~3.6 cm humanoid
+        const EsResult m = esMeasure(t, device);
+        const bool caught = m.real && m.body >= bandMin && m.body <= 3.0f;
+        x3::logInfo("[enemy-scale] control(degenerate 0.02x): body=" +
+                    std::to_string(m.body) + "m height=" + std::to_string(m.height) + "m");
+        escheck(caught, "S4 a deliberately degenerate authored scale is CAUGHT and refit "
+                        "(the guard is live, not decorative)");
+    }
+
+    // ---- (S5) CONTROL: the guard must NOT fire on a legitimately FLAT body.
+    // The hovering drone is 0.54 m tall and 1.88 m across; keying the band on
+    // height alone would "correct" it into a 3 m saucer. Its authored scale must
+    // survive untouched.
+    {
+        const MonsterSystem::Tuning t = tuningFor(EnemyType::BlueSynth);
+        const EsResult m = esMeasure(t, device);
+        const bool flatKept = !m.real ||
+                              (m.height > 0.30f && m.height < 1.00f && m.body > 1.20f);
+        x3::logInfo("[enemy-scale] control(flat drone): body=" + std::to_string(m.body) +
+                    "m height=" + std::to_string(m.height) + "m");
+        escheck(flatKept, "S5 a legitimately FLAT body (hovering drone) keeps its authored "
+                          "scale — the band keys on the largest axis, not height");
+    }
+
+    x3::logInfo("[enemy-scale] " + std::to_string(es_pass) + " passed, " +
+                std::to_string(es_fail) + " failed (" + std::to_string(skippedNoArt) +
+                " rows skipped: no art on this machine)");
+    return es_fail == 0;
+}
+
+void enemyHeightBand(float& outMin, float& outMax, float& outFit) {
+    outMin = kMinEnemyHeight; outMax = kMaxAutoBodySize; outFit = kFitEnemyHeight;
+}
 
 bool runBestiarySelfTest() {
     be_pass = be_fail = 0;

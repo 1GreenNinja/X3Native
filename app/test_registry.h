@@ -93,6 +93,7 @@ struct TestFlags {
     bool testRidgeRoad   = false;      // --test-ridgeroad (the dirt road along the tops)
     bool testTunnelMouth = false;     // --test-tunnelmouth (THE tunnel-mouth defect gate)
     bool testWorldStream = false, testWorldMap = false, testAi = false, testBestiary = false;
+    bool testEnemyScale = false;     // --test-enemy-scale (THE BODY-SIZE SWEEP: every live enemy row renders body-sized)
     bool testBosses = false, testAct2Bosses = false, testSpireMid = false, testNexus = false;
     bool testAdaptiveHide = false;   // --test-adaptive-hide (canon-aliens rotate-damage rhythm)
     bool testCanonAliens = false;    // --test-canonaliens (canon-alien roster: Mantis/Grey/Reptilian/Nordic)

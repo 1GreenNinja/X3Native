@@ -401,13 +401,39 @@ inline ModelExtent modelBindExtentY(const x3::asset::Model& m) {
     ModelExtent e;
     float lo = 1e30f, hi = -1e30f;
     for (const auto& p : m.primitives) {
-        if (p.basePos.empty()) continue;
-        for (size_t i = 1; i < p.basePos.size(); i += 3) {
-            const float y = p.basePos[i];
-            if (y < lo) lo = y;
-            if (y > hi) hi = y;
+        // A physics hull or a reduced LOD is not the body the player sees; letting
+        // it into the extent measures geometry that is never drawn.
+        if (p.nonVisual) continue;
+        if (!p.basePos.empty()) {
+            for (size_t i = 1; i < p.basePos.size(); i += 3) {
+                const float y = p.basePos[i];
+                if (y < lo) lo = y;
+                if (y > hi) hi = y;
+            }
+            e.ok = true;
+            continue;
         }
-        e.ok = true;
+        // ---- STATIC ART (fix/spawn-anomalies, Tim 2026-08-17: "some monsters
+        // are spawned with midsection level with the floor").
+        //
+        // basePos is retained for SKINNED primitives only, so for a static-art
+        // enemy every primitive was skipped, e.ok stayed false, and
+        // artLowestBelowOrigin() below returned 0 — "this art does not dip below
+        // its origin". groundCharacter() then seated the model's ORIGIN on the
+        // floor. That is correct for feet-at-origin humanoids and WRONG for the
+        // CENTRE-origin models the roster actually contains (monster.cpp's hitbox
+        // sizing documents both conventions and budgets a 0.4 m skirt for "low
+        // insectoid beasts"): seating a centre origin on the floor buries the
+        // whole lower half — a monster standing in the ground to its midsection.
+        //
+        // The primitive BOUNDING BOX now covers that gap: it is filled for every
+        // primitive, skinned or not, in the loader loop that already walks each
+        // vertex. Static art can finally state where its lowest point is.
+        if (p.hasBBox) {
+            if (p.bboxMin[1] < lo) lo = p.bboxMin[1];
+            if (p.bboxMax[1] > hi) hi = p.bboxMax[1];
+            e.ok = true;
+        }
     }
     if (!e.ok) return e;
     e.minY = lo; e.maxY = hi;
