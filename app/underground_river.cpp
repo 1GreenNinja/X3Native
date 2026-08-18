@@ -27,6 +27,24 @@ inline float rj(float a, float b) {
     return ((float)((h ^ (h >> 16)) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
 }
 
+// THE VAULT'S INNER SURFACE — the cavern's ceiling. ONE formula with TWO
+// callers (NO_SLOP rule 4): buildStrip() draws it, gate U9 measures headroom
+// against it. `jitter=false` returns the LOWEST the rough ceiling can ever
+// hang at that point, which is what a clearance gate has to assume.
+//   ground = worldPreUnderRiverHeight (the surface the lid restores)
+//   waterY = the river surface here;  u = 0..1 across the span
+// Displacement only ever hangs DOWN into the void, scaled by the room there,
+// and tapers to nothing at the rim so the lid meets the country flush.
+inline float vaultCeilingY(float ground, float waterY, float u,
+                           float s, int k, bool jitter) {
+    const float archT = std::sin(u * 3.14159265f);
+    const float room  = std::max(ground - (waterY + kURShelfLift), 0.0f);
+    const float amp   = std::min(2.6f, room * 0.12f) * archT;
+    const float j = jitter ? (rj(s * 0.13f + 3.7f, (float)k * 2.1f) * 0.5f + 0.5f)
+                           : 1.0f;
+    return ground - 0.30f * archT - j * amp;
+}
+
 struct CpuMesh {
     std::vector<x3::rhi::MeshVertex> v;
     std::vector<uint32_t> i;
@@ -114,13 +132,7 @@ UndergroundRiver::Result UndergroundRiver::build(
                 if (foot) {
                     y = ground - 1.4f;                 // tucked under the country
                 } else if (inner) {
-                    // A ROUGH ROCK CEILING: displacement only ever hangs DOWN
-                    // into the void (never up through the hill), and only where
-                    // the void is tall enough to take it.
-                    const float room = std::max(ground - (w + kURShelfLift), 0.0f);
-                    const float amp  = std::min(2.6f, room * 0.12f) * archT;
-                    y = ground - 0.30f * archT
-                      - (rj(s * 0.13f + 3.7f, (float)k * 2.1f) * 0.5f + 0.5f) * amp;
+                    y = vaultCeilingY(ground, w, u, s, k, true);   // see the helper
                 } else {
                     y = ground + (0.35f + rj(s * 0.13f + 9.1f, (float)k * 2.1f)
                                           * 0.28f) * archT;
@@ -672,6 +684,47 @@ bool UndergroundRiver::runSelfTest() {
         for (int i = 0; same && i < uc.n; ++i)
             same = uc2.w[i] == uc.w[i] && uc2.natural[i] == uc.natural[i];
         check(same, "U6 the derived table is stable");
+    }
+
+    // U9 — IT IS A CAVERN YOU CAN STAND IN. The vault had no gate at all: the
+    // lid is a mesh, the floor is the height field, and nothing checked that
+    // there is a VOID between them. Walks the vaulted reach and measures the
+    // ceiling (vaultCeilingY at its LOWEST — no jitter luck) against the built
+    // ground, across the channel and both beaches. Two ways this can fail and
+    // both have to be caught: a ceiling that dives into the floor (no cavern),
+    // and a ceiling low enough to walk into (CONTACT LAW's other direction —
+    // the beaches are walkable ground, so they need standing room over them).
+    {
+        const ChainWalk walk(uc);
+        const float vaultEnd = uc.cum[uc.n - 1] - kURGorgeLen;
+        float minHead = 1e9f, minBeachHead = 1e9f, maxHead = 0.0f;
+        float hx = 0, hz = 0; int probes = 0;
+        for (float s = 10.0f; s < vaultEnd; s += 20.0f) {
+            float cx, cz, w, nat, dx, dz; walk.at(s, cx, cz, w, nat, dx, dz);
+            const float px = -dz, pz = dx;
+            const float span = kURWallOutW + 2.0f;      // the lid's foot-to-foot
+            for (int k = 1; k < 12; ++k) {              // skip the buried feet
+                const float u = (float)k / 12.0f;
+                const float lat = (u * 2.0f - 1.0f) * span;
+                const float vx = cx + px * lat, vz = cz + pz * lat;
+                const float ceil = vaultCeilingY(worldPreUnderRiverHeight(vx, vz),
+                                                 w, u, s, k, false);
+                const float head = ceil - terrainHeightAtWorld(vx, vz);
+                ++probes;
+                if (head < minHead) { minHead = head; hx = vx; hz = vz; }
+                maxHead = std::max(maxHead, head);
+                // Standing room is only owed over ground you can stand on —
+                // the channel and its beaches, not the rim where the lens shuts.
+                if (std::fabs(lat) <= kURShelfHalfW + 3.0f)
+                    minBeachHead = std::min(minBeachHead, head);
+            }
+        }
+        std::snprintf(d, sizeof(d),
+            "%d probes over %.0f m of vault; headroom %.2f..%.2f m "
+            "(tightest at (%.0f, %.0f)); over the beaches at least %.2f m",
+            probes, vaultEnd, minHead, maxHead, hx, hz, minBeachHead);
+        check(minHead > 0.05f && minBeachHead >= 2.5f && probes > 500,
+              "U9 there is a cavern in there, and you can stand up in it", d);
     }
 
     std::snprintf(d, sizeof(d), "--test-underriver: %d/%d passed", passN, passN + failN);
