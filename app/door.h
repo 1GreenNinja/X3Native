@@ -114,6 +114,61 @@ enum class DoorState : uint32_t {
 // bio-mesh progression assigns these; a Door/DoorSpec `keycard` field references one.
 constexpr int kKeycardSecurity = 1;
 
+// ---------------------------------------------------------------------------
+// DOORS PASS — the DOOR MODEL REGISTRY ("all the door models we have should be
+// usable, with their sounds"). Every door-shaped GLB in the asset tree is a row
+// here: its mesh, its authored MOTION (respected — a split door parts, it does
+// not portcullis), and its SOUND SET (data-driven model -> sounds mapping; the
+// library today ships exactly ONE door sound family, so every row references it
+// — the closest family — and a future WAV drop is a data edit, not code).
+//
+// Rows:
+//   door_a   — ModularSciFi SM_Door_A + SM_DoorFrame_A. Single pentagon leaf,
+//              slides UP (portcullis). The facility default; wired everywhere.
+//   slider   — meshy props_articulated/sliding_door_art. Authored as door_frame
+//              + door_panel_L/R with L/R translation clips: a TWO-PANEL door
+//              whose halves part HORIZONTALLY. Frame draws static.
+//   bulkhead — SciFiKit3 Wall_Door_Simple_01's Door_Left/Door_Right leaves as a
+//              two-leaf horizontal split. NOTE: the kit's authored node TRS for
+//              these panels is broken by conversion (panels land outside their
+//              own wall, rotated flat), so the leaves are seated from their
+//              MESH-local geometry; the fused Wall/Fence nodes are skipped (the
+//              canon walls already exist — LAW 2 forbids doubling them).
+// (rifthub gate_ring / Stargate_* are portal RINGS, not passage doors — they
+// stay with the rifthub system, not this registry.)
+// ---------------------------------------------------------------------------
+enum class DoorMotion : uint32_t {
+    SlideUp    = 0,   // single leaf rises into the header (portcullis)
+    SlideSplit = 1,   // two panels part horizontally from the centre
+};
+
+// One registry row. AABBs are PROBED constants (tools-side glTF walk — the same
+// house style as kDoorAabb): whole-model bounds + each moving panel's bounds, in
+// the model's own space AFTER its node TRS (except `rawPanelSpace` models, whose
+// broken node TRS is ignored and mesh-local bounds are used).
+struct DoorModelDef {
+    const char* key;          // DoorSpec::model registry key
+    const char* glbRel;       // path under its mount root
+    int         rootKind;     // 0 = converted_glb root, 1 = assets/meshy root
+    DoorMotion  motion;
+    // Whole-model bounds (frame + panels) — the fit box.
+    float aabb[6];            // minx,miny,minz, maxx,maxy,maxz
+    // Moving panels (SlideSplit only): node-name prefix + bounds per panel.
+    const char* panelANode;   // nullptr for SlideUp
+    const char* panelBNode;
+    float panelA[6];
+    float panelB[6];
+    bool  rawPanelSpace;      // true = ignore node TRS, seat from mesh-local bounds
+    float preYaw;             // model-space yaw (rad) mapping its width axis onto +X
+    // Data-driven sound set (resolved via resolveAudio by the host wire-up).
+    const char* sndOpen, *sndClose, *sndLocked, *sndServo, *sndThunk;
+};
+
+// The registry (static table). `count` receives the row count.
+const DoorModelDef* doorModelDefs(uint32_t& count);
+// Row index by key (0 = door_a default when key is null/unknown).
+uint32_t doorModelIndex(const char* key);
+
 struct Door {
     uint32_t          entity   = kNoLink;
     x3::phys::BodyId  body;
@@ -161,6 +216,20 @@ struct Door {
     // whenever the door is at rest — that invariant IS the "the sound never
     // outlives the motion" guarantee, and runDoorSelfTest() asserts it. ----
     x3::audio::LoopHandle motorLoop{};
+
+    // ---- DOOR MODEL (registry row; 0 = door_a). A SlideSplit door uses the
+    // two-panel machinery (body/body2) with HORIZONTAL travel and is drawn from
+    // its own registry mesh; door_a keeps the existing SM_Door_A path. ----
+    uint32_t modelIdx = 0;
+
+    // ---- THE TINY LOCK API (doors-pass). `locked` is the single source of
+    // truth the keycard/keypad gate, the RED signage band and the bed
+    // interaction all read. lock() does NOT move the door (a lock is a bolt,
+    // not a motor) — pair with the system's closeAndLock() to also seal an
+    // open door. All idempotent. ----
+    void lock()           { locked = true;  }
+    void unlock()         { locked = false; }
+    bool isLocked() const { return locked;  }
 };
 
 // Registry of doors in a level. Kept in the game layer (not the Scene) so the
@@ -201,6 +270,19 @@ public:
     // be opened by startOpening()/its button. Idempotent.
     void unlock(Door& d) const { d.locked = false; }
 
+    // Set a door's locked flag (does NOT move it — a bolt, not a motor). A
+    // locked door refuses startOpening()/toggle() (denied buzz) until unlock().
+    void lock(Door& d) const { d.locked = true; }
+
+    // Seal a door: if it is Open/Opening, start it Closing (with the normal
+    // motion voice), then lock it — the close completes under update() and the
+    // lock holds because toggle()/startOpening() refuse locked doors, including
+    // the mid-Closing reversal. The bed interaction's "the door locks" path.
+    void closeAndLock(Door& d) const {
+        if (d.state == DoorState::Open || d.state == DoorState::Opening) toggle(d);
+        d.lock();
+    }
+
     // Unlock + immediately start opening (the "open on event" path). Used by the
     // host for Door E on Martinez's death. Returns true if the door began opening.
     bool unlockAndOpen(Door& d) const { unlock(d); return startOpening(d); }
@@ -223,6 +305,13 @@ public:
 
     // True once the shared door GLB has loaded ok (a real mesh will be drawn).
     bool hasDoorMesh() const { return m_meshOk; }
+
+    // Load a REGISTRY model (doors-pass; idempotent per row). Row 0 (door_a)
+    // forwards to loadDoorMesh(). Returns true iff the row's mesh is drawable.
+    // buildLevelDoor() calls this for spec.model rows automatically.
+    bool loadModelMesh(x3::rhi::IRenderDevice& device, uint32_t modelIdx);
+    // True iff registry row `modelIdx` has a drawable mesh loaded.
+    bool hasModelMesh(uint32_t modelIdx) const;
 
     // ---- W2-A2: door audio (P0 #5 — every door was silent). The host wires the
     // audio system + the three WAV handles once; open/close/locked emissions fire
@@ -255,6 +344,18 @@ public:
         m_sndServo = servoLoop; m_sndThunk = seatThunk;
     }
 
+    // ---- DATA-DRIVEN model->sound wiring (doors-pass). Loads every registry
+    // row's sound set through `audio` (paths resolved by `resolve` — the host
+    // passes resolveAudio) and stores them per model, so a door emits ITS
+    // model's set with zero per-call-site wiring. Rows whose WAVs are missing
+    // fall back to the global setAudio/setMotorAudio handles (never silent
+    // when those are wired). Today every row maps to the one shipped family
+    // (doors/door_*.wav + interact/servo_loop|door_thunk) so behaviour is
+    // identical — the mapping is the point: a per-model WAV drop is a data
+    // edit in doorModelDefs(), not a code change.
+    void wireModelSounds(x3::audio::IAudioSystem* audio,
+                         const std::function<std::string(std::string_view)>& resolve);
+
     // Hard-stop every live servo voice (level teardown / world switch / pause).
     // Idempotent; safe with no audio wired.
     void stopAllMotors();
@@ -273,6 +374,9 @@ public:
 private:
     // Emit a door sound at the door's world position (3D). Silent if unwired.
     void playDoorSound(const Door& d, x3::audio::SoundHandle h, float vol) const;
+
+    // Per-model sound lookups (registry rows; invalid handle -> global fallback).
+    x3::audio::SoundHandle modelSnd(const Door& d, int which) const;
 
     // The legacy open/close one-shot — suppressed whenever a servo LOOP is wired
     // (that loop is the motion voice and it cannot outlive the motion).
@@ -320,6 +424,22 @@ private:
     x3::asset::Model                      m_frameModel;
     std::vector<x3::asset::ModelDrawable> m_frameDrawables;
     bool m_frameOk = false;
+
+    // ---- REGISTRY MODEL SLOTS (doors-pass). One lazily-loaded slot per
+    // doorModelDefs() row. Row 0 (door_a) keeps the dedicated members above;
+    // its slot stays empty. Drawables are partitioned by glTF NODE NAME
+    // (makeDrawablesNamed) into the static shell and the two moving panels. ----
+    struct ModelSlot {
+        bool tried = false, ok = false;
+        x3::asset::Model model;
+        std::vector<x3::asset::ModelDrawable> fixedDr;    // frame/shell (static)
+        std::vector<x3::asset::ModelDrawable> panelADr;   // moves with body
+        std::vector<x3::asset::ModelDrawable> panelBDr;   // moves with body2
+        // Per-model sound set (invalid -> global fallback).
+        x3::audio::SoundHandle sOpen, sClose, sLocked, sServo, sThunk;
+    };
+    std::vector<ModelSlot> m_slots;
+    ModelSlot& slot(uint32_t idx);
 };
 
 // Resolve which door (if any) a use-ray is aiming at: raycast from `eye` along
@@ -388,6 +508,11 @@ struct DoorSpec {
     // opening. Turn it OFF where another pass already frames that opening (cell
     // dressing frames Jake's Cell) so the level never double-frames a doorway.
     bool           withFrame  = true;
+    // DOOR MODEL registry key (doorModelDefs). nullptr/"door_a" = the SM_Door_A
+    // default (slide-up). "slider"/"bulkhead" build a TWO-PANEL horizontal-split
+    // door (its authored motion) drawn from that model's mesh, with its sound
+    // set. Unknown keys fall back to door_a (never a build failure).
+    const char*    model      = nullptr;
 };
 
 // Build a generalized door (+ optional linked button) per `spec`, registering
@@ -428,7 +553,12 @@ bool runInteractSelfTest();
 //      walks clean through the OPEN one at canonical doorway dimensions,
 //   D5 the servo voice starts with the motion and stops with it (no live loop at
 //      rest, and no long one-shot fired while a servo loop is wired),
-//   D6 the per-floor / frame spec plumbing survives buildLevelDoor.
+//   D6 the per-floor / frame spec plumbing survives buildLevelDoor,
+//   D7 the LOCK API: a locked door refuses to open (denied buzz), closeAndLock
+//      seals an open door against the mid-travel E reversal, unlock re-arms,
+//   D8 the MODEL REGISTRY: every door model resolves with a sound set, and a
+//      SPLIT-motion door blocks a capsule closed / passes it open and speaks
+//      through the same transition-audio path.
 // Logs PASS/FAIL D#, returns true iff all pass. NOTE this proves MECHANICS ONLY —
 // how the doors LOOK and FEEL is an owner eyeball, not a headless assertion.
 bool runDoorSelfTest();

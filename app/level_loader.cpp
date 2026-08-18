@@ -548,6 +548,8 @@ void CanonFloor::floodVisibleRoomsAt(float x, float y, float z,
     auto doorwayOpen = [&](uint32_t doorwayIdx) -> bool {
         const CanonDoorway& dw = doorways[doorwayIdx];
         if (dw.doorIndex == kNoLink) return true;             // doorless opening / bridge / tube
+        if (dw.pvsTransparent) return true;                   // cell throat: the obs WINDOW
+                                                              // sees past the closed slab
         if (!doors || dw.doorIndex >= doors->count()) return true;   // no system => treat as open
         return doors->at(dw.doorIndex).state != DoorState::Closed;
     };
@@ -1150,7 +1152,7 @@ uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
                                   const std::vector<uint32_t>& visibleRooms,
                                   float eyeX, float eyeY, float eyeZ,
                                   std::vector<x3::rhi::PointLight>& out,
-                                  uint32_t maxLights) {
+                                  uint32_t maxLights, uint32_t excludeRoom) {
     if (all.empty() || visibleRooms.empty() || maxLights == 0) return 0;
     // Fast membership test for the (small) visible-room set.
     auto visible = [&](uint32_t room) {
@@ -1175,6 +1177,8 @@ uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
             // nearest-to-eye cap below still holds the budget.
             const float reach = cl.light.range * 2.0f;
             if (d2 > reach * reach) continue;
+        } else if (cl.room == excludeRoom) {
+            continue;   // doors-pass: the room's fixtures are switched OFF (bed rest)
         } else if (!visible(cl.room)) {
             continue;
         }
@@ -2075,12 +2079,22 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         const uint32_t jakeCellRoom = floor.roomByName("Jake's Cell");
         // Record which DoorSystem slab fills each cut doorway into doorIndex so the portal
         // flood-fill can later query that door's open/closed state.
+        uint32_t openJunctions = 0;
         for (uint32_t dwi = 0; dwi < (uint32_t)floor.doorways.size(); ++dwi) {
             CanonDoorway& dw = floor.doorways[dwi];
             if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
                 dw.kind != DoorwayKind::Overlap)
                 continue;
-            if (dw.junction) continue;   // W2-E: open corridor junction (LAW 1: no slab in open space)
+            // W2-E: open corridor junctions carry no slab (LAW 1: no door in open
+            // space) — EXCEPT the DETENTION-CELL throat (doors-pass / cell-shell
+            // finding): Jake's cell had NO door at all (the SECURITY terminal
+            // claims "STATUS: SECURE" over a permanently open throat). A cell
+            // throat gets a real, lockable door: the heavy two-leaf "bulkhead"
+            // split model, seated on the CELL's own face plane (the SLAB SEAT
+            // rule — never mid-throat), sized to the widened junction cut.
+            const bool cellThroat = jakeCellRoom != kNoRoom &&
+                                    (dw.a == jakeCellRoom || dw.b == jakeCellRoom);
+            if (dw.junction && !cellThroat) { ++openJunctions; continue; }
             DoorSpec spec;
             spec.doorwayCenter = x3::phys::Vec3{ dw.cx, dw.cy, dw.cz };
             // axis 0 => door thin in X (wall plane X=const) => DoorAxis::AlongZ; axis 1 => AlongX.
@@ -2093,16 +2107,58 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             // except Jake's Cell, which CellDressing already trims.
             spec.withFrame = (jakeCellRoom == kNoRoom ||
                               (dw.a != jakeCellRoom && dw.b != jakeCellRoom));
+            if (cellThroat) {
+                // THE DETENTION SEAL. EVERY vertical way out of Jake's Cell locks
+                // at boot (the captive premise) — sealing only SOME of them read
+                // as a bug: a "DETENTION SEAL" refusal on one door while the one
+                // beside it opened freely. Live game only: opts.lockSecuredRooms
+                // is the live-game flag, so the geometry self-tests keep a fully
+                // passable level. The escape is the authored opening beat — the
+                // cell terminal's 1278 override, which opens the floor hatch AND
+                // releases this seal on the same edge (host latch) — and the host
+                // UNLOCKS these again if that hatch failed to build, so a player
+                // can never be sealed in a cell with no way out.
+                spec.locked = opts.lockSecuredRooms;
+                if (dw.junction) {
+                    // Seat the slab plane on the cell's own face (never mid-throat),
+                    // span the widened junction cut, and pick the heavy bulkhead.
+                    const CanonRoom& jc = floor.rooms[jakeCellRoom];
+                    if (dw.axis == 0) {
+                        const float f0 = jc.x0(), f1 = jc.x1();
+                        spec.doorwayCenter.x =
+                            (std::fabs(dw.cx - f0) < std::fabs(dw.cx - f1)) ? f0 : f1;
+                    } else {
+                        const float f0 = jc.z0(), f1 = jc.z1();
+                        spec.doorwayCenter.z =
+                            (std::fabs(dw.cz - f0) < std::fabs(dw.cz - f1)) ? f0 : f1;
+                    }
+                    spec.halfWidth = dw.cutHalf;     // fill the whole throat
+                    spec.model     = "bulkhead";     // detention blast door (2-leaf)
+                }
+            }
             uint32_t di = buildLevelDoor(scene, *opts.doors, device, physics, spec);
             dw.doorIndex = di;                   // doorway -> DoorSystem slab (flood-fill query)
+            // CELL DOORS ARE PVS-TRANSPARENT: the cell's observation WINDOW looks
+            // into the Main Hall, so a CLOSED cell door must never cull the room
+            // the player can see through the glass (the void-through-glass defect
+            // class — an amber fog void where the hall should be). Visibility
+            // only; the slab still blocks, locks and draws normally.
+            if (cellThroat) dw.pvsTransparent = true;
             // Room-tag the door's entity so it culls with its room's PVS.
             uint32_t ent = opts.doors->at(di).entity;
             if (ent != kNoLink && ent < scene.size())
                 scene.get(ent).roomId = dw.a;
+            // Split doors have a second panel entity — tag it to the same room.
+            uint32_t ent2 = opts.doors->at(di).entity2;
+            if (ent2 != kNoLink && ent2 < scene.size())
+                scene.get(ent2).roomId = dw.a;
             ++built;
         }
+        // DOOR-LESS THROAT CENSUS (doors-pass report): junction throats stay OPEN
+        // by design (LAW 1) — this line is the honest count of them tower-wide.
         x3::logInfo("buildCanonFloor: placed " + std::to_string(built) +
-                    " SM_Door_A doors at cut doorways");
+                    " doors at cut doorways; " + std::to_string(openJunctions) +
+                    " junction throat(s) remain OPEN (no slab, by design)");
 
         // ---- SECURED ROOMS (gameplay lock; design: docs/design/HIDDEN_AREAS_AND_BIOMESH.md).
         // The center command rooms reach the hall via OPEN gap-bridge corridors (no slab), so
