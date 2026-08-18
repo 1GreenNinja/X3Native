@@ -378,6 +378,9 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
         for (int k = 0; k < 3; ++k)
             accel[k] += upW[k] * vertAxis * m_tuning.maxStrafeAccel * boost;
     }
+    // Test-only 6DOF speed multiplier (F5 gate): scale ALL accel uniformly.
+    if (m_speedMul != 1.0f)
+        for (int k = 0; k < 3; ++k) accel[k] *= m_speedMul;
 
     // ---- Integrate linear velocity + drag ----------------------------------
     // dv/dt = a - drag*v, solved EXACTLY over the step for constant a:
@@ -478,11 +481,11 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
     // (every existing default-Tuning caller + the --test-space cap check) this is
     // exactly the old hard clamp at maxSpeed.
     if (in.sprint) {
-        m_speedCap = m_tuning.maxSpeed * m_tuning.boostSpeedCapMul;   // instant ceiling raise
+        m_speedCap = m_tuning.maxSpeed * m_tuning.boostSpeedCapMul * m_speedMul;   // instant ceiling raise
     } else {
         const float decayK = 1.0f - std::exp(-kBoostCapDecay * dt);
-        m_speedCap += (m_tuning.maxSpeed - m_speedCap) * decayK;
-        if (m_speedCap < m_tuning.maxSpeed) m_speedCap = m_tuning.maxSpeed;  // never below base
+        m_speedCap += (m_tuning.maxSpeed * m_speedMul - m_speedCap) * decayK;
+        if (m_speedCap < m_tuning.maxSpeed * m_speedMul) m_speedCap = m_tuning.maxSpeed * m_speedMul;  // never below base
     }
     const float spd = length3(m_vel);
     if (spd > m_speedCap) {
@@ -500,8 +503,9 @@ void SpacePilotController::update(const PlayerInput& in, float dt,
                          m_vel[1] - fwdW[1]*along,
                          m_vel[2] - fwdW[2]*along };
         const float latSpd = length3(lat);
-        if (latSpd > m_tuning.maxStrafeSpeed) {
-            const float s = m_tuning.maxStrafeSpeed / latSpd;
+        const float latCap = m_tuning.maxStrafeSpeed * m_speedMul;
+        if (latSpd > latCap) {
+            const float s = latCap / latSpd;
             for (int k = 0; k < 3; ++k) m_vel[k] = fwdW[k]*along + lat[k]*s;
         }
     }

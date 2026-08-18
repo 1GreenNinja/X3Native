@@ -123,6 +123,17 @@ enum class DeathFx : uint32_t {
     CoreDetonation, // the reactor lets go: the biggest blast of the sequence
 };
 
+// THE TWO AUTHORED ENDINGS (owner, live 2026-08-17: "When it goes down.. it
+// should either crash land on a planet OR break up in space"). Picked per
+// encounter CONTEXT by the host (a dominant planet in the sky -> she deorbits
+// toward it; deep space -> she comes apart where she floats), not rolled.
+enum class DeathOutcome : uint32_t {
+    BreakupInSpace, // the full in-place cascade -> core detonation (the classic)
+    DeorbitCrash,   // rupture + lights-out, then the wreck FALLS toward the
+                    // planet under an atmosphere-entry burn and dies as a
+                    // distant flash on the disc ("she's going in")
+};
+
 // One scheduled beat, resolved to world space by step().
 struct DeathEvent {
     DeathFx kind   = DeathFx::Cascade;
@@ -142,6 +153,12 @@ struct CapitalDeathState {
     float axis[3]   = { 1.0f, 0.0f, 0.0f };  // hull long axis (unit; bow -> stern)
     float halfLen   = 210.0f;                // half the hull length in metres
 
+    // Which authored ending this death plays (see DeathOutcome above).
+    DeathOutcome outcome = DeathOutcome::BreakupInSpace;
+    // DeorbitCrash only: unit direction from the kill point toward the planet
+    // the wreck falls at (the hero body's sky direction). Zero for Breakup.
+    float planetDir[3] = { 0.0f, 0.0f, 0.0f };
+
     // ---- Presentation scalars the host reads EVERY frame -------------------
     // Hull emissive / self-light multiplier. Starts at 1 (window rows, running
     // lights and the drive plume all lit), stutters, then falls to kLightsOutFloor
@@ -153,6 +170,12 @@ struct CapitalDeathState {
     // Metres the dead hull has fallen off its patrol line (it stops holding
     // station and starts going DOWN — the read that sells "she's going in").
     float sag      = 0.0f;
+    // DeorbitCrash only: metres the wreck has plunged along planetDir (the
+    // host draws the hull at center + planetDir * plunge). 0 for Breakup.
+    float plunge   = 0.0f;
+    // DeorbitCrash only: atmosphere-entry burn intensity in [0,1]. The host
+    // rides its warm hull glow + the entry trail off this. 0 for Breakup.
+    float burn     = 0.0f;
 };
 
 class CapitalDeathSequence {
@@ -160,6 +183,13 @@ public:
     // Total run time. The host must hold the death window open at least this
     // long or the player never sees the sequence finish.
     static constexpr float kDurationSec      = 5.0f;
+    // DeorbitCrash runs longer: the fall + entry burn + impact flash need the
+    // extra seconds to READ as a deorbit rather than a sideways drift.
+    static constexpr float kDeorbitDurationSec = 9.0f;
+    // Per-outcome duration (the hold the host must keep the window open).
+    static constexpr float durationFor(DeathOutcome o) {
+        return o == DeathOutcome::DeorbitCrash ? kDeorbitDurationSec : kDurationSec;
+    }
     // Hard per-step emission cap (frame-cost guard — see the class comment).
     static constexpr int   kMaxEventsPerStep = 3;
     // Where the hull emissive bottoms out (not 0: a black cutout reads as a
@@ -170,9 +200,17 @@ public:
 
     // Arm the sequence at `center`, with the hull's long axis `axis` (need not
     // be unit; a degenerate axis falls back to +X) and half-length `halfLen`.
-    // Resets every field — safe to re-arm a used state.
+    // Resets every field — safe to re-arm a used state. This overload plays
+    // the classic BreakupInSpace ending.
     static void begin(CapitalDeathState&, const float center[3],
                       const float axis[3], float halfLen);
+
+    // Outcome-aware arm. For DeorbitCrash pass the unit sky direction of the
+    // planet the wreck falls toward (`planetDir`; a degenerate one demotes the
+    // outcome to BreakupInSpace — a crash with nowhere to crash is a breakup).
+    static void begin(CapitalDeathState&, const float center[3],
+                      const float axis[3], float halfLen,
+                      DeathOutcome outcome, const float planetDir[3]);
 
     // Advance by `dt` and write up to `maxOut` (and never more than
     // kMaxEventsPerStep) newly-due events into `out`. Returns how many were
@@ -182,6 +220,118 @@ public:
 
     static bool isActive(const CapitalDeathState& s)   { return s.active; }
     static bool isFinished(const CapitalDeathState& s) { return s.finished; }
+};
+
+// ===========================================================================
+// CAPITAL MOTION — the dreadnought MOVES (owner, live 2026-08-17: "The
+// overlords ship should move around").
+// ===========================================================================
+//
+// A 450 m battleship does not strafe: she carves a slow, wide ARC. The state
+// machine keeps the hull on a fixed-radius circle around an anchor point, so
+// she is ALWAYS in the authored arena by construction (the circle IS the
+// bound), with a mass-appropriate eased speed that is phase-driven:
+//   * Patrol (shields up)   — stately patrol speed;
+//   * Combat (shields down) — she answers the helm: speed rises;
+//   * Adrift (engines hardpoint dead, or the hull is dead) — the drive is
+//     gone: speed EASES to zero and she freezes on the arc (the existing
+//     "your choice changed the fight" consequence, now dt-correct instead of
+//     a hard snap).
+// Pure value type: deterministic, dt-stable (eased exponentially, integrated
+// by dt — never per-frame), fully testable headless.
+enum class CapitalMovePhase : uint32_t { Patrol, Combat, Adrift };
+
+struct CapitalMotionState {
+    float anchor[3] = { 0.0f, 0.0f, 0.0f };  // arc centre (world)
+    float radius    = 520.0f;                // arc radius (m)
+    float arcPhase  = 0.0f;                  // position angle on the arc (rad)
+    float speed     = 0.0f;                  // current tangential speed (m/s)
+    float pos[3]    = { 0.0f, 0.0f, 0.0f };  // hull centre (world)
+    float fwd[3]    = { -1.0f, 0.0f, 0.0f }; // unit heading (arc tangent)
+    float vel[3]    = { 0.0f, 0.0f, 0.0f };  // world velocity (m/s)
+    CapitalMovePhase phase = CapitalMovePhase::Patrol;
+};
+
+class CapitalMotion {
+public:
+    // Mass-appropriate speeds. At kPatrolSpeed the full circuit takes ~5
+    // minutes and the nose swings ~1.2 deg/s — majestic, never evasive.
+    static constexpr float kPatrolSpeed = 11.0f;   // m/s, shields up
+    static constexpr float kCombatSpeed = 19.0f;   // m/s, shields down
+    // Speed ease rate (1/s). ~e-fold in 4.5 s: the helm answers like mass.
+    static constexpr float kSpeedEase   = 0.22f;
+
+    // Seed the state so the hull STARTS exactly at `startPos` heading -X
+    // (nose at the player's approach lane — the reveal framing is preserved)
+    // and arcs from there. The anchor is placed at startPos - (0,0,radius).
+    static void begin(CapitalMotionState&, const float startPos[3]);
+
+    // Advance by dt. `shieldsDown` lifts the target speed to combat;
+    // `adrift` (engines dead OR hull dead) eases it to zero.
+    static void update(CapitalMotionState&, float dt,
+                       bool shieldsDown, bool adrift);
+};
+
+// ===========================================================================
+// CAPITAL GUN BATTERY — the big mounted weapons (owner, live 2026-08-17:
+// "have big mounted weapons that HURT.. but I can shoot off").
+// ===========================================================================
+//
+// Four VISIBLE gun mounts clustered on the ventral battery line. Each gun is
+// individually destructible: shoot one off and THAT mount stops firing while
+// the rest keep the gauntlet up — fire only ever ceases from destroyed
+// mounts. The battery IS the Turrets subsystem made physical: each gun kill
+// routes a quarter of the Turrets subsystem HP, so four gun kills == the
+// subsystem down == "BATTERY SILENCED" (and a Turrets-subsystem death by any
+// other path kills every remaining gun). Pure value type; the host owns the
+// meshes, muzzles, telegraphs and damage resolution.
+inline constexpr int kCapitalGunCount = 4;
+
+struct CapitalGun {
+    int   hp      = 0;     // <= 0 => shot off (a wreck stub remains)
+    int   maxHp   = 0;
+    float cd      = 0.0f;  // seconds until this gun's next spool
+    float spoolT  = -1.0f; // >= 0 while spooling (the telegraph); < 0 idle
+};
+
+struct CapitalBatteryState {
+    CapitalGun gun[kCapitalGunCount];
+};
+
+class CapitalBattery {
+public:
+    // Per-gun cadence: 4 live guns stagger into one bolt every ~1.2 s — twice
+    // the old single-battery pressure, which is the "they HURT" half of the
+    // ask; shooting guns off is the counterplay that buys it back.
+    static constexpr float kGunPeriod = 4.8f;   // per-gun seconds between spools
+    static constexpr float kGunSpool  = 0.6f;   // telegraph: spool before the bolt
+    static constexpr int   kGunHp     = 30;     // one landed 90-dmg hit shears a gun
+    // What one landed capital bolt does to the player (vs 500 shield + 1000
+    // hull): ~8 landed bolts kill — at full-battery cadence that is ~10 s of
+    // flying straight at her. Aspect dodge (transverse velocity) is the out.
+    static constexpr int   kGunDamage = 180;
+    // Quarter of the Turrets subsystem routed per gun kill (4 * 30 == 120).
+    static constexpr int   kSubQuarter = 30;
+
+    // Seed all guns alive with staggered first-spool clocks (gun i fires its
+    // first bolt at ~1.2 * (i+1) s — the gauntlet opens hot but never as one
+    // synchronized volley).
+    static void init(CapitalBatteryState&);
+
+    // Advance timers. While `inRange` a live idle gun counts down and then
+    // SPOOLS; a spooling gun that completes FIRES. Out of range every gun
+    // stands down (spool cancelled — no bolt from a target that left).
+    // Returns a bitmask of guns that FIRED this tick; `spooled` (optional)
+    // gets a bitmask of guns that STARTED their spool this tick (telegraph).
+    static uint32_t update(CapitalBatteryState&, float dt, bool inRange,
+                           uint32_t* spooled = nullptr);
+
+    static bool gunAlive(const CapitalBatteryState&, int i);
+    static int  aliveGuns(const CapitalBatteryState&);
+
+    // Apply damage to gun i. Returns true exactly when THIS call destroyed it
+    // (hp crossed to <= 0). No-op on a dead gun / bad index / amount <= 0.
+    static bool damageGun(CapitalBatteryState&, int i, int amount);
 };
 
 // ---- --test-ship-damage self-test (>=8 sub-checks, no window/Vulkan) --------
