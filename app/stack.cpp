@@ -1171,6 +1171,8 @@ StackStructurePlan planStackStructure(const StackResult& st) {
                     d.z += ( d.tx) * side * lateral;
                 }
                 r.halfW = kStackMainDeckHalfM;
+                r.runHalfW = kFwyRunningHalfM;
+                r.lanes = kFwyLaneCount;
                 r.depth = kStackMainDepthM;
                 r.level = 2;
                 r.name  = cw == 0 ? "L2 deck (left carriageway)"
@@ -1186,6 +1188,11 @@ StackStructurePlan planStackStructure(const StackResult& st) {
             StackDeckRun r;
             r.s     = std::move(base);
             r.halfW = kStackRampDeckHalfM;
+            // A ramp is TWO 12 ft lanes (RoadSpec::widthScale 0.5) — the same
+            // pairing road_network.cpp's paint loop makes: the geometry scales
+            // but a LANE is still 12 ft.
+            r.runHalfW = kRunningHalfM * 0.5f;
+            r.lanes = 2;
             r.depth = kStackRampDepthM;
             r.level = st.ramp[q].level;
             r.name  = st.ramp[q].spec.name;
@@ -1449,19 +1456,46 @@ StackBuildResult buildStack(const StackResult& st, Scene& scene,
     for (const StackDeckRun& r : plan.runs) {
         emitDeckBox(deckA, deckC, r);
         emitParapets(deckC, r);
-        // deck edge lines, continuing the approach ribbon's paint across the
-        // span (the diamond does exactly this on its 40 m deck)
-        for (int w = -1; w <= 1; w += 2) {
-            const float lat = (float)w * (r.halfW - kStackParapetW - 0.55f);
-            for (size_t i = 0; i + 1 < r.s.size(); ++i) {
-                float a0[3], a1[3], b0[3], b1[3];
+        // LANE PAINT, continuing the approach ribbon's across the span:
+        // SOLID white at both running edges, DASHED on every interior lane
+        // line, 40 ft cycle at 60% duty — the same numbers road_network.cpp
+        // paints the road with, because a deck that loses its lane lines
+        // reads as a runway at drive height. WHITE ONLY: this is a divided
+        // road and the opposing traffic is on another structure entirely.
+        {
+            const float laneM = kLaneFt * kFtToM;
+            const float halfPaint = 0.06f;
+            auto stripe = [&](size_t i, float lat, float t0, float t1) {
                 const float ay = r.s[i].y   + kPaveProud + 0.012f;
                 const float by = r.s[i+1].y + kPaveProud + 0.012f;
-                deckPt(r.s[i],   lat - 0.06f, ay, a0);
-                deckPt(r.s[i],   lat + 0.06f, ay, a1);
-                deckPt(r.s[i+1], lat + 0.06f, by, b1);
-                deckPt(r.s[i+1], lat - 0.06f, by, b0);
-                paint.quad(a0, a1, b1, b0);
+                float a0[3], a1[3], b0[3], b1[3];
+                deckPt(r.s[i],   lat - halfPaint, ay, a0);
+                deckPt(r.s[i],   lat + halfPaint, ay, a1);
+                deckPt(r.s[i+1], lat + halfPaint, by, b1);
+                deckPt(r.s[i+1], lat - halfPaint, by, b0);
+                auto mix = [&](const float A[3], const float B[3], float t, float o[3]) {
+                    for (int k = 0; k < 3; ++k) o[k] = A[k] + (B[k] - A[k]) * t;
+                };
+                float p0[3], p1[3], p2[3], p3[3];
+                mix(a0, b0, t0, p0); mix(a1, b1, t0, p1);
+                mix(a1, b1, t1, p2); mix(a0, b0, t1, p3);
+                paint.quad(p0, p1, p2, p3);
+            };
+            for (int lane = 0; lane <= r.lanes; ++lane) {
+                const float lat = -r.runHalfW + (float)lane * laneM;
+                const bool edge = (lane == 0 || lane == r.lanes);
+                for (size_t i = 0; i + 1 < r.s.size(); ++i) {
+                    if (edge) { stripe(i, lat, 0.0f, 1.0f); continue; }
+                    const float u0 = r.s[i].u, u1 = r.s[i+1].u;
+                    const float span = std::max(1e-3f, u1 - u0);
+                    constexpr float cycle = 12.19f, duty = 0.6f;
+                    for (float c0 = std::floor(u0 / cycle) * cycle; c0 < u1; c0 += cycle) {
+                        const float s0 = std::max(u0, c0);
+                        const float s1 = std::min(u1, c0 + cycle * duty);
+                        if (s1 <= s0 + 0.05f) continue;
+                        stripe(i, lat, (s0 - u0) / span, (s1 - u0) / span);
+                    }
+                }
             }
         }
         // ABUTMENTS: a seat wall under each end of the run, down into the

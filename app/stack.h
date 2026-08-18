@@ -246,7 +246,9 @@ struct StackDeckStation {
 };
 struct StackDeckRun {
     std::vector<StackDeckStation> s;
-    float halfW = 5.0f;
+    float halfW = 5.0f;            // deck edge (parapet sits inside this)
+    float runHalfW = 3.66f;        // RUNNING surface — where the edge line goes
+    int   lanes = 2;               // interior dashed lines = lanes - 1
     float depth = kStackRampDepthM;
     int   level = 3;               // 2, 3 or 4 — for the log and the gates
     std::string name;
