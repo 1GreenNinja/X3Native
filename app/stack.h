@@ -113,7 +113,7 @@ constexpr float kStackArcMinR    = 150.0f;
 constexpr float kStackArcMaxR    = 300.0f;
 // The zone. Covers the four ramp terminals and their gore tapers with margin:
 // no median crossover, no work zone, in any of it.
-constexpr float kStackZoneR      = 1080.0f;
+constexpr float kStackZoneR      = 1260.0f;
 // The STRAIGHTNESS window is not the zone: the outer 180 m of the zone is the
 // gore taper, which follows the freeway's own curve and does not care. Sized
 // so a site exists on a 16-mile tour whose fillets run 300-900 m.
@@ -302,6 +302,8 @@ StackBuildResult buildStack(const StackResult& st, Scene& scene,
 //   S8 PARAPET CONTINUITY: every metre of elevated deck is walled both sides
 //   S9 piers stand clear of every route's pavement (traffic cannot hit one)
 //   S10 determinism: re-registration carves bit-identically
+//   S11 every ramp is REACHABLE: both terminals land outside the host
+//       freeway's running lanes and the gore wedge between them is a wedge
 bool runStackSelfTest();
 
 } // namespace x3::game

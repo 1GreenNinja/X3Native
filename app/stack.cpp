@@ -39,8 +39,11 @@ constexpr float kArcSaM         = 210.0f;
 constexpr float kRampLeadM      = 700.0f;
 // The gore taper: the ramp's terminal is fully separate from the mainline;
 // this is the paved wedge that gets a car from the outer running lane onto
-// it. ~260 m over a ~20 m lateral shift is 1:13 — a real high-speed exit.
-constexpr float kGoreTaperM     = 260.0f;
+// it. MEASURED (gate S11): the driver's path shifts ~29 m from the outer
+// running lane onto the ramp's centreline, so 330 m is a 1:11 divergence — a
+// real high-speed exit. The first cut ran 260 m and S11 reported the 1:9 it
+// actually was, which is a lane change, not a gore.
+constexpr float kGoreTaperM     = 330.0f;
 // The crossing freeway's half length: past the ramp terminals, past the
 // descent off the deck, plus a country tail. v1 dead-ends in the open,
 // exactly as the diamond's crossroad does and for the same reason.
@@ -1519,8 +1522,9 @@ StackBuildResult buildStack(const StackResult& st, Scene& scene,
 
     // ---- THE GORE TAPERS ---------------------------------------------------
     // A stack ramp is not a T-junction: at 60 mph you leave the outer running
-    // lane through a paved wedge that shifts you ~20 m sideways over
-    // kGoreTaperM (1:13) onto a fully separate ramp. buildJunctionMouth's
+    // lane through a paved wedge that shifts you ~29 m sideways over
+    // kGoreTaperM (1:11, measured by gate S11) onto a fully separate ramp.
+    // buildJunctionMouth's
     // ruled twist is
     // built for an OBLIQUE branch arriving from outside and is the wrong
     // shape here, so the Stack lays its own — the honest new geometry a
@@ -1957,6 +1961,46 @@ bool runStackSelfTest() {
         check(!plan.piers.empty() && plan.minPierClearM >= 0.0f &&
               plan.maxSpanM <= 215.0f && plan.maxPierM >= 8.0f,
               "S9 no pier stands in anybody's pavement; spans stay structural", d);
+    }
+
+    // ---- S11 THE GORE IS A REAL WEDGE --------------------------------------
+    // A flyover you cannot get onto is scenery. Both ends of every ramp are
+    // already proven to land at the host freeway's own datum (S4's
+    // end-off-datum), which is half of "reachable"; this is the other half,
+    // laterally: the terminal has to sit OUTSIDE the host's running lanes
+    // (or the ramp is laid across live traffic) and close enough that the
+    // taper wedge between the outer running edge and the ramp's outer edge is
+    // a wedge and not an inversion.
+    {
+        const std::vector<float> mpA = computeMedianPlan(st.aSpec, st.aRoadY);
+        const std::vector<float> mpB = computeMedianPlan(st.bSpec, st.bRoadY);
+        float minWedge = 1e9f, minOutside = 1e9f;
+        uint32_t ends = 0;
+        for (int q = 0; q < 4; ++q) {
+            const StackResult::Ramp& rp = st.ramp[q];
+            if (!rp.built) continue;
+            for (int e = 0; e < 2; ++e) {
+                const float tx = e ? rp.spec.x.back() : rp.spec.x.front();
+                const float tz = e ? rp.spec.z.back() : rp.spec.z.front();
+                const bool onB = distToSpec(st.bSpec, tx, tz) < distToSpec(st.aSpec, tx, tz);
+                const RoadSpec& host = onB ? st.bSpec : st.aSpec;
+                const std::vector<float>& mp = onB ? mpB : mpA;
+                const float d  = distToSpec(host, tx, tz);
+                const float mh = mp.empty() ? kFwyMedianMinHalfM : datumNear(host, mp, tx, tz);
+                const float runEdge = mh + kFwyPavedHalfM + kFwyRunningHalfM;
+                minOutside = std::min(minOutside, d - runEdge);
+                minWedge   = std::min(minWedge, (d + kStackRampDeckHalfM) - runEdge);
+                ++ends;
+            }
+        }
+        std::snprintf(d, sizeof(d),
+            "%u ramp ends; tightest terminal clearance outside the host's "
+            "running lanes %.1f m, narrowest gore wedge %.1f m over a %.0f m "
+            "taper (1:%.0f)",
+            ends, minOutside, minWedge, kGoreTaperM,
+            minWedge > 0.1f ? kGoreTaperM / minWedge : 0.0f);
+        check(ends == 8 && minOutside > 2.0f && minWedge > 6.0f,
+              "S11 every ramp is reachable: the gore taper is a real wedge", d);
     }
 
     // ---- S10 DETERMINISM ---------------------------------------------------
