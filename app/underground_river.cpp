@@ -464,8 +464,15 @@ bool UndergroundRiver::runSelfTest() {
     // measured 228 m of massif over nodes 7-8, which cut-and-cover cannot
     // express; every node below is now chosen off THIS grid). Diagnostic only.
     if (const char* sc = std::getenv("X3_UR_SCAN"); sc && sc[0]) {
-        float x0 = -1200, x1 = -100, z0 = -600, z1 = 1150, st = 50;
-        std::sscanf(sc, "%f,%f,%f,%f,%f", &x0, &x1, &z0, &z1, &st);
+        // Default window = the west valley. A full "x0,x1,z0,z1,step" is taken
+        // only if ALL FIVE parse: X3_UR_SCAN=1 is the obvious thing to type,
+        // and a partial scanf would have left x0=1 > x1 and printed an empty
+        // grid that looks like "the terrain is gone".
+        float x0 = -1250, x1 = -850, z0 = -900, z1 = 1120, st = 50;
+        float a0, a1, b0, b1, ss;
+        if (std::sscanf(sc, "%f,%f,%f,%f,%f", &a0, &a1, &b0, &b1, &ss) == 5) {
+            x0 = a0; x1 = a1; z0 = b0; z1 = b1; st = std::max(ss, 1.0f);
+        }
         std::snprintf(d, sizeof(d),
                       "[underriver] SCAN pre-UR ground: x %.0f..%.0f (columns) "
                       "z %.0f..%.0f, step %.0f", x0, x1, z0, z1, st);
