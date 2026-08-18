@@ -33,6 +33,7 @@
 #include <memory>
 #include "../road_network.h"
 #include "../interchange.h"      // W-INTERCHANGE — the diamond grade split
+#include "../stack.h"            // W-STACK — the four-level Mega Stack (I-17/I-10)
 #include "../summit_lot.h"       // the pad the summit spur climbs to
 #include "../ridge_road.h"       // the dirt road along the tops, lot -> the bore's massif
 #include "../river_bridge.h"
@@ -702,6 +703,41 @@ int hostTunnel(HostContext& hc) {
         }
     }
 
+    // THE MEGA STACK (X3_STACK=0 to disable) — the I-17/I-10 four-level
+    // directional interchange the owner asked for. Registered immediately
+    // AFTER the diamond, and it must be: its site test refuses any node whose
+    // whole 900 m footprint is not clear of the diamond's own interchange
+    // zone, which only exists once registerInterchange() has noted it.
+    x3::game::StackResult stack;
+    bool stackOn = false;
+    {
+        const char* e = std::getenv("X3_STACK");
+        stackOn = ringOn && !(e && e[0] == '0');   // DEFAULT ON (NO_SLOP rule 6)
+        if (stackOn) {
+            std::vector<const x3::game::RoadSpec*> avoidS;
+            if (connOn) avoidS.push_back(&connector.spec);
+            if (outerOn) avoidS.push_back(&outerRing.spec);
+            if (riverOn) avoidS.push_back(&riverRoad.spec);
+            if (circuitOn) {
+                avoidS.push_back(&rangeCircuit.spec);
+                avoidS.push_back(&rangeCircuit.accessSpec);
+            }
+            if (summitSpur.built) avoidS.push_back(&summitSpur.spec);
+            if (ridgeRoad.built)  avoidS.push_back(&ridgeRoad.spec);
+            if (outerConnOn)      avoidS.push_back(&outerConn.spec);
+            if (interOn) {
+                avoidS.push_back(&interchange.spec);
+                for (int q = 0; q < 4; ++q)
+                    if (interchange.ramp[q].built) avoidS.push_back(&interchange.ramp[q].spec);
+            }
+            stack = x3::game::registerStack(ringSpec, ringRoadY, &avoidS);
+            stackOn = stack.built;
+            if (!stack.built)
+                x3::logWarn(std::string("--world tunnel: MEGA STACK NOT built — ") +
+                            stack.whyNot);
+        }
+    }
+
     // ==== W-STATIONS — "places for cars to go, to fuel up" ==================
     // Sited from the routes just registered (the freeway's turnaround
     // crossovers, the town approach, the country crossroads), then CARVED here
@@ -1204,6 +1240,19 @@ int hostTunnel(HostContext& hc) {
         } else if (w == "bore") {
             float p[3]; route.posAt(std::max(8.0f, route.boreS0 - 40.0f), p);
             startPos[0] = p[0]; startPos[2] = p[2]; moved = true;
+        } else if (w == "stack" && stackOn) {
+            // On the CROSSING FREEWAY (L2), one ramp-terminal out, pointed at
+            // the pile: you drive up the approach, over the inner tour on the
+            // deck, and under the two ramp levels — all four storeys in the
+            // windscreen before you reach the middle. Right carriageway, in
+            // the lanes (the same "not on the crossover" fix the ring spawn
+            // carries), so traffic and the player share a datum.
+            const float s0 = 560.0f;
+            startPos[0] = stack.cx - stack.pX * s0
+                        + stack.tX * (stack.medianHalfB + x3::game::kFwyPavedHalfM);
+            startPos[2] = stack.cz - stack.pZ * s0
+                        + stack.tZ * (stack.medianHalfB + x3::game::kFwyPavedHalfM);
+            moved = true;
         } else if (w == "interchange" && interOn) {
             // On the crossroad, one ramp-landing out, facing the overpass —
             // the streamer centres here, so captures and drives both work.
@@ -1219,7 +1268,7 @@ int hostTunnel(HostContext& hc) {
             x3::logInfo(sb);
         } else {
             x3::logWarn(std::string("--world tunnel: X3_SPAWN=") + w +
-                        " not available (want lot|spur|bore|interchange) — default spawn");
+                        " not available (want lot|spur|bore|interchange|stack) — default spawn");
         }
     }
 
@@ -1358,6 +1407,20 @@ int hostTunnel(HostContext& hc) {
             x3::game::buildJunctionMouth(rp.fwyJct, scene, *device, *phys);
             x3::game::buildJunctionMouth(rp.crossJct, scene, *device, *phys);
         }
+    }
+    // THE MEGA STACK: the crossing freeway's ribbon (its deck reach is a gap
+    // the structure owns), the four flyover ramps' at-grade tails, and then
+    // the whole four-level structure — twin box-girder decks, ramp decks,
+    // continuous parapets with collision, piers with footing/taper/hammerhead,
+    // abutments and the high-speed gore tapers.
+    if (stackOn) {
+        x3::game::buildRoadRibbon(stack.bSpec, scene, *device, *phys, &stack.bRoadY);
+        for (int q = 0; q < 4; ++q) {
+            const auto& rp = stack.ramp[q];
+            if (!rp.built) continue;
+            x3::game::buildRoadRibbon(rp.spec, scene, *device, *phys, &rp.roadY);
+        }
+        x3::game::buildStack(stack, scene, *device, *phys);
     }
     if (riverOn) {
         x3::game::buildRoadRibbon(riverRoad.spec, scene, *device, *phys,
