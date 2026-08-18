@@ -1199,6 +1199,17 @@ float worldCarveGuardAt(float x, float z) {
     return facilityGuard(x, z) * contentGuard(x, z);
 }
 
+bool worldUnderRiverContains(float x, float z, float pad) {
+    const UnderRiverChain& uc = worldUnderRiverChain();
+    if (uc.n < 2) return false;
+    const float r = kURWallOutW + pad;
+    if (x < uc.bx0 - pad || x > uc.bx1 + pad ||
+        z < uc.bz0 - pad || z > uc.bz1 + pad) return false;
+    float d, w;
+    polyClosest(uc.x, uc.z, uc.w, uc.n, x, z, d, w);
+    return d < r;
+}
+
 float worldPreUnderRiverHeight(float x, float z) {
     const bool prev = g_skipUnderRiver;
     g_skipUnderRiver = true;                      // authoredLandforms skips the UR carve
@@ -1214,10 +1225,12 @@ const UnderRiverChain& worldUnderRiverChain() {
         // west valley (terrain.h's mechanism note says why it is not the
         // massif). Only WIDTH is authored here: the depth profile and the
         // whitewater are derived below from the ground itself.
+        // hw is kURHalfWidth for every node (see terrain.h — the drawn water
+        // pass carries ONE half-width, so a varying one would split truth).
         struct N { float x, z, hw, bed; bool pool; };
         const N kN[] = {
-            { -1020.0f, 1090.0f, 5.5f, 2.0f, false },  //  0 head grotto (spring)
-            { -1045.0f,  900.0f, 5.5f, 2.0f, false },
+            { -1020.0f, 1090.0f, kURHalfWidth, 2.0f, false },  //  0 head grotto (spring)
+            { -1045.0f,  900.0f, kURHalfWidth, 2.0f, false },
             // Nodes 2-5 stand off the WEST side of Scrapyard City's keep-out
             // ring (pad (-600,500) r250 -> guard zero out to r*1.7=425, full
             // only past 485) by 485 + the BAND half-width, not by 485: the
@@ -1226,18 +1239,18 @@ const UnderRiverChain& worldUnderRiverChain() {
             // U8 still read 0.243 at its band edge; U3 read a 25.7 m un-carved
             // "bed" where the guard had quietly zeroed the trench while the
             // water table still said wet.
-            { -1100.0f,  720.0f, 9.0f, 3.5f, true  },  //  2 the upper pool
-            { -1135.0f,  540.0f, 5.5f, 2.0f, false },
-            { -1125.0f,  400.0f, 5.0f, 2.2f, false },  //  4 the shallow-roof step
-            { -1075.0f,  230.0f, 5.5f, 2.0f, false },
-            {  -990.0f,   40.0f, 9.5f, 3.5f, true  },  //  6 THE GREAT HALL pool
+            { -1100.0f,  720.0f, kURHalfWidth, 4.2f, true  },  //  2 the upper pool
+            { -1135.0f,  540.0f, kURHalfWidth, 2.0f, false },
+            { -1125.0f,  400.0f, kURHalfWidth, 2.2f, false },  //  4 the shallow-roof step
+            { -1075.0f,  230.0f, kURHalfWidth, 2.0f, false },
+            {  -990.0f,   40.0f, kURHalfWidth, 4.8f, true  },  //  6 THE GREAT HALL pool
             // ... and nodes 7-9 stand the same band clearance off the WEST
             // OUTPOST's camp ring at (-880,-320).
-            { -1035.0f, -140.0f, 5.5f, 2.0f, false },
-            { -1110.0f, -290.0f, 5.0f, 2.2f, false },
-            { -1090.0f, -450.0f, 5.5f, 2.0f, false },
-            { -1070.0f, -600.0f, 5.0f, 2.2f, false },  // 10 the gorge steps
-            { -1090.0f, -700.0f, 9.0f, 3.5f, true  },  // 11 plunge pool, OPEN sky
+            { -1035.0f, -140.0f, kURHalfWidth, 2.0f, false },
+            { -1110.0f, -290.0f, kURHalfWidth, 2.2f, false },
+            { -1090.0f, -450.0f, kURHalfWidth, 2.0f, false },
+            { -1070.0f, -600.0f, kURHalfWidth, 2.2f, false },  // 10 the gorge steps
+            { -1090.0f, -700.0f, kURHalfWidth, 4.2f, true  },  // 11 plunge pool, OPEN sky
         };
         c.n = (int)(sizeof(kN) / sizeof(kN[0]));
         float total = 0.0f;

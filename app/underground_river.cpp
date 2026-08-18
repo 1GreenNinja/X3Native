@@ -226,7 +226,14 @@ UndergroundRiver::Result UndergroundRiver::build(
                 for (int k = 0; k + 1 < kAcross; ++k) {
                     const uint32_t a = (uint32_t)(rg * kAcross + k);
                     const uint32_t b = a + 1, c2 = a + kAcross, d2 = c2 + 1;
-                    m.i.insert(m.i.end(), { a, c2, b,  b, c2, d2 });
+                    // UP-FACING winding — the vault's OUTER order, not its
+                    // inner one. This was copied from the inner (ceiling)
+                    // strip, so every beach triangle faced the floor and was
+                    // backface-culled: the apron drew nothing and both banks
+                    // rendered as the terrain splat's GRASS, indoors, under a
+                    // rock ceiling. Invisible to every numeric gate; obvious
+                    // in the first capture.
+                    m.i.insert(m.i.end(), { a, b, c2,  b, d2, c2 });
                 }
             if (m.v.empty()) continue;
             Entity e;
@@ -241,36 +248,23 @@ UndergroundRiver::Result UndergroundRiver::build(
         }
     }
 
-    // ---- THE WATER: CaveRiver pointed at the open world. ------------------
-    // Denser ribbon nodes than the carve chain (bends + drop steps read as
-    // water, not as a low-poly strip); emissive brighter at rush + pools.
-    std::vector<CaveRiverNode> wn;
-    for (float s = 0.0f; s <= total + 0.1f; s += 24.0f) {
-        float cx, cz, w, nat, dx, dz;
-        walk.at(std::min(s, total), cx, cz, w, nat, dx, dz);
-        // Per-node character from the nearest chain node.
-        int ni = 0;
-        while (ni + 1 < uc.n && uc.cum[ni + 1] < s) ++ni;
-        const float t = std::clamp((s - uc.cum[ni]) /
-                        std::max(uc.cum[ni + 1] - uc.cum[ni], 1e-3f), 0.0f, 1.0f);
-        CaveRiverNode n;
-        n.x = cx; n.y = w + 0.06f; n.z = cz;
-        n.halfWidth = uc.hw[ni] + (uc.hw[std::min(ni + 1, uc.n - 1)] - uc.hw[ni]) * t;
-        n.rush = uc.rush[ni] + (uc.rush[std::min(ni + 1, uc.n - 1)] - uc.rush[ni]) * t;
-        n.pool = (t < 0.5f ? uc.pool[ni] : uc.pool[std::min(ni + 1, uc.n - 1)]);
-        // The ribbon is SELF-LUMINESCENT because there is no sun down here —
-        // but the last reach is the open gorge, where there is. Fade the glow
-        // out as the lid ends or the plunge pool reads as a neon strip lying
-        // in daylight.
-        const float openT = std::clamp((s - (vaultEnd - 40.0f)) /
-                                       std::max(total - (vaultEnd - 40.0f), 1.0f),
-                                       0.0f, 1.0f);
-        const float daylight = openT * openT * (3.0f - 2.0f * openT);
-        n.emissive = (0.30f + 0.25f * n.rush + (n.pool ? 0.10f : 0.0f))
-                   * (1.0f - 0.92f * daylight);
-        wn.push_back(n);
-    }
-    r.waterSegs = m_water.build(scene, device, wn, outLights);
+    // ---- THE WATER is NOT drawn here. -------------------------------------
+    // It is drawn by the SAME pass as the surface river: host_tunnel's
+    // applyRiverWater switches WaterParams' polyline to worldUnderRiverChain()
+    // whenever the focus is inside this corridor, so the cavern channel gets
+    // the real Gerstner surface, clarity (you see the carved bed through it),
+    // Fresnel, contact foam and caustics.
+    //
+    // WHAT WAS HERE, AND WHY IT WENT. The first build drew the channel with
+    // CaveRiver — the club's grotto ribbon: an opaque tinted quad strip with a
+    // travelling emissive crest. In a 3 m tube lit by crystals that reads as
+    // water. In an 88 m cavern it photographed as flat cornflower-blue
+    // construction paper with hard triangular edges and a wedge notch where
+    // the strip ended: no depth, no transparency, no flow, no shading. Two
+    // water implementations in one world is the duplicate rule 1 exists to
+    // stop, and the one we kept is the one JOB 1 already made honest.
+    // r.waterSegs stays in Result as the count of nodes handed to that pass.
+    r.waterSegs = uc.n;
 
     // ---- THE MIST: emitters on the steps and the pools. -------------------
     // Density follows the water's own character: a rushing reach throws spray,
@@ -321,8 +315,8 @@ UndergroundRiver::Result UndergroundRiver::build(
         l.pos[0] = cx + px * 13.0f * side;
         l.pos[1] = w + 3.4f;
         l.pos[2] = cz + pz * 13.0f * side;
-        // Same blue family as CaveRiver's pool banks so the accents and the
-        // water read as ONE light source — but not the same MAGNITUDE. Those
+        // Same blue family as the club grotto's pool banks so the accents
+        // and the water read as ONE source — but not the same MAGNITUDE. Those
         // are (0.10,0.22,0.85)@12 m, tuned for the club's little grotto; this
         // cavern is 88 m across and up to 38 m tall, and that lamp would light
         // a puddle of it. Scaled to the room, still blue-dominant.
@@ -332,7 +326,7 @@ UndergroundRiver::Result UndergroundRiver::build(
         m_lights.push_back(l);
     }
     r.lightCount = (int)m_lights.size();
-    (void)outLights;   // CaveRiver's pool bank lights already went in above
+    (void)outLights;   // this run's lights are delivered per-frame, nearest-K
 
     m_built = r.waterSegs > 0;
     r.built = m_built;
@@ -383,7 +377,6 @@ uint32_t UndergroundRiver::nearestLights(const float cam[3],
 // ---------------------------------------------------------------------------
 void UndergroundRiver::update(float dt, Scene& scene) {
     if (!m_built) return;
-    m_water.update(dt, scene);
     if (m_puffs.empty()) return;
     auto rnd = [&]() {
         m_seed = m_seed * 1664525u + 1013904223u;

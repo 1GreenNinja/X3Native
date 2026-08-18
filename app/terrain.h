@@ -291,8 +291,25 @@ float worldPreUnderRiverHeight(float x, float z);
 // and left its water table hanging in mid-air over un-carved ground. Gate on
 // it (--test-underriver U8) rather than rediscovering that.
 float worldCarveGuardAt(float x, float z);
+// True inside the underground river's carved corridor (its cavern footprint),
+// grown by `pad`. ANYTHING that scatters onto the height field — the forest,
+// the road trees, rocks, ecology — must reject here: the carve pulls the
+// ground down to the river, so a placer that only knows the field plants its
+// props INSIDE THE CAVERN. A tree grew in the Great Hall exactly this way and
+// it took a capture to see it, because every numeric gate was green.
+bool worldUnderRiverContains(float x, float z, float pad = 0.0f);
 // Carve geometry (PAIRED with the carve in terrain.cpp authoredLandforms and
 // the vault/selftest in app/underground_river.cpp):
+// THE DRAWN WATER'S HALF-WIDTH — and why it is a CONSTANT. The cavern channel
+// is drawn by the SAME Gerstner/clarity/foam water pass as the surface river
+// (host_tunnel applyRiverWater), and WaterParams::riverHalfWidth is ONE scalar
+// for the whole polyline. A per-node width would therefore have the drawn edge
+// and worldWaterLevelAt's wet set disagree by up to 2.5 m at the pools — JOB
+// 1's defect, in miniature, for the sake of a wider pool. So the pools are
+// expressed by DEPTH (bedDrop) instead, which with clarity>0 reads as a darker
+// bed through the water, and the width is one number both truths share.
+// PAIRED with WaterParams::riverHalfWidth at host_tunnel's cavern branch.
+constexpr float kURHalfWidth   = 7.0f;    // water half-width, whole run
 constexpr float kURBedHalfW    = 4.5f;    // wet channel floor half-width
 constexpr float kURShelfHalfW  = 12.0f;   // rock-beach shelf out to here (walkable)
 constexpr float kURWallOutW    = 44.0f;   // walls ease to natural country by here

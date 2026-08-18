@@ -191,7 +191,7 @@ bool WorldForests::build(x3::rhi::IRenderDevice& device, const Inputs& in) {
     // the southern belt starved twice and the reason was a number both times).
     uint32_t rejected = 0;
     uint32_t rjPad = 0, rjWater = 0, rjCorr = 0, rjJct = 0, rjDemo = 0,
-             rjClose = 0, rjSlope = 0, rjSea = 0;
+             rjClose = 0, rjSlope = 0, rjSea = 0, rjUnder = 0;
     auto tryPlant = [&](float x, float z, uint32_t h, float oakBias) {
         // cheap authored keep-outs first
         if (inPadKeep(x, z)) { ++rejected; ++rjPad; return; }
@@ -200,6 +200,13 @@ bool WorldForests::build(x3::rhi::IRenderDevice& device, const Inputs& in) {
         // every road, and every bore's tube footprint (junction throats too —
         // they register 2-node corridors).
         if (terrainCorridorContains(x, z)) { ++rejected; ++rjCorr; return; }
+        // THE UNDERGROUND RIVER'S CORRIDOR. Its carve is a landform, not a
+        // registered corridor, so terrainCorridorContains above does not see
+        // it — and the carve pulls the ground down to the water, so planting
+        // on the height field here plants INSIDE the cavern. A tree grew in
+        // the Great Hall, 30 m under a rock ceiling, and every numeric gate
+        // was green; it took a capture. Margin so no canopy overhangs the rim.
+        if (worldUnderRiverContains(x, z, 10.0f)) { ++rejected; ++rjUnder; return; }
         if (distToNearestRoadJunction(x, z) < kJunctionKeep) { ++rejected; ++rjJct; return; }
         if (nearDemoSpine(x, z)) { ++rejected; ++rjDemo; return; }
         if (tooClose(x, z)) { ++rejected; ++rjClose; return; }
@@ -456,7 +463,7 @@ bool WorldForests::build(x3::rhi::IRenderDevice& device, const Inputs& in) {
                "(rj c" + std::to_string(r.corr) + "/s" + std::to_string(r.slope) +
                "/j" + std::to_string(r.jct) + ")";
     x3::logInfo(msg);
-    x3::logInfo("forest: rejects — pad=" + std::to_string(rjPad) +
+    x3::logInfo("forest: rejects — cavern=" + std::to_string(rjUnder) + " pad=" + std::to_string(rjPad) +
                 " water=" + std::to_string(rjWater) +
                 " corridor=" + std::to_string(rjCorr) +
                 " junction=" + std::to_string(rjJct) +

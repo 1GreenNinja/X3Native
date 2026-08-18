@@ -1441,6 +1441,25 @@ int hostTunnel(HostContext& hc) {
         // RoadTrees' own water-table check IS the drawn waterline. `phys` stays
         // — that is the trunk collision the owner asked for, unrelated to the
         // shim that shared the call.
+        // AND OUT OF THE CAVERN. The underground river's carve pulls the
+        // ground down to the water; a placer that only knows the height field
+        // plants on that floor, i.e. INSIDE the cavern. A tree grew in the
+        // Great Hall exactly this way and only a capture caught it — every
+        // numeric gate was green. Discs down the whole run, band + margin.
+        {
+            const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
+            for (int i = 0; i + 1 < uc.n; ++i) {
+                const float sx = uc.x[i], sz = uc.z[i];
+                const float ex = uc.x[i+1], ez = uc.z[i+1];
+                const float len = std::sqrt((ex-sx)*(ex-sx) + (ez-sz)*(ez-sz));
+                const int steps = std::max(1, (int)(len / 40.0f));
+                for (int k = 0; k <= steps; ++k) {
+                    const float u = (float)k / (float)steps;
+                    camKeepOut.push_back({ sx + (ex-sx) * u, sz + (ez-sz) * u,
+                                           x3::game::kURWallOutW + 10.0f });
+                }
+            }
+        }
         trees.build(*device, route, camKeepOut, -1.0e9f, phys.get());
     }
 
@@ -2403,7 +2422,16 @@ int hostTunnel(HostContext& hc) {
     // the LOCAL water level there into seaLevel (the shader's underside-view
     // gate) and the caustics plane — the flat bridge-level plane is gone.
     auto applyRiverWater = [&](float t, float fx, float fz) {
-        if (!(riverOn && riverRoad.plan.ok)) return;
+        // THE CAVERN IS A BODY OF WATER TOO. When the focus is inside the
+        // underground river's corridor the SAME pass draws THAT channel: same
+        // Gerstner surface, same clarity, same foam, same caustics. It used to
+        // be a CaveRiver ribbon and photographed as flat blue paper — see
+        // app/underground_river.h. The two channels are 1.5 km apart and the
+        // patch is 480 m, so they can never both be near the camera; one
+        // polyline is enough and the switch cannot pop.
+        const float focus3[3] = { fx, 0.0f, fz };
+        const bool inCavern = x3::game::UndergroundRiver::insideCorridor(focus3);
+        if (!inCavern && !(riverOn && riverRoad.plan.ok)) return;
         x3::rhi::IRenderDevice::WaterParams wpr{};
         wpr.enabled   = true;
         // ONE WATER TRUTH (task #32): the drawn surface follows the SAME node
@@ -2413,7 +2441,29 @@ int hostTunnel(HostContext& hc) {
         // carved table downstream and climbed the banks (receipt: the bench
         // that shipped submerged at (-340,11,-468) while PASSING the
         // worldWaterLevelAt+0.5 check).
-        {
+        if (inCavern) {
+            using WP = x3::rhi::IRenderDevice::WaterParams;
+            const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
+            const uint32_t n = std::min<uint32_t>((uint32_t)uc.n, WP::kMaxRiverNodes);
+            wpr.riverNodeCount = n;
+            for (uint32_t i = 0; i < n; ++i) {
+                wpr.riverNodes[i][0] = uc.x[i];
+                wpr.riverNodes[i][1] = uc.z[i];
+                wpr.riverNodes[i][2] = uc.w[i];
+            }
+            // ONE number shared with worldWaterLevelAt's wet test (terrain.h
+            // kURHalfWidth says why it is a constant), so drawn coverage and
+            // the model cannot disagree down here either.
+            wpr.riverHalfWidth = x3::game::kURHalfWidth;
+            // No ocean disc and no shoreline table underground: basinRadius 0
+            // switches the estuary hand-off off entirely, which is what stops
+            // the sea being drawn through a hill 3 km away.
+            wpr.basinRadius    = 0.0f;
+            // RUSHING WATER. Faster, shorter, steeper swell than the valley
+            // reach and foam wide open — the run falls 16 m over its length
+            // and the derived rush hits 1.00 at the steps.
+            wpr.foam = 1.0f;
+        } else {
             using WP = x3::rhi::IRenderDevice::WaterParams;
             x3::game::WorldRiverNode rn[WP::kMaxRiverNodes];
             const uint32_t n = x3::game::worldRiverRisenNodes(rn, WP::kMaxRiverNodes);
@@ -2482,6 +2532,24 @@ int hostTunnel(HostContext& hc) {
         // W-NIGHT: the river glints to the LIVE luminary (sun by day, moon at
         // night), not to a phantom 14:00 sun that set hours ago.
         wpr.sunDir[0] = todSunDir[0]; wpr.sunDir[1] = todSunDir[1]; wpr.sunDir[2] = todSunDir[2];
+        if (inCavern) {
+            // There is no sun down here, so a surface tuned to glint at one
+            // renders as a black hole in the floor. The cavern's luminary is
+            // the run's own bank lights: a steep overhead direction with a
+            // soft, wide highlight, a cooler and slightly lifted shallow tint
+            // so the carved bed reads THROUGH the water, and a choppier,
+            // quicker swell for water that is actually falling.
+            wpr.sunDir[0] = 0.12f; wpr.sunDir[1] = 1.0f; wpr.sunDir[2] = 0.10f;
+            wpr.specular  = 2.2f;
+            wpr.fresnel   = 0.030f;
+            wpr.clarity   = 0.72f;
+            wpr.amplitude = 0.26f;
+            wpr.steepness = 0.55f;
+            wpr.waveLength= 5.5f;
+            wpr.speed     = 1.9f;
+            wpr.deepColor[0]    = 0.006f; wpr.deepColor[1] = 0.024f; wpr.deepColor[2] = 0.040f;
+            wpr.shallowColor[0] = 0.070f; wpr.shallowColor[1]= 0.190f; wpr.shallowColor[2]= 0.230f;
+        }
         device->setWaterParams(wpr);
         x3::rhi::IRenderDevice::CausticsParams cp{};
         cp.enabled = true; cp.waterY = wpr.seaLevel;   // local level, not the flat plane
