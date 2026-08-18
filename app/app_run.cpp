@@ -5301,6 +5301,33 @@ int runDefaultHost(HostContext& hc) {
         const bool shotWorldMenu = std::getenv("X3_WORLD_MENU") != nullptr;
         if (shotWorldMenu) shotMenu.open();
 
+        // ---- X3_TUNE_PANEL=1: stage the F7 TUNING PANEL into the capture (the
+        // X3_WORLD_MENU pattern). The panel is a keypress-driven overlay, so
+        // without this the only way to judge it is by hand — and a HUD that is
+        // only ever judged by hand is a HUD nobody re-checks over a bright scene.
+        // X3_TUNE_TAB=0|1 picks the page, X3_TUNE_SOAK=<weapon> lights the soak
+        // readout so the "it is FIRING right now" state is in the evidence too.
+        x3::game::WeaponTuningMenu shotTune;
+        x3::ui::UiContext          shotTuneUi;
+        const bool shotTunePanel = std::getenv("X3_TUNE_PANEL") != nullptr;
+        if (shotTunePanel) {
+            x3::game::WeaponTuningSource src;
+            src.count   = arsenal.count();
+            src.name    = [&arsenal](int i) { return arsenal.def(i).name; };
+            src.fxKind  = [&arsenal](int i) {
+                return (int)x3::game::fxKindFromId(arsenal.def(i).muzzleFx);
+            };
+            src.held    = [&arsenal]() { return arsenal.selected(); };
+            // A capture has no live soak state, so the staged one is whatever
+            // X3_TUNE_SOAK names (-1 = the "SOAK: off" read).
+            const char* soakEnv = std::getenv("X3_TUNE_SOAK");
+            const int   soakIdx = soakEnv ? arsenal.indexOf(soakEnv) : -1;
+            src.soaking = [soakIdx]() { return soakIdx; };
+            src.toggleSoak = [](int) {};        // pure draw: the still never fires
+            shotTune.setSource(std::move(src));
+            shotTune.open();
+        }
+
         // ---- POLISH (W10 proof shots): X3_SHOT_SWIM=fp|3p — stage the swim reads
         // over THE RIVER (env-var staging, the X3_SHOT_RPG pattern). fp = the eye
         // at the buoyancy line with the swim viewmodel LOWER at full blend (proof
@@ -6924,6 +6951,28 @@ int runDefaultHost(HostContext& hc) {
                     else
                         rpgUi.drawHudChip(*device, frame, inventory, itemDb, progression, dt);
                 }
+                // X3_TUNE_PANEL: the F7 tuning panel over the live vantage.
+                // Drawn with a PARKED cursor and no input edges, so the still is
+                // the panel at rest rather than mid-hover.
+                if (shotTunePanel) {
+                    x3::ui::UiInput tin{};
+                    tin.mouseX = -1000.0f; tin.mouseY = -1000.0f;
+                    if (const char* tb = std::getenv("X3_TUNE_TAB")) {
+                        // Nudge to the requested tab on the first settle frames:
+                        // activating tab N takes a focus move then an activate.
+                        const int want = std::atoi(tb);
+                        if (want == 1 && i < 4) {
+                            tin.mouseX = 0.0f; tin.mouseY = 0.0f;   // let nav claim focus
+                            if (i == 1) tin.navDown = true;
+                            if (i == 2) tin.navActivate = true;
+                            tin.mouseX = -1000.0f; tin.mouseY = -1000.0f;
+                        }
+                    }
+                    shotTuneUi.begin(*device, frame, tin);
+                    shotTune.draw(shotTuneUi, *console, dt);
+                    shotTuneUi.end();
+                }
+
                 // --screenshot-alert: the alert indicator + lockdown red frame.
                 if (alertShot) {
                     x3::game::Hud alertHud;
@@ -6998,6 +7047,26 @@ int runDefaultHost(HostContext& hc) {
         // Drive the controller to the requested screen (default MainMenu).
         const float mw = (float)kHeadlessW, mh = (float)kHeadlessH, mcx = mw * 0.5f;
         float hoverX = mcx, hoverY = mh * 0.5f;   // element to hover (focused/hot)
+        // X3_TUNE_PANEL: the tuning panel staged over a ui-demo screen. Its own
+        // context, so it never disturbs the menu contexts these screens use.
+        x3::game::WeaponTuningMenu demoTune;
+        x3::ui::UiContext          demoTuneUi;
+        if (std::getenv("X3_TUNE_PANEL")) {
+            x3::game::WeaponTuningSource src;
+            src.count  = arsenal.count();
+            src.name   = [&arsenal](int i2) { return arsenal.def(i2).name; };
+            src.fxKind = [&arsenal](int i2) {
+                return (int)x3::game::fxKindFromId(arsenal.def(i2).muzzleFx);
+            };
+            src.held    = []() { return 0; };
+            const char* soakEnv = std::getenv("X3_TUNE_SOAK");
+            const int   soakIdx = soakEnv ? arsenal.indexOf(soakEnv) : -1;
+            src.soaking = [soakIdx]() { return soakIdx; };
+            src.toggleSoak = [](int) {};      // pure draw
+            demoTune.setSource(std::move(src));
+            demoTune.open();
+        }
+
         if (uiDemoScreen == "pause") {
             demoUi.setState(x3::ui::GameState::Paused);
             // RESUME is the first pause button; hover it.
@@ -7100,6 +7169,24 @@ int runDefaultHost(HostContext& hc) {
                     row(FR::News,  "NEWS: Space Mono  ENEMIES: 4   AREA CLEAR", amb, 24.0f);
                     row(FR::News,  "AREA CLEAR", grn, 30.0f);
                     row(FR::Console, "Console/HudMono: Roboto Mono  HP 100  37 / 120", grn, 24.0f);
+                }
+                // X3_TUNE_PANEL=1: the F7 TUNING PANEL over whichever ui-demo
+                // screen was asked for. Paired with `--ui-demo hudwhite` this is
+                // the WORST-CASE legibility gate for it — a full white wash, the
+                // vantage that started the whole hud-restyle lane. If the panel
+                // reads there it reads anywhere.
+                if (std::getenv("X3_TUNE_PANEL")) {
+                    x3::ui::UiInput tin{};
+                    tin.mouseX = -1000.0f; tin.mouseY = -1000.0f;
+                    if (const char* tb = std::getenv("X3_TUNE_TAB")) {
+                        if (std::atoi(tb) == 1) {
+                            if (i == 1) tin.navDown = true;
+                            if (i == 2) tin.navActivate = true;
+                        }
+                    }
+                    demoTuneUi.begin(*device, frame, tin);
+                    demoTune.draw(demoTuneUi, *console, dt);
+                    demoTuneUi.end();
                 }
                 // Dev console last (it sits on top of everything, as in the game).
                 // dt*4 so the slide-down finishes inside the settle loop.

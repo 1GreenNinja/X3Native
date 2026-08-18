@@ -176,10 +176,13 @@ bool UiContext::tabBar(const char* const* labels, int count, int& active, float 
         // The SELECTED tab is the bright one and is the only one with an
         // underline; focus adds an edge. Selection and focus are different
         // things and must not look the same, or keyboard nav reads as a change.
+        // The SELECTED tab is a lit plate with a 3px underline; the others are
+        // nearly bare glass. Selection has to be legible at a glance from across
+        // the desk, and "slightly bluer" is not (the first capture proved it).
         const float fill[4] = { kHotFill[0], kHotFill[1], kHotFill[2],
-                                sel ? 0.62f : (hot ? 0.34f : 0.14f) };
+                                sel ? 0.85f : (hot ? 0.30f : 0.10f) };
         quad(tx, r.y, tabW - 1.0f, r.h, fill);
-        if (sel) quad(tx, r.y + r.h - 2.0f, tabW - 1.0f, 2.0f, kEdge);
+        if (sel) quad(tx, r.y + r.h - 3.0f, tabW - 1.0f, 3.0f, kEdge);
         if (hot && !sel) quad(tx, r.y, tabW - 1.0f, 1.0f, kEdge);
 
         const float px = 11.0f;

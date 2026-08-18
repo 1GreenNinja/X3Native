@@ -384,10 +384,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-targeting") o.testTargeting = true;
         else if (a == "--test-ship-damage") o.testShipDamage = true;
         else if (a == "--width") {
-            if (i + 1 < argc) { o.winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
+            if (i + 1 < argc) { o.winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); o.resExplicit = true; }
         }
         else if (a == "--height") {
-            if (i + 1 < argc) { o.winH = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
+            if (i + 1 < argc) { o.winH = (uint32_t)std::strtoul(argv[++i], nullptr, 10); o.resExplicit = true; }
         }
         else if (a == "--world") {
             if (i + 1 < argc && argv[i + 1][0] != '-') { o.worldMode = argv[++i]; o.worldExplicit = true; }

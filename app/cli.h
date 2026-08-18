@@ -970,6 +970,11 @@ struct CliOptions {
     // affect ONLY the on-screen window: headless capture/screenshot resolution is
     // forced back to 1280x720 below regardless of these flags.
     uint32_t    winW = 1600, winH = 900;   // bigger windowed default (NOT maximized)
+    // Did the command line ASK for a resolution? Headless capture is fixed at
+    // 1280x720 so every existing shot stays byte-stable, but a capture explicitly
+    // asked for at another size should get it — reviewing a HUD at one resolution
+    // only is how a layout that breaks at 1080p ships.
+    bool        resExplicit = false;
     bool loadedWinSize = false;   // a saved "SET AS DEFAULT" window size was found
 };
 

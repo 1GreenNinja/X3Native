@@ -28,7 +28,10 @@ constexpr float kFontAspect = 1.0f;
 constexpr float kColText[4]     = { 0.90f, 0.95f, 0.92f, 1.0f };
 constexpr float kColTextDim[4]  = { 0.62f, 0.68f, 0.66f, 1.0f };
 constexpr float kColShadow[4]   = { 0.0f,  0.0f,  0.0f,  0.80f };
-constexpr float kColBtn[4]      = { 0.10f, 0.13f, 0.18f, 0.82f };
+// NEAR-BLACK, not slate. See the note above hud_panel.h kHudPanelFill: linear
+// 0.10 encodes to sRGB ~0.35, so the old value painted every widget row a
+// mid-grey card and hid the glass plate underneath it.
+constexpr float kColBtn[4]      = { 0.030f, 0.040f, 0.055f, 0.80f };
 constexpr float kColBtnHot[4]   = { 0.16f, 0.42f, 0.66f, 0.92f }; // focused/hover
 constexpr float kColBtnEdge[4]  = { 0.30f, 0.62f, 0.95f, 0.95f };
 constexpr float kColPanel[4]    = { 0.02f, 0.03f, 0.06f, 0.78f };

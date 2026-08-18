@@ -30,15 +30,50 @@ using Rect      = x3::ui::Rect;
 // is the narrowest panel that keeps a ~100 px track while still leaving the
 // screen centre (the crosshair) and the lower-right (the muzzle flash) clear.
 constexpr float kPanelW  = 480.0f;
-constexpr float kRowH    = 24.0f;   // weapon button
-constexpr float kDialH   = 26.0f;   // slider row
+constexpr float kRowH    = 20.0f;   // weapon button
+constexpr float kDialH   = 24.0f;   // slider row
 constexpr float kResetW  = 46.0f;   // the per-dial RESET chip
-constexpr int   kCols    = 2;       // weapon grid columns
+// THREE columns, not two. The canon roster is 12 weapons: at two columns that is
+// six rows, which pushed the panel past the safe band and ran the FX dials off
+// the bottom of their own plate (caught in the first 720p capture). Three
+// columns is four rows and still leaves each cell wide enough for "flamethrower".
+constexpr int   kCols    = 3;       // weapon grid columns
+
+// A caption row for text of cap size `px`. A HUD glyph inks well past its
+// nominal cap height (see hud_panel.h hudLineH), so a 10 px caption in a 12 px
+// row prints into the row below it — which is exactly what the first capture
+// showed under the weapon grid.
+inline float capRow(float px) { return x3::game::hudLineH(px); }
+
+// Largest cap size <= basePx at which `s` fits `maxW` in the mono face.
+//
+// Captions are the one place a HUD string is authored as PROSE, and prose grows
+// with every edit. Measuring beats guessing: a caption that overruns the plate
+// prints onto bare scene, which over a bright vantage is unreadable — the very
+// failure the glass exists to prevent. Bounded loop, half-point steps, floor 6.5
+// (below that the mono face stops being legible and the caption should be cut
+// instead).
+float fitPx(const char* s, float maxW, float basePx) {
+    float px = basePx;
+    for (int i = 0; i < 32 && px > 6.5f; ++i) {
+        if (UiContext::textWidth(UiContext::FontRole::HudMono, s, px) <= maxW) break;
+        px -= 0.5f;
+    }
+    return px;
+}
+
+// Draw a caption that is GUARANTEED to sit inside the content column, and
+// advance the layout by the leading its final size actually needs.
+void caption(UiContext& ui, const char* s, float basePx, const float* col) {
+    const float px = fitPx(s, ui.layoutW(), basePx);
+    const Rect r = ui.row(capRow(px));
+    ui.text(s, r.x, r.y, px, col, UiContext::FontRole::HudMono);
+}
 
 // Vertical no-go bands, so the panel never lands on the left HUD stack. Top: the
 // FPS chip (y=4, ~26 tall) plus the objective + enemies panels stacked under it.
 // Bottom: the HP bar plate (its top edge sits at h - 58).
-constexpr float kSafeTop = 140.0f;
+constexpr float kSafeTop = 196.0f;   // clears a THREE-LINE objective, the worst case
 constexpr float kSafeBot = 66.0f;
 
 constexpr float kDim[4] = { 0.55f, 0.62f, 0.68f, 1.00f };
@@ -123,7 +158,11 @@ int WeaponTuningMenu::draw(x3::ui::UiContext& ui, x3::con::IConsole& console, fl
     // anyone adds a row. One frame of lag on a section toggle is invisible; a
     // plate that does not fit its rows is not.
     const float pw = std::min(kPanelW, std::max(260.0f, W - 2.0f * x3::game::kHudMargin));
-    const float ph = std::clamp(m_lastContentH, 120.0f, std::max(120.0f, H - kSafeTop - kSafeBot));
+    // The panel is placed to sit inside the safe band, but its HEIGHT is capped
+    // only by the screen (a 24 px tail margin). Clipping the panel to the band
+    // cut its own footer off — and a HUD instrument that hides its last row is
+    // worse than one that briefly overlaps the HP plate on a short window.
+    const float ph = std::clamp(m_lastContentH, 120.0f, std::max(120.0f, H - kSafeTop - 24.0f));
     const float px = x3::game::kHudMargin;
     const float py = std::clamp(H * 0.5f - ph * 0.5f, kSafeTop,
                                 std::max(kSafeTop, H - kSafeBot - ph));
@@ -140,7 +179,7 @@ int WeaponTuningMenu::draw(x3::ui::UiContext& ui, x3::con::IConsole& console, fl
 
     // ---- Title -------------------------------------------------------------
     {
-        const Rect r = ui.row(20.0f);
+        const Rect r = ui.row(capRow(15.0f));
         ui.text("TUNING", r.x, r.y, 17.0f, x3::game::kHudAccentAmber,
                 UiContext::FontRole::Title);
         const char* hint = "[F7] CLOSE";
@@ -158,7 +197,7 @@ int WeaponTuningMenu::draw(x3::ui::UiContext& ui, x3::con::IConsole& console, fl
         // deliberately keeps running while this panel is open (that is the entire
         // workflow), so the panel owes the user an unmissable statement of it.
         {
-            const Rect r = ui.row(16.0f);
+            const Rect r = ui.row(capRow(13.0f));
             char line[128];
             const float* col = kDim;
             float alpha = 1.0f;
@@ -172,14 +211,12 @@ int WeaponTuningMenu::draw(x3::ui::UiContext& ui, x3::con::IConsole& console, fl
                 std::snprintf(line, sizeof(line), "SOAK: off");
             }
             const float c[4] = { col[0], col[1], col[2], col[3] * alpha };
-            ui.text(line, r.x, r.y, 13.0f, c, UiContext::FontRole::HudMono);
+            ui.text(line, r.x, r.y, fitPx(line, r.w, 13.0f), c,
+                    UiContext::FontRole::HudMono);
         }
-        {
-            const Rect r = ui.row(12.0f);
-            ui.text(n > 0 ? "click a weapon to soak it - click it again to stop"
-                          : "no weapon roster in this world - FX dials still live",
-                    r.x, r.y, 10.0f, kDim, UiContext::FontRole::HudMono);
-        }
+        caption(ui, n > 0 ? "click a weapon to soak it - click again to stop"
+                          : "no weapon roster here - the FX dials are still live",
+                10.0f, kDim);
         ui.spacing(4.0f);
 
         // ---- Weapon roster -------------------------------------------------
@@ -214,9 +251,8 @@ int WeaponTuningMenu::draw(x3::ui::UiContext& ui, x3::con::IConsole& console, fl
                             ui.quad(bx, r.y + r.h - 2.0f, colW, 2.0f, x3::game::kHudAccentAmber);
                     }
                 }
-                const Rect lg = ui.row(12.0f);
-                ui.text("green = SOAKING    cyan = IN HAND    amber = SELECTED",
-                        lg.x, lg.y, 9.5f, kDim, UiContext::FontRole::HudMono);
+                caption(ui, "green SOAKING   cyan IN HAND   amber SELECTED",
+                        9.5f, kDim);
             } else {
                 const Rect r = ui.row(16.0f);
                 ui.text("(no weapon roster in this world)", r.x, r.y, 11.0f, kDim,
@@ -225,8 +261,9 @@ int WeaponTuningMenu::draw(x3::ui::UiContext& ui, x3::con::IConsole& console, fl
         }
 
         // ---- The live FX dials ---------------------------------------------
-        if (ui.collapsingHeader("FX DIALS  (drag / arrows / ctrl+click to type)",
-                                m_openDials)) {
+        if (ui.collapsingHeader("FX DIALS", m_openDials)) {
+            caption(ui, "drag, arrow-nudge, or ctrl+click a value to type it",
+                    9.5f, kDim);
             for (int i = 0; i < kFxRowCount; ++i) {
                 const WeaponFxDial& spec = *kFxRows[i].spec;
                 std::string name;
@@ -252,11 +289,8 @@ int WeaponTuningMenu::draw(x3::ui::UiContext& ui, x3::con::IConsole& console, fl
         // The colour picker's real target. The glass fill and the corner radius
         // were BOTH settled by rebuild-and-look cycles; they are cvars now, so
         // they are settled under the cursor instead.
-        {
-            const Rect r = ui.row(12.0f);
-            ui.text("the plate under every HUD block, menu and console",
-                    r.x, r.y, 10.0f, kDim, UiContext::FontRole::HudMono);
-        }
+        caption(ui, "the plate under every HUD block, menu and console",
+                10.0f, kDim);
         ui.spacing(2.0f);
 
         // Read the live tuning, edit it, write any change back to the cvars (the
@@ -294,20 +328,13 @@ int WeaponTuningMenu::draw(x3::ui::UiContext& ui, x3::con::IConsole& console, fl
             if (!tip.empty()) ui.tooltip(tip.c_str());
             if (ui.button("RESET", ui.rest())) console.set("hud_radius", "3");
         }
-        {
-            const Rect r = ui.row(12.0f);
-            ui.text("alpha below ~0.86 washes light text out over bright scenes",
-                    r.x, r.y, 9.5f, kDim, UiContext::FontRole::HudMono);
-        }
+        caption(ui, "below ~0.86 alpha light text washes out on bright scenes",
+                9.5f, kDim);
     }
 
     // ---- Footer -------------------------------------------------------------
     ui.spacing(2.0f);
-    {
-        const Rect r = ui.row(12.0f);
-        ui.text("these ARE the cvars - console and panel share them",
-                r.x, r.y, 9.5f, kDim, UiContext::FontRole::HudMono);
-    }
+    caption(ui, "these ARE the cvars - the console shares them", 9.5f, kDim);
 
     // Measure for NEXT frame's plate (see the plate comment above).
     m_lastContentH = (ui.cursorY() - top) + x3::game::kHudPadY * 2.0f;
