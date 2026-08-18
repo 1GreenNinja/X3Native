@@ -19,6 +19,7 @@
 #include "engine/asset/IModelLoader.h"   // hero-car GLB skin (ModelDrawable)
 #include "engine/asset/IAssetSource.h"
 #include "mesh_prims.h"
+#include "car_roster.h"                  // CarSpec — which car this DriveDemo IS
 
 #include <cstdint>
 #include <memory>
@@ -42,6 +43,14 @@ void makeUnitCylinderY(uint32_t segments,
 // ---------------------------------------------------------------------------
 class DriveDemo {
 public:
+    // WHICH CAR THIS IS. Call BEFORE build()/buildPhysics() — the spec supplies
+    // the wheel stations, the chassis box and the skin's widen/drop, all of
+    // which are baked at build time. Default is app/car_roster.h entry 0 (CTR)
+    // with the exact numbers this class shipped before the roster existed, so
+    // a host that never calls this is bit-for-bit unchanged.
+    void setSpec(const CarSpec& s) { m_spec = &s; m_hx = s.halfX; m_hy = s.halfY; m_hz = s.halfZ; }
+    const CarSpec& spec() const { return m_spec ? *m_spec : carSpecDefault(); }
+
     // Spawn the car at (x,y,z). The chassis is a ~1300 kg box sized to the HERO
     // CAR GLB (CTR: 1.81 x 1.3 x 4.3 m, wheel stations from the model); 4 wheels
     // (front steered, rear powered + handbrake). Returns false if the controller
@@ -82,6 +91,12 @@ public:
     x3::phys::BodyId chassis() const { return m_chassis; }
     // World position of the chassis (for chasing the camera).
     void chassisPos(float out[3]) const;
+    // Live pose of one wheel (0=FL 1=FR 2=RL 3=RR). Exposed so the roster
+    // self-test can read back the stations the rig ACTUALLY built instead of
+    // re-deriving them from the same literals the builder used.
+    bool wheelState(uint32_t slot, x3::phys::WheelState& out) const {
+        return m_ctl && m_ctl->wheelState(slot, out);
+    }
     float forwardSpeed() const { return m_ctl ? m_ctl->forwardSpeed() : 0.0f; }
     float engineRPM()    const { return m_ctl ? m_ctl->engineRPM() : 0.0f; }
     int   gear()         const { return m_ctl ? m_ctl->gear() : 0; }
@@ -256,6 +271,9 @@ private:
     // 1.07 = half the widened 2.13 m body (1.808 * 1.18), so the collision box
     // spans the bodywork rather than sitting inside it.
     float m_hx = 1.07f, m_hy = 0.5f, m_hz = 1.95f;
+    // Which car (app/car_roster.h). nullptr = the roster default (CTR), whose
+    // numbers ARE the constants this class used to hard-code.
+    const CarSpec* m_spec = nullptr;
 
     x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD)
     x3::phys::VehicleInput m_effIn;      // post-TC input (preStep shapes steer on this)

@@ -107,6 +107,12 @@ int hostDrive(HostContext& hc) {
         x3::game::DriveDemo car;
         x3::game::BoatDemo  boat;
         x3::game::FlyDemo   plane;
+        // WHICH CAR (--car <id>, app/car_roster.h). setSpec BEFORE build(): the
+        // wheel stations, chassis box and mass are baked into the Jolt rig at
+        // build time, so selecting after would give the GBX coupe CTR's 2.274 m
+        // wheelbase and plant its wheels inside the bodywork.
+        const x3::game::CarSpec& carSpec = x3::game::carSpecById(hc.carId.c_str());
+        car.setSpec(carSpec);
         bool built = false;
         if (isDrive) built = car.build(*device, *vphys, spawnX, spawnY, spawnZ);
         else if (isBoat) built = boat.build(*device, *vphys, spawnX, spawnY, spawnZ, boatSeaLevel, /*isSub*/false);
@@ -125,8 +131,10 @@ int hostDrive(HostContext& hc) {
         // HERO-CAR GLB skin: render the real clearcoat-painted car instead of the
         // graybox (graybox stays the fallback on a clean checkout without LFS).
         if (isDrive) {
-            const bool sk = car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
-            x3::logInfo(std::string("--world drive: hero-car GLB skin ") + (sk ? "ON (CTR)" : "absent — graybox"));
+            const bool sk = car.skin(*device, x3::game::convertedGlbRoot(), carSpec.glb);
+            x3::logInfo(std::string("--world drive: hero-car GLB skin ") +
+                        (sk ? std::string("ON (") + carSpec.name + ", " + carSpec.glb + ")"
+                            : std::string("absent - graybox (") + carSpec.glb + ")"));
         }
 
         // ---- THE PERFORMANCE SHOP ("LATE NIGHT SPEED") — drive in, build your

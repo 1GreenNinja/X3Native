@@ -85,6 +85,7 @@ add_library(x3app SHARED
     summit_lot.cpp      # the parking lot at the top of the summit spur
     ridge_road.cpp      # the dirt road along the tops, lot -> the bore's massif
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
+    underground_river.cpp # W-UNDERRIVER: the lake-to-canyon river under the mountain
     factory.cpp         # THE GLIMVALE WORKS + the golden-ticket hunt
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
     gas_station.cpp     # W-STATIONS — forecourts off the network + the fuel stub

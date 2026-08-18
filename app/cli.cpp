@@ -2,6 +2,9 @@
 #include "cli.h"
 #include "settings_io.h"   // readWindowSize (saved window default)
 #include "test_registry.h" // g_testGrounding (--test-grounding; see the note there)
+#include "car_roster.h"    // --car <id> validation against the real roster
+#include "engine/core/x3_log.h"
+#include <string>
 #include <string_view>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +26,27 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         // every `else if` nests a block; the chain is at the compiler's limit).
         if (a == "--test-ddgi") { o.smoketest = true; o.testDdgi = true; continue; }
         if (a == "--ddgi") { o.ddgiForce = true; continue; }
+        // --car <id>: WHICH hero car (app/car_roster.h ids: gbx, ctr). Declared
+        // OUTSIDE the big else-if chain below for the same MSVC C1061 reason as
+        // the DDGI flags. An unknown id is REJECTED LOUDLY rather than silently
+        // falling back — "I asked for the coupe, got the other car, and nothing
+        // said so" is precisely the class this repo keeps paying for.
+        if (a == "--car") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                const std::string id = argv[++i];
+                if (x3::game::carSpecKnown(id.c_str())) {
+                    o.carId = id;
+                } else {
+                    size_t n = 0;
+                    const x3::game::CarSpec* r = x3::game::carRoster(n);
+                    std::string all;
+                    for (size_t k = 0; k < n; ++k) { all += (k ? ", " : ""); all += r[k].id; }
+                    x3::logWarn("--car: unknown id '" + id + "' (have: " + all +
+                                ") - keeping '" + o.carId + "'");
+                }
+            }
+            continue;
+        }
         // Lane 3: cascaded-shadow-map proof suite (A/B at 3 distances, a camera
         // pan proving edges do not swim, and a cascade-boundary framing).
         // Declared OUTSIDE the big else-if chain: MSVC C1061 nesting limit.
@@ -387,6 +411,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-routeframe") o.testRouteFrame = true;
         else if (a == "--test-roadnetwork") o.testRoadNetwork = true;
         else if (a == "--test-riverbridge") o.testRiverBridge = true;
+        else if (a == "--test-underriver") o.testUnderRiver = true;
         else if (a == "--test-traffic") o.testTraffic = true;
         else if (a == "--test-gasstation") o.testGasStation = true;
         else if (a == "--test-factory") o.testFactory = true;

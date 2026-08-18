@@ -224,10 +224,15 @@ struct TunnelConfig {
 // — used between disconnected side-shoot tubes).
 struct CaveRiverNode {
     float x = 0, y = 0, z = 0;      // world position of the water surface centerline
-    float halfWidth = 0.9f;         // ribbon half-width (across, in Z) at this node
+    float halfWidth = 0.9f;         // ribbon half-width (perpendicular to the run) at this node
     float emissive  = 0.30f;        // base emissive strength here (pools brighter)
     bool  pool      = false;        // a POOL widening (brighter, slower breathe, a bank light)
     bool  breakSeg  = false;        // this node ENDS a river run (no segment to the next)
+    // RUSH (W-UNDERRIVER, 0..1; default 0 keeps every existing cave river
+    // byte-identical): whitewater at a drop. Blends the segment's colour
+    // toward churned foam-white and speeds/loudens the travelling crest —
+    // the owner's "rushing water" at the underground river's step drops.
+    float rush      = 0.0f;
 };
 
 struct DescentFallLayout {

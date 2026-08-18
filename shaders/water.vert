@@ -44,6 +44,17 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     // xy = ocean basin centre (world XZ), z = basin radius (0 = no sea
     // fallback), w = oceanLevel (sea surface Y the estuary hands off to).
     vec4  riverBasin;
+    // THE SHORELINE TABLE (W-UNDERRIVER — water only IN bodies of water).
+    // x = sector count (0 = legacy: the whole basin disc draws water, even
+    // under the dry beach ring — the owner's "water underground"), y = fade
+    // width (m). Radii below are the outermost radius per angular sector at
+    // which the terrain bowl is actually below oceanLevel — computed on the
+    // CPU from the SAME terrainHeightAtWorld the water query uses
+    // (app/terrain.cpp worldOceanShoreTable — PAIRED, a change to one IS a
+    // change to both). Past that radius there is beach/hill, not sea, and
+    // the surface fades out exactly like the river's waterline.
+    vec4  shoreInfo;
+    vec4  shoreRadii[64];   // 256 radii, 4 per vec4, sector i at [i>>2][i&3]
     // Per node: x = world x, y = world z, z = waterY. The SAME node table the
     // terrain carve and worldWaterLevelAt interpolate — the drawn plane can
     // no longer stand above the carved water table downstream.
@@ -59,6 +70,10 @@ layout(location = 2) out vec2 vGrid;       // [-1,1] patch coord (edge fade)
 // waterline (fragment multiplies alpha; <= 0 discards). Always 1 in legacy
 // flat-sea mode so every existing world renders byte-identically.
 layout(location = 3) out float vMask;
+// Raw Gerstner lift (m) of this vertex — the fragment stage turns lift near
+// the top of its travel into crest foam (WaterParams::foam; 0 = off, and the
+// varying is simply ignored, so legacy worlds are untouched).
+layout(location = 4) out float vCrest;
 
 // One Gerstner wave: displaces a flat point p (XZ) and accumulates the analytic
 // partial derivatives needed to build the surface normal. Direction d is a unit
@@ -131,18 +146,44 @@ void main() {
         vec2  bp = basePos - u.riverBasin.xy;
         bool  inBasin = (u.riverBasin.z > 0.0) &&
                         (dot(bp, bp) < u.riverBasin.z * u.riverBasin.z);
+        // The channel's waterline: fade out across the last 2 m INSIDE the
+        // ribbon edge, hitting zero exactly at halfWidth — the same boundary
+        // worldWaterLevelAt flips to dry at, so the drawn skirt can never
+        // outrun the model (the banks cross the level between ~27 and ~34 m
+        // out, so this edge is normally already clipped underground by the
+        // depth test; noclip under the bank sees nothing either way now).
+        float channelMask = 1.0 - smoothstep(hw - 2.0, hw, d);
         if (inBasin) {
             // Estuary handoff: river level (rides ~0.1 proud) feathers into
-            // the sea surface past the channel edge; the whole basin disc is
-            // sea — terrain above oceanLevel clips it into the shoreline.
+            // the sea surface past the channel edge; the basin disc is sea —
+            // terrain above oceanLevel clips it into the shoreline FROM
+            // ABOVE, and the shoreline table bounds it from below (the disc
+            // used to draw the full 950 m even under the dry beach ring and
+            // the rim hills: a sheet of underground water round the coast).
             seaLevel = mix(lvl, u.riverBasin.w,
                            smoothstep(hw - 6.0, hw + 14.0, d));
+            float shoreMask = 1.0;
+            float ns = u.shoreInfo.x;
+            if (ns >= 4.0) {
+                // NEAREST sector, not a lerp: each sector stores the MAX
+                // shoreline radius over exactly its own angular span
+                // (worldOceanShoreTable supersamples it), so nearest-lookup
+                // can never cut real sea off — a lerp across a radial reach
+                // of coast cut 16 m of water at bearing 309.5 (RB12's
+                // measurement). The residual is a <= one-arc-width staircase
+                // of OVERDRAW that dies under the beach sand.
+                float db  = length(bp);
+                float ang = atan(bp.y, bp.x);                    // [-pi, pi]
+                float fs  = (ang * 0.15915494309 + 0.5) * ns;    // sector coord
+                int   ia  = int(mod(floor(fs + 0.5), ns));
+                float rs  = u.shoreRadii[ia >> 2][ia & 3];
+                float fade = max(u.shoreInfo.y, 1.0);
+                shoreMask = 1.0 - smoothstep(rs - fade, rs, db);
+            }
+            mask = max(channelMask, shoreMask);
         } else {
             seaLevel = lvl;
-            // The waterline: fade out across the last 2 m to the ribbon edge
-            // (the banks cross the level between ~27 and ~34 m out, so this
-            // edge is normally already clipped underground by the depth test).
-            mask = 1.0 - smoothstep(hw - 1.5, hw + 0.5, d);
+            mask = channelMask;
         }
     }
 
@@ -183,5 +224,6 @@ void main() {
     vNormal   = nrm;
     vGrid     = inGrid;
     vMask     = mask;
+    vCrest    = disp.y;
     gl_Position = u.viewProj * vec4(worldPos, 1.0);
 }

@@ -121,6 +121,7 @@
 #include "interchange.h"       // x3::game::runInterchangeSelfTest (--test-interchange)
 #include "stack.h"             // x3::game::runStackSelfTest (--test-stack)
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
+#include "underground_river.h" // x3::game::UndergroundRiver::runSelfTest (--test-underriver)
 #include "traffic.h"           // x3::game::runTrafficSelfTest (--test-traffic)
 #include "gas_station.h"       // x3::game::runGasStationSelfTest (--test-gasstation)
 #include "factory.h"           // x3::game::runFactorySelfTest (--test-factory)
@@ -797,6 +798,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running FREEWAY TRAFFIC self-test (carriageway direction law / "
                     "median-on-left / following gap >= 0 / spawn ring / determinism)...");
         return x3::game::runTrafficSelfTest() ? 0 : 1;
+    }
+    if (tf.testUnderRiver) {
+        x3::logInfo("running UNDERGROUND RIVER self-test (the derived table descends, "
+                    "the trench + rock beaches are carved, one water truth, drops + pools)...");
+        return x3::game::UndergroundRiver::runSelfTest() ? 0 : 1;
     }
     if (tf.testRiverBridge) {
         x3::logInfo("running RIVER BRIDGE self-test (the valley road meets the river "

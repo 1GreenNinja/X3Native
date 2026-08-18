@@ -361,6 +361,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testRouteFrame = o.testRouteFrame;
         _tf.testRoadNetwork = o.testRoadNetwork;
         _tf.testRiverBridge = o.testRiverBridge;
+        _tf.testUnderRiver = o.testUnderRiver;
         _tf.testTraffic = o.testTraffic;
     _tf.testGasStation = o.testGasStation;
         _tf.testFactory     = o.testFactory;
@@ -851,6 +852,7 @@ int x3AppMain(int argc, char** argv) {
         _hc.destructShot     = o.destructShot;     _hc.destructShotPath = o.destructShotPath;
         _hc.elevShot         = o.elevShot;         _hc.elevShotDir      = o.elevShotDir;
         _hc.carShot          = o.carShot;          _hc.carShotDir       = o.carShotDir;
+        _hc.carId            = o.carId;
         _hc.upperShot        = o.upperShot;        _hc.upperShotDir     = o.upperShotDir;
         _hc.doorShot         = o.doorShot;         _hc.doorShotDir      = o.doorShotDir;
         _hc.rescueShot       = o.rescueShot;        _hc.rescueShotDir   = o.rescueShotDir;

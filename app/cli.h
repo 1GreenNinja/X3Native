@@ -542,6 +542,7 @@ struct CliOptions {
     bool        testRouteFrame = false;
     bool        testRoadNetwork = false;   // --test-roadnetwork
     bool        testRiverBridge = false;   // --test-riverbridge (valley road + Bridge No.1)
+    bool        testUnderRiver = false;    // --test-underriver (the river under the mountain)
     bool        testTraffic = false;       // --test-traffic (freeway AI traffic)
     bool        testGasStation = false;    // --test-gasstation (W-STATIONS forecourts + fuel stub)
     bool        testFactory     = false;   // --test-factory (the works siting + the tickets)
@@ -606,6 +607,12 @@ struct CliOptions {
     // 4x SSAA. Writes <outDir>/car_*.png (default docs/screenshots/vehicles).
     bool        carShot = false;
     std::string carShotDir = "docs/screenshots/vehicles";
+    // --car <id>: WHICH hero car the player drives / the showcase poses. Ids are
+    // app/car_roster.h's CarSpec::id — "gbx" (the black GBX COUPE, default) or
+    // "ctr" (the incumbent 993-shaped baseline). This is a SELECTOR, not a
+    // feature gate: both cars are reachable with no flag set, which is the
+    // NO_SLOP rule-6 shape ("the flag is for turning it OFF").
+    std::string carId = "gbx";
     // Upper-floor CONTENT proof (--screenshot-upperfloors [outDir]): build the WHOLE
     // canon tower (loadCanonTower) + CanonPlay's full content (floor-1 spine + the
     // R-5 upper-floor squads/pickups), pose the camera INSIDE a few populated upper

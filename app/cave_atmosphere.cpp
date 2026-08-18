@@ -317,18 +317,26 @@ x3::rhi::MeshHandle makeRibbonSeg(x3::rhi::IRenderDevice& device,
         mv.uv[0] = u; mv.uv[1] = vv;
         v.push_back(mv);
     };
+    // Width runs PERPENDICULAR to the segment (W-UNDERRIVER: the club_bedrock
+    // tubes all run along +X, where perp == the old z±halfWidth exactly — the
+    // caves render byte-identically — but the open-world underground river
+    // BENDS, and an axis-aligned ribbon leaves wedge gaps at every bend).
+    float dx = b.x - a.x, dz = b.z - a.z;
+    const float len = std::sqrt(dx * dx + dz * dz);
+    if (len > 1e-4f) { dx /= len; dz /= len; } else { dx = 1.0f; dz = 0.0f; }
+    const float px = -dz, pz = dx;   // left-hand perp in XZ
     // TOP face (normal +Y) — aL,aR,bL,bR.
-    push(a.x, a.y, a.z - a.halfWidth, uA, 0.0f, 1.0f);   // 0
-    push(a.x, a.y, a.z + a.halfWidth, uA, 1.0f, 1.0f);   // 1
-    push(b.x, b.y, b.z - b.halfWidth, uB, 0.0f, 1.0f);   // 2
-    push(b.x, b.y, b.z + b.halfWidth, uB, 1.0f, 1.0f);   // 3
+    push(a.x - px * a.halfWidth, a.y, a.z - pz * a.halfWidth, uA, 0.0f, 1.0f);   // 0
+    push(a.x + px * a.halfWidth, a.y, a.z + pz * a.halfWidth, uA, 1.0f, 1.0f);   // 1
+    push(b.x - px * b.halfWidth, b.y, b.z - pz * b.halfWidth, uB, 0.0f, 1.0f);   // 2
+    push(b.x + px * b.halfWidth, b.y, b.z + pz * b.halfWidth, uB, 1.0f, 1.0f);   // 3
     idx.insert(idx.end(), { 0, 2, 3,  0, 3, 1 });
     // BOTTOM copy (normal -Y, reversed winding) — visible from below too (noclip-proof).
     const uint32_t b2 = (uint32_t)v.size();
-    push(a.x, a.y, a.z - a.halfWidth, uA, 0.0f, -1.0f);
-    push(a.x, a.y, a.z + a.halfWidth, uA, 1.0f, -1.0f);
-    push(b.x, b.y, b.z - b.halfWidth, uB, 0.0f, -1.0f);
-    push(b.x, b.y, b.z + b.halfWidth, uB, 1.0f, -1.0f);
+    push(a.x - px * a.halfWidth, a.y, a.z - pz * a.halfWidth, uA, 0.0f, -1.0f);
+    push(a.x + px * a.halfWidth, a.y, a.z + pz * a.halfWidth, uA, 1.0f, -1.0f);
+    push(b.x - px * b.halfWidth, b.y, b.z - pz * b.halfWidth, uB, 0.0f, -1.0f);
+    push(b.x + px * b.halfWidth, b.y, b.z + pz * b.halfWidth, uB, 1.0f, -1.0f);
     idx.insert(idx.end(), { b2 + 0, b2 + 3, b2 + 2,  b2 + 0, b2 + 1, b2 + 3 });
     return device.createMesh(v.data(), (uint32_t)v.size(), idx.data(), (uint32_t)idx.size());
 }
@@ -378,10 +386,19 @@ int CaveRiver::build(Scene& scene, x3::rhi::IRenderDevice& device,
         Entity e;
         e.mesh = makeRibbonSeg(device, a, b, uA, uB);
         e.tex  = m_tex;
-        for (int k = 0; k < 4; ++k) e.baseColor[k] = blueBase[k];
+        // RUSH (whitewater): blend colour + emissive toward churned foam.
+        // rush 0 (every pre-existing cave river) is bit-identical blue.
+        const float rush = 0.5f * (a.rush + b.rush);
+        auto lerp = [](float p, float q, float t) { return p + (q - p) * t; };
+        e.baseColor[0] = lerp(blueBase[0], 0.42f, rush);
+        e.baseColor[1] = lerp(blueBase[1], 0.55f, rush);
+        e.baseColor[2] = lerp(blueBase[2], 0.62f, rush);
+        e.baseColor[3] = blueBase[3];
         const float em = 0.5f * (a.emissive + b.emissive);
-        e.emissive[0] = blueEmis[0]; e.emissive[1] = blueEmis[1];
-        e.emissive[2] = blueEmis[2]; e.emissive[3] = em;
+        e.emissive[0] = lerp(blueEmis[0], 0.55f, rush);
+        e.emissive[1] = lerp(blueEmis[1], 0.72f, rush);
+        e.emissive[2] = lerp(blueEmis[2], 0.95f, rush);
+        e.emissive[3] = em;
         e.tag  = (uint32_t)Tag::Static;
         e.body = x3::phys::BodyId{};                     // purely visual (water floats over the floor)
         const uint32_t id = scene.add(e);
@@ -392,6 +409,7 @@ int CaveRiver::build(Scene& scene, x3::rhi::IRenderDevice& device,
         sg.s01 = cum[i - 1] / total;
         sg.baseEmis = em;
         sg.pool = a.pool || b.pool;
+        sg.rush = rush;
         m_segs.push_back(sg);
 
         // POOL bank light — a DIM blue glow over the pool that softly lights the rock
@@ -422,9 +440,13 @@ void CaveRiver::update(float dt, Scene& scene) {
         } else {
             // A bright CREST travels DOWNSTREAM (increasing s01) as m_flow rises, + a
             // faster micro-shimmer so it reads as living water, not a sliding gradient.
-            const float crest   = 0.5f + 0.5f * std::sin(phase - m_flow);
-            const float shimmer = 0.90f + 0.10f * std::sin(phase * 2.3f - m_flow * 1.7f);
-            strength = s.baseEmis * (0.80f + 0.34f * crest) * shimmer;
+            // RUSH segments run the crest ~3x faster with a deeper churn swing —
+            // whitewater at the drops (rush 0 = the historic motion, bit-identical).
+            const float rf      = 1.0f + 2.2f * s.rush;
+            const float crest   = 0.5f + 0.5f * std::sin(phase - m_flow * rf);
+            const float shimmer = 0.90f + (0.10f + 0.10f * s.rush) *
+                                  std::sin(phase * (2.3f + 2.1f * s.rush) - m_flow * 1.7f * rf);
+            strength = s.baseEmis * (0.80f + (0.34f + 0.30f * s.rush) * crest) * shimmer;
         }
         e.emissive[3] = strength;
         // Gentle ripple BOB on the surface Y (verts are world-space; the translation

@@ -22,6 +22,7 @@
 #include "scene.h"
 #include "mesh_prims.h"
 #include "env_art.h"
+#include "car_roster.h"    // --car <id>: which hero car the showcase poses
 #include "monster.h"
 #include "anim.h"
 #include "terrain.h"
@@ -2123,8 +2124,10 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
                     std::to_string(carY) + "," + std::to_string(carZ) + ") haveRoom=" +
                     (haveRoom ? "1" : "0"));
 
-        // --- The hero car (CTR.glb: clearcoat paint + emissive lights). The GLB
-        // sits on y=0 with +Z = nose, so the instance transform is yaw+translate.
+        // --- The hero car (--car <id>, app/car_roster.h; default the black GBX
+        // COUPE, `--car ctr` for the incumbent). Both GLBs carry clearcoat paint
+        // + emissive lights and both sit on y=0 with +Z = nose, so the instance
+        // transform is yaw+translate for either.
         const float kSlabTop = 0.02f;                  // polished slab top above the floor
         auto carXform = [&](float yawRad, float ox, float oy, float oz, float out[16]) {
             const float c = std::cos(yawRad), s = std::sin(yawRad);
@@ -2134,10 +2137,14 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
         float carT[16];
         carXform(0.6f, carX, carY + kSlabTop, carZ, carT);
         x3::game::EnvArtSystem car;
+        const x3::game::CarSpec& carSpec = x3::game::carSpecById(hc.carId.c_str());
+        x3::logInfo(std::string("--screenshot-car: hero car ") + carSpec.name +
+                    " (" + carSpec.glb + ")");
         const bool carOk = car.buildFromGlbAt(*device, x3::game::convertedGlbRoot(),
-                                              "Vehicles/CTR.glb", carT);
+                                              carSpec.glb, carT);
         if (!carOk) {
-            x3::logError("--screenshot-car: Vehicles/CTR.glb FAILED to load — aborting");
+            x3::logError(std::string("--screenshot-car: ") + carSpec.glb +
+                         " FAILED to load — aborting");
             device->shutdown();
             if (window) glfwDestroyWindow(window);
             glfwTerminate();

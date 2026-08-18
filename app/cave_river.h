@@ -62,6 +62,7 @@ private:
         float    s01      = 0.0f;   // 0..1 position along the whole river (flow phase)
         float    baseEmis = 0.30f;  // base emissive strength (pools brighter)
         bool     pool     = false;
+        float    rush     = 0.0f;   // whitewater factor (CaveRiverNode::rush)
     };
     std::vector<Seg>       m_segs;
     float                  m_flow = 0.0f;   // accumulated flow phase (dt-scaled)
