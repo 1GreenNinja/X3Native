@@ -1111,6 +1111,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // sun's directional contrast. Near-black cool fill: the star is the key, the
         // dark side goes dark, the hull reads as a solid mass instead of a decal.
         hc.device->setAmbient(0.008f, 0.008f, 0.015f);
+        // CAPITAL SHADOW (owner: "the ships lighting needs some shadow... the
+        // overlord especially"). The intro never turned on cascaded shadows, so the
+        // legacy single ~45 m camera-locked box left the 450 m capital at 2.6 km
+        // with NO sun shadow — the decal look. Cascades to 3.2 km cover the whole
+        // arena. (RT shadows would be higher-res at range; CSM is the established
+        // outdoor-host path — see world_host_common.h applyOutdoorCsm.)
+        x3::rhi::IRenderDevice::CsmParams csm{};
+        csm.enabled  = true;
+        csm.lambda   = 0.75f;
+        csm.distance = 3200.0f;
+        csm.blend    = 0.12f;
+        hc.device->setCsmParams(csm);
     };
     // The star: living-surface core (bake as baseColor AND emissive) + corona.
     auto drawStar = [&](const x3::rhi::FrameContext& frame) {
