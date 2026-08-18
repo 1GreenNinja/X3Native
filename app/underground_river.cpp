@@ -302,15 +302,21 @@ UndergroundRiver::Result UndergroundRiver::build(
         // Off the spine and up: a wash across the beach and the wall, not a
         // lamp hanging over the middle of the channel.
         const float px = -dz, pz = dx;
+        // 13 m out puts them over the BEACH, clear of the channel floor even
+        // where a pool widens it to 10.3 m (the carve's max(kURBedHalfW,
+        // hw+0.8) — PAIRED with terrain.cpp's UR carve).
         const float side = (std::fmod(s / 42.0f, 2.0f) < 1.0f) ? 1.0f : -1.0f;
-        l.pos[0] = cx + px * 9.0f * side;
-        l.pos[1] = w + 3.2f;
-        l.pos[2] = cz + pz * 9.0f * side;
-        l.range = nearPool ? 34.0f : 26.0f;
-        // Cold cave glow — the same blue family CaveRiver's pool banks use, so
-        // the accents and the water read as one light source, not two.
+        l.pos[0] = cx + px * 13.0f * side;
+        l.pos[1] = w + 3.4f;
+        l.pos[2] = cz + pz * 13.0f * side;
+        // Same blue family as CaveRiver's pool banks so the accents and the
+        // water read as ONE light source — but not the same MAGNITUDE. Those
+        // are (0.10,0.22,0.85)@12 m, tuned for the club's little grotto; this
+        // cavern is 88 m across and up to 38 m tall, and that lamp would light
+        // a puddle of it. Scaled to the room, still blue-dominant.
         const float k = nearPool ? 1.35f : 1.0f;
-        l.color[0] = 0.10f * k; l.color[1] = 0.22f * k; l.color[2] = 0.60f * k;
+        l.range = nearPool ? 42.0f : 30.0f;
+        l.color[0] = 0.22f * k; l.color[1] = 0.48f * k; l.color[2] = 1.30f * k;
         m_lights.push_back(l);
     }
     r.lightCount = (int)m_lights.size();
