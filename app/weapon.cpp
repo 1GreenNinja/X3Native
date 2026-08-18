@@ -13,6 +13,7 @@
 #include "monster.h"
 
 #include "engine/core/x3_log.h"
+#include "engine/core/IConsole.h"   // --test-weapons WT2: the live w_* slider gate
 
 #include <cmath>
 #include <cstdlib>
@@ -3149,6 +3150,160 @@ bool runWeaponsSelfTest() {
         const bool sane = kFrostTintR < 1.0f && kFrostTintB > 1.0f;
         wcheck(applies && reverts && sane,
                "FV3 frost tint: icy shift while chilled, byte-exact identity when not");
+    }
+
+    // =====================================================================
+    // WEAPONS TUNING LANE (Tim, live play 2026-08-16). Three asks, three gates.
+    // =====================================================================
+
+    // ---- WT1: the LIGHTNING MUZZLE FLARE is cut ~95% ------------------------
+    // "Lightning gun has lightning but also a big muzzle flare ... that could be
+    // 95% reduced." The muzzle burst is ADDITIVE billboards accumulating at the
+    // barrel tip, so perceived flare goes with AREA: a 0.05 size scale is a 400x
+    // area cut — comfortably past the 95% he asked for — while the ARC (core /
+    // glow / fractal / branch constants) is untouched by this row entirely.
+    // Also asserted: the PISTOL row is the 50% he asked for in the same session,
+    // and every other kind is byte-unchanged at 1.0 (no collateral re-tune).
+    {
+        const MuzzleStyle lz = muzzleStyleFor(WeaponFxKind::Lightning);
+        const MuzzleStyle pz = muzzleStyleFor(WeaponFxKind::Pistol);
+        const bool cut95  = lz.flashScale <= 0.05f + 1e-6f && lz.flashScale > 0.0f;
+        const bool half   = pz.flashScale > 0.49f && pz.flashScale < 0.51f;
+        // The arc is NOT touched: the lightning row's spark tint/count and the bolt
+        // constants are exactly what the weapon-vfx lane shipped.
+        const bool arcIntact = lz.sparkCount == 9 && lz.sparkB > 7.0f &&
+                               kLightningCoreThick > 0.0f && kLightningGlowThick > kLightningCoreThick;
+        bool othersUnchanged = true;
+        for (int k = 0; k < kWeaponFxKindCount; ++k) {
+            if (k == (int)WeaponFxKind::Lightning || k == (int)WeaponFxKind::Pistol) continue;
+            const MuzzleStyle s = muzzleStyleFor((WeaponFxKind)k);
+            if (s.flashScale != 1.0f) othersUnchanged = false;
+        }
+        wcheck(cut95 && half && arcIntact && othersUnchanged,
+               "WT1 muzzle flare: lightning row 0.05 (95%+ cut), pistol 0.5, arc + other kinds untouched");
+    }
+
+    // ---- WT2: the LIVE SLIDERS actually move the FX state -------------------
+    // A cvar that reads pretty but never reaches the renderer is the failure mode
+    // this asserts against: set the cvar, run the SAME per-frame sync the host
+    // runs, and read the value the FX paths read. Clamping is asserted at both
+    // ends (a fat-finger 999 must not hand the renderer a pathological width).
+    {
+        x3::con::IConsole* c = x3::con::createConsole();
+        c->registerCVar("w_lightning_thickness", "1", "");
+        c->registerCVar("w_tracer_len", "2.5", "");
+        c->registerCVar("w_tracer_speed", "90", "");
+        for (int k = 0; k < kWeaponFxKindCount; ++k)
+            c->registerCVar(std::string("w_flash_") + weaponFxKindName(k), "1", "");
+
+        const FxTuning shipped = fxTuning();          // save (process-wide singleton)
+        applyWeaponFxCVars(*c);
+        const bool defaultsHold = fxTuning().lightningThickness == 1.0f &&
+                                  fxTuning().flashKind[(int)WeaponFxKind::Lightning] == 1.0f;
+
+        c->exec("w_lightning_thickness 2.5");
+        applyWeaponFxCVars(*c);
+        const bool thickApplies = fxTuning().lightningThickness > 2.49f &&
+                                  fxTuning().lightningThickness < 2.51f;
+
+        c->exec("w_lightning_thickness 999");
+        applyWeaponFxCVars(*c);
+        const bool clampHi = fxTuning().lightningThickness <= 8.0f;
+        c->exec("w_lightning_thickness -5");
+        applyWeaponFxCVars(*c);
+        const bool clampLo = fxTuning().lightningThickness >= 0.1f;
+
+        c->exec("w_flash_lightning 0.25");
+        c->exec("w_tracer_len 6");
+        c->exec("w_tracer_speed 250");
+        applyWeaponFxCVars(*c);
+        const bool flashApplies  = fxTuning().flashKind[(int)WeaponFxKind::Lightning] > 0.24f &&
+                                   fxTuning().flashKind[(int)WeaponFxKind::Lightning] < 0.26f;
+        const bool tracerApplies = fxTuning().tracerLen > 5.9f && fxTuning().tracerSpeed > 249.0f;
+
+        // A console WITHOUT the catalog must leave the state alone (bare --world
+        // hosts keep the shipped look instead of getting zeroes).
+        x3::con::IConsole* bare = x3::con::createConsole();
+        const float before = fxTuning().lightningThickness;
+        applyWeaponFxCVars(*bare);
+        const bool bareSafe = fxTuning().lightningThickness == before;
+
+        fxTuning() = shipped;   // restore — later tests/hosts see the shipped look
+        delete bare; delete c;
+        wcheck(defaultsHold && thickApplies && clampHi && clampLo && flashApplies &&
+               tracerApplies && bareSafe,
+               "WT2 live sliders: w_lightning_thickness / w_flash_<kind> / w_tracer_* apply, clamp, and no-op on a bare console");
+    }
+
+    // ---- WT3: the SOAK TEST can address EVERY weapon ------------------------
+    // `wtest <name>` resolves the roster by NAME, selects it, and flips ammo-free
+    // test mode on (restoring the prior state on stop). The host owns the trigger
+    // pin; what is testable headlessly — and what actually broke soak tests in the
+    // past — is the name->index->select->ammo round trip, for EVERY weapon, plus
+    // the canon-12 key names Tim will actually type.
+    {
+        Arsenal a;
+        bool allAddressable = true;
+        for (int i = 0; i < a.count(); ++i) {
+            const std::string nm = a.def(i).name;
+            const int idx = a.indexOf(nm);
+            if (idx != i || !a.selectByName(nm) || a.selected() != i) allAddressable = false;
+        }
+        bool canonAddressable = true;
+        for (int i = 0; i < kCanonKeyCount; ++i) {
+            const char* nm = canonKeyWeaponName(i);
+            if (!nm || a.indexOf(nm) < 0) canonAddressable = false;
+        }
+        // Ammo-free test mode round-trips (soak ON grants it, soak OFF restores).
+        const bool prior = a.infiniteAmmo();
+        a.setInfiniteAmmo(true);
+        const bool granted = a.infiniteAmmo();
+        a.setInfiniteAmmo(prior);
+        const bool restored = a.infiniteAmmo() == prior;
+        // A soaked SEMI-AUTO still fires at its own rate, not per frame — the
+        // cadence bound that keeps a soak from accumulating spawns.
+        a.selectByName("pistol");
+        a.tick(1.0f);
+        int shots = 0;
+        for (int f = 0; f < 60; ++f) {            // 60 frames of 1/60 s = 1.0 s held
+            if (a.fire(eye, fwd, rng).fired) ++shots;
+            a.tick(1.0f / 60.0f);
+        }
+        const bool ratePinned = shots >= 4 && shots <= 5;   // pistol fireRate 4.5/s
+        wcheck(allAddressable && canonAddressable && granted && restored && ratePinned,
+               "WT3 soak test: every weapon addressable by name, ammo-free mode round-trips, held fire stays at the weapon's rate");
+    }
+
+    // ---- WT4: the BULLET STREAK is presentation only ------------------------
+    // Tim: the pistol "shoots what looks like a phaser beam like primitive line" —
+    // the tracer is now a short travelling window instead of a full-length ribbon.
+    // The hitscan RESOLVE must be untouched by that: one instant ray per trigger
+    // pull, no projectile, at the unchanged rate/range/damage.
+    {
+        Arsenal a;
+        a.selectByName("pistol");
+        a.tick(1.0f);
+        ResolvedFire f = a.fire(eye, fwd, rng);
+        const bool instant = f.fired && f.rays.size() == 1 && f.projectiles.empty();
+        const bool unchangedStats = a.current().fireRate == 4.5f && a.current().range == 55.0f &&
+                                    a.current().damage == 16 && a.current().kind == FireKind::Hitscan;
+        // SEVERAL rounds in flight at once IS the "stream of bullets" read — but the
+        // tracer pool is a fixed ring (kMaxTracers), and a stream that outruns it
+        // would recycle live streaks mid-flight (the visible symptom: bullets that
+        // vanish halfway downrange under held fire). Bound it for EVERY hitscan
+        // weapon at its own rate + range, at the shipped streak speed.
+        const FxTuning t;   // shipped defaults
+        bool poolBounded = true, streakVisible = false;
+        for (int i = 0; i < a.count(); ++i) {
+            const WeaponDef& d = a.def(i);
+            if (d.kind != FireKind::Hitscan || d.beam) continue;   // beams take the bolt path
+            const float flight = (d.range + t.tracerLen) / t.tracerSpeed;
+            const float concurrent = flight * d.fireRate * (float)(d.pellets > 0 ? d.pellets : 1);
+            if (concurrent > (float)kMaxTracers * 0.5f) poolBounded = false;
+            if (flight > 0.1f) streakVisible = true;   // on screen for several frames
+        }
+        wcheck(instant && unchangedStats && poolBounded && streakVisible,
+               "WT4 bullet streak: hitscan resolve unchanged (1 instant ray, same stats); streak readable + concurrent streaks stay inside the tracer pool");
     }
 
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +

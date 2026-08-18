@@ -21,6 +21,8 @@
 #include <cstdint>
 #include <string_view>
 
+namespace x3::con { class IConsole; }   // cvar sync (applyWeaponFxCVars) — fx.cpp includes the real header
+
 namespace x3::game {
 
 // Per-weapon FX look. The WeaponDef carries string FX-id hints (muzzleFx/impactFx);
@@ -49,6 +51,19 @@ enum class WeaponFxKind : uint8_t {
     Frost,       // ICE: cyan-white crystals that shrink in flight, crystalline burst
     Napalm,      // rocket-class fireball + the burning ground pool on impact
 };
+// Number of WeaponFxKind rows (keep in sync with the enum above — the per-kind
+// live-tuning cvar array in FxTuning is indexed by (int)kind).
+constexpr int kWeaponFxKindCount = (int)WeaponFxKind::Napalm + 1;
+
+// Stable lower-case name per kind — used to build the per-kind muzzle-flash cvar
+// names ("w_flash_" + name) in ONE place (registration + per-frame sync share it,
+// so the two can never drift). nullptr for an out-of-range index.
+inline const char* weaponFxKindName(int k) {
+    static const char* kNames[kWeaponFxKindCount] = {
+        "default", "pistol", "smg", "shotgun", "chaingun",
+        "plasma", "lightning", "rocket", "flame", "frost", "napalm" };
+    return (k >= 0 && k < kWeaponFxKindCount) ? kNames[k] : nullptr;
+}
 
 // Map a WeaponDef FX-id string (e.g. "muzzle_plasma", "impact_bullet") onto a
 // WeaponFxKind. Recognizes the substrings the roster uses; anything unknown ->
@@ -203,6 +218,93 @@ inline BoltStyle boltStyleFor(WeaponFxKind k) {
         default:                      return { 5.0f, 3.4f, 1.0f,  5.0f, 3.4f, 1.0f,  0.13f, 0.7f, 0.0f, 0.06f }; // hot yellow
     }
 }
+
+// ---- Per-kind muzzle-flash tuning (weapons-tuning lane) --------------------
+// Formerly a file-local table in fx.cpp; hoisted here (like boltStyleFor) so the
+// headless --test-weapons gate can assert the rows directly. Returns a tint
+// (linear HDR), per-spark count + size + speed multipliers, and a soft-flash
+// tint/scale, so each weapon's flash reads distinctly.
+//
+// flashScale (NEW, Tim live-play 2026-08-16) is the SIZE scale of the whole
+// muzzle read (spark billboards + the soft flash sprite). Because the sparks are
+// ADDITIVE and accumulate at the barrel tip, perceived flare energy goes with
+// AREA (~flashScale^2):
+//   * Lightning 0.05 — "big muzzle flare ... could be 95% reduced": the arc is
+//     the read; the accumulated blue spark cone was a headlight in front of it.
+//   * Pistol 0.5 — "muzzle flashes ... can be 50% of what they are now in size".
+// Live per-kind multipliers stack on top via the w_flash_<kind> cvars (FxTuning).
+struct MuzzleStyle {
+    float sparkR, sparkG, sparkB;     // spark tint (linear HDR -> bloom)
+    float flashR, flashG, flashB;     // soft-flash sprite tint
+    int   sparkCount;                 // number of cone sparks
+    float sizeMul;                    // spark + flash size multiplier
+    float speedMul;                   // spark cone speed multiplier
+    float coneJitter;                 // lateral spark spread (m/s)
+    float flashSize;                  // soft-flash half-extent (m) at birth
+    float flashScale;                 // overall muzzle-flash SIZE scale (1 = legacy)
+};
+inline MuzzleStyle muzzleStyleFor(WeaponFxKind k) {
+    switch (k) {
+        case WeaponFxKind::Smg:       // leaner/cooler, many small fast sparks
+            return { 4.5f, 3.0f, 1.2f,  5.5f, 3.8f, 1.8f, 12, 0.8f, 1.15f, 2.0f, 0.22f, 1.0f };
+        case WeaponFxKind::Shotgun:   // WIDE fat boom: big flash, broad spray
+            return { 6.0f, 3.6f, 1.0f,  7.5f, 4.6f, 1.6f, 16, 1.6f, 1.0f,  3.6f, 0.52f, 1.0f };
+        case WeaponFxKind::Chaingun:  // hot + extra-sparky (busy auto roar)
+            return { 6.0f, 3.0f, 0.7f,  7.0f, 4.0f, 1.2f, 18, 0.95f,1.25f, 2.6f, 0.30f, 1.0f };
+        case WeaponFxKind::Plasma:    // BLUE energy: soft round flash, no metal sparks
+            return { 0.8f, 2.4f, 6.0f,  1.2f, 3.0f, 7.0f,  8, 1.2f, 0.85f, 1.4f, 0.40f, 1.0f };
+        case WeaponFxKind::Lightning: // electric crackle: LIGHT BLUE, twitchy fast.
+                                      // flashScale 0.05 = Tim's 95% flare cut — the
+                                      // accumulated additive spark cone was a headlight
+                                      // swamping the arc (the arc is untouched).
+            return { 1.8f, 4.0f, 7.2f,  2.0f, 4.5f, 7.5f, 9, 0.55f, 1.5f,  3.2f, 0.26f, 0.05f };
+        case WeaponFxKind::Flame:     // IGNITION CONE: a fat orange flash + slower, wide,
+                                      // larger tongues leaving the nozzle (fuel catching,
+                                      // not a gunshot crack)
+            return { 5.0f, 2.0f, 0.45f, 6.0f, 2.6f, 0.7f, 14, 1.5f, 0.75f, 2.8f, 0.34f, 1.0f };
+        case WeaponFxKind::Frost:     // icy discharge: cyan-white, small tight cone
+            return { 1.5f, 3.5f, 6.5f,  2.0f, 4.2f, 7.0f,  8, 0.9f, 0.9f,  1.6f, 0.30f, 1.0f };
+        case WeaponFxKind::Napalm:    // heavy launcher pop (rocket-class, warmer)
+            return { 5.5f, 2.4f, 0.6f,  6.5f, 3.2f, 1.0f, 12, 1.3f, 1.0f,  2.4f, 0.40f, 1.0f };
+        case WeaponFxKind::Pistol:    // hot orange-white ballistic look at HALF size
+                                      // (Tim live-play: "muzzle flashes ... 50% of what
+                                      // they are now in size" — the stream-of-bullets read)
+            return { 5.0f, 3.2f, 1.0f,  6.0f, 4.0f, 1.6f, 10, 1.0f, 1.0f,  2.0f, 0.28f, 0.5f };
+        case WeaponFxKind::Default:
+        default:                      // original hot orange-white ballistic look
+            return { 5.0f, 3.2f, 1.0f,  6.0f, 4.0f, 1.6f, 10, 1.0f, 1.0f,  2.0f, 0.28f, 1.0f };
+    }
+}
+
+// ---- LIVE WEAPON-FX TUNING (Tim: tune the read by eye, in play) ------------
+// One mutable singleton of the live-tunable weapon-FX dials, written per frame
+// from the w_* cvars (applyWeaponFxCVars) and read by CombatFx. Defaults are the
+// shipped look — a fresh process with no cvar edits renders bit-identically to
+// the constants above.
+struct FxTuning {
+    // w_lightning_thickness: scale on the lightning arc core (glow tracks the
+    // core at its fixed ~2.13x ratio, and the impact arc tendrils track too).
+    float lightningThickness = 1.0f;
+    // w_tracer_len / w_tracer_speed: the travelling BULLET STREAK (a short bright
+    // window that runs muzzle->hit at tracerSpeed, replacing the old full-length
+    // "phaser beam" line for hitscan bullet weapons).
+    float tracerLen   = 2.5f;    // streak length (m)
+    // 160 m/s: fast enough to read as a BULLET (not a floating paintball), slow
+    // enough that the streak is on screen for ~0.35 s across a 55 m pistol shot —
+    // so held fire shows SEVERAL rounds in flight at once, which is the "stream of
+    // bullets" read Tim asked for. --test-weapons WT4 bounds the concurrency.
+    float tracerSpeed = 160.0f;  // streak travel speed (m/s)
+    // w_flash_<kind>: per-kind LIVE multiplier stacked on the MuzzleStyle
+    // flashScale row (1 = the shipped row value).
+    float flashKind[kWeaponFxKindCount] = { 1,1,1,1,1,1,1,1,1,1,1 };
+};
+FxTuning& fxTuning();   // the live tuning state (mutable singleton; fx.cpp)
+
+// Per-frame cvar sync: read w_lightning_thickness / w_tracer_len / w_tracer_speed /
+// w_flash_<kind> from the console into fxTuning(), clamped to sane ranges. A cvar
+// that is NOT registered on this console (getString empty) leaves the current
+// value untouched — bare hosts without the engine cvar catalog stay at defaults.
+void applyWeaponFxCVars(const x3::con::IConsole& console);
 
 // ---- FLAME LICKS (weapon-vfx iteration; Tim: "fire should be flames not puffs") -
 // The particle renderer draws CAMERA-FACING billboards with no stretch axis, so

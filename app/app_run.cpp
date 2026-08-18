@@ -436,6 +436,11 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     // function is the per-frame cvar sync hub, rtao naming notwithstanding).
     x3::game::setCombatLogEnabled(console.getInt("combat_log") != 0);
     x3::game::setAiLogEnabled(console.getInt("ai_log") != 0);
+    // WEAPONS TUNING (Tim's sliders): pull w_lightning_thickness / w_tracer_* /
+    // w_flash_<kind> into the live FX tuning state. Riding the per-frame sync hub
+    // is what makes them LIVE — typed value in, next frame out, in every host and
+    // in the --screenshot settle path (which calls this hub too).
+    x3::game::applyWeaponFxCVars(console);
     x3::rhi::IRenderDevice::RtaoParams p{};
     p.enabled  = console.getInt("r_rtao") != 0;
     p.radius   = console.getFloat("r_rtao_radius");
@@ -7605,6 +7610,99 @@ int runDefaultHost(HostContext& hc) {
     consoleHooks.introPlay = [&introPlayRequest]() { introPlayRequest = true; };
     x3::game::registerEngineConsoleCommands(*console, window, consoleHooks);
 
+    // =====================================================================
+    // WEAPONS TUNING MENU — the SOAK TEST (Tim, live play 2026-08-16):
+    //   "with a test button that continuously shoots lightning .. for each weapon"
+    //
+    //   wtest lightning   -> hold the trigger down on the Lightning Gun, forever
+    //   wtest             -> soak the weapon currently in hand
+    //   wtest off         -> release (also: any weapon name toggles itself off)
+    //   wtest list        -> the roster + the tuning cvars, printed to the console
+    //
+    // THE REAL FIRE PATH, not a bespoke FX loop: the soak only pins the trigger
+    // "held" (and arms + grants ammo-free test mode). Everything downstream is
+    // the shipped code — Arsenal::fire gates the CADENCE (dt-correct cooldown, so
+    // spawns can NEVER accumulate faster than the weapon's own fire rate no matter
+    // the frame rate), the same rays/projectiles resolve, the same per-weapon FX
+    // and audio play. What Tim tunes by eye here is exactly what ships.
+    //
+    // It deliberately keeps firing WHILE THE CONSOLE IS OPEN — that is the whole
+    // point: hold the beam on and drag w_lightning_thickness / w_flash_lightning
+    // until it looks right. It still stops for the pause menu (simFrozen), death,
+    // and driving, and restores the prior infinite-ammo state when it ends.
+    // =====================================================================
+    struct WeaponSoak {
+        bool  active      = false;   // trigger pinned down
+        bool  prevInfinite= false;   // infinite-ammo state to restore on stop
+        int   weapon      = -1;      // roster index being soaked (-1 = whatever is held)
+        std::string name;            // for the console/HUD readout
+    };
+    WeaponSoak weaponSoak;
+    {
+        x3::game::Arsenal*        ars    = &arsenal;
+        x3::game::Level1Game*     lvl    = &game;
+        x3::game::CanonPlay*      cplay  = &canonPlay;
+        x3::game::Scene*          scn    = &scene;
+        WeaponSoak*               soak   = &weaponSoak;
+        x3::con::IConsole*        con    = console.get();
+        auto stopSoak = [soak, ars, con]() {
+            if (!soak->active) return;
+            soak->active = false;
+            ars->setInfiniteAmmo(soak->prevInfinite);
+            ars->setBeamHeld(false);
+            con->print("wtest: soak OFF (" + soak->name + ")");
+            x3::logInfo("wtest: soak OFF (" + soak->name + ")");
+        };
+        console->registerCommand("wtest",
+            [soak, ars, lvl, cplay, scn, con, stopSoak](const std::vector<std::string>& a) {
+                const std::string arg = a.empty() ? std::string() : a[0];
+                if (arg == "list" || arg == "?") {
+                    con->print("wtest: continuous-fire soak test. Usage: wtest <weapon> | wtest | wtest off");
+                    std::string row;
+                    for (int i = 0; i < ars->count(); ++i) {
+                        row += ars->def(i).name;
+                        row += (i + 1 < ars->count()) ? ", " : "";
+                    }
+                    con->print("  weapons: " + row);
+                    con->print("  sliders: w_lightning_thickness (arc), w_flash_<kind> (muzzle size),");
+                    con->print("           w_tracer_len / w_tracer_speed (bullet streak)");
+                    con->print("  kinds:   default pistol smg shotgun chaingun plasma lightning rocket flame frost napalm");
+                    return;
+                }
+                if (arg == "off" || arg == "0" || arg == "stop") { stopSoak(); return; }
+                // A weapon name (or nothing = the weapon in hand).
+                int idx = ars->selected();
+                if (!arg.empty()) {
+                    idx = ars->indexOf(arg);
+                    if (idx < 0) {
+                        con->print("wtest: unknown weapon '" + arg + "' (try: wtest list)");
+                        return;
+                    }
+                }
+                // Re-running wtest on the weapon already soaking = the OFF half of
+                // the toggle (a "test button" you press twice).
+                if (soak->active && idx == soak->weapon) { stopSoak(); return; }
+                if (!soak->active) soak->prevInfinite = ars->infiniteAmmo();
+                ars->select(idx);
+                soak->weapon = idx;
+                soak->name   = ars->def(idx).name;
+                soak->active = true;
+                // AMMO-FREE TEST MODE through the shipped switch: infinite ammo also
+                // bypasses the Lightning charge drain (Arsenal::tick), so a beam soak
+                // never dies mid-tune. Restored to its prior value on stop.
+                ars->setInfiniteAmmo(true);
+                // ARM the player through the SAME cheat path idkfa/idfa use — an
+                // unarmed Jake's trigger does nothing, and a soak that silently no-ops
+                // is worse than no soak.
+                lvl->cheatArm(*scn);
+                if (cplay->built()) cplay->cheatArm(*scn);
+                con->print("wtest: soak ON — " + soak->name +
+                           " firing continuously (wtest off to stop; sliders apply live)");
+                x3::logInfo("wtest: soak ON — " + soak->name);
+            },
+            "WEAPONS TUNING: continuous-fire soak test on a weapon (wtest <name> | wtest | wtest off | wtest list). Real fire path, ammo-free, sliders apply live.");
+    }
+
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
     // '`' toggle + Enter/Backspace/Up/Down/Tab/Esc while the console is open.
@@ -10876,9 +10974,20 @@ int runDefaultHost(HostContext& hc) {
             if (swimVmAmt > 0.9999f) swimVmAmt = 1.0f;
             if (swimFireDenyCooldown > 0.0f) swimFireDenyCooldown -= (float)dt;
         }
-        bool fireHeld = !uiCapture && !simFrozen && !worldCars.driving() &&
-                        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
+        // WEAPONS TUNING soak test (`wtest <weapon>`): pin the trigger down. It
+        // deliberately IGNORES uiCapture so the beam keeps running while the console
+        // is open and Tim drags the sliders — but it still stops for the pause menu
+        // (simFrozen), for driving, and for death (the playerArmed/isAlive gates
+        // below, shared with the real trigger).
+        const bool soakFire = weaponSoak.active && !simFrozen && !worldCars.driving();
+        bool fireHeld = (!uiCapture && !simFrozen && !worldCars.driving() &&
+                         glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
+                        || soakFire;
+        // The soak fires EVERY weapon continuously — including semi-autos, whose
+        // real trigger is rising-edge only. Cadence is still the weapon's own
+        // dt-correct fire-rate cooldown inside Arsenal::fire (nothing accumulates).
+        bool wantFire = (arsenal.current().automatic || soakFire)
+                            ? fireHeld : (fireHeld && !prevFire);
         // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
         // CHARGE weapon (Lightning): mark the beam HELD so Arsenal::tick drains its
