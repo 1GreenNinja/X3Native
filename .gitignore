@@ -121,13 +121,19 @@ assets/surface_library/
 # git rm --cached'd back out).
 assets/converted_glb/GasStation/
 assets/converted_glb/Detention/
-# W-HEROCAR (2026-08-17): the CONVERTED FLEET is store-served for the same
-# reason. CTR.glb predates the rule and stays tracked (git rm'ing it would
-# break every checkout that has not run `fetch --all`); everything else the
-# vehicle converters emit — GBX_Coupe.glb, the traffic fleet, the tow/police
-# rigs — lives in assets/manifest.json only.
-assets/converted_glb/Vehicles/*.glb
+# W-HEROCAR (2026-08-17). Everything below is STORE-SERVED — every one of these
+# paths is already in assets/manifest.json and `asset_store.py fetch --all`
+# materialises it. They were NOT ignored, and `fetch` runs during a build, so a
+# routine `git add -A` in a worktree swept 45 fetched GLBs into the index — the
+# exact mistake ENGINE_GOTCHAS 2.5 records W3-2 having to be git rm --cached'd
+# back out of. Ignoring them makes that unrepresentable. (gitignore never
+# affects ALREADY-TRACKED files, so nothing existing changes: CTR.glb predates
+# the rule and stays tracked, as do every rigged_glb entry.)
+assets/converted_glb/Vehicles/**/*.glb
 !assets/converted_glb/Vehicles/CTR.glb
+assets/converted_glb/Town/
+assets/converted_glb/Factory/
+assets/rigged_glb/CityPerson_*.glb
 # mines lane (2026-08-03): Armory mine kit � asset-store distributed (manifest.json),
 # never LFS (the LFS budget is exhausted fleet-wide; see the weapon-viewmodel note below).
 assets/converted_glb/mine/

@@ -86,21 +86,20 @@ void makeUnitCylinderY(uint32_t segments,
     }
 }
 
-namespace {
-// BODY WIDTH. Scales the hero car's bodywork on X. 1.0 = the GLB's stock
-// 1.808 m (5.93 ft); 1.18 -> 2.13 m (7.0 ft).
-// The WHEEL TRACK below is multiplied by the SAME factor, because the arches
-// move out with the body — widening one without the other is what made it look
-// like a donk (Tim, 2026-08-14). Change this single constant and the stance
-// stays coherent.
-constexpr float kBodyWiden = 1.18f;
-} // namespace
+// BODY WIDTH lives in app/car_roster.h now (CarSpec::bodyWiden). It scales the
+// hero car's bodywork on X — 1.0 = the GLB's stock width, CTR's 1.18 -> 2.13 m
+// (7.0 ft), the owner's 2026-08-14 ask. The WHEEL TRACK below is multiplied by
+// the SAME factor because the arches move out with the body; widening one
+// without the other is what made it look like a donk. Per-car now, but still
+// ONE number per car (NO_SLOP rule 4).
 
 // ===========================================================================
 // DriveDemo
 // ===========================================================================
 bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y, float z) {
     m_physics = &physics;
+    const CarSpec& cs = spec();
+    const float kBodyWiden = cs.bodyWiden;
 
     // --- Chassis dynamic body (a box). Layer Dynamic. ---
     // CENTER OF MASS dropped 0.45 m below the box center (was 0.30). CoM height
@@ -119,7 +118,7 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // corner danced on the tip line. Fix = this + the lateral grip cap below.
     // 0.31 m is slot-car low, and invisible: the render skin never reads CoM.
     m_chassis = physics.addBox(x3::phys::Vec3{m_hx, m_hy, m_hz},
-                               x3::phys::Vec3{x, y, z}, 1083.2f, x3::phys::Layer::Dynamic,
+                               x3::phys::Vec3{x, y, z}, cs.massKg, x3::phys::Layer::Dynamic,
                                x3::phys::Vec3{0.0f, -0.45f, 0.0f});
     if (!m_chassis.valid()) return false;
 
@@ -132,20 +131,23 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // Track = the GLB's OWN wheel stations. An earlier attempt pushed these out
     // to +-0.85/0.90 to "make the car wider" and it read as a DONK — wheels proud
     // of the arches. Width belongs to the BODY (kBodyWiden below), not the track.
-    // x stations are the GLB's own (+-0.677 / +-0.723) SCALED BY kBodyWiden, so
-    // the wheels stay centered under the widened arches instead of poking out.
+    // x stations are the GLB's own SCALED BY kBodyWiden, so the wheels stay
+    // centered under the widened arches instead of poking out. Both the
+    // stations and the widen now come from the car's CarSpec (app/car_roster.h)
+    // — CTR's entry holds exactly the +-0.677/+-0.723, -1.186/+1.088 that were
+    // literals here, so nothing moves unless a host selects another car.
     P p[4] = {
-        { -0.677f * kBodyWiden, -1.186f, true,  false, true  },   // front-left  (AWD drive)
-        {  0.677f * kBodyWiden, -1.186f, true,  false, true  },   // front-right
-        { -0.723f * kBodyWiden,  1.088f, false, true,  true  },   // rear-left  (drive)
-        {  0.723f * kBodyWiden,  1.088f, false, true,  true  },   // rear-right (drive)
+        { -cs.wheelXFront * kBodyWiden, cs.wheelZFront, true,  false, true },  // front-left (AWD)
+        {  cs.wheelXFront * kBodyWiden, cs.wheelZFront, true,  false, true },  // front-right
+        { -cs.wheelXRear  * kBodyWiden, cs.wheelZRear,  false, true,  true },  // rear-left (drive)
+        {  cs.wheelXRear  * kBodyWiden, cs.wheelZRear,  false, true,  true },  // rear-right (drive)
     };
     for (int i = 0; i < 4; ++i) {
         x3::phys::WheelDesc w;
         // Attach high in the wheel well (NOT the box bottom) so the rest pose
         // matches the GLB arches: wheel center = attach - suspension (~0.30 m).
         w.position[0] = p[i].wx; w.position[1] = -0.15f; w.position[2] = p[i].wz;
-        w.radius = 0.33f; w.width = 0.24f;
+        w.radius = cs.wheelRadius; w.width = cs.wheelWidth;
         w.suspensionMin = 0.15f; w.suspensionMax = 0.42f;
         w.suspensionFreq = 2.2f; w.suspensionDamp = 0.7f;
         w.steered = p[i].steer; w.handBraked = p[i].hb; w.powered = p[i].powered;
@@ -344,13 +346,16 @@ namespace {
 // GLB ground-origin -> physics chassis-center offset + the 180-deg nose flip.
 // (chassis center = wheel attach (-0.15) + rest suspension (~0.28) + wheel
 // radius 0.33 above the ground plane => drop the skin by the sum.)
-constexpr float kBodyDropY = -0.76f;
-// BODY WIDTH (Tim, 2026-08-14: "The MODEL needs to be wider"). Scales the skin's
+// BODY WIDTH (Tim, 2026-08-14: "The MODEL needs to be wider") scales the skin's
 // X axis only, so the bodywork widens while the wheels — which are drawn from
 // the physics wheel poses, not from this matrix — stay on the model's own track.
 // That is the opposite of widening the track, which made it look like a donk.
-// 1.0 = stock 1.808 m (5.93 ft); 1.18 -> 2.13 m (7.0 ft) of hips.
-const float kBodySkin[16] = { -kBodyWiden,0,0,0,  0,1,0,0,  0,0,-1,0,  0,kBodyDropY,0,1 };
+// Both numbers are PER-CAR now (app/car_roster.h): CTR keeps -0.76 / 1.18, the
+// GBX coupe is already 1.926 m wide so it takes 1.0.
+inline void bodySkinMatrix(const CarSpec& cs, float out[16]) {
+    const float m[16] = { -cs.bodyWiden,0,0,0,  0,1,0,0,  0,0,-1,0,  0,cs.bodyDropY,0,1 };
+    std::memcpy(out, m, sizeof(m));
+}
 // Mesh-local wheel axis is +-X (car lateral); the physics wheel pose maps a unit
 // Y-cylinder (axis = axle). Rotate mesh X onto pose Y (Rz +90deg, column-major).
 // EXPERIMENT (Tim live-testing 2026-08-13): the Rz+90 below assumes the GLB's
@@ -752,7 +757,8 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
         // flip + ride-height drop baked in kBodySkin); the wheels ride the LIVE
         // physics wheel poses (steer + spin + suspension travel). ----
         float chassisM[16]; composeTRS(pos, q, 1.0f, 1.0f, 1.0f, chassisM);
-        float carM[16];     x3::asset::mulMat4(chassisM, kBodySkin, carM);
+        float bodySkin[16]; bodySkinMatrix(spec(), bodySkin);
+        float carM[16];     x3::asset::mulMat4(chassisM, bodySkin, carM);
         float fin[16];
         for (const auto& d : m_bodyDraw) {
             x3::asset::mulMat4(carM, d.nodeTransform, fin);
@@ -1415,6 +1421,86 @@ bool runDriveEnterExitSelfTest() {
         check(k1.maxRoll < 45.0f, "H5 curb: shipped car never exceeds 45 deg of roll");
         check(k1.maxRoll <= k0.maxRoll + 2.0f,
               "H5 curb: downforce+roll-damping do not WORSEN the roll transient");
+    }
+
+    // =======================================================================
+    // R: THE CAR ROSTER (W-HEROCAR, 2026-08-17). Every entry in
+    // app/car_roster.h must build a rig whose wheels land AT ITS OWN STATIONS
+    // and settle on the ground.
+    //
+    // WHY THIS TEST EXISTS: host_tunnel.cpp carried a comment saying the E46
+    // could not be the hero because "DriveDemo's chassis box + wheel stations
+    // are still sized to the CTR, so the E46 body sits mis-scaled over
+    // CTR-position wheels — Tim's screenshot of the broken red sedan". That is
+    // a defect an eyeball caught after it shipped. It is now a check: add a car
+    // to the roster with a fat-fingered station and --test-vehicle says so.
+    // =======================================================================
+    {
+        size_t nCars = 0;
+        const CarSpec* roster = carRoster(nCars);
+        check(nCars >= 2, "roster: more than one car exists (the whole point)");
+        for (size_t ci = 0; ci < nCars; ++ci) {
+            const CarSpec& cs = roster[ci];
+            std::unique_ptr<x3::phys::IPhysicsWorld> rp(x3::phys::createPhysicsWorld());
+            if (!rp->init()) { check(false, "roster: physics init"); break; }
+            {
+                x3::prims::PrimMesh g = x3::prims::makeBox(400.0f, 0.5f, 400.0f,
+                                                           0.0f, -0.5f, 0.0f, 0.02f);
+                rp->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
+                                  g.cindex.data(), (uint32_t)g.cindex.size());
+            }
+            DriveDemo rc;
+            rc.setSpec(cs);
+            const bool built = rc.buildPhysics(*rp, 0.0f, 1.2f, 0.0f);
+            check(built, (std::string("roster[") + cs.id + "]: rig builds").c_str());
+            if (!built) continue;
+            rc.setTerrainContactLaw(false);
+            rp->optimizeBroadphase();
+            for (int i = 0; i < 120; ++i) {
+                x3::phys::VehicleInput in{};
+                rc.setInput(in); rc.preStep(dt); rp->step(dt); rc.postStep(dt);
+            }
+            check(rc.allWheelsInContact(),
+                  (std::string("roster[") + cs.id + "]: settles on all four wheels").c_str());
+
+            // The stations the rig ACTUALLY built, read back out of the live
+            // wheel poses in chassis space, not re-derived from the same
+            // literals the builder used. Wheelbase and track are the two
+            // numbers that made the E46 look broken.
+            float cpos[3]; rc.chassisPos(cpos);
+            float zf = 0.0f, zr = 0.0f, xspread = 0.0f;
+            int got = 0;
+            for (int s = 0; s < 4; ++s) {
+                x3::phys::WheelState ws;
+                if (!rc.wheelState((uint32_t)s, ws)) continue;
+                const float wx = ws.worldTransform[12] - cpos[0];
+                const float wz = ws.worldTransform[14] - cpos[2];
+                if (s < 2) zf += wz * 0.5f; else zr += wz * 0.5f;
+                xspread += std::fabs(wx) * 0.25f;
+                ++got;
+            }
+            const float wb = std::fabs(zr - zf);
+            const float wbSpec = std::fabs(cs.wheelZRear - cs.wheelZFront);
+            const float trSpec = (cs.wheelXFront + cs.wheelXRear) * 0.5f * cs.bodyWiden;
+            x3::logInfo(std::string("[drive-test] roster[") + cs.id + "] " + cs.name +
+                        " wheelbase " + std::to_string(wb) + " m (spec " +
+                        std::to_string(wbSpec) + "), half-track " +
+                        std::to_string(xspread) + " m (spec " + std::to_string(trSpec) +
+                        "), glb " + cs.glb);
+            check(got == 4, (std::string("roster[") + cs.id + "]: four wheel poses").c_str());
+            check(std::fabs(wb - wbSpec) < 0.02f,
+                  (std::string("roster[") + cs.id + "]: WHEELBASE matches its own spec, "
+                   "not the previous car's").c_str());
+            check(std::fabs(xspread - trSpec) < 0.02f,
+                  (std::string("roster[") + cs.id + "]: TRACK matches its own spec").c_str());
+        }
+        // Every roster GLB path must be distinct — two entries pointing at the
+        // same file is the silent way a "new car" turns out to be the old one.
+        bool distinct = true;
+        for (size_t i = 0; i < nCars; ++i)
+            for (size_t j = i + 1; j < nCars; ++j)
+                if (std::strcmp(roster[i].glb, roster[j].glb) == 0) distinct = false;
+        check(distinct, "roster: every entry names a DIFFERENT GLB");
     }
 
     x3::logInfo("[drive-test] " + std::to_string(passN) + " passed, " +
