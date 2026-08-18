@@ -6,6 +6,23 @@
 namespace x3::rhi {
 bool VulkanRenderDevice::createSwapchain(uint32_t w, uint32_t h) {
         vkb::SwapchainBuilder scb{ m_dev };
+        // ---- MULTI-INSTANCE LANE (Bug 2): the present mode, made EXPLICIT ------
+        // This was ONE expression — `m_vsync ? FIFO : MAILBOX` — and it is the most
+        // consequential line in the file the moment a second X3Engine window opens.
+        // FIFO queues every composited window behind the SAME DWM vblank; MAILBOX
+        // renders at full tilt for frames the compositor then discards. Neither is
+        // right for every situation, so the choice is now a cvar (`r_presentmode`)
+        // and an env var (X3_PRESENTMODE) instead of a hardcoded ternary.
+        // m_presentPref 0 = auto = byte-for-byte the historical behaviour.
+        VkPresentModeKHR wantPresent = m_vsync ? VK_PRESENT_MODE_FIFO_KHR
+                                               : VK_PRESENT_MODE_MAILBOX_KHR;
+        switch (m_presentPref) {
+            case 1: wantPresent = VK_PRESENT_MODE_FIFO_KHR;         break;
+            case 2: wantPresent = VK_PRESENT_MODE_MAILBOX_KHR;      break;
+            case 3: wantPresent = VK_PRESENT_MODE_IMMEDIATE_KHR;    break;
+            case 4: wantPresent = VK_PRESENT_MODE_FIFO_RELAXED_KHR; break;
+            default: break;   // 0 = auto, resolved above
+        }
         // LINEAR vs GAMMA (root cause, confirmed 2026-07-25 — see docs/HANDOFF §11):
         // this was *_UNORM paired with SRGB_NONLINEAR, i.e. the display expects sRGB
         // but nothing ever encoded — composite.frag writes LINEAR straight out (no
@@ -21,7 +38,7 @@ bool VulkanRenderDevice::createSwapchain(uint32_t w, uint32_t h) {
            // a silent contributor to every "washed out" report. OPAQUE = the
            // window is a window, never a pane of glass.
            .set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
-           .set_desired_present_mode(m_vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_MAILBOX_KHR)
+           .set_desired_present_mode(wantPresent)
            .set_desired_extent(w, h)
            // TRANSFER_SRC so captureFrame() can vkCmdCopyImageToBuffer the
            // presented color image to a host-visible readback buffer (--screenshot).
@@ -31,6 +48,26 @@ bool VulkanRenderDevice::createSwapchain(uint32_t w, uint32_t h) {
         auto ret = scb.build();
         if (!ret) { logError(std::string("[rhi] swapchain: ") + ret.error().message()); return false; }
         vkb::Swapchain sc = ret.value();
+        // RECEIPT (multi-instance lane): print what the presentation engine actually
+        // GRANTED, not what we asked for. A desired mode the surface does not support
+        // is silently downgraded to FIFO by vk-bootstrap, and a lane that reports
+        // "we switched to MAILBOX" without this line is quoting an intention.
+        {
+            auto pmName = [](VkPresentModeKHR m) {
+                switch (m) {
+                    case VK_PRESENT_MODE_IMMEDIATE_KHR:    return "IMMEDIATE";
+                    case VK_PRESENT_MODE_MAILBOX_KHR:      return "MAILBOX";
+                    case VK_PRESENT_MODE_FIFO_KHR:         return "FIFO";
+                    case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED";
+                    default:                               return "?";
+                }
+            };
+            logInfo(std::string("[rhi] present mode: ") + pmName(sc.present_mode) +
+                    " (asked " + pmName(wantPresent) +
+                    ", r_presentmode=" + std::to_string(m_presentPref) +
+                    ", vsync=" + (m_vsync ? "1" : "0") +
+                    ", images=" + std::to_string(sc.image_count) + ")");
+        }
 
         // destroy old views/swapchain after building the new one
         destroySwapchain();

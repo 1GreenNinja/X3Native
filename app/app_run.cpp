@@ -444,6 +444,11 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     device.setDebugView(console.getInt("r_debugview"));
     if (p.radius <= 0.0f) p.radius = 1.2f;
     device.setRtaoParams(p);
+    // MULTI-INSTANCE LANE: live present-mode switch. setPresentMode is a no-op
+    // when the value is unchanged, so this costs one string lookup per frame and
+    // `r_presentmode mailbox` in the console rebuilds the swapchain next frame.
+    device.setPresentMode(x3::game::presentModeFromCVar(console));
+    device.setIblRate(console.getFloat("r_iblrate"));
     // Whole-scene brightness dial (live; default 1.0 = unchanged). Piggybacks the
     // per-frame cvar->device sync so `r_exposure` takes effect immediately. With
     // auto-exposure on this is the exposure COMPENSATION bias.
@@ -8311,26 +8316,14 @@ int runDefaultHost(HostContext& hc) {
                             why + ") — starting at the world's own spawn");
             }
         }
-        // ---- Frame cap (r_maxfps): sleep out the remainder of the frame budget so
-        // vsync-off doesn't churn the GPU on invisible frames. No-op when vsync is on
-        // (FIFO already blocks) since we'll already be slower than the cap, and when
-        // r_maxfps<=0. Sleep most of the wait, spin the last ~1 ms for accuracy. ----
-        {
-            const float maxfps = (float)std::atof(console->getString("r_maxfps").c_str());
-            if (maxfps > 0.0f) {
-                const double target = frameCapPrev + 1.0 / (double)maxfps;
-                double nowc = glfwGetTime();
-                if (nowc < target) {
-                    const double remain = target - nowc;
-                    if (remain > 0.002)
-                        std::this_thread::sleep_for(std::chrono::duration<double>(remain - 0.001));
-                    while (glfwGetTime() < target) { /* short spin to the deadline */ }
-                }
-                frameCapPrev = glfwGetTime();
-            } else {
-                frameCapPrev = glfwGetTime();
-            }
-        }
+        // ---- Frame cap: sleep out the remainder of the frame budget so vsync-off
+        // doesn't churn the GPU on invisible frames. Sleep most of the wait, spin
+        // the last ~1 ms for accuracy.
+        // MULTI-INSTANCE LANE (Bug 2): the block that lived here inline is now
+        // x3::game::paceFrame() — the SAME sleep/spin, plus one thing: when this
+        // window is NOT the focused one the cap becomes `r_bgfps`. That is what
+        // lets the owner play in one instance while others are standing. ----
+        x3::game::paceFrame(*console, window, frameCapPrev);
         // Push the live r_rtao* cvars onto the device (hardware RT ambient occlusion).
         // No-op on a non-RT GPU; default OFF so the visual build is unchanged.
         applyRtaoCVars(*console, *device);
