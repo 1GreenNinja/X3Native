@@ -219,6 +219,7 @@ public:
     void setCaustics(const CausticsParams& c) override;
     void setWetness(const WetnessParams& w) override;
     void setSnowCover(float cover) override;
+    void setTerrainMaterial(const TerrainMatParams& t) override;
 
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override;
@@ -2944,6 +2945,12 @@ private:
         // host API: a host that pushes clouds into the sky gets their shade
         // on the ground for free (NO_SLOP rule 6: defaults ON).
         glm::vec4 cloudShadow;
+        // TERRAIN MATERIAL + FOOTPRINT ANTI-SHIMMER (setTerrainMaterial;
+        // mesh.frag `terrainMat` — keep in sync). x = antiAlias, y = perBand,
+        // z = sparkle, w = roughScale. APPENDED at the tail for the same reason
+        // terrainNrm and precip were: glass.frag declares this same buffer only
+        // as far as `caustics` and must stay a valid std140 prefix.
+        glm::vec4 terrainMat{ 1.0f, 1.0f, 1.0f, 1.0f };
     };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.
@@ -3318,6 +3325,11 @@ private:
     // shadowed region leads the car instead of being centred on it. 0 = the
     // historical camera-centred box, bit-for-bit.
     float                 m_shadowForward = 0.0f;
+    // r_shadowsnap (outdoor-polish lane): quantise the LEGACY camera-following
+    // shadow box's centre to the world-anchored shadow-texel lattice so edges
+    // stop swimming as the camera translates. 0 = the historical unsnapped box,
+    // bit-for-bit (the escape hatch every existing capture can be re-taken with).
+    bool                  m_shadowSnap = true;
     // This frame's fitted cascades (filled in prepareFrameData, consumed by
     // recordShadowPassBody). count == 0 means the legacy path ran.
     csm::Result           m_csm{};
@@ -3511,6 +3523,10 @@ private:
     CausticsParams          m_caustics{};        // enabled=false -> mesh.frag caustics gate stays shut
     WetnessParams           m_wetness{};         // amount=0 -> mesh.frag wetness gate stays shut
     float                   m_snowCover = 0.0f;  // 0 -> terrain snow band is altitude-only
+    // Terrain material + footprint anti-shimmer (setTerrainMaterial). Defaults
+    // are the SHIPPED look; r_terrainaa 0 / r_terrainmat 0 restore the historical
+    // math exactly (see IRenderDevice::TerrainMatParams).
+    TerrainMatParams        m_terrainMat{};
     GradeParams             m_gradeParams{};     // strength=0 -> composite grade block inert
     FilmicParams            m_filmic{};          // enabled=false -> composite filmic block inert
     uint32_t                m_filmicFrame = 0;   // per-frame grain-seed advance (the crawl)

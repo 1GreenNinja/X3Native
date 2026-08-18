@@ -60,21 +60,49 @@ struct ZoneLook {
     float r, g, b;        // luminaire tint
     float intensity;      // pooled-light intensity
     float range;          // pooled-light falloff radius (m)
-    float poolR;          // cone base / pool radius (m)
+    float poolR;          // GROUND-POOL radius (m)
     float coneStr;        // cone emissive strength (additive HDR)
     float headStr;        // luminaire head emissive strength
     float discStr;        // ground-pool emissive strength
 };
+
+// The visible light SHAFT is narrower than the pool it lights, and that is not
+// an approximation — it is what a luminaire does. The pool is lit by the whole
+// reflector aperture (plus bounce); the shaft you can SEE in the air is only the
+// dense near-axis part of it. Tying the two together (as this file did, with one
+// `poolR` feeding both) forced a choice between a pencil-beam pool and a
+// 100-degree glowing funnel, and the funnel is exactly the "solid traffic cone"
+// tell the cone mesh's own comments were already fighting.
+constexpr float kConeToPool = 0.55f;
 const ZoneLook& zoneLook(StreetLights::Zone z) {
     // Calibrated against the dusk shots: the CONE/DISC are whispers (the real
     // pooled light does the lighting); over-bright cones read as solid funnels.
+    //
+    // ---- POOL RADIUS, 2026-08-17 (Tim: "Lights look fake in the parking lot") --
+    // `poolR` was 2.0-2.2 m on a 4.9 m pole. Nothing in the world is lit like
+    // that: a luminaire 4.9 m up with any real reflector throws a pool 2-3 TIMES
+    // its mounting height across, which is why street lamps are spaced ~30 m and
+    // still overlap. A 2 m disc under a 5 m pole is a bright coin on black
+    // asphalt, and a 2 m cone base is a pencil beam — between them they are most
+    // of what read as "fake": the geometry said spotlight while the pooled point
+    // light (range 16 m) said street lamp. They now agree at ~1.15x the mounting
+    // height in radius, which is also roughly where the inverse-square falloff
+    // baked into the disc gradient has dropped to a tenth.
     static const ZoneLook k[(uint32_t)StreetLights::Zone::Count] = {
-        { 1.00f, 0.72f, 0.42f,  8.0f, 16.0f, 2.0f, 0.55f, 2.6f, 0.07f },  // Scrapyard sodium
-        { 0.80f, 0.90f, 1.00f,  8.5f, 17.0f, 2.2f, 0.52f, 2.8f, 0.07f },  // New District LED
-        { 1.00f, 0.70f, 0.38f,  8.0f, 16.0f, 2.0f, 0.55f, 2.5f, 0.07f },  // Industrial sodium
-        { 0.84f, 0.92f, 1.00f,  8.0f, 17.0f, 2.6f, 0.50f, 2.7f, 0.10f },  // Approach LED (pool bumped for district night streets)
-        { 1.00f, 0.85f, 0.60f,  7.0f, 15.0f, 2.0f, 0.50f, 2.5f, 0.06f },  // Apron warm white
-        { 0.88f, 0.95f, 1.00f, 13.0f, 26.0f, 5.0f, 0.85f, 3.4f, 0.14f },  // Dock work light
+        // discStr is held DOWN as poolR went up, and that is not a taste call:
+        // area scales with the SQUARE of the radius, so carrying the old
+        // strength onto a 2.8x wider disc multiplies the light it adds by ~8.
+        // Read off the first pass of after_street.png, it laid a milky sheet
+        // over the near kerb. ~0.10 is where the pool reads as the road
+        // CATCHING light while the real pooled point light still does the work
+        // (which is the disc's documented job: survive losing the light budget,
+        // not replace it).
+        { 1.00f, 0.72f, 0.42f,  8.0f, 16.0f, 5.6f, 0.42f, 2.6f, 0.10f },  // Scrapyard sodium
+        { 0.80f, 0.90f, 1.00f,  8.5f, 17.0f, 5.9f, 0.40f, 2.8f, 0.10f },  // New District LED
+        { 1.00f, 0.70f, 0.38f,  8.0f, 16.0f, 5.6f, 0.42f, 2.5f, 0.10f },  // Industrial sodium
+        { 0.84f, 0.92f, 1.00f,  8.0f, 17.0f, 6.2f, 0.38f, 2.7f, 0.13f },  // Approach LED (pool bumped for district night streets)
+        { 1.00f, 0.85f, 0.60f,  7.0f, 15.0f, 5.4f, 0.38f, 2.5f, 0.10f },  // Apron warm white
+        { 0.88f, 0.95f, 1.00f, 13.0f, 26.0f, 9.5f, 0.62f, 3.4f, 0.19f },  // Dock work light
         // GLOW-ONLY (no geometry): the cone/head/disc strengths are unused.
         { 1.00f, 0.82f, 0.55f,  2.6f, 10.0f, 0.0f, 0.0f, 0.0f, 0.0f },    // Window spill (warm)
         { 1.00f, 0.55f, 0.65f,  3.2f,  9.0f, 0.0f, 0.0f, 0.0f, 0.0f },    // Sign wash (tinted per-glow)
@@ -167,15 +195,25 @@ StreetLights::Kit StreetLights::makeKit(x3::rhi::IRenderDevice& device) const {
     }
     // Axial cone gradient (v: 1 at the head -> 0 well BEFORE the base rim, so
     // the cone dissolves in the air — no visible end). LINEAR (srgb=false).
+    //
+    // TWO ENDS, NOT ONE (2026-08-17). The old curve was brightest at exactly
+    // v=0 — the apex, a single point — so the shaft had a hard bright THROAT
+    // right where the housing is, and that hot ring against a dark housing is a
+    // hard silhouette edge: the eye reads it as a glowing solid, not as light in
+    // air. Real haze glow has no edge anywhere. The near end now ramps IN over
+    // the first ~12% (the fixture's own body would occlude that volume anyway)
+    // and the far end still dissolves before the rim, so the shaft has soft
+    // boundaries at both ends and none in between.
     {
-        const int W = 8, H = 64;
+        const int W = 8, H = 128;
         std::vector<uint8_t> px(W * H * 4);
         for (int y = 0; y < H; ++y) {
             // Row-flipped: the upload lands row 0 at v=1 (diag2 proof), so
             // compute the AXIAL coordinate from the far end — v=0 (the apex,
             // sampled at the luminaire) must be the bright end.
             const float v = (float)(H - 1 - y) / (float)(H - 1);
-            const float f = std::pow(1.0f - smoothstepf(0.0f, 0.80f, v), 2.2f);
+            float f = std::pow(1.0f - smoothstepf(0.0f, 0.82f, v), 2.2f);
+            f *= smoothstepf(0.0f, 0.12f, v);     // soft THROAT, not a hot point
             const uint8_t b = (uint8_t)std::lround(255.0f * f);
             for (int x = 0; x < W; ++x) {
                 uint8_t* p = &px[(y * W + x) * 4];
@@ -185,19 +223,56 @@ StreetLights::Kit StreetLights::makeKit(x3::rhi::IRenderDevice& device) const {
         kit.coneGrad = device.createTexture(px.data(), W, H, false);
     }
     // Radial pool gradient (bright center -> nothing at the rim).
+    //
+    // INVERSE-SQUARE, NOT LINEAR (2026-08-17; Tim: "Lights look fake in the
+    // parking lot"). pow(1-r, 2.2) is a cone of light: it falls off SLOWLY near
+    // the centre and hits zero at a definite radius, so the pool reads as a flat
+    // disc with a rim. Illuminance under a point source at height h obeys
+    //   E(d) = I*cos^3(theta) / h^2,  cos(theta) = h / sqrt(h^2 + d^2)
+    // i.e. E/E0 = (1 + (d/h)^2)^(-3/2) — bright and nearly flat directly under
+    // the lamp, then falling away fast with NO edge at all. That shape is what
+    // makes a pool read as light landing on ground rather than as a painted
+    // circle. `kPoolHOverR` is the mounting height in units of the pool radius
+    // (the zone table now sizes poolR at ~1.15x the mounting height).
     {
-        const int N = 64;
+        const int N = 128;
+        const float kPoolHOverR = 0.87f;        // h / poolR
         std::vector<uint8_t> px(N * N * 4);
+        // Normalise so the RIM lands at 0 without a hard cut: subtract the
+        // rim value and rescale, then apply a short smootherstep taper over the
+        // outer 15% so the disc's own polygon edge can never show.
+        const float rimE = 1.0f / std::pow(1.0f + (1.0f / kPoolHOverR) *
+                                                  (1.0f / kPoolHOverR), 1.5f);
         for (int y = 0; y < N; ++y)
             for (int x = 0; x < N; ++x) {
                 const float dx = ((float)x + 0.5f) / N - 0.5f;
                 const float dy = ((float)y + 0.5f) / N - 0.5f;
                 const float r = std::sqrt(dx * dx + dy * dy) * 2.0f;   // 0..1 at rim
-                const float f = std::pow(std::max(0.0f, 1.0f - r), 2.2f);
+                float f = 0.0f;
+                if (r < 1.0f) {
+                    const float dOverH = r / kPoolHOverR;
+                    const float e = 1.0f / std::pow(1.0f + dOverH * dOverH, 1.5f);
+                    f = (e - rimE) / std::max(1.0f - rimE, 1e-4f);
+                    f *= 1.0f - smoothstepf(0.85f, 1.0f, r);
+                }
                 uint8_t* p = &px[(y * N + x) * 4];
-                p[0] = p[1] = p[2] = (uint8_t)std::lround(255.0f * f); p[3] = 255;
+                p[0] = p[1] = p[2] = (uint8_t)std::lround(255.0f * std::max(0.0f, f));
+                p[3] = 255;
             }
         kit.discGrad = device.createTexture(px.data(), N, N, false);
+    }
+    // SOURCE GLOW sprite (2026-08-17). The luminaire itself was a dark housing
+    // BOX with an emissive term — a flat-shaded glowing rectangle, which is not
+    // what a light source looks like from any angle. This is a small view-
+    // independent sphere hung at the aperture, driven well above the bloom
+    // threshold so the engine's own bloom chain does the work: the fixture
+    // BLOOMS, the way every real light in a dusk photograph does. It is the
+    // single cheapest thing that makes a lamp read as a source rather than as a
+    // lit prop, and it costs one ~80-triangle mesh shared by every lamp.
+    {
+        x3::prims::PrimMesh gs = x3::prims::makeUVSphere(8, 12);   // unit radius
+        kit.glowSphere = device.createMesh(gs.verts.data(), (uint32_t)gs.verts.size(),
+                                           gs.index.data(), (uint32_t)gs.index.size());
     }
     return kit;
 }
@@ -235,6 +310,16 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
     const bool lit = l.state != State::Dead;
     const float lvl = 1.0f;
 
+    // ---- THE VISUAL AND THE REAL LIGHT MUST AGREE (2026-08-17) --------------
+    // `l.intensity` already carried a deterministic +-15% per-lamp spread, but
+    // the CONE, the HEAD and the POOL took the flat zone constants. So a lamp
+    // whose pooled light was 15% down still glowed at full strength, and one
+    // 15% up threw a dim-looking cone over a bright pool. Over a row of lamps
+    // that mismatch is read as "the glow isn't coming from the light" — which is
+    // half of "fake" — and it is free to fix: the same scalar, applied to both.
+    // Stored on the lamp so update()/killNear() re-strike at the right level.
+    l.emisMul = l.intensity / std::max(look.intensity, 1e-3f);
+
     auto addBox = [&](float cx, float cy, float cz, float sx, float sy, float sz,
                       const float col[4], const float* emiss) -> SceneHandle {
         Entity e;
@@ -261,7 +346,7 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
     {
         const float housing[4] = { 0.10f, 0.10f, 0.11f, 1.0f };
         const float deadHousing[4] = { 0.05f, 0.05f, 0.06f, 1.0f };
-        float em[4] = { l.color[0], l.color[1], l.color[2], look.headStr * lvl };
+        float em[4] = { l.color[0], l.color[1], l.color[2], look.headStr * lvl * l.emisMul };
         l.headEnt = addBox(hx, headY, hz,
                            workLight ? 1.05f : 0.62f, workLight ? 0.34f : 0.17f,
                            workLight ? 0.55f : 0.32f,
@@ -269,6 +354,30 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
     }
 
     if (lit) {
+        // ---- SOURCE BLOOM: the lamp's own aperture ------------------------
+        // Hung just under the housing, at the aperture the cone's apex sits at,
+        // so the shaft visibly LEAVES the source instead of starting in mid-air
+        // below a dark box. Strength is far above the composite's bloom
+        // threshold (1.10) on purpose — this exists to be picked up by the bloom
+        // chain, which is what turns a lit prop into a light in a dusk frame.
+        // Additive through the glass pass, like the cone and the pool, with a
+        // low rim power so it holds its brightness from every angle (a source
+        // that dims when you walk past it is the artefact this replaces).
+        {
+            const float gr = workLight ? 0.34f : 0.19f;
+            Entity e;
+            e.mesh = kit.glowSphere;
+            composeYawScale(hx, headY - 0.13f, hz, 0.0f, gr, gr * 0.72f, gr, e.transform);
+            e.baseColor[3] = 1.0f;
+            e.emissive[0] = l.color[0]; e.emissive[1] = l.color[1]; e.emissive[2] = l.color[2];
+            e.emissive[3] = (workLight ? 9.0f : 6.5f) * l.emisMul;
+            e.transparent = true;
+            e.glass.opacity = 0.0f; e.glass.refraction = 0.0f;
+            e.glass.roughness = 0.0f; e.glass.specular = 0.0f;
+            e.glass.additive = 0.35f;   // near view-independent: a source, not a facet
+            e.tag = (uint32_t)Tag::Prop;
+            l.glowEnt = scene.handle(scene.add(e));
+        }
         // THE CONE: additive fake-volumetric shaft, apex at the luminaire.
         {
             // Lazy per-zone world-baked cone (drop = poleH - 0.22 by
@@ -277,7 +386,11 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
             const float drop = headY - 0.10f - groundY;
             if (!coneMesh.valid()) {
                 std::vector<x3::rhi::MeshVertex> cv; std::vector<uint32_t> ci;
-                makeConeMesh(look.poolR, drop, cv, ci);
+                // kConeToPool: the visible shaft is NARROWER than the pool it
+                // lights — see the constant's note. Widening poolR to a real
+                // street-lamp footprint without this would have turned the shaft
+                // into a 100-degree glowing funnel.
+                makeConeMesh(look.poolR * kConeToPool, drop, cv, ci);
                 coneMesh = device.createMesh(cv.data(), (uint32_t)cv.size(),
                                              ci.data(), (uint32_t)ci.size());
             }
@@ -287,7 +400,7 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
             composeYawScale(hx, headY - 0.10f, hz, 0.0f, 1.0f, 1.0f, 1.0f, e.transform);
             e.baseColor[3] = 1.0f;
             e.emissive[0] = l.color[0]; e.emissive[1] = l.color[1]; e.emissive[2] = l.color[2];
-            e.emissive[3] = look.coneStr;
+            e.emissive[3] = look.coneStr * l.emisMul;
             e.transparent = true;
             e.glass.opacity = 0.0f; e.glass.refraction = 0.0f;
             e.glass.roughness = 0.0f; e.glass.specular = 0.0f;
@@ -295,8 +408,15 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
             // cones"). The rim term pow(dot(N,V), w) at 3.5 only lights a narrow
             // face-on band; from oblique/orbit angles (every establishing shot)
             // the whole cone read black — the "cones missing in captures" bug.
-            // 1.8 widens the band while still avoiding the solid-funnel look.
-            e.glass.additive = 1.8f;
+            // 1.8 widened the band while still avoiding the solid-funnel look.
+            //
+            // 2.15 (2026-08-17): the rim power IS the silhouette softness. At
+            // 1.8 the cone's edge still stops abruptly against the sky, and a
+            // hard-edged shaft is the single loudest "this is a mesh, not light"
+            // tell. Raising it steepens the fade toward the silhouette so the
+            // outline dissolves; the coneStr cut in the zone table pays for the
+            // brighter core that comes with it, so total energy is roughly held.
+            e.glass.additive = 2.15f;
             e.tag = (uint32_t)Tag::Prop;
             l.coneEnt = scene.handle(scene.add(e));
         }
@@ -316,7 +436,7 @@ void StreetLights::addLamp(Scene& scene, Kit& kit, x3::rhi::IRenderDevice& devic
                             look.poolR * 0.95f, 1.0f, look.poolR * 0.95f, e.transform);
             e.baseColor[3] = 1.0f;
             e.emissive[0] = l.color[0]; e.emissive[1] = l.color[1]; e.emissive[2] = l.color[2];
-            e.emissive[3] = look.discStr;
+            e.emissive[3] = look.discStr * l.emisMul;
             e.transparent = true;
             e.glass.opacity = 0.0f; e.glass.refraction = 0.0f;
             e.glass.roughness = 0.0f; e.glass.specular = 0.0f;
@@ -555,7 +675,7 @@ void StreetLights::buildDistrictLamps(Scene& scene, x3::rhi::IRenderDevice& devi
         m_lamps[i].intensity *= iMul;   // carry the extra distance
         m_lamps[i].discMul    = pMul;
         if (Entity* e = scene.getChecked(m_lamps[i].discEnt))
-            e->emissive[3] = zoneLook(m_lamps[i].zone).discStr * pMul;
+            e->emissive[3] = zoneLook(m_lamps[i].zone).discStr * pMul * m_lamps[i].emisMul;
     }
     logBuild("district rows", first);
 }
@@ -590,6 +710,7 @@ uint32_t StreetLights::killNear(Scene& scene, float x, float z,
         if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = 0.0f;
         if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = 0.0f;
         if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = 0.0f;
+        if (Entity* e = scene.getChecked(l.glowEnt)) e->emissive[3] = 0.0f;
         ++n;
     }
     return n;
@@ -606,9 +727,14 @@ void StreetLights::update(float dt, Scene& scene) {
         l.state = l.preState;
         l.level = 1.0f;
         const ZoneLook& look = zoneLook(l.zone);
-        if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = look.coneStr;
-        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.discMul;
-        if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = look.headStr;
+        // Re-strike at THIS lamp's level, not the zone nominal (l.emisMul) —
+        // otherwise a grid cut would quietly re-normalise a whole row of lamps
+        // to identical brightness and wipe out the authored variance.
+        if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = look.coneStr * l.emisMul;
+        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.discMul * l.emisMul;
+        if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = look.headStr * l.emisMul;
+        if (Entity* e = scene.getChecked(l.glowEnt))
+            e->emissive[3] = (l.workLight ? 9.0f : 6.5f) * l.emisMul;
     }
     for (Lamp& l : m_lamps) {
         if (l.state != State::Flicker) continue;
@@ -644,9 +770,14 @@ void StreetLights::update(float dt, Scene& scene) {
         l.level += (target - l.level) * k;
 
         const ZoneLook& look = zoneLook(l.zone);
-        if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = look.coneStr * l.level;
-        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.discMul * l.level;
-        if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = look.headStr * l.level;
+        const float em = l.level * l.emisMul;
+        if (Entity* e = scene.getChecked(l.coneEnt)) e->emissive[3] = look.coneStr * em;
+        if (Entity* e = scene.getChecked(l.discEnt)) e->emissive[3] = look.discStr * l.discMul * em;
+        if (Entity* e = scene.getChecked(l.headEnt)) e->emissive[3] = look.headStr * em;
+        // The SOURCE GLOW is the fixture's own aperture — it must flicker WITH
+        // the tube, or a "dead" burst leaves a bright bloom hanging in the air.
+        if (Entity* e = scene.getChecked(l.glowEnt))
+            e->emissive[3] = (l.workLight ? 9.0f : 6.5f) * em;
     }
 }
 

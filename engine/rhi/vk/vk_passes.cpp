@@ -1147,9 +1147,20 @@ glm::mat4 VulkanRenderDevice::computeLightViewProj() const {
                                             std::cos(m_camPitch) * std::sin(m_camYaw));
             followCenter += glm::normalize(fwd) * m_shadowForward;
         }
-        const glm::vec3 center = m_shadowOverride ? m_shadowCenter : followCenter;
+        glm::vec3       center = m_shadowOverride ? m_shadowCenter : followCenter;
         const float     ortho  = m_shadowOverride ? m_shadowOrtho : kShadowOrtho;
         const float     dHalf  = m_shadowOverride ? m_shadowDepthHalf : kShadowDepthHalf;
+        // TEXEL SNAP (r_shadowsnap, default ON — the outdoor-polish lane). The
+        // camera-following box slid by a fraction of a texel every frame, so the
+        // whole shadow map re-rasterized against a moving lattice and every edge
+        // in the frame crawled. Quantising the CENTRE to the world-anchored
+        // light-space texel grid holds it still. See csm::legacySnapCenter.
+        //
+        // A HOST-PINNED box (setShadowBounds) is already stationary — snapping it
+        // would only shift a hand-tuned scene by up to a texel, so it is skipped:
+        // the showroom's md5-gated captures stay byte-for-byte.
+        if (m_shadowSnap && !m_shadowOverride)
+            center = csm::legacySnapCenter(center, sunDir, ortho, kShadowDim);
         // The matrix build itself lives in engine/rhi/Csm.cpp (moved VERBATIM), so
         // the renderer and --test-csm exercise the SAME code and the test can
         // assert it still matches the historical expression bit-for-bit.
@@ -2205,6 +2216,10 @@ void VulkanRenderDevice::prepareFrameData() {
             const bool cloudsOn = m_sky.enabled && m_sky.cloud > 0.001f;
             sc.cloudShadow = glm::vec4(cloudsOn ? 0.85f : 0.0f,
                                        m_sky.cloud, m_skyTime, 0.0f);
+            // TERRAIN MATERIAL + FOOTPRINT ANTI-SHIMMER (setTerrainMaterial).
+            // x/y at 0 return mesh_terrain.glsl to its historical math exactly.
+            sc.terrainMat = glm::vec4(m_terrainMat.antiAlias, m_terrainMat.perBand,
+                                      m_terrainMat.sparkle,   m_terrainMat.roughScale);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }

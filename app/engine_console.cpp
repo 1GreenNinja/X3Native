@@ -321,6 +321,26 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     // along the camera axis so the shadowed region leads the car instead of being
     // centred on it. Independent of r_csm. 0 = the historical camera-centred box.
     console.registerCVar("r_shadowforward", "0.0", "slide the LEGACY single shadow cascade forward along the camera axis (meters); 0 = historical");
+    // OUTDOOR POLISH: the legacy box was CAMERA-LOCKED and unsnapped, so it slid
+    // sub-texel every frame and every shadow edge in the frame crawled — the
+    // "mountain is shimmering" report. Snapping the box centre to the world-
+    // anchored shadow-texel lattice holds them still. 0 = the historical box.
+    console.registerCVar("r_shadowsnap", "1", "snap the LEGACY shadow box to the shadow-texel grid so edges stop swimming (0 = historical unsnapped)");
+    // ---- TERRAIN MATERIAL / TEMPORAL STABILITY (outdoor-polish lane) --------
+    // r_terrainaa: footprint-aware anti-shimmer. At range one screen pixel spans
+    // several metres of ground, which is WIDER than the stochastic-tiling hex
+    // lattice (~16 m) and the fine splat-mask noise (~28 m) — so their per-pixel
+    // weights alias no matter how good the mip chain is. This fades those
+    // sub-footprint terms out with distance. 0 = the historical (aliasing) math.
+    console.registerCVar("r_terrainaa", "1", "terrain footprint-aware anti-shimmer: fade sub-pixel tiling/noise/relief with distance (0 = historical)");
+    // r_terrainmat: per-band terrain roughness/specular (grass/rock/snow/sand)
+    // instead of the one flat dielectric 0.5 every terrain fragment used to get.
+    // 0 = that flat 0.5, exactly.
+    console.registerCVar("r_terrainmat", "1", "terrain per-band roughness/specular authoring (0 = the legacy flat dielectric 0.5)");
+    // r_terrain_sparkle: Tim's calibration knob. 1 = the sand band stays glossy
+    // so hard-baked sand GLINTS in a low evening sun; 0 = matte sand.
+    console.registerCVar("r_terrain_sparkle", "1", "sand-band grazing sparkle 0..1 (1 = glinting hard-baked sand, 0 = matte)");
+    console.registerCVar("r_terrain_rough", "1.0", "scale on the authored per-band terrain roughness (>1 = duller, <1 = glossier)");
     // ---- DISCRETE MESH LOD (Lane 5): r_meshlod / r_meshlod_err / r_meshlod_hyst.
     x3::game::registerLodCVars(console);
     // ---- FUEL (W-STATIONS): fuel_on / fuel_burn / fuel_cap / fuel_rate. Pure

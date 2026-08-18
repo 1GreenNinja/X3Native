@@ -640,7 +640,19 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     csmp.blend       = console.getFloat("r_csm_blend");
     csmp.forwardBias = console.getFloat("r_shadowforward");
     csmp.debug       = console.getInt("r_csm_debug") != 0;
+    // LEGACY-BOX TEXEL SNAP (r_shadowsnap). Independent of r_csm: it fixes the
+    // ONE box the r_csm 0 path draws, which is what every non-CSM world renders.
+    csmp.snapLegacy  = console.getInt("r_shadowsnap") != 0;
     device.setCsmParams(csmp);
+    // TERRAIN MATERIAL + FOOTPRINT ANTI-SHIMMER (r_terrainaa / r_terrainmat /
+    // r_terrain_sparkle / r_terrain_rough). Live: the sparkle knob is the
+    // owner's calibration dial and has to be turnable from the console.
+    x3::rhi::IRenderDevice::TerrainMatParams tm{};
+    tm.antiAlias  = (float)console.getInt("r_terrainaa");
+    tm.perBand    = (float)console.getInt("r_terrainmat");
+    tm.sparkle    = console.getFloat("r_terrain_sparkle");
+    tm.roughScale = console.getFloat("r_terrain_rough");
+    device.setTerrainMaterial(tm);
     // DISCRETE MESH LOD (Lane 5): a CPU-side policy, so it lands in the process
     // policy rather than on the device. Scene::render reads it each frame.
     x3::game::applyLodCVars(console);

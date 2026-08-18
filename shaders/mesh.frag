@@ -141,6 +141,15 @@ layout(set = 3, binding = 1) uniform SsaoControl {
     // y = cover (SkyParams::cloud), z = sky time (s, the drift clock),
     // w = reserved. Consumed via inc/sky_clouds.glsl cloudShadowFactor().
     vec4 cloudShad;
+    // ---- TERRAIN MATERIAL + FOOTPRINT ANTI-SHIMMER (outdoor-polish lane;
+    // SsaoControl::terrainMat in VulkanRenderDevice_internal.h — keep in sync).
+    //   x = antiAlias  (0 = the historical aliasing math, 1 = full footprint fade)
+    //   y = perBand    (0 = the legacy flat dielectric roughness 0.5)
+    //   z = sparkle    (sand-band gloss 0..1 — the owner's evening-glint knob)
+    //   w = roughScale (multiplier on the authored per-band roughness)
+    // Appended at the tail: glass.frag declares this buffer only as far as
+    // `caustics` and stays a valid std140 prefix.
+    vec4 terrainMat;
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
@@ -275,6 +284,11 @@ void main() {
     // mixed-winding HDRP kit meshes shade correctly from both sides — without this
     // a flipped sub-mesh lights as if facing away (black wall).
     if (!gl_FrontFacing) N = -N;
+    // The GEOMETRY normal, kept before any perturbation. The terrain splat is
+    // keyed off it (a rock face's own bump must not vote on whether it is a rock
+    // face), so terrainSurface() below must key off the same vector terrainAlbedo
+    // did — not the relief-perturbed N it leaves behind.
+    vec3 Ngeom = N;
     // PBR normal map (non-terrain): perturb the geometry normal via a derivative TBN.
     if ((vFlags & FLAG_TERRAIN) == 0u && vNormalTexIndex > 0u)
         N = perturbNormal(N, vWorldPos, vUV, vNormalTexIndex);
@@ -462,6 +476,23 @@ void main() {
         vec3  F0d = vec3(0.04);
         float dRough = kDielectricRough;
         float aD = aDdry;
+        // ---- AUTHORED PER-BAND TERRAIN SURFACE (r_terrainmat) ---------------
+        // Terrain reaches this branch (no MR map) and used to take the ONE flat
+        // 0.5 above for grass, cliff, snow and sand alike. inc/mesh_terrain.glsl
+        // authors a roughness/specular per band and blends them with the SAME
+        // splat weights the albedo used, so the ground's gloss finally agrees
+        // with what the ground IS. It also folds in the specular anti-aliasing
+        // that pays back the normal variance the footprint relief-fade removed.
+        //
+        // GATED, and gated on the TERRAIN FLAG as well as the cvar, so every
+        // graybox prim on this path keeps the constant-folded 0.5*0.5 codegen
+        // the comment above is about, byte for byte.
+        if ((vFlags & FLAG_TERRAIN) != 0u && ssao.terrainMat.y > 0.0) {
+            TerrainSurface ts = terrainSurface(vWorldPos, Ngeom);
+            dRough = mix(kDielectricRough, ts.rough, clamp(ssao.terrainMat.y, 0.0, 1.0));
+            F0d    = vec3(0.04) * mix(1.0, ts.spec, clamp(ssao.terrainMat.y, 0.0, 1.0));
+            aD     = dRough * dRough;
+        }
         // RAIN WETNESS on the dielectric path too: a graybox street has to get
         // wet exactly like a textured one, or the world rains in patches. Applied
         // BEFORE aD derives from the roughness. metallic = 0 by definition here.
