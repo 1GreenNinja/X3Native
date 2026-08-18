@@ -3196,12 +3196,12 @@ int hostEchoHarbor(HostContext& hc) {
                     (device->rayTracingSupported() ? " [RT hardware]" : " [no RT — inert]"));
     }
 
-    // --set OVERRIDES. This host builds its OWN console and registers its own
-    // cvars above, and until now it never looked at hc.cliCVars — so `--set`
-    // was a SILENT NO-OP for every cvar in this world, not just new ones. Any
-    // A/B run against --world echotropolis with --set compared a value to
-    // itself. Applied HERE, after registration, because registerCVar seeds the
-    // default and would otherwise stomp the override.
+    // --set OVERRIDES, applied LAST. HostShell::attach(hc) already replayed
+    // hc.cliCVars once onto the shared console, but this world then stamps its
+    // scene-tuned defaults on top (kEchoDefaults above) — which would silently
+    // stomp the operator's `--set r_ddgi 0` and make every A/B run compare a
+    // value to itself, the exact bug this block was written for. Replaying here
+    // makes the CLI the last writer, unconditionally.
     for (const auto& kv : hc.cliCVars) {
         console->set(kv.first, kv.second);
         x3::logInfo("--world echotropolis: --set " + kv.first + " " + kv.second);

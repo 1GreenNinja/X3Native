@@ -1,6 +1,6 @@
 # W-ECHOART — the Echo Harbor art pass
 *Filed 2026-08-17 by the session lead at the owner's direction, after he flew
-`--world echotropolis` and photographed it. **Two sessions are editing Echo
+`--world echoharbor` (the canonical flag; `--world echotropolis` is a permanent alias) and photographed it. **Two sessions are editing Echo
 Harbor RIGHT NOW** — this brief is written to be handed to one of them (or run
 when they are clear), NOT to be raced against them. Coordinate on the fleet
 channel before touching these files.*
@@ -104,7 +104,7 @@ in a city sim, indefensible up close (rule 3), and it is what the eye lands on.
 ---
 
 ## GATES
-Build green; boot `--world echotropolis` with zero `[ERROR]`; that world's own
+Build green; boot `--world echoharbor` with zero `[ERROR]`; that world's own
 suites green; fps within 10% of its current numbers (74-157 depending on the
 view — record which camera). **Eyes-on FULL-RES before/after PAIRS read by the
 agent itself** for each of P0, P0b, P1, P2 — same camera, same time of day.

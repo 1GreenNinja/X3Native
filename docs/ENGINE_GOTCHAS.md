@@ -3,6 +3,39 @@
 was paid for. Read this BEFORE touching the build, the assets, or the dressing systems.
 Format: SYMPTOM → CAUSE → FIX → DETECTION.*
 
+## 0. NAMING — READ FIRST
+
+### 0.1 The world flag is `--world echoharbor`, NOT `--world echotropolis`
+- Owner, 2026-08-18: *"Echo Harbor should Not be called echotropolis."* The display
+  name was always **Echo Harbor**; the internal id was the odd one out. The
+  canonical registry key and `--world` flag are now `echoharbor`, and the host is
+  `app/world_hosts/host_echoharbor.cpp` / `hostEchoHarbor`.
+- `--world echotropolis` is a **PERMANENT alias** and will never be removed —
+  ~350 references across 74 files (scripts, test recipes, screenshot commands,
+  fleet docs, session notes) type it. Both flags dispatch to the same host.
+  Older entries in this file and in `docs/` still say `echotropolis`; they are
+  not wrong, just old. **Write `echoharbor` in anything new.**
+- Two things deliberately KEEP the old spelling because they are wire formats,
+  not labels: the asset paths (`echotropolis_props.glb`,
+  `regions.echotropolis.json`, `assets/audio/echotropolis/**`, the
+  `echotropolis.rpg.txt` save) and the runtime log prefix
+  `--world echotropolis: ...`, which `scripts/echo_stream_ab.ps1` parses.
+- DETECTION: `--test-rifthub` D12 fails if the alias ever stops dispatching,
+  stops being a reasoned exclusion, or stops resolving to the `echoharbor` row.
+
+### 0.2 Every world host wires the SHARED shell — there is a gate now
+- A `--world` host must use `HostShell` (`app/world_hosts/host_shell.h`) for its
+  console, pause menu and FPS overlay. Echo Harbor kept a bespoke one for months
+  and therefore shipped with NONE of the ~118 shared commands (`noclip` printed
+  "unknown"); nothing caught it until a manual audit.
+- DETECTION: `app/host_shell_lint.cpp`, run as destinations **D13** inside
+  `--test-rifthub`. It sweeps `app/world_hosts/host_*.cpp` and fails on a world
+  host that never references `HostShell` (R1) or that calls
+  `drawConsole()`/`toggleConsole()` on a Hud of its own (R2). Driving the shared
+  console through `shell.hudForCallbacks()` is the one sanctioned route. Four
+  controls (negative/positive/sneak/mediated) run every time, so the probe's
+  failure mode is proven rather than assumed.
+
 ## 1. BUILD SYSTEM
 
 ### 1.1 The stale-exe trap (X3Engine vs x3engine case-collision) — THE #1 KILLER
