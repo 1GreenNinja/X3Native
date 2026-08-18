@@ -38,8 +38,10 @@ public:
     struct Result {
         bool  built = false;
         int   vaultChunks = 0;     // rock vault entities
+        int   beachChunks = 0;     // rock-beach apron entities
         int   waterSegs   = 0;     // CaveRiver ribbon segments
         int   lightCount  = 0;     // lights appended
+        int   mistSources = 0;     // rush/pool emitters
         float portalX = 0.0f, portalZ = 0.0f;   // where the river surfaces
     };
 
@@ -49,10 +51,30 @@ public:
                  SurfaceLibrary* surf,
                  std::vector<x3::rhi::PointLight>* outLights);
 
-    // Per-frame flow (CaveRiver crest scroll + whitewater churn).
-    void update(float dt, Scene& scene) { m_water.update(dt, scene); }
+    // Per-frame flow (CaveRiver crest scroll + whitewater churn) and the mist
+    // simulation. Safe to call when nothing was built.
+    void update(float dt, Scene& scene);
+
+    // THE MIST. Spray off the whitewater steps and a cold breath lying on the
+    // pools, as billboards through IRenderDevice::submitParticles — the same
+    // pass and the same alpha/additive contract RiverLife's wake foam uses
+    // (NO_SLOP rule 1: this is that system aimed underground, not a new one).
+    // Call once per frame from the host's render phase.
+    void render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame);
 
     bool built() const { return m_built; }
+
+    // THE CAVERN LIGHTS, delivered NEAREST-FIRST rather than as a boot-time
+    // block. host_tunnel re-uploads ONE merged point-light array every frame
+    // (uploadTunnelLights) — a boot-time setPointLights is overwritten by the
+    // next frame, which is exactly how the town's lamps went dark once
+    // already. So the run carries its own dense set and hands the host only
+    // the few that are near the camera. Returns the number written.
+    uint32_t nearestLights(const float cam[3], x3::rhi::PointLight* out,
+                           uint32_t maxN) const;
+    // Is this point inside the river's corridor (the derived carve box)? Used
+    // to decide whether a capture needs the cavern lane at all.
+    static bool insideCorridor(const float p[3]);
 
     // Headless gate: --test-underriver. Asserts the derived table descends,
     // the trench + beaches carved as authored, one water truth, the vault
@@ -60,7 +82,25 @@ public:
     static bool runSelfTest();
 
 private:
+    struct MistSource {                 // one emitter on the run
+        float x = 0, y = 0, z = 0;
+        float dx = 0, dz = 0;           // downstream unit direction
+        float rush = 0;                 // 0 = pool breath, 1 = whitewater spray
+        float acc = 0;                  // spawn accumulator
+    };
+    struct Puff {
+        float x = 0, y = 0, z = 0;
+        float vx = 0, vy = 0, vz = 0;
+        float age = 0, life = 1, size0 = 1.0f;
+        bool  spray = false;            // additive droplet vs alpha haze
+    };
     CaveRiver m_water;
+    std::vector<x3::rhi::PointLight> m_lights;   // the whole run's accents
+    std::vector<MistSource> m_mist;
+    std::vector<Puff>       m_puffs;    // fixed pool, round-robin reuse
+    uint32_t  m_puffNext = 0;
+    std::vector<x3::rhi::IRenderDevice::ParticleInstance> m_hazeOut, m_sprayOut;
+    uint32_t  m_seed = 12345u;
     bool      m_built = false;
 };
 

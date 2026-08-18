@@ -2728,6 +2728,17 @@ int hostTunnel(HostContext& hc) {
                     x3::game::uploadTunnelLights(*device, lcp,
                                                  shotEn ? shotEx : nullptr, shotEn);
                 }
+                // A STILL TAKEN INSIDE THE CAVERN needs the cavern's own
+                // lights, which are a per-frame nearest-K lane and so are NOT
+                // in the boot set this path otherwise keeps. Gated on the
+                // camera actually being in the corridor, so no reference
+                // capture anywhere else in the world moves.
+                if (underRiver.built() &&
+                    x3::game::UndergroundRiver::insideCorridor(cam)) {
+                    x3::rhi::PointLight ul[12];
+                    const uint32_t un = underRiver.nearestLights(cam, ul, 12);
+                    if (un) x3::game::uploadTunnelLights(*device, cam, ul, un);
+                }
 
                 // THE TOWN WALKS IN CAPTURES TOO. ENGINE_GOTCHAS 4.4 is right
                 // that a still cannot PROVE motion — but a still of six
@@ -2767,6 +2778,7 @@ int hostTunnel(HostContext& hc) {
                     if (carBuilt) car.render(frame);
                     traffic.render(frame, cam);
                     riverLife.render(*device, frame, scene);
+                    underRiver.render(*device, frame);   // cavern mist + spray
                     if (shotDraw) shotDraw(frame);   // the staged swimmer
                     // The ticket HUD in a STILL, but ONLY once a card has been
                     // taken (X3_TICKETS=n, or the console). At the default 0/5
@@ -5142,6 +5154,7 @@ int hostTunnel(HostContext& hc) {
                 if (carBuilt) car.chassisPos(pcam);
                 traffic.render(pf, pcam);               // traffic holds its pose paused
                 riverLife.render(*device, pf, scene);   // boats stay visible paused
+                underRiver.render(*device, pf);
                 gameMenu.draw(pf, gmIn, fdt, todHours); // the game menu, over the frozen world
                 shell.draw(pf, fdt);                    // console stays reachable over the menu
             }
@@ -6154,6 +6167,16 @@ int hostTunnel(HostContext& hc) {
                   for (uint32_t i = 0; i < kTown; ++i) xl.push_back(tl[ts[i].i]);
               }
           }
+          // THE CAVERN, lane six. Same reason as the town's: the underground
+          // river's accents are a boot-time array no more — this upload
+          // overwrites any setPointLights every frame, so the run hands over
+          // only the few lights near the camera, and only when the camera is
+          // actually inside its corridor (above ground they cost nothing).
+          if (underRiver.built() && x3::game::UndergroundRiver::insideCorridor(cp)) {
+              x3::rhi::PointLight ul[10];
+              const uint32_t un = underRiver.nearestLights(cp, ul, 10);
+              for (uint32_t i = 0; i < un; ++i) xl.push_back(ul[i]);
+          }
           x3::game::uploadTunnelLights(*device, cp, xl.empty() ? nullptr : xl.data(),
                                        (uint32_t)xl.size()); }
         // SPEED FOV. Physical speed alone does not read as fast on a screen —
@@ -6346,6 +6369,7 @@ int hostTunnel(HostContext& hc) {
                 traffic.render(frame, fcam);           // the freeway is populated
             }
             riverLife.render(*device, frame, scene);   // boats + drivers + wakes
+            underRiver.render(*device, frame);         // cavern mist + spray
             // Combat FX: tracers + muzzle boxes (mesh draws), then the
             // particle pool + impact decals (billboards through
             // submitParticles). After the world, before the HUD.
