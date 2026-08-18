@@ -1,28 +1,39 @@
 #pragma once
-// THE UNDERGROUND RIVER (W-UNDERRIVER) — the owner's sketch line from the NW
-// lake down past the city ("we want an underground river... with rock
-// beaches... movie grade.. rushing water" / "under the mountain.. That will
-// be Amazinng").
+// THE UNDERGROUND RIVER (W-UNDERRIVER) — the owner: "we want an underground
+// river... with rock beaches... movie grade.. rushing water" / "under the
+// mountain.. That will be Amazinng".
 //
-// The TRENCH is terrain.cpp's business (authoredLandforms carves bed + rock
-// beach shelves + walls from the derived worldUnderRiverChain() table — the
-// same one-truth table worldWaterLevelAt answers from). This module adds the
-// three things the heightfield cannot be:
-//   * THE VAULT — a displaced rock ceiling (ring-stitched arch strips, the
-//     mine_fx bore idiom) closing the trench from head grotto to the gorge,
-//     inner face wet cave rock (cv_rock_wet), outer back dry country rock
-//     (terrain_rock), so the hill reads shut from above and a CAVERN from
-//     the beaches. The last kURGorgeLen metres before the plunge pool stay
-//     OPEN — the river steps down into daylight there.
+// The TRENCH is terrain.cpp's business: authoredLandforms carves bed + rock
+// beach shelves + walls from the derived worldUnderRiverChain() table, the
+// SAME table worldWaterLevelAt answers from, so swimming, the CONTACT LAW,
+// collision and streaming all work down here for free. terrain.h carries the
+// mechanism note — what cut-and-cover can and cannot express, and why the
+// route follows the west valley instead of the 250 m massif.
+//
+// This module adds the four things a height field cannot be:
+//   * THE VAULT — the lid that puts the hillside BACK. Every vertex samples
+//     worldPreUnderRiverHeight, so the lid restores the surface the trench
+//     removed rather than arching over it; the void between carved floor and
+//     restored surface IS the cavern, a lens tallest over the channel and
+//     closed at the rim. Inner face wet cave rock (cv_rock_wet), outer back
+//     dry country rock (terrain_rock). The last kURGorgeLen metres stay OPEN
+//     — the river steps down into daylight there. Gate U9 measures the
+//     headroom (10-44 m over the beaches).
+//   * THE BEACHES — an apron of water-worn rock (cv_rock_flume) 7 cm over the
+//     carved shelf. The shelf itself is height field and stays the collision
+//     surface; the apron exists because the terrain splat picks its material
+//     from height + slope and would paint a flat lowland shelf GRASS, indoors.
 //   * THE WATER — the CaveRiver machinery (app/cave_river.h) pointed at the
-//     open world: self-luminescent ribbon (there is no sun down here), pools
-//     that breathe, and the new CaveRiverNode::rush whitewater at the drops.
-//   * THE LIGHT — CaveRiver's pool bank lights plus sparse cool accents down
-//     the run, appended to the host's point-light array.
+//     open world: a self-luminescent ribbon (there is no sun down here, and
+//     the glow fades out where the gorge opens to one), pools that breathe,
+//     and CaveRiverNode::rush whitewater wherever the DERIVED gradient says
+//     the river is falling.
+//   * THE MIST — spray off the steps, cold breath on the pools.
 //
 // Reuse ledger (NO_SLOP rule 1): water = CaveRiver (extended, not forked);
-// carve = the authored-landforms river pattern; vault = the mine_fx
-// ring-stitch idiom with the surface library's published rock sets.
+// carve = the authored-landforms river pattern; mist = RiverLife's wake-puff
+// system through the same submitParticles pass; rock = the surface library's
+// published sets, checked for real bytes before use.
 
 #include "scene.h"
 #include "cave_river.h"
@@ -45,8 +56,10 @@ public:
         float portalX = 0.0f, portalZ = 0.0f;   // where the river surfaces
     };
 
-    // Build vault + water + lights from worldUnderRiverChain(). `surf` may be
-    // null (a local library is mounted). Lights are APPENDED to outLights.
+    // Build vault + beaches + water + mist + lights from
+    // worldUnderRiverChain(). `surf` may be null (a local library is mounted).
+    // outLights receives CaveRiver's POOL BANK lights only — the cavern's own
+    // accents are delivered per-frame instead (see nearestLights).
     Result build(Scene& scene, x3::rhi::IRenderDevice& device,
                  SurfaceLibrary* surf,
                  std::vector<x3::rhi::PointLight>* outLights);
@@ -76,9 +89,15 @@ public:
     // to decide whether a capture needs the cavern lane at all.
     static bool insideCorridor(const float p[3]);
 
-    // Headless gate: --test-underriver. Asserts the derived table descends,
-    // the trench + beaches carved as authored, one water truth, the vault
-    // closes the hill, and the gorge stays open. Prints the measured table.
+    // Headless gate: --test-underriver, 9 checks. The river descends (U1) under
+    // ground it never breaks (U2), the bed is under the water and the beaches
+    // are dry and walkable (U3), the query and the drawn table are one truth
+    // (U4), it rushes at the steps and stills at the pools (U5), the table is
+    // deterministic (U6), the route stays inside what cut-and-cover can build
+    // (U7), the whole corridor is allowed to be dug at all (U8), and there is
+    // a cavern in there you can stand up in (U9). Prints the measured table;
+    // X3_UR_SCAN[=x0,x1,z0,z1,step] prints the pre-UR ground the route was
+    // picked off.
     static bool runSelfTest();
 
 private:
