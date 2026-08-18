@@ -518,12 +518,23 @@ bool UndergroundRiver::runSelfTest() {
         check(minCover >= 0.85f, "U2 the run stays under the ground it bores", d);
     }
 
-    // U3 — THE TRENCH IS CARVED: at each station the built terrain sits at
-    // the bed under the spine (water floats over it) and at the BEACH SHELF
-    // 8 m out — dry, walkable, above the waterline (CONTACT LAW ground).
+    // U3 — THE TRENCH IS CARVED, AND ITS BEACHES ARE WALKABLE ROCK. Two
+    // invariants, not a shape: (1) the bed under the spine is below the water,
+    // so the ribbon floats on a floor rather than over the countryside, and
+    // (2) the beach is DRY and STANDABLE — the owner asked for rock beaches
+    // and NO_SLOP rule 11 says a surface a character can be on is a surface
+    // that has to hold them up.
+    //
+    // What this gate deliberately does NOT assert is a beach of constant
+    // height. An earlier version wanted the shelf within 1.4 m of the water
+    // everywhere and failed on the outside of bends — where the polyline's
+    // nearest point is the VERTEX, the effective distance exceeds the lateral
+    // offset, and the beach correctly narrows into the wall. That is a real
+    // river bank, not a defect; the tolerance was the bug.
     {
         const ChainWalk walk(uc);
-        int bad = 0, stations = 0; float worstBed = 0, worstShelf = 0;
+        int wetBeach = 0, steepBeach = 0, badBed = 0, stations = 0;
+        float worstBed = 0, worstLift = 1e9f, worstNy = 1.0f;
         float wsx = 0, wsz = 0;
         for (float s = 6.0f; s < uc.cum[uc.n - 1] - 6.0f; s += 18.0f) {
             float cx, cz, w, nat, dx, dz; walk.at(s, cx, cz, w, nat, dx, dz);
@@ -531,22 +542,28 @@ bool UndergroundRiver::runSelfTest() {
             ++stations;
             const float bedT = terrainHeightAtWorld(cx, cz);
             const float bedErr = bedT - w;              // want < 0 (bed under water)
-            if (bedErr > -0.8f) { ++bad; worstBed = std::max(worstBed, bedErr); }
+            if (bedErr > -0.8f) { ++badBed; worstBed = std::max(worstBed, bedErr); }
+            // The beach: outside even a POOL's widened channel floor (the carve
+            // starts the beach at max(kURShelfHalfW, hw+0.8+3.5) = 13.8 m at
+            // the 9.5 m pools), so this lands on shelf everywhere on the run.
+            const float bd = kURShelfHalfW + 3.0f;
             for (int side = -1; side <= 1; side += 2) {
-                const float sx = cx + px * 8.0f * (float)side;
-                const float sz = cz + pz * 8.0f * (float)side;
-                const float shelfT = terrainHeightAtWorld(sx, sz);
-                const float lift = shelfT - w;          // want ~ +kURShelfLift
-                if (lift < 0.1f || lift > 1.4f) {
-                    ++bad;
-                    if (std::fabs(lift) > worstShelf) { worstShelf = std::fabs(lift); wsx = sx; wsz = sz; }
-                }
+                const float sx = cx + px * bd * (float)side;
+                const float sz = cz + pz * bd * (float)side;
+                const float lift = terrainHeightAtWorld(sx, sz) - w;
+                if (lift < worstLift) { worstLift = lift; wsx = sx; wsz = sz; }
+                if (lift < 0.1f) ++wetBeach;            // beach under the water
+                float n[3]; terrainNormalAtWorld(sx, sz, n);
+                worstNy = std::min(worstNy, n[1]);
+                if (n[1] < 0.72f) ++steepBeach;         // > ~44 deg: not standable
             }
         }
         std::snprintf(d, sizeof(d),
-            "%d stations; %d bad probes (worst bed err %.2f, worst shelf dev %.2f at (%.0f, %.0f))",
-            stations, bad, worstBed, worstShelf, wsx, wsz);
-        check(bad == 0 && stations > 50, "U3 bed under water, rock beaches dry above it, whole run", d);
+            "%d stations; bed %d bad (worst err %.2f); beach %d wet / %d too steep "
+            "(lowest beach %.2f m over the water at (%.0f, %.0f), worst normal.y %.2f)",
+            stations, badBed, worstBed, wetBeach, steepBeach, worstLift, wsx, wsz, worstNy);
+        check(badBed == 0 && wetBeach == 0 && steepBeach == 0 && stations > 50,
+              "U3 bed under the water, beaches dry and walkable, whole run", d);
     }
 
     // U4 — ONE WATER TRUTH: worldWaterLevelAt on the spine IS the table; a
@@ -562,8 +579,9 @@ bool UndergroundRiver::runSelfTest() {
             else
                 worst = 1e9f;                            // dry mid-channel = broken
             const float px = -dz, pz = dx;
-            if (worldWaterLevelAt(cx + px * 10.5f, cz + pz * 10.5f) >
-                kWorldWaterDry + 1.0f) ++wetShelf;       // 10.5 m > every hw
+            const float dry = kURShelfHalfW + 3.0f;   // > every node half-width
+            if (worldWaterLevelAt(cx + px * dry, cz + pz * dry) >
+                kWorldWaterDry + 1.0f) ++wetShelf;
         }
         std::snprintf(d, sizeof(d),
             "largest spine drawn-vs-query gap %.4f m; %d wet probes on the dry shelf",

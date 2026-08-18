@@ -1398,9 +1398,20 @@ float authoredLandforms(float h, float x, float z) {
             polyClosest(uc.x, uc.z, uc.w, uc.n, x, z, d, w, uc.bedDrop, &bed);
             if (d < kURWallOutW) {
                 const float g = facilityGuard(x, z) * contentGuard(x, z);
+                // THE CHANNEL FLOOR MUST BE AT LEAST AS WIDE AS THE WATER.
+                // The drawn ribbon is kURBedHalfW-agnostic — it spans the
+                // node's own half-width — and the pools are 9.5 m wide against
+                // a 4.5 m constant floor, so with a fixed ramp the pool's water
+                // ran out over rising beach and buried its own edges in the
+                // shingle. The floor now starts from the LOCAL half-width plus
+                // a lip, and the beach starts outside that.
+                float dh, wh, hwL;
+                polyClosest(uc.x, uc.z, uc.w, uc.n, x, z, dh, wh, uc.hw, &hwL);
+                const float bedW   = std::max(kURBedHalfW,   hwL + 0.8f);
+                const float shelfW = std::max(kURShelfHalfW, bedW + 3.5f);
                 // bed -> rock-beach shelf -> walls easing to the natural country.
-                const float t1 = sstep(kURBedHalfW, kURBedHalfW + 3.5f, d);
-                const float t2 = sstep(kURShelfHalfW, kURWallOutW, d);
+                const float t1 = sstep(bedW, shelfW, d);
+                const float t2 = sstep(shelfW, kURWallOutW, d);
                 const float inner = (w - bed) + ((w + kURShelfLift) - (w - bed)) * t1;
                 const float target = inner + (h - inner) * t2;
                 if (target < h) h += (target - h) * g;
