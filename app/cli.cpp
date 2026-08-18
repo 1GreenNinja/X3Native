@@ -387,6 +387,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-routeframe") o.testRouteFrame = true;
         else if (a == "--test-roadnetwork") o.testRoadNetwork = true;
         else if (a == "--test-riverbridge") o.testRiverBridge = true;
+        else if (a == "--test-underriver") o.testUnderRiver = true;
         else if (a == "--test-traffic") o.testTraffic = true;
         else if (a == "--test-gasstation") o.testGasStation = true;
         else if (a == "--test-factory") o.testFactory = true;

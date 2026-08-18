@@ -163,6 +163,30 @@ constexpr float kWorldOceanBasinZ = -1350.0f;
 constexpr float kWorldOceanBasinR = 950.0f;
 
 // ---------------------------------------------------------------------------
+// THE SHORELINE TABLE (W-UNDERRIVER — water only IN bodies of water).
+// worldWaterLevelAt says the sea exists only where the basin bowl is genuinely
+// below kWorldSeaLevel — but the DRAWN sea used to cover the whole 950 m disc,
+// which put a sheet of water under the dry beach ring and under every rim hill
+// the disc overlaps (the owner, noclip: "we do indeed have water underground").
+// This fills outRadii[i] (i < maxSectors, up to WaterParams::kShoreSectors)
+// with the OUTERMOST radius per angular sector at which the terrain is below
+// kWorldSeaLevel — marched inward from the rim over the SAME
+// terrainHeightAtWorld field the water query tests, +kShoreBiasM outward so
+// the drawn edge always dies under the beach, never short of the waterline.
+// Points within (kWorldRiverHalfWidth + 8) of the river chain are ignored
+// (the estuary notch carves below sea level OUTSIDE the true shoreline; that
+// water is the channel mask's business, not the shore's).
+// Sector i's angle is ((i / n) - 0.5) * 2*pi from basin centre — PAIRED with
+// water.vert's sector decode (a change to one IS a change to both).
+// Consumers: host_tunnel's applyRiverWater (feeds WaterParams::shoreRadii)
+// and river_bridge's RB11 gate (asserts drawn coverage == model coverage).
+// Returns the sector count written. NOT cached — callers cache; the answer
+// depends on registered corridors, so compute it after world build.
+// ---------------------------------------------------------------------------
+constexpr float kShoreBiasM = 6.0f;
+uint32_t worldOceanShoreTable(float* outRadii, uint32_t maxSectors);
+
+// ---------------------------------------------------------------------------
 // RAIN RUNOFF (W-WATER, task #23) — the river runs HIGH in heavy rain.
 // The host's weather tick feeds the (smoothed) rise in metres; BOTH truths
 // consume it through the same node table: worldWaterLevelAt adds the risen
@@ -176,6 +200,120 @@ constexpr float kWorldOceanBasinR = 950.0f;
 constexpr float kWorldRiverRainRiseMax = 0.9f;   // hard bound (m); levee min is 0.6*c
 void  setWorldRiverRainRise(float riseM);        // clamped to [0, kWorldRiverRainRiseMax]
 float worldRiverRainRise();
+
+// ===========================================================================
+// THE UNDERGROUND RIVER (W-UNDERRIVER — ROAD_NETWORK_SKETCH_V2.png's blue line
+// from the NW lake down past the city; owner: "we want an underground river...
+// with rock beaches... movie grade.. rushing water" / "under the mountain..
+// That will be Amazinng").
+//
+// MECHANISM: cut-and-cover, the project's decided answer (see TERRAIN CORRIDOR
+// DEPRESSION above — no CSG, no voxels, no holes). The trench below is carved
+// ABSOLUTELY into authoredLandforms (the same pattern as THE RIVER: bed at
+// waterY-bedDrop, walkable rock BEACH shelves at waterY+0.45, walls easing to
+// the natural country), and app/underground_river.cpp closes it with a rock
+// VAULT mesh so the hill reads shut from above; inside, the trench IS the
+// cavern floor, so streaming, collision, CONTACT LAW and worldWaterLevelAt
+// all keep working untouched.
+//
+// WHAT CUT-AND-COVER CAN AND CANNOT EXPRESS — the measured law of this
+// feature, paid for once (NO_SLOP rule 9/10). The trench's walls have to
+// CLIMB from the beach shelf back to the natural country inside the wall band
+// (kURShelfHalfW -> kURWallOutW). So the cavern's height IS its cover, and the
+// cover is bounded by band * tan(slope): with a 32 m band at the canyon pass's
+// own ~50-60 deg wall vocabulary that is ~36 m, no more. The FIRST authored
+// route was drawn off the map and never measured; --test-underriver's scan
+// then read 228 m of massif over its middle nodes (x -800..-350, z +100..-900
+// is a 200-270 m block). Cut-and-cover under that is not a cavern, it is a
+// 200 m slot with a lid on top — and where the same route crossed LOW country
+// its water sat 7.9 m ABOVE the ground 8 m off the spine, which is JOB 1's own
+// defect (water outside a body of water) reintroduced underground. Hence:
+//   * the route follows the WEST VALLEY, west of the massif, picked node by
+//     node off X3_UR_SCAN's measured grid, never over it;
+//   * the water table is derived from the MEASURED CORRIDOR BAND FLOOR, not
+//     from the spine height — w[i] <= (min pre-UR ground across the whole
+//     +-kURWallOutW band of the segments touching node i) - kURCoverMin — so
+//     no probe anywhere in the corridor can be under water and above ground;
+//   * gate U7 asserts the steepest trench WALL is no steeper than
+//     kURWallMaxDeg, i.e. the route stays inside what the mechanism can build.
+//     A route that fails U7 gets MOVED, not forced.
+//
+// THE WATER TABLE IS DERIVED, NOT GUESSED: head at bandFloor-kURHeadCover (a
+// sealed spring under the NW country), then a strictly descending walk
+// w[i] = min(bandFloor[i]-kURCoverMin, w[i-1]-kURMinFall*len) — so the river
+// falls exactly as much as the country makes it fall, and RUSH (whitewater) is
+// DERIVED from that gradient instead of being authored: where the roof forces
+// the water down fast, it churns. Sampling uses worldPreUnderRiverHeight (skips
+// this carve — no self-reference — and subtracts corridor deltas so the table
+// cannot depend on road-registration order).
+//
+// Route (authored XZ, every node read off the scan): head grotto (-1020,1090)
+// in the NW country -> S down the west valley -> the GREAT HALL pool at
+// (-990,10) where the flank stands ~43 m over the water -> W around the West
+// Outpost's keep-out -> the stepped gorge -> plunge pool at (-1090,-700),
+// open to the sky. Clearances (all measured, gate U8): Scrapyard City pad
+// guard, West Outpost, the facility box, and the 250 m massif itself.
+// ===========================================================================
+struct UnderRiverChain {
+    static constexpr int kMax = 16;
+    int   n = 0;
+    float x[kMax] = {}, z[kMax] = {};
+    float w[kMax] = {};        // derived water surface Y (strictly descending)
+    float natural[kMax] = {};  // pre-corridor, pre-UR ground at the node
+    float hw[kMax] = {};       // water half-width (pools wider)
+    float bedDrop[kMax] = {};  // bed depth below w (pools deeper)
+    float rush[kMax] = {};     // whitewater factor 0..1 (drops)
+    bool  pool[kMax] = {};
+    float cum[kMax] = {};      // along-chain length (m)
+    float floorMin[kMax] = {}; // MEASURED min pre-UR ground across the corridor
+                               // band around this node (the table's real input)
+    float floorMax[kMax] = {}; // ... and the HIGHEST ground in the same band —
+                               // the trench wall actually has to climb to THAT,
+                               // so it, not floorMin, is what gate U7 budgets.
+    // The carve/query bounding box, DERIVED from the route (route + band +
+    // margin). One owner: authoredLandforms and worldWaterLevelAt both read
+    // it, so a route edit can never leave a stale hand-typed box behind
+    // (NO_SLOP rule 4 — this pair used to be two hardcoded literals).
+    float bx0 = 0, bx1 = 0, bz0 = 0, bz1 = 0;
+};
+const UnderRiverChain& worldUnderRiverChain();
+// The country BEFORE this river's own trench and before any road corridor —
+// the field the route, the water table and the COVER gate are all measured
+// against. Without it the derivation would read its own carve (cover 0
+// everywhere) and the route could never be checked.
+float worldPreUnderRiverHeight(float x, float z);
+// The authored-landform CARVE GUARD at (x,z): 1 where a cut may be dug, 0
+// inside the facility box and the city-pad / outpost keep-out rings, and a
+// ramp between. EVERY authored cut (canyon, ravines, river, this river) is
+// multiplied by it. Exported because a cut whose spine strays into a guard is
+// silently NOT DUG while every other system still believes it was — the
+// underground river's first route lost three nodes to Scrapyard City's ring
+// and left its water table hanging in mid-air over un-carved ground. Gate on
+// it (--test-underriver U8) rather than rediscovering that.
+float worldCarveGuardAt(float x, float z);
+// Carve geometry (PAIRED with the carve in terrain.cpp authoredLandforms and
+// the vault/selftest in app/underground_river.cpp):
+constexpr float kURBedHalfW    = 4.5f;    // wet channel floor half-width
+constexpr float kURShelfHalfW  = 12.0f;   // rock-beach shelf out to here (walkable)
+constexpr float kURWallOutW    = 44.0f;   // walls ease to natural country by here
+constexpr float kURShelfLift   = 0.45f;   // beach height ABOVE the water surface
+// The derivation's budget. The wall limit is not a preference: it is how steep
+// a face the wall band may climb out of the trench at, and with the band fixed
+// it is what bounds the trench's depth (see the mechanism note above). Gate U7
+// enforces it against the ROUTE.
+constexpr float kURCoverMin    = 8.0f;    // rock over the water, minimum
+constexpr float kURWallMaxDeg  = 60.0f;   // ... and the steepest wall the band
+                                          // may climb out at — the CANYON PASS's
+                                          // own figure (terrain.cpp: "walls over
+                                          // 15 m (~60 deg at full depth)"), so
+                                          // this river's trench is no steeper
+                                          // than a cut the world already ships.
+constexpr float kURHeadCover   = 10.0f;   // the sealed spring at the head
+constexpr float kURMinFall     = 0.004f;  // m of fall per m of run, minimum
+constexpr float kURRushGrade   = 0.030f;  // gradient that reads as full whitewater
+// The gorge: the trench's last reach before the plunge pool runs OPEN to the
+// sky (no vault) — the river steps down into daylight.
+constexpr float kURGorgeLen    = 120.0f;
 // Fill `out` with the working chain's nodes at the CURRENT risen level (the
 // same per-node cap worldWaterLevelAt applies). Returns the node count
 // (<= maxN). This is the array the drawn river surface renders from.

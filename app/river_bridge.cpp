@@ -813,6 +813,151 @@ bool runRiverBridgeSelfTest() {
               "RB10 the drawn surface and worldWaterLevelAt are ONE truth", d);
     }
 
+    // =======================================================================
+    // RB11/RB12 — WATER ONLY IN BODIES OF WATER (W-UNDERRIVER). The owner,
+    // flying noclip: "we do indeed have water underground.. which I do not
+    // like. We just want water IN bodies of water and rivers. like real
+    // life." The model (worldWaterLevelAt) was always right; the DRAWN
+    // surface used to cover the whole basin disc — a sheet of sea under the
+    // dry beach ring and the rim hills. These two gates walk the map and
+    // compare the shader's coverage (mirrored here the way RB10 mirrors the
+    // level math — deliberately independent) against the model.
+    // =======================================================================
+    {
+        setWorldRiverRainRise(0.0f);
+        WorldRiverNode risen[64];
+        const uint32_t rn = worldRiverRisenNodes(risen, 64);
+        // The same shoreline table the host feeds the shader (one producer:
+        // worldOceanShoreTable; 256 sectors + fade 10 m are PAIRED with
+        // WaterParams::kShoreSectors / shoreFade's default in IRenderDevice.h
+        // and applyRiverWater in host_tunnel.cpp).
+        constexpr uint32_t kSect = 256;
+        constexpr float    kFade = 10.0f;
+        float shore[kSect];
+        worldOceanShoreTable(shore, kSect);
+        auto smooth01 = [](float e0, float e1, float x) {
+            const float t = std::clamp((x - e0) / std::max(e1 - e0, 1e-6f), 0.0f, 1.0f);
+            return t * t * (3.0f - 2.0f * t);
+        };
+        // water.vert's coverage, on the CPU: channel mask to halfWidth, shore
+        // mask inside the basin, drawn iff the blended alpha survives the
+        // shader's 0.004 discard.
+        auto drawnMask = [&](float x, float z) {
+            float dist = 0.0f;
+            (void)drawnSurface(risen, rn, x, z, dist);
+            const float hw = kWorldRiverHalfWidth;
+            float mask = 1.0f - smooth01(hw - 2.0f, hw, dist);
+            const float bx = x - kWorldOceanBasinX, bz = z - kWorldOceanBasinZ;
+            if (bx * bx + bz * bz <
+                kWorldOceanBasinR * kWorldOceanBasinR) {
+                const float db  = std::sqrt(bx * bx + bz * bz);
+                float ang = std::atan2(bz, bx);
+                float fs  = (ang * 0.15915494309f + 0.5f) * (float)kSect;
+                // NEAREST sector — mirrors water.vert (each sector stores the
+                // supersampled MAX over its own span; a lerp cuts corners).
+                const int ia = (((int)std::floor(fs + 0.5f)) % (int)kSect
+                                + kSect) % kSect;
+                const float rs = shore[ia];
+                mask = std::max(mask, 1.0f - smooth01(rs - kFade, rs, db));
+            }
+            return mask;
+        };
+        // RB11 — map-wide: nowhere does the drawn surface put water where the
+        // model says dry, except a skirt hugging a real waterline (the fade
+        // band + the shoreline table's sector interpolation — bounded, and
+        // buried inside the bank/beach ground). "Hugging" = a model-wet point
+        // within kSkirtM of the sample.
+        {
+            constexpr float kSkirtM = 30.0f;
+            uint32_t drawnN = 0, violN = 0;
+            float vx = 0, vz = 0, worstAway = 0.0f;
+            auto nearWater = [&](float x, float z) {
+                for (int k = 0; k < 16; ++k) {
+                    const float a = (float)k * 0.3926991f;   // 2*pi/16
+                    const float cx = std::cos(a), sz = std::sin(a);
+                    for (float r = 10.0f; r <= kSkirtM + 0.1f; r += 10.0f)
+                        if (worldWaterLevelAt(x + cx * r, z + sz * r) >
+                            kWorldWaterDry + 1.0f)
+                            return true;
+                }
+                return false;
+            };
+            auto sampleGrid = [&](float x0, float x1, float z0, float z1, float step) {
+                for (float x = x0; x <= x1; x += step)
+                    for (float z = z0; z <= z1; z += step) {
+                        if (drawnMask(x, z) <= 0.004f) continue;
+                        ++drawnN;
+                        if (worldWaterLevelAt(x, z) > kWorldWaterDry + 1.0f) continue;
+                        if (nearWater(x, z)) continue;
+                        ++violN;
+                        // distance to the chain, for the report
+                        float dd = 0.0f; (void)drawnSurface(risen, rn, x, z, dd);
+                        if (dd > worstAway) { worstAway = dd; vx = x; vz = z; }
+                    }
+            };
+            // Fine grid over the water country (chain + basin, with margin),
+            // coarse grid over the whole map — drawn water 4 km from any
+            // body of water is exactly the defect this gate exists for.
+            float minX = 1e9f, maxX = -1e9f, minZ = 1e9f, maxZ = -1e9f;
+            for (uint32_t i = 0; i < rn; ++i) {
+                minX = std::min(minX, risen[i].x); maxX = std::max(maxX, risen[i].x);
+                minZ = std::min(minZ, risen[i].z); maxZ = std::max(maxZ, risen[i].z);
+            }
+            minX = std::min(minX, kWorldOceanBasinX - kWorldOceanBasinR);
+            maxX = std::max(maxX, kWorldOceanBasinX + kWorldOceanBasinR);
+            minZ = std::min(minZ, kWorldOceanBasinZ - kWorldOceanBasinR);
+            maxZ = std::max(maxZ, kWorldOceanBasinZ + kWorldOceanBasinR);
+            sampleGrid(minX - 300.0f, maxX + 300.0f, minZ - 300.0f, maxZ + 300.0f, 25.0f);
+            sampleGrid(-4000.0f, 4000.0f, -4000.0f, 4000.0f, 150.0f);
+            std::snprintf(d, sizeof(d),
+                          "%u drawn-water samples, %u on dry land beyond the %.0f m "
+                          "waterline skirt (worst %.0f m from the channel at (%.0f, %.0f))",
+                          drawnN, violN, 30.0f, worstAway, vx, vz);
+            check(violN == 0 && drawnN > 0,
+                  "RB11 no drawn water where the model says dry, map-wide", d);
+        }
+        // RB12 — the other direction: the drawn sea REACHES its beach. Walk
+        // the true shoreline at 0.5 deg and compare against the table's
+        // interpolation: real sea left undrawn past tolerance is a visible
+        // strip of dry seabed off every beach (the defect bounding must not
+        // introduce). Tolerance = the outward bias + sector interpolation
+        // slack over a 64-gon.
+        {
+            float worstUnder = -1e9f; float ua = 0.0f;
+            for (float deg = 0.0f; deg < 360.0f; deg += 0.5f) {
+                const float a = (deg / 180.0f) * 3.14159265f - 3.14159265f;
+                const float dx = std::cos(a), dz = std::sin(a);
+                // the true outermost wet radius on this ray (the same march
+                // worldOceanShoreTable runs, independently re-done)
+                float trueR = 0.0f;
+                for (float r = kWorldOceanBasinR - 2.0f; r > 0.0f; r -= 2.0f) {
+                    const float x = kWorldOceanBasinX + dx * r;
+                    const float z = kWorldOceanBasinZ + dz * r;
+                    if (terrainHeightAtWorld(x, z) >= kWorldSeaLevel) continue;
+                    float dd = 0.0f; (void)drawnSurface(risen, rn, x, z, dd);
+                    if (dd <= kWorldRiverHalfWidth + 8.0f) continue;
+                    trueR = r; break;
+                }
+                if (trueR <= 0.0f) continue;
+                const float fs = (a * 0.15915494309f + 0.5f) * (float)kSect;
+                const int ia = (((int)std::floor(fs + 0.5f)) % (int)kSect
+                                + kSect) % kSect;
+                const float rs = shore[ia];
+                const float under = trueR - rs;   // >0: sea past the drawn edge
+                if (under > worstUnder) { worstUnder = under; ua = deg; }
+            }
+            // Nearest-sector over a supersampled-MAX table: undrawn sea can
+            // only come from sub-supersample wiggle + the 2 m march, and the
+            // 6 m outward bias eats that. 4 m of slack is measurement noise.
+            std::snprintf(d, sizeof(d),
+                          "worst undrawn sea %.1f m at bearing %.1f deg "
+                          "(bias %.0f m out, %u supersampled-max sectors)",
+                          worstUnder, ua, kShoreBiasM, kSect);
+            check(worstUnder <= 4.0f,
+                  "RB12 the drawn sea reaches its beach all the way round", d);
+        }
+    }
+
     // RB7 — determinism: re-register, the carved field answers identically
     // along the whole road.
     {

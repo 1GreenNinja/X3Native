@@ -37,6 +37,7 @@
 #include "../ridge_road.h"       // the dirt road along the tops, lot -> the bore's massif
 #include "../river_bridge.h"
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
+#include "../underground_river.h" // W-UNDERRIVER — the river under the mountain
 #include "../traffic.h"          // W-TRAFFIC — AI traffic on the 16-lane freeway
 #include "../gas_station.h"      // W-STATIONS — forecourts + the fuel stub
 #include "../factory.h"          // W-FACTORY — the Glimvale Works + the golden tickets
@@ -1524,6 +1525,52 @@ int hostTunnel(HostContext& hc) {
         }
     }
 
+    // ==== THE UNDERGROUND RIVER (W-UNDERRIVER) ==============================
+    // The sketch's blue line from the NW lake site down under the bluff
+    // plateau to the plunge pool by the canyon-feeding ravine. The trench is
+    // already in the height field (terrain.cpp carves it from the same
+    // derived table worldWaterLevelAt answers), so swimming, CONTACT LAW and
+    // the streamer all work down there for free; this builds the rock vault,
+    // the luminescent rushing water, the mist and the cavern light. DEFAULT
+    // ON; X3_UNDERRIVER=0 is the off door (NO_SLOP rule 6) — note it turns off
+    // the DRAWN cavern only. The trench is a landform: it is carved by
+    // terrain.cpp for every caller, and worldWaterLevelAt answers from the same
+    // table, so the flag cannot desync the model from the map. With it off you
+    // get the open cut and its water and no lid, which is what you want when
+    // you are photographing the carve itself.
+    x3::game::UndergroundRiver underRiver;
+    {
+        const char* e = std::getenv("X3_UNDERRIVER");
+        if (!(e && e[0] == '0')) {
+            std::vector<x3::rhi::PointLight> url;
+            const auto ur = underRiver.build(scene, *device, nullptr, &url);
+            if (ur.built && !url.empty()) {
+                // Join the host's light array (ONE setPointLights owner —
+                // same rule the town followed).
+                std::vector<x3::rhi::PointLight> pl = tunnel.lights();
+                if (townOn) pl.insert(pl.end(), town.lights().begin(), town.lights().end());
+                pl.insert(pl.end(), url.begin(), url.end());
+                device->setPointLights(pl.data(), (uint32_t)pl.size());
+            }
+            // Conflict probe (measurements, not vibes): a road corridor
+            // crossing the trench would be a real defect — log the deepest
+            // foreign lowering along the spine so it cannot hide.
+            {
+                const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
+                float worst = 0.0f, wx = 0.0f, wz = 0.0f;
+                for (int i = 0; i < uc.n; ++i) {
+                    const float dCa = x3::game::terrainCorridorDelta(uc.x[i], uc.z[i]);
+                    if (dCa < worst) { worst = dCa; wx = uc.x[i]; wz = uc.z[i]; }
+                }
+                if (worst < -0.05f)
+                    x3::logWarn("[under-river] a registered corridor lowers the spine by "
+                                + std::to_string(-worst) + " m at ("
+                                + std::to_string(wx) + ", " + std::to_string(wz)
+                                + ") — check for a road crossing the trench");
+            }
+        }
+    }
+
     // ---- THE INTERIOR PROGRAM, decided and COUNTED at boot -----------------
     // This is the whole hook the rooms lane needs from the host: the fitout says
     // where the service doors are, the room program says what is behind them,
@@ -2381,6 +2428,36 @@ int hostTunnel(HostContext& hc) {
             wpr.basinCenter[1] = x3::game::kWorldOceanBasinZ;
             wpr.basinRadius    = x3::game::kWorldOceanBasinR;
             wpr.oceanLevel     = x3::game::kWorldSeaLevel;
+            // THE SHORELINE TABLE (W-UNDERRIVER): without it the shader draws
+            // the sea across the whole basin disc — under the dry beach ring
+            // and the rim hills too (the owner, noclip: "we do indeed have
+            // water underground"). Computed ONCE from the same height field
+            // worldWaterLevelAt tests (terrain.cpp worldOceanShoreTable),
+            // lazily here so every road corridor is already registered.
+            // RB11 (river_bridge.cpp) gates drawn-vs-model coverage map-wide.
+            // Default ON; X3_WATER_SHORE=0 is the door for turning it OFF
+            // (NO_SLOP rule 6) — it exists so the underground-sea defect can
+            // be reproduced for an A/B receipt from the same binary.
+            {
+                static const bool kShoreOn = [] {
+                    const char* e = std::getenv("X3_WATER_SHORE");
+                    return !(e && e[0] == '0');
+                }();
+                static const std::vector<float> kShore = [] {
+                    std::vector<float> r(WP::kShoreSectors, 0.0f);
+                    x3::game::worldOceanShoreTable(r.data(), WP::kShoreSectors);
+                    return r;
+                }();
+                if (kShoreOn) {
+                    wpr.shoreSectorCount = WP::kShoreSectors;
+                    std::memcpy(wpr.shoreRadii, kShore.data(),
+                                sizeof(float) * WP::kShoreSectors);
+                }
+            }
+            // FOAM (the owner: "alive.. pulsing... writhing.. foaming if
+            // needed"): contact foam hugs the banks, rocks and anything
+            // breaking the surface; whitecaps stay quiet at this amplitude.
+            wpr.foam = 0.85f;
         }
         // seaLevel carries the LOCAL level at the focus (underside-view gate +
         // caustics plane); dry land falls back to the bridge's level.
@@ -2536,6 +2613,7 @@ int hostTunnel(HostContext& hc) {
                 // boats/fish so the capture proves the LIVING river.
                 riverWaterClock += dt;
                 applyRiverWater(riverWaterClock, cam[0], cam[2]);
+                if (underRiver.built()) underRiver.update(dt, scene);
                 device->setSkyTime(riverWaterClock);   // cloud drift (see the interactive loop)
                 riverLife.prePhysics(dt);
                 // TRAFFIC IN CAPTURES TOO (gotcha 4.1b's lesson: moving
@@ -2655,6 +2733,17 @@ int hostTunnel(HostContext& hc) {
                     x3::game::uploadTunnelLights(*device, lcp,
                                                  shotEn ? shotEx : nullptr, shotEn);
                 }
+                // A STILL TAKEN INSIDE THE CAVERN needs the cavern's own
+                // lights, which are a per-frame nearest-K lane and so are NOT
+                // in the boot set this path otherwise keeps. Gated on the
+                // camera actually being in the corridor, so no reference
+                // capture anywhere else in the world moves.
+                if (underRiver.built() &&
+                    x3::game::UndergroundRiver::insideCorridor(cam)) {
+                    x3::rhi::PointLight ul[12];
+                    const uint32_t un = underRiver.nearestLights(cam, ul, 12);
+                    if (un) x3::game::uploadTunnelLights(*device, cam, ul, un);
+                }
 
                 // THE TOWN WALKS IN CAPTURES TOO. ENGINE_GOTCHAS 4.4 is right
                 // that a still cannot PROVE motion — but a still of six
@@ -2694,6 +2783,7 @@ int hostTunnel(HostContext& hc) {
                     if (carBuilt) car.render(frame);
                     traffic.render(frame, cam);
                     riverLife.render(*device, frame, scene);
+                    underRiver.render(*device, frame);   // cavern mist + spray
                     if (shotDraw) shotDraw(frame);   // the staged swimmer
                     // The ticket HUD in a STILL, but ONLY once a card has been
                     // taken (X3_TICKETS=n, or the console). At the default 0/5
@@ -5069,6 +5159,7 @@ int hostTunnel(HostContext& hc) {
                 if (carBuilt) car.chassisPos(pcam);
                 traffic.render(pf, pcam);               // traffic holds its pose paused
                 riverLife.render(*device, pf, scene);   // boats stay visible paused
+                underRiver.render(*device, pf);
                 gameMenu.draw(pf, gmIn, fdt, todHours); // the game menu, over the frozen world
                 shell.draw(pf, fdt);                    // console stays reachable over the menu
             }
@@ -5088,6 +5179,7 @@ int hostTunnel(HostContext& hc) {
         // ---- THE RIVER HAS WATER (Tim: "Can we pour the water in now").
         // One lambda with the headless path — same tone, same clock shape.
         riverWaterClock += fdt;
+        if (underRiver.built()) underRiver.update(fdt, scene);
         {
             // Focus = whoever the camera is following this frame.
             float wfx = startPos[0], wfz = startPos[2];
@@ -6080,6 +6172,16 @@ int hostTunnel(HostContext& hc) {
                   for (uint32_t i = 0; i < kTown; ++i) xl.push_back(tl[ts[i].i]);
               }
           }
+          // THE CAVERN, lane six. Same reason as the town's: the underground
+          // river's accents are a boot-time array no more — this upload
+          // overwrites any setPointLights every frame, so the run hands over
+          // only the few lights near the camera, and only when the camera is
+          // actually inside its corridor (above ground they cost nothing).
+          if (underRiver.built() && x3::game::UndergroundRiver::insideCorridor(cp)) {
+              x3::rhi::PointLight ul[10];
+              const uint32_t un = underRiver.nearestLights(cp, ul, 10);
+              for (uint32_t i = 0; i < un; ++i) xl.push_back(ul[i]);
+          }
           x3::game::uploadTunnelLights(*device, cp, xl.empty() ? nullptr : xl.data(),
                                        (uint32_t)xl.size()); }
         // SPEED FOV. Physical speed alone does not read as fast on a screen —
@@ -6272,6 +6374,7 @@ int hostTunnel(HostContext& hc) {
                 traffic.render(frame, fcam);           // the freeway is populated
             }
             riverLife.render(*device, frame, scene);   // boats + drivers + wakes
+            underRiver.render(*device, frame);         // cavern mist + spray
             // Combat FX: tracers + muzzle boxes (mesh draws), then the
             // particle pool + impact decals (billboards through
             // submitParticles). After the world, before the HUD.

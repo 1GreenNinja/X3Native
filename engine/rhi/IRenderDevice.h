@@ -1259,6 +1259,30 @@ public:
         float    basinCenter[2] = { 0.0f, 0.0f };
         float    basinRadius    = 0.0f;      // 0 => no ocean fallback disc
         float    oceanLevel     = 0.0f;
+        // ---- THE SHORELINE TABLE (W-UNDERRIVER: water only IN bodies of
+        // water). shoreSectorCount == 0 (default) keeps the historic basin
+        // behaviour: the WHOLE disc draws sea, including under the dry beach
+        // ring and every rim hill the disc overlaps — a sheet of underground
+        // water for anyone under the coast. When > 0, shoreRadii[i] is the
+        // outermost radius (m from basinCenter) at angular sector i at which
+        // the terrain bowl is genuinely below oceanLevel; past it the drawn
+        // surface fades out over shoreFade metres. Fill it from
+        // app/terrain.cpp worldOceanShoreTable() — the SAME height field
+        // worldWaterLevelAt tests, so drawn coverage and the water query stay
+        // one truth (the river_bridge RB11 gate asserts exactly this).
+        // 256 sectors: the coast is an fbm line — at 64 sectors the polygon
+        // cut real bulges off by up to 97 m (RB12's measurement). Each sector
+        // carries the supersampled MAX radius over its span, so the error is
+        // overdraw that dies under the beach, never a strip of undrawn sea.
+        static constexpr uint32_t kShoreSectors = 256;
+        uint32_t shoreSectorCount = 0;
+        float    shoreFade = 10.0f;
+        float    shoreRadii[kShoreSectors] = {};
+        // ---- FOAM (0 = off, legacy byte-identical). >0 scales contact foam
+        // at every water/scene intersection (banks, rocks, hulls, swimmers —
+        // from the scene-depth reconstruction, no geometry knowledge) plus
+        // whitecap foam where the Gerstner lift tops out. See water.frag.
+        float    foam = 0.0f;
     };
     // Set the active water parameters for subsequent frames (cached + re-applied
     // each frame, like setSkyParams). Calling with enabled=false disables water.
