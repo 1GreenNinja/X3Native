@@ -1102,7 +1102,7 @@ StackResult registerStack(const RoadSpec& fwySpec,
                 char nm[64];
                 std::snprintf(nm, sizeof(nm), "flyover L3 q%d", q);
                 underL4.push_back(UnderRoute::fromRoute(nm, rp.spec, rp.roadY, false,
-                                                        rampHalfW + kStackParapetW));
+                                                        kStackRampDeckHalfM));
             }
         }
     }
@@ -1163,7 +1163,7 @@ StackStructurePlan planStackStructure(const StackResult& st) {
                     d.x += (-d.tz) * side * lateral;
                     d.z += ( d.tx) * side * lateral;
                 }
-                r.halfW = kFwyShoulderHalfM + 0.55f;
+                r.halfW = kStackMainDeckHalfM;
                 r.depth = kStackMainDepthM;
                 r.level = 2;
                 r.name  = cw == 0 ? "L2 deck (left carriageway)"
@@ -1178,7 +1178,7 @@ StackStructurePlan planStackStructure(const StackResult& st) {
         for (auto& base : runs) {
             StackDeckRun r;
             r.s     = std::move(base);
-            r.halfW = kPavedHalfM * 0.5f + 1.0f;
+            r.halfW = kStackRampDeckHalfM;
             r.depth = kStackRampDepthM;
             r.level = st.ramp[q].level;
             r.name  = st.ramp[q].spec.name;

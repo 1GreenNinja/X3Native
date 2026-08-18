@@ -98,6 +98,13 @@ constexpr float kStackBearingM   = 0.20f;
 // above the 1.07 m (42 in) US standard for a high-speed bridge rail.
 constexpr float kStackParapetH   = 1.25f;
 constexpr float kStackParapetW   = 0.42f;
+// DECK WIDTHS. Running surface + shoulders + a kerb — the APRONS stop at the
+// abutment, exactly as the diamond's deck does and for the same reason: real
+// bridges drop them and the wingwalls close the corner. A ramp carries the
+// half-scale cross-section (two 12 ft lanes), the mainline carries a full
+// 8-lane carriageway. PAIRED with RoadSpec::widthScale 0.5 on the ramps.
+constexpr float kStackRampDeckHalfM = kShoulderHalfM * 0.5f + 0.55f;   // ~9.6 m wide
+constexpr float kStackMainDeckHalfM = kFwyShoulderHalfM + 0.55f;       // ~32.8 m wide
 // Pier rhythm. PAIRED with echo_roads.cpp's kPillarEvery (70 m).
 constexpr float kPierEveryM      = 70.0f;
 constexpr float kPierMinAirM     = 1.5f;     // below this the abutment carries it
