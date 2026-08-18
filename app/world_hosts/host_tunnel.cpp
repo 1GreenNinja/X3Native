@@ -7042,33 +7042,12 @@ int hostTunnel(HostContext& hc) {
                     }
                 }
             }
-            {   // Key hints on the glass. A binding nobody can see does not
-                // exist: T toggled traction control for a whole session while
-                // the only mention of it went to a log file.
-                const float hp = R * 0.085f;
-                const float hcol[4] = { 0.52f, 0.57f, 0.66f, 1.0f };
-                device->drawHudText(frame, "F4 WEATHER  F5 LIGHTS", gcx - R * 0.95f,
-                                    gcy - R * 2.00f, hp, hcol);
-                device->drawHudText(frame, "~  CONSOLE",      gcx - R * 0.95f,
-                                    gcy - R * 1.64f, hp, hcol);
-                device->drawHudText(frame, "SHIFT  NITROUS",  gcx - R * 0.95f,
-                                    gcy - R * 1.88f, hp, hcol);
-                device->drawHudText(frame, "T  TRACTION",     gcx - R * 0.95f,
-                                    gcy - R * 1.52f, hp, hcol);
-                device->drawHudText(frame, "C  CLIMB",        gcx - R * 0.95f,
-                                    gcy - R * 1.76f, hp, hcol);
-                device->drawHudText(frame, "SPACE  HANDBRAKE", gcx - R * 0.95f,
-                                    gcy - R * 1.40f, hp, hcol);
-            }
-            {
-                const bool tcOn = car.tractionControl();
-                const float px = R * 0.105f;
-                const float c4[4] = { tcOn ? 0.35f : 1.0f, tcOn ? 0.78f : 0.58f,
-                                      tcOn ? 0.95f : 0.20f, 1.0f };
-                const char* t = car.climbMode() ? "CLIMB" : (tcOn ? "TC" : "TC OFF");
-                device->drawHudText(frame, t, gcx - (float)std::strlen(t) * px * 0.5f,
-                                    gcy - R * 1.30f, px, c4);
-            }
+            // KEY HINTS + TC readout: drawn by the SHARED gauge_hud module
+            // (app/gauge_hud.cpp) which the capture path also calls. The
+            // host's own inline copy lived here until 2026-08-18, and the
+            // session lead's union merge kept BOTH — the owner's screenshot
+            // showed the hint list and "TC OFF" stamped twice on top of
+            // themselves. One producer, per the reason the module exists.
             // ---- JET READOUT — the observation HUD. On foot with the pack
             // burning, the two numbers the owner is flying by: airspeed (the
             // 300 mph claim, live) and height over the ground directly below.
