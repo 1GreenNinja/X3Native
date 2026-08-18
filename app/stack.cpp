@@ -557,7 +557,7 @@ FlyoverPlan planFlyoverGaps(RoadSpec& over, float startDatum, float endDatum,
         if (elev[i]) { ++i; continue; }
         size_t j = i;
         while (j < n && !elev[j]) ++j;
-        if (i > 0 && j < n && runLenFrom(i, j) < 60.0f)
+        if (i > 0 && j < n && runLenFrom(i, j) < 80.0f)
             for (size_t k = i; k < j; ++k) elev[k] = 1;
         i = j;
     }
@@ -565,7 +565,9 @@ FlyoverPlan planFlyoverGaps(RoadSpec& over, float startDatum, float endDatum,
         if (!elev[i]) { ++i; continue; }
         size_t j = i;
         while (j < n && elev[j]) ++j;
-        if (runLenFrom(i, j - 1) < 40.0f)
+        // Under 60 m is not a bridge, it is an embankment with pretensions:
+        // let the ribbon lay it and keep the abutment count honest.
+        if (runLenFrom(i, j - 1) < 60.0f)
             for (size_t k = i; k < j; ++k) elev[k] = 0;
         i = j;
     }
@@ -1624,11 +1626,14 @@ StackBuildResult buildStack(const StackResult& st, Scene& scene,
                 rp.level, q, rp.spec.x[hi], rp.plan.profile[hi], rp.spec.z[hi], yaw);
             x3::logInfo(cb);
         }
-        char cb2[220];
+        char cb2[300];
         std::snprintf(cb2, sizeof(cb2),
-            "stack camera: centre (%.0f, %.1f, %.0f); tallest pier base "
+            "stack camera: centre (%.0f, %.1f, %.0f), L1 yaw %.3f / L2 yaw "
+            "%.3f, L2 deck %.1f, L3 %.1f, L4 %.1f; tallest pier base "
             "(%.0f, %.1f, %.0f) rising %.1f m to its cap",
             st.cx, st.baseSurfaceY, st.cz,
+            std::atan2(st.tZ, st.tX), std::atan2(st.pZ, st.pX),
+            st.levelY[0], st.levelY[1], st.levelY[2],
             tall ? tall->x : st.cx, tall ? tall->yGround : st.baseSurfaceY,
             tall ? tall->z : st.cz, tall ? (tall->ySoffit - tall->yGround) : 0.0f);
         x3::logInfo(cb2);
