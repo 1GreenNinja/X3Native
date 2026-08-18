@@ -418,23 +418,30 @@ FlyoverPlan planFlyoverGaps(RoadSpec& over, float startDatum, float endDatum,
     out.levelY = (forceLevelY > 0.0f) ? forceLevelY : derived;
 
     // ---- THE AUTHORED VERTICAL ALIGNMENT -----------------------------------
-    // The walk is the diamond's (interchange.cpp): a K-rate-limited TRACKING
-    // WALK from each pinned end with dv clamped against the AVERAGE of the two
-    // adjacent segment lengths (the per-segment clamp leaked 1.43x of the rate
-    // at a station-spacing transition — measured, then killed). What is new is
-    // the TARGET it tracks: not a trapezoid but the upper envelope of three
-    // grade-limited CONES —
-    //   * one rising out of each crossing's own requirement (surface + the
-    //     16.5 ft law + bearing + structure), so a crossing over a freeway at
-    //     grade costs 7 m and a crossing over another ramp's deck costs 21,
-    //     and the profile between them is allowed to fall;
-    //   * one from each terminal datum, so the ramp never dives below the
-    //     road it merges with.
-    // A cone is `req_j - maxGrade * |u - u_j|`: the lowest a <=maxGrade
-    // profile through req_j can be here. Their max is therefore the LOWEST
-    // feasible profile — a crest, exactly the shape a directional ramp is.
-    // Where a level is FORCED (the two ramps of one level must be coplanar at
-    // the crest) the top requirements are lifted to it and the cones follow.
+    // The diamond RELAXES its crossroad profile with a K-rate-limited tracking
+    // walk. Two cuts of that ran here and both failed, in opposite directions
+    // (see the receipts on the walk's own remains below), so this one is
+    // CONSTRUCTED instead of tracked:
+    //
+    //   1. req[i] — what THIS node has to be above: the surface under it plus
+    //      the 16.5 ft law plus bearing plus structure. A node over a freeway
+    //      at grade asks ~7 m; a node over another ramp's deck asks ~21. A
+    //      single level for the whole flyover would ask 21 everywhere and the
+    //      ramp is not long enough to climb it. Where a level is FORCED (the
+    //      two ramps of one level must be coplanar at the crest) the top
+    //      requirements are lifted to it and everything follows.
+    //   2. the K-AWARE CONE from every requirement, swept both ways: the
+    //      lowest profile that can pass over req_j and still get away from it
+    //      legally — a parabola of curvature `rate` for the first g/rate
+    //      metres, then a straight g.
+    //   3. a FLOOR at the terminal datum you came from before the crest, and
+    //      at the one you are going to after it, so the ramp never dives.
+    //   4. one raise-only relaxation to fill the SAG corners the envelope's
+    //      own maxima leave behind.
+    //
+    // The result is the LOWEST profile that clears everything at <= maxGrade
+    // with |d(grade)/ds| <= rate — which is a CREST, which is what a
+    // directional ramp is.
     std::vector<float> req(n, -1e18f);
     for (size_t i = 0; i < n; ++i) {
         if (!overSomething[i]) continue;
@@ -448,9 +455,9 @@ FlyoverPlan planFlyoverGaps(RoadSpec& over, float startDatum, float endDatum,
         if (req[i] > out.levelY - 0.30f) {
             crestLo = std::min(crestLo, U[i]); crestHi = std::max(crestHi, U[i]);
         }
-    // A ride height over the bare requirement: the rate-limited walk cannot
-    // turn a corner instantly, so it shaves a crest. 0.35 m buys that back
-    // and the clearance is MEASURED off the finished profile anyway.
+    // A ride height over the bare requirement — a little daylight so the law
+    // is a floor the structure never has to argue with. The clearance is
+    // MEASURED off the finished profile at every node regardless.
     constexpr float kRide = 0.35f;
     std::vector<float> T(n, -1e18f);
     for (size_t i = 0; i < n; ++i)
@@ -458,12 +465,12 @@ FlyoverPlan planFlyoverGaps(RoadSpec& over, float startDatum, float endDatum,
     {   // THE K-AWARE CONE. Spreading a requirement outward at maxGrade gives
         // a target that is grade-feasible and RATE-infeasible: a road cannot
         // leave a crest at 6% instantly, it has to turn the corner over
-        // g/rate = 133 m first. A cone that forgets that asks the walk for a
-        // 12 m-wide spike 9 m above its neighbours, and the walk misses it by
-        // 3.46 m — measured, gate S4. So the kernel is the real one: a
-        // parabola of curvature `rate` for the first g/rate metres, then a
-        // straight g. Swept forward and backward, its upper envelope is the
-        // LOWEST profile that can legally pass over every requirement.
+        // g/rate = 133 m first. A cone that forgets that produces a 12 m-wide
+        // spike 9 m above its neighbours that nothing can drive (measured, a
+        // 3.46 m miss at gate S4). So the kernel is the real one: a parabola
+        // of curvature `rate` for the first g/rate metres, then a straight g.
+        // Swept forward and backward, its upper envelope is the LOWEST
+        // profile that can legally pass over every requirement.
         auto sweep = [&](bool forward) {
             float p = -1e18f, v = 0.0f;
             for (size_t c = 0; c < n; ++c) {
