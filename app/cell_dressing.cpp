@@ -343,6 +343,70 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         return false;
     };
 
+    // ======================================================================
+    // THE MOUNTED-PROP LAW (fix/spawn-anomalies, 2026-08-17)
+    // ======================================================================
+    // A prop that is BOLTED TO A WALL needs a wall to be bolted to. Obvious;
+    // nothing enforced it.
+    //
+    // The shipped defect: a small white low-poly wedge floating in a cell-block
+    // DOORWAY at head height, filed by the VFX lane (d8bf8224) as a stray
+    // "delta-wing ship" and reported again mid-hall. It is neither ship nor
+    // marker mesh — it is a Main Hall WALL SCONCE (SciFi_Warehouse_Kit/Wall
+    // Light.glb, 0.25 x 0.26 x 0.06 m, lit lens emissive). The opening-route
+    // sconce run marches down the hall's long walls on a blind fixed pitch
+    // (`sx += 6.5`), and the hall's -Z wall is PIERCED by the cell-block
+    // doorways: the run's first stop lands squarely on the cell's door opening.
+    // With no wall behind it the fixture hangs in the doorway, and seen
+    // point-blank from inside the cell that untextured, self-lit lens reads as a
+    // white paper-plane wedge embedded in the door header.
+    //
+    // This is the SAME defect family as the pistol buried in the jamb
+    // (canonPickupSpotClear, d8bf8224) and the drone floating inside the header
+    // (THE HOVER RULE, monster.cpp): AN AUTHORED OFFSET APPLIED WITHOUT ASKING
+    // WHETHER THE SURFACE IT ASSUMES IS ACTUALLY THERE. The answer is the same
+    // one all three times — probe first, and let the data move the prop.
+    //
+    // wallSolidAt(): is `room`'s wall `wall` (0=-X 1=+X 2=-Z 3=+Z) SOLID over
+    // [coord-halfW, coord+halfW] along that wall's run? False when the span
+    // crosses a resolved doorway cut (plus a jamb margin). Driven off the same
+    // floor.doorways data the frames and pane-clipping already use, so a future
+    // layout change moves the sconces with it instead of stranding them in air.
+    auto wallSolidAt = [&](uint32_t room, int wall, float coord, float halfW) -> bool {
+        if (room == kNoRoom || room >= floor.rooms.size()) return true;
+        const CanonRoom& R = floor.rooms[room];
+        const bool xWall = (wall == 0 || wall == 1);
+        const float plane = (wall == 0) ? R.x0() : (wall == 1) ? R.x1()
+                          : (wall == 2) ? R.z0() : R.z1();
+        for (const CanonDoorway& dw : floor.doorways) {
+            if (dw.a != room && dw.b != room) continue;
+            if (dw.kind == DoorwayKind::GapBridge || dw.kind == DoorwayKind::CrossLevel ||
+                dw.kind == DoorwayKind::None) continue;
+            // axis 0 = wall plane X=const (run along Z); axis 1 = plane Z=const (run along X).
+            if ((dw.axis == 0) != xWall) continue;
+            const float dwPlane = xWall ? dw.cx : dw.cz;
+            if (std::fabs(dwPlane - plane) > 0.75f) continue;   // a cut in a DIFFERENT wall
+            const float c  = xWall ? dw.cz : dw.cx;             // cut centre along the run
+            const float oh = (dw.cutHalf > 0.05f) ? dw.cutHalf : 0.8f;
+            const float m  = 0.20f;                             // jamb margin
+            if (coord + halfW > c - oh - m && coord - halfW < c + oh + m) return false;
+        }
+        return true;
+    };
+    // Slide a wall-mounted prop along its wall to the first SOLID spot, searching
+    // outward from the authored coordinate in `step` increments up to `reach`.
+    // Returns false when the whole neighbourhood is opening — the caller then
+    // SKIPS the prop rather than hanging it in a doorway.
+    auto slideToSolidWall = [&](uint32_t room, int wall, float& coord, float halfW,
+                                float reach, float step) -> bool {
+        if (wallSolidAt(room, wall, coord, halfW)) return true;
+        for (float d = step; d <= reach + 1e-4f; d += step) {
+            if (wallSolidAt(room, wall, coord - d, halfW)) { coord -= d; return true; }
+            if (wallSolidAt(room, wall, coord + d, halfW)) { coord += d; return true; }
+        }
+        return false;
+    };
+
     // ---- Load all kit pieces up front (cached). ----
     const uint32_t aConsole = load(kRelConsole);
     const uint32_t aPipes   = load(kRelPipes);
@@ -640,11 +704,21 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // R4: the sconce's screen is its local -Z face, and local -Z maps to world
         // (sin yaw, 0, -cos yaw). On the +X wall the screen must face -X -> yaw = -pi/2.
         const float emSconce[4] = { 1.0f, 0.86f, 0.62f, 1.0f };
+        // THE MOUNTED-PROP LAW (see wallSolidAt above): the +X wall carries this
+        // cell's West Cell Hall opening, so the authored ccz+1.4 seat is not
+        // guaranteed to be wall. Slide along the wall to solid, or drop the
+        // fixture and its pool rather than float them in the doorway.
+        float sconceZ = ccz + 1.4f;
+        const float cellSconceHalf = (kWLightAabb.maxx - kWLightAabb.minx) * 0.5f;
+        const bool sconceSeated =
+            slideToSolidWall(bt.jakeCell, 1, sconceZ, cellSconceHalf, 1.6f, 0.3f);
+        if (sconceSeated)
         place(aWLight, -kPi * 0.5f, 1.0f, cx(kWLightAabb), cy(kWLightAabb), kWLightAabb.maxz,
-              x1 - 0.10f, fY + 2.2f, ccz + 1.4f, emSconce, tSteel);   // back ON the graybox face
+              x1 - 0.10f, fY + 2.2f, sconceZ, emSconce, tSteel);   // back ON the graybox face
         // Its pool: SMALL and warm. It is a bulb on a wall, not a floodlight — it lights
         // the plate it is bolted to and dies within a couple of metres.
-        addLight(bt.jakeCell, x1 - 0.45f, fY + 2.2f, ccz + 1.4f, 2.2f, 0.55f, 0.44f, 0.29f);
+        if (sconceSeated)
+            addLight(bt.jakeCell, x1 - 0.45f, fY + 2.2f, sconceZ, 2.2f, 0.55f, 0.44f, 0.29f);
     }
 
     // ================= CELL DOORWAYS — a reinforced frame at EACH real opening =======
@@ -1042,19 +1116,63 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
             const float hx1 = H.x1();
             const float emSconce[4] = { 1.0f, 0.86f, 0.62f, 1.0f };   // lit lens
             const float sconceY = hfY + 2.2f;                          // head height
-            int side = 0;
+            // Half-width of the fixture on the wall's run — what has to land on solid wall.
+            const float sconceHalf = (kWLightAabb.maxx - kWLightAabb.minx) * 0.5f;
+            m_mountedFirst = (uint32_t)m_instances.size();   // audit window start
+            int side = 0, skipped = 0, slid = 0;
             for (float sx = hx0 + 3.0f; sx <= hx1 - 3.0f; sx += 6.5f, ++side) {
                 const bool onMinZ = (side % 2) == 0;                  // alternate walls
+                // THE MOUNTED-PROP LAW: this wall is pierced by the cell-block
+                // doorways, and the blind 6.5 m pitch used to plant a fixture in
+                // mid-air inside one of them (the "stray white delta-wing"). Slide
+                // to the first solid span; skip the stop if the whole neighbourhood
+                // is opening. Its POOL goes with it — a light with no visible source
+                // is the other half of the same lie.
+                const int   wallId = onMinZ ? 2 : 3;
+                float       mx     = sx;
+                if (!slideToSolidWall(bt.mainHall, wallId, mx, sconceHalf, 2.6f, 0.4f)) {
+                    ++skipped;
+                    continue;
+                }
+                if (std::fabs(mx - sx) > 1e-3f) ++slid;
                 // Screen = local -Z -> world (sin yaw, 0, -cos yaw): face INTO the hall.
                 const float yaw = onMinZ ? kPi : 0.0f;
                 const float wz  = onMinZ ? (H.z0() + 0.10f) : (H.z1() - 0.10f);
                 place(aWLight, yaw, 1.0f, cx(kWLightAabb), cy(kWLightAabb), kWLightAabb.maxz,
-                      sx, sconceY, wz, emSconce, tSteel);
+                      mx, sconceY, wz, emSconce, tSteel);
                 // Its pool: warm tungsten, ranged so neighbouring pools OVERLAP on the
                 // walls (6.5 m pitch / 6.5 m range) — a rhythm of pools, not a wash.
                 const float lz = onMinZ ? (H.z0() + 0.55f) : (H.z1() - 0.55f);
-                addLight(bt.mainHall, sx, sconceY, lz, 6.5f, 2.60f, 2.17f, 1.51f);
+                addLight(bt.mainHall, mx, sconceY, lz, 6.5f, 2.60f, 2.17f, 1.51f);
             }
+            if (skipped || slid)
+                x3::logInfo("[cell-dress] sconce run: " + std::to_string(slid) +
+                            " slid off a doorway, " + std::to_string(skipped) +
+                            " skipped (no solid wall within reach)");
+            // ---- THE AUDIT. The law above is only worth what it can PROVE, so
+            // re-test every sconce actually placed and report the count that ended
+            // up spanning a doorway. It must be zero; a nonzero count is the exact
+            // defect that shipped (a fixture hanging in an opening reading as a
+            // stray white object) and it now says so, loudly, at every level build
+            // instead of waiting for someone to photograph it.
+            for (uint32_t si = m_mountedFirst; si < (uint32_t)m_instances.size(); ++si) {
+                const Instance& in = m_instances[si];
+                const bool minZ = std::fabs(in.transform[14] - (H.z0() + 0.10f)) < 0.02f;
+                if (!minZ && std::fabs(in.transform[14] - (H.z1() - 0.10f)) >= 0.02f) continue;
+                if (!wallSolidAt(bt.mainHall, minZ ? 2 : 3, in.transform[12], sconceHalf))
+                    ++m_mountedInOpening;
+                ++m_mountedAudited;
+            }
+            if (m_mountedInOpening > 0)
+                x3::logError("[cell-dress] MOUNTED-PROP AUDIT FAILED: " +
+                             std::to_string(m_mountedInOpening) + " of " +
+                             std::to_string(m_mountedAudited) +
+                             " wall sconces span a DOORWAY — a fixture bolted to no wall "
+                             "renders as a stray object floating in the opening");
+            else
+                x3::logInfo("[cell-dress] mounted-prop audit: " +
+                            std::to_string(m_mountedAudited) +
+                            " wall sconces, 0 in a doorway");
         }
     }
 

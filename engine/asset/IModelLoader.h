@@ -38,6 +38,38 @@ struct MeshPrimitive {
     // these vectors are empty and the primitive is drawn untouched. The bind-pose
     // positions/normals are kept (skinning is computed relative to them every
     // frame, never accumulated). vertexCount == basePos.size()/3. ----
+    // ---- LOCAL BOUNDS. Axis-aligned min/max of this primitive's POSITIONS in
+    // mesh-local space, populated for EVERY primitive (skinned or not) at load.
+    // It costs one min/max per vertex in a loop that already touches them all,
+    // and it is the ONLY CPU-side record of an UNSKINNED model's size: basePos
+    // is retained for skinned primitives alone, so before this every size/height
+    // check in the game (monster.cpp's fit guards, grounding.h's
+    // artLowestBelowOrigin, env_art's namedBounds) was structurally blind to
+    // static art and silently measured nothing. Combine with the referencing
+    // node's world transform for model-space bounds.
+    // NOTE for skinned primitives this is the BIND-pose box, which the joint
+    // matrices may rescale wholesale — measure those through the skinning
+    // palette, not this. ----
+    // ---- NON-VISUAL geometry (fix/spawn-anomalies, Tim 2026-08-17: "the tiny
+    // body was cloned, under the full size model ... Car models had the same
+    // issue. It was a collider mesh").
+    //
+    // Art packs ship geometry that is NOT meant to be seen: physics hulls
+    // (Collider / UCX_ / UBX_ / USP_ / *_phys) and reduced LOD copies. Nothing
+    // in glTF marks them, so the loader used to hand every primitive in the file
+    // to the renderer AND to every bounds query. Two ways that bites:
+    //   * a hull drawn at the wrong transform is a SECOND, mis-scaled copy of the
+    //     body sitting under the real one (the "mini car", and the tiny humanoid
+    //     under the full-size enemy);
+    //   * even when suppressed from DRAWING, the hull still sat in the bounds, so
+    //     size and grounding maths measured a body that is not the visible one.
+    // Classified once at load; honoured by the drawable builders AND the bounds
+    // helpers, so a proxy can never be drawn or measured. ----
+    bool                 nonVisual = false;
+    bool                 hasBBox = false;
+    float                bboxMin[3] = { 0, 0, 0 };
+    float                bboxMax[3] = { 0, 0, 0 };
+
     bool                 skinned = false;
     std::vector<float>   basePos;    // bind-pose positions (vertexCount * 3)
     std::vector<float>   baseNrm;    // bind-pose normals    (vertexCount * 3)

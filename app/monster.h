@@ -1135,6 +1135,27 @@ public:
     // Valid after buildMonster().
     bool usingRealModel() const { return m_usingReal; }
 
+    // THE ART-HEIGHT LAW (fix/spawn-anomalies). The world height, in metres, of
+    // the art this enemy actually DRAWS: the model's extent along world up (node
+    // transforms included) times the final model scale, measured at build time
+    // AFTER every scale decision (authored row, skeleton fit, art-height
+    // correction). 0 if no real model loaded (the fallback box). This is what
+    // --test-enemy-scale asserts against each species' sane band — the assertion
+    // that makes another 30 cm guard impossible.
+    float visualHeight() const { return m_visualHeight; }
+    // The unscaled art span along up (metres). visualHeight = artSpan * scale.
+    float artSpan() const { return m_artSpan; }
+    // World size of the LARGEST drawn axis (metres) — what the runtime band guard
+    // keys on, so a legitimately flat body (a hovering drone) is not "corrected".
+    float bodySize() const { return m_bodySize; }
+    // THE HOVER RULE: true when this flyer's hover column was probed and found
+    // clear of floor/ceiling/lintel at build time. False for ground enemies (they
+    // go through groundCharacter instead) and for a flyer with no clear column —
+    // the case that shipped a drone embedded in a cell-block door header.
+    bool hoverSeated() const { return m_hoverSeated; }
+    // The uniform model scale in force after all corrections.
+    float modelScale() const { return m_modelScale; }
+
 private:
     // Issue the per-primitive drawMesh calls for the monster at `model`, with
     // `tint` multiplied into each primitive's base color (for the hit-flash).
@@ -1261,6 +1282,10 @@ private:
     uint32_t         m_entity = kNoLink;      // index into the Scene
     x3::phys::BodyId m_body;                  // Enemy-layer collision box
     float            m_modelScale = 1.0f;     // uniform scale applied to the model
+    float            m_artSpan     = 0.0f;    // art extent along world up, model units
+    float            m_visualHeight = 0.0f;   // m_artSpan * m_modelScale (metres); see visualHeight()
+    float            m_bodySize     = 0.0f;   // largest drawn axis * scale (metres); see bodySize()
+    bool             m_hoverSeated  = false;   // flyer: hover column probed clear (THE HOVER RULE)
     float            m_hitHalfY   = 0.95f;    // Enemy hitbox half-height (scaled); top half = head zone
     float            m_hitHalfXZ  = 0.5f;     // Enemy hitbox half-width (scaled); chase probe clears this
     float            m_hitCenterOff = 0.0f;   // box center offset above m_pos (feet-origin ground enemies raise it)
@@ -1626,6 +1651,24 @@ MonsterSystem::Tuning tuningFor(EnemyType t);
 // Logs PASS/FAIL T#, returns true iff all pass. No window / Vulkan. Lives in
 // monster.cpp. Mirrors the other self-tests. Reuses the existing combat AI verbatim.
 bool runBestiarySelfTest();
+
+// THE ENEMY HEIGHT BAND (fix/spawn-anomalies). The legal world height, in metres,
+// of any enemy body: [min, max], plus the height a degenerate body is refit to.
+// Single source of truth — both the runtime guard in buildMonsterTuned and the
+// --test-enemy-scale assertion read it, so they can never drift apart.
+void enemyHeightBand(float& outMin, float& outMax, float& outFit);
+
+// Headless self-test (--test-enemy-scale). THE SWEEP: builds EVERY live enemy row
+// the game can spawn — the data-driven bestiary, the canon-alien roster, the Act-1
+// mid-bosses, the Act-2 surface roster + bosses, the pack arachnids, and the spire
+// floor tunings — and asserts each one's rendered world HEIGHT lands inside the
+// sane band above, with its boss phase multipliers applied. This is the assertion
+// that closes the "~30 cm humanoid floating between a guard's legs" defect class:
+// a future roster row, art re-export, or rig regression that would ship a body at
+// a fraction (or multiple) of human size fails here instead of on Tim's screen.
+// Also asserts the runtime guard actually FIRES on deliberately degenerate art.
+// No window / Vulkan. Lives in monster.cpp.
+bool runEnemyScaleSelfTest();
 
 // ===========================================================================
 // ACT-1 MID-BOSS ROSTER (Wave 1). The five canon Act-1 mid-bosses, as DATA on top

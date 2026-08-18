@@ -72,6 +72,9 @@ public:
 
     bool built() const { return m_built; }
     uint32_t propInstances() const { return (uint32_t)m_instances.size(); }
+    // Mounted-prop audit results (see the members below). inOpenings() must be 0.
+    uint32_t mountedPropsAudited() const { return m_mountedAudited; }
+    uint32_t mountedPropsInOpenings() const { return m_mountedInOpening; }
     uint32_t propsLoaded() const;
 
     // QA PROP-CLIP LINT (GATE A extension, app/qa_propclip.cpp): enumerate every
@@ -178,6 +181,14 @@ private:
     std::vector<std::string>                 m_assetPaths;
     std::vector<Instance>                    m_instances;
     std::vector<x3::rhi::MeshHandle>         m_procMeshes; // procedural atmosphere meshes
+    // THE MOUNTED-PROP LAW audit (fix/spawn-anomalies): how many wall-mounted
+    // fixtures were checked against the room's doorway cuts, and how many ended up
+    // spanning one anyway. mountedPropsInOpenings() MUST be 0 — a sconce bolted to
+    // an opening has no wall behind it and renders as a stray object floating in
+    // the doorway (the "white delta-wing" filed by the VFX lane in d8bf8224).
+    uint32_t                                 m_mountedFirst     = 0;
+    uint32_t                                 m_mountedAudited   = 0;
+    uint32_t                                 m_mountedInOpening = 0;
     std::vector<ProcDraw>                    m_proc;        // shafts + motes
     std::vector<Mote>                        m_motes;       // animated motes (index into m_proc)
     std::vector<DressLight>                  m_lights;

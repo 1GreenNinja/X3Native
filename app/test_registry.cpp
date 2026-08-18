@@ -861,6 +861,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running D-ai monster combat behaviour state-machine self-test...");
         return x3::game::runAiSelfTest() ? 0 : 1;
     }
+    if (tf.testEnemyScale) {
+        x3::logInfo("running THE BODY-SIZE SWEEP (--test-enemy-scale): every live enemy row "
+                    "across every roster builds and renders inside the sane body-size band, "
+                    "plus the degenerate-art / flat-body guard controls...");
+        return x3::game::runEnemyScaleSelfTest() ? 0 : 1;
+    }
     if (tf.testBestiary) {
         x3::logInfo("running data-driven enemy bestiary roster self-test...");
         return x3::game::runBestiarySelfTest() ? 0 : 1;
