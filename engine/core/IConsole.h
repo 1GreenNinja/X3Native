@@ -37,6 +37,25 @@ public:
     virtual int         getInt   (std::string_view name) const = 0;
     virtual void        set      (std::string_view name, std::string_view value) = 0;
 
+    // ---- CVar INTROSPECTION (the tuning-panel fold) -------------------------
+    // registerCVar() has always taken a help string and a default and stored
+    // both; nothing could read them back, so every GUI over the cvars had to
+    // carry its own duplicate copy of each cvar's description and shipped value
+    // — which is exactly how a panel drifts from the console behind it.
+    //
+    // cvarHelp()    -> the registered description (the hover TOOLTIP text).
+    // cvarDefault() -> the registered default value (what RESET restores).
+    // Both return an empty string for an unknown cvar.
+    //
+    // NOT pure: they have a "" default so alternate IConsole implementations
+    // (test doubles, bare hosts) keep compiling untouched; the real Console
+    // overrides them.
+    virtual std::string cvarHelp(std::string_view /*name*/) const { return {}; }
+    virtual std::string cvarDefault(std::string_view /*name*/) const { return {}; }
+    // Every registered cvar name, sorted. Lets a panel enumerate a namespace
+    // (e.g. everything starting "w_") instead of hard-coding a list.
+    virtual std::vector<std::string> cvarNames() const { return {}; }
+
     virtual void exec(std::string_view line) = 0;
     virtual void print(std::string_view msg) = 0;
 

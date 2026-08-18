@@ -101,7 +101,8 @@
 #include "rifthub.h"      // W-RIFT: the RIFT HUB, now a REGION of the one world
 #include "rift_depths.h"  // W-RIFT: the landing + the approach corridor to it
 #include "destinations.h" // W-MENU: the ONE registry of every place the game has
-#include "world_menu.h"   // W-MENU: the world / place selection screen (F6 + pause)
+#include "world_menu.h"
+#include "weapon_tuning_menu.h"                // F7 TUNING PANEL (shared with HostShell)   // W-MENU: the world / place selection screen (F6 + pause)
 #include "club1127.h"
 #include "club_listen.h"   // CLUB LISTEN MODE: cvars + console bind (live-beat drive)
 #include "env_art.h"                       // EnvArtSystem::buildFromGlb (--screenshot-showroom)
@@ -443,6 +444,11 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     // is what makes them LIVE — typed value in, next frame out, in every host and
     // in the --screenshot settle path (which calls this hub too).
     x3::game::applyWeaponFxCVars(console);
+    // HUD GLASS (hud_glass_* / hud_radius): the panel fill and the ONE corner
+    // radius every HUD plate, menu and console share. Same hub, same reason —
+    // the colour picker in the tuning panel writes these cvars, so the glass
+    // restyles under the cursor instead of costing a rebuild.
+    x3::game::applyHudPanelCVars(console);
     x3::rhi::IRenderDevice::RtaoParams p{};
     p.enabled  = console.getInt("r_rtao") != 0;
     p.radius   = console.getFloat("r_rtao_radius");
@@ -8561,6 +8567,44 @@ int runDefaultHost(HostContext& hc) {
     x3::game::WorldMenu worldMenu;
     x3::ui::UiContext   menuUi;         // its own IMGUI-lite context (the map's pattern)
     bool  prevWorldMenuKey = false;
+
+    // ---- F7: THE TUNING PANEL --------------------------------------------------
+    // The SAME class HostShell owns, so the campaign and all 28 world hosts get one
+    // panel with one behaviour (Tim: "the console and menu should stay consistent
+    // across x3native no matter what game"). This loop predates HostShell and wires
+    // its own console, so it wires its own panel too.
+    //
+    // It deliberately does NOT join simFrozen: the workflow is soak-the-weapon /
+    // watch-the-beam / drag-the-slider, which dies the instant the sim stops. It
+    // DOES take the keyboard + show the cursor while open.
+    x3::game::WeaponTuningMenu weaponTune;
+    x3::ui::UiContext   tuneUi;         // its own context (the world map's pattern)
+    bool  prevTuneKey = false;
+    bool  prevTuneMouse = false;
+    bool  prevTuneNavUp = false, prevTuneNavDown = false, prevTuneNavLeft = false;
+    bool  prevTuneNavRight = false, prevTuneNavAct = false, prevTuneTab = false;
+
+    // ---- F7 TUNING PANEL: hand it this world's weapon roster. -----------------
+    // THE SOAK BUTTON RUNS `wtest <name>` — the console command registered right
+    // above, not a copy of it. So the panel gets the real fire path (cadence,
+    // rays, FX, audio), the ammo-free mode, the cheatArm, the restore-on-stop and
+    // the toggle semantics for free, and the two can never diverge: there is one
+    // implementation and the GUI is a caller of it. The console even prints the
+    // same "soak ON/OFF" line, so the log tells the same story either way.
+    {
+        x3::game::WeaponTuningSource src;
+        src.count   = arsenal.count();
+        src.name    = [&arsenal](int i) { return arsenal.def(i).name; };
+        src.fxKind  = [&arsenal](int i) {
+            return (int)x3::game::fxKindFromId(arsenal.def(i).muzzleFx);
+        };
+        src.held    = [&arsenal]() { return arsenal.selected(); };
+        src.soaking = [&weaponSoak]() { return weaponSoak.active ? weaponSoak.weapon : -1; };
+        src.toggleSoak = [&arsenal, c = console.get()](int i) {
+            if (i >= 0 && i < arsenal.count()) c->exec("wtest " + arsenal.def(i).name);
+        };
+        weaponTune.setSource(std::move(src));
+    }
     bool  worldLoadRequested = false;   // a "LOADS WORLD" pick -> main()'s world-load loop
 
     // ---- W-RIFT: THE RIFT CONSOLE, IN THE CANON GAME LOOP ---------------------------
@@ -8658,6 +8702,7 @@ int runDefaultHost(HostContext& hc) {
         const bool riftConsoleOpen = rifthub.consoleOpen();   // W-RIFT: in the canon loop now
         const bool wantCursor = consoleOpen || gameUi.showCursor() || worldMapOpen ||
                                 worldMenu.isOpen() || riftConsoleOpen ||
+                                weaponTune.isOpen() ||  // F7: sliders need a pointer
                                 rpgUi.anyOpen();   // [W9-3 RPG] backpack/skill screens show the cursor
         if (wantCursor != cursorShown) {
             glfwSetInputMode(window, GLFW_CURSOR,
@@ -8698,6 +8743,7 @@ int runDefaultHost(HostContext& hc) {
             }
             else if (riftConsoleOpen) { rifthub.closeConsole(); }  // W-RIFT: step back
             else if (worldMenu.isOpen()) { worldMenu.close(); }    // W-MENU: close the directory
+            else if (weaponTune.isOpen()) { weaponTune.close(); }  // F7: close the tuning panel
             else if (rpgUi.anyOpen()) { rpgUi.closeAll(); }   // [W9-3 RPG] Esc closes the RPG screens
             else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
         }
@@ -8723,6 +8769,7 @@ int runDefaultHost(HostContext& hc) {
         lastMX = mx; lastMY = my;
         if (consoleOpen || uiMenuActive || termMode || codeMode || worldMapOpen ||
             worldMenu.isOpen() || riftConsoleOpen ||
+            weaponTune.isOpen() /* F7 tuning panel */ ||
             rpgUi.anyOpen() /* [W9-3 RPG] */) { ddx = 0.0f; ddy = 0.0f; }
 
         // Gameplay key reads are gated off while the console, a UI menu, the cell
@@ -8732,6 +8779,7 @@ int runDefaultHost(HostContext& hc) {
         auto keyDown = [&](int k) {
             return !consoleOpen && !uiMenuActive && !termMode && !codeMode && !worldMapOpen &&
                    !worldMenu.isOpen() && !riftConsoleOpen /* W-MENU / W-RIFT capture */ &&
+                   !weaponTune.isOpen() /* F7: its nav keys must not also walk Jake */ &&
                    !rpgUi.anyOpen() /* [W9-3 RPG] */ &&
                    glfwGetKey(window, k) == GLFW_PRESS;
         };
@@ -8846,6 +8894,26 @@ int runDefaultHost(HostContext& hc) {
             gameUi.setShowEditorRow(console->getInt("ui_editor") != 0);
             if (wNow && !prevWorldMenuKey) worldMenu.toggle();
             prevWorldMenuKey = wNow;
+        }
+
+        // ---- F7 = THE TUNING PANEL (weapons soak + live FX dials + HUD glass).
+        // F7 was the only completely unbound function key in the project: F1/F2
+        // are the view toggles, F3 stats, F4 a map mode in host_tunnel, F5/F9
+        // quick save/load, F6 the world directory, F8 the cold-open skip. DELETE
+        // is reserved for the space encounter's lock-on and is untouched here.
+        //
+        // Unlike every other surface in this list it does NOT pause the sim (see
+        // simFrozen above, which it is deliberately absent from) — a weapon soak
+        // has to keep firing while its sliders move. It does take the keyboard and
+        // release the cursor, like the world map.
+        {
+            const bool tNow = !consoleOpen && !termMode && !codeMode &&
+                              !chatTrees.active() && !worldMapOpen &&
+                              !worldMenu.isOpen() && !riftConsoleOpen &&
+                              !rpgUi.anyOpen() &&
+                              rawKey(GLFW_KEY_F7);
+            if (tNow && !prevTuneKey) weaponTune.toggle();
+            prevTuneKey = tNow;
 
             // The pause menu's TRAVEL button routes here too: open the directory and
             // hand it the screen (the pause overlay steps aside).
@@ -11181,6 +11249,11 @@ int runDefaultHost(HostContext& hc) {
         // through Lena's dialog box) — same capture idea as the terminal/keypad.
         const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode ||
                                chatTrees.active() || worldMapOpen ||
+                               // F7: dragging a slider must not also pull the trigger.
+                               // The SOAK is exempt by construction (soakFire below
+                               // ignores uiCapture), which is exactly what keeps the
+                               // beam lit while the panel is open.
+                               weaponTune.isOpen() ||
                                rpgUi.anyOpen();   // [W9-3 RPG] no firing through the backpack
         // PUNCH: F is the primary key (2026-08; F used to be the noclip test toggle,
         // now on G). V and MMB are kept as aliases so existing muscle memory and the
@@ -12827,6 +12900,71 @@ int runDefaultHost(HostContext& hc) {
                         x3::logWarn(std::string("[worldmenu] refused ") + d.key + ": " + why);
                     }
                 }
+            }
+
+            // ================================================================
+            // F7 — THE TUNING PANEL. The SAME x3::game::WeaponTuningMenu HostShell
+            // draws for every world host, so the campaign and the dev worlds have
+            // one panel with one behaviour.
+            //
+            // Note what is NOT here: this block does not touch simFrozen. The
+            // panel runs OVER a live world on purpose — the weapon soak keeps
+            // firing, the beam keeps flickering, and the sliders move under it.
+            // That is the whole point of the panel and the reason `wtest` was
+            // built to survive an open console in the first place.
+            // ================================================================
+            if (weaponTune.isOpen()) {
+                x3::ui::UiInput tin{};
+                double tmx = 0.0, tmy = 0.0; glfwGetCursorPos(window, &tmx, &tmy);
+                tin.mouseX = (float)tmx; tin.mouseY = (float)tmy;
+                const bool tLmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                tin.mouseDown    = tLmb;
+                tin.mousePressed = tLmb && !prevTuneMouse;
+                prevTuneMouse    = tLmb;
+
+                // Rising edges for the nav keys. Read RAW: the panel IS the active
+                // surface, so keyDown()'s capture gate (which the panel itself
+                // closes) would suppress exactly the keys it needs.
+                const bool tUp  = rawKey(GLFW_KEY_UP)    || rawKey(GLFW_KEY_W);
+                const bool tDn  = rawKey(GLFW_KEY_DOWN)  || rawKey(GLFW_KEY_S);
+                const bool tLf  = rawKey(GLFW_KEY_LEFT)  || rawKey(GLFW_KEY_A);
+                const bool tRt  = rawKey(GLFW_KEY_RIGHT) || rawKey(GLFW_KEY_D);
+                const bool tAct = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER) ||
+                                  rawKey(GLFW_KEY_SPACE);
+                const bool tTab = rawKey(GLFW_KEY_TAB);
+                const bool tSh  = rawKey(GLFW_KEY_LEFT_SHIFT) || rawKey(GLFW_KEY_RIGHT_SHIFT);
+                tin.navUp       = tUp  && !prevTuneNavUp;
+                tin.navDown     = tDn  && !prevTuneNavDown;
+                tin.navLeft     = tLf  && !prevTuneNavLeft;
+                tin.navRight    = tRt  && !prevTuneNavRight;
+                tin.navActivate = tAct && !prevTuneNavAct;
+                tin.enter       = (rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER)) &&
+                                  !prevTuneNavAct;
+                if (tTab && !prevTuneTab) { if (tSh) tin.navPrev = true; else tin.navNext = true; }
+                prevTuneNavUp = tUp; prevTuneNavDown = tDn; prevTuneNavLeft = tLf;
+                prevTuneNavRight = tRt; prevTuneNavAct = tAct; prevTuneTab = tTab;
+
+                // CTRL is a LEVEL (ctrl+click asks "was ctrl down on the click
+                // frame"), so it is polled, not edged.
+                tin.ctrlDown = rawKey(GLFW_KEY_LEFT_CONTROL) || rawKey(GLFW_KEY_RIGHT_CONTROL);
+                tin.backspace = rawKey(GLFW_KEY_BACKSPACE);
+                // Printable characters for ctrl+click-to-type, from the shared ring
+                // the char callback fills. Drained here; the rift console (the only
+                // other consumer) cannot be open at the same time — F7 is gated on
+                // riftConsoleOpen — so the two never race for the same keystroke.
+                for (int t = 0; t < g_riftTypedN && t < x3::ui::UiInput::kMaxTyped; ++t)
+                    tin.typed[tin.typedCount++] = (char)g_riftTyped[t];
+                g_riftTypedN = 0;
+
+                tuneUi.begin(*device, frame, tin);
+                weaponTune.draw(tuneUi, *console, dt);
+                tuneUi.end();
+            } else {
+                // Keep the edge trackers fresh so opening the panel never injects a
+                // stale press on its first frame.
+                prevTuneMouse = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                prevTuneNavUp = prevTuneNavDown = prevTuneNavLeft = false;
+                prevTuneNavRight = prevTuneNavAct = prevTuneTab = false;
             }
 
             // ================================================================

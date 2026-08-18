@@ -5,8 +5,44 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace x3::game {
+
+// ---- Live glass tuning (see hud_panel.h). Defaults ARE the constants. -------
+HudPanelTuning& hudPanelTuning() {
+    static HudPanelTuning s;
+    return s;
+}
+
+void registerHudPanelCVars(x3::con::IConsole& console) {
+    console.registerCVar("hud_glass_r", "0.008", "HUD GLASS: panel fill RED (linear 0..1). Live. The near-black glass every HUD plate, menu and the console share.");
+    console.registerCVar("hud_glass_g", "0.012", "HUD GLASS: panel fill GREEN (linear 0..1). Live.");
+    console.registerCVar("hud_glass_b", "0.018", "HUD GLASS: panel fill BLUE (linear 0..1). Live.");
+    console.registerCVar("hud_glass_a", "0.86",  "HUD GLASS: panel fill ALPHA. MEASURED, not taste: below ~0.86 the plate composites to mid grey over bright scenes and light text washes out. Live.");
+    console.registerCVar("hud_radius",  "3",     "HUD GLASS: corner radius in px for EVERY panel (HUD blocks, menus, console, tuning panels). Tiny = machined chamfer; large = soft app card. Live.");
+}
+
+void applyHudPanelCVars(const x3::con::IConsole& console) {
+    HudPanelTuning& t = hudPanelTuning();
+    // An unregistered cvar reads empty -> leave the shipped value alone (the same
+    // rule applyWeaponFxCVars uses, so a bare host without the catalog is
+    // byte-identical rather than reset to zero — a 0-alpha HUD would be invisible).
+    auto sync = [&console](const char* name, float& dst, float lo, float hi) {
+        const std::string s = console.getString(name);
+        if (s.empty()) return;
+        float v = 0.0f;
+        try { v = std::stof(s); } catch (...) { return; }
+        dst = (v < lo) ? lo : (v > hi ? hi : v);
+    };
+    sync("hud_glass_r", t.fill[0], 0.0f, 1.0f);
+    sync("hud_glass_g", t.fill[1], 0.0f, 1.0f);
+    sync("hud_glass_b", t.fill[2], 0.0f, 1.0f);
+    sync("hud_glass_a", t.fill[3], 0.0f, 1.0f);
+    // 24 px is a hard cap: the corner cost is 2*R one-pixel strips per panel, and
+    // beyond a quarter of a HUD chip's height the "rounding" is just a lozenge.
+    sync("hud_radius",  t.radius,  0.0f, 24.0f);
+}
 
 void hudPanel(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
               float x, float y, float w, float h,
@@ -15,10 +51,17 @@ void hudPanel(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame
     if (w <= 0.0f || h <= 0.0f || alpha <= 0.0f) return;
     if (alpha > 1.0f) alpha = 1.0f;
 
-    const float* f = fill ? fill : kHudPanelFill;
+    const HudPanelTuning& tun = hudPanelTuning();
+    const float* f = fill ? fill : tun.fill;
     const float fc[4] = { f[0], f[1], f[2], f[3] * alpha };
 
-    float r = std::max(0.0f, radius);
+    // THE ONE RADIUS. Callers pass kHudPanelRadius (or a local number) but the
+    // live value wins, so dragging hud_radius moves the ENTIRE panel family at
+    // once instead of only the screens that happened to use the default. A
+    // caller asking for 0 still gets 0 — a deliberately square edge (the console
+    // slab's top) is a shape decision, not a style one.
+    float radiusIn = (radius <= 0.0f) ? 0.0f : tun.radius;
+    float r = std::max(0.0f, radiusIn);
     r = std::min(r, std::floor(std::min(w, h) * 0.5f));
     const float rTop = roundTop    ? r : 0.0f;
     const float rBot = roundBottom ? r : 0.0f;

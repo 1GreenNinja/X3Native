@@ -2,6 +2,7 @@
 
 #include "engine/core/x3_log.h"
 #include "weapon.h"        // kVmDef* viewmodel defaults
+#include "hud_panel.h"   // registerHudPanelCVars (hud_glass_* / hud_radius)
 #include "fx.h"            // kWeaponFxKindCount / weaponFxKindName (w_flash_* cvars)
 #include "mesh_lod.h"      // registerLodCVars (Lane 5 discrete LOD cvars)
 #include "gas_station.h"   // registerFuelCVars (W-STATIONS fuel_* cvars)
@@ -287,24 +288,37 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     // ---- WEAPONS TUNING (Tim, live play 2026-08-16) ------------------------
     // "lightning thickness needs to be a slider in the weapons menu ... with a
     // test button that continuously shoots lightning .. for each weapon."
-    // These are the sliders; `wtest <weapon>` (app_run.cpp) is the test button.
-    // All are LIVE — applyWeaponFxCVars() syncs them into x3::game::fxTuning()
-    // every frame, so a typed value shows on the next frame with no restart.
-    console.registerCVar("w_lightning_thickness", "1",
+    // These are the sliders; `wtest <weapon>` (app_run.cpp) is the test button,
+    // and F7 (app/weapon_tuning_menu.h) is the GUI over both. All are LIVE —
+    // applyWeaponFxCVars() syncs them into x3::game::fxTuning() every frame, so a
+    // value typed here OR dragged on the panel shows on the next frame.
+    //
+    // DEFAULTS COME FROM THE ONE DIAL TABLE (fx.h kDial*), not from literals
+    // retyped here — the panel's RESET restores exactly this same number.
+    auto regDial = [&console](const x3::game::WeaponFxDial& d, const char* help) {
+        console.registerCVar(d.cvar, x3::game::dialDefaultString(d), help);
+    };
+    regDial(x3::game::kDialLightningThickness,
         "WEAPONS TUNING: lightning arc thickness scale (0.1 hairline .. 8 rope; 1 = shipped). Live; the blue corona tracks the core.");
-    console.registerCVar("w_tracer_len", "2.5",
+    regDial(x3::game::kDialTracerLen,
         "WEAPONS TUNING: bullet-streak LENGTH in meters for hitscan tracers (the travelling window of the ray, not a full-length beam). Live.");
-    console.registerCVar("w_tracer_speed", "160",
+    regDial(x3::game::kDialTracerSpeed,
         "WEAPONS TUNING: bullet-streak TRAVEL SPEED (m/s) muzzle->hit. Presentation only — the hitscan ray already resolved. Live.");
     // Per-kind muzzle-flash SIZE multipliers, stacked on the shipped per-kind
     // flashScale row (fx.h muzzleStyleFor). Registered from the ONE name table so
     // the cvar set can never drift from the enum.
     for (int k = 0; k < x3::game::kWeaponFxKindCount; ++k) {
-        const char* n = x3::game::weaponFxKindName(k);
-        if (!n) continue;
-        console.registerCVar(std::string("w_flash_") + n, "1",
+        const std::string n = x3::game::weaponFlashCVar(k);
+        if (n.empty()) continue;
+        console.registerCVar(n, x3::game::dialDefaultString(x3::game::kDialFlashKind),
             "WEAPONS TUNING: muzzle-flash size multiplier for this weapon kind (0 = no flash, 1 = shipped). Live.");
     }
+
+    // ---- HUD GLASS (the colour-picker fold) --------------------------------
+    // The panel fill + the one corner radius, live. Registered here so EVERY
+    // console in the project has them: the canon game, all 28 HostShell worlds,
+    // and the screenshot hosts alike. See app/hud_panel.h.
+    x3::game::registerHudPanelCVars(console);
 
     // ---- ZERO-STUTTER GUARANTEE (docs/ZERO_STUTTER.md) ---------------------
     // r_strictpso: any pipeline/shader-module/descriptor-pool created after the

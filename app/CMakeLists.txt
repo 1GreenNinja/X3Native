@@ -276,7 +276,9 @@ add_library(x3app SHARED
     progression.cpp
     skilltree.cpp
     rpg_ui.cpp
-    ui.cpp)
+    ui.cpp
+    ui_widgets.cpp
+    weapon_tuning_menu.cpp)
 
 # PRIVATE, not PUBLIC: the thin launchers only call x3AppMain() and must not
 # inherit the engine static lib. PUBLIC propagated x3core to both exes — harmless

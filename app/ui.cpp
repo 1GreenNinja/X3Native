@@ -6,6 +6,7 @@
 #include "hud_panel.h"         // the ONE rounded dark-translucent panel primitive
 #include "headless_device.h"   // shared no-op IRenderDevice (for --test-ui)
 #include "world_menu.h"        // U31: the world/place selection menu's own gate
+#include "weapon_tuning_menu.h" // U40: the F7 tuning panel own gate
 #include "version_gen.h"       // X3_VERSION_STRING — build stamp on the title screen
 
 #include "engine/core/x3_log.h"
@@ -54,24 +55,44 @@ void UiContext::begin(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
 
     m_widgetIndex     = 0;
     m_mouseMovedFocus = false;
+    m_lastHovered     = false;
+    m_tipPending      = false;
     // The pointer goes back to nobody as soon as the button is up (see
     // m_dragWidget in ui.h — sliderEx's drag capture).
     if (!m_in.mouseDown) m_dragWidget = -1;
+    // ESC abandons a value edit without committing it. Handled here rather than
+    // inside the widget so the mode also clears on a frame where the edited
+    // slider is not emitted at all (a collapsed section, a switched tab) —
+    // otherwise the edit would strand with no way to leave it.
+    if (m_in.escape && m_editWidget >= 0) {
+        m_editWidget = -1; m_editLen = 0; m_editSeeded = false; m_editFresh = false;
+    }
 }
 
 void UiContext::end() {
     // Number of focusable widgets emitted this frame.
     m_lastFocusCount = m_widgetIndex;
-    if (m_lastFocusCount <= 0) { m_focus = 0; return; }
+    if (m_lastFocusCount <= 0) { m_focus = 0; drawQueuedTooltip(); return; }
 
     // Apply keyboard nav (wrap-around) unless a hover already moved focus this
     // frame (mouse takes precedence so the two never fight on the same frame).
+    // TAB / SHIFT+TAB walk the same ring — the motion every hand already has for
+    // a form — so a tuning panel is navigable without leaving the home row.
     if (!m_mouseMovedFocus) {
-        if (m_in.navDown) m_focus = (m_focus + 1) % m_lastFocusCount;
-        if (m_in.navUp)   m_focus = (m_focus - 1 + m_lastFocusCount) % m_lastFocusCount;
+        if (m_in.navDown || m_in.navNext) m_focus = (m_focus + 1) % m_lastFocusCount;
+        if (m_in.navUp   || m_in.navPrev) m_focus = (m_focus - 1 + m_lastFocusCount) % m_lastFocusCount;
     }
     if (m_focus < 0) m_focus = 0;
     if (m_focus >= m_lastFocusCount) m_focus = m_lastFocusCount - 1;
+    // A value edit only lives while its own widget holds focus: moving off it (by
+    // Tab, by nav, or by clicking another row) leaves the mode, so a half-typed
+    // number can never sit invisibly armed on a row nobody is looking at.
+    if (m_editWidget >= 0 && m_editWidget != m_focus) {
+        m_editWidget = -1; m_editLen = 0; m_editSeeded = false; m_editFresh = false;
+    }
+
+    // The tooltip draws LAST, so nothing emitted after its widget paints over it.
+    drawQueuedTooltip();
 }
 
 float UiContext::textWidth(FontRole role, const char* s, float px) {
@@ -138,6 +159,7 @@ bool UiContext::button(const char* label, float x, float y, float w, float h) {
 
     // Hover claims keyboard focus so mouse + keyboard agree on what's "hot".
     const bool hovered = pointIn(x, y, w, h);
+    m_lastHovered = hovered;   // tooltip() asks the most recently emitted widget
     if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
     const bool hot = (m_focus == idx);
 
@@ -166,6 +188,7 @@ bool UiContext::toggle(const char* label, bool value, float x, float y, float w,
     const int idx = m_widgetIndex++;
 
     const bool hovered = pointIn(x, y, w, h);
+    m_lastHovered = hovered;   // tooltip() asks the most recently emitted widget
     if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
     const bool hot = (m_focus == idx);
 
@@ -201,6 +224,7 @@ bool UiContext::slider(const char* label, float& value, float x, float y, float 
     const int idx = m_widgetIndex++;
 
     const bool hovered = pointIn(x, y, w, h);
+    m_lastHovered = hovered;   // tooltip() asks the most recently emitted widget
     if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
     const bool hot = (m_focus == idx);
 
@@ -271,14 +295,30 @@ bool UiContext::sliderEx(const char* label, float& value, float minV, float maxV
     const int idx = m_widgetIndex++;
 
     const bool hovered = pointIn(x, y, w, h);
+    m_lastHovered = hovered;
+    // ---- CTRL+CLICK TO TYPE THE VALUE (the ImGui idiom Tim asked for by name:
+    // "he wants 1.47, not drag toward 1.47"). Folded into sliderEx itself rather
+    // than added as a separate widget, so EVERY slider in the game — weather,
+    // lighting, the weapon dials, anything written later — gets it at once.
+    // The press is consumed here: it must not also start a drag, or the value
+    // would jump to wherever the cursor happened to be before you typed.
+    if (hovered && m_in.mousePressed && m_in.ctrlDown && m_editWidget != idx) {
+        m_editWidget = idx; m_editLen = 0; m_editSeeded = false; m_editFresh = false;
+        m_focus = idx; m_mouseMovedFocus = true;
+    }
+    const bool editing = (m_editWidget == idx);
     // DRAG CAPTURE: the press inside the row claims the pointer; the claim
     // survives until mouseDown goes false (cleared in begin()). Without it a
     // drag dies the instant the cursor leaves a 34 px row, which is the first
     // thing a hand does when it pulls RAIN from 0 to 10.
-    if (hovered && m_in.mousePressed && m_dragWidget < 0) m_dragWidget = idx;
-    const bool dragging = (m_dragWidget == idx);
+    if (!editing && hovered && m_in.mousePressed && m_dragWidget < 0) m_dragWidget = idx;
+    const bool dragging = (!editing && m_dragWidget == idx);
     if (hovered || dragging) { m_focus = idx; m_mouseMovedFocus = true; }
     const bool hot = (m_focus == idx);
+    // Keyboard route into the same mode: ctrl + activate on the focused row.
+    if (hot && m_in.ctrlDown && m_in.navActivate && !editing) {
+        m_editWidget = idx; m_editLen = 0; m_editSeeded = false; m_editFresh = false;
+    }
 
     if (maxV <= minV) maxV = minV + 1.0f;
     if (step <= 0.0f) step = (maxV - minV) / 20.0f;
@@ -303,9 +343,6 @@ bool UiContext::sliderEx(const char* label, float& value, float minV, float maxV
     // dragging). Wider than slider()'s percent cell — readouts carry words.
     const float roW = 132.0f;
     const float roPx = h * 0.38f;
-    if (readout)
-        textCentered(readout, x + w - roW * 0.5f - 10.0f, y + (h - roPx) * 0.5f,
-                     roPx, kColText, FontRole::HudMono);
 
     // Track between the label and the readout.
     const float labelW = 150.0f;
@@ -314,6 +351,74 @@ bool UiContext::sliderEx(const char* label, float& value, float minV, float maxV
     const float trackW = std::max(8.0f, trackR - trackX);
     const float trackH = std::max(4.0f, h * 0.16f);
     const float trackY = y + (h - trackH) * 0.5f;
+
+    if (editing) {
+        // ---- TYPE MODE. The readout cell becomes the field: a lit box with the
+        // typed text and a blinking caret. The TRACK IS HIDDEN while typing, so
+        // there is never any doubt about which half of the row is live.
+        if (!m_editSeeded) {
+            // Seed with the value as currently shown, so ctrl+click then Enter is
+            // a no-op rather than a surprise.
+            std::snprintf(m_editBuf, sizeof(m_editBuf), "%g", (double)v);
+            m_editLen = (int)std::strlen(m_editBuf);
+            m_editSeeded = true;
+            m_editFresh  = true;   // the seed is "selected" — see below
+        }
+        // FIRST KEYSTROKE REPLACES THE SEED (ImGui selects the text on entry).
+        // Without this, ctrl+click on 1.0 and typing 4.25 commits 14.25 — the
+        // seeded digit silently becomes part of the number.
+        if (m_editFresh && (m_in.typedCount > 0 || m_in.backspace)) {
+            m_editBuf[0] = '\0';
+            m_editLen = 0;
+            m_editFresh = false;
+        }
+        // Accept digits, sign, and one decimal point; ignore the rest (a stray
+        // letter must not silently poison the parse on commit).
+        for (int i = 0; i < m_in.typedCount && m_editLen < (int)sizeof(m_editBuf) - 1; ++i) {
+            const char c = m_in.typed[i];
+            const bool ok = (c >= '0' && c <= '9') ||
+                            (c == '.' && !std::strchr(m_editBuf, '.')) ||
+                            ((c == '-' || c == '+') && m_editLen == 0);
+            if (ok) { m_editBuf[m_editLen++] = c; m_editBuf[m_editLen] = '\0'; }
+        }
+        if (m_in.backspace && m_editLen > 0) m_editBuf[--m_editLen] = '\0';
+
+        const float fx = x + w - roW - 6.0f;
+        const float fieldW = roW;
+        quad(fx, y + 3.0f, fieldW, h - 6.0f, kColTrack);
+        quad(fx, y + 3.0f, fieldW, 1.0f, kColBtnEdge);
+        quad(fx, y + h - 4.0f, fieldW, 1.0f, kColBtnEdge);
+        quad(fx, y + 3.0f, 1.0f, h - 6.0f, kColBtnEdge);
+        quad(fx + fieldW - 1.0f, y + 3.0f, 1.0f, h - 6.0f, kColBtnEdge);
+        const float tw = textWidth(FontRole::HudMono, m_editBuf, roPx);
+        text(m_editBuf, fx + 6.0f, y + (h - roPx) * 0.5f, roPx, kColText, FontRole::HudMono);
+        // Caret: a steady block is enough at this size, and it never blinks out
+        // at the exact moment of a screenshot.
+        quad(fx + 8.0f + tw, y + (h - roPx) * 0.5f, 1.5f, roPx, kColBtnEdge);
+        // A one-word mode tag where the track used to be — the row must say what
+        // it is doing, not just look different.
+        text("TYPE  ENTER=SET  ESC=CANCEL", trackX, y + (h - roPx * 0.8f) * 0.5f,
+             roPx * 0.8f, kColTextDim, FontRole::HudMono);
+
+        // ENTER commits: parse, clamp to the SAME range the drag obeys, and leave
+        // the mode. A junk buffer commits nothing.
+        if (m_in.enter || m_in.navActivate) {
+            float parsed = v;
+            bool  good   = m_editLen > 0;
+            if (good) { try { parsed = std::stof(m_editBuf); } catch (...) { good = false; } }
+            m_editWidget = -1; m_editLen = 0; m_editSeeded = false; m_editFresh = false;
+            if (good) {
+                if (parsed < minV) parsed = minV;
+                if (parsed > maxV) parsed = maxV;
+                if (parsed != v) { value = parsed; return true; }
+            }
+        }
+        return false;   // typing never drags
+    }
+
+    if (readout)
+        textCentered(readout, x + w - roW * 0.5f - 10.0f, y + (h - roPx) * 0.5f,
+                     roPx, kColText, FontRole::HudMono);
 
     quad(trackX, trackY, trackW, trackH, kColTrack);
     quad(trackX, trackY, trackW * t01, trackH, kColOn);
@@ -395,6 +500,7 @@ bool UiContext::glowSlider(const char* label, float& value, float x, float y,
                            float w, float h, float danger01, float clock) {
     const int idx = m_widgetIndex++;
     const bool hovered = pointIn(x, y, w, h);
+    m_lastHovered = hovered;   // tooltip() asks the most recently emitted widget
     if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
     const bool hot = (m_focus == idx);
 
@@ -546,6 +652,7 @@ bool UiContext::textField(const char* label, char* buf, int cap, float x, float 
                           float w, float h, float danger01, float clock) {
     const int idx = m_widgetIndex++;
     const bool hovered = pointIn(x, y, w, h);
+    m_lastHovered = hovered;   // tooltip() asks the most recently emitted widget
     if (hovered && m_in.mousePressed) { m_focus = idx; m_mouseMovedFocus = true; }
     else if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
     const bool hot = (m_focus == idx);
@@ -1813,6 +1920,190 @@ bool runUiSelfTest() {
     check(x3::game::runWorldMenuSelfTest(),
           "U31 world menu: a row per destination, unavailable rows unpickable, "
           "activate picks the focused place");
+
+    // ---- U32..U39: THE ImGui-STUDY FOLD -------------------------------------
+    // The widgets ported from studying Dear ImGui (without linking it). Each is
+    // gated on the property that makes it worth having, not merely on "it drew".
+    {
+        StubDevice dev; x3::rhi::FrameContext fc{};
+        const float kOff = 9000.0f;
+
+        // ---- U32: the LAYOUT CURSOR hands out non-overlapping stacked rows,
+        // and rowSplit/rest partition one row without gaps or overlap.
+        {
+            UiContext ui; UiInput in{}; in.mouseX = kOff; in.mouseY = kOff;
+            ui.begin(dev, fc, in);
+            ui.beginLayout(100.0f, 200.0f, 400.0f, 20.0f, 4.0f);
+            const Rect a = ui.row();
+            const Rect b = ui.row();
+            const Rect l = ui.rowSplit(0.5f);
+            const Rect r = ui.rest();
+            ui.end();
+            const bool stacked = (a.y == 200.0f) && (b.y == 224.0f) && (a.h == 20.0f);
+            const bool sameW   = (a.w == 400.0f) && (b.w == 400.0f);
+            const bool split   = (l.x == 100.0f) && (r.x > l.x + l.w - 0.01f) &&
+                                 (l.y == r.y) && (l.w > 0.0f) && (r.w > 0.0f) &&
+                                 (l.w + r.w <= 400.0f + 0.01f);
+            check(stacked && sameW && split,
+                  "U32 layout cursor: rows stack without overlap, rowSplit/rest "
+                  "partition one row");
+        }
+
+        // ---- U33: COLLAPSING HEADER toggles its caller's bool and returns it.
+        {
+            UiContext ui; bool open = false;
+            UiInput in{}; in.mouseX = kOff; in.mouseY = kOff;
+            ui.begin(dev, fc, in); ui.beginLayout(0, 0, 300.0f);
+            const bool shownClosed = ui.collapsingHeader("SEC", open);
+            ui.end();
+            UiInput act{}; act.mouseX = kOff; act.mouseY = kOff; act.navActivate = true;
+            ui.begin(dev, fc, act); ui.beginLayout(0, 0, 300.0f);
+            const bool shownOpen = ui.collapsingHeader("SEC", open);
+            ui.end();
+            check(!shownClosed && shownOpen && open,
+                  "U33 collapsingHeader: activate flips the caller's bool and the "
+                  "return value follows it");
+        }
+
+        // ---- U34: TAB BAR selects by keyboard, one focus slot per tab.
+        {
+            UiContext ui; int active = 0;
+            const char* tabs[] = { "A", "B", "C" };
+            UiInput in{}; in.mouseX = kOff; in.mouseY = kOff;
+            ui.begin(dev, fc, in); ui.beginLayout(0, 0, 300.0f);
+            ui.tabBar(tabs, 3, active, 22.0f);
+            ui.end();
+            const bool slots = ui.focusCount() == 3;
+            UiInput down{}; down.mouseX = kOff; down.mouseY = kOff; down.navDown = true;
+            ui.begin(dev, fc, down); ui.beginLayout(0, 0, 300.0f);
+            ui.tabBar(tabs, 3, active, 22.0f); ui.end();
+            UiInput act{}; act.mouseX = kOff; act.mouseY = kOff; act.navActivate = true;
+            ui.begin(dev, fc, act); ui.beginLayout(0, 0, 300.0f);
+            const bool changed = ui.tabBar(tabs, 3, active, 22.0f);
+            ui.end();
+            check(slots && changed && active == 1,
+                  "U34 tabBar: one focus slot per tab, activate selects that page");
+        }
+
+        // ---- U35: CTRL+CLICK A SLIDER TO TYPE THE VALUE. The whole point of the
+        // fold: an exact number goes in, clamped to the slider's own range, and
+        // the click that starts the edit must NOT also drag the value.
+        {
+            UiContext ui;
+            float v = 1.0f;
+            const float sx = 100.0f, sy = 100.0f, sw = 500.0f, sh = 30.0f;
+            UiInput click{};
+            click.mouseX = sx + 20.0f; click.mouseY = sy + 10.0f;
+            click.mouseDown = true; click.mousePressed = true; click.ctrlDown = true;
+            ui.begin(dev, fc, click);
+            ui.sliderEx("v", v, 0.0f, 10.0f, 0.1f, "1", sx, sy, sw, sh);
+            ui.end();
+            const bool noDragJump = (v == 1.0f);
+            const bool inEdit = ui.editingValue();
+            UiInput type{};
+            type.mouseX = sx + 20.0f; type.mouseY = sy + 10.0f;
+            const char* s4 = "4.25";
+            type.typedCount = 4;
+            for (int i = 0; i < 4; ++i) type.typed[i] = s4[i];
+            ui.begin(dev, fc, type);
+            ui.sliderEx("v", v, 0.0f, 10.0f, 0.1f, "1", sx, sy, sw, sh);
+            ui.end();
+            UiInput commit{};
+            commit.mouseX = sx + 20.0f; commit.mouseY = sy + 10.0f; commit.enter = true;
+            ui.begin(dev, fc, commit);
+            const bool changed = ui.sliderEx("v", v, 0.0f, 10.0f, 0.1f, "1", sx, sy, sw, sh);
+            ui.end();
+            check(noDragJump && inEdit && changed && std::fabs(v - 4.25f) < 1e-4f &&
+                      !ui.editingValue(),
+                  "U35 ctrl+click a slider types an EXACT value, commits on ENTER, "
+                  "and the click never drags");
+        }
+
+        // ---- U36: COLOUR EDITOR moves the channel it was nudged on, only that one.
+        {
+            UiContext ui;
+            float col[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
+            UiInput in{}; in.mouseX = kOff; in.mouseY = kOff;
+            ui.begin(dev, fc, in); ui.beginLayout(0, 0, 460.0f);
+            ui.colorEdit4("C", col, true); ui.end();
+            const bool slots = ui.focusCount() == 4;   // R,G,B,A (the header takes none)
+            UiInput left{}; left.mouseX = kOff; left.mouseY = kOff; left.navLeft = true;
+            ui.begin(dev, fc, left); ui.beginLayout(0, 0, 460.0f);
+            const bool changed = ui.colorEdit4("C", col, true); ui.end();
+            check(slots && changed && col[0] < 0.5f && col[1] == 0.5f &&
+                      col[2] == 0.5f && col[3] == 1.0f,
+                  "U36 colorEdit4: a channel slider per component, and a nudge "
+                  "moves ONLY that channel");
+        }
+
+        // ---- U37: COMBO steps through its items and wraps.
+        {
+            UiContext ui; int idx = 0;
+            const char* items[] = { "one", "two", "three" };
+            UiInput right{}; right.mouseX = kOff; right.mouseY = kOff; right.navRight = true;
+            ui.begin(dev, fc, right);
+            ui.combo("pick", items, 3, idx, Rect{ 0, 0, 300.0f, 24.0f });
+            ui.end();
+            const bool fwd = (idx == 1);
+            UiInput left{}; left.mouseX = kOff; left.mouseY = kOff; left.navLeft = true;
+            ui.begin(dev, fc, left);
+            ui.combo("pick", items, 3, idx, Rect{ 0, 0, 300.0f, 24.0f });
+            ui.end();
+            const bool back = (idx == 0);
+            ui.begin(dev, fc, left);
+            ui.combo("pick", items, 3, idx, Rect{ 0, 0, 300.0f, 24.0f });
+            ui.end();
+            check(fwd && back && idx == 2, "U37 combo: steps forward, back, and wraps");
+        }
+
+        // ---- U38: TAB / SHIFT+TAB walk the focus ring like nav down/up.
+        {
+            UiContext ui;
+            UiInput in{}; in.mouseX = kOff; in.mouseY = kOff;
+            auto three = [&](const UiInput& i) {
+                ui.begin(dev, fc, i);
+                (void)ui.button("a", 0, 0, 10, 10);
+                (void)ui.button("b", 0, 20, 10, 10);
+                (void)ui.button("c", 0, 40, 10, 10);
+                ui.end();
+            };
+            three(in);
+            UiInput tab{}; tab.mouseX = kOff; tab.mouseY = kOff; tab.navNext = true;
+            three(tab); three(tab);
+            const bool fwd = (ui.focus() == 2);
+            UiInput sh{}; sh.mouseX = kOff; sh.mouseY = kOff; sh.navPrev = true;
+            three(sh);
+            check(fwd && ui.focus() == 1, "U38 Tab / Shift+Tab walk the focus ring");
+        }
+
+        // ---- U39: TOOLTIP is claimed only by a HOVERED widget.
+        {
+            UiContext ui;
+            UiInput off{}; off.mouseX = kOff; off.mouseY = kOff;
+            ui.begin(dev, fc, off);
+            (void)ui.button("a", 0, 0, 100, 40);
+            const bool hoveredWhenAway = ui.lastHovered();
+            ui.tooltip("help text");
+            ui.end();
+            UiInput on{}; on.mouseX = 50.0f; on.mouseY = 20.0f;
+            ui.begin(dev, fc, on);
+            (void)ui.button("a", 0, 0, 100, 40);
+            const bool hoveredWhenOver = ui.lastHovered();
+            ui.tooltip("help text");
+            ui.end();
+            check(!hoveredWhenAway && hoveredWhenOver,
+                  "U39 tooltip: only the widget actually under the cursor claims it");
+        }
+    }
+
+    // ---- U40: THE F7 TUNING PANEL -------------------------------------------
+    // Shared infrastructure, not a canonlevel feature: its own gate covers the
+    // roster enumeration, the wtest soak hand-off, the anti-drift w_flash_<kind>
+    // binding, dial clamping/RESET against the shared table, the HUD-glass colour
+    // tab, and the source-less (weapon-free world host) degradation.
+    check(x3::game::runWeaponTuningMenuSelfTest(),
+          "U40 tuning panel: roster rows, soak hand-off, anti-drift flash cvar, "
+          "clamped dials, RESET, glass colour tab, weapon-free host degradation");
 
     x3::logInfo(std::string("--test-ui: ") + std::to_string(pass) + " passed, " +
                 std::to_string(fail) + " failed");

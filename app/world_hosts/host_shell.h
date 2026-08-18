@@ -43,6 +43,7 @@
 #include "engine/core/IConsole.h"
 #include "../hud.h"
 #include "../ui.h"
+#include "../weapon_tuning_menu.h"
 #include "../host_context.h"
 
 #include <cstddef>
@@ -82,7 +83,12 @@ public:
     // integrating (mx - lastMX) will spin the view across the screen while you
     // type. Multiply the deltas by it rather than branching, so the `const
     // float ddx = ...` hosts need no restructuring.
-    bool inputEnabled() const { return !m_paused && !m_hud.consoleOpen(); }
+    bool inputEnabled() const {
+        // The tuning panel owns the keyboard AND releases the cursor, so a host
+        // that keeps integrating mouse deltas would spin the view while you drag
+        // a slider — exactly the bug this flag exists to prevent for the console.
+        return !m_paused && !m_hud.consoleOpen() && !m_wtune.isOpen();
+    }
 
     // Gameplay-safe key poll. False while the console or the pause menu holds
     // the keyboard; otherwise identical to glfwGetKey(...) == GLFW_PRESS.
@@ -127,6 +133,23 @@ public:
     // after attach(); null before it.
     x3::con::IConsole* console() { return m_console; }
 
+    // ---- THE TUNING PANEL (F7) ---------------------------------------------
+    // Tim: "The console and menu should stay consistent across x3native no
+    // matter what game.. colors can change but functions should all be there."
+    // So the panel lives HERE, next to the console, and every host that attaches
+    // this shell gets it for the same zero lines the console costs. F7 toggles
+    // it; it does NOT pause the sim (a soak has to keep firing while you tune),
+    // but it does take the keyboard and show the cursor while it is up.
+    //
+    // A host with weapons calls setWeaponTuningSource() to hand over its roster
+    // and its `wtest` hook; a host without weapons calls nothing and still gets
+    // the global FX + HUD-glass dials.
+    x3::game::WeaponTuningMenu& weaponTuning() { return m_wtune; }
+    void setWeaponTuningSource(x3::game::WeaponTuningSource src) {
+        m_wtune.setSource(std::move(src));
+    }
+    bool tuningPanelOpen() const { return m_wtune.isOpen(); }
+
     // Convenience: register a command that reads one float argument. The huge
     // majority of tuning commands have this shape, and spelling out the arg
     // parsing 20 times per host is how hosts end up with none of them.
@@ -166,17 +189,23 @@ public:
     // ---- For the GLFW callbacks only (they are free functions and cannot be
     // friends of a class they are declared before). Not for host use.
     bool onKey(int glfwKey, int action, int mods);
+    // Printable codepoints, for the tuning panel's ctrl+click-to-type fields.
+    // Returns true if the shell consumed the character (the console already
+    // consumes its own; this is the panel's half).
+    bool onChar(unsigned int codepoint);
     x3::game::Hud& hudForCallbacks() { return m_hud; }
 
 private:
     void setPaused(bool on);
     void drawPauseMenu(const x3::rhi::FrameContext& frame);
+    void drawTuningPanel(const x3::rhi::FrameContext& frame, float dt);
 
     GLFWwindow*             m_window  = nullptr;
     x3::rhi::IRenderDevice* m_device  = nullptr;
     x3::con::IConsole*      m_console = nullptr;
     x3::game::Hud           m_hud;
     x3::ui::UiContext       m_ui;
+    x3::game::WeaponTuningMenu m_wtune;   // F7 tuning panel (every host gets one)
 
     bool m_paused     = false;
     bool m_quit       = false;
@@ -198,6 +227,18 @@ private:
     bool m_mouseWasDown = false;
     // Menu keyboard nav edges, latched by the key callback and consumed by draw.
     bool m_navUp = false, m_navDown = false, m_navActivate = false;
+    // The tuning panel needs the horizontal pair (sliders), Tab/Shift+Tab, and
+    // the text-entry edges (ctrl+click a slider to TYPE a value). Latched the
+    // same way, for the same reason: a polled edge drops presses on long frames.
+    bool m_navLeft = false, m_navRight = false;
+    bool m_navNext = false, m_navPrev = false;
+    bool m_navEnter = false, m_navBackspace = false, m_navEscape = false;
+    char m_typed[x3::ui::UiInput::kMaxTyped] = {};
+    int  m_typedCount = 0;
+    bool m_prevMouseForPanel = false;
+    // True while a slider in the panel is in ctrl+click TYPE mode, so ESC can
+    // cancel the edit before it closes the panel.
+    bool m_editingInPanel = false;
 
     // ---- NOCLIP freefly state ------------------------------------------------
     struct FlyCam { float pos[3] = { 0.0f, 0.0f, 0.0f }; float yaw = 0.0f, pitch = 0.0f; bool active = false; };

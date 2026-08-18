@@ -19,6 +19,8 @@
 #include "engine/physics/IPhysicsWorld.h"
 
 #include <cstdint>
+#include <cstdio>        // formatDialValue() (snprintf)
+#include <string>        // weaponFlashCVar() builds "w_flash_<kind>"
 #include <string_view>
 
 namespace x3::con { class IConsole; }   // cvar sync (applyWeaponFxCVars) — fx.cpp includes the real header
@@ -299,6 +301,57 @@ struct FxTuning {
     float flashKind[kWeaponFxKindCount] = { 1,1,1,1,1,1,1,1,1,1,1 };
 };
 FxTuning& fxTuning();   // the live tuning state (mutable singleton; fx.cpp)
+
+// ---- THE ONE WEAPON-TUNING DIAL TABLE --------------------------------------
+// Every consumer of a w_* tuning cvar reads its default + legal range + a
+// sensible nudge step from HERE:
+//   * engine_console.cpp registers the cvar with `def` as the default string,
+//   * fx.cpp applyWeaponFxCVars() clamps to [lo,hi] on the per-frame sync,
+//   * weapon_tuning_menu.cpp builds its sliders (range, step, RESET target).
+// Before this table those three carried their own copies of 0.1/8/2.5/160/20
+// and a GUI slider was one edit away from letting you drag to a value the sync
+// silently clamped back. Same discipline as weaponFxKindName(): one source.
+struct WeaponFxDial {
+    const char* cvar;   // console name (nullptr for the per-kind w_flash_* family)
+    float def;          // shipped default — also what the panel's RESET restores
+    float lo, hi;       // clamp range enforced by applyWeaponFxCVars()
+    float step;         // one keyboard nudge / mouse drag snap
+};
+// Range rationale: 0.1x lightning is a hairline thread, 8x a fat plasma rope;
+// both ends still render (no divide-by-zero, no pathological overdraw). Flash
+// tops out at 20 because the LIGHTNING row ships at 0.05, so 20 is exactly the
+// pre-cut legacy flare — the A/B "before" frame is expressible from the shipped
+// binary instead of needing an old build to photograph.
+constexpr WeaponFxDial kDialLightningThickness{ "w_lightning_thickness",   1.0f, 0.1f,    8.0f, 0.05f };
+constexpr WeaponFxDial kDialTracerLen         { "w_tracer_len",            2.5f, 0.1f,   60.0f, 0.1f  };
+constexpr WeaponFxDial kDialTracerSpeed       { "w_tracer_speed",        160.0f, 5.0f, 2000.0f, 5.0f  };
+// The per-kind muzzle-flash family. The cvar NAME is "w_flash_" + weaponFxKindName(k),
+// built by weaponFlashCVar() below so registration, sync, and the GUI agree.
+constexpr WeaponFxDial kDialFlashKind         { nullptr,                   1.0f, 0.0f,   20.0f, 0.05f };
+
+// "w_flash_<kind>" for kind index k, or an empty string if k is out of range.
+// The ONE place that name is spelled (three callers used to concatenate it).
+inline std::string weaponFlashCVar(int k) {
+    const char* n = weaponFxKindName(k);
+    return n ? (std::string("w_flash_") + n) : std::string();
+}
+
+// Format a dial value the way BOTH the console and the panel show it: up to two
+// decimals with trailing zeros trimmed, so 1.0 -> "1", 2.50 -> "2.5", 160 ->
+// "160". The panel writes cvars with this, which keeps `w_tracer_len` reading
+// "2.5" after a RESET instead of "2.500000" — the console readout and the panel
+// readout stay the same string.
+inline std::string formatDialValue(float v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.2f", (double)v);
+    std::string s(buf);
+    if (s.find('.') != std::string::npos) {
+        while (!s.empty() && s.back() == '0') s.pop_back();
+        if (!s.empty() && s.back() == '.') s.pop_back();
+    }
+    return s.empty() ? std::string("0") : s;
+}
+inline std::string dialDefaultString(const WeaponFxDial& d) { return formatDialValue(d.def); }
 
 // Per-frame cvar sync: read w_lightning_thickness / w_tracer_len / w_tracer_speed /
 // w_flash_<kind> from the console into fxTuning(), clamped to sane ranges. A cvar

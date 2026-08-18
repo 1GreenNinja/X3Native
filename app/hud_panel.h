@@ -23,6 +23,7 @@
 // the world, not painted over it.
 
 #include "engine/rhi/IRenderDevice.h"
+#include "engine/core/IConsole.h"
 
 namespace x3::game {
 
@@ -52,7 +53,16 @@ constexpr float kHudAccentRed[4]   = { 1.00f, 0.25f, 0.20f, 0.90f };
 // Light text over the dark plate (off-white, cool-tinted).
 constexpr float kHudTextLight[4]   = { 0.92f, 0.96f, 0.98f, 1.00f };
 // The consistent corner radius (px) — one radius across the whole HUD.
-constexpr float kHudPanelRadius    = 8.0f;
+//
+// TINY on purpose (Tim, 2026-08-18: "tiny rounded corners"). 8px read as a
+// friendly app card / soft pill; 3px reads as a MACHINED CHAMFER — the edge is
+// broken so nothing looks laser-cut-sharp, but the silhouette is still a
+// rectangle, which is what an instrument panel in this world should be. It is
+// deliberately ONE constant: every consumer (HUD blocks, objective, HP, prompt
+// chips, dialog boxes, the pause/main menus via UiContext::panel, the dev
+// console slab, the weapon tuning panel) reads it, so the whole family changes
+// together and no screen can drift into its own radius.
+constexpr float kHudPanelRadius    = 3.0f;
 
 // ---- THE ONE SPACING SCALE --------------------------------------------------
 // Every HUD block uses these and nothing else, so margins and gaps agree
@@ -61,6 +71,29 @@ constexpr float kHudMargin = 16.0f;   // screen edge -> panel
 constexpr float kHudGap    = 12.0f;   // panel -> panel within a stack
 constexpr float kHudPadX   = 14.0f;   // panel edge -> text (horizontal)
 constexpr float kHudPadY   = 10.0f;   // panel edge -> text (vertical)
+
+// ---- LIVE HUD GLASS TUNING (the colour-picker fold, 2026-08-18) ------------
+// The two numbers above — the glass fill and the corner radius — were BOTH
+// settled by rebuild-and-look cycles: the 0.86 alpha took a measured pass over a
+// white-terrain vantage, and the radius took a second one to get from "friendly
+// app card" to "machined chamfer". That is the exact loop a colour picker is
+// supposed to delete, so they are now live cvars as well as constants:
+//
+//     hud_glass_r/g/b/a   the panel fill (linear, 0..1)
+//     hud_radius          the ONE corner radius, in px, for every consumer
+//
+// DEFAULTS ARE THE CONSTANTS, byte-for-byte, so a process that never touches
+// them renders identically to before — same discipline as FxTuning. Every
+// hudPanel() caller reads this, including the ones that pass kHudPanelRadius
+// explicitly, so a live radius change moves the WHOLE panel family together
+// (that is the "one visual system" property; it must not be per-screen).
+struct HudPanelTuning {
+    float fill[4] = { 0.008f, 0.012f, 0.018f, 0.86f };
+    float radius  = 3.0f;
+};
+HudPanelTuning& hudPanelTuning();          // process-wide live state
+void registerHudPanelCVars(x3::con::IConsole& console);   // once, at startup
+void applyHudPanelCVars(const x3::con::IConsole& console); // per frame, on the sync hub
 
 // TRUE line height for stacked text at cap size `px`.
 //

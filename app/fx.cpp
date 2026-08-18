@@ -1649,22 +1649,24 @@ void syncCVar(const x3::con::IConsole& c, const char* name, float& dst, float lo
     try { v = std::stof(s); } catch (...) { return; }
     dst = (v < lo) ? lo : (v > hi ? hi : v);
 }
+// Same, driven straight off a shared dial row (name + clamp range in one place).
+void syncDial(const x3::con::IConsole& c, const WeaponFxDial& d, float& dst) {
+    syncCVar(c, d.cvar, dst, d.lo, d.hi);
+}
 } // namespace
 
 void applyWeaponFxCVars(const x3::con::IConsole& console) {
     FxTuning& t = fxTuning();
-    // Range rationale: 0.1x is a hairline thread, 8x is a fat plasma rope — both
-    // ends still render (no divide-by-zero, no pathological overdraw).
-    syncCVar(console, "w_lightning_thickness", t.lightningThickness, 0.1f,  8.0f);
-    syncCVar(console, "w_tracer_len",          t.tracerLen,          0.1f, 60.0f);
-    syncCVar(console, "w_tracer_speed",        t.tracerSpeed,        5.0f, 2000.0f);
+    // Names + clamp ranges come from the ONE dial table (fx.h) that the cvar
+    // registration and the F7 tuning panel also read, so a GUI slider can no
+    // longer offer a value this sync would silently clamp back.
+    syncDial(console, kDialLightningThickness, t.lightningThickness);
+    syncDial(console, kDialTracerLen,          t.tracerLen);
+    syncDial(console, kDialTracerSpeed,        t.tracerSpeed);
     for (int k = 0; k < kWeaponFxKindCount; ++k) {
-        const char* n = weaponFxKindName(k);
-        if (!n) continue;
-        // Upper bound 20: the LIGHTNING row ships at 0.05, so 20 is exactly the
-        // pre-cut legacy flare — the A/B "before" frame is expressible from the
-        // shipped binary instead of needing an old build to photograph.
-        syncCVar(console, (std::string("w_flash_") + n).c_str(), t.flashKind[k], 0.0f, 20.0f);
+        const std::string n = weaponFlashCVar(k);
+        if (n.empty()) continue;
+        syncCVar(console, n.c_str(), t.flashKind[k], kDialFlashKind.lo, kDialFlashKind.hi);
     }
 }
 

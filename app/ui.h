@@ -64,6 +64,27 @@ struct UiInput {
     int   typedCount = 0;
     bool  backspace  = false;      // rising edge
     bool  enter      = false;      // rising edge (commit the field)
+
+    // ---- TAB ORDER + MODIFIERS (the ImGui-study fold, 2026-08-18) -----------
+    // Tab / Shift+Tab walk the focus ring the same way navDown / navUp do, which
+    // is the motion every hand already has for a form. Kept separate from the
+    // nav edges because a host may want WASD to keep driving the game while Tab
+    // still walks a tuning panel.
+    bool  navNext = false;         // Tab           — focus forward  (rising edge)
+    bool  navPrev = false;         // Shift+Tab     — focus backward (rising edge)
+    // CTRL+CLICK A SLIDER TO TYPE ITS VALUE — ImGui's single best interaction,
+    // and the one Tim asked for by name: he wants to enter 1.47, not drag toward
+    // it. Level (not an edge): the widget checks it on the click frame.
+    bool  ctrlDown = false;
+    bool  escape   = false;        // rising edge — cancels an in-progress edit
+};
+
+// A rectangle in framebuffer pixels. Returned by the layout cursor so panels are
+// DECLARED as a sequence of rows rather than hand-positioned with x/y literals
+// (the thing that makes every existing panel a wall of `+ 26.0f` arithmetic and
+// makes inserting one row a re-edit of everything under it).
+struct Rect {
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -158,6 +179,99 @@ public:
                   const char* readout, float x, float y, float w, float h);
 
     // =======================================================================
+    // THE ImGui-STUDY FOLD (2026-08-18). Tim: "If you can LOOK at IMGUI and make
+    // UPGRADES to our existing stuff, go ahead."
+    //
+    // Dear ImGui is NOT linked (it stays in X3LevelArchitect); what is borrowed
+    // is its INTERACTION DESIGN, re-implemented on our own widgets in our own
+    // near-black-glass look:
+    //   * ctrl+click a slider to TYPE the value      (folded into sliderEx below)
+    //   * a layout cursor, so panels are declared as rows, not x/y arithmetic
+    //   * collapsing headers + tabs, so one panel can hold a growing cvar set
+    //   * hover tooltips sourced from the cvar's REGISTERED help text
+    //   * a colour editor with a live swatch
+    //   * Tab / Shift+Tab focus walking
+    // Every one returns whether it CHANGED this frame — that is what keeps
+    // immediate-mode call sites short and bookkeeping-free.
+    // =======================================================================
+
+    // ---- LAYOUT CURSOR -----------------------------------------------------
+    // beginLayout() parks a cursor at (x,y) with a content width and a default
+    // row height; row() hands out the next rectangle and advances. Panels then
+    // read as a list of rows, and inserting one costs one line instead of
+    // re-deriving every y below it.
+    void beginLayout(float x, float y, float w, float rowH = 26.0f, float gap = 4.0f);
+    // The next full-width row. h <= 0 uses the layout's default row height.
+    Rect row(float h = 0.0f);
+    // Split a row: returns the LEFT `frac` of it (minus half the gap); the
+    // remainder is handed back by rest(). The "[slider][RESET]" idiom.
+    Rect rowSplit(float frac, float h = 0.0f);
+    // The right-hand remainder of the row most recently begun by rowSplit().
+    Rect rest();
+    // A fixed-width right-hand cell instead of a fraction (rest() still works).
+    Rect rowSplitPx(float rightW, float h = 0.0f);
+    void spacing(float px);              // blank vertical space
+    void indent(float px = 12.0f);       // narrow the content column
+    void unindent();
+    // A 1px rule, optionally captioned with a small mono section label above it.
+    void separator(const char* label = nullptr);
+    // Where the cursor is now — panels measure their own height by laying out
+    // once and reading this, instead of hard-coding a total.
+    float cursorY() const { return m_layY; }
+    float layoutW() const { return m_layW; }
+
+    // ---- COLLAPSING HEADER (ImGui::CollapsingHeader) -----------------------
+    // A clickable section title with a disclosure triangle. `open` is the
+    // caller's persistent bool; returns its NEW value, so the body is written as
+    //     if (ui.collapsingHeader("WEAPONS", m_openWeapons)) { ...rows... }
+    // Takes one focus slot. This is what makes one panel able to hold the whole
+    // cvar set instead of a flat unusable list.
+    bool collapsingHeader(const char* label, bool& open);
+
+    // ---- TAB BAR (ImGui::BeginTabBar) --------------------------------------
+    // One row of tabs; `active` is the caller's persistent index. Each tab takes
+    // a focus slot. Returns true on the frame the selection changed.
+    bool tabBar(const char* const* labels, int count, int& active, float h = 24.0f);
+
+    // ---- TOOLTIP -----------------------------------------------------------
+    // Call IMMEDIATELY after a widget: if that widget was hovered this frame the
+    // text is queued and drawn over everything at end(), anchored to the cursor.
+    // The tuning panels pass IConsole::cvarHelp(name), so the panel documents
+    // itself from the same string the console prints — no duplicate copy to rot.
+    void tooltip(const char* text);
+    // Was the widget emitted most recently under the mouse? (tooltip() uses it;
+    // exposed so a caller can drive its own richer hover behaviour.)
+    bool lastHovered() const { return m_lastHovered; }
+
+    // ---- COLOUR EDITOR (ImGui::ColorEdit4) ---------------------------------
+    // THE highest-value widget for this project: fog, emissives, lamp tint, hull
+    // darkness and HUD alpha are all art-directed by eye, and every one of them
+    // used to cost a full rebuild. Draws a label row carrying a LIVE SWATCH and
+    // the #RRGGBB(AA) readout, then one slider row per channel, all through the
+    // layout cursor. Writes `rgba` in place; true on any frame it changed.
+    // Channels are 0..1 linear — the same space the render params take.
+    bool colorEdit4(const char* label, float rgba[4], bool withAlpha = true);
+
+    // ---- COMBO (ImGui::Combo) ----------------------------------------------
+    // Pick one of N. Implemented as a CYCLER (click / Left / Right steps through
+    // the items, current item shown) rather than a drop-down POPUP: a popup has
+    // to draw and hit-test above widgets that are emitted after it, which in an
+    // immediate-mode pass means a deferred-input layer this UI does not have yet.
+    // The function — choose one of a fixed set, by mouse or keyboard — is the
+    // same. True on the frame the index changed.
+    bool combo(const char* label, const char* const* items, int count, int& idx, Rect r);
+
+    // ---- Layout-cursor overloads of the row widgets -------------------------
+    // Same widgets, taking a Rect from the layout cursor. Declared here so a
+    // panel never has to spell out x/y/w/h twice.
+    bool button(const char* text, Rect r) { return button(text, r.x, r.y, r.w, r.h); }
+    bool toggle(const char* label, bool value, Rect r) { return toggle(label, value, r.x, r.y, r.w, r.h); }
+    bool sliderEx(const char* label, float& v, float minV, float maxV, float step,
+                  const char* readout, Rect r) {
+        return sliderEx(label, v, minV, maxV, step, readout, r.x, r.y, r.w, r.h);
+    }
+
+    // =======================================================================
     // R8 — THE GLOWING CONTROL SURFACE (Tim: "the sliders glow").
     //
     // These three are the rift console's physical controls. They are the SAME
@@ -222,6 +336,10 @@ public:
     float enemyNameplate(const char* s, float cx, float top, float px,
                          const float rgba[4]) const;
 
+    // True while a slider is in ctrl+click TYPE mode. Hosts route ESC on this:
+    // escape must abandon the half-typed number before it closes the panel.
+    bool editingValue() const { return m_editWidget >= 0; }
+
     // ---- Focus ------------------------------------------------------------
     int  focus() const { return m_focus; }
     void setFocus(int i) { m_focus = i; }
@@ -258,6 +376,36 @@ private:
     // instead of freezing at the row edge. Persists across frames; cleared in
     // begin() the moment the mouse is no longer down. -1 = nobody holds it.
     int  m_dragWidget     = -1;
+
+    // ---- ImGui-study fold state ---------------------------------------------
+    // KEYBOARD VALUE ENTRY. `m_editWidget` is the focus index of the slider being
+    // typed into (-1 = none), and it PERSISTS ACROSS FRAMES — an edit is a mode,
+    // not an event. Entered by ctrl+click (or ctrl+activate) on a slider,
+    // committed by Enter, abandoned by Esc or by clicking elsewhere.
+    int  m_editWidget = -1;
+    char m_editBuf[32] = {};
+    int  m_editLen    = 0;
+    bool m_editSeeded = false;   // buffer primed with the current value
+    // The seeded text is "selected": the first keystroke REPLACES it rather
+    // than appending to it, so ctrl+click on 1.0 and typing 4.25 commits 4.25
+    // and not 14.25. Cleared as soon as anything is typed or backspaced.
+    bool m_editFresh  = false;
+
+    // Layout cursor (beginLayout/row/rowSplit/...). Purely a convenience over the
+    // same absolute coordinates the widgets always took.
+    float m_layX = 0.0f, m_layY = 0.0f, m_layW = 0.0f;
+    float m_layRowH = 26.0f, m_layGap = 4.0f;
+    float m_layIndent = 0.0f;
+    Rect  m_layRest{};           // remainder stashed by rowSplit(), yielded by rest()
+
+    // Hover bookkeeping for tooltip(): set by every widget as it is emitted.
+    bool  m_lastHovered = false;
+    // The queued tooltip, drawn over everything in end() (a tooltip must not be
+    // painted over by the widgets emitted after the one it belongs to).
+    std::string m_tipText;
+    bool        m_tipPending = false;
+
+    void drawQueuedTooltip();
 };
 
 // ===========================================================================

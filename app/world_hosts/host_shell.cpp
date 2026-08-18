@@ -1,5 +1,6 @@
 // HOST SHELL — see host_shell.h for why this exists.
 #include "host_shell.h"
+#include "../hud_panel.h"   // applyHudPanelCVars (hud_glass_* / hud_radius)
 
 #include <GLFW/glfw3.h>
 #include "engine/core/x3_log.h"
@@ -42,6 +43,10 @@ static void shellCharCB(GLFWwindow* w, unsigned int cp) {
         g_shell->hudForCallbacks().onChar(cp);
         return;                       // consumed: do NOT pass typing to the host
     }
+    // The tuning panel's ctrl+click-to-type fields want printables too. Same
+    // rule as the console: while it owns the keyboard the host must not also
+    // see the character, or typing 1.47 into a slider also selects weapon 1.
+    if (g_shell && w == g_window && g_shell->onChar(cp)) return;
     if (g_prevChar) g_prevChar(w, cp);
 }
 
@@ -168,6 +173,16 @@ bool HostShell::onKey(int key, int action, int mods) {
         // closed the window, so the reflex key is now the safe one and leaving
         // takes a deliberate two-key press (or the menu's QUIT row).
         if (shift) { m_quit = true; return true; }
+        // The tuning panel is a modal too: ESC steps back out of it before it
+        // means "open the menu". It also feeds the panel an escape edge first,
+        // so ESC abandons a half-typed slider value rather than closing the whole
+        // panel out from under the edit.
+        if (m_wtune.isOpen()) {
+            if (m_editingInPanel) { m_navEscape = true; return true; }
+            m_wtune.close();
+            if (!m_paused) glfwSetInputMode(m_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            return true;
+        }
         // The host gets first refusal, so its own modals stay closable — see
         // setEscapeHandler. Not offered while the menu is already up: ESC then
         // means "leave the menu", unambiguously.
@@ -179,6 +194,43 @@ bool HostShell::onKey(int key, int action, int mods) {
     if (key == GLFW_KEY_F3) {
         m_console->set("r_stats", m_console->getInt("r_stats") ? "0" : "1");
         return true;
+    }
+
+    // ---- F7: THE TUNING PANEL -----------------------------------------------
+    // F7 was the only completely unbound function key in the project (F1/F2 are
+    // the view toggles, F3 stats, F4 a map mode in host_tunnel, F5/F9 quick
+    // save/load, F6 the world directory, F8 the cold-open skip). DELETE is
+    // reserved for the space encounter's lock-on and is deliberately untouched.
+    if (key == GLFW_KEY_F7) {
+        m_wtune.toggle();
+        // The panel takes the keyboard and needs the cursor, but it must NOT
+        // pause: the whole workflow is "soak the weapon, watch the beam, drag the
+        // slider", which dies the moment the sim freezes.
+        if (!m_paused)
+            glfwSetInputMode(m_window, GLFW_CURSOR,
+                             m_wtune.isOpen() ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+        return true;
+    }
+
+    // While the panel is up it owns the keyboard (except the keys handled above:
+    // the console toggle, ESC, F3 and F7 itself). The edges are LATCHED here
+    // rather than polled in draw() for the same reason the menu's are — a poll
+    // drops any press shorter than the frame.
+    if (m_wtune.isOpen()) {
+        switch (key) {
+            case GLFW_KEY_W: case GLFW_KEY_UP:    m_navUp = true;    return true;
+            case GLFW_KEY_S: case GLFW_KEY_DOWN:  m_navDown = true;  return true;
+            case GLFW_KEY_A: case GLFW_KEY_LEFT:  m_navLeft = true;  return true;
+            case GLFW_KEY_D: case GLFW_KEY_RIGHT: m_navRight = true; return true;
+            case GLFW_KEY_TAB:
+                if (shift) m_navPrev = true; else m_navNext = true;
+                return true;
+            case GLFW_KEY_ENTER: case GLFW_KEY_KP_ENTER:
+                m_navActivate = true; m_navEnter = true; return true;
+            case GLFW_KEY_SPACE:     m_navActivate = true;  return true;
+            case GLFW_KEY_BACKSPACE: m_navBackspace = true; return true;
+            default: return true;    // the panel owns the rest; nothing leaks to the host
+        }
     }
 
     if (m_paused) {
@@ -230,8 +282,20 @@ bool HostShell::keyRaw(int glfwKey) const {
 }
 
 bool HostShell::key(int glfwKey) const {
-    if (!m_window || m_paused || m_hud.consoleOpen()) return false;
+    // The tuning panel joins the console and the menu as a keyboard owner: its
+    // arrow/WASD nav must not also drive the car or the player. (The SIM keeps
+    // running — only input is taken. That is the difference between this panel
+    // and the pause menu, and it is deliberate: the soak has to keep firing.)
+    if (!m_window || m_paused || m_hud.consoleOpen() || m_wtune.isOpen()) return false;
     return glfwGetKey(m_window, glfwKey) == GLFW_PRESS;
+}
+
+bool HostShell::onChar(unsigned int codepoint) {
+    if (!m_wtune.isOpen()) return false;
+    if (codepoint < 32 || codepoint > 126) return false;   // printable ASCII only
+    if (m_typedCount < x3::ui::UiInput::kMaxTyped)
+        m_typed[m_typedCount++] = (char)codepoint;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,13 +362,72 @@ void HostShell::draw(const x3::rhi::FrameContext& frame, float dt) {
     // re-applied only on an actual change, checked every ~15th frame.
     x3::apphost::applyLiveHostRenderCVars(*m_console, *m_device, m_liveApplyFrame++, m_liveApplyHash);
 
+    // HUD GLASS (hud_glass_* / hud_radius) — the plate colour + the ONE corner
+    // radius every panel below shares. Synced here so the F7 colour picker
+    // restyles the whole family live, in every world host, not just the campaign.
+    x3::game::applyHudPanelCVars(*m_console);
+
     if (m_paused) drawPauseMenu(frame);
+
+    // The tuning panel sits under the console (which must stay reachable from
+    // every state) and over the pause menu.
+    if (m_wtune.isOpen()) drawTuningPanel(frame, dt);
 
     // Console over the menu: it is the one overlay that has to stay reachable
     // from every state.
     m_hud.drawConsole(*m_device, frame, *m_console, dt);
     m_hud.drawFps(*m_device, frame, *m_console, dt);
     m_hud.drawStats(*m_device, frame, *m_console, dt);
+}
+
+// ---------------------------------------------------------------------------
+// THE TUNING PANEL (F7). Same UiContext, same widgets, same glass as the pause
+// menu — the difference is that this one does NOT freeze anything: it takes the
+// keyboard and shows the cursor, and the world keeps running behind it so a
+// weapon soak stays lit while its sliders move.
+// ---------------------------------------------------------------------------
+void HostShell::drawTuningPanel(const x3::rhi::FrameContext& frame, float dt) {
+    if (!m_window || !m_device || !m_console) return;
+
+    double mx = 0.0, my = 0.0;
+    glfwGetCursorPos(m_window, &mx, &my);
+    const bool down = glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+
+    x3::ui::UiInput in{};
+    in.mouseX       = (float)mx;
+    in.mouseY       = (float)my;
+    in.mouseDown    = down;
+    in.mousePressed = down && !m_prevMouseForPanel;
+    m_prevMouseForPanel = down;
+
+    in.navUp       = m_navUp;
+    in.navDown     = m_navDown;
+    in.navLeft     = m_navLeft;
+    in.navRight    = m_navRight;
+    in.navActivate = m_navActivate;
+    in.navNext     = m_navNext;
+    in.navPrev     = m_navPrev;
+    in.enter       = m_navEnter;
+    in.backspace   = m_navBackspace;
+    in.escape      = m_navEscape;
+    // CTRL is a LEVEL, not an edge (ctrl+click asks "was ctrl down on the click
+    // frame"), so it is polled rather than latched.
+    in.ctrlDown = glfwGetKey(m_window, GLFW_KEY_LEFT_CONTROL)  == GLFW_PRESS ||
+                  glfwGetKey(m_window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+    in.typedCount = m_typedCount;
+    for (int i = 0; i < m_typedCount; ++i) in.typed[i] = m_typed[i];
+
+    m_navUp = m_navDown = m_navActivate = false;
+    m_navLeft = m_navRight = false;
+    m_navNext = m_navPrev = false;
+    m_navEnter = m_navBackspace = m_navEscape = false;
+    m_typedCount = 0;
+
+    m_ui.begin(*m_device, frame, in);
+    m_wtune.draw(m_ui, *m_console, dt);
+    m_ui.end();
+    // So ESC can cancel a half-typed value before it closes the panel (onKey).
+    m_editingInPanel = m_ui.editingValue();
 }
 
 void HostShell::drawPauseMenu(const x3::rhi::FrameContext& frame) {
