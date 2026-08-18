@@ -247,7 +247,16 @@ struct CellWindow {
     float    plane = 0.0f;               // Z plane of the wall (cell z1)
     bool valid() const { return room != kNoRoom && hi > lo + 0.3f; }
 };
-CellWindow cellObsWindow(const CanonFloor& floor);
+// VOID-FRONTED WINDOW RULE (fix/cell-hole-2, owner playtest 2026-08-18 "the HOLE in
+// Jake's cell" / "I saw the cell still open to outside"): the glazed stub is CLIPPED to
+// the PARTNER room's footprint. A see-through opening whose far side is not enclosed
+// space is not a viewport, it is a hole — Jake's Cell overhangs the Main Hall by 1.5 m
+// at -X, and the old rule glazed straight through that overhang into raw void, full room
+// height, at eye level. If no stub survives the clip the window is invalid and the +Z
+// wall builds SOLID. `legacyRule` reproduces the pre-fix unclipped span — the SEAL-VIEW
+// lint's permanent negative control (same shared-rule pattern as canonLidVisible /
+// canonPlinthBands).
+CellWindow cellObsWindow(const CanonFloor& floor, bool legacyRule = false);
 
 // ---- SEAL-BAND closure rules (fix/cell-shell-hole, owner playtest 2026-08-16: "This...
 // is a hole in Jake's cell" — a sightline over the cell's wall tops into the lit Main
