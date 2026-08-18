@@ -1519,8 +1519,9 @@ StackBuildResult buildStack(const StackResult& st, Scene& scene,
 
     // ---- THE GORE TAPERS ---------------------------------------------------
     // A stack ramp is not a T-junction: at 60 mph you leave the outer running
-    // lane through a paved wedge that shifts you ~20 m sideways over 300 m
-    // (1:15) onto a fully separate ramp. buildJunctionMouth's ruled twist is
+    // lane through a paved wedge that shifts you ~20 m sideways over
+    // kGoreTaperM (1:13) onto a fully separate ramp. buildJunctionMouth's
+    // ruled twist is
     // built for an OBLIQUE branch arriving from outside and is the wrong
     // shape here, so the Stack lays its own — the honest new geometry a
     // high-speed interchange needs and the diamond's 48 m loops did not.
