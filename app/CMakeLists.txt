@@ -121,6 +121,7 @@ add_library(x3app SHARED
     leveldoc_world.cpp
     player.cpp
     door.cpp
+    bed_rest.cpp
     keypad.cpp
     physprops.cpp
     ragdoll.cpp

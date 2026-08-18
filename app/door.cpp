@@ -101,7 +101,70 @@ constexpr float kFloorBaseY[kDoorFloorCount] = { 0.0f, 5.0f, 10.0f, 20.0f, 30.0f
 // A LOCKED door burns its signage RED whatever floor it is on (see door.h): the
 // live status readout for the existing keycard/keypad gate.
 constexpr float kLockedSign[3] = { 1.00f, 0.16f, 0.10f };
+
+// ---------------------------------------------------------------------------
+// DOOR MODEL REGISTRY (doors-pass; see door.h). AABBs PROBED via a tools-side
+// glTF node walk (accessor min/max through each node's TRS chain) — the same
+// discipline as kDoorAabb above. The sound columns all reference the ONE door
+// sound family the library ships (assets/audio/doors + interact) — the closest
+// family for every model; a per-model WAV drop is a data edit here.
+// ---------------------------------------------------------------------------
+constexpr DoorModelDef kDoorModels[] = {
+    // 0 — door_a: the SM_Door_A default. Drawn by the dedicated legacy path
+    // (m_doorModel + frame + backing slab); this row exists so every door has a
+    // registry identity + sound row. AABB = kDoorAabb.
+    { "door_a", "ModularSciFi_Interior/SM_Door_A.glb", 0, DoorMotion::SlideUp,
+      { -4.875f, 0.054f, -0.112f, -2.525f, 3.554f, 0.112f },
+      nullptr, nullptr, {0,0,0,0,0,0}, {0,0,0,0,0,0}, false, 0.0f,
+      "doors/door_open.wav", "doors/door_close.wav", "doors/door_locked.wav",
+      "interact/servo_loop.wav", "interact/door_thunk.wav" },
+
+    // 1 — slider: meshy sliding_door_art. door_frame (static) + door_panel_L/R
+    // parting HORIZONTALLY (its authored L/R translation clips). Probed after
+    // node TRS (pure translations). Width axis = X (preYaw 0).
+    { "slider", "props_articulated/sliding_door_art.glb", 1, DoorMotion::SlideSplit,
+      { -0.951f, -0.787f, -0.475f, 0.949f, 0.785f, 0.473f },
+      "door_panel_L", "door_panel_R",
+      { -0.832f, -0.787f, -0.356f, 0.321f, 0.123f, 0.340f },
+      { -0.122f, -0.787f, -0.358f, 0.837f, 0.111f, 0.342f },
+      false, 0.0f,
+      "doors/door_open.wav", "doors/door_close.wav", "doors/door_locked.wav",
+      "interact/servo_loop.wav", "interact/door_thunk.wav" },
+
+    // 2 — bulkhead: SciFiKit3 Wall_Door_Simple_01's Door_Left/Door_Right leaves.
+    // The kit's converted node TRS for these panels is BROKEN (probed: panels
+    // land at z -3.6..-0.2 while their own wall spans z 0..6, rotated flat), so
+    // the leaves seat from MESH-LOCAL bounds (rawPanelSpace) and the fused
+    // Wall/Fence nodes are skipped entirely (canon walls already exist; LAW 2
+    // forbids a doubled wall). Mesh-local: X +-0.5 = thickness, Y 0..3.416 = up,
+    // Z = the width run (Left -1.333..0, Right 0..1.333) -> preYaw 90 deg maps
+    // the Z run onto the standard X run.
+    { "bulkhead", "SciFiKit3/Wall_Door_Simple_01.glb", 0, DoorMotion::SlideSplit,
+      { -0.5f, 0.0f, -1.333f, 0.5f, 3.416f, 1.333f },
+      "Door_Left", "Door_Right",
+      { -0.5f, 0.0f, -1.333f, 0.5f, 3.416f, 0.0f },
+      { -0.5f, 0.0f,  0.0f,   0.5f, 3.416f, 1.333f },
+      true, 1.5707963f,
+      "doors/door_open.wav", "doors/door_close.wav", "doors/door_locked.wav",
+      "interact/servo_loop.wav", "interact/door_thunk.wav" },
+};
+constexpr uint32_t kDoorModelCount = (uint32_t)(sizeof(kDoorModels) / sizeof(kDoorModels[0]));
+
+// Registry-model VALUE normalization (surface-library band; door_a's measured
+// 0.42 lives in loadDoorMesh). meshy PBR ships near-honest albedos; the SciFi
+// kits ship hot ones (every sibling measured so) — eyeball-pending values, both
+// hue-preserving scales like the leaf/frame normalizations above.
+constexpr float kModelValueScale[kDoorModelCount] = { 1.0f, 0.90f, 0.55f };
 } // namespace
+
+const DoorModelDef* doorModelDefs(uint32_t& count) { count = kDoorModelCount; return kDoorModels; }
+
+uint32_t doorModelIndex(const char* key) {
+    if (!key || !*key) return 0;
+    for (uint32_t i = 0; i < kDoorModelCount; ++i)
+        if (std::string_view(kDoorModels[i].key) == key) return i;
+    return 0;   // unknown key -> the door_a default (never a build failure)
+}
 
 // ---------------------------------------------------------------------------
 // Motion profile + per-floor style (see door.h for the derivation + the dt rule).
@@ -153,17 +216,48 @@ void DoorSystem::playDoorSound(const Door& d, x3::audio::SoundHandle h, float vo
     m_audio->playSound3D(h, d.closedPos.x, d.closedPos.y, d.closedPos.z, vol, 1.0f);
 }
 
+// Per-model sound lookup (doors-pass): the door's registry row's handle when
+// wireModelSounds() loaded one, else the global setAudio/setMotorAudio handle.
+// which: 0=open 1=close 2=locked 3=servo 4=thunk.
+x3::audio::SoundHandle DoorSystem::modelSnd(const Door& d, int which) const {
+    if (d.modelIdx < (uint32_t)m_slots.size()) {
+        const ModelSlot& ms = m_slots[d.modelIdx];
+        const x3::audio::SoundHandle h =
+            which == 0 ? ms.sOpen : which == 1 ? ms.sClose :
+            which == 2 ? ms.sLocked : which == 3 ? ms.sServo : ms.sThunk;
+        if (h.valid()) return h;
+    }
+    return which == 0 ? m_sndOpen : which == 1 ? m_sndClose :
+           which == 2 ? m_sndLocked : which == 3 ? m_sndServo : m_sndThunk;
+}
+
+void DoorSystem::wireModelSounds(x3::audio::IAudioSystem* audio,
+                                 const std::function<std::string(std::string_view)>& resolve) {
+    if (!audio || !resolve) return;
+    if (m_slots.size() < kDoorModelCount) m_slots.resize(kDoorModelCount);
+    for (uint32_t i = 0; i < kDoorModelCount; ++i) {
+        const DoorModelDef& def = kDoorModels[i];
+        ModelSlot& ms = m_slots[i];
+        ms.sOpen   = audio->load(resolve(def.sndOpen));
+        ms.sClose  = audio->load(resolve(def.sndClose));
+        ms.sLocked = audio->load(resolve(def.sndLocked));
+        ms.sServo  = audio->load(resolve(def.sndServo));
+        ms.sThunk  = audio->load(resolve(def.sndThunk));
+    }
+}
+
 // ---- SERVO VOICE (door-mesh-swap audio). The ONLY two places a motor voice is
 // created or destroyed. Both are idempotent, and both are called exclusively from
 // DoorSystem::update() — the single function that can move a door OR settle it —
 // so "a live loop" and "a moving slab" are the same condition by construction.
 void DoorSystem::startMotor(Door& d) const {
-    if (!m_audio || !m_sndServo.valid()) return;
+    const x3::audio::SoundHandle servo = modelSnd(d, 3);
+    if (!m_audio || !servo.valid()) return;
     if (d.motorLoop.valid()) return;          // already humming (mid-slide reversal)
     // 3D so the hum attenuates + pans against the listener for as long as it runs.
     // Closing runs a touch lower — the same servo winding down under gravity.
     const float pitch = (d.state == DoorState::Closing) ? 0.92f : 1.0f;
-    d.motorLoop = m_audio->startLoop3D(m_sndServo, d.closedPos.x, d.closedPos.y,
+    d.motorLoop = m_audio->startLoop3D(servo, d.closedPos.x, d.closedPos.y,
                                        d.closedPos.z, 0.55f, pitch);
 }
 
@@ -189,12 +283,12 @@ uint32_t DoorSystem::liveMotorCount() const {
 // loop present the motion is voiced by that loop (started/stopped in update()) and
 // this stays silent; without one it is still better than a silent door.
 void DoorSystem::playMotionCue(const Door& d, bool opening, float vol) const {
-    if (m_sndServo.valid()) return;   // the loop owns the motion; no over-running one-shot
-    playDoorSound(d, opening ? m_sndOpen : m_sndClose, vol);
+    if (modelSnd(d, 3).valid()) return;   // the loop owns the motion; no over-running one-shot
+    playDoorSound(d, opening ? modelSnd(d, 0) : modelSnd(d, 1), vol);
 }
 
 bool DoorSystem::startOpening(Door& d) const {
-    if (d.locked) { playDoorSound(d, m_sndLocked, 0.55f); return false; }  // §6.4 + denied buzz
+    if (d.locked) { playDoorSound(d, modelSnd(d, 2), 0.55f); return false; }  // §6.4 + denied buzz
     if (d.state != DoorState::Closed) return false;
     d.state = DoorState::Opening;
     d.t = 0.0f;
@@ -205,7 +299,7 @@ bool DoorSystem::startOpening(Door& d) const {
 bool DoorSystem::toggle(Door& d) const {
     switch (d.state) {
         case DoorState::Closed:
-            if (d.locked) { playDoorSound(d, m_sndLocked, 0.55f); return false; }  // §6.4
+            if (d.locked) { playDoorSound(d, modelSnd(d, 2), 0.55f); return false; }  // §6.4
             d.state = DoorState::Opening;         // t is already 0
             playMotionCue(d, true, 0.8f);
             return true;
@@ -218,6 +312,11 @@ bool DoorSystem::toggle(Door& d) const {
             playMotionCue(d, false, 0.6f);
             return true;
         case DoorState::Closing:
+            // LOCK-BYPASS FIX (doors-pass): a door sealed mid-close (closeAndLock)
+            // could be re-opened by E during the travel — the one path around the
+            // lock. A locked, Closing door now refuses the reversal (denied buzz)
+            // and finishes seating.
+            if (d.locked) { playDoorSound(d, modelSnd(d, 2), 0.55f); return false; }
             d.state = DoorState::Opening;         // reverse mid-slide (keep t)
             playMotionCue(d, true, 0.6f);
             return true;
@@ -282,7 +381,7 @@ void DoorSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics
             startMotor(d);                        // idempotent: no restart mid-slide
         } else {
             stopMotor(d);                         // the frame the slab SEATS
-            playDoorSound(d, m_sndThunk, 0.65f);  // short transient, fires once
+            playDoorSound(d, modelSnd(d, 4), 0.65f);  // short transient, fires once
         }
         // Normalized cursor -> EASED displacement (accel / cruise / decel; door.h).
         // dt entered only through the `d.t +/- dt` integration above, so this is
@@ -396,8 +495,78 @@ void DoorSystem::loadDoorMesh(x3::rhi::IRenderDevice& device, std::string_view c
     }
 }
 
+// ---------------------------------------------------------------------------
+// Registry model slots (doors-pass; see door.h).
+// ---------------------------------------------------------------------------
+DoorSystem::ModelSlot& DoorSystem::slot(uint32_t idx) {
+    if (m_slots.size() < kDoorModelCount) m_slots.resize(kDoorModelCount);
+    return m_slots[idx < kDoorModelCount ? idx : 0];
+}
+
+bool DoorSystem::hasModelMesh(uint32_t modelIdx) const {
+    if (modelIdx == 0) return m_meshOk;
+    return modelIdx < (uint32_t)m_slots.size() && m_slots[modelIdx].ok;
+}
+
+bool DoorSystem::loadModelMesh(x3::rhi::IRenderDevice& device, uint32_t modelIdx) {
+    if (modelIdx >= kDoorModelCount) modelIdx = 0;
+    // Row 0 first: door_a's dedicated load also creates the shared loader +
+    // mounts the converted-GLB root (idempotent).
+    loadDoorMesh(device, kDoorGlbDir());
+    if (modelIdx == 0) return m_meshOk;
+    ModelSlot& ms = slot(modelIdx);
+    if (ms.tried) return ms.ok;
+    ms.tried = true;
+    if (!m_loader || !m_assets) return false;   // mount failed in loadDoorMesh
+    const DoorModelDef& def = kDoorModels[modelIdx];
+    if (def.rootKind == 1)
+        m_assets->mountDir(assetRoot() + "/meshy", 1);   // idempotent secondary root
+    ms.model = m_loader->load(def.glbRel);
+    if (!ms.model.ok) {
+        x3::logWarn(std::string("[door] registry model '") + def.key +
+                    "' FAILED to load (" + def.glbRel + ") — graybox panels kept");
+        return false;
+    }
+    // Partition by glTF node name: the two moving panels vs the static shell.
+    // rawPanelSpace models keep ONLY their panels (the other nodes carry the
+    // broken TRS / a fused wall the canon level already builds), drawn in
+    // MESH-local space (identity nodeTransform).
+    std::vector<std::string> names;
+    std::vector<x3::asset::ModelDrawable> all = x3::asset::makeDrawablesNamed(ms.model, names);
+    auto starts = [](const std::string& s, const char* p) {
+        return p && s.rfind(p, 0) == 0;
+    };
+    constexpr float kIdent[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    for (size_t i = 0; i < all.size(); ++i) {
+        x3::asset::ModelDrawable dr = all[i];
+        const std::string nm = i < names.size() ? names[i] : std::string();
+        const bool isA = starts(nm, def.panelANode);
+        const bool isB = !isA && starts(nm, def.panelBNode);
+        if (def.rawPanelSpace) {
+            if (!isA && !isB) continue;                       // broken-TRS shell: skip
+            for (int k = 0; k < 16; ++k) dr.nodeTransform[k] = kIdent[k];
+        }
+        // Hue-preserving VALUE normalization (band discipline; see table above).
+        for (int k = 0; k < 3; ++k) dr.baseColorFactor[k] *= kModelValueScale[modelIdx];
+        if (isA)      ms.panelADr.push_back(dr);
+        else if (isB) ms.panelBDr.push_back(dr);
+        else          ms.fixedDr.push_back(dr);
+    }
+    ms.ok = !ms.panelADr.empty() && !ms.panelBDr.empty();
+    x3::logInfo(std::string("[door] registry model '") + def.key + "' " +
+                (ms.ok ? "loaded" : "MISSING its panel nodes (graybox kept)") +
+                " (fixed " + std::to_string(ms.fixedDr.size()) +
+                ", panelA " + std::to_string(ms.panelADr.size()) +
+                ", panelB " + std::to_string(ms.panelBDr.size()) + ")");
+    return ms.ok;
+}
+
 void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
-    if (!m_meshOk) return;   // no real mesh -> the (still-visible) box renders instead
+    // door_a's shared leaf AND any loaded registry model can draw; with neither,
+    // every door keeps its (still-visible) graybox boxes.
+    bool anySlotOk = false;
+    for (const ModelSlot& s : m_slots) if (s.ok) { anySlotOk = true; break; }
+    if (!m_meshOk && !anySlotOk) return;
 
     // Uniform scale to fit each door's opening height: the GLB slab is 3.50 m tall;
     // scale so it stands at the door's clear-passage height (~2.1 m). The width then
@@ -428,6 +597,13 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
         const float czw = d.closedPos.z + (d.openPos.z - d.closedPos.z) * u;
         const float bottomY = cyw - d.height * 0.5f;   // floor-level bottom of the slab
 
+        // SPLIT-MODEL doors (registry rows > 0): the STATIC doorway centre is the
+        // midpoint of the two panels' closed positions (each panel is off-centre
+        // by half the opening); door_a's closedPos IS the doorway centre.
+        const bool split = d.modelIdx != 0 && d.body2.valid() && !d.floorHatch;
+        const float dwx = split ? (d.closedPos.x + d.closedPos2.x) * 0.5f : d.closedPos.x;
+        const float dwz = split ? (d.closedPos.z + d.closedPos2.z) * 0.5f : d.closedPos.z;
+
         const float s = d.height / kDoorGlbH;          // uniform scale (height fit)
         // Orient the slab to the host wall: GLB is wide in X / thin in Z by default.
         //   AlongZ (axis 0): wall plane x=const, opening runs along Z -> yaw 90deg.
@@ -457,7 +633,7 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
             // centred on the STATIC doorway (closedPos), never the sliding leaf.
             const float fax = gcx(kFrameAabb), faz = gcz(kFrameAabb);
             const float fay = kFrameAabb.miny + kFrameSillGlb;
-            const float sx0 = d.closedPos.x, sz0 = d.closedPos.z;
+            const float sx0 = dwx, sz0 = dwz;                              // static doorway centre
             const float sy0 = d.closedPos.y - d.height * 0.5f;             // doorway floor
             float fmt[16];
             fmt[0]=cs*sRun; fmt[1]=0;    fmt[2]=-sn*sRun; fmt[3]=0;
@@ -488,6 +664,75 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                    x3::rhi::TextureHandle{ fr.emissiveTexId });
             }
         }
+
+        // ---- SPLIT-MODEL DRAW (registry rows > 0): the static shell at the
+        // doorway + each panel offset by ITS collision body's current travel —
+        // the delta is computed from the SAME eased cursor update() drives the
+        // bodies with, so the drawn panels can never drift from collision. ----
+        if (split) {
+            const DoorModelDef& def = kDoorModels[d.modelIdx < kDoorModelCount ? d.modelIdx : 0];
+            const ModelSlot&    ms  = m_slots[d.modelIdx];
+            if (!ms.ok) continue;                      // graybox panels render instead
+            // Model-local axes: width runs along local X (preYaw 0) or local Z
+            // (preYaw 90 deg maps it onto the run). Per-axis fit (rectilinear
+            // panels read correctly under it — the frame-fit precedent).
+            const bool  zRun   = def.preYaw > 0.5f;
+            const float modelW = zRun ? (def.aabb[5] - def.aabb[2]) : (def.aabb[3] - def.aabb[0]);
+            const float modelT = zRun ? (def.aabb[3] - def.aabb[0]) : (def.aabb[5] - def.aabb[2]);
+            const float modelH = def.aabb[4] - def.aabb[1];
+            const float sRun = (d.halfWidth * 2.0f + 0.30f) / modelW;   // straddles the jambs
+            const float sY   = d.height / modelH;
+            const float sThk = std::min(sRun, 0.30f / modelT);          // never a metre-thick slab
+            const float sx = zRun ? sThk : sRun;
+            const float sy = sY;
+            const float sz = zRun ? sRun : sThk;
+            const float ax2 = (def.aabb[0] + def.aabb[3]) * 0.5f;       // local bottom-centre anchor
+            const float ay2 =  def.aabb[1];
+            const float az2 = (def.aabb[2] + def.aabb[5]) * 0.5f;
+            const float totYaw = yaw + def.preYaw;
+            const float c2 = std::cos(totYaw), s2 = std::sin(totYaw);
+            const float doorFloorY = d.closedPos.y - d.height * 0.5f;
+            float M[16];
+            M[0]=c2*sx; M[1]=0;  M[2]=-s2*sx; M[3]=0;
+            M[4]=0;     M[5]=sy; M[6]=0;      M[7]=0;
+            M[8]=s2*sz; M[9]=0;  M[10]=c2*sz; M[11]=0;
+            M[12]=dwx - (c2*ax2*sx + s2*az2*sz);
+            M[13]=doorFloorY - ay2*sy;
+            M[14]=dwz - (-s2*ax2*sx + c2*az2*sz);
+            M[15]=1.0f;
+            // Panel travel deltas from the shared cursor (== the bodies' motion).
+            const float dA[3] = { (d.openPos.x  - d.closedPos.x)  * u,
+                                  (d.openPos.y  - d.closedPos.y)  * u,
+                                  (d.openPos.z  - d.closedPos.z)  * u };
+            const float dB[3] = { (d.openPos2.x - d.closedPos2.x) * u,
+                                  (d.openPos2.y - d.closedPos2.y) * u,
+                                  (d.openPos2.z - d.closedPos2.z) * u };
+            auto drawSet = [&](const std::vector<x3::asset::ModelDrawable>& set,
+                               const float* delta) {
+                float Mt[16];
+                for (int k = 0; k < 16; ++k) Mt[k] = M[k];
+                if (delta) { Mt[12] += delta[0]; Mt[13] += delta[1]; Mt[14] += delta[2]; }
+                for (const auto& dr : set) {
+                    float fin[16];
+                    x3::asset::mulMat4(Mt, dr.nodeTransform, fin);
+                    const float emis[4] = { dr.emissiveFactor[0], dr.emissiveFactor[1],
+                                            dr.emissiveFactor[2], 1.0f };
+                    device.drawMeshPBR(frame,
+                                       x3::rhi::MeshHandle{ dr.meshId },
+                                       x3::rhi::TextureHandle{ dr.baseColorTexId },
+                                       x3::rhi::TextureHandle{ dr.normalTexId },
+                                       x3::rhi::TextureHandle{ dr.mrTexId },
+                                       dr.baseColorFactor, emis, fin,
+                                       dr.alphaMask, dr.alphaBlend,
+                                       x3::rhi::TextureHandle{ dr.emissiveTexId });
+                }
+            };
+            drawSet(ms.fixedDr, nullptr);
+            drawSet(ms.panelADr, dA);
+            drawSet(ms.panelBDr, dB);
+            continue;   // door_a leaf / backing slab / signage do not apply
+        }
+        if (!m_meshOk) continue;   // door_a leaf missing: graybox box renders instead
 
         // Column-major TRS: world = T(c) * R_y(yaw) * S(s) * T(-anchor), placing the
         // GLB anchor (ax, ay, az) at the world bottom-center (cxw, bottomY, czw).
@@ -786,6 +1031,117 @@ uint32_t buildFloorHatch(Scene& scene, DoorSystem& doors,
 // ---------------------------------------------------------------------------
 // Generalized door (+ optional button) at an arbitrary doorway (Level 1).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// SPLIT-MODEL door (doors-pass): a registry model whose authored motion is two
+// panels parting HORIZONTALLY from the centre ("slider" / "bulkhead"). Two
+// static collision boxes — each covering half the opening — slide APART along
+// the wall run on the shared cursor (the floor hatch's body2 machinery, stood
+// upright), pocketing into the wall meat. Each panel's travel is the larger of
+// the half-opening and its VISUAL leaf width, so both collision and mesh clear
+// the cut. Closed blocks, open passes — --test-doors D8 walks a capsule at it.
+// ---------------------------------------------------------------------------
+static uint32_t buildSplitDoor(Scene& scene, DoorSystem& doors,
+                               x3::rhi::IRenderDevice& device,
+                               x3::phys::IPhysicsWorld& physics,
+                               const DoorSpec& spec, uint32_t modelIdx) {
+    const DoorModelDef& def = kDoorModels[modelIdx];
+    const float hw = spec.halfWidth;
+    const float hh = spec.height * 0.5f;
+    const float ht = spec.thickness * 0.5f;
+    const bool  runX = (spec.axis == DoorAxis::AlongX);   // wall plane Z=const -> run along X
+
+    // Load the model mesh (idempotent; also warms door_a + the shared loader).
+    const bool meshOk = doors.loadModelMesh(device, modelIdx);
+
+    // Visual leaf widths along the run at the build's fit scale (mirror of the
+    // drawMeshes fit): sRun = (opening + straddle) / model width.
+    const bool  zRun   = def.preYaw > 0.5f;
+    const float modelW = zRun ? (def.aabb[5] - def.aabb[2]) : (def.aabb[3] - def.aabb[0]);
+    const float sRun   = (hw * 2.0f + 0.30f) / modelW;
+    const float pAW = (zRun ? (def.panelA[5] - def.panelA[2]) : (def.panelA[3] - def.panelA[0])) * sRun;
+    const float pBW = (zRun ? (def.panelB[5] - def.panelB[2]) : (def.panelB[3] - def.panelB[0])) * sRun;
+    const float travelA = std::max(hw, pAW) + 0.02f;
+    const float travelB = std::max(hw, pBW) + 0.02f;
+
+    // Panel collision boxes: each covers HALF the opening (full height/thickness).
+    const x3::phys::Vec3 panelHalf = runX ? x3::phys::Vec3{ hw * 0.5f, hh, ht }
+                                          : x3::phys::Vec3{ ht, hh, hw * 0.5f };
+    const float cx = spec.doorwayCenter.x, cy = spec.doorwayCenter.y + hh, cz = spec.doorwayCenter.z;
+    const x3::phys::Vec3 closed1 = runX ? x3::phys::Vec3{ cx - hw * 0.5f, cy, cz }
+                                        : x3::phys::Vec3{ cx, cy, cz - hw * 0.5f };
+    const x3::phys::Vec3 closed2 = runX ? x3::phys::Vec3{ cx + hw * 0.5f, cy, cz }
+                                        : x3::phys::Vec3{ cx, cy, cz + hw * 0.5f };
+    const x3::phys::Vec3 open1   = runX ? x3::phys::Vec3{ closed1.x - travelA, cy, cz }
+                                        : x3::phys::Vec3{ cx, cy, closed1.z - travelA };
+    const x3::phys::Vec3 open2   = runX ? x3::phys::Vec3{ closed2.x + travelB, cy, cz }
+                                        : x3::phys::Vec3{ cx, cy, closed2.z + travelB };
+
+    auto buildPanel = [&](const x3::phys::Vec3& closed) -> uint32_t {
+        x3::prims::PrimMesh geo = x3::prims::makeBox(panelHalf.x, panelHalf.y, panelHalf.z,
+                                                     0, 0, 0, 1.0f);
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        e.baseColor[0] = spec.tint[0]; e.baseColor[1] = spec.tint[1];
+        e.baseColor[2] = spec.tint[2]; e.baseColor[3] = spec.tint[3];
+        e.tag = (uint32_t)Tag::Door;
+        e.visible = !meshOk;               // graybox fallback only when the GLB is absent
+        e.body = physics.addBox(panelHalf, closed, 0.0f, x3::phys::Layer::Static);
+        e.transform[12] = closed.x; e.transform[13] = closed.y; e.transform[14] = closed.z;
+        return scene.add(e);
+    };
+    const uint32_t ent1 = buildPanel(closed1);
+    const uint32_t ent2 = buildPanel(closed2);
+
+    Door d;
+    d.entity     = ent1;
+    d.body       = scene.get(ent1).body;
+    d.closedPos  = closed1;
+    d.openPos    = open1;
+    d.entity2    = ent2;
+    d.body2      = scene.get(ent2).body;
+    d.closedPos2 = closed2;
+    d.openPos2   = open2;
+    d.duration   = spec.duration;
+    d.state      = DoorState::Closed;
+    d.locked     = spec.locked;
+    d.code       = spec.code;
+    d.keycard    = spec.keycard;
+    d.requireBoth = spec.requireBoth;
+    d.axis       = (uint32_t)spec.axis;
+    d.halfWidth  = spec.halfWidth;
+    d.height     = spec.height;
+    d.modelIdx   = modelIdx;
+    d.floorStyle = (spec.floorStyle == kDoorFloorAuto) ? doorFloorForY(spec.doorwayCenter.y)
+                                                       : spec.floorStyle;
+    d.withFrame  = spec.withFrame;
+    const uint32_t doorIdx = doors.add(d);
+
+    if (spec.withButton) {
+        const float kBtnHalf = 0.12f;
+        x3::phys::Vec3 btnPos = runX
+            ? x3::phys::Vec3{ cx + hw + 0.5f, spec.doorwayCenter.y + 1.3f, cz - ht - kBtnHalf }
+            : x3::phys::Vec3{ cx - ht - kBtnHalf, spec.doorwayCenter.y + 1.3f, cz + hw + 0.5f };
+        x3::prims::PrimMesh geo = x3::prims::makeBox(kBtnHalf, kBtnHalf, kBtnHalf, 0, 0, 0, 1.0f);
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        e.baseColor[0] = 0.20f; e.baseColor[1] = 0.85f; e.baseColor[2] = 0.55f; e.baseColor[3] = 1.0f;
+        e.tag  = (uint32_t)Tag::Button;
+        e.link = ent1;
+        e.body = physics.addBox(x3::phys::Vec3{ kBtnHalf, kBtnHalf, kBtnHalf },
+                                btnPos, 0.0f, x3::phys::Layer::Static);
+        e.transform[12] = btnPos.x; e.transform[13] = btnPos.y; e.transform[14] = btnPos.z;
+        scene.add(e);
+    }
+
+    x3::logInfo(std::string("buildSplitDoor['") + def.key + "']: door idx " +
+                std::to_string(doorIdx) + " entities " + std::to_string(ent1) + "+" +
+                std::to_string(ent2) + " [" + doorStyleFor(d.floorStyle).name + "]" +
+                (spec.locked ? " [LOCKED]" : "") + (meshOk ? "" : " (graybox panels)"));
+    return doorIdx;
+}
+
 uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
                         x3::rhi::IRenderDevice& device,
                         x3::phys::IPhysicsWorld& physics,
@@ -800,7 +1156,15 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
         // builder so it can lay TWO flush, floor-textured panels that part from the
         // centre. buildFloorHatch() returns the door index directly.
         return buildFloorHatch(scene, doors, device, physics, spec);
-    } else if (spec.axis == DoorAxis::AlongX) {
+    }
+    // REGISTRY MODEL dispatch (doors-pass): a split-motion model routes to the
+    // two-panel builder; door_a (and unknown keys) keep the slide-up path below.
+    {
+        const uint32_t modelIdx = doorModelIndex(spec.model);
+        if (kDoorModels[modelIdx].motion == DoorMotion::SlideSplit)
+            return buildSplitDoor(scene, doors, device, physics, spec, modelIdx);
+    }
+    if (spec.axis == DoorAxis::AlongX) {
         // Wall plane is Z = const: door is wide in X (the run), thin in Z. Slides UP.
         half      = x3::phys::Vec3{ hw, hh, ht };
         closedPos = x3::phys::Vec3{ spec.doorwayCenter.x, spec.doorwayCenter.y + hh, spec.doorwayCenter.z };
@@ -1402,6 +1766,139 @@ bool runDoorSelfTest() {
         w->shutdown();
         dcheck(autoOk && pinnedOk && hatchOk,
                "D6 floorStyle auto/pinned + withFrame plumb through buildLevelDoor");
+    }
+
+    // ---- D7: THE LOCK API (doors-pass) — lock/unlock/isLocked + closeAndLock -
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        HeadlessDevice dev; Scene s; DoorSystem dd;
+        CountingAudio audio;
+        dd.setAudio(&audio, audio.load("open"), audio.load("close"), audio.load("locked"));
+        DoorSpec spec;
+        spec.doorwayCenter = x3::phys::Vec3{ 0, 0, 0 };
+        spec.halfWidth = kCanonDoorHalf; spec.height = kCanonLintel;
+        spec.duration = 1.0f; spec.withButton = false;
+        buildLevelDoor(s, dd, dev, *w, spec);
+        Door& d = dd.at(0);
+        // Locked closed door refuses to open, and SAYS so (denied buzz fired).
+        d.lock();
+        const int shots0 = audio.oneShots;
+        const bool refusedOpen = !dd.startOpening(d) && !dd.toggle(d) &&
+                                 d.state == DoorState::Closed && d.isLocked();
+        const bool buzzed = audio.oneShots == shots0 + 2;   // one buzz per refusal
+        // unlock() restores normal operation.
+        d.unlock();
+        const bool opens = dd.startOpening(d);
+        for (int i = 0; i < 90; ++i) { dd.update(kFixedDt, s, *w); w->step(kFixedDt); }
+        const bool nowOpen = d.state == DoorState::Open;
+        // closeAndLock() seals an OPEN door: it starts Closing + locks, the E
+        // toggle can NOT reverse it mid-travel (the lock-bypass fix), and it
+        // finishes seated + locked.
+        dd.closeAndLock(d);
+        const bool sealing = d.state == DoorState::Closing && d.isLocked();
+        dd.update(kFixedDt, s, *w);
+        const bool noReverse = !dd.toggle(d) && d.state == DoorState::Closing;
+        for (int i = 0; i < 90; ++i) { dd.update(kFixedDt, s, *w); w->step(kFixedDt); }
+        const bool sealed = d.state == DoorState::Closed && d.isLocked() &&
+                            !dd.startOpening(d);
+        // ...and a plain unlock re-arms it (lock leaves no residue).
+        dd.unlock(d);
+        const bool rearmed = dd.startOpening(d);
+        w->shutdown();
+        dcheck(refusedOpen && buzzed && opens && nowOpen && sealing && noReverse &&
+               sealed && rearmed,
+               "D7 lock API: locked refuses open (buzz), closeAndLock seals mid-travel, unlock re-arms");
+    }
+
+    // ---- D8: MODEL REGISTRY + SPLIT MOTION — every door model is usable ------
+    {
+        uint32_t nDefs = 0;
+        const DoorModelDef* defs = doorModelDefs(nDefs);
+        // The registry knows every door model family in the tree, each with a
+        // full sound set (the data-driven model->sound mapping).
+        bool rows = nDefs >= 3 && defs != nullptr;
+        bool sounds = true;
+        for (uint32_t i = 0; i < nDefs; ++i)
+            if (!defs[i].sndOpen || !defs[i].sndClose || !defs[i].sndLocked ||
+                !defs[i].sndServo || !defs[i].sndThunk) sounds = false;
+        const bool keys = doorModelIndex("door_a") == 0 && doorModelIndex(nullptr) == 0 &&
+                          doorModelIndex("nonsense") == 0 &&
+                          doorModelIndex("slider") == 1 && doorModelIndex("bulkhead") == 2;
+
+        // A SPLIT door (authored two-panel motion) blocks the canonical doorway
+        // closed and passes a standing capsule open — collision state matches
+        // the motion state for the new motion class exactly as D4 proves for
+        // slide-up. Graybox collision works even with no GLB on disk.
+        auto walkSplit = [](const char* model, bool openIt) -> float {
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init();
+            HeadlessDevice dev; Scene s; DoorSystem dd;
+            w->addBox(x3::phys::Vec3{ 8.0f, 0.2f, 8.0f }, x3::phys::Vec3{ 0, -0.2f, 0 },
+                      0.0f, x3::phys::Layer::Static);
+            DoorSpec spec;
+            spec.doorwayCenter = x3::phys::Vec3{ 0, 0, 0 };
+            spec.axis = DoorAxis::AlongX;
+            spec.halfWidth = kCanonDoorHalf; spec.height = kCanonLintel;
+            spec.duration = 1.0f; spec.withButton = false;
+            spec.model = model;
+            buildLevelDoor(s, dd, dev, *w, spec);
+            Door& d = dd.at(0);
+            if (!d.body2.valid()) { w->shutdown(); return -777.0f; }   // not split-built
+            if (openIt) {
+                dd.startOpening(d);
+                for (int i = 0; i < 120; ++i) { dd.update(kFixedDt, s, *w); w->step(kFixedDt); }
+                if (d.state != DoorState::Open) { w->shutdown(); return -99.0f; }
+            }
+            x3::phys::BodyId chr = w->createCharacter(0.3f, 1.8f, x3::phys::Vec3{ 0, 0.05f, -3.0f });
+            for (int i = 0; i < 30; ++i) { w->moveCharacter(chr, x3::phys::Vec3{0,0,0}, kFixedDt); w->step(kFixedDt); }
+            for (int i = 0; i < 300; ++i) {
+                w->moveCharacter(chr, x3::phys::Vec3{ 0, 0, 4.0f }, kFixedDt);
+                dd.update(kFixedDt, s, *w);
+                w->step(kFixedDt);
+            }
+            const float z = w->getBodyPosition(chr).z;
+            w->shutdown();
+            return z;
+        };
+        const float zClosed = walkSplit("slider", false);
+        const float zOpen   = walkSplit("slider", true);
+        const bool splitBlocks = zClosed > -20.0f && zClosed < -0.15f;
+        const bool splitPasses = zOpen > 1.0f;
+
+        // The split door speaks through the SAME state-transition audio path
+        // (open cue/servo owned by transitions, locked buzz on refusal).
+        bool splitSounds = false;
+        {
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init();
+            HeadlessDevice dev; Scene s; DoorSystem dd;
+            CountingAudio audio;
+            dd.setAudio(&audio, audio.load("open"), audio.load("close"), audio.load("locked"));
+            dd.setMotorAudio(audio.load("servo"), audio.load("thunk"));
+            DoorSpec spec;
+            spec.doorwayCenter = x3::phys::Vec3{ 0, 0, 0 };
+            spec.halfWidth = kCanonDoorHalf; spec.height = kCanonLintel;
+            spec.duration = 1.0f; spec.withButton = false; spec.model = "bulkhead";
+            buildLevelDoor(s, dd, dev, *w, spec);
+            Door& d = dd.at(0);
+            dd.toggle(d);
+            dd.update(kFixedDt, s, *w);
+            const bool hum = audio.liveLoops() == 1;                  // servo with the motion
+            for (int i = 0; i < 90; ++i) dd.update(kFixedDt, s, *w);
+            const bool restSilent = audio.liveLoops() == 0 && d.state == DoorState::Open;
+            d.lock(); dd.closeAndLock(d);
+            for (int i = 0; i < 90; ++i) dd.update(kFixedDt, s, *w);
+            const int shots = audio.oneShots;
+            dd.toggle(d);                                              // locked refusal
+            const bool buzz = audio.oneShots == shots + 1;
+            splitSounds = hum && restSilent && buzz;
+            w->shutdown();
+        }
+        dcheck(rows && sounds && keys && splitBlocks && splitPasses && splitSounds,
+               "D8 registry: every model resolves w/ sound set; split door blocks closed, passes open, sounds");
+        x3::logInfo("[door-test]   split capsule z: closed=" + std::to_string(zClosed) +
+                    " open=" + std::to_string(zOpen));
     }
 
     x3::logInfo(std::string("[door-test] ") + std::to_string(h_pass) + " passed, " +

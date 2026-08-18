@@ -149,7 +149,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-gltf") o.testGltf = true;
         else if (a == "--test-player") o.testPlayer = true;
         else if (a == "--test-interact") o.testInteract = true;
-        else if (a == "--test-doors") o.testDoors = true;   // door-mesh-swap polish gate (D1-D6)
+        else if (a == "--test-doors") o.testDoors = true;   // door-mesh-swap polish gate (D1-D8)
+        else if (a == "--test-bedrest") o.testBedRest = true;   // bed-rest loop (lie->lock+dark, rise->restore)
         else if (a == "--test-physprops") o.testPhysprops = true;
         else if (a == "--test-ragdoll") o.testRagdoll = true;
         else if (a == "--test-ragdollskin") o.testRagdollSkin = true;

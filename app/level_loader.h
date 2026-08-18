@@ -111,6 +111,12 @@ struct CanonDoorway {
     // queries this door's DoorState: a CLOSED door is opaque and stops the flood; an
     // Open/Opening/Closing door lets visibility flow to the room behind it.
     uint32_t doorIndex = kNoLink;
+    // PVS-TRANSPARENT door (doors-pass): the doorway carries a slab but the flood
+    // ALWAYS passes (as if doorless). Set on Jake's cell throat — the cell's
+    // observation WINDOW looks into the Main Hall, so a closed cell door must not
+    // cull the hall (the void-through-glass defect class). Purely a visibility
+    // property; the slab still blocks, locks and draws normally.
+    bool pvsTransparent = false;
 };
 
 // ---- Camera frustum (for the frustum-directional portal flood-fill). 6 world-space
@@ -306,11 +312,17 @@ std::vector<CanonLight> buildCanonLights(const CanonFloor& floor);
 // headroom for the flashlight's 2 lights). The closest lights to `eye` win when over the
 // cap. Appends into `out` (NOT cleared — the host inserts the flashlight first). Returns
 // the number of room lights appended.
+//
+// `excludeRoom` (doors-pass, bed rest): a ROOM whose lights are switched OFF this
+// frame (the cell while the player sleeps). Applies to room-TAGGED lights only —
+// passing kNoRoom (the default) excludes nothing, and un-roomed range-fed lights
+// (which carry kNoRoom as their tag) are never affected.
 uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
                                    const std::vector<uint32_t>& visibleRooms,
                                    float eyeX, float eyeY, float eyeZ,
                                    std::vector<x3::rhi::PointLight>& out,
-                                   uint32_t maxLights = 16);
+                                   uint32_t maxLights = 16,
+                                   uint32_t excludeRoom = kNoRoom);
 
 // The canonical source path baked into the repo's environment (the owner's project).
 // Override via the --world canonlevel arg if needed.

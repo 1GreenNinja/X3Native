@@ -22,6 +22,7 @@ struct CliOptions {
          // --test-doors: door-mesh-swap polish gate (ease curve / dt-scaling /
          // per-floor variants / 1.8 m capsule PASSABILITY / servo start-stop).
          testDoors = false,
+         testBedRest = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBlockout = false,
          testBarrels = false, testGlass = false, testHoloterm = false, testLlm = false, testEditorAi = false, testEcs = false, testEcsRender = false,

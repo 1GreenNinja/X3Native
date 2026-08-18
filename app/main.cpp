@@ -291,6 +291,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testPlayer = o.testPlayer;
         _tf.testInteract = o.testInteract;
         _tf.testDoors = o.testDoors;
+        _tf.testBedRest = o.testBedRest;
         _tf.testPhysprops = o.testPhysprops;
         _tf.testRagdollSkin = o.testRagdollSkin;
         _tf.testEditor = o.testEditor;

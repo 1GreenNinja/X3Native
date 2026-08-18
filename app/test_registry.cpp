@@ -56,6 +56,7 @@
 #include "level_lint.h"
 #include "qa_propclip.h"          // x3::game::runPropClipSelfTest (--test-propclip)
 #include "keypad.h"      // PB fold: --test-keypad (realistic access keypad geometry)
+#include "bed_rest.h"    // doors-pass: --test-bedrest (runBedRestSelfTest)
 #include "leveldoc_world.h"
 #include "player.h"
 #include "monster.h"
@@ -376,8 +377,12 @@ int dispatchTests(const TestFlags& tf) {
         return x3::game::runInteractSelfTest() ? 0 : 1;
     }
     if (tf.testDoors) {
-        x3::logInfo("running door-mesh-swap polish self-test (D1-D6)...");
+        x3::logInfo("running door-mesh-swap polish self-test (D1-D8)...");
         return x3::game::runDoorSelfTest() ? 0 : 1;
+    }
+    if (tf.testBedRest) {
+        x3::logInfo("running bed-rest loop self-test (--test-bedrest, B1-B6)...");
+        return x3::game::runBedRestSelfTest() ? 0 : 1;
     }
     if (tf.testPhysprops) {
         x3::logInfo("running physics-props (hanging cubes / joints) self-test...");
