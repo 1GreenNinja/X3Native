@@ -1295,13 +1295,36 @@ void FreewayTraffic::update(float dt, const float focus[3], x3::phys::IPhysicsWo
     for (Car& c : m_cars) {
         if (!c.body.valid()) continue;
         if (c.loose) {
-            // NO_SLOP rule 11 — THE CONTACT LAW, runtime invariant: a loose
+            // NO_SLOP rule 11 - THE CONTACT LAW, runtime invariant: a loose
             // (dynamic) wreck must never end up under the carved field. Same
             // shape as DriveDemo::postStep's wheel clamp: only ever push UP.
+            //
+            // DECK-AWARE (W-STACK's trap, fixed before it could bite). The
+            // carved field is NOT the floor everywhere this road goes: over a
+            // RoadSpec::Gap - a bridge deck, an interchange ramp, a Stack
+            // flyover - the pavement rides on structure and the field is the
+            // ground far below (21 m on the Stack's L4; its tallest pier is
+            // 33.5 m). A terrain-only clamp is merely silent while a car sits
+            // on a deck, and actively wrong the instant one dips a hair below
+            // it: it reads "under the field" and yanks the car to the dirt
+            // underneath the interchange.
+            //
+            // So the floor is the TOPMOST STATIC SURFACE under the car, not
+            // the field: max(field, downward ray). The ray starts just above
+            // the body and reaches only a little below it - the character
+            // rig's v3 lesson (character_anim.cpp), where a ray that started
+            // 40 m overhead found a tunnel LID and ejected the player through
+            // the roof. Start low, look down: a deck can then only hold a car
+            // UP, never teleport it somewhere it has never been.
             const x3::phys::Vec3 bp = phys->getBodyPosition(c.body);
-            const float ground = terrainHeightAtWorld(bp.x, bp.z);
-            if (bp.y < ground - 0.2f)
-                phys->setBodyPosition(c.body, x3::phys::Vec3{ bp.x, ground + c.halfH, bp.z });
+            float floorY = terrainHeightAtWorld(bp.x, bp.z);
+            const x3::phys::RayHit deck = phys->rayCast(
+                x3::phys::Vec3{ bp.x, bp.y + 0.5f, bp.z },
+                x3::phys::Vec3{ 0.0f, -1.0f, 0.0f },
+                c.halfH * 2.0f + 1.5f, x3::phys::Layer::Static);
+            if (deck.hit && deck.point.y > floorY) floorY = deck.point.y;
+            if (bp.y < floorY - 0.2f)
+                phys->setBodyPosition(c.body, x3::phys::Vec3{ bp.x, floorY + c.halfH, bp.z });
             continue;
         }
         float pos[3], dir[2], mh, dy;
