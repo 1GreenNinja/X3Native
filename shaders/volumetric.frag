@@ -39,7 +39,8 @@ layout(set = 0, binding = 0) uniform sampler2D depthTex;   // main depth (D32, [
 // block below must match FrameUBO / mesh.frag's Camera block byte-for-byte.
 struct PointLight {
     vec4 posRange;   // xyz = world position, w = range (meters)
-    vec4 colorPad;   // rgb = linear color * intensity, a = unused
+    vec4 colorPad;   // rgb = linear color * intensity, a = cos(inner half-angle)
+    vec4 dirCone;    // xyz = spot axis (all-zero = OMNI),  w = cos(outer half-angle)
 };
 const int kMaxPointLights = 64;
 layout(set = 1, binding = 1) uniform Camera {
@@ -95,6 +96,20 @@ float pointAtten(float dist, float range) {
     float w = clamp(1.0 - t * t * t * t, 0.0, 1.0);
     w *= w;
     return w / (dist * dist + 1.0);
+}
+
+// SPOT CONE — the same law as inc/mesh_lighting.glsl (duplicated here because
+// this shader carries its own copy of pointAtten and includes nothing). Omni
+// lights (dirCone.xyz == 0) return a literal 1.0, so the haze around every
+// pre-existing lamp is unchanged; a real spot's shaft now narrows and its
+// penumbra fades instead of ending at a hard cone wall.
+float spotCone(vec4 dirCone, float cosInner, vec3 L) {
+    if (dot(dirCone.xyz, dirCone.xyz) < 0.25) return 1.0;
+    float cd    = dot(dirCone.xyz, -L);
+    float denom = max(cosInner - dirCone.w, 1.0e-4);
+    float t     = clamp((cd - dirCone.w) / denom, 0.0, 1.0);
+    t = t * t * (3.0 - 2.0 * t);
+    return t * t;
 }
 
 // Single hardware-compare tap into the sun shadow map at a WORLD point. Outside the
@@ -198,7 +213,9 @@ void main() {
                     int   i    = lidx[k];
                     vec3  toL  = cam.lights[i].posRange.xyz - p;
                     float d    = length(toL);
-                    float att  = pointAtten(d, cam.lights[i].posRange.w);
+                    float att  = pointAtten(d, cam.lights[i].posRange.w)
+                               * spotCone(cam.lights[i].dirCone,
+                                          cam.lights[i].colorPad.a, toL / max(d, 1e-4));
                     if (att <= 0.0) continue;
                     L += cam.lights[i].colorPad.rgb * att
                        * phaseFn(dot(dir, toL / max(d, 1e-4)), g) * lightMul;

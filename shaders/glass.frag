@@ -31,7 +31,8 @@ layout(set = 0, binding = 0) uniform sampler2D textures[];
 
 struct PointLight {
     vec4 posRange;   // xyz = world position, w = range (meters)
-    vec4 colorPad;   // rgb = linear color * intensity, a = unused
+    vec4 colorPad;   // rgb = linear color * intensity, a = cos(inner half-angle)
+    vec4 dirCone;    // xyz = spot axis (all-zero = OMNI),  w = cos(outer half-angle)
 };
 const int kMaxPointLights = 64;
 
@@ -280,7 +281,8 @@ void main() {
         float dist = length(toL);
         vec3  L    = toL / max(dist, 0.0001);
         float pndl = max(dot(N, L), 0.0);
-        float att  = pointAtten(dist, PL.posRange.w);
+        float att  = pointAtten(dist, PL.posRange.w)
+                   * spotCone(PL.dirCone, PL.colorPad.a, L);
         lighting  += PL.colorPad.rgb * (pndl * att);
         specSum   += specLight(N, V, L, PL.colorPad.rgb, specRough) * att;
     }

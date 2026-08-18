@@ -29,7 +29,7 @@ layout(set = 0, binding = 0) uniform sampler2D textures[];
 // ---- Per-frame Camera UBO (set1/binding1) — MUST match mesh.frag's block exactly.
 //      (Sun is emissive, so sunDir/camPos/ambient are unused here, but the block
 //       layout must still match the bound descriptor.)
-struct PointLight { vec4 posRange; vec4 colorPad; };
+struct PointLight { vec4 posRange; vec4 colorPad; vec4 dirCone; };
 const int kMaxPointLights = 64;
 layout(set = 1, binding = 1) uniform Camera {
     mat4 viewProj;

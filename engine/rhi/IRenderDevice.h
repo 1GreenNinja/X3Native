@@ -103,11 +103,35 @@ struct TextureHandle { uint32_t id = 0; bool valid() const { return id != 0; } }
 // A point light contributes NO shadow (the single shadow map is the sun's); it
 // is a cheap unshadowed fill — exactly right for corridor ceiling fixtures.
 // ---------------------------------------------------------------------------
+// SPOT CONE (2026-08-18, fix/flashlight-feel). Until this lane the struct had NO
+// direction and NO cone, so every "spot" in the game — the player's torch above
+// all — was an omni point light whose disc shape came only from inverse-square
+// plus N.L. Aim one of those at a wall from a metre away and the core clips to
+// pure white while the shoulder is barely a metre wide, so the tonemapper paints
+// a FLAT WHITE DISC with what reads as a hard rim. That absence IS the defect.
+//
+// A light becomes a real spot when `dir` is non-zero. coneInner/OuterCos are
+// cosines of the HALF-angles: full brightness inside the inner cone, a smooth
+// penumbra out to the outer, zero beyond. Leaving `dir` all-zero keeps the light
+// exactly omni — every existing fixture is untouched bit for bit, because the
+// shader's cone factor is then a literal 1.0.
 struct PointLight {
     float pos[3]   = { 0.0f, 0.0f, 0.0f };
     float range    = 6.0f;                  // meters; attenuation -> 0 at range
     float color[3] = { 1.0f, 1.0f, 1.0f };  // linear RGB * intensity
-    float _pad     = 0.0f;                  // keep 16-byte friendly for the GPU
+    float coneInnerCos = 1.0f;              // cos(inner half-angle) — hotspot edge
+    float dir[3]   = { 0.0f, 0.0f, 0.0f };  // spot axis (unit). ALL-ZERO = OMNI
+    float coneOuterCos = -1.0f;             // cos(outer half-angle) — spill edge
+
+    // Aim this light down `d` with the two half-angles in DEGREES.
+    void setSpot(float dx, float dy, float dz, float innerDeg, float outerDeg) {
+        const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (len < 1e-6f) { dir[0] = dir[1] = dir[2] = 0.0f; return; }
+        dir[0] = dx / len; dir[1] = dy / len; dir[2] = dz / len;
+        const float kDeg = 3.14159265358979f / 180.0f;
+        coneInnerCos = std::cos(innerDeg * kDeg);
+        coneOuterCos = std::cos(outerDeg * kDeg);
+    }
 };
 
 // ---------------------------------------------------------------------------

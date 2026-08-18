@@ -264,7 +264,8 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     // is degrees; scale is added to the row's scaleMul. See the BAKE block above
     // kTpGripTable. Synced per-frame in applyRtaoCVars().
     console.registerCVar("r_debugview", "0", "Renderer debug view: 0 = off, 1 = SHADING NORMALS (N*0.5+0.5). The instrument that separates 'the light cannot reach it' from 'its normal points into the wall'.");
-    console.registerCVar("r_flashlight", "1", "Player flashlight (L toggles in game). Set 0 to measure a room's OWN practicals with no torch riding the camera — the lighting-audit workhorse.");
+    console.registerCVar("r_torchlegacy", "0", "Flashlight A/B: 1 restores the pre-2026-08-18 torch EXACTLY (two omni bulbs 2 m downrange, 3.30 @ 20 m + 1.70 @ 8 m) — the hard white disc, reproducible on demand. 0 = the spot-cone torch.");
+    console.registerCVar("r_flashlight", "0", "Player flashlight — DEFAULT OFF since 2026-08-18 (Tim: \"I would like it OFF by default\"). L toggles it in game; setting this cvar live drives the torch either way (1 = on, 0 = off), so it is still the lighting-audit workhorse for measuring a room's OWN practicals.");
     console.registerCVar("shot_weapon", "", "--screenshot: weapon whose FP viewmodel is held in the capture (e.g. shotgun/plasma/chaingun/lightning). Empty = pistol. QA hook for the per-weapon texture gate.");
     console.registerCVar("shot_fire",   "0", "--screenshot: fire the held weapon FROM ITS BARREL TIP through the settle frames (muzzle flash + tracer). The eyeball gate for 'the fire comes from the barrel', per weapon.");
     console.registerCVar("grip_x",     "0", "3P held-weapon grip override: +meters toward thumb (right); live, current weapon");

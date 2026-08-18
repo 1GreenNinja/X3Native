@@ -75,8 +75,12 @@ struct HostContext {
     int         screenshotSettle = 16;
     bool        shotCamOverride  = false;
     float       shotCam[5]       = { 8.0f, 1.75f, -0.4f, 0.06f, -0.16f };
-    // Start with the flashlight OFF (--flashlight-off): the honest-lighting review gate.
+    // Start with the flashlight OFF (--flashlight-off): the honest-lighting review
+    // gate. Redundant since the torch defaults OFF (2026-08-18) but still honored.
     bool        flashlightOff    = false;
+    // Start with the flashlight ON (--flashlight-on). Also raises r_flashlight to 1
+    // so the cvar and the live state agree from frame one.
+    bool        flashlightOn     = false;
 
     // ---- Stress / benchmark ----
     uint32_t stressCount = 0;

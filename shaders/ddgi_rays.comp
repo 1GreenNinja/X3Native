@@ -55,7 +55,8 @@ layout(std430, set = 0, binding = 2) writeonly buffer Rays {
 
 struct PointLight {
     vec4 posRange;        // xyz = world position, w = range (meters)
-    vec4 colorPad;        // rgb = linear color * intensity
+    vec4 colorPad;        // rgb = linear color * intensity, a = cos(inner half-angle)
+    vec4 dirCone;         // xyz = spot axis (all-zero = OMNI), w = cos(outer half-angle)
 };
 const int kMaxPointLights = 64;
 
@@ -232,6 +233,16 @@ void main() {
             float w = clamp(1.0 - tt * tt * tt * tt, 0.0, 1.0);
             w *= w;
             float atten = w / (d * d + 1.0);
+            // SPOT CONE (fix/flashlight-feel): omni lights (dirCone.xyz == 0) keep
+            // their exact former GI contribution; a spot only bounces where it
+            // actually shines, so the torch does not wash the whole probe cage.
+            vec4 dc = ub.lights[i].dirCone;
+            if (dot(dc.xyz, dc.xyz) >= 0.25) {
+                float ci = ub.lights[i].colorPad.a;
+                float ct = clamp((dot(dc.xyz, -L) - dc.w) / max(ci - dc.w, 1.0e-4), 0.0, 1.0);
+                ct = ct * ct * (3.0 - 2.0 * ct);
+                atten *= ct * ct;
+            }
             radiance += albedo * ub.lights[i].colorPad.rgb * (nl * atten);
         }
 

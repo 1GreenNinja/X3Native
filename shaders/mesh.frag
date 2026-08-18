@@ -50,7 +50,8 @@ layout(set = 0, binding = 0) uniform sampler2D textures[];
 // PointLight in IRenderDevice.h). std140: two vec4s, 32 bytes.
 struct PointLight {
     vec4 posRange;   // xyz = world position, w = range (meters)
-    vec4 colorPad;   // rgb = linear color * intensity, a = unused
+    vec4 colorPad;   // rgb = linear color * intensity, a = cos(inner half-angle)
+    vec4 dirCone;    // xyz = spot axis (all-zero = OMNI),  w = cos(outer half-angle)
 };
 
 const int kMaxPointLights = 64;
@@ -437,7 +438,8 @@ void main() {
             float dist = length(toL);
             vec3  L    = toL / max(dist, 0.0001);
             dbg += PL.colorPad.rgb
-                 * (max(dot(N, L), 0.0) * pointAtten(dist, PL.posRange.w));
+                 * (max(dot(N, L), 0.0) * pointAtten(dist, PL.posRange.w)
+                    * spotCone(PL.dirCone, PL.colorPad.a, L));
         }
         outColor = vec4(dbg, 1.0);
         return;
@@ -487,7 +489,8 @@ void main() {
             vec3  toL  = PL.posRange.xyz - vWorldPos;
             float dist = length(toL);
             vec3  L    = toL / max(dist, 0.0001);
-            float atten = pointAtten(dist, PL.posRange.w);
+            float atten = pointAtten(dist, PL.posRange.w)
+                        * spotCone(PL.dirCone, PL.colorPad.a, L);
 #ifdef RT_SHADOWS
             // POINT RT shadow (tier >= 2): the first K lights with a real
             // contribution here each get one source-jittered shadow ray;
@@ -549,7 +552,8 @@ void main() {
 #ifdef RT_SHADOWS
             // POINT RT shadow (tier >= 2): same first-K-significant policy as
             // the dielectric loop (one budget shared across both paths).
-            float atten = pointAtten(dist, PL.posRange.w);
+            float atten = pointAtten(dist, PL.posRange.w)
+                        * spotCone(PL.dirCone, PL.colorPad.a, L);
             float vis = 1.0;
             if (ssao.rtsh0.x >= 1.5 && rtshRaysLeft > 0 && dot(N, L) > 0.0
                 && atten * dot(PL.colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
@@ -558,7 +562,8 @@ void main() {
             }
             Lo += brdf(N, V, NoV, L, F0, diff, a, kPointDiffuseW) * PL.colorPad.rgb * (atten * vis);
 #else
-            Lo += brdf(N, V, NoV, L, F0, diff, a, kPointDiffuseW) * PL.colorPad.rgb * pointAtten(dist, PL.posRange.w);
+            Lo += brdf(N, V, NoV, L, F0, diff, a, kPointDiffuseW) * PL.colorPad.rgb
+                * (pointAtten(dist, PL.posRange.w) * spotCone(PL.dirCone, PL.colorPad.a, L));
 #endif
         }
         // Image-based lighting: SPLIT-SUM diffuse irradiance + GGX-prefiltered specular
@@ -626,7 +631,8 @@ void main() {
                 vec3 H = normalize(Vc + L);
                 float NoH = max(dot(Nc, H), 0.0), VoH = max(dot(Vc, H), 0.0);
                 float Fd  = 0.04 + 0.96 * pow(1.0 - VoH, 5.0);
-                ccLo += PL.colorPad.rgb * pointAtten(dist, PL.posRange.w)
+                ccLo += PL.colorPad.rgb
+                      * (pointAtten(dist, PL.posRange.w) * spotCone(PL.dirCone, PL.colorPad.a, L))
                       * (D_GGX(NoH, aCc) * V_SmithGGX(NoVc, NoL2, aCc) * Fd * NoL2);
             }
         }

@@ -973,7 +973,8 @@ void VulkanRenderDevice::prepareDdgiUbo() {
         for (uint32_t i = 0; i < lc; ++i) {
             const PointLight& pl = m_pointLights[i];
             u.lights[i].posRange = glm::vec4(pl.pos[0], pl.pos[1], pl.pos[2], pl.range);
-            u.lights[i].colorPad = glm::vec4(pl.color[0], pl.color[1], pl.color[2], 0.0f);
+            u.lights[i].colorPad = glm::vec4(pl.color[0], pl.color[1], pl.color[2], pl.coneInnerCos);
+            u.lights[i].dirCone  = glm::vec4(pl.dir[0], pl.dir[1], pl.dir[2], pl.coneOuterCos);
         }
         if (m_ddgiUboMapped[m_frameIdx])
             std::memcpy(m_ddgiUboMapped[m_frameIdx], &u, sizeof(u));
@@ -2270,7 +2271,8 @@ void VulkanRenderDevice::prepareFrameData() {
         for (uint32_t i = 0; i < lc; ++i) {
             const PointLight& s = m_pointLights[i];
             ubo.lights[i].posRange = glm::vec4(s.pos[0], s.pos[1], s.pos[2], s.range);
-            ubo.lights[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], 0.0f);
+            ubo.lights[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], s.coneInnerCos);
+            ubo.lights[i].dirCone  = glm::vec4(s.dir[0], s.dir[1], s.dir[2], s.coneOuterCos);
         }
         ubo.camPos = glm::vec4(m_camPos, 0.0f);   // PBR view vector (mesh.frag)
         // Per-scene sun direction for lighting + shadows (same source as the sky disk).
@@ -2315,7 +2317,8 @@ void VulkanRenderDevice::prepareFrameData() {
             for (uint32_t i = 0; i < sceneLights; ++i) {
                 const PointLight& s = m_pointLights[i];
                 gl[i].posRange = glm::vec4(s.pos[0], s.pos[1], s.pos[2], s.range);
-                gl[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], 0.0f);
+                gl[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], s.coneInnerCos);
+                gl[i].dirCone  = glm::vec4(s.dir[0], s.dir[1], s.dir[2], s.coneOuterCos);
             }
 
             // Assign into CACHED staging (see m_clusterCounts), then copy out.
