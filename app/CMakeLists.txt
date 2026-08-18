@@ -97,6 +97,7 @@ add_library(x3app SHARED
     rift_console.cpp
     # W-MENU — the ONE destination registry + the world/place selection menu
     destinations.cpp
+    host_shell_lint.cpp
     world_menu.cpp
     space_pilot.cpp
     space/ship_ai.cpp

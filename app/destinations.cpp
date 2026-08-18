@@ -1,7 +1,8 @@
 #include "destinations.h"
 
 #include "engine/core/x3_log.h"
-#include "world_hosts.h"   // dispatchedWorldModes() — the LIVE dispatch table
+#include "world_hosts.h"       // dispatchedWorldModes() — the LIVE dispatch table
+#include "host_shell_lint.h"   // D13: every dispatchable world's host wires the shared shell
 
 #include <algorithm>
 #include <cctype>
@@ -547,6 +548,17 @@ bool runDestinationsSelfTest() {
         }
         dtCheck(ok, "D12 legacy --world aliases still dispatch, are reasoned, and resolve");
     }
+
+    // D13 — THE SHELL GATE. The registry's job is "every place the game has,
+    //       reachable and honest"; a world you can dispatch but that has no
+    //       console, no pause menu and none of the ~118 shared commands is
+    //       reachable in name only. Echo Harbor was exactly that for months and
+    //       nothing noticed, so the invariant now has a probe with a proven
+    //       failure mode (app/host_shell_lint.h — it logs its own [hostshell]
+    //       PASS/FAIL lines, including a negative control that goes RED against
+    //       the pre-migration Echo Harbor).
+    dtCheck(runHostShellLint(),
+            "D13 every world host wires the shared HostShell (console/pause/FPS)");
 
     x3::logInfo("destinations: " + std::to_string(dt_pass) + "/" +
                 std::to_string(dt_pass + dt_fail) + " passed");
