@@ -139,8 +139,47 @@ def cmd_anim(args):
     if not glb: sys.exit(f"[meshy] no animation glb url; keys={list(t.keys())} result_keys={list((t.get('result') or {}).keys())}")
     download(glb, out)
 
+def cmd_rigfile(args):
+    """rigfile <local.glb> <out_rigged.glb> [--height 1.75] [--spec out.json]
+
+    Rig a mesh WE already own, rather than one Meshy generated. `rig` above only
+    accepts an input_task_id, so it can only ever re-rig Meshy's own output — but
+    the assets that actually need rigging here are the cast models in
+    assets/rigged_glb, and the reason they need it is that their existing skin
+    WEIGHTS are degenerate: they hold a standing idle and then collapse into
+    stretched sheets under any real joint flexion (the ward bent-over pose
+    reproduces it every time). Meshy's rigging endpoint takes a `model_url`, and a
+    data: URI is a URL — the route the 2026-07-25 pass proved. ~5 credits, ~20 s.
+
+    The task JSON is written next to the output (or to --spec) so the skeleton, the
+    credit cost and the expiring asset URLs stay on the record.
+    """
+    import base64
+    src, out = args[0], args[1]
+    height = opt(args, "--height", 1.75, float)
+    spec = opt(args, "--spec", os.path.splitext(out)[0] + "_rig.json")
+    blob = open(src, "rb").read()
+    print(f"[meshy] rigging {os.path.basename(src)} ({len(blob)} bytes) "
+          f"at height {height} m", flush=True)
+    uri = "data:model/gltf-binary;base64," + base64.b64encode(blob).decode()
+    rg = call("POST", RIG, {"model_url": uri, "height_meters": height})
+    rg_id = rg.get("result") or rg.get("id")
+    print("RIG_TASK_ID", rg_id, flush=True)
+    t = poll(RIG, rg_id, "rig")
+    res = t.get("result") or {}
+    glb = res.get("rigged_character_glb_url") or t.get("rigged_character_glb_url")
+    if not glb:
+        sys.exit(f"[meshy] no rigged glb url; keys={list(t.keys())} / {list(res.keys())}")
+    download(glb, out)
+    os.makedirs(os.path.dirname(os.path.abspath(spec)) or ".", exist_ok=True)
+    with open(spec, "w", encoding="utf-8") as f:
+        json.dump(t, f, indent=2)
+    print("[meshy] spec ->", spec, "| consumed_credits:",
+          t.get("consumed_credits"), flush=True)
+
+
 CMDS = {"balance": cmd_balance, "preview": cmd_preview, "refine": cmd_refine,
-        "full": cmd_full, "rig": cmd_rig, "anim": cmd_anim}
+        "full": cmd_full, "rig": cmd_rig, "rigfile": cmd_rigfile, "anim": cmd_anim}
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:

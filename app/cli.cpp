@@ -171,9 +171,14 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-pickup") o.testPickup = true;
         else if (a == "--test-combat") o.testCombat = true;
         else if (a == "--test-deathragdoll") o.testDeathRagdoll = true;
-        // Sets the inline global rather than a CliOptions field (the 0cbe3f89
-        // wiring, dropped by merge 58eb79b3's KEEP-BOTH resolution — restored).
-        else if (a == "--test-grounding") x3::apphost::g_testGrounding = true;
+        // KEEP BOTH (fold wave 3). Two lanes plumbed --test-grounding independently:
+        // trunk sets the inline global (the 0cbe3f89 wiring), ward-tableau sets the
+        // CliOptions field. dispatchTests() reads the GLOBAL, main.cpp mirrors the
+        // FIELD into TestFlags — drop either and one of those two reads silently
+        // goes false again, which is the exact failure mode that left this gate
+        // never running in the first place. So set both.
+        else if (a == "--test-grounding") { x3::apphost::g_testGrounding = true;
+                                            o.testGrounding = true; }
         else if (a == "--test-audio") o.testAudio = true;
         else if (a == "--test-acoustics") o.testAcoustics = true;
         else if (a == "--test-level1") o.testLevel1 = true;

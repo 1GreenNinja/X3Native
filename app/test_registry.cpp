@@ -63,7 +63,7 @@
 #include "sarah.h"   // Sarah companion-combat self-test (--test-companion-combat)
 #include "level1_game.h"
 #include "canon_play.h"
-#include "grounding.h"        // x3::game::runGroundingSelfTest (--test-grounding)
+#include "grounding.h"        // x3::game::runGroundingSelfTest — the feet-in-floor gate (--test-grounding)
 #include "desc_mechanics.h"   // W9-1: runDescMechSelfTest (--test-descmech)
 #include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
 #include "pack_spiders.h"                    // PACK-HARVEST arachnids (Lab Skitterer / Venom Brood) — --test-packspiders
@@ -490,6 +490,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testDeathRagdoll) {
         x3::logInfo("running skinned death-ragdoll (TASK#12) self-test...");
         return x3::game::runDeathRagdollSelfTest() ? 0 : 1;
+    }
+    if (tf.testGrounding) {
+        x3::logInfo("running grounding self-test (feet-in-floor law + the ward tableau)...");
+        return x3::game::runGroundingSelfTest() ? 0 : 1;
     }
     if (tf.testAudio) {
         x3::logInfo("running audio (M9) self-test...");
