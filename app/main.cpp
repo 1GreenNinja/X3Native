@@ -417,6 +417,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testChatTree = o.testChatTree;
         _tf.testVigil = o.testVigil;
         _tf.testMission = o.testMission;
+        _tf.testCanonMission = o.testCanonMission;
         _tf.testDestruction = o.testDestruction;
         _tf.testDebris = o.testDebris;
         _tf.testGibs = o.testGibs;

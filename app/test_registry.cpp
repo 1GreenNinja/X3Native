@@ -1123,6 +1123,12 @@ int dispatchTests(const TestFlags& tf) {
                     "the Level-1 doc-vs-hardcoded objective EQUIVALENCE walk)...");
         return x3::game::runMissionSelfTest() ? 0 : 1;
     }
+    if (tf.testCanonMission) {
+        x3::logInfo("running canon mission spine self-test (P1-4: canon_act1.mission.json "
+                    "parse/validate + the objective walk cell->helipad->outro + negative "
+                    "control + pollCanonMissionFlags on a real CanonPlay)...");
+        return x3::game::runCanonMissionSelfTest() ? 0 : 1;
+    }
     if (tf.testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
         return x3::phys::runDestructionSelfTest() ? 0 : 1;

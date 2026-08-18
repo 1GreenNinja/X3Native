@@ -1,0 +1,55 @@
+{
+ "keep_existing": false,
+ "clips": [
+  {
+   "name": "Idle",
+   "src": "assets/rigged_glb/canon_grey_anim.glb",
+   "rig": "meshy_from_meshy",
+   "action": "Idle",
+   "loop": true
+  },
+  {
+   "name": "Walk",
+   "src": "assets/rigged_glb/canon_grey_anim.glb",
+   "rig": "meshy_from_meshy",
+   "action": "Walk",
+   "loop": true
+  },
+  {
+   "name": "Run",
+   "src": "assets/rigged_glb/canon_grey_anim.glb",
+   "rig": "meshy_from_meshy",
+   "action": "Run",
+   "loop": true
+  },
+  {
+   "name": "Attack",
+   "src": "assets/rigged_glb/canon_grey_anim.glb",
+   "rig": "meshy_from_meshy",
+   "action": "Attack",
+   "loop": false
+  },
+  {
+   "name": "Attack2",
+   "src": "assets/rigged_glb/canon_grey_anim.glb",
+   "rig": "meshy_from_meshy",
+   "action": "Attack2",
+   "loop": false
+  },
+  {
+   "name": "Hitreaction",
+   "src": "assets/rigged_glb/canon_grey_anim.glb",
+   "rig": "meshy_from_meshy",
+   "action": "Hitreaction",
+   "loop": false
+  },
+  {
+   "name": "Death",
+   "src": "assets/rigged_glb/canon_grey_anim.glb",
+   "rig": "meshy_from_meshy",
+   "action": "Death",
+   "loop": false
+  }
+ ],
+ "skip_assert": true
+}

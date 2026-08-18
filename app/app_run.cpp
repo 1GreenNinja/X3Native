@@ -4524,6 +4524,44 @@ int runDefaultHost(HostContext& hc) {
         }
     }
 
+    // ---- CANON MISSION RUNNER (P1-4, g_canon_missiondoc — default ON). On the
+    // product path (--world canonlevel) missions/canon_act1.mission.json is loaded
+    // + validated and the doc DRIVES the HUD objective line cell -> Sarah (the
+    // same ObjectiveSystem free-text lane; the runner is ticked AFTER the canon
+    // endgame flag sync each frame, so its objective text is the final word and
+    // the legacy level1 mission path above is untouched). Flags/conditions ride
+    // the SAME StoryFlags the chat trees + canon host already write (girl.freed.*,
+    // clone.defeated, sarah.freed, sarah.extracted) — missions and dialog see one
+    // world. The final "outro" stage holds "TO BE CONTINUED" until Phase 5 sets
+    // act2.handoff, so the win card keeps today's objective with no regression.
+    x3::game::MissionDoc        canonMissionDoc;
+    x3::game::MissionRunner     canonMissionRunner;
+    x3::game::MissionEventBridge canonMissionEvents;
+    bool canonMissionActive = false;
+    if (canonWorld && console->getInt("g_canon_missiondoc") != 0) {
+        const std::string cp = x3::game::findMissionFile("canon_act1.mission.json");
+        std::vector<std::string> cerr;
+        if (!cp.empty() && x3::game::loadMissionFile(cp, canonMissionDoc, cerr) &&
+            x3::game::validateMission(canonMissionDoc, cerr)) {
+            canonMissionRunner.ctx().flags    = &chatTrees.flags();
+            canonMissionRunner.ctx().timeline = &x3::game::globalTimeline();
+            canonMissionRunner.ctx().scripts  = scripts.get();
+            canonMissionEvents.bind(&chatTrees.flags());
+            canonMissionRunner.setObjectiveSink([&game](const std::string& t) {
+                game.objectives().setText(t);
+            });
+            // resume() falls back to start() when no position marker is in the
+            // flags (fresh boot); after an F9 flags restore doLoad re-resumes.
+            canonMissionActive = canonMissionRunner.resume(canonMissionDoc);
+            x3::logInfo(std::string("[mission] g_canon_missiondoc=1 — `") + canonMissionDoc.id +
+                        "` drives the canon objective (stage `" +
+                        canonMissionRunner.currentStageId() + "`)");
+        } else {
+            for (const auto& e : cerr) x3::logWarn("[mission] " + e);
+            x3::logWarn("[mission] g_canon_missiondoc=1 but no canon mission doc — staying on the hardcoded canon beats");
+        }
+    }
+
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
     // exercised under Vulkan validation. No-op if the device lacks RT support (the
@@ -8464,6 +8502,34 @@ int runDefaultHost(HostContext& hc) {
     bool  prevWorldMenuKey = false;
     bool  worldLoadRequested = false;   // a "LOADS WORLD" pick -> main()'s world-load loop
 
+    // ---- `gallery` / `arena`: console fast-travel to the CHARACTER GALLERY ----------
+    // Tim's mirror of Predator II's `arena` console command. Reuses EXACTLY the world
+    // menu's "LOADS WORLD" mechanism above: resolve the registry row, set
+    // hc.switchWorldTo/switchDestKey, raise worldLoadRequested — the frame loop breaks
+    // at the top of the next frame and main()'s world-load loop tears this world down
+    // and builds --world gallery into the SAME window + device (no process relaunch).
+    // Registered HERE (not with the cheat block above) because worldLoadRequested must
+    // exist to be captured. `arena` is a plain alias of the same lambda.
+    {
+        const x3::con::CommandFn galleryTravel =
+            [&hc, &worldLoadRequested, &console](const std::vector<std::string>&) {
+                const x3::game::Destination* d = x3::game::findDestination("gallery");
+                if (!d || !d->worldFlag[0]) {   // registry row gone: say so, do nothing
+                    console->print("gallery: not in the destination registry - cannot travel");
+                    return;
+                }
+                hc.switchWorldTo = d->worldFlag;
+                hc.switchDestKey = d->key;
+                worldLoadRequested = true;
+                console->print("traveling to THE GALLERY...");
+                x3::logInfo(std::string("[console] gallery -> WORLD LOAD --world ") + d->worldFlag);
+            };
+        console->registerCommand("gallery", galleryTravel,
+                                 "travel to the CHARACTER GALLERY (loads --world gallery)");
+        console->registerCommand("arena", galleryTravel,
+                                 "alias of gallery - travel to the character gallery");
+    }
+
     // ---- W-RIFT: THE RIFT CONSOLE, IN THE CANON GAME LOOP ---------------------------
     // The consoles used to run ONLY under `--world rifthub`, because the canon loop had
     // no UiContext to draw a control surface into. It has several now (the map screen,
@@ -10857,6 +10923,20 @@ int runDefaultHost(HostContext& hc) {
                             rpgUi.notifyLevelUp(progression.level());
                         x3::logInfo("[endgame] WIN — Sarah extracted (" + winLine2 + ")");
                     }
+                }
+                // ---- CANON MISSION DOC (P1-4, g_canon_missiondoc — default ON):
+                // bridge this tick's canon state into mission flags (cell/arm/
+                // Martinez/floor beats via pollCanonMissionFlags; the rescue/clone/
+                // Sarah beats already ride StoryFlags above) and advance the canon
+                // runner — it owns the objective line while active. Runs AFTER the
+                // endgame flag sync so the runner sees this tick's fresh flags. ----
+                if (canonMissionActive) {
+                    const int canonFloorNum = stairNav.valid
+                        ? stairNav.floorForY(camPos.y, 0.4f, 2.6f)
+                        : -1;
+                    x3::game::pollCanonMissionFlags(canonPlay, canonMissionEvents,
+                                                    chatTrees.flags(), canonFloorNum);
+                    canonMissionRunner.tick();
                 }
             }
             // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's

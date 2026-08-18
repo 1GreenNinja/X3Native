@@ -68,6 +68,7 @@ struct CliOptions {
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testVigil = false,      // --test-vigil: VIGIL bark system (trigger/cooldown/no-repeat/gate/idle)
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
+         testCanonMission = false, // --test-canonmission: canon_act1.mission.json + the canon objective-spine walk
          testDeathRagdoll = false, testCanonLevel = false, testLevelLint = false, testCanonPlay = false,
          testGrounding = false,   // --test-grounding: character feet vs support surface (app/grounding.h GATE)
          testStairNav = false,

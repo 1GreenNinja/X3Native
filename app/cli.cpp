@@ -266,6 +266,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-chattree") o.testChatTree = true;
         else if (a == "--test-vigil") o.testVigil = true;
         else if (a == "--test-mission") o.testMission = true;
+        else if (a == "--test-canonmission") o.testCanonMission = true;   // P1-4 canon mission spine
         else if (a == "--test-destruction") o.testDestruction = true;
         else if (a == "--test-debris") o.testDebris = true;
         else if (a == "--test-gibs") o.testGibs = true;
