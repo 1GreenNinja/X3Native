@@ -47,6 +47,14 @@ namespace x3::game {
 struct CanonRoom {
     std::string name;
     std::string type;       // "Cell" / "Hallway" / "Boss Arena" / "Cave" / ...
+    // The room's one-line FLAVOUR LINE, straight from the project JSON's "desc"
+    // field ("Brain-computer links. Memory extraction."). It was in the data all
+    // along and the parser silently dropped it; the CUTAWAY VIEW's hover cards
+    // (app/cutaway.h) are its first consumer. Floors 2-7 ship one per room; the
+    // 53 Floor-1 rooms have an EMPTY desc in the JSON and are filled in from
+    // kF1Desc in app/cutaway.cpp — PAIRED VALUE (NO_SLOP rule 4): if a Floor-1
+    // room here ever gains a real "desc" in the JSON, drop its kF1Desc row.
+    std::string desc;
     float cx = 0, cy = 0, cz = 0;   // center (world m)
     float w = 0, h = 0, d = 0;      // FULL extents (x, y, z) (world m)
 
@@ -234,6 +242,27 @@ struct CellWindow {
     bool valid() const { return room != kNoRoom && hi > lo + 0.3f; }
 };
 CellWindow cellObsWindow(const CanonFloor& floor);
+
+// ---- SEAL-BAND closure rules (fix/cell-shell-hole, owner playtest 2026-08-16: "This...
+// is a hole in Jake's cell" — a sightline over the cell's wall tops into the lit Main
+// Hall / West Cell Hall). A room that INTERPENETRATES a taller room (Overlap junction)
+// has NO wall of its own above its ceiling on the shared boundary — its ceiling LID is
+// the only closure of that band, so the lid must RENDER there; and where the partner's
+// floor sits LOWER, the slot under the room's floor slab must be closed by a PLINTH
+// band. These are the single rules BOTH the graybox builder and the seal-band lint
+// consume (the same shared-rule pattern as the wall dedup); `legacyRule` reproduces the
+// pre-fix behavior and is the lint's permanent negative control.
+bool canonLidVisible(const CanonFloor& floor, uint32_t ri, bool legacyRule = false);
+
+// A vertical closure band on `room`'s boundary face inside an Overlap partner:
+// face 0..3 = -X/+X/-Z/+Z, `plane` = the face plane coordinate, lo..hi = the run span
+// along the face (Z coords for X faces, X coords for Z faces), y0..y1 = vertical band.
+struct CanonBand {
+    uint32_t room = kNoRoom;
+    int      face = 0;
+    float    plane = 0, lo = 0, hi = 0, y0 = 0, y1 = 0;
+};
+std::vector<CanonBand> canonPlinthBands(const CanonFloor& floor, bool legacyRule = false);
 
 // Parse + resolve one floor ("1".."7") from the v2 project JSON at `jsonPath`. Returns
 // a CanonFloor; on failure (file missing / parse error / floor absent) returns a floor

@@ -5,6 +5,7 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include "engine/core/x3_log.h"
+#include "engine/core/x3_log_region.h"   // pinned terminal region: typed-command queue (x3::conregion::popInput)
 #include "engine/core/x3_boot.h"   // [boot] timeline (boot-to-interactive instrumentation + --test-boottime)
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
@@ -58,6 +59,8 @@
 #include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "room_dressing.h"                   // WAVE-3: recipe dressing for every OTHER canon room (surface-library panels + zone fog)
 #include "facility_exterior.h"               // SEAM 2: the glass facility exterior wrapped around the REAL canon tower
+#include "apron_landing.h"                   // ONE WORLD landing: intro -> canon apron spawn + ship set-down (feat/canon-apron-landing)
+#include "glb_cpu_read.h"                    // CPU AABB measurement for the landed ship (placement-datum law)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "intro_orchestrator.h"              // Phase 3/4: runInteractiveIntro + IntroOutcome (branches the game start)
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
@@ -987,9 +990,25 @@ int runDefaultHost(HostContext& hc) {
     // (runIntro is also a no-op when `window` is null, a second safety net). The intro renders on
     // the public 2D path only — it spawns NO meshes/lights/physics, so there is nothing to leak
     // and the cell build that follows is byte-for-byte unchanged.
+    //
+    // ---- ONE WORLD LANDING (feat/canon-apron-landing). Owner, live play
+    // 2026-08-16: "Why are we even landing in a different world than we play
+    // in?" The flyable outcomes (Escaped / CapitalKilled) no longer hand off to
+    // the separate `--world surface` slice: on the canon worlds they FALL
+    // THROUGH into THIS host's canonlevel build with spawnAtKey="apron" — the
+    // player lands on the canon facility's apron ring, his ship set down beside
+    // the walk, and enters through the SEAM-2 breach on foot. No world switch.
+    // `--world surface` (and its [E] breach handoff) survives as a dev shortcut
+    // per docs/design/WORLDS.md — the legacy route below still serves the
+    // level1/elevator dev worlds, whose build has no exterior to land at. ----
+    bool introApronLanding = false;                      // land on the canon apron this boot
+    x3::intro::IntroOutcome introLandingOutcome = x3::intro::IntroOutcome::ShotDown;
     {
         const bool introCellWorld = (worldMode == "level1") || (worldMode == "elevator") ||
                                     (worldMode == "canonlevel") || (worldMode == "intro");
+        // The worlds whose build stands up the SEAM-2 exterior + apron — the
+        // ones the ONE WORLD landing can put you down in (== canonWorld below).
+        const bool canonCapableWorld = (worldMode == "canonlevel") || (worldMode == "intro");
         // --test-boottime skips the cold-open: the intro is CONTENT the player watches
         // (a skippable cinematic), not boot work — the gate measures the machine.
         if (window && introCellWorld && !testBootTime && !skipIntro) {
@@ -1017,51 +1036,71 @@ int runDefaultHost(HostContext& hc) {
                 return 0;
             }
 
-            if (outcome == x3::intro::IntroOutcome::CapitalKilled) {
-                // KILL PATH (owner canon 2026-07-27: "kill big ship.. it crashes...
-                // i land.. recover tech and prisoners from it.. break IN to Lab
-                // zero"). Earned, never rolled. The dreadnought is down on the
-                // surface and StoryFlags["intro.wreck"] is set beside
-                // ["intro.landed"], so Act-1 starts at the CRASH SITE: salvage the
-                // wreck's tech, free the prisoners in its hold, then breach Lab
-                // Zero from outside. It shares the surface world host with the
-                // escape path (same "land outside the facility, free and armed"
-                // shape) — the wreck flag is what makes the start differ. Same
-                // teardown contract as the escape branch below.
-                x3::logInfo("[intro] CAPITAL_KILLED -> crash-site Act-1 "
-                            "(host_surface_start + intro.wreck: salvage -> prisoners "
-                            "-> breach Lab Zero)");
-                loading.shutdown(*device);
-                physics->shutdown();
-                hc.worldMode = "surface";
-                return x3::apphost::dispatchWorldHost(hc);
-            }
-
-            if (outcome == x3::intro::IntroOutcome::Escaped) {
-                // ESCAPE PATH (Phase 7): the REAL surface-landing Act-1. The ion-pulse
-                // descent (Phase 6) set StoryFlags["intro.landed"]; instead of waking
-                // Jake a prisoner in the canon cell, hand off to the surface-start host
-                // (app/world_hosts/host_surface_start.cpp) — Jake lands OUTSIDE the huge
-                // glass facility where Sarah is held, FREE + ARMED, a rescuer (the exact
-                // inverse of the cell start). The host owns its own scene/physics and the
-                // FULL host teardown (device + window + glfw) per the world-host contract,
-                // so we shut down THIS default host's physics first (the device/window are
-                // torn down by the host) and return its exit code directly — we do NOT
-                // fall through into the cell build below.
-                x3::logInfo("[intro] ESCAPED -> surface-landing Act-1 (host_surface_start)");
-                loading.shutdown(*device);
-                physics->shutdown();
-                hc.worldMode = "surface";
-                return x3::apphost::dispatchWorldHost(hc);
+            if (outcome == x3::intro::IntroOutcome::CapitalKilled ||
+                outcome == x3::intro::IntroOutcome::Escaped) {
+                // THE FLYABLE OUTCOMES. Escaped (Phase 7): the ion-pulse descent
+                // set StoryFlags["intro.landed"] — Jake lands OUTSIDE the glass
+                // facility where Sarah is held, FREE + ARMED, a rescuer (the exact
+                // inverse of the cell start). CapitalKilled (owner canon
+                // 2026-07-27): the dreadnought is down, ["intro.wreck"] set beside
+                // ["intro.landed"] — same "land outside, free and armed" shape;
+                // the wreck flag is what makes the start differ.
+                //
+                // ONE WORLD (owner 2026-08-16): on the canon worlds these land IN
+                // canonlevel — fall through into the build below with
+                // spawnAtKey="apron" (app/apron_landing.h; the main loop's
+                // load-and-place block stands him on the apron, the arrival block
+                // arms him, the build sets his ship down by the walk). No world
+                // switch, no [E] handoff.
+                if (canonCapableWorld) {
+                    introApronLanding   = true;
+                    introLandingOutcome = outcome;
+                    hc.spawnAtKey = x3::game::introLandingSpawnKey(outcome);
+                    x3::logInfo(std::string("[intro] ") +
+                                (outcome == x3::intro::IntroOutcome::Escaped
+                                     ? "ESCAPED" : "CAPITAL_KILLED") +
+                                " -> ONE WORLD landing: canon apron (spawnAtKey='" +
+                                hc.spawnAtKey + "', ship set down on the apron)");
+                } else {
+                    // Legacy route (level1/elevator dev worlds only — their build
+                    // has no exterior/apron to land at): the surface-start host.
+                    // The host owns its own scene/physics and the FULL teardown
+                    // per the world-host contract, so shut down THIS host's
+                    // physics first and return its exit code directly.
+                    x3::logInfo(std::string("[intro] ") +
+                                (outcome == x3::intro::IntroOutcome::Escaped
+                                     ? "ESCAPED" : "CAPITAL_KILLED") +
+                                " -> surface-landing Act-1 (host_surface_start; "
+                                "legacy dev-world route)");
+                    loading.shutdown(*device);
+                    physics->shutdown();
+                    hc.worldMode = "surface";
+                    return x3::apphost::dispatchWorldHost(hc);
+                }
             }
 
             // SEAMLESS WAKE (canon cell): the intro ends on black ("SIX MONTHS LATER").
             // Flip the loading screen to BLACKOUT so the cell build stays black, then
             // the hand-off fade is the slow first-person wake in the cell — control is
-            // live underneath it, exactly like a normal spawn. (The stub escape path
-            // also lands in the cell, so this applies to both for now.)
-            loading.setBlackout(true);
+            // live underneath it, exactly like a normal spawn. The APRON LANDING is a
+            // daylight touchdown, not the black wake — it keeps the normal loading fade.
+            if (!introApronLanding) loading.setBlackout(true);
             x3::boot::mark("intro cold-open (content)");
+        }
+        // STAGING HOOK (screenshot/QA — the X3_DESCMECH_SABOTAGE pattern):
+        // X3_APRON_LANDING=1 boots the canon worlds in the landed state (apron
+        // spawn + ship set down + armed arrival) WITHOUT playing the intro, so
+        // the landed view is capturable on the headless screenshot path (which
+        // never runs the windowed cold-open). =2 stages the CapitalKilled
+        // (wreck) variant.
+        if (const char* ap = std::getenv("X3_APRON_LANDING");
+            ap && (ap[0] == '1' || ap[0] == '2') && canonCapableWorld && !introApronLanding) {
+            introApronLanding   = true;
+            introLandingOutcome = (ap[0] == '2') ? x3::intro::IntroOutcome::CapitalKilled
+                                                 : x3::intro::IntroOutcome::Escaped;
+            hc.spawnAtKey = x3::game::introLandingSpawnKey(introLandingOutcome);
+            x3::logInfo("[apron] X3_APRON_LANDING staging — booting in the landed state "
+                        "(spawnAtKey='apron', ship on the apron)");
         }
     }
 
@@ -1120,6 +1159,16 @@ int runDefaultHost(HostContext& hc) {
     x3::game::CellDressing canonDressing;      // opening-space set-dressing + motivated lights (canonWorld only)
     x3::game::RoomDressing canonRooms;         // WAVE-3 recipe dressing for the other 52 rooms (canonWorld only)
     x3::game::FacilityExterior facilityExterior; // SEAM 2: the glass exterior wrapping the REAL tower (canonWorld only)
+    // ---- ONE WORLD landing: Jake's LANDED SHIP on the canon apron (built only
+    // when the intro landed here — introApronLanding). The loader + Model live
+    // at host scope so the GPU handles stay valid for the world's lifetime;
+    // unloaded in the teardown chain below. Drawables become STATIC scene
+    // entities (kNoRoom => always drawn under the PVS cull, the R-9 skirt
+    // contract), so every render path — windowed, screenshot, smoketest —
+    // draws the ship with zero per-frame wiring. ----
+    std::unique_ptr<x3::asset::IAssetSource>  apronShipSrc;
+    std::unique_ptr<x3::asset::IModelLoader>  apronShipLoader;
+    x3::asset::Model                          apronShipModel{};
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
     // ---- Keycard / keypad door gating (canonWorld). keycardMask = bitmask of held
     // keycard ids; the Security keycard is a glowing pickup in the Research Lab. ----
@@ -1709,6 +1758,17 @@ int runDefaultHost(HostContext& hc) {
             if (er == x3::game::kNoRoom) return no("the loaded tower data has no Entrance room");
             const x3::game::CanonRoom& rm = canonFloor.rooms[er];
             out = { rm.cx, rm.y0() + 1.0f, rm.cz };
+            return true;
+        }
+        // --- [ONE WORLD landing] The APRON — the ring outside the breach where
+        //     the intro sets the player down (and a plain destination). Derived
+        //     from the exterior this world ACTUALLY built (app/apron_landing.h).
+        if (k == x3::game::kApronDestKey) {
+            if (!facilityExterior.built()) return no("this world has no facility apron");
+            const x3::game::ApronLanding al =
+                x3::game::computeApronLanding(facilityExterior.builtDesc());
+            if (!al.ok) return no("the apron landing could not be computed");
+            out = { al.spawn[0], al.spawn[1] + 1.0f, al.spawn[2] };
             return true;
         }
         // --- Back home: the facility, ANY floor. F1 = the detention lobby (the rift is
@@ -2651,13 +2711,14 @@ int runDefaultHost(HostContext& hc) {
                     device->setSkyParams(sp);
                     x3::logInfo("--day: bright-midday sky override active (underwater staging)");
                 }
-                // The sky's baked irradiance at full strength shifted the
-                // calibrated interior reads (the FP viewmodel washed pink-white
-                // vs the pre-merge baseline): scale the IBL ambient so interiors
-                // match the baseline (eye-compared) while the facade's shadow
-                // side keeps enough sky fill to read its banding. Sun, sky
-                // background and the glass pass's reflections are unscaled.
-                device->setIblIntensity(0.5f);
+                // FULL sky irradiance (fix/exterior-atmosphere). The historic
+                // 0.5 cut kept the FP viewmodel from washing pink-white INDOORS,
+                // but RoomDressing::applyZoneAtmosphere now owns interior IBL
+                // per-zone and re-asserts it on every zone change, so interiors
+                // never see this global. Matches kExteriorIbl (room_dressing) —
+                // and since m_iblSpecular is unset (-1 falls back to this), it
+                // also restores full env-specular to outdoor glass/metal.
+                device->setIblIntensity(1.0f);
                 // STREET LIGHT (host-owned): the facility-apron lamps by the
                 // breach + the Spire-approach road rows. kNoRoom entities;
                 // the city grid's lamps build with the region (hook below).
@@ -2667,6 +2728,97 @@ int runDefaultHost(HostContext& hc) {
                     const float bx = zFace ? fd.breachCenter : (fd.x0 + fd.x1) * 0.5f;
                     const float bz = zFace ? fd.z1 + 2.0f : fd.z1 + 2.0f;
                     streetLights.buildHostLamps(scene, *device, fd.baseY + 0.02f, bx, bz);
+                }
+                // ---- ONE WORLD LANDING: Jake's SHIP set down on the apron. Only
+                // when the intro actually landed here (introApronLanding — the
+                // flyable outcomes or the X3_APRON_LANDING staging hook); the
+                // shot_down canon boot has no ship outside (Jake was captured).
+                // Placement rides app/apron_landing.h (the SAME maths the spawn
+                // + the --test-apronlanding gate use); the set-down Y obeys the
+                // PLACEMENT-DATUM LAW — the hull's CPU-measured AABB minY sits
+                // ON the apron top, never the model origin (the 0.6 m-proud
+                // boat bug class). Static v1 prop: scene entities + one static
+                // collision box. ----
+                if (introApronLanding) {
+                    const x3::game::ApronLanding al = x3::game::computeApronLanding(fd);
+                    const char* kShipCandidates[] = { "JakeFighterShip_textured.glb",
+                                                      "JakeFighterShip.glb",
+                                                      "SpaceShip4.glb", "SpaceShip.glb" };
+                    apronShipSrc.reset(x3::asset::createAssetSource());
+                    apronShipSrc->mountDir(x3::game::riggedGlbRoot(), 0);
+                    apronShipLoader.reset(x3::asset::createModelLoader(device, apronShipSrc.get()));
+                    std::string shipFile;
+                    for (const char* c : kShipCandidates) {
+                        apronShipModel = apronShipLoader->load(c);
+                        if (apronShipModel.ok) { shipFile = c; break; }
+                    }
+                    if (al.ok && apronShipModel.ok) {
+                        // MEASURE, never assume: CPU-read the GLB with the full
+                        // node hierarchy applied (the traffic-system pattern).
+                        float mn[3] = { 0, 0, 0 }, mx[3] = { 0, 0, 0 };
+                        bool measured = false;
+                        const x3::game::GlbModel cpu = x3::game::readGlbForLod(
+                            x3::game::riggedGlbRoot() + "/" + shipFile, /*minTriangles=*/16);
+                        if (cpu.ok) {
+                            mn[0] = mn[1] = mn[2] = 1e18f; mx[0] = mx[1] = mx[2] = -1e18f;
+                            for (const x3::game::GlbPrimitive& pr : cpu.prims)
+                                for (const auto& v : pr.verts)
+                                    for (int k = 0; k < 3; ++k) {
+                                        mn[k] = std::min(mn[k], v.pos[k]);
+                                        mx[k] = std::max(mx[k], v.pos[k]);
+                                    }
+                            measured = mx[0] > mn[0];
+                        }
+                        const float S = 2.2f;   // the surface world's landed-ship scale
+                        const float shipY = measured
+                            ? x3::game::shipYForApron(al.apronY, mn[1], S)
+                            : al.apronY;        // unmeasured: trust the art's origin datum
+                        const float cy = std::cos(al.shipYaw), sy = std::sin(al.shipYaw);
+                        const float place[16] = { cy * S, 0, -sy * S, 0,
+                                                  0,      S,  0,      0,
+                                                  sy * S, 0,  cy * S, 0,
+                                                  al.ship[0], shipY, al.ship[2], 1 };
+                        for (const auto& dr : x3::asset::makeDrawables(apronShipModel)) {
+                            x3::game::Entity e{};
+                            e.mesh = x3::rhi::MeshHandle{ dr.meshId };
+                            e.tex  = x3::rhi::TextureHandle{ dr.baseColorTexId };
+                            // The surface world's exact landed-ship tint (golden-
+                            // hour lift on the dark gunmetal plating).
+                            e.baseColor[0] = dr.baseColorFactor[0] * 1.2f + 0.15f;
+                            e.baseColor[1] = dr.baseColorFactor[1] * 1.2f + 0.16f;
+                            e.baseColor[2] = dr.baseColorFactor[2] * 1.2f + 0.18f;
+                            e.baseColor[3] = dr.baseColorFactor[3];
+                            x3::asset::mulMat4(place, dr.nodeTransform, e.transform);
+                            e.tag    = (uint32_t)x3::game::Tag::Static;
+                            e.roomId = x3::game::kNoRoom;   // outdoors: always drawn
+                            scene.add(e);
+                        }
+                        // One static collision box over the measured hull (axis
+                        // swap for the near-cardinal yaw; v1 approximation).
+                        if (measured) {
+                            float hx = (mx[0] - mn[0]) * 0.5f * S;
+                            float hz = (mx[2] - mn[2]) * 0.5f * S;
+                            const float hy = (mx[1] - mn[1]) * 0.5f * S;
+                            if (std::fabs(sy) > 0.7071f) std::swap(hx, hz);
+                            physics->addBox(x3::phys::Vec3{ hx, hy, hz },
+                                            x3::phys::Vec3{ al.ship[0],
+                                                            shipY + (mn[1] + (mx[1] - mn[1]) * 0.5f) * S,
+                                                            al.ship[2] },
+                                            0.0f, x3::phys::Layer::Static);
+                        }
+                        char sb[240];
+                        std::snprintf(sb, sizeof(sb),
+                            "[apron] landed ship %s set down at (%.1f, %.2f, %.1f) yaw %.2f "
+                            "(hull minY %+.3f x%.1f -> ON the apron at y=%.2f; datum=AABB%s)",
+                            shipFile.c_str(), al.ship[0], shipY, al.ship[2], al.shipYaw,
+                            measured ? mn[1] : 0.0f, S, al.apronY,
+                            measured ? "" : " UNMEASURED — origin datum");
+                        x3::logInfo(sb);
+                    } else {
+                        x3::logWarn(std::string("[apron] landed ship NOT placed (") +
+                                    (al.ok ? "no ship GLB loaded" : "no apron landing computed") +
+                                    ") — the landing stands without the prop");
+                    }
                 }
                 x3::boot::mark("SEAM 2 exterior (facade wraps the tower)");
             } else {
@@ -3009,7 +3161,15 @@ int runDefaultHost(HostContext& hc) {
 
     // ---- Combat FX (gameplay-feel pass): shot tracers + muzzle flash. The
     // crosshair now lives in the screen-space HUD layer (S7), not here. ----
-    x3::game::CombatFx combatFx;
+    // HEAP-allocated (the intro_orchestrator "host_space convention"): CombatFx
+    // carries ~850 KB of particle pool + submit scratch, and this function's
+    // stack frame is already enormous — as a plain local it tipped the Debug
+    // build over the 1 MB default stack (STATUS_STACK_OVERFLOW in --smoketest)
+    // when the weapon-vfx lane widened Particle by one end-color. One boot-time
+    // allocation; nothing on the render path.
+    const std::unique_ptr<x3::game::CombatFx> combatFxPtr =
+        std::make_unique<x3::game::CombatFx>();
+    x3::game::CombatFx& combatFx = *combatFxPtr;
     combatFx.init(*device);
     x3::boot::mark("combat fx init");
     // FX / debris / UI primed — bar nearly full.
@@ -3209,14 +3369,25 @@ int runDefaultHost(HostContext& hc) {
     // Live projectile bolts (plasma): host-owned; advanced + impact-resolved each
     // frame. Bounded by gameplay (a handful in flight); a plain vector is fine.
     struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range;
+                            // Phase B1: per-weapon ballistic arc, stamped from
+                            // ProjectileSpawn::gravity (m/s^2 down). 0 = the flat
+                            // path every legacy bolt flies (bit-identical).
+                            float gravity = 0.0f;
                             x3::game::WeaponFxKind impactKind = x3::game::WeaponFxKind::Default;
                             // canon-aliens Adaptive Hide: carry the firing WeaponDef's DamageType
                             // (Kinetic / Energy / Explosive / ...) along the bolt so the on-impact
                             // dispatch passes it to MonsterManager::fire — closes the projectile
                             // half of the resist-rhythm loop (plasma bolts read as Energy, etc).
                             x3::DamageType type = x3::DamageType::Kinetic;
-                            x3::audio::SoundHandle impactSnd{}; };  // per-bolt impact SFX (weapon may have switched mid-flight)
+                            x3::audio::SoundHandle impactSnd{};  // per-bolt impact SFX (weapon may have switched mid-flight)
+                            // weapon-vfx lane: the napalm FIRE-POOL payload, stamped from
+                            // ProjectileSpawn (authored by the canon-12 roster, consumed on
+                            // impact by FirePoolSystem). 0 on every other weapon.
+                            float fpDuration = 0.0f, fpRadius = 0.0f; int fpDps = 0; };
     std::vector<LiveProjectile> projectiles;
+    // NAPALM fire pools (weapon-vfx lane): host-owned, HARD-BOUNDED at
+    // x3::game::kMaxFirePools (6) simultaneous — oldest recycled (see weapon.h).
+    x3::game::FirePoolSystem firePools;
     uint32_t weaponRng = 0xA11CE5u;   // deterministic spread stream
     float    weaponRecoilPitch = 0.0f; // accumulated upward camera kick (rad), decays
     constexpr float kRecoilRecover = 6.0f; // recoil recovery rate (rad/s decay)
@@ -4215,6 +4386,31 @@ int runDefaultHost(HostContext& hc) {
                     "spawning at 'entrance'");
     }
 
+    // ---- ONE WORLD LANDING — ARRIVAL SIDE (feat/canon-apron-landing). The
+    // intro's flyable outcomes fell through into THIS build (no world switch),
+    // so the outcome is IN HAND — no persisted-flags round trip needed. Same
+    // arrival contract as the entrance handoff above: the live flags world gets
+    // the outcome (+landed, +wreck on the kill path) via the orchestrator's own
+    // writeOutcomeFlag; the rescuer lands ARMED (cheatArm — the same
+    // WeaponSystem the cell pickup flips); the objective is the walk-in. The
+    // PLACEMENT itself rides the generic load-and-place path (pendingSpawnKey ->
+    // riftDestination("apron") in the main loop). Gated on introApronLanding so
+    // the shot_down cell start, menu travel and every dev world are
+    // byte-identical. ----
+    if (canonWorld && canonPlay.built() && introApronLanding) {
+        x3::intro::writeOutcomeFlag(chatTrees.flags(), introLandingOutcome);
+        chatTrees.flags().set(x3::intro::kIntroLandedFlag);
+        if (introLandingOutcome == x3::intro::IntroOutcome::CapitalKilled)
+            chatTrees.flags().set(x3::intro::kIntroWreckFlag);
+        canonPlay.cheatArm(scene);
+        game.objectives().setText("ENTER THE FACILITY - REACH SARAH");
+        x3::logInfo(std::string("[apron] landed arrival: intro.outcome=") +
+                    (introLandingOutcome == x3::intro::IntroOutcome::CapitalKilled
+                         ? "capital_killed (+intro.wreck)" : "escaped") +
+                    " +intro.landed written to the live flags, player ARMED, "
+                    "objective -> ENTER THE FACILITY; spawning at 'apron'");
+    }
+
     // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the
     // cvar is 1, missions/level1.mission.json is loaded + validated and the doc
     // DRIVES the HUD objective line through the ObjectiveSystem free-text lane
@@ -4726,13 +4922,43 @@ int runDefaultHost(HostContext& hc) {
 
             const bool particlesThisFrame = fxBench && (f >= halfFrames);
             if (particlesThisFrame) {
-                // Spawn a heavy burst spread across the view each frame so the pool
-                // stays near its kMaxParticles cap (worst-case particle draw load).
-                for (int s = 0; s < 24; ++s) {
-                    x3::phys::Vec3 o{ bEye.x + bLook.x * (6.0f + s * 0.6f),
-                                      bEye.y + bLook.y * (6.0f + s * 0.6f) + (float)((s % 5) - 2),
-                                      bEye.z + bLook.z * (6.0f + s * 0.6f) + (float)((s % 7) - 3) };
-                    combatFx.spawnImpact(o, x3::phys::Vec3{ -bLook.x, 1.0f, -bLook.z });
+                // X3_BENCH_FLAME: drive the WEAPON-VFX flame stack instead of the
+                // generic impact burst, so the bench measures what the flame
+                // iteration actually costs rather than a proxy. `=licks0` drives
+                // the same emission with the velocity-stretched LICKS suppressed —
+                // i.e. the pre-iteration ("puffs") cost — so a single build yields
+                // a true before/after delta for the licks.
+                //   worst case staged here = a HELD flamethrower (11 bolts in
+                //   flight at 12 shots/s x 3 puffs over a 0.3 s crossing) + one
+                //   burning ground pool, which is the game's real ceiling.
+                const char* bf = std::getenv("X3_BENCH_FLAME");
+                if (bf) {
+                    const bool noLicks = (std::string(bf).find("licks0") != std::string::npos);
+                    for (int s = 0; s < 11; ++s) {
+                        const float d = 1.0f + s * 0.8f;
+                        x3::phys::Vec3 o{ bEye.x + bLook.x * d + (float)((s % 3) - 1) * 0.3f,
+                                          bEye.y + bLook.y * d + (float)((s % 5) - 2) * 0.2f,
+                                          bEye.z + bLook.z * d + (float)((s % 7) - 3) * 0.3f };
+                        const x3::phys::Vec3 bv{ bLook.x * 30.0f, bLook.y * 30.0f, bLook.z * 30.0f };
+                        combatFx.boltFx(o, bv,
+                                        noLicks ? x3::game::WeaponFxKind::Rocket
+                                                : x3::game::WeaponFxKind::Flame,
+                                        (float)s / 11.0f);
+                    }
+                    if (!noLicks)
+                        combatFx.firePoolFx(x3::phys::Vec3{ bEye.x + bLook.x * 4.0f,
+                                                            bEye.y - 1.6f,
+                                                            bEye.z + bLook.z * 4.0f },
+                                            3.0f, 1.0f / 120.0f);
+                } else {
+                    // Spawn a heavy burst spread across the view each frame so the pool
+                    // stays near its kMaxParticles cap (worst-case particle draw load).
+                    for (int s = 0; s < 24; ++s) {
+                        x3::phys::Vec3 o{ bEye.x + bLook.x * (6.0f + s * 0.6f),
+                                          bEye.y + bLook.y * (6.0f + s * 0.6f) + (float)((s % 5) - 2),
+                                          bEye.z + bLook.z * (6.0f + s * 0.6f) + (float)((s % 7) - 3) };
+                        combatFx.spawnImpact(o, x3::phys::Vec3{ -bLook.x, 1.0f, -bLook.z });
+                    }
                 }
                 combatFx.update(1.0f / 120.0f);
             }
@@ -4774,8 +5000,9 @@ int runDefaultHost(HostContext& hc) {
             const double gOn  = nOn  ? sumGpuOn  / nOn  : 0.0;
             char pb[256];
             std::snprintf(pb, sizeof(pb),
-                "BENCH-PARTICLES live=%d | GPU off=%.3f ms  on=%.3f ms  particle delta=%.3f ms",
-                combatFx.liveParticleCount(), gOff, gOn, gOn - gOff);
+                "BENCH-PARTICLES live=%d licks=%d | GPU off=%.3f ms  on=%.3f ms  particle delta=%.3f ms",
+                combatFx.liveParticleCount(), combatFx.liveFlameLickCount(),
+                gOff, gOn, gOn - gOff);
             x3::logInfo(pb);
         }
 
@@ -5665,9 +5892,80 @@ int runDefaultHost(HostContext& hc) {
                 // only the impact call is taken from 8e9f7d5.
                 combatFx.spawnImpact(hitP, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z },
                                      x3::game::fxKindFromId(arsenal.current().impactFx));
+                // weapon-vfx lane: a PROJECTILE STREAM weapon (flamethrower 3 puffs /
+                // freezeray 4 crystals) reads as its TRAVELLING particles, not the
+                // tracer. Populate the stream along the real ballistic path with the
+                // SAME boltFx the live loop calls once per bolt per frame — each
+                // settle frame drops each pellet's core at a deterministic point of
+                // its flight, so by the capture the whole cone is alive.
+                const x3::game::WeaponDef& cd = arsenal.current();
+                if (cd.kind == x3::game::FireKind::Projectile && cd.pellets > 1 &&
+                    cd.projSpeed > 0.0f) {
+                    const float flight = cd.range / cd.projSpeed;
+                    const float spreadT = std::tan(cd.spreadDeg * 3.14159265f / 180.0f);
+                    const x3::phys::Vec3 rH{ -fxLook.z, 0.0f, fxLook.x };   // horizontal right
+                    // 5 flight-phase samples per pellet per settle frame: the LIVE
+                    // loop calls boltFx every frame for every airborne bolt (~11 at
+                    // once for a held flamethrower), so a single sample per pellet
+                    // under-fills the still — the "flames not puffs" body needs the
+                    // capture density to match play density.
+                    for (int pk = 0; pk < cd.pellets; ++pk)
+                    for (int sm = 0; sm < 5; ++sm) {
+                        uint32_t h = (uint32_t)(i * 2654435761u)
+                                   ^ (uint32_t)((pk + 1) * 40503u)
+                                   ^ (uint32_t)((sm + 1) * 968699u);
+                        h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15;
+                        const float u0 = (float)(h & 0xFFFFu) / 65536.0f;          // flight phase
+                        const float u1 = (float)((h >> 16) & 0xFFFFu) / 65536.0f;  // cone azimuth
+                        // Radial sample INSIDE the cone disc (sqrt = uniform by
+                        // area), matching what applySpread does per shot. Using
+                        // the cone's full radius for every sample drew a hollow
+                        // SHELL — the still showed a ring of fire with a dark
+                        // core, which is a staging artifact, not the weapon.
+                        const uint32_t h2 = (h * 2246822519u) ^ (h >> 13);
+                        const float u2 = (float)(h2 & 0xFFFFu) / 65536.0f;         // radial
+                        const float tt   = 0.05f + u0 * flight;
+                        const float dist = cd.projSpeed * tt;
+                        const float lat  = dist * spreadT * std::sqrt(u2);
+                        x3::phys::Vec3 bp{
+                            mz.x + fxLook.x * dist + rH.x * std::cos(u1 * 6.2831853f) * lat,
+                            mz.y + fxLook.y * dist + std::sin(u1 * 6.2831853f) * lat
+                                 - 0.5f * cd.projectileGravity * tt * tt,   // -8 = flames RISE
+                            mz.z + fxLook.z * dist + rH.z * std::cos(u1 * 6.2831853f) * lat };
+                        combatFx.boltFx(bp, x3::phys::Vec3{ fxLook.x * cd.projSpeed,
+                                                            fxLook.y * cd.projSpeed,
+                                                            fxLook.z * cd.projSpeed },
+                                        x3::game::fxKindFromId(cd.impactFx),
+                                        (flight > 0.0f) ? tt / flight : -1.0f);
+                    }
+                }
                 combatFx.update(dt);
             }
+            // weapon-vfx proof: X3_SHOT_FIREPOOL=1 stages a live BURNING NAPALM POOL
+            // ~3.5 m ahead of the camera on the real floor (raycast-snapped) through
+            // the same firePoolFx path the live loop renders — flames, embers, smoke.
+            if (std::getenv("X3_SHOT_FIREPOOL")) {
+                x3::phys::Vec3 pc{ ssX + fxLook.x * 3.5f, ssY - 1.55f, ssZ + fxLook.z * 3.5f };
+                const x3::phys::RayHit gh = physics->rayCast(
+                    x3::phys::Vec3{ pc.x, ssY, pc.z },
+                    x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 6.0f, x3::phys::Layer::Static);
+                if (gh.hit) pc.y = gh.point.y;
+                if (i == 0) combatFx.addDecal(pc, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+                combatFx.firePoolFx(pc, 3.0f, dt);
+                if (console->getInt("shot_fire") == 0 && !fxDemo) combatFx.update(dt);
+            }
             if (fxDemo) combatFx.update(dt);
+            // weapon-vfx: report the FX population at the captured frame — the
+            // measured answer to "how much did the flame iteration cost", from
+            // the offscreen path (the GPU --bench needs a window, which the
+            // capture rules forbid).
+            if (i == kSettleFrames - 1 &&
+                (console->getInt("shot_fire") != 0 || std::getenv("X3_SHOT_FIREPOOL")))
+                x3::logInfo("[fxcount] at capture: particles=" +
+                            std::to_string(combatFx.liveParticleCount()) +
+                            " flameLicks=" + std::to_string(combatFx.liveFlameLickCount()) +
+                            " (caps " + std::to_string(x3::game::kMaxParticles) + "/" +
+                            std::to_string(x3::game::kMaxFlameLicks) + ")");
             // --world canonlevel SCREENSHOT lighting + cull: feed the player's visible
             // rooms' ceiling lights PLUS the opening-space dressing's motivated lights
             // (flickering tube / red alarm / cyan terminal), and set the visible-room
@@ -6299,7 +6597,9 @@ int runDefaultHost(HostContext& hc) {
                 // photographs nothing at all.
                 // (X3_SHOT_ZAP needs the same: the money shot IS the FX — the arcs
                 // spidering across the water.)
-                if (fxDemo || console->getInt("shot_fire") != 0 || !zapShotMode.empty()) {
+                // (X3_SHOT_FIREPOOL too: the staged burning ground pool is pure FX.)
+                if (fxDemo || console->getInt("shot_fire") != 0 || !zapShotMode.empty() ||
+                    std::getenv("X3_SHOT_FIREPOOL")) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
                 }
@@ -7324,7 +7624,7 @@ int runDefaultHost(HostContext& hc) {
     x3::audio::LoopHandle fireLoop{};
     x3::audio::SoundHandle fireLoopSnd{};   // the sound the current loop voice was started with
     // WEAPONS: rising-edge tracking for the number keys 1..N (weapon switch) + R (reload).
-    bool prevWeaponKey[9] = {};
+    bool prevWeaponKey[x3::game::kCanonKeyCount] = {};   // Phase B3: 12 canon keys (1..9 0 - =)
     bool prevReload = false;
 
     // ---- Door-code keypad host state (§6.4 keypad gate). When the player presses
@@ -7995,6 +8295,13 @@ int runDefaultHost(HostContext& hc) {
             std::string    why;
             if (riftDestination(want, to, &why)) {
                 player.setFeetPosition(*physics, x3::phys::Vec3{ to.x, to.y - 1.6f + 0.3f, to.z });
+                // ONE WORLD landing: the apron arrival FACES the breach (he just
+                // set his ship down; the facility is the first thing he sees).
+                if (want == x3::game::kApronDestKey && facilityExterior.built()) {
+                    const x3::game::ApronLanding al =
+                        x3::game::computeApronLanding(facilityExterior.builtDesc());
+                    if (al.ok) player.setLook(al.spawnYaw, -0.02f);
+                }
                 const x3::game::Destination* d = x3::game::findDestination(want);
                 riftHudMsg   = std::string("ARRIVED -> ") + (d ? d->name : want.c_str());
                 riftHudTimer = 4.0f;
@@ -8148,6 +8455,15 @@ int runDefaultHost(HostContext& hc) {
         bool gNow = keyDown(GLFW_KEY_G);
         if (gNow && !prevG && !worldCars.driving()) player.setNoclip(!player.noclip());
         prevG = gNow;
+        // TERMINAL COMMAND LINE (pinned console region, engine/core/x3_log.cpp):
+        // lines typed into the OS terminal's bottom input row feed the SAME
+        // dispatcher as the in-game dev-shell console. Drained HERE, on the main
+        // thread, because IConsole::exec is not thread-safe; results echo back to
+        // the terminal via Console::print -> logInfo("[con] ...").
+        {
+            std::string termCmd;
+            while (x3::conregion::popInput(termCmd)) console->exec(termCmd);
+        }
         // U = IDKFA hotkey (playtest aid): runs the console command of the same name
         // (god + full health + all weapons + unlimited ammo) so the cheat is one key
         // instead of opening the console. Gated on !consoleOpen so typing a 'u' into
@@ -8367,10 +8683,21 @@ int runDefaultHost(HostContext& hc) {
         // keys are being typed as a code, not used to switch weapons), and while a
         // chat-tree conversation is capturing 1-4 as dialog choices.
         if (!codeMode && !termMode && !terrainWorld && !chatTrees.active()) {
-            const int n = arsenal.count() < 9 ? arsenal.count() : 9;
-            for (int wi = 0; wi < n; ++wi) {
-                bool down = keyDown(GLFW_KEY_1 + wi);
-                if (down && !prevWeaponKey[wi]) arsenal.select(wi);
+            // Phase B3: the CANON 12-weapon key row. 1..9 then 0 - = select the
+            // canonical twelve BY NAME in canon order (weapon.cpp
+            // canonKeyWeaponName) — the old `GLFW_KEY_1 + wi` slot mapping capped
+            // at 9 and left five canon weapons keyless. The two X3Native-only
+            // weapons (smg / plasma_rifle) stay on the scroll-wheel cycle below.
+            static const int kWeaponKeyCodes[x3::game::kCanonKeyCount] = {
+                GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3, GLFW_KEY_4, GLFW_KEY_5,
+                GLFW_KEY_6, GLFW_KEY_7, GLFW_KEY_8, GLFW_KEY_9, GLFW_KEY_0,
+                GLFW_KEY_MINUS, GLFW_KEY_EQUAL };
+            for (int wi = 0; wi < x3::game::kCanonKeyCount; ++wi) {
+                bool down = keyDown(kWeaponKeyCodes[wi]);
+                if (down && !prevWeaponKey[wi]) {
+                    const int slot = arsenal.indexOf(x3::game::canonKeyWeaponName(wi));
+                    if (slot >= 0) arsenal.select(slot);
+                }
                 prevWeaponKey[wi] = down;
             }
             bool rNow = keyDown(GLFW_KEY_R);
@@ -10649,11 +10976,23 @@ int runDefaultHost(HostContext& hc) {
             // one-shot — so suppress the per-shot fire SFX here for those weapons.
             const bool usesFireLoop = arsenal.current().fireSfxLoop;
             if (!shot.projectiles.empty()) {
-                // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
-                const auto& pj = shot.projectiles[0];
-                // [W9-3 RPG] skill/mod damage layer on the bolt (base def untouched).
-                const int pjDmg = x3::game::rpgScaleDamage(pj.damage, rpgMods, rpgCritRng);
-                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, impactKind, pj.type, currentImpactSfx() });
+                // ---- Projectile weapon: spawn EVERY travelling bolt this trigger
+                // pull produced (Phase B2; shape copied from the smoketest consumer,
+                // which already loops). Stream weapons (flamethrower / freezeray)
+                // emit several jittered short-lived particles per pull — bounded by
+                // kMaxStreamSpawns on the producer — every other weapon exactly one.
+                // Was a hard read of projectiles[0], which dropped the extras.
+                const x3::audio::SoundHandle pjImpactSnd = currentImpactSfx();
+                for (const auto& pj : shot.projectiles) {
+                    // [W9-3 RPG] skill/mod damage layer on the bolt (base def untouched).
+                    const int pjDmg = x3::game::rpgScaleDamage(pj.damage, rpgMods, rpgCritRng);
+                    LiveProjectile lp{ muzzle, pj.vel, pjDmg, 0.0f, pj.range, pj.gravity, impactKind, pj.type, pjImpactSnd };
+                    // weapon-vfx lane: carry the napalm fire-pool payload to the impact.
+                    lp.fpDuration = pj.firePoolDuration;
+                    lp.fpRadius   = pj.firePoolRadius;
+                    lp.fpDps      = pj.firePoolDps;
+                    projectiles.push_back(lp);
+                }
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
                 if (!usesFireLoop)
                     audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
@@ -10788,6 +11127,38 @@ int runDefaultHost(HostContext& hc) {
             }
         }
 
+        // ---- NAPALM fire-pool IGNITION (weapon-vfx lane): consume the firePool
+        // payload a napalm bolt carried to its impact. The pool burns on the GROUND
+        // (a shell that strikes a wall or a body still splashes burning fuel at the
+        // feet), so snap DOWN from the impact point; then the SurfaceType rule:
+        // a pool never ignites on Water (extinguish -> steam), Lava needs none.
+        // Lava is not host-classifiable yet (no lava query exists) — the rule is
+        // implemented + tested in FirePoolSystem; this host classifies Water only.
+        auto igniteFirePool = [&](const LiveProjectile& b, const x3::phys::Vec3& at) {
+            if (b.fpDuration <= 0.0f || b.fpRadius <= 0.0f) return;
+            x3::phys::Vec3 ground = at;
+            const x3::phys::RayHit gh = physics->rayCast(
+                x3::phys::Vec3{ at.x, at.y + 0.2f, at.z },
+                x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, 6.0f, x3::phys::Layer::Static);
+            if (gh.hit) ground = gh.point;
+            x3::game::SurfaceType surf = x3::game::SurfaceType::Unknown;
+            const float wY = x3::game::worldWaterLevelAt(ground.x, ground.z);
+            if (wY > x3::game::kWorldWaterDry && ground.y <= wY + 0.05f)
+                surf = x3::game::SurfaceType::Water;
+            const x3::game::FirePoolSpawn r =
+                firePools.spawn(ground, b.fpRadius, b.fpDps, b.fpDuration, surf);
+            if (r == x3::game::FirePoolSpawn::Ignited) {
+                // A big scorch under the fire — it outlives the burn as the aftermath.
+                combatFx.addDecal(ground, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+                x3::logInfo("napalm: ground fire ignited (" + std::to_string(b.fpDps) +
+                            " dps, r=" + std::to_string(b.fpRadius) + " m, " +
+                            std::to_string(b.fpDuration) + " s)");
+            } else if (r == x3::game::FirePoolSpawn::ExtinguishedWater) {
+                combatFx.extinguishFx(x3::phys::Vec3{ ground.x, wY, ground.z });
+                x3::logInfo("napalm: shell EXTINGUISHED on water (no pool)");
+            }
+        };
+
         // ---- WEAPONS: advance live projectile bolts. Each step moves the bolt and
         // raycasts the segment against Enemy then Static; on an enemy hit it deals
         // damage via the enemy fire path (aimed straight at the bolt's travel dir);
@@ -10795,6 +11166,12 @@ int runDefaultHost(HostContext& hc) {
         if (!simFrozen && !terrainWorld && !projectiles.empty()) {
             for (size_t pi = 0; pi < projectiles.size(); ) {
                 LiveProjectile& b = projectiles[pi];
+                // Phase B1: ballistic arc. Apply the spawn's per-weapon gravity to
+                // the velocity BEFORE the step so the raycast segment below matches
+                // this frame's actual travel (v.y -= g*dt; pos += v*dt). dt-SCALED,
+                // never per-frame — house rule; a per-frame term changes with the
+                // refresh rate. gravity == 0 keeps every legacy bolt exactly flat.
+                if (b.gravity != 0.0f) b.vel.y -= b.gravity * dt;
                 float speed = std::sqrt(b.vel.x*b.vel.x + b.vel.y*b.vel.y + b.vel.z*b.vel.z);
                 float stepLen = speed * dt;
                 if (stepLen < 1e-5f) stepLen = 1e-5f;
@@ -10831,9 +11208,12 @@ int runDefaultHost(HostContext& hc) {
                         if (rs.hitMonster) r = rs;
                     }
                     combatFx.addTracer(b.pos, eh.point);
-                    // Rocket detonates in a fireball; other bolts splash at the hit.
-                    if (b.impactKind == x3::game::WeaponFxKind::Rocket)
+                    // Rocket/napalm detonate in a fireball; other bolts splash at the hit.
+                    if (b.impactKind == x3::game::WeaponFxKind::Rocket ||
+                        b.impactKind == x3::game::WeaponFxKind::Napalm)
                         combatFx.spawnExplosion(eh.point, 1.4f);
+                    // Napalm: the burning fuel pools at the victim's feet too.
+                    igniteFirePool(b, eh.point);
                     if (r.killed) { combatFx.spawnDeath(eh.point);
                         audio->playSound3D(sndDeath, eh.point.x, eh.point.y, eh.point.z, 1.0f, 1.0f); }
                     else combatFx.spawnBlood(eh.point, ndir);
@@ -10841,11 +11221,14 @@ int runDefaultHost(HostContext& hc) {
                 } else {
                     x3::phys::RayHit sh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Static);
                     if (sh.hit) {
-                        // Rocket -> violent fireball; energy/ballistic bolts -> per-kind splash.
-                        if (b.impactKind == x3::game::WeaponFxKind::Rocket)
+                        // Rocket/napalm -> violent fireball; energy/ballistic bolts -> per-kind splash.
+                        if (b.impactKind == x3::game::WeaponFxKind::Rocket ||
+                            b.impactKind == x3::game::WeaponFxKind::Napalm)
                             combatFx.spawnExplosion(sh.point, 1.4f);
                         else
                             combatFx.spawnImpact(sh.point, sh.normal, b.impactKind);
+                        // Napalm: leave the burning ground pool (the actual weapon).
+                        igniteFirePool(b, sh.point);
                         combatFx.addTracer(b.pos, sh.point);
                         if (b.impactSnd.valid())
                             audio->playSound3D(b.impactSnd, sh.point.x, sh.point.y, sh.point.z, 0.6f, 1.0f);
@@ -10856,11 +11239,85 @@ int runDefaultHost(HostContext& hc) {
                     b.traveled += stepLen;
                     // Make the travelling bolt VISIBLE in flight (glowing core + trail;
                     // rocket also puffs exhaust smoke) — bolts were invisible before.
-                    combatFx.boltFx(b.pos, b.vel, b.impactKind);
+                    // Flame bolts also pass their FLIGHT PHASE (traveled/range) so the
+                    // stream is a fat connected body at the nozzle and breaks into
+                    // separated licks at the tail ("flames not puffs" iteration).
+                    combatFx.boltFx(b.pos, b.vel, b.impactKind,
+                                    (b.range > 0.0f) ? b.traveled / b.range : -1.0f);
                     if (b.traveled >= b.range) consumed = true;   // out of range -> despawn
                 }
                 if (consumed) { projectiles[pi] = projectiles.back(); projectiles.pop_back(); }
                 else ++pi;
+            }
+        }
+
+        // ---- NAPALM FIRE POOLS (weapon-vfx lane): render each live pool's flames
+        // (dt-scaled emission), advance the bounded pool set, and dispatch the due
+        // damage ticks — the player by distance (the barrel splash pattern), enemies
+        // via short Enemy-layer probe rays run through the SAME per-host onFire
+        // chain every bolt impact uses. Bio type: burning fuel is a chemical burn
+        // (also keeps a pool tick from re-chilling anyone the way a stray Cryo
+        // re-tag would). Frozen with the sim. ----
+        if (!simFrozen && !terrainWorld && firePools.liveCount() > 0) {
+            for (int fi = 0; fi < x3::game::FirePoolSystem::capacity(); ++fi) {
+                const auto& fp = firePools.pool(fi);
+                if (fp.remaining > 0.0f) combatFx.firePoolFx(fp.center, fp.radius, dt);
+            }
+            x3::game::FirePoolSystem::Tick poolTicks[x3::game::kMaxFirePools];
+            const int nTicks = firePools.update(dt, poolTicks, x3::game::kMaxFirePools);
+            for (int t = 0; t < nTicks; ++t) {
+                const auto& tk = poolTicks[t];
+                // Player: stand in the fire, take the tick (flat inside the pool —
+                // a burning pool has no gentle edge).
+                {
+                    const x3::phys::Vec3 pp = player.damageTargetPos();
+                    const float dx = pp.x - tk.center.x, dy = pp.y - tk.center.y,
+                                dz = pp.z - tk.center.z;
+                    if (std::sqrt(dx*dx + dy*dy + dz*dz) < tk.radius && player.isAlive())
+                        player.takeDamage(tk.damage);
+                }
+                // Enemies: 8 radial probe rays at hip height, each PRE-BOUNDED to the
+                // pool radius on the Enemy layer, then dispatched through the standard
+                // per-host chain along the same ray (the chain re-raycasts and finds
+                // the same nearest body; the pre-check just keeps the reach honest).
+                const x3::phys::Vec3 org{ tk.center.x, tk.center.y + 0.7f, tk.center.z };
+                for (int rr = 0; rr < 8; ++rr) {
+                    const float az = (float)rr * (3.14159265f / 4.0f);
+                    const x3::phys::Vec3 rd{ std::cos(az), 0.0f, std::sin(az) };
+                    const x3::phys::RayHit ph =
+                        physics->rayCast(org, rd, tk.radius, x3::phys::Layer::Enemy);
+                    if (!ph.hit) continue;
+                    x3::game::FireResult r = game.onFire(org, rd, scene, *physics,
+                                                         tk.damage, x3::DamageType::Bio);
+                    if (!r.hitMonster && canonWorld && canonPlay.built()) {
+                        x3::game::FireResult rc = canonPlay.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rc.hitMonster) r = rc;
+                    }
+                    if (!r.hitMonster && canonWorld) {
+                        x3::game::FireResult ca = canonAliens.fire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (ca.hitMonster) r = ca;
+                    }
+                    if (!r.hitMonster) {
+                        x3::game::FireResult rm = midFloors.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rm.hitMonster) r = rm;
+                    }
+                    if (!r.hitMonster) {
+                        x3::game::FireResult rt = topFloors.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rt.hitMonster) r = rt;
+                    }
+                    if (!r.hitMonster) {
+                        x3::game::FireResult rn = nexus.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rn.hitMonster) r = rn;
+                    }
+                    if (!r.hitMonster) {
+                        x3::game::FireResult rs = subLevels.onFire(org, rd, scene, *physics, tk.damage, x3::DamageType::Bio);
+                        if (rs.hitMonster) r = rs;
+                    }
+                    if (r.killed) {
+                        combatFx.spawnDeath(r.endPoint);
+                        audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
+                    }
+                }
             }
         }
 
@@ -12241,6 +12698,7 @@ int runDefaultHost(HostContext& hc) {
     shutdownGameSystems();   // every enemy group + Martinez + barrels + Nexus/canon ragdolls
     if (spacePlanetMesh.valid())     { device->destroyMesh(spacePlanetMesh); spacePlanetMesh = {}; }
     if (spacePlanetRingMesh.valid()) { device->destroyMesh(spacePlanetRingMesh); spacePlanetRingMesh = {}; }
+    if (apronShipModel.ok && apronShipLoader) apronShipLoader->unload(apronShipModel);   // ONE WORLD landing ship
     docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
     worldMap.shutdown(*device);                    // baked map-tile textures
     x3::club_listen::shutdown();                    // close the WASAPI loopback device (idempotent)

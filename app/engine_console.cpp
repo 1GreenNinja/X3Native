@@ -170,6 +170,25 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     // to carry -- pair it with `--set r_clusterlights 1`, or the frame will
     // still assemble to the legacy 64-light budget and most of them are wasted.
     console.registerCVar("r_citylights", "0", "city light density: 0 = the 9 legacy lamp rows (bit-exact), 1 = every authored street + window/sign glow (~240 lamps; use with r_clusterlights 1)");
+    // SSAO / SSGI (W-MENU find, 2026-08-17). These two groups were the ONLY
+    // watched cvars (world_host_common.h hashLiveHostCVars) missing from this
+    // catalog — UiController::init registers them for the CAMPAIGN console,
+    // and nothing registered them for a --world HostShell console. Unregistered
+    // reads return 0, so the shell's frame-0 live push (pushLiveHostCVarsToDevice)
+    // silently pushed SsaoParams{enabled=0,...}/GiParams{enabled=0,...} and
+    // TURNED BOTH CHAINS OFF in every interactive world host, while headless
+    // proof shots (no shell) kept them on: the interactive game was flatter
+    // than every screenshot said it was. Defaults = IRenderDevice.h's struct
+    // defaults (PAIRED — change both).
+    console.registerCVar("r_ssao",           "1",     "screen-space ambient occlusion chain on/off");
+    console.registerCVar("r_ssao_radius",    "0.5",   "SSAO view-space hemisphere radius (meters)");
+    console.registerCVar("r_ssao_bias",      "0.025", "SSAO depth-compare bias (view-space units)");
+    console.registerCVar("r_ssao_intensity", "1.0",   "SSAO raw occlusion scale");
+    console.registerCVar("r_ssao_power",     "1.5",   "SSAO contrast exponent on the final AO");
+    console.registerCVar("r_ssao_strength",  "0.9",   "SSAO applied strength (1 = full, 0 = off)");
+    console.registerCVar("r_ssgi",           "1",     "screen-space one-bounce GI (indirect diffuse) on/off");
+    console.registerCVar("r_ssgi_intensity", "1.0",   "SSGI gathered-radiance scale");
+    console.registerCVar("r_ssgi_strength",  "1.0",   "SSGI applied strength (HDR, final knob)");
     // SSR / RT REFLECTIONS (STRIKE 3): a half-res compute pass marches each pixel's
     // reflection ray against the depth buffer and samples LAST frame's lit scene
     // (the TAA history image — reflections REQUIRE r_taa 1; with TAA off the whole

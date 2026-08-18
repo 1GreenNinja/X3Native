@@ -475,6 +475,9 @@ public:
     // Textured HUD rectangle sampling an app-created texture (world-map tiles).
     // Same vertex ring / deferred-record path as drawHudQuad; the record carries
     // the texture id so recordHudDraws binds it instead of the white texel.
+    // Arbitrary-corner variant (rotated map tiles — see IRenderDevice.h).
+    void drawHudImageQuad(const FrameContext& fc, TextureHandle tex,
+                          const float xyPx[8], const float rgba[4]) override;
     void drawHudImage(const FrameContext& fc, TextureHandle tex,
                       float xPx, float yPx, float wPx, float hPx,
                       const float rgba[4],
@@ -1239,6 +1242,9 @@ private:
     static constexpr uint32_t kDebrisCapacity = 65536;  // pool size (spec §11 target: 50k+)
     static constexpr float    kDebrisDeadState = 0.0f;
     static constexpr float    kDebrisActiveState = 1.0f;
+    // Vertices per shard mesh slot in the shard-set SSBO (padded with degenerate
+    // repeats of the last vertex). MUST match kShardVerts in shaders/debris.vert.
+    static constexpr uint32_t kDebrisShardVertsMax = 36;
 
     bool createDebris();
 
@@ -2265,7 +2271,8 @@ private:
     bool             m_rtShadowsWantThisFrame   = false; // decided in prepareFrameData (UBO gate)
     bool             m_rtShadowsActiveThisFrame = false; // decided in endFrame (TLAS ready + descriptor written)
     bool             m_meshTlasWritten = false;          // mesh set3 binding5 points at a real TLAS
-    uint32_t         m_rtshFrameSeed = 0;                // per-frame jitter rotation counter
+    // (fix/interior-shadows) the old per-frame RT-shadow jitter counter is GONE:
+    // rtsh1.x is pinned 0 — the shader's stratified sampler owns the dither.
     VkPipelineLayout m_meshLayout = VK_NULL_HANDLE;
     // Translucent GLASS pipeline (transparent pass). Shares mesh.vert + sets 0-3
     // with the opaque mesh path, but uses its OWN pipeline layout m_glassLayout
@@ -2405,6 +2412,13 @@ private:
     VkDescriptorSetLayout m_skySetLayout = VK_NULL_HANDLE;
     VkDescriptorPool      m_skyPool      = VK_NULL_HANDLE;
     SkyParams             m_sky{};   // cached params (enabled=false by default)
+    // The sky snapshot the LAST IBL dirty-mark was issued for. setSkyParams()
+    // compares against THIS (with per-field significance thresholds), not
+    // bytewise against m_sky: a live time-of-day sun moves a fraction of a
+    // degree every frame, and the IBL rebake is a BLOCKING oneTimeSubmit —
+    // per-frame memcmp dirtying would stall the whole loop on it. See
+    // setSkyParams for the thresholds.
+    SkyParams             m_skyIblMark{};
     float                 m_skyTime = 0.0f;  // sky-animation time (seconds), -> sky UBO params.z
 
     // ---- Image-based lighting (IBL) — split-sum environment reflections ----
@@ -3177,9 +3191,12 @@ private:
     VkBuffer      m_debrisCountBuf  = VK_NULL_HANDLE; VmaAllocation m_debrisCountAlloc = nullptr; void* m_debrisCountMapped = nullptr;
     VkBuffer      m_debrisParamsBuf[kFramesInFlight]  = {}; VmaAllocation m_debrisParamsAlloc[kFramesInFlight]  = {}; void* m_debrisParamsMapped[kFramesInFlight]  = {};
     VkBuffer      m_debrisDrawUboBuf[kFramesInFlight] = {}; VmaAllocation m_debrisDrawUboAlloc[kFramesInFlight] = {}; void* m_debrisDrawUboMapped[kFramesInFlight] = {};
-    VkBuffer      m_debrisCubeVbo = VK_NULL_HANDLE; VmaAllocation m_debrisCubeAlloc    = nullptr;
-    VkBuffer      m_debrisCubeIbo = VK_NULL_HANDLE; VmaAllocation m_debrisCubeIboAlloc = nullptr;
-    uint32_t      m_debrisCubeIndexCount = 0;
+    // Shard mesh set SSBO (fix/gib-meshes): kGpuDebrisShardCount distinct low-poly
+    // irregular shard meshes, each padded to kDebrisShardVertsMax vertices (two vec4
+    // rows per vertex: position, flat normal). The draw fetches vertices from this
+    // buffer per instance (no vertex-input bindings) so ONE instanced draw renders
+    // several distinct gib meshes.
+    VkBuffer      m_debrisShardBuf = VK_NULL_HANDLE; VmaAllocation m_debrisShardAlloc = nullptr;
     VkDescriptorPool      m_debrisPool             = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_debrisComputeSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_debrisDrawSetLayout    = VK_NULL_HANDLE;

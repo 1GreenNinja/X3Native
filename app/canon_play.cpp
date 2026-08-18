@@ -369,9 +369,33 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
     // pistol glints in the debris and picking it up is a deliberate step.
     if (bt.jakeCell != kNoRoom) {
         const CanonRoom& jc = floor.rooms[bt.jakeCell];
-        m_weapon.buildWeaponPickup(scene, device, m_modelDir,
-                                   x3::phys::Vec3{ jc.cx + 2.1f, roomFloorY(bt.jakeCell, kPickupUp),
-                                                   jc.cz + 1.6f });
+        // CLEARANCE-PROBED placement (2026-08-16, Tim playtest: the authored
+        // (+2.1, +1.6) offset put the pistol INSIDE the doorway jamb column at the
+        // cell's +X/+Z corner — a pickup half-buried in a pillar is the same bug
+        // family as the buried-feet placements SurfaceType exists for). The offset
+        // is now the FIRST of several candidates, each probed against the REAL
+        // static collision (canonPickupSpotClear: 8 lateral rays + a floor ray),
+        // so the pickup survives future dressing/structure changes instead of
+        // trusting one hand-authored point. Every candidate keeps the pickup
+        // outside kPickupRadius of the room-center spawn (no frame-1 auto-arm).
+        const float cand[][2] = {
+            { 2.1f, 1.6f },     // the authored debris corner (kept when clear)
+            { 1.4f, 1.6f },     // pulled a step off the +X wall/jamb
+            { 1.6f, 0.4f },     // beside the hatch, mid +X
+            { 0.0f, 1.8f },     // straight +Z of center
+            { 1.4f, -1.4f },    // +X/-Z (clear of the bunk's -X/-Z corner)
+        };
+        x3::phys::Vec3 pickPos{ jc.cx + cand[0][0], roomFloorY(bt.jakeCell, kPickupUp),
+                                jc.cz + cand[0][1] };
+        for (const auto& c : cand) {
+            const x3::phys::Vec3 p{ jc.cx + c[0], roomFloorY(bt.jakeCell, kPickupUp),
+                                    jc.cz + c[1] };
+            if (canonPickupSpotClear(physics, p)) { pickPos = p; break; }
+            x3::logInfo("canonplay: sidearm candidate (" + std::to_string(p.x) + ", " +
+                        std::to_string(p.z) + ") blocked — probing next");
+        }
+        m_pickupPos = pickPos;
+        m_weapon.buildWeaponPickup(scene, device, m_modelDir, pickPos);
         // Tag the pickup entity with Jake's Cell so the cull + lights include it.
         const uint32_t pe = m_weapon.pickupEntity();
         if (pe != kNoLink && pe < scene.size()) scene.get(pe).roomId = bt.jakeCell;
@@ -1712,6 +1736,25 @@ bool inRoom(const CanonRoom& R, float x, float z, float m = 1.5f) {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// canonPickupSpotClear — see canon_play.h. Pure probe against the physics
+// world's Static layer; no Scene/render dependency, so the headless self-test
+// runs the SAME check the live build ran.
+// ---------------------------------------------------------------------------
+bool canonPickupSpotClear(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& p) {
+    constexpr float kLateralClear = 0.45f;   // >= the pickup's drawn half-extent
+    constexpr float kFloorWithin  = kPickupUp + 0.35f;   // hover height + slack
+    for (int i = 0; i < 8; ++i) {
+        const float az = (float)i * (3.14159265f / 4.0f);
+        const x3::phys::Vec3 d{ std::cos(az), 0.0f, std::sin(az) };
+        if (physics.rayCast(p, d, kLateralClear, x3::phys::Layer::Static).hit)
+            return false;                    // wall / jamb / prop inside the clearance
+    }
+    const x3::phys::RayHit down = physics.rayCast(
+        p, x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, kFloorWithin, x3::phys::Layer::Static);
+    return down.hit;                          // a real floor under the hover point
+}
+
 bool runCanonPlaySelfTest() {
     g_cpass = g_cfail = 0;
 
@@ -1742,6 +1785,35 @@ bool runCanonPlaySelfTest() {
     {
         bool ok = play.pickupRoom() != kNoRoom && play.pickupRoom() == bt.jakeCell;
         pcheck(ok, "P1 sidearm pickup placed in Jake's Cell (room-tagged)");
+    }
+
+    // ---- P1b: the sidearm pickup spot is CLEAR (2026-08-16 Tim playtest: the
+    // authored offset buried the pistol in the doorway jamb column). Asserted
+    // against the REAL built collision with the SAME probe the build used —
+    // lateral clearance on 8 compass rays, a floor within hover reach below,
+    // and the spot inside the cell's bounds. If a future dressing pass blocks
+    // every candidate, this fails loudly instead of shipping a pistol-in-pillar.
+    {
+        const x3::phys::Vec3 pp = play.pickupPos();
+        const bool clear = canonPickupSpotClear(*physics, pp);
+        bool inCell = false;
+        if (bt.jakeCell != kNoRoom) {
+            const CanonRoom& jc = floor.rooms[bt.jakeCell];
+            inCell = pp.x > jc.x0() && pp.x < jc.x1() &&
+                     pp.z > jc.z0() && pp.z < jc.z1() &&
+                     pp.y > jc.y0() && pp.y < jc.y0() + 2.0f;
+        }
+        // No frame-1 auto-arm: the spot stays outside kPickupRadius of the
+        // room-center spawn point.
+        bool offSpawn = true;
+        if (bt.jakeCell != kNoRoom) {
+            const CanonRoom& jc = floor.rooms[bt.jakeCell];
+            const float dx = pp.x - jc.cx, dz = pp.z - jc.cz;
+            offSpawn = std::sqrt(dx * dx + dz * dz) > kPickupRadius;
+        }
+        pcheck(clear && inCell && offSpawn,
+               "P1b sidearm spot probe-clear (no wall/jamb within 0.45 m, floor under it, "
+               "in-cell, outside the spawn's auto-arm radius)");
     }
 
     // ---- P2: the Main-Hall animated squad spawned + is anchored INSIDE the Main Hall. ----

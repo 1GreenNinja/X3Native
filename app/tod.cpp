@@ -39,36 +39,61 @@ inline float wrap01(float t) {
 }
 
 // A "sky look": the color/intensity/haze/exposure + ambient at a phase anchor.
+// W-NIGHT growth: each look now also carries the sky DOME palette (zenith +
+// horizon — the lane the analytic sky's whole brightness actually lives in;
+// without it "night" was a dimmer sun under the same daylight-blue dome and
+// the stars could never gate on) and the directional KEY scale (sunLight, the
+// mesh.frag kSunColor multiplier — the half of darkness the ground obeys).
 struct SkyLook {
     float sunColor[3];
     float sunIntensity;
     float haze;
     float exposure;
     float ambient[3];
+    float zenith[3];
+    float horizon[3];
+    float sunLight;
 };
 
 // Keyframes anchored at each phase (and a wrap anchor == dawn). Tuned so DAY
 // reproduces the engine's existing warm-white sun look. Linear RGB. Dawn/dusk
 // are warm + low; day is bright neutral; night is dim + cool/blue.
+// Zenith/horizon day values == SkyParams' own defaults, so a midday sample is
+// the old global sky exactly. Night values are NEAR-BLACK with a whisper of
+// blue: the sky shader's star gate keys on rendered sky luminance, so THIS is
+// what actually switches the stars on; the phantom-daylight IBL ground fix in
+// ibl_env.frag keys on the same palette.
 constexpr SkyLook kLookDawn = {
     { 1.00f, 0.62f, 0.40f },  // warm orange sunrise
     0.55f, 0.70f, 1.05f,
     { 0.10f, 0.07f, 0.09f },
+    { 0.050f, 0.095f, 0.280f }, { 0.940f, 0.520f, 0.300f },
+    0.55f,
 };
 constexpr SkyLook kLookDay = {
     { 1.00f, 0.97f, 0.92f },  // engine default warm white
     1.00f, 0.40f, 1.00f,
     { 0.16f, 0.17f, 0.20f },
+    { 0.10f, 0.28f, 0.66f }, { 0.62f, 0.74f, 0.92f },   // == SkyParams defaults
+    1.00f,
 };
 constexpr SkyLook kLookDusk = {
     { 1.00f, 0.55f, 0.34f },  // deeper orange/red sunset
     0.55f, 0.72f, 1.05f,
     { 0.10f, 0.07f, 0.08f },
+    { 0.042f, 0.070f, 0.210f }, { 1.000f, 0.440f, 0.190f },
+    0.55f,
 };
 constexpr SkyLook kLookNight = {
-    { 0.30f, 0.38f, 0.62f },  // cool blue moonlight
-    0.18f, 0.30f, 1.15f,
-    { 0.045f, 0.05f, 0.075f },
+    { 0.62f, 0.70f, 0.88f },  // the MOON's pale disc color (sunDir is the moon at night)
+    0.30f,                    // disc/halo intensity — a moon, not a floodlight
+    // haze 0.52, not the old 0.30: the sky shader treats haze < 0.5 as "shading
+    // toward deep space" and starts drawing stars BELOW the horizon; a ground
+    // world's night keeps its aerosol so the starfield stays celestial.
+    0.52f, 1.12f,
+    { 0.024f, 0.028f, 0.046f },
+    { 0.0016f, 0.0024f, 0.0060f }, { 0.0070f, 0.0100f, 0.0200f },
+    0.05f,                    // moonlight key: see the road faintly, nothing more
 };
 
 void lerpLook(const SkyLook& a, const SkyLook& b, float u, SkyLook& out) {
@@ -77,6 +102,9 @@ void lerpLook(const SkyLook& a, const SkyLook& b, float u, SkyLook& out) {
     out.haze         = lerp(a.haze, b.haze, u);
     out.exposure     = lerp(a.exposure, b.exposure, u);
     lerp3(a.ambient, b.ambient, u, out.ambient);
+    lerp3(a.zenith,  b.zenith,  u, out.zenith);
+    lerp3(a.horizon, b.horizon, u, out.horizon);
+    out.sunLight = lerp(a.sunLight, b.sunLight, u);
 }
 
 } // namespace
@@ -145,20 +173,20 @@ TodSample TimeOfDay::sampleAt(float t) const {
         } break;
     }
 
-    s.sky.enabled      = true;
-    s.sky.sunColor[0]  = look.sunColor[0];
-    s.sky.sunColor[1]  = look.sunColor[1];
-    s.sky.sunColor[2]  = look.sunColor[2];
-    s.sky.sunIntensity = look.sunIntensity;
-    s.sky.haze         = look.haze;
-    s.sky.exposure     = look.exposure;
-    s.ambient[0]       = look.ambient[0];
-    s.ambient[1]       = look.ambient[1];
-    s.ambient[2]       = look.ambient[2];
-
-    // ---- Sun arc. Map the clock to a solar parameter p: 0 at sunrise (east
-    // horizon) -> 1 at sunset (west horizon); night continues to p in [1,2) so the
-    // sun keeps moving + sits below the horizon. Daytime spans [dawnStart, nightStart].
+    // ---- THE SUN ARC, computed FIRST (W-NIGHT). ------------------------------
+    // It used to be computed after the look was already written into s.sky,
+    // which forced the phase table to be the ONLY thing deciding how dark the
+    // sky is. That is a clock, and darkness is a fact about the SUN.
+    //
+    // THE RECEIPT: with the tunnel world's config, 22:00 lands at t=0.677. The
+    // Night phase spans [0.604, 1.0) and its look only reaches kLookNight at
+    // its MIDPOINT — so the blend at 22:00 was 69% DUSK, and the dome rendered
+    // a warm cream sunset horizon (0.695, 0.308, 0.132) with the sun 28 DEGREES
+    // BELOW THE HORIZON. Full dark did not arrive until ~01:00. The eye gate
+    // caught it on the first night capture: bright sunset sky, no stars, and
+    // a campfire invisible against it.
+    float elev = 0.0f;
+    float sunDirRaw[3] = { 0.0f, 1.0f, 0.0f };
     {
         float dayStart = m_cfg.dawnStart;
         float dayEnd   = m_cfg.nightStart;
@@ -176,7 +204,7 @@ TodSample TimeOfDay::sampleAt(float t) const {
         }
 
         float phi  = p * kPi;                              // 0..pi day, pi..2pi night
-        float elev = std::sin(phi) * m_cfg.middayElevation;// + above horizon, - below
+        elev       = std::sin(phi) * m_cfg.middayElevation;// + above horizon, - below
         float az   = lerp(m_cfg.sunAzimuthEast, m_cfg.sunAzimuthWest, clamp01(p));
 
         // Direction TOWARD the sun (engine convention; normalized internally).
@@ -187,9 +215,52 @@ TodSample TimeOfDay::sampleAt(float t) const {
         // component every vertical facade gets N.L ~ 0 (flat, ambient-only towers)
         // and every cast shadow falls straight down inside its own footprint.
         float cosE = std::sqrt(std::max(0.0f, 1.0f - elev * elev));
-        s.sky.sunDir[0] = std::sin(az) * cosE;
-        s.sky.sunDir[1] = elev;
-        s.sky.sunDir[2] = std::cos(az) * cosE * 0.6f + 0.2f;
+        sunDirRaw[0] = std::sin(az) * cosE;
+        sunDirRaw[1] = elev;
+        sunDirRaw[2] = std::cos(az) * cosE * 0.6f + 0.2f;
+    }
+
+    // ---- TWILIGHT COLLAPSE: the whole look falls to NIGHT as the sun sinks. --
+    // Keyed on real twilight geometry, not on the clock. elev is sin(altitude),
+    // so the classical bands are: civil = 0 .. -0.105 (-6 deg), nautical
+    // -0.208 (-12 deg), astronomical -0.309 (-18 deg) = full dark. The ramp
+    // starts a hair below the horizon (-0.015) and is complete by -0.275
+    // (~-16 deg), which puts the tunnel world's 22:00 (elev -0.482) at FULL
+    // night and keeps a real, gradual dusk between.
+    // Above the horizon darkK is 0, so every daytime sample — and every
+    // existing calibrated daytime capture — is untouched.
+    {
+        const float darkK = smooth(clamp01((-elev - 0.015f) / 0.260f));
+        if (darkK > 0.0f) {
+            SkyLook nl;
+            lerpLook(look, kLookNight, darkK, nl);
+            look = nl;
+        }
+    }
+
+    s.sky.enabled      = true;
+    s.sky.sunColor[0]  = look.sunColor[0];
+    s.sky.sunColor[1]  = look.sunColor[1];
+    s.sky.sunColor[2]  = look.sunColor[2];
+    s.sky.sunIntensity = look.sunIntensity;
+    s.sky.haze         = look.haze;
+    s.sky.exposure     = look.exposure;
+    s.sky.zenith[0]    = look.zenith[0];
+    s.sky.zenith[1]    = look.zenith[1];
+    s.sky.zenith[2]    = look.zenith[2];
+    s.sky.horizon[0]   = look.horizon[0];
+    s.sky.horizon[1]   = look.horizon[1];
+    s.sky.horizon[2]   = look.horizon[2];
+    s.sky.sunLight     = look.sunLight;
+    s.ambient[0]       = look.ambient[0];
+    s.ambient[1]       = look.ambient[1];
+    s.ambient[2]       = look.ambient[2];
+
+    // ---- The arc's results land here (computed above, before the collapse). --
+    {
+        s.sky.sunDir[0] = sunDirRaw[0];
+        s.sky.sunDir[1] = sunDirRaw[1];
+        s.sky.sunDir[2] = sunDirRaw[2];
         s.sunElevation  = elev;
         // DUSTY-DAY FIX (Tim: "blue sky!") — placed AFTER sunElevation is set
         // (the first draft read it before assignment): a HIGH sun burns the
@@ -197,6 +268,38 @@ TodSample TimeOfDay::sampleAt(float t) const {
         // hours keep the authored haze where the atmosphere belongs.
         if (elev > 0.30f)
             s.sky.haze *= clamp01(1.0f - (elev - 0.30f) / 0.42f * 0.65f);
+
+        // ---- W-NIGHT: the horizon crossing, done honestly. ----------------
+        // 1. The directional KEY dies WITH the sun, not with the phase table:
+        //    full above elev 0.10, gone by -0.02 (civil-twilight fade). The
+        //    look table's sunLight then only shapes the daytime curve.
+        {
+            float ku = clamp01((elev + 0.02f) / 0.12f);        // -0.02 .. 0.10
+            s.sky.sunLight = look.sunLight * smooth(ku);
+        }
+        // 2. Once the sun is genuinely down, the MOON takes the luminary seat:
+        //    sky.sunDir swings to the anti-solar point (above the horizon all
+        //    night, riding the same arc), sky.moon tells the sky shader to draw
+        //    a pale mottled disc + cool halo there instead of a sun, and a dim
+        //    cool key (kLookNight.sunLight via the ramp) lights the world —
+        //    lighting, shadows and the backdrop all agree the moon is the lamp.
+        //    The swap happens inside the band where the key above is already
+        //    ZERO from both sides, so the direction snap is invisible.
+        if (elev < -0.03f) {
+            float moonRamp = smooth(clamp01((-elev - 0.03f) / 0.10f));
+            s.sky.sunDir[0] = -s.sky.sunDir[0];
+            s.sky.sunDir[1] = -s.sky.sunDir[1];
+            s.sky.sunDir[2] = -s.sky.sunDir[2];
+            s.sky.moon      = moonRamp;
+            s.sky.sunLight  = 0.05f * moonRamp;                // moonlight key
+            // Disc color/intensity ease in with the ramp (the look table is
+            // already the moon by deep night; early dusk holds its warm color
+            // until the moon actually owns the sky).
+            s.sky.sunIntensity = lerp(0.0f, look.sunIntensity > 0.30f ? look.sunIntensity : 0.30f, moonRamp);
+        }
+        // 3. The smooth lamp dial for towns/headlights/windows: 0 in daylight,
+        //    1 once the sun is well down. (cityLightsOn keeps its legacy bool.)
+        s.night = smooth(clamp01((0.06f - elev) / 0.14f));
 
         // City lights: on whenever the sun is below (or barely above) the horizon.
         s.cityLightsOn = m_cfg.enableCityLights && (elev < 0.08f);
@@ -213,6 +316,10 @@ TodSample TimeOfDay::sampleAt(float t) const {
     }
 
     return s;
+}
+
+TodSample TimeOfDay::sampleAtHours(float hours) const {
+    return sampleAt(wrap01((hours - m_cfg.sunriseHour) / 24.0f));
 }
 
 // ===========================================================================
@@ -373,6 +480,84 @@ bool runTodSelfTest() {
         TodSample noon = tod.sampleAt(midday);
         tcheck(noon.sky.enabled && noon.sky.sunDir[1] > 0.5f && noon.sky.haze >= 0.0f,
                "T13 sky snapshot enabled + sun overhead at midday (renderer-ready)");
+    }
+
+    // ---- T14-T16: THE TWILIGHT COLLAPSE (W-NIGHT). Darkness must follow the
+    // SUN, not the clock. The defect this guards: the phase table reached the
+    // night look only at the MIDPOINT of the Night phase, so a sample with the
+    // sun 28 degrees below the horizon still rendered a 69%-dusk dome — bright
+    // cream, no stars, campfires invisible. Sampling by ELEVATION rather than
+    // by phase name is the whole point of these three. ----
+    {
+        auto domeLum = [](const TodSample& s) {
+            const float lz = 0.299f * s.sky.zenith[0] + 0.587f * s.sky.zenith[1]
+                           + 0.114f * s.sky.zenith[2];
+            const float lh = 0.299f * s.sky.horizon[0] + 0.587f * s.sky.horizon[1]
+                           + 0.114f * s.sky.horizon[2];
+            return 0.5f * (lz + lh);
+        };
+        // Walk the whole cycle and collect, for every sample, its elevation and
+        // its dome luminance. Then assert on the RELATION, not on any hour.
+        const int N = 720;
+        float lumAtNoon = 0.0f, worstDeepNight = 0.0f, brightestBelow = 0.0f;
+        float dimmestAbove10deg = 1e9f;
+        bool  keyDeadBelowHorizon = true, moonUpAtNight = true;
+        for (int i = 0; i < N; ++i) {
+            const TodSample s = tod.sampleAt((float)i / (float)N);
+            const float e = s.sunElevation;
+            const float L = domeLum(s);
+            if (e > 0.85f) lumAtNoon = std::max(lumAtNoon, L);
+            if (e < -0.35f) {                       // astronomical night and beyond
+                worstDeepNight = std::max(worstDeepNight, L);
+                // The directional key must be moonlight-or-less down here...
+                if (s.sky.sunLight > 0.08f) keyDeadBelowHorizon = false;
+                // ...and the luminary the sky draws must be the MOON, ABOVE the
+                // horizon (the host swings sunDir to the anti-solar point).
+                if (s.sky.moon < 0.9f || s.sky.sunDir[1] <= 0.0f) moonUpAtNight = false;
+            }
+            if (e < -0.02f) brightestBelow = std::max(brightestBelow, L);
+            if (e > 0.174f) dimmestAbove10deg = std::min(dimmestAbove10deg, L);
+        }
+        // The DUSK DESCENT, sampled by elevation: the dome luminance at each
+        // step down must be strictly lower than the step above it. Walk the
+        // second half of the day (sun falling) and bucket by elevation.
+        bool descentMonotone = true;
+        {
+            const float probes[] = { 0.30f, 0.15f, 0.05f, -0.02f, -0.08f,
+                                     -0.16f, -0.26f, -0.40f };
+            float prev = 1e9f;
+            for (float want : probes) {
+                // Find the falling-sun clock whose elevation is closest to want.
+                float bestT = 0.0f, bestErr = 1e9f;
+                for (int i = 0; i < N; ++i) {
+                    const float tt = (float)i / (float)N;
+                    const TodSample s = tod.sampleAt(tt);
+                    // falling side only: after solar noon
+                    if (tt < 0.5f * (cfg.dawnStart + cfg.nightStart)) continue;
+                    const float err = std::fabs(s.sunElevation - want);
+                    if (err < bestErr) { bestErr = err; bestT = tt; }
+                }
+                if (bestErr > 0.05f) continue;               // that elevation is not visited
+                const float L = domeLum(tod.sampleAt(bestT));
+                if (L >= prev) descentMonotone = false;
+                prev = L;
+            }
+        }
+        // T14: with the sun well below the horizon the dome is at most 2% of
+        // its midday luminance. (Measured after the fix: ~0.9%.)
+        tcheck(lumAtNoon > 0.05f && worstDeepNight < lumAtNoon * 0.02f,
+               "T14 sun below -20 deg -> the sky dome is DARK (<2% of midday)");
+        // T15: the dome gets DARKER at every step of the sunset, all the way
+        // down — and by the time the sun is 23 deg under it is at most a fifth
+        // of what it was at the horizon crossing. The old clock-driven blend
+        // failed this: it was still 69% dusk with the sun 28 deg below.
+        (void)brightestBelow; (void)dimmestAbove10deg;
+        tcheck(descentMonotone,
+               "T15 the dome dims monotonically as the sun sets, elevation by elevation");
+        // T16: below the horizon the directional key is moonlight, the sky
+        // draws the MOON, and it is up. Lighting, shadows and backdrop agree.
+        tcheck(keyDeadBelowHorizon && moonUpAtNight,
+               "T16 deep night: dim moon key, moon flag set, moon above horizon");
     }
 
     x3::logInfo(std::string("tod: ") + std::to_string(t_pass) + "/" +

@@ -28,6 +28,7 @@
 #include "engine/physics/Destruction.h"
 #include "tunnel_corridor.h"    // fix/tunnel-mouth: runTunnelMouthSelfTest
 #include "strata.h"              // R-3 fold: runStrataSelfTest
+#include "cutaway.h"             // W-CUTAWAY: runCutawaySelfTest (--test-cutaway)
 #include "elevator_showcase.h"  // R-4 fold: runElevatorShowcaseSelfTest
 #include "inventory.h"          // W9-3 RPG: runInventorySelfTest
 #include "progression.h"        // W9-3 RPG: runProgressionSelfTest
@@ -61,6 +62,7 @@
 #include "sarah.h"   // Sarah companion-combat self-test (--test-companion-combat)
 #include "level1_game.h"
 #include "canon_play.h"
+#include "grounding.h"        // x3::game::runGroundingSelfTest (--test-grounding)
 #include "desc_mechanics.h"   // W9-1: runDescMechSelfTest (--test-descmech)
 #include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
 #include "pack_spiders.h"                    // PACK-HARVEST arachnids (Lab Skitterer / Venom Brood) — --test-packspiders
@@ -103,6 +105,8 @@
 #include "act2_desert.h"
 #include "act2_caves.h"
 #include "rifthub.h"                        // --test-rifthub (Stargate portal hub)
+#include "grounding.h"   // x3::game::runGroundingSelfTest (--test-grounding)
+#include "apron_landing.h" // x3::game::runApronLandingSelfTest (--test-apronlanding, ONE WORLD landing)
 #include "basis.h"                          // --test-basis (KNOWN_BUGS R3: the MIRROR invariant)
 #include "tod.h"
 #include "weather.h"
@@ -114,10 +118,12 @@
 #include "summit_lot.h"        // x3::game::runSummitLotSelfTest (--test-summitlot)
 #include "ridge_road.h"        // x3::game::runRidgeRoadSelfTest (--test-ridgeroad)
 #include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
+#include "interchange.h"       // x3::game::runInterchangeSelfTest (--test-interchange)
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
 #include "underground_river.h" // x3::game::UndergroundRiver::runSelfTest (--test-underriver)
 #include "traffic.h"           // x3::game::runTrafficSelfTest (--test-traffic)
 #include "gas_station.h"       // x3::game::runGasStationSelfTest (--test-gasstation)
+#include "factory.h"           // x3::game::runFactorySelfTest (--test-factory)
 #include "ocean_base.h"
 #include "elevator.h"
 #include "club1127.h"
@@ -189,6 +195,7 @@ namespace x3::apphost {
 // are byte-identical.
 using x3::apphost::runFrustumCullSelfTest;
 using x3::apphost::runDebrisSelfTest;
+using x3::apphost::runGibsSelfTest;
 using x3::apphost::runGpuSkinSelfTest;
 using x3::apphost::runGpuCullSelfTest;
 using x3::apphost::runVisUnifySelfTest;
@@ -308,6 +315,13 @@ static bool runFilmicMathSelfTest() {
 }
 
 int dispatchTests(const TestFlags& tf) {
+    // CHARACTER GROUNDING GATE — "character feet can NOT enter the floor unless
+    // its water, sand, or lava" (Tim). Reads the inline global rather than a
+    // TestFlags field; see the note in test_registry.h for why.
+    if (g_testGrounding) {
+        x3::logInfo("running character-grounding self-test (--test-grounding)...");
+        return x3::game::runGroundingSelfTest() ? 0 : 1;
+    }
     // Headless self-tests (no window / Vulkan needed)
     if (tf.testJobs) {
         x3::logInfo("running job system (Subsystem A) self-test...");
@@ -503,6 +517,10 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
         return x3::game::runCanonPlaySelfTest() ? 0 : 1;
     }
+    if (tf.testGrounding) {
+        x3::logInfo("running the character-grounding GATE (feet vs support surface, app/grounding.h)...");
+        return x3::game::runGroundingSelfTest() ? 0 : 1;
+    }
     if (tf.testStairNav) {
         x3::logInfo("running the STAIR-NAV self-test (S1-S5: chain vs geometry, 4.5 seal, F1->F3 climb)...");
         return x3::game::runStairNavSelfTest() ? 0 : 1;
@@ -641,6 +659,12 @@ int dispatchTests(const TestFlags& tf) {
                     "escaped-flags import, with shot_down negative controls)...");
         return x3::apphost::runSurfaceHandoffSelfTest() ? 0 : 1;
     }
+    if (tf.testApronLanding) {
+        x3::logInfo("running ONE WORLD APRON-LANDING self-test (intro flyable outcomes "
+                    "land IN canonlevel: apron spawn/facing + ship set-down datum + "
+                    "walk-to-breach nav probe + the 'apron' registry row)...");
+        return x3::game::runApronLandingSelfTest() ? 0 : 1;
+    }
     if (tf.testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
         return x3::game::runPhase2aSelfTest() ? 0 : 1;
@@ -752,6 +776,12 @@ int dispatchTests(const TestFlags& tf) {
                     "chained corridors; grade, length and cap)...");
         return x3::game::runRoadNetworkSelfTest() ? 0 : 1;
     }
+    if (tf.testInterchange) {
+        x3::logInfo("running INTERCHANGE self-test (the diamond grade split: deck "
+                    "clearance over every lane, ramps at grade both ends, no median "
+                    "crossover inside a ramp pair, no jointed bends)...");
+        return x3::game::runInterchangeSelfTest() ? 0 : 1;
+    }
     if (tf.testRouteFrame) {
         x3::logInfo("running ROUTE FRAME self-test (polyline frame: straight unchanged, "
                     "curve followed, frame perpendicular through the bend)...");
@@ -787,6 +817,13 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running SUMMIT PARKING LOT self-test (the pad at the top of the "
                     "summit spur: carved, level, on the peak, drivable into)...");
         return x3::game::runSummitLotSelfTest() ? 0 : 1;
+    }
+    if (tf.testFactory) {
+        x3::logInfo("running FACTORY self-test (the Glimvale Works is sited in the "
+                    "sketch's NE sector on ground flat enough to build on, its drive "
+                    "reaches the freeway at grade, and five tickets hide in five "
+                    "real places)...");
+        return x3::game::runFactorySelfTest() ? 0 : 1;
     }
     if (tf.testTunnelDrive) {
         x3::logInfo("running TUNNEL DRIVE-THROUGH self-test (real rig through the demo "
@@ -856,6 +893,12 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testGallery) {
         x3::logInfo("running CHARACTER GALLERY (--world gallery) cast + clip-cycle self-test...");
         return x3::apphost::runGallerySelfTest() ? 0 : 1;
+    }
+    if (tf.testCutaway) {
+        x3::logInfo("running LEVEL ARCHITECT CUTAWAY (--world cutaway) model self-test "
+                    "(canonical project -> 7 floors / 124 rooms / 160 doors, bands, "
+                    "structure groups, hover descriptions, legend coverage, ray-pick)...");
+        return x3::game::runCutawaySelfTest() ? 0 : 1;
     }
     if (tf.testSpireMid) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "
@@ -1066,6 +1109,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running K-T2 GPU-compute persistent debris world self-test "
                     "(spawn burst -> compute integrate -> fall/settle/sleep -> lifetime free)...");
         return runDebrisSelfTest() ? 0 : 1;
+    }
+    if (tf.testGibs) {
+        x3::logInfo("running gib shard-mesh self-test (kill-sized burst -> >1 distinct "
+                    "shard mesh -> settle with none below the floor -> bounded "
+                    "oldest-recycled pool)...");
+        return runGibsSelfTest() ? 0 : 1;
     }
     if (tf.testGpuSkin) {
         x3::logInfo("running GPU compute-skinning self-test (register skinned mesh -> "

@@ -29,6 +29,7 @@
 //   * Audio (pickup chime / gunshot) is DEFERRED — no audio system until M9.
 
 #include "scene.h"
+#include "surface_type.h"            // SurfaceType (napalm fire pools: no fire on Water/Lava)
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -233,6 +234,17 @@ enum class FireKind : uint8_t {
     Projectile,  // spawn a travelling projectile — plasma / energy
 };
 
+// HARD BOUND on how many ProjectileSpawns ONE trigger pull may emit (see
+// Arsenal::fire). A Projectile weapon emits WeaponDef::pellets spawns — 1 for every
+// aimed weapon, N for a STREAM weapon (flamethrower 3 puffs, freezeray 4 crystals) —
+// and this clamps N so a mis-authored def cannot make a held stream weapon push an
+// unbounded burst. It bounds the SHOT, not time: ResolvedFire::projectiles is a fresh
+// vector per call, so holding fire can never grow one vector. What holding fire does
+// grow is the HOST's live-bolt list, and that is bounded by flight time, not by this:
+// the worst case in the roster is the freezeray at 12 shots/s x 4 crystals travelling
+// 12 m at 35 m/s (0.34 s of life) = ~16 bolts alive at steady state.
+constexpr int kMaxStreamSpawns = 8;
+
 // One weapon's data. Plain values, no behaviour. Copyable.
 struct WeaponDef {
     std::string name        = "weapon"; // display / log / switch name
@@ -254,6 +266,21 @@ struct WeaponDef {
     int         reserveAmmo = 60;       // spare rounds carried (refills the mag on reload)
     float       reloadTime  = 1.5f;     // seconds to reload a full magazine
     float       projSpeed   = 0.0f;     // projectile travel speed (m/s); 0 for hitscan
+    // ---- BALLISTIC ARC (2026-08-15 weapon-feel lane) -------------------------
+    // Downward acceleration (m/s^2) applied to this weapon's projectiles by the host
+    // integrator: v.y -= projectileGravity * dt (POSITIVE falls, NEGATIVE rises — the
+    // flamethrower's puffs rise). Hitscan weapons ignore it entirely.
+    //
+    // DEFAULT 0.0 IS LOAD-BEARING. Zero reproduces the flat-velocity model every
+    // pre-existing weapon was tuned against exactly, so adding this field changes no
+    // existing trajectory. runWeaponsSelfTest W17c asserts that rather than assuming it.
+    //
+    // Harvested from the C++ port (D:\GameDev\EscapeLab3D, read-only): the port stores a
+    // dimensionless `gravityScale` against a fixed `GRAVITY = 800` port-units/s^2
+    // (src/game/projectile.cpp ApplyGravity). Converting an acceleration needs the same
+    // LENGTH ratio the roster lane derived for speed (x0.05), so:
+    //     projectileGravity = gravityScale * 800 * 0.05 = gravityScale * 40
+    float       projectileGravity = 0.0f; // m/s^2 down (+) / up (-); 0 = flat (every legacy weapon)
     // ---- Act-1 weapon-ladder mechanics (additive; default 0 = old behaviour) ----
     // ChainGun spin-up: seconds of continuous firing before the weapon reaches its
     // full fireRate. While spinning up the EFFECTIVE rate ramps linearly from
@@ -309,6 +336,42 @@ struct WeaponDef {
     float       chargeRegenTo      = 0.0f;   // regen ceiling; <= 0 -> chargeCap (the 300 cap)
     float       chargeRegenSlowAbove = 0.0f; // charge at/above which regen halves (0 = no slow band)
     float       chargeRegenSlowMult  = 0.5f; // rate multiplier in the slow band
+    // ---- CANON-12 ROSTER mechanics (2026-08; additive, all default 0/false so every
+    // pre-existing weapon is byte-identical). Sourced from the C++ port of the original
+    // game at D:\GameDev\EscapeLab3D (src/game/weapon.cpp InitWeaponDefs + game_types.h),
+    // which is the design authority for the canonical 12-weapon arsenal.
+    //
+    // RAILGUN pierce: the slug passes THROUGH enemies instead of stopping at the first.
+    // The port models this as `penetrates = true` ("through ALL enemies"); a raw bool
+    // gives the host no bound to walk, so this is the same idea as an explicit count of
+    // EXTRA bodies the slug continues through beyond the first. The host resolves up to
+    // this many additional targets along the same ray. 0 = stops at the first hit
+    // (every existing weapon).
+    int         pierceTargets  = 0;     // extra enemies a hitscan slug passes through
+    // FLAMETHROWER / NAPALM burn: a damage-over-time the host applies to anything the
+    // shot connects with. 0 duration = no burn (every existing weapon).
+    float       burnDuration   = 0.0f;  // seconds of burn DOT applied on hit
+    int         burnDps        = 0;     // damage per second while burning
+    // FREEZE RAY slow: the port's `appliesFreeze`. The real payload is the SLOW, not the
+    // 5 damage — freezeSlowFactor is the multiplier applied to the victim's move speed
+    // for freezeDuration seconds (0.35 = down to 35% speed). 0 duration = no freeze.
+    float       freezeDuration   = 0.0f; // seconds the target stays slowed
+    float       freezeSlowFactor = 1.0f; // move-speed multiplier while frozen (1 = none)
+    // NAPALM LAUNCHER area denial: the impact leaves a burning GROUND POOL that keeps
+    // dealing damage in place. This is the behaviour that makes napalm a distinct weapon
+    // from the rocket (which is a pure one-shot blast). 0 duration = no pool.
+    float       firePoolDuration = 0.0f; // seconds the ground fire burns
+    int         firePoolDps      = 0;    // damage per second inside the pool
+    float       firePoolRadius   = 0.0f; // pool radius (m)
+    // BFG 11k: secondary bolts that lash out from the detonation to nearby targets.
+    int         secondaryBolts   = 0;    // extra bolts spawned at detonation (0 = none)
+    // Rounds consumed per trigger pull. The BFG canonically eats FIVE (port: ammoPerShot
+    // = 5 on a 5-round pool — one full pickup is one shot). 1 for every other weapon.
+    int         ammoPerShot      = 1;    // mag rounds consumed per shot
+    // LASER: a genuinely CONTINUOUS beam (port: `isContinuous`), as opposed to the
+    // Lightning Gun's fast-but-discrete zaps. Purely a host/FX hint that the beam should
+    // read as an unbroken line while held rather than a per-shot flash.
+    bool        continuous     = false; // held fire = one unbroken beam
     // Viewmodel: the GLB filename (in the rigged-GLB dir) + the convention-correct
     // viewmodel pose offsets (degrees / meters about the camera basis — same basis
     // the existing pistol viewmodel uses; see WeaponSystem::drawViewmodel + §3 of
@@ -387,6 +450,12 @@ struct ProjectileSpawn {
     x3::phys::Vec3 vel{};      // unit dir * projSpeed (m/s)
     int            damage = 0; // damage on impact
     float          range  = 0; // max travel distance before despawn (m)
+    // Ballistic arc: downward acceleration (m/s^2) the host applies to `vel` each
+    // step — dt-SCALED, never per frame (v.y -= gravity*dt; pos += v*dt). Stamped
+    // from WeaponDef::projectileGravity. 0 = the flat path every legacy bolt flies.
+    // NOTE the host integrator does not read this yet (that is app_run.cpp, frozen
+    // behind inspx/la-exe = Phase B1); the value is carried correctly regardless.
+    float          gravity = 0.0f;
     // canon-aliens Adaptive Hide: type stamped from the firing WeaponDef::type so the
     // host can pass it to MonsterManager::fire(..., damage, type).
     x3::DamageType type   = x3::DamageType::Kinetic;
@@ -395,6 +464,19 @@ struct ProjectileSpawn {
     // direct-hit `damage`). 0 radius -> plain single-target bolt.
     float          splashRadius = 0; // AoE radius on impact (m)
     int            splashDamage = 0; // AoE damage at the impact center
+    // ---- CANON-12 payloads (stamped from the firing WeaponDef; 0 = absent) --------
+    // Napalm: the burning ground pool the host lays down at the impact point.
+    float          firePoolDuration = 0.0f; // seconds the ground fire burns
+    int            firePoolDps      = 0;    // damage per second inside the pool
+    float          firePoolRadius   = 0.0f; // pool radius (m)
+    // Flamethrower / napalm: burn DOT applied to whatever the bolt strikes.
+    float          burnDuration     = 0.0f;
+    int            burnDps          = 0;
+    // Freeze ray: slow applied to whatever the particle strikes.
+    float          freezeDuration   = 0.0f;
+    float          freezeSlowFactor = 1.0f;
+    // BFG: secondary bolts spawned at detonation.
+    int            secondaryBolts   = 0;
 };
 
 // One resolved hitscan ray (after spread). The host raycasts each one and applies
@@ -414,6 +496,17 @@ struct HitscanRay {
     bool           beam  = false;
     bool           chain = false;
     float          falloffStart = 0; // m where damage starts falling off (0 = none)
+    // ---- CANON-12 payloads (stamped from the firing WeaponDef; 0 = absent) --------
+    // Railgun: extra enemies this ray continues through beyond the first it hits.
+    int            pierceTargets = 0;
+    // Laser: this ray is an unbroken continuous beam (render as a solid line).
+    bool           continuous    = false;
+    // Flamethrower: burn DOT applied to whatever this ray strikes.
+    float          burnDuration  = 0.0f;
+    int            burnDps       = 0;
+    // Freeze ray: slow applied to whatever this ray strikes.
+    float          freezeDuration   = 0.0f;
+    float          freezeSlowFactor = 1.0f;
 };
 
 // Result of a successful fire (gating already passed). Exactly one of the two
@@ -429,7 +522,11 @@ struct ResolvedFire {
     // not once per frame.
     bool                         dryFire = false;
     std::vector<HitscanRay>      rays;          // FireKind::Hitscan (pellets entries)
-    std::vector<ProjectileSpawn> projectiles;   // FireKind::Projectile (1 entry)
+    // FireKind::Projectile. `pellets` entries — ONE for every aimed weapon, and N for
+    // a STREAM weapon (flamethrower/freezeray fire a cone of puffs/crystals). Bounded
+    // by kMaxStreamSpawns. The old "1 entry" comment was never true of the container,
+    // only of the producer; Arsenal::fire now fills it properly.
+    std::vector<ProjectileSpawn> projectiles;
     float                        recoilPitchDeg = 0.0f;
 };
 
@@ -438,6 +535,15 @@ struct ResolvedFire {
 // Plasma Rifle (splash projectile) and Lightning Gun (chaining beam).
 // Values pulled from the design docs (see weapon.cpp provenance).
 std::vector<WeaponDef> makeDefaultRoster();
+
+// Phase B3 — the canonical 12-weapon KEY ROW. The number-key row (1..9 then
+// 0 - =) selects the CANON twelve in canon order, BY NAME (the live arsenal
+// also carries the two X3Native-only weapons, smg and plasma_rifle, which are
+// NOT in the canon 12 and stay on the scroll-wheel cycle). Returns the canon
+// weapon name for key index i (0-based: i==0 is the '1' key, i==9 is '0',
+// i==10 is '-', i==11 is '='), or nullptr outside [0, kCanonKeyCount).
+constexpr int kCanonKeyCount = 12;
+const char* canonKeyWeaponName(int i);
 
 // Apply a uniform random cone of half-angle `spreadDeg` around unit `dir`, using
 // the deterministic stream `rngState` (xorshift; advanced in place). Returns a new
@@ -700,6 +806,70 @@ private:
     float m_vmFovDeg      = kVmDefFovDeg;
     float m_vmWorldFovDeg = kVmWorldFovDeg;
     float m_vmScaleMul    = 1.0f;
+};
+
+// ===========================================================================
+// NAPALM FIRE POOLS (weapon-vfx lane, 2026-08) — the consumer of the
+// firePoolDuration/firePoolDps/firePoolRadius payload that the canon-12 roster
+// lane authored onto every napalm ProjectileSpawn and nothing ever read.
+//
+// Pure headless LOGIC (testable with no Vulkan/physics/Scene): the host owns
+// rendering (CombatFx::firePoolFx) and damage delivery (the per-host onFire
+// dispatch, driven by the Tick events update() returns). Design points:
+//   * HARD BOUND: kMaxFirePools simultaneous pools; spawning past the bound
+//     recycles the OLDEST pool (by spawn order), never grows.
+//   * SURFACE RULE (Tim's SurfaceType system, app/surface_type.h): a pool never
+//     ignites on Water — the shell EXTINGUISHES (host shows steam); Lava is
+//     already burning, so a pool there is pointless and is skipped. Every other
+//     surface burns (Unknown included — it is solid by design).
+//   * DAMAGE CADENCE: a tick every kFirePoolTickSec with the damage taken from a
+//     dt-scaled ACCUMULATOR (dps * dt summed between ticks), so the long-run
+//     damage rate is exactly `dps` at any frame rate (house dt rule; the port's
+//     own per-frame max(1, dps*dt) over-damaged at high Hz — not carried over).
+//   * EXPIRY: remaining counts down dt-scaled; at <= 0 the slot frees.
+// ===========================================================================
+constexpr int   kMaxFirePools    = 6;     // hard bound on simultaneous pools (oldest recycled)
+constexpr float kFirePoolTickSec = 0.5f;  // seconds between damage ticks
+
+// What became of a napalm impact (host FX keys off this).
+enum class FirePoolSpawn : uint8_t {
+    Ignited,             // pool created (or recycled the oldest slot)
+    ExtinguishedWater,   // landed in water: no fire, host shows steam
+    AlreadyBurningLava,  // landed in lava: no pool needed, lava IS the fire
+};
+
+class FirePoolSystem {
+public:
+    struct Pool {
+        x3::phys::Vec3 center{};
+        float    radius    = 0.0f;
+        int      dps       = 0;
+        float    remaining = 0.0f;   // seconds left; <= 0 == free slot
+        float    tickTimer = 0.0f;   // counts down to the next damage tick
+        float    dmgAccum  = 0.0f;   // dps*dt summed since the last tick
+        uint64_t seq       = 0;      // spawn order (oldest-first recycling)
+    };
+    // One due damage event: "deal `damage` to everything within `radius` of
+    // `center`". The host dispatches it (player distance check + the per-host
+    // onFire chain along short Enemy-layer probe rays).
+    struct Tick { x3::phys::Vec3 center{}; float radius = 0.0f; int damage = 0; };
+
+    // Try to ignite a pool at `center` on surface `surf`. Water/Lava refuse per
+    // the surface rule; otherwise claims a free slot or recycles the oldest.
+    FirePoolSpawn spawn(const x3::phys::Vec3& center, float radius, int dps,
+                        float duration, SurfaceType surf);
+
+    // Advance all pools by dt (dt-scaled; call once per frame). Due damage ticks
+    // are written to out[0..maxOut); the return value is the number written.
+    int update(float dt, Tick* out, int maxOut);
+
+    int liveCount() const;
+    static constexpr int capacity() { return kMaxFirePools; }
+    const Pool& pool(int i) const { return m_pools[i]; }
+
+private:
+    Pool     m_pools[kMaxFirePools];
+    uint64_t m_nextSeq = 1;
 };
 
 // Headless self-test (--test-weapons). Exercises the data-driven arsenal with NO

@@ -874,6 +874,17 @@ public:
         // a STAR is the only light out there, and the ship hulls are near-black
         // paint, so an honest star has to be hot to shade them without crutches.
         float sunLight      = 1.0f;
+        // THE LUMINARY IS THE MOON (W-NIGHT, task: night sky). 0 (default) =
+        // `sunDir` is the SUN and the sky draws the familiar hot disk + warm Mie
+        // glow — every existing world is byte-identical. > 0 = the host has swung
+        // `sunDir` onto the MOON for the night half of its day cycle: the sky
+        // draws a pale noise-mottled moon disc with a cool halo there instead of
+        // a sun, and the value doubles as the night gate the cloud layer keys its
+        // moonlit-edges-over-dark-bodies shading on. Rides the sky UBO's free
+        // zenith.w lane, so no new binding. Set it together with a dim cool
+        // sunColor + a small sunLight (~0.05): lighting, shadows and the sky
+        // then all agree that moonlight is the light.
+        float moon          = 0.0f;
     };
     // Set the active sky parameters for subsequent frames (cached + re-applied
     // each frame, like setPointLights). Calling with enabled=false disables it.
@@ -1335,13 +1346,34 @@ public:
     // Lifecycle: configure once (gpuDebrisConfig), spawn bursts at fracture/explosion
     // events (gpuDebrisSpawnBurst), step the sim each frame AFTER beginFrame and
     // BEFORE the draw (gpuDebrisStep dispatches the compute pass), then draw the live
-    // pool between beginFrame/endFrame (gpuDebrisDraw issues ONE instanced cube draw
+    // pool between beginFrame/endFrame (gpuDebrisDraw issues ONE instanced shard draw
     // over the whole pool capacity; dead slots collapse to nothing in the shader).
+    //
+    // GIB MESHES (fix/gib-meshes): the instanced draw renders one of
+    // kGpuDebrisShardCount DISTINCT low-poly irregular shard meshes per fragment
+    // (procedurally authored once at device init — jagged asymmetric chunks, NOT
+    // scaled cubes). Each instance selects its shard from an integer hash of its
+    // pool slot, so a single burst spans several distinct meshes. The hash below is
+    // the canonical CPU mirror of shaders/debris.vert's slotHash (MUST match); the
+    // gib self-test asserts mesh variety through it.
     //
     // PASCAL (1080 Ti): plain compute only — NO hardware ray tracing. The compute is
     // a synchronous pass on the graphics queue (the spec's async path is a 5090
     // optimization; the synchronous fallback is correct everywhere). POD only — no
     // Vulkan types cross this boundary.
+
+    // Number of distinct procedural shard meshes in the debris draw's mesh set.
+    // MUST match kShardCount in shaders/debris.vert.
+    static constexpr uint32_t kGpuDebrisShardCount = 6;
+    // Which shard mesh a given pool slot renders: gpuDebrisShardHash(slot) %
+    // kGpuDebrisShardCount. MUST match slotHash in shaders/debris.vert.
+    static uint32_t gpuDebrisShardHash(uint32_t slot) {
+        uint32_t h = slot * 0x9E3779B9u;
+        h ^= h >> 16;
+        h *= 0x85EBCA6Bu;
+        h ^= h >> 13;
+        return h;
+    }
 
     // Simulation tunables (spec §5/§15). All cached by the device; re-applied each
     // gpuDebrisStep. Defaults are sensible for a ~1m-scale ground world.
@@ -1386,7 +1418,8 @@ public:
     // Advance the debris sim by `dt` (dispatches the compute pass over the pool).
     // Call once per frame between beginFrame and gpuDebrisDraw.
     virtual void gpuDebrisStep(float dt) = 0;
-    // Draw the live debris pool (one instanced cube draw over the pool capacity).
+    // Draw the live debris pool (one instanced shard-mesh draw over the pool
+    // capacity; each instance renders one of kGpuDebrisShardCount irregular shards).
     // Call between beginFrame/endFrame, after gpuDebrisStep. `tint` is linear RGBA.
     virtual void gpuDebrisDraw(const FrameContext&, const float tint[4]) = 0;
     // Current alive (active + sleeping) fragment count (cheap; no GPU readback).
@@ -1491,6 +1524,16 @@ public:
                               const float /*rgba*/[4],
                               float /*u0*/ = 0.0f, float /*v0*/ = 0.0f,
                               float /*u1*/ = 1.0f, float /*v1*/ = 1.0f) {}
+    // drawHudImageQuad: drawHudImage generalized to an arbitrary convex quad —
+    // xyPx = 4 corners in PIXELS, order TL,TR,BR,BL of the SOURCE image (they
+    // carry uv (0,0),(1,0),(1,1),(0,1) respectively), so a rotated map view can
+    // draw its baked tile rotated instead of smearing it into an axis-aligned
+    // rect (W-MAP v3 Q/E rotation — the receipt is shots_wmap/06b pre-fix:
+    // terrain a vertical band while the route overlays rotated correctly).
+    // Same pixel space / blending / ordering as drawHudImage; non-pure no-op
+    // default for the headless stub, same as drawHudImage.
+    virtual void drawHudImageQuad(const FrameContext&, TextureHandle /*tex*/,
+                                  const float /*xyPx*/[8], const float /*rgba*/[4]) {}
     // textAdvance: the TRUE rendered pixel width `text` occupies for `role` at glyph
     // size `px` — sums per-glyph advances (proportional) or N*cell (mono). The UI
     // layer's textWidth() reads this so centering/right-alignment is pixel-exact.

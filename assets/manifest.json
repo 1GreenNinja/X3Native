@@ -6,6 +6,114 @@
   },
   "assets": [
     {
+      "repo_path": "assets/audio/vehicles/engine_bank/bov_psssht.wav",
+      "sha256": "fdc24cd3ea9a01ae8378acd05a86f9c1f3c8d39ae677824dacaab31eb29334f2",
+      "size": 65324,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/engine_noise_bed.wav",
+      "sha256": "30ad7425c2a54d334ea57a438049a3d08c1aa888cce650801d14a92910c11406",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_0900.wav",
+      "sha256": "e622538139e02047461dbdcbca2c4a2cd573a7a8550bec58b926262ac9906843",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_1500.wav",
+      "sha256": "655003ac7f7db7f90eebb72db6071c3e8fcbd4369f44d734b95e2aa5b33bafad",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_2500.wav",
+      "sha256": "20e07176845d79ff3abbde519a4ba4bff6e70e7f3ddd8640fecc2e9674b03ad6",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_4000.wav",
+      "sha256": "a8ffc6f9ed947c652d8826f75b73b54061326744d3377b9d29acd91ee35d5f9c",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_5500.wav",
+      "sha256": "b961284ae97bcc0f2b029ae569198beb790b29053806b389a9a3521bce31f42d",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_onload_7000.wav",
+      "sha256": "13064b4c3e73dea87c7602c7540f30d0ff5e2171c6d7782f52388aef8392eb95",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_0900.wav",
+      "sha256": "4db327d2c973283931cdaff28ebf11cf03740a5e9a32b4c7a55d859a2604c7d4",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_1500.wav",
+      "sha256": "500f43edcb08ee6781ed21b8b50244908240083e1e81d68e4b342b75f3da5441",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_2500.wav",
+      "sha256": "9cfd97343956d816e26b65ddd700714c1c35f05fa9f9b652d25e1d33a9c54c00",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_4000.wav",
+      "sha256": "999cf89e9b26909f48cfe2cbdc7a9e56a03411123011f9f8a0b86c7da75ab707",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_5500.wav",
+      "sha256": "5f2d5d928cacd6700a46bc6d93c6fd1dbbd437006b22d224546914f146509416",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/flat6_overrun_7000.wav",
+      "sha256": "827f4808430e0c34c8fbfa10d3cc927ba4b717453b013c3137d3ecb06baeb198",
+      "size": 230444,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/src/extracted_high_24hz.wav",
+      "sha256": "7774c275861e4ba4d791c7506d6a9060e47cea7749cb8b9c096e4f4deed2848e",
+      "size": 268844,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/src/extracted_idle_18hz.wav",
+      "sha256": "8560bc7d2710fafaccb11fe1c22aea1115983006b6ae9043dc7bc16c010cda20",
+      "size": 268844,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/turbo_whistle_loop.wav",
+      "sha256": "311a59761816ec1dd9bf8a3ace86b2dde8890c651af8267b4a0f67c7b9a2269a",
+      "size": 192044,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
+      "repo_path": "assets/audio/vehicles/engine_bank/whine_loop.wav",
+      "sha256": "c8b0d5647fbbec699c72e18442df7eadd76f9bf5862706376a152ecf1057ebe4",
+      "size": 192044,
+      "source_note": "engine bank rev3 2026-08-17: de-hissed noise bed, rev-with-rpm swell, f0-tracking presence shelf, header rumble, + bov_psssht one-shot"
+    },
+    {
       "repo_path": "assets/audio/weather/thunder_crack.wav",
       "sha256": "e48bd6f5f917989a09973638493e4e86fc060d46af63e50ab98813287c086f3d",
       "size": 561424,
@@ -28,6 +136,114 @@
       "sha256": "74d9f27986125b0757aa8f2a132ec3b6a213c48c3d8c6d031a643a9614f89bb4",
       "size": 13308776,
       "source_note": "F3: hospital cot for the canon detention cell (textures injected)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Barrel_01_01.glb",
+      "sha256": "58d6d8d2f70b91c3146ff9c949a42ac6c3b7f7de1f61799bccc9c71fcfcb72ff",
+      "size": 6549212,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Chimney_01_01.glb",
+      "sha256": "a68fc3adff89fd0d9fb16e8d61232cdf06c4323b880ebbd7c2d60b8c31a30f56",
+      "size": 11822516,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Chimney_01_02.glb",
+      "sha256": "0590bea052195d7475c4fcf2c2367034901b0b1e0a59d081c64577a2fbfcccd7",
+      "size": 11043836,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_ConcreteFence_01_01.glb",
+      "sha256": "3344b2b2541ab12a78fb05762af3e32c4739f70785b6afb74b8733945fe5a8f6",
+      "size": 11165376,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_ConcreteFence_01_02.glb",
+      "sha256": "67b663185147396aba63d75e9aab549b860ac4cea91881f785dae95effb2f8a7",
+      "size": 10795172,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Container_Body_01_01.glb",
+      "sha256": "ea9bbb3292ad2e32b1960aaaaaaffc923ad0f378e4a213acbfdba2e969d74ed3",
+      "size": 5796636,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_CraneMain_OneMesh_01_01.glb",
+      "sha256": "fe1f61c5a00c4d297f8bcb1f1fccd3874e041cf6358321424fb735672784fcc8",
+      "size": 31900812,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_FactoryWall_01_01.glb",
+      "sha256": "63414135db5f32253a1d0ff89fee58db0b8745c9c1ed15b24c9733762de34996",
+      "size": 22938496,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_FactoryWall_02_01.glb",
+      "sha256": "0b34c995bce9f5298e23cb6de3904ac7e6db32f33a0746fb8fb2cb7bbb7ae06d",
+      "size": 17907504,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Hall_01_01.glb",
+      "sha256": "b32c230fc4bc86b3b31c33fc3cebf895bf5ac44ad0db45346dad8b1732079c66",
+      "size": 4728560,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Hall_02_01.glb",
+      "sha256": "c130b57c902255ab0c484e932f39e46c57ad32ad966e4f3621e431dc16aafd74",
+      "size": 8282712,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Hall_03_01.glb",
+      "sha256": "86aea55fa6ed50eacee49a43b7231e54352046141918e9ab3705b62ea5ac11aa",
+      "size": 4454316,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_MainGate_01_01.glb",
+      "sha256": "886f0a7fa3e074ef3ce6205f937f0015faefd5ab853d65ead0682d027269343f",
+      "size": 12288632,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_MetalConstructionRoof_01_01.glb",
+      "sha256": "f130531753a1752dba58a5f2bd3d28388284bc1789f29b845ab7dee35964ec94",
+      "size": 4661192,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Pipe_Elbow_03_02.glb",
+      "sha256": "cf4052a9e4973212c4dcbe765310252bb7c33e206da89b0e33ba62b90ee8b3a2",
+      "size": 4166808,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Pipe_Straight_8m_03_14.glb",
+      "sha256": "6c1eeab9c9776182db0d2cdc70b4136669ca3e30465876fe639dd4ea1b20b661",
+      "size": 3269984,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_Smokestack_01_01.glb",
+      "sha256": "a77d829c967edbafb618dd633048b5dc861452c64a7365284d052d0122d648e0",
+      "size": 3968012,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Factory/sm_WaterTank_01_01.glb",
+      "sha256": "21b6501cc202d327f024d5181adc86cda3ab6ba9c678efe718e713b35974a62e",
+      "size": 5443616,
+      "source_note": "W-FACTORY: ScansFactory industrial kit for the Glimvale Works exterior (tools/convert_scansfactory.py)"
     },
     {
       "repo_path": "assets/converted_glb/GasStation/gas_pump_miami.glb",
@@ -318,130 +534,76 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse01.glb",
-      "sha256": "b0e37c841b954ebfb03aeb2a6d03ff0d06aea805e5d42e8ae21a805f6a104d9a",
-      "size": 13278756,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/Billboard_1.glb",
+      "sha256": "8116b207269ccc6255f4822875efad1caa43e898af45328c67ed114ca2e8c0eb",
+      "size": 508480,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse02.glb",
-      "sha256": "5f7a95bb55264833825b1267254f518410ae652f45cf2207173edc3bce940d00",
-      "size": 12226996,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/Billboard_2.glb",
+      "sha256": "64359d4f0ab58955a049f072587791846085e37ada94b9f7df8ebd3ae6480240",
+      "size": 523572,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse03.glb",
-      "sha256": "5d4d8fa22cb3eb6b21ee2002cae87dd0d8ad46f4dbaabeaf83bac77e8642e305",
-      "size": 14610324,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_1_Red.glb",
+      "sha256": "bd0b90ebf5c5e5905c9f8edba64085dd963f30fc614e116f2ee50a96e90ad63e",
+      "size": 595960,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_PrimitiveHouse04.glb",
-      "sha256": "aaaa34fdc1aa55cef419dbaf7407aa41d3c577bf7749da56ac5fe9c83bf6e6a6",
-      "size": 13982976,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_1_White.glb",
+      "sha256": "7910c88392ac94def87162057e1debc7a6303aae0b533c172ffecc5434f67ebe",
+      "size": 616564,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StockageWood_01a.glb",
-      "sha256": "9a523284fd3a9edb4e2c232eb0443537da5f3a6d50973843dbec847c4859f6a4",
-      "size": 462132,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_2_Red.glb",
+      "sha256": "0236261950b0a23a636f2617b075aa42ee9124ba3a4df6ee7aaf2f5b50cc16e7",
+      "size": 476252,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StoneHouse01_JustBuilding.glb",
-      "sha256": "a3f754570776bd0ba774c12d96b37e73ce3d5fa052e818a51ed9c39238c22252",
-      "size": 13684324,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_2_White.glb",
+      "sha256": "05a4445308d6e4c905019ae3b3d85d37d9cb9b4c98bc5cadeb5fa98690bbac67",
+      "size": 496856,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StoneHouse01_WithSetDressing.glb",
-      "sha256": "9ff7cfae56e6ea40cdc2ba4d2c3d8c54003d346badd427f22b4282b92bf480f6",
-      "size": 21103424,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_3_Red.glb",
+      "sha256": "1ac45aefd40872a712715ce06addcd8928fa1eadafbfe475b4f4d9e29271c55c",
+      "size": 621212,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StoneHouse02.glb",
-      "sha256": "bdfc50beffc777a8083c1e555a168e4767dc0ae3730568d514aeafca4eff5b8f",
-      "size": 12506088,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_3_White.glb",
+      "sha256": "377361b980a755539f588466c3f0c574ffb19a99cd49728d345a4a2c0864d210",
+      "size": 641816,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01a.glb",
-      "sha256": "a55c87e4d1d0c79a0c46ce4642c0865241ae9b4dd202f89e1cc78a959933dedc",
-      "size": 567008,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_4_Red.glb",
+      "sha256": "7885caad905d944be7148e6d1198678a869c795878fbbcc6c550e740e8ca3573",
+      "size": 950348,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01c.glb",
-      "sha256": "f328aac8c8174a66d764f9f68142bf2273da4caa1492de57cbd377449a89095f",
-      "size": 772604,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/House_4_White.glb",
+      "sha256": "2f492491c287f447a61c97ffd59a6aa082bcc248a123cfa45606196bbf6a1050",
+      "size": 970952,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01e.glb",
-      "sha256": "995d3d34428f223ad1f4dca556f0c6aa8f755a1ca23dc713df34741f3092c21a",
-      "size": 933908,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/Light_2.glb",
+      "sha256": "ce9c3096c1689fbb979b1dda4916d2d421ec181b7e8f81d2ff0decdc25b7adb4",
+      "size": 267376,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
-      "repo_path": "assets/converted_glb/Town/PF_StorageMarket_01f.glb",
-      "sha256": "db3df894d1109c5df2be8bef9dc2f3298d67ca24d0fe5fbfc69347934a15b69f",
-      "size": 1037824,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodCart_01a.glb",
-      "sha256": "d5c7b83892fac7e2b239fa5e8a4a959430dce68bd2574282654057de7a8c21e2",
-      "size": 801664,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodCart_02a.glb",
-      "sha256": "fb0f551539695aff5bd83ee3cbd1662f0adde98e4108cc512446d2b2e8ed4e1e",
-      "size": 876884,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodLightTorch_01a.glb",
-      "sha256": "326b49685564ad1e589aa66bfb220864d7e16512fbb6d068505374b35cb9d3b8",
-      "size": 296532,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodLightTorch_01b.glb",
-      "sha256": "25efa57c67c7faef9169570897071c993b4900ac7a9fe263592e6ab17f9f9ad9",
-      "size": 296428,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodStorage_01b.glb",
-      "sha256": "2cd9ef10cd0c55163a33505958cdba9718acbe7aea39234f9927dc40b4a6507d",
-      "size": 1090392,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodStorage_01c.glb",
-      "sha256": "60bc5ff8f9b124e66033ea5a09e0c1406ee3d28ab47e90634503d2654551f74a",
-      "size": 924440,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodenHouse01_JustBuilding.glb",
-      "sha256": "da9b4d6a115bee7880f6272ef150d2e35a0df963fe2946027e26f63183ed509c",
-      "size": 10526028,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodenHouse02.glb",
-      "sha256": "43a10d374aef4058d69c320f77ef5aa212bb83892ed7f99862d42cf751dc4620",
-      "size": 9186040,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
-    },
-    {
-      "repo_path": "assets/converted_glb/Town/PF_WoodenHouse03.glb",
-      "sha256": "ba784a16bdc46232c5773493477b057ce837cfdfea31b00debd0d8b2a281807b",
-      "size": 11400584,
-      "source_note": "W-TOWN: HouseForge mountain-town prefabs, draco decoded + EXT_texture_webp transcoded to PNG/JPEG (no WebP decoder in the engine)"
+      "repo_path": "assets/converted_glb/Town/Wood_Fence.glb",
+      "sha256": "d006d6d33cb2c2632f7bc59a1608e60881290f4751941e077b2f5663381f30ba",
+      "size": 131228,
+      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/CTR.glb",
@@ -502,6 +664,12 @@
       "sha256": "6fafa2b87ffb734ce7c310757bbf45179c94684a9fe54f09412f2e56b3699323",
       "size": 2102456,
       "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Traffic/LightBar.glb",
+      "sha256": "ab860bb27445fe6baa5d239b688bc80e81f24a458fa3a4ce0658ed1a8b8b417f",
+      "size": 237660,
+      "source_note": "RCC v4 Model_Police_Siren -> convert_lightbar_glb.py + glb_zero_root_nodes.py (1.3775x0.0979x0.2485 m)"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/Traffic/OldVan.glb",
@@ -595,15 +763,15 @@
     },
     {
       "repo_path": "assets/converted_glb/nature/OakBigTree01.glb",
-      "sha256": "285e72ff6d163ff1b5eae2567c1ea9c3bf8323930c107c70edff2b5de6a02ecb",
-      "size": 11761208,
-      "source_note": "billboard far-LOD cards textured: real pack atlases (BigOakBillboard01/PoplarTree001_Billboard), oak alpha keyed by border flood fill"
+      "sha256": "615db24c47a9c6a18bd3998f37cb826d9337963cec14fcd29998fa5c9a4cd0cf",
+      "size": 9692928,
+      "source_note": "post-merge: their rebaked Jake root fix + W-TREES bark/leaf art"
     },
     {
       "repo_path": "assets/converted_glb/nature/PoplarTree001.glb",
-      "sha256": "0326d2d5e32d7b70214c064b3999c21c525886f1a5886165c2c3d7824668fa30",
-      "size": 22345944,
-      "source_note": "billboard far-LOD cards textured: real pack atlases (BigOakBillboard01/PoplarTree001_Billboard), oak alpha keyed by border flood fill"
+      "sha256": "88a6800847003eb6824f062bac8ede5e8b9ee8b0aae478e302f6c9341de19762",
+      "size": 17726072,
+      "source_note": "post-merge: their rebaked Jake root fix + W-TREES bark/leaf art"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaBodySuit.glb",
@@ -660,6 +828,42 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/rigged_glb/CityPerson_Boy.glb",
+      "sha256": "bbb06839887312d87085e9352cd68cf062945b722e3320432020616d2c58abd4",
+      "size": 626776,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_Elder.glb",
+      "sha256": "88bc9c7a4af74b7a05f6e3f3d0f4be26bd497b3dbe9697c588c3c96fa31c1406",
+      "size": 502864,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_ManCasual.glb",
+      "sha256": "a8d5ac00a5b5e72577fd4f00354111fa29988b2af42e8c71d15384d663300732",
+      "size": 586988,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_ManJacket.glb",
+      "sha256": "2d3615ce3c308f4f7e2c6cab088e207e3ae5117f4a0e264ec3abbf583d5cb9d0",
+      "size": 615696,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_WomanCasual.glb",
+      "sha256": "1408dac9efa759144f0a20920c42685b26ec6b0af74747f8a2461a02660fec84",
+      "size": 456400,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
+      "repo_path": "assets/rigged_glb/CityPerson_WomanCoat.glb",
+      "sha256": "21ca375135c95110b2d7ce412531453aa4d3d4168cafcf89c06f83297e326a63",
+      "size": 497252,
+      "source_note": "W-TOWN civilian pedestrians: City People FREE Samples, mesh+Idle/Walk/Run/LookAround merged via glb-merge-anims (tools/town_people.py)"
+    },
+    {
       "repo_path": "assets/rigged_glb/DroneExportWMotion.glb",
       "sha256": "5b293a03bd50390392be5448130c00476c98906c6aa849e94fdbcc2a4b82f14c",
       "size": 21458424,
@@ -711,7 +915,19 @@
       "repo_path": "assets/rigged_glb/Jake_22_actions.glb",
       "sha256": "92a322f111de1706635b4dcafe0efd4f81acaf23a8b9dca6c4f47ecf009d0a83",
       "size": 26624592,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12; RE-BAKED 2026-07-12 with Swim + SwimIdle (tools/swim_bake.py) -> 24 clips"
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12; RE-BAKED 2026-07-12 with Swim + SwimIdle (tools/swim_bake.py) -> 24 clips; fleet backfill 2026-08-16"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Jake_44_actions.glb",
+      "sha256": "ada324675ae59543c976a0422d3128db81364cc13aabcc8ba35380aa620683b2",
+      "size": 27610124,
+      "source_note": "post-merge: their rebaked Jake root fix + W-TREES bark/leaf art"
+    },
+    {
+      "repo_path": "assets/rigged_glb/OH1.glb",
+      "sha256": "97d759b33227464ff5135d4be98e99cd24f24a4469bc690430b8bf287e2eb703",
+      "size": 25317032,
+      "source_note": "fleet backfill 2026-08-16: manifest entries with no store object + never-published locals"
     },
     {
       "repo_path": "assets/rigged_glb/Oracle.glb",
@@ -780,6 +996,18 @@
       "source_note": "2026-07-11 regenerated by tools/rebind_weapon_textures.py: per-weapon Rodin PBR maps (shared-atlas camo bug fixed); shotgun maps extracted from base_basic_pbr.usdz"
     },
     {
+      "repo_path": "assets/rigged_glb/WeaponFlameThrower.glb",
+      "sha256": "cf45b847d8d51089b57b3dbc18ef0eabb885a351d18cfa501c35c7cc823c17a0",
+      "size": 4417540,
+      "source_note": "Canon-12 armory: FlameThrower generated with Meshy text-to-3D (preview 01a00e4d-4ea2-7e89-aee8-9bb494c1fbe6, refine 2026-08-16), oriented +Z forward / 1.55m via Blender post (scratch ft_post.py); muzzleLocal {-0.001, 0.490, 0.868}"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponFreezeRayCryo.glb",
+      "sha256": "381836d428a3c7ba6897a39a826fb202418a1fcfc0bb50f87fc30a4dc7e17f01",
+      "size": 4018484,
+      "source_note": "Canon-12 armory swap: Protofactor SCI FI SHOOTER VOL 3 SM_SciFiLaserGun (laser) + SM_SciFiMissileLauncher (napalm), and a cyan cryo reskin of SM_SciFiLightingGun (freezeray). Draco-decompressed via headless Blender; muzzles measured with tools/weapon_muzzle_probe.py"
+    },
+    {
       "repo_path": "assets/rigged_glb/WeaponRailgun.glb",
       "sha256": "493dd1d7ff867fd1a115cceaa148788feb9ce24c28a266ab20da3c0a519fc178",
       "size": 6389304,
@@ -790,6 +1018,18 @@
       "sha256": "ce100f3651cc6f75c20082dbb99600350d9bfd2e28f116057dec6d21d9d05b2d",
       "size": 8664256,
       "source_note": "2026-07-11 regenerated by tools/rebind_weapon_textures.py: per-weapon Rodin PBR maps (shared-atlas camo bug fixed); shotgun maps extracted from base_basic_pbr.usdz"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponSciFiLaserGun.glb",
+      "sha256": "58870d36c0ba840efda595ddb031f1e1daa9842b8ebc95e1d651042e23f01e7c",
+      "size": 2656460,
+      "source_note": "Canon-12 armory swap: Protofactor SCI FI SHOOTER VOL 3 SM_SciFiLaserGun (laser) + SM_SciFiMissileLauncher (napalm), and a cyan cryo reskin of SM_SciFiLightingGun (freezeray). Draco-decompressed via headless Blender; muzzles measured with tools/weapon_muzzle_probe.py"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponSciFiMissileLauncher.glb",
+      "sha256": "89b9a4bf598319f6ba8eba7878ac3291375ebb56871170a0e2d7cb3bced00d04",
+      "size": 2478300,
+      "source_note": "Canon-12 armory swap: Protofactor SCI FI SHOOTER VOL 3 SM_SciFiLaserGun (laser) + SM_SciFiMissileLauncher (napalm), and a cyan cryo reskin of SM_SciFiLightingGun (freezeray). Draco-decompressed via headless Blender; muzzles measured with tools/weapon_muzzle_probe.py"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponShotGun.glb",

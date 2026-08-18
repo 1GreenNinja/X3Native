@@ -51,6 +51,11 @@ add_library(x3app SHARED
     world_hosts/host_valley.cpp
     world_hosts/host_cliffs.cpp
     world_hosts/host_mines.cpp   # mine-entrance showcase (inspx/mines)
+    # W-CUTAWAY — the Level Architect CUTAWAY VIEW: the whole canonical facility
+    # in X-ray (--world cutaway / --screenshot-cutaway / --test-cutaway).
+    # docs/design/LEVEL_ARCHITECT_CUTAWAY_REF{,2,3}.png is the spec.
+    world_hosts/host_cutaway.cpp
+    cutaway.cpp
     world_hosts/host_streamed.cpp
     # Phase 2 — space-combat stack folded from feat/cockpit-vattalus
     world_hosts/host_space.cpp
@@ -61,22 +66,31 @@ add_library(x3app SHARED
     world_hosts/host_surface_start.cpp
     world_hosts/host_rifthub.cpp
     world_hosts/host_gallery.cpp
+    # W-MENU — the ESC game menu + F4 weather / F5 lighting panels (host_tunnel)
+    world_hosts/host_menu.cpp
     world_hosts/host_tunnel.cpp
     tunnel_corridor.cpp
     # W-TREES — tall broadleaf groves along the tunnel road (--world tunnel)
     road_trees.cpp
+    # W-NIGHT — roadside campfires at the grove benches (people roast hot dogs)
+    campfire.cpp
     # W-TOWN — the sketch's Small Mountain Town on the summit spur
     town.cpp
     # W-FOREST — the sketch's brown regions: area forests, two-tier draw
     forest.cpp
     road_network.cpp    # chained-corridor road routes (the ring tours)
+    interchange.cpp     # the diamond interchange — the first structural grade split
     traffic.cpp         # W-TRAFFIC — AI traffic on the 16-lane freeway
     summit_lot.cpp      # the parking lot at the top of the summit spur
     ridge_road.cpp      # the dirt road along the tops, lot -> the bore's massif
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
     underground_river.cpp # W-UNDERRIVER: the lake-to-canyon river under the mountain
+    factory.cpp         # THE GLIMVALE WORKS + the golden-ticket hunt
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
     gas_station.cpp     # W-STATIONS — forecourts off the network + the fuel stub
+    # The car gauge cluster. Lifted out of host_tunnel's interactive loop so the
+    # headless proof set can photograph the dials at all (see gauge_hud.h).
+    gauge_hud.cpp
     rifthub.cpp
     rift_depths.cpp
     rift_console.cpp
@@ -148,6 +162,9 @@ add_library(x3app SHARED
     monster.cpp
     anim.cpp
     character_anim.cpp
+    # W-JETPACK: the `fly` command's pack visuals + thrust FX (flight physics
+    # lives in player.cpp, the pose in character_anim.cpp).
+    jetpack.cpp
     thirdperson.cpp
     melee.cpp
     objective.cpp
@@ -187,6 +204,7 @@ add_library(x3app SHARED
     world_regions.cpp
     world_stream.cpp
     world_map.cpp
+    map_poi.cpp         # W-MAP: shared MapPoi contract for lanes 4-6 (town/stations/factory)
     city.cpp
     ocean_base.cpp
     save.cpp

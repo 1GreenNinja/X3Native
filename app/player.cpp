@@ -76,6 +76,37 @@ constexpr float kSwimEyeAbove   = 0.20f;  // rest: eye settles this far ABOVE th
 constexpr float kSwimBuoyGain   = 2.5f;   // buoyancy spring: m/s per m of depth error
 constexpr float kSwimBuoyMax    = 1.6f;   // buoyancy speed cap (gentle bob, no pop)
 constexpr float kSwimAccel      = 6.0f;   // 1/s soft-acceleration rate (tau ~0.17 s)
+
+// ---- JETPACK tuning (the `fly` command). Owner: "flies at 300MPH.. so jake
+// can get over the whole world quickly to observe." 300 mph IS the spec
+// (NO_SLOP rule 8) — 134.112 m/s exactly, clamped, not an asymptote the
+// needle never reaches. All blends are the frame-rate-independent
+// 1-exp(-k*dt) form (the delta-time HARD RULE).
+constexpr float kJetTopSpeed  = 134.112f; // 300 mph — the owner's number
+constexpr float kJetAccel     = 0.65f;    // 1/s thrust blend: ~95% spool in ~4.5 s
+constexpr float kJetBrake     = 1.8f;     // 1/s S air-brake bleed (hard but not a wall)
+constexpr float kJetHover     = 0.9f;     // 1/s no-input ease into the hover
+constexpr float kJetStrafe    = 22.0f;    // m/s lateral nudge target (A/D)
+constexpr float kJetVert      = 16.0f;    // m/s Space-rise / Ctrl-sink channel
+constexpr float kJetFlareM    = 6.0f;     // m of ground proximity that arms the flare
+constexpr float kJetFlareSink = -1.4f;    // m/s max sink rate inside the flare window
+constexpr float kJetFlareK    = 4.0f;     // 1/s vertical blend while flaring (firm)
+constexpr float kJetLandSpd   = 6.0f;     // m/s planar ceiling for a clean touchdown
+// ---- COAST BEFORE THE BRAKE — borrowed, with its receipt, from the SPACE
+// lane. app/space_pilot.h's Tuning carries `flightAssist` (a station-keeping
+// brake) AND `assistDelay`, and the comment on the latter records what the
+// owner said when it was missing: *"visually it darts left and right, but it
+// doesn't FEEL like its moving much past the initial burst"* — the brake bit
+// on the FIRST idle frame, so every burst died the instant the key came up.
+// kJetHover is the same station-keeping brake by another name and had the same
+// defect: release W at 300 mph and the hover ease started immediately, so you
+// could never coast across a valley to look at it, which is the entire stated
+// purpose of the pack ("get over the whole world quickly to OBSERVE").
+// PAIRED with SpacePilotController::Tuning::assistDelay (space_pilot.h) — the
+// two are the same idea and each names the other. Their arcade preset uses
+// 0.45 s for a dogfight; a 300 mph observation cruise wants a long glide.
+constexpr float kJetAssistDelay = 2.5f;   // s of hands-off coasting before hover bites
+constexpr float kJetCoastDrag   = 0.06f;  // 1/s bleed while coasting (thin-air, not a brake)
 } // namespace
 
 void Player::spawn(x3::phys::IPhysicsWorld& physics, float x, float y, float z) {
@@ -243,6 +274,104 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
         return;
     }
 
+    // ---- JETPACK (the `fly` command). Runs BEFORE swimming: at 300 mph over
+    // the river the water feed must not grab the capsule mid-flight. Not
+    // flying (pack worn, boots down) falls straight through to the normal
+    // walk/swim code — the pack on his back changes nothing until he thrusts.
+    if (m_jetpack) {
+        const bool thrust = in.moveFwd > 0.1f;     // W — toward the look dir
+        const bool brake  = in.moveFwd < -0.1f;    // S — air-brake
+        // LIFT-OFF is SPACE (or W already in the air — walk off a ledge and
+        // catch yourself). Grounded W stays WALKING: a worn pack must not
+        // steal the man's legs.
+        const bool wantLift = in.jumpPressed || in.jumpHeld ||
+                              (thrust && !m_grounded);
+        if (!m_jetFlying && wantLift) {
+            // LIFT-OFF. Gravity goes off through the same physics switch the
+            // swim state uses; a small upward kick sells ignition.
+            m_jetFlying = true;
+            physics.setCharacterSwim(m_body, true);
+            m_jetVelX = m_lastHorizX; m_jetVelZ = m_lastHorizZ;
+            m_jetVelY = 3.0f;
+        }
+        if (m_jetFlying) {
+            // Full-look thrust basis (pitch included: altitude via look pitch).
+            const float cp = std::cos(m_pitch), sp = std::sin(m_pitch);
+            const float f3x = std::cos(m_yaw) * cp, f3y = sp, f3z = std::sin(m_yaw) * cp;
+            const float r3x = -std::sin(m_yaw),     r3z = std::cos(m_yaw);
+            // Target velocity + blend rate for this frame's intent.
+            float tx = 0.0f, ty = 0.0f, tz = 0.0f;
+            // COAST, THEN HOVER (the assistDelay borrow — see the constant's
+            // receipt). Hands off, the pack first GLIDES on thin-air drag for
+            // kJetAssistDelay seconds; only then does the station-keeping
+            // hover brake engage. Any input at all resets the timer.
+            const bool jetAnyInput = thrust || brake ||
+                                     std::fabs(in.moveStrafe) > 0.01f ||
+                                     in.jumpHeld || in.diveHeld;
+            m_jetIdleFor = jetAnyInput ? 0.0f : (m_jetIdleFor + dt);
+            float k = (m_jetIdleFor >= kJetAssistDelay) ? kJetHover : kJetCoastDrag;
+            if (thrust) {
+                // Aim 5% OVER the cap and clamp below, so the spool actually
+                // ARRIVES at 300 mph instead of approaching it forever.
+                const float over = kJetTopSpeed * 1.05f;
+                tx = f3x * over; ty = f3y * over; tz = f3z * over;
+                k = kJetAccel;
+            } else if (brake) {
+                k = kJetBrake;                       // hard bleed toward zero
+            }
+            tx += r3x * in.moveStrafe * kJetStrafe;
+            tz += r3z * in.moveStrafe * kJetStrafe;
+            if (in.jumpHeld) ty += kJetVert;         // Space: rise
+            if (in.diveHeld) ty -= kJetVert;         // Ctrl/C: sink
+            float ky = k;
+            // THE FLARE. Descending with no thrust and ground a few metres
+            // below: cap the sink rate so the CONTACT LAW receives boots, not
+            // a crater. The probe rays DOWN FROM THE FEET — never from above
+            // the head (the tunnel-lid trap, NO_SLOP rule 11 v3).
+            if (!thrust && m_jetVelY < 0.0f) {
+                const x3::phys::RayHit rh = physics.rayCast(
+                    x3::phys::Vec3{ m_feetX, m_feetY + 0.3f, m_feetZ },
+                    x3::phys::Vec3{ 0.0f, -1.0f, 0.0f },
+                    kJetFlareM + 0.3f, x3::phys::Layer::Static);
+                if (rh.hit) {
+                    if (ty < kJetFlareSink) ty = kJetFlareSink;
+                    ky = kJetFlareK;
+                }
+            }
+            const float blend  = 1.0f - std::exp(-k  * dt);
+            const float blendY = 1.0f - std::exp(-ky * dt);
+            m_jetVelX += (tx - m_jetVelX) * blend;
+            m_jetVelY += (ty - m_jetVelY) * blendY;
+            m_jetVelZ += (tz - m_jetVelZ) * blend;
+            // 300 mph is a CLAMP, not a suggestion.
+            const float spd = std::sqrt(m_jetVelX * m_jetVelX +
+                                        m_jetVelY * m_jetVelY +
+                                        m_jetVelZ * m_jetVelZ);
+            if (spd > kJetTopSpeed) {
+                const float s = kJetTopSpeed / spd;
+                m_jetVelX *= s; m_jetVelY *= s; m_jetVelZ *= s;
+            }
+            physics.moveCharacter(m_body,
+                x3::phys::Vec3{ m_jetVelX, m_jetVelY, m_jetVelZ }, dt);
+            m_grounded = physics.characterGrounded(m_body);
+            const x3::phys::Vec3 jfeet = physics.getBodyPosition(m_body);
+            m_feetX = jfeet.x; m_feetY = jfeet.y; m_feetZ = jfeet.z;
+            m_lastHorizX = m_jetVelX;                // clean walking handoff
+            m_lastHorizZ = m_jetVelZ;
+            // TOUCHDOWN: grounded, sinking-or-still, and slow enough to keep
+            // his feet — hand the frame back to the walking controller (the
+            // pack stays worn; the next thrust lifts off again).
+            const float planarJet = std::sqrt(m_jetVelX * m_jetVelX +
+                                              m_jetVelZ * m_jetVelZ);
+            if (m_grounded && m_jetVelY <= 0.5f && planarJet < kJetLandSpd) {
+                m_jetFlying = false;
+                physics.setCharacterSwim(m_body, false);
+                m_jetVelX = m_jetVelY = m_jetVelZ = 0.0f;
+            }
+            return;
+        }
+    }
+
     // ---- SWIMMING (W10): water depth over the feet from the host-wired feed.
     // Enter deep (>1.35 m), exit shallow (<1.05 m) — hysteresis so the surface
     // boundary never jitters. No feed wired (dev worlds/tests) => depth is
@@ -367,6 +496,28 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
         const float landIntensity = std::min(1.0f, 0.15f + drop / 3.0f);
         emitCueOrLog(m_cueSink, GameCue{ CueKind::PlayerLand, damageTargetPos(), landIntensity });
     }
+}
+
+// ---------------------------------------------------------------------------
+// JETPACK mode toggle (the `fly` command).
+// ---------------------------------------------------------------------------
+void Player::setJetpack(bool on, x3::phys::IPhysicsWorld& physics) {
+    if (on == m_jetpack) return;
+    m_jetpack = on;
+    m_jetIdleFor = 0.0f;      // a freshly strapped pack has not been coasting
+    if (!on && m_jetFlying) {
+        // Pack off mid-air: gravity returns and the fall clip + CONTACT LAW
+        // own what happens next. Deliberate — `fly 0` at altitude is a choice.
+        m_jetFlying = false;
+        if (m_spawned && m_body.valid() && !m_swimming)
+            physics.setCharacterSwim(m_body, false);
+        m_jetVelX = m_jetVelY = m_jetVelZ = 0.0f;
+    }
+}
+
+float Player::jetSpeed() const {
+    return std::sqrt(m_jetVelX * m_jetVelX + m_jetVelY * m_jetVelY +
+                     m_jetVelZ * m_jetVelZ);
 }
 
 // ---------------------------------------------------------------------------
@@ -738,6 +889,112 @@ bool runPlayerSelfTest() {
         check(exited && !popped && s5ExitY > -1.2f &&
               !p.swimming() && p.grounded() && p.feet().y > s5ExitY + 0.2f,
               "S5 swim: bank exit onto ground (walking resumes, no launch-out pop)");
+        w->shutdown();
+    }
+
+    // ==== JETPACK (W-JETPACK, the `fly` command): J1 spool to the 300 mph
+    // clamp along the look, J2 auto-hover on release (altitude holds), J3
+    // descend + flare + touchdown hands back the walking controller with the
+    // boots ON the ground (NO_SLOP rule 11 — a flying character type is not
+    // DONE until it is under the law). One flat ground plane; thrust is
+    // pitched 60 deg up so five seconds of 134 m/s needs sky, not acreage. ====
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        // 2 km of half-extent, not 400 m: the coast phase (J2a) adds a couple
+        // of hundred metres of downrange to what the climb already covers, and
+        // a lander that runs off the edge of the test plane never touches down
+        // — J3 would fail for a reason that has nothing to do with the flare.
+        makeGround(*w, 0, 0, 2000.0f);
+        Player p;
+        p.spawn(*w, 0.0f, 0.05f, 0.0f);
+        for (int i = 0; i < 30; ++i) frame(p, *w, PlayerInput{});
+        p.setJetpack(true, *w);
+
+        // ---- J1: SPACE ignites, then W held five seconds — spools to the
+        // clamp, along the look.
+        p.setLook(0.0f, 1.0472f);              // pitch 60 deg up, yaw +X
+        PlayerInput thrust; thrust.moveFwd = 1.0f;
+        float spd3s = 0.0f;
+        for (int i = 0; i < 300; ++i) {
+            // SPACE for the first half second (ignition), then pure W — the
+            // Space rise channel adds vertical target and would inflate the
+            // mid-spool sample.
+            thrust.jumpHeld = (i < 30);
+            frame(p, *w, thrust);
+            if (i == 180) spd3s = p.jetSpeed();   // mid-spool sample
+        }
+        const float spd5s = p.jetSpeed();
+        const bool j1Fly   = p.jetFlying() && !p.grounded();
+        const bool j1Spool = spd3s > 90.0f && spd3s < 132.0f;   // still spooling at 3 s
+        const bool j1Cap   = spd5s > 128.0f && spd5s <= 134.2f; // AT the 300 mph clamp
+        const bool j1Up    = p.feet().y > 150.0f;               // altitude via look pitch
+        if (!(j1Fly && j1Spool && j1Cap && j1Up))
+            x3::logError("[player-test] J1 detail: fly=" + std::to_string(j1Fly) +
+                         " spd3s=" + std::to_string(spd3s) +
+                         " spd5s=" + std::to_string(spd5s) +
+                         " y=" + std::to_string(p.feet().y));
+        check(j1Fly && j1Spool && j1Cap && j1Up,
+              "J1 jetpack: W spools over seconds to the 134.1 m/s (300 mph) clamp along the look");
+
+        // ---- J2a: release everything — the pack COASTS first. The assistDelay
+        // borrow from the space lane (kJetAssistDelay, and the receipt on it):
+        // the hover brake used to bite on the first idle frame, which killed
+        // every glide. Two seconds hands-off must still be carrying most of the
+        // speed, or "cross the valley to look at it" does not exist.
+        const float spdAtRelease = p.jetSpeed();
+        for (int i = 0; i < 120; ++i) frame(p, *w, PlayerInput{});   // 2 s < the 2.5 s delay
+        const float coastSpd = p.jetSpeed();
+        const bool j2aCoast = coastSpd > spdAtRelease * 0.80f;
+        if (!j2aCoast)
+            x3::logError("[player-test] J2a detail: release=" + std::to_string(spdAtRelease) +
+                         " after2s=" + std::to_string(coastSpd));
+        check(j2aCoast, "J2a jetpack: hands off COASTS first (assistDelay) — a glide, not an instant brake");
+
+        // ---- J2b: keep hands off past the delay — the station-keeping hover
+        // then bleeds the speed and the altitude HOLDS (no gravity sag, no climb).
+        for (int i = 0; i < 600; ++i) frame(p, *w, PlayerInput{});   // +10 s, brake engaged
+        const float hoverSpd = p.jetSpeed();
+        const float hy0 = p.feet().y;
+        for (int i = 0; i < 60; ++i) frame(p, *w, PlayerInput{});    // +1 s settled
+        const bool j2Slow = hoverSpd < 6.0f;
+        const bool j2Hold = std::fabs(p.feet().y - hy0) < 1.0f && p.jetFlying();
+        if (!(j2Slow && j2Hold))
+            x3::logError("[player-test] J2b detail: hoverSpd=" + std::to_string(hoverSpd) +
+                         " dy=" + std::to_string(p.feet().y - hy0) +
+                         " flying=" + std::to_string(p.jetFlying()));
+        check(j2Slow && j2Hold, "J2b jetpack: past the delay, auto-hover (speed bleeds, altitude holds)");
+
+        // ---- J3: hold Ctrl to sink; the flare caps the last metres and the
+        // touchdown returns the walking controller with boots ON the ground.
+        PlayerInput sink; sink.diveHeld = true;
+        bool landed = false;
+        for (int i = 0; i < 4200 && !landed; ++i) {   // up to 70 s of descent
+            frame(p, *w, sink);
+            if (!p.jetFlying() && p.grounded()) landed = true;
+        }
+        const float landY = p.feet().y;
+        const bool j3Boots = landY > -0.10f && landY < 0.6f;  // ON the plane, never under
+        const bool j3Worn  = p.jetpack();                     // pack stays worn
+        if (!(landed && j3Boots))
+            x3::logError("[player-test] J3 detail: landed=" + std::to_string(landed) +
+                         " y=" + std::to_string(landY) +
+                         " flying=" + std::to_string(p.jetFlying()));
+        check(landed && j3Boots && j3Worn,
+              "J3 jetpack: descend -> flare -> touchdown hands back walking, boots on the ground");
+
+        // Walking with the pack worn is plain walking (mode only owns the air).
+        const float wx0 = p.feet().x;
+        PlayerInput walk; walk.moveFwd = 1.0f;
+        p.setLook(0.0f, 0.0f);
+        // A landed jet frame leaves jetFlying false; W on the ground must WALK,
+        // not lift off — lift-off needs the thrust to actually be held while
+        // airborne intent exists, and grounded W maps to locomotion first.
+        // (Take-off is Space/W from the host; here we assert ground movement.)
+        p.setJetpack(false, *w);
+        for (int i = 0; i < 120; ++i) frame(p, *w, walk);
+        check(p.grounded() && p.feet().x > wx0 + 3.0f,
+              "J4 jetpack: pack off, walking is untouched");
         w->shutdown();
     }
 

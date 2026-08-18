@@ -65,6 +65,12 @@ struct CharacterClipTable {
     const char* turnLeft    = nullptr;  float turnLeftRad  = 0.0f;
     const char* turnRight   = nullptr;  float turnRightRad = 0.0f;
     const char* fall        = nullptr;  // airborne >0.4 s and falling
+    // JETPACK flight pose (the `fly` command): an exact-named clip HELD at
+    // jetFlyHold seconds while the character is airborne in jetpack mode —
+    // rigs ship no "flying" loop, so the readable frame of an airborne clip
+    // is the pose (Jake: Riflejump's mid-air frame; picked by eye against
+    // Fall_Down, which reads as losing balance, not flying).
+    const char* jetFly      = nullptr;  float jetFlyHold = 0.0f;
     const char* idleVariant = nullptr;  float idleVariantEvery = 20.0f;
     const char* swim        = nullptr;  // selection ready; swim STATE is the
     const char* swimIdle    = nullptr;  // river lane's (Player::swimming()).
@@ -156,6 +162,12 @@ public:
     // additionally faces the CAMERA (fine-aim) even while moving forward.
     void setArmed(bool armed);
     bool armed()  const { return m_armed; }
+    // JETPACK mode (the `fly` command): while on and the capsule is airborne,
+    // the module holds the table's jetFly pose and faces the camera (you fly
+    // where you look). Grounded with the pack on, everything is normal
+    // locomotion — the mode only owns the AIR.
+    void setJetpack(bool on) { m_jetpackMode = on; }
+    bool jetpackMode() const { return m_jetpackMode; }
     void setAiming(bool aiming) { m_aiming = aiming && m_armed; }
     bool aiming() const { return m_aiming; }
     // The rifle one-shots, resolved from the clip table (false if absent).
@@ -202,7 +214,7 @@ private:
     // ---- resolved clips (exact-name; -1 = absent) ----
     int m_walkBack = -1, m_runBack = -1, m_strafeL = -1, m_strafeR = -1;
     int m_turnL = -1, m_turnR = -1, m_jump = -1, m_fall = -1;
-    int m_idleVar = -1, m_swim = -1, m_swimIdle = -1;
+    int m_idleVar = -1, m_swim = -1, m_swimIdle = -1, m_jetFly = -1;
     // Combat layer (the weapons task). m_idle/m_walk/m_run are ALSO kept so
     // setArmed() can re-register the locomotion blend both ways.
     int m_idle = -1, m_walk = -1, m_run = -1;
@@ -228,9 +240,12 @@ private:
     // Weapon layer state.
     bool  m_armed  = false;
     bool  m_aiming = false;
-    // boneWorld() cache: one resolved node per (last-requested) bone name.
-    std::string m_boneName;
-    int         m_boneNode = -1;
+    // Jetpack layer state (the `fly` command).
+    bool  m_jetpackMode = false;
+    // boneWorld() cache: TWO resolved nodes (hand socket + spine mount can be
+    // queried in the same frame; a one-slot cache re-resolved both per frame).
+    struct BoneSlot { std::string name; int node = -1; };
+    BoneSlot m_boneCache[2];
 };
 
 } // namespace x3::game

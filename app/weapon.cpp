@@ -4,6 +4,13 @@
 // IPhysicsWorld + Scene interfaces only. No purchased C# copied.
 #include "weapon.h"
 #include "mesh_prims.h"
+// weapon-vfx lane: WeaponFxKind / fxKindFromId / boltStyleFor — the FV tests pin
+// the flame/frost/napalm consumer rows + particle params headlessly.
+#include "fx.h"
+// kCryoSlowFactor / kCryoSlowDuration — W17f asserts the engine-side chill constants
+// still mirror the FreezeRay's own freezeSlowFactor/freezeDuration (they are set in
+// two places because the host cannot thread the per-shot payload; see monster.h).
+#include "monster.h"
 
 #include "engine/core/x3_log.h"
 
@@ -305,6 +312,19 @@ void WeaponSystem::drawViewmodel(x3::rhi::IRenderDevice& device,
 // Clean-room: every value is derived from the design docs (docs/EFLZ_DESIGN.md §5
 // + docs/ASSET_INVENTORY.md S5 weapon table). No purchased C# copied — only the
 // plausible numeric stats from the design bible are used.
+
+// Phase B3 — canon 12-weapon key row, in the CANON order from the original
+// game's arsenal (see the CANONICAL 12 block below): Pistol · Shotgun ·
+// Bazooka(rocket) · Laser · Plasma · ChainGun · LightningGun · RailGun ·
+// FlameThrower · NapalmLauncher · FreezeRay · BFG11k. Keys 1..9 map to canon
+// slots 1-9; 0 - = map to canon slots 10-12. Names, not roster indices — the
+// live arsenal interleaves smg/plasma_rifle (X3Native-only, scroll-wheel only).
+const char* canonKeyWeaponName(int i) {
+    static const char* kCanonOrder[kCanonKeyCount] = {
+        "pistol", "shotgun", "rocket",  "laser",        "plasma",   "chaingun",
+        "lightning", "railgun", "flamethrower", "napalm", "freezeray", "bfg11k" };
+    return (i >= 0 && i < kCanonKeyCount) ? kCanonOrder[i] : nullptr;
+}
 
 std::vector<WeaponDef> makeDefaultRoster() {
     std::vector<WeaponDef> r;
@@ -632,6 +652,329 @@ std::vector<WeaponDef> makeDefaultRoster() {
         r.push_back(w);
     }
 
+    // =====================================================================
+    // THE CANONICAL 12 (2026-08). The original game's arsenal is 12 weapons:
+    //   Pistol · Shotgun · Bazooka · Laser · Plasma · ChainGun · LightningGun ·
+    //   RailGun · FlameThrower · NapalmLauncher · FreezeRay · BFG11k
+    // Eight of those already had a slot above (the Bazooka is slot 8 "rocket" —
+    // there is deliberately NO second rocket weapon), plus two X3Native-only
+    // weapons that are NOT in the canon 12 and are kept as-is (smg, plasma_rifle).
+    // The six below close the gap: Laser, RailGun, FlameThrower, NapalmLauncher,
+    // FreezeRay, BFG11k.
+    //
+    // PROVENANCE — every stat is harvested from the C++ port of the original game at
+    // D:\GameDev\EscapeLab3D (read-only), specifically src/game/weapon.cpp
+    // InitWeaponDefs() and src/game/game_types.h WEAPON_STATS/DEFAULT_MAX_AMMO. That
+    // port is the design authority for the canon roster.
+    //
+    // UNIT CONVERSION (the port is a 2D game in pixel-ish units; X3Native is metric).
+    // The scale factors are derived from the weapons the two rosters already SHARE,
+    // not invented:
+    //   * DAMAGE  ~1:1  — port Pistol 15 vs ours 16; port Bazooka 75 direct vs our
+    //                     rocket 80. Damage numbers therefore carry over directly.
+    //   * RADIUS  x0.05 — port Bazooka explosionRadius 80 vs our rocket splashRadius 4.0 m.
+    //   * SPEED   x0.05 — port Bazooka projectileSpeed 600 vs our rocket projSpeed 30 m/s.
+    //   * RANGE   x0.022 — port Pistol maxRange 2500 vs our pistol range 55 m.
+    // Where a converted range would be absurd for the facility's interiors (the
+    // RailGun's 10000 -> 220 m) it is clamped and the clamp is called out at the site.
+    // =====================================================================
+
+    // ---- 9) Laser — the canon CONTINUOUS beam. ------------------------------
+    // Port: 35 dmg/tick, fireRate 60 ("fires every frame"), isHitscan + isContinuous,
+    // maxRange 3000, ammo 200, blue. This is the roster's precision sustained-damage
+    // tool: dead accurate, no travel time, no chaining — it just does not stop while
+    // you hold it. That is what separates it from the Lightning Gun (which chains but
+    // zaps discretely and dies at 30 m).
+    //
+    // The port's literal 60 shots/s at 35 dmg = 2100 DPS, which would delete a 400-HP
+    // Act-1 boss in 0.19 s and break the W11 power-ladder invariant every other weapon
+    // is tuned against. The CONTINUOUS FEEL is the canon intent, not that DPS, so the
+    // tick is cut to 9 at 20/s = 180 sustained DPS — a clear step over the pistol (72)
+    // and in the same band as the chaingun (~195), with the beam read preserved by
+    // `continuous` + a fire rate fast enough to look unbroken.
+    {
+        WeaponDef w;
+        w.name        = "laser";
+        w.kind        = FireKind::Hitscan;   // port: isHitscan
+        w.automatic   = true;                // held = keeps firing
+        w.damage      = 9;                   // per beam tick (port 35/tick at 60/s rescaled)
+        w.type        = x3::DamageType::Energy;   // x3_damage.h lists "laser" under Energy
+        w.fireRate    = 20.0f;               // fast enough to read as unbroken
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;                // port spread 0.0 — a beam is dead-accurate
+        w.recoilDeg   = 0.08f;               // essentially none (steady beam)
+        w.range       = 66.0f;               // port 3000 x0.022
+        w.magSize     = 200;                 // port DEFAULT_MAX_AMMO[Laser] = 200
+        w.reserveAmmo = 400;
+        w.reloadTime  = 2.4f;
+        w.beam        = true;                // render as a solid beam (host hint)
+        w.continuous  = true;                // port isContinuous: ONE unbroken beam
+        // Armory swap 2026-08: purpose-shaped laser carbine (Protofactor SCI FI
+        // SHOOTER VOL 3 SM_SciFiLaserGun, PBR albedo+normal+emissive), replacing
+        // the WeaponEnergyPistol2 stand-in. Source is 0.444 m long -> larger scale.
+        w.viewmodelGlb = "WeaponSciFiLaserGun.glb";
+        w.vmScale     = 0.90f;                        // 0.444 m source * 2x boost -> 0.80 m draw (railgun-class read: railgun draws at 0.91 m)
+        w.vmMuzzle    = {  0.000f, 0.090f, 0.346f };  // WeaponSciFiLaserGun.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_lightning";  // closest existing kind: electric-blue energy
+        w.impactFx    = "impact_lightning";
+        w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";  // sustained beam tone
+        w.fireSfxLoop = true;                // continuous beam: ONE loop voice
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";
+        r.push_back(w);
+    }
+
+    // ---- 10) RailGun — the canon PIERCING slug. ----------------------------
+    // Port: 300 dmg, fireRate 0.5, isHitscan, penetrates = true ("through ALL
+    // enemies"), maxRange 10000, ammo 15, white. The sniper: one deliberate,
+    // expensive shot that skewers a whole line of enemies.
+    //
+    // Damage 300 carries over 1:1 (the port's damage scale matches ours). The port's
+    // "penetrates ALL" is expressed as pierceTargets = 6 extra bodies, which is every
+    // enemy a facility corridor can physically line up and gives the host a bound to
+    // walk instead of an unbounded loop. Range is CLAMPED from the converted 220 m to
+    // 150 m — still by far the longest reach in the roster (next is the rocket at
+    // 100 m) but not larger than the streamed world the ray would have to resolve in.
+    {
+        WeaponDef w;
+        w.name        = "railgun";
+        w.kind        = FireKind::Hitscan;
+        w.automatic   = false;
+        w.damage      = 300;                 // port: 300 (1:1 damage scale)
+        w.type        = x3::DamageType::Energy;   // x3_damage.h lists "railgun" under Energy
+        w.fireRate    = 0.5f;                // port: 0.5 shots/s — one deliberate shot
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;                // port spread 0.0 — perfect accuracy
+        w.recoilDeg   = 5.5f;                // heaviest kick in the roster
+        w.range       = 150.0f;              // port 10000 x0.022 = 220 m, CLAMPED to 150 m
+        w.magSize     = 5;
+        w.reserveAmmo = 15;                  // port DEFAULT_MAX_AMMO[RailGun] = 15
+        w.reloadTime  = 3.2f;                // slow, deliberate reload
+        w.pierceTargets = 6;                 // port penetrates=true ("through ALL enemies")
+        w.viewmodelGlb = "WeaponRailgun.glb"; // the purpose-built railgun mesh, finally on the railgun
+        w.vmScale     = 0.24f;                // longarm (~0.46 m held)
+        w.vmMuzzle    = {  0.000f, 0.494f, 0.909f };  // WeaponRailgun.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_rocket";     // big bright discharge (no dedicated rail kind)
+        w.impactFx    = "impact_plasma";
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav";  // heaviest single crack
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";
+        r.push_back(w);
+    }
+
+    // ---- 11) FlameThrower — the canon short-range burn cone. ---------------
+    // Port: 12 dmg/tick, fireRate 30, pelletsPerShot 3 ("3 flame puffs per tick"),
+    // spread 12 deg, maxRange 300 (the shortest in the game), appliesBurn = true,
+    // isContinuous, ammo 250, gravityScale -0.2 ("flames rise slightly").
+    //
+    // 2026-08-15 (weapon-feel lane) — NOW A REAL PROJECTILE STREAM. The roster lane
+    // shipped this as a multi-ray hitscan cone and said so plainly, because
+    // Arsenal::fire could only push a SINGLE ProjectileSpawn: a 3-puff burst was not
+    // expressible. That producer limit is gone — a Projectile weapon now emits
+    // `pellets` spawns — so the port's shape is reproduced honestly: 3 travelling
+    // FlamePuffs per tick, each with its own draw from the 12-degree cone, its own
+    // staggered despawn range, and the burn DOT.
+    //
+    // ⚠ COUPLED TO PHASE B2. The host has two consumers of ResolvedFire::projectiles;
+    // app_run.cpp:7148 already loops correctly, but the LIVE fire path at :10935 still
+    // reads projectiles[0] and drops the rest. Until that one-site fix lands (it is
+    // blocked on inspx/la-exe) this weapon puts 1 puff in the air per tick instead of 3.
+    // The producer is correct; the arithmetic is stated here rather than hidden.
+    {
+        WeaponDef w;
+        w.name        = "flamethrower";
+        w.kind        = FireKind::Projectile; // port isHitscan = false: travelling FlamePuffs
+        w.automatic   = true;                // held = continuous stream
+        w.damage      = 6;                   // per puff; x3 puffs x 12/s = ~216 DPS point-blank
+        w.type        = x3::DamageType::Bio; // closest existing tag for chemical fuel burn
+        w.fireRate    = 12.0f;               // port 30/s rescaled to keep the DPS in-band
+        w.pellets     = 3;                   // port pelletsPerShot = 3 flame puffs
+        w.spreadDeg   = 12.0f;               // port spread = 12 deg — a wide cone
+        w.recoilDeg   = 0.05f;               // almost none (a fuel stream, not a gun)
+        w.range       = 9.0f;                // port 300 x0.022 = 6.6 m, opened slightly to 9 m
+        w.magSize     = 250;                 // port DEFAULT_MAX_AMMO[FlameThrower] = 250
+        w.reserveAmmo = 500;
+        w.reloadTime  = 3.0f;                // swapping a fuel canister is slow
+        w.projSpeed   = 30.0f;               // port projectileSpeed 600 x0.05 — a puff crosses 9 m in 0.3 s
+        // Port gravityScale -0.2 ("flames rise slightly") x GRAVITY 800 x0.05 = -8 m/s^2.
+        // NEGATIVE = the puffs drift UPWARD, which is what fire does. Same harvest rule
+        // as napalm's +32; see WeaponDef::projectileGravity.
+        w.projectileGravity = -8.0f;         // HARVESTED: flames rise
+        w.continuous  = true;                // port isContinuous
+        w.burnDuration= 3.0f;                // port appliesBurn — the DOT is the point
+        w.burnDps     = 8;
+        // Armory swap 2026-08 (assets/weapon-models lane): a REAL flamethrower
+        // silhouette (Meshy-generated, store-distributed) — the rocket-launcher
+        // stand-in is retired. Scale derived, not eyeballed: source is 1.55 m
+        // long (probe AABB), rocket-launcher-class projector read targets ~0.93 m
+        // -> 1.55 m source * 0.30 * 2x boost = 0.93 m draw (good-8 band 0.65-0.99).
+        w.viewmodelGlb = "WeaponFlameThrower.glb";
+        w.vmScale     = 0.30f;                        // 1.55 m source * 2x boost -> 0.93 m draw
+        w.vmMuzzle    = { -0.001f, 0.490f, 0.868f };  // WeaponFlameThrower.glb nozzle tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_flame";      // IGNITION CONE (weapon-vfx lane: WeaponFxKind::Flame)
+        w.impactFx    = "impact_flame";      // fire splash + scorch, not a rocket fireball per puff
+        w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";
+        w.fireSfxLoop = true;                // continuous stream: ONE loop voice
+        r.push_back(w);
+    }
+
+    // ---- 12) Napalm Launcher — the canon AREA-DENIAL weapon. ---------------
+    // Port: 120 dmg, fireRate 0.8, explosionRadius 120, projectileSpeed 700,
+    // gravityScale 0.8 ("heavy arcing trajectory"), firePoolDuration 5.0 s,
+    // firePoolDPS 25, appliesBurn, ammo 10.
+    //
+    // This is the weapon that is NOT just "a second rocket": the blast is the opener,
+    // and the BURNING GROUND POOL it leaves behind is the actual weapon. It denies a
+    // corridor for 5 seconds. Direct 120 + 70 splash over 6 m, then 25 DPS standing
+    // fire in a 3 m pool.
+    //
+    // THE ARC (2026-08-15 weapon-feel lane) — HARVESTED, not chosen. The port's
+    // `gravityScale = 0.8f  // heavy arcing trajectory` runs against its fixed
+    // GRAVITY = 800 port-units/s^2 (src/game/projectile.cpp ApplyGravity), i.e. 640
+    // port-units/s^2 of real acceleration. An acceleration converts on the LENGTH
+    // ratio, which for this roster is the same x0.05 the projectile SPEEDS used
+    // (port 700 -> our 35 m/s), giving 640 x 0.05 = 32.0 m/s^2.
+    //
+    // The number is independently CORROBORATED by its own ballistics rather than
+    // taken on faith: a 45-degree lob at this weapon's 35 m/s reaches v^2/g =
+    // 1225/32 = 38 m, which sits just inside its authored 44 m despawn range. That
+    // is the signature of a properly-tuned lobbed weapon — you must arc it to reach
+    // the far end of its envelope. (For contrast, at Earth's 9.81 the same shell
+    // would carry 125 m, so no arc would ever be visible inside 44 m and the weapon
+    // would simply read as a slower rocket.)
+    //
+    // NOTE the value is carried onto every ProjectileSpawn correctly, but the host's
+    // live-projectile integrator does not yet READ it — that is app/app_run.cpp,
+    // frozen behind inspx/la-exe, and is Phase B1 of this lane's plan.
+    {
+        WeaponDef w;
+        w.name        = "napalm";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 120;                 // port: 120 direct (1:1 damage scale)
+        w.type        = x3::DamageType::Explosive;
+        w.fireRate    = 0.8f;                // port: 0.8 shots/s
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;                // port spread 0.0
+        w.recoilDeg   = 4.0f;
+        w.range       = 44.0f;               // port 2000 x0.022
+        w.magSize     = 4;
+        w.reserveAmmo = 10;                  // port DEFAULT_MAX_AMMO[NapalmLauncher] = 10
+        w.reloadTime  = 3.4f;
+        w.projSpeed   = 35.0f;               // port 700 x0.05
+        w.projectileGravity = 32.0f;         // port gravityScale 0.8 x GRAVITY 800 x0.05 — HARVESTED
+        w.splashRadius= 6.0f;                // port explosionRadius 120 x0.05
+        w.splashDamage= 70;
+        w.firePoolDuration = 5.0f;           // port firePoolDuration = 5.0 s — AREA DENIAL
+        w.firePoolDps      = 25;             // port firePoolDPS = 25
+        w.firePoolRadius   = 3.0f;           // the standing-fire footprint
+        w.burnDuration= 4.0f;                // port appliesBurn
+        w.burnDps     = 10;
+        // Armory swap 2026-08: dedicated boxy missile pod (Protofactor SCI FI
+        // SHOOTER VOL 3 SM_SciFiMissileLauncher, PBR albedo+normal+emissive) so
+        // the napalm no longer shares the rocket's WeaponRocketLauncher silhouette.
+        w.viewmodelGlb = "WeaponSciFiMissileLauncher.glb";
+        w.vmScale     = 0.38f;                        // 1.308 m source * 2x boost -> 0.99 m draw (rocket-launcher-class: it draws at 0.985 m)
+        w.vmMuzzle    = { -0.000f, 0.165f, 0.538f };  // WeaponSciFiMissileLauncher.glb barrel tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_napalm";     // rocket-class launch pop, warmer tint
+        w.impactFx    = "impact_napalm";     // fireball + the BURNING GROUND POOL (weapon-vfx lane)
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";
+        r.push_back(w);
+    }
+
+    // ---- 13) Freeze Ray — the canon CONTROL weapon. ------------------------
+    // Port: 5 dmg, fireRate 20, pelletsPerShot 4 ("3-5 crystalline particles"),
+    // spread 10 deg, maxRange 400, appliesFreeze = true, isContinuous, ammo 120.
+    // The port's own comment says it plainly: "5 damage/tick but the real power is
+    // the freeze". This is a CONTROL tool, not a damage tool — it is the only weapon
+    // in the roster that makes an enemy stop being a threat without killing it.
+    //
+    // 2026-08-15 (weapon-feel lane) — a REAL crystalline stream, and it finally CHILLS.
+    // Two things changed together, and neither was reachable from config:
+    //   (1) kind is now Projectile, so the port's 4 travelling particles are emitted as
+    //       4 spawns instead of collapsing to one (see the flamethrower's note, incl.
+    //       the same Phase-B2 host coupling: 1 of 4 reaches the air until :10935 loops).
+    //   (2) type is DamageType::Cryo, a NEW enum row. That tag is the mechanism, not a
+    //       label: MonsterSystem::onDamaged reads it and applies the timed chase-speed
+    //       slow, so the freeze is now a thing that HAPPENS to an enemy rather than a
+    //       number sitting unread on a ray. Before this it was tagged Energy — which
+    //       also meant it shared an Adaptive-Hide resist window with the laser, railgun,
+    //       plasma and BFG, so hosing a Warlord built the WRONG resist.
+    // The freeze is modelled as a slow rather than a hard stun: freezeSlowFactor 0.35 =
+    // down to 35% move speed for 2.5 s, refreshed by every tick you hold it on target.
+    {
+        WeaponDef w;
+        w.name        = "freezeray";
+        w.kind        = FireKind::Projectile; // port isHitscan = false: crystalline particles
+        w.automatic   = true;                // held = continuous cone
+        w.damage      = 5;                   // port: 5 — deliberately feeble, the slow is the payload
+        w.type        = x3::DamageType::Cryo;    // THE mechanism — drives MonsterSystem's slow
+        w.fireRate    = 12.0f;               // port 20/s eased slightly
+        w.pellets     = 4;                   // port pelletsPerShot = 4 crystalline particles
+        w.spreadDeg   = 10.0f;               // port spread = 10 deg
+        w.recoilDeg   = 0.05f;
+        w.range       = 12.0f;               // port 400 x0.022 = 8.8 m, opened slightly to 12 m
+        w.magSize     = 120;                 // port DEFAULT_MAX_AMMO[FreezeRay] = 120
+        w.reserveAmmo = 240;
+        w.reloadTime  = 2.6f;
+        w.projSpeed   = 35.0f;               // port projectileSpeed 700 x0.05
+        // Port gravityScale 0.0 — ice crystals fly flat. Left at the 0 default DELIBERATELY
+        // (stated, not omitted): this weapon harvests a zero, it does not merely lack a value.
+        w.continuous  = true;                // port isContinuous
+        w.freezeDuration   = 2.5f;           // port appliesFreeze — THE payload
+        w.freezeSlowFactor = 0.35f;          // down to 35% move speed while frozen
+        // Armory swap 2026-08: NO cryo weapon mesh exists in any library, so this
+        // is the sanctioned reskin — Protofactor SM_SciFiLightingGun tinted cold
+        // (cyan baseColorFactor + icy emissiveFactor over the source textures),
+        // exported as WeaponFreezeRayCryo.glb. Distinct silhouette from the BFG.
+        w.viewmodelGlb = "WeaponFreezeRayCryo.glb";
+        w.vmScale     = 0.50f;                        // 0.904 m source * 2x boost -> 0.90 m draw (bulky projector, BFG-class read)
+        w.vmMuzzle    = { -0.000f, 0.122f, 0.523f };  // WeaponFreezeRayCryo.glb emitter tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_freeze";     // icy cyan-white discharge (weapon-vfx lane: WeaponFxKind::Frost)
+        w.impactFx    = "impact_freeze";     // crystalline burst + pale frost ring (no scorch)
+        w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";
+        w.fireSfxLoop = true;                // continuous cone: ONE loop voice
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";
+        r.push_back(w);
+    }
+
+    // ---- 14) BFG 11k — the canon ultimate weapon. --------------------------
+    // Port: 150 direct dmg, fireRate 0.3, projectileSpeed 350 ("slow, menacing"),
+    // explosionRadius 100, secondaryBolts 8, ammoPerShot 5, maxAmmo 5, BFG-green.
+    // One full pickup is exactly ONE shot — that scarcity IS the weapon's design.
+    //
+    // Kept as the top of the ladder without trivializing it: 150 direct + 90 splash
+    // over 5 m, and at 5 rounds per shot on a 5-round magazine you fire once and then
+    // hunt for more. The 8 secondary bolts at detonation are what make it read as the
+    // BFG rather than "a bigger rocket".
+    {
+        WeaponDef w;
+        w.name        = "bfg11k";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 150;                 // port: 150 direct (1:1 damage scale)
+        w.type        = x3::DamageType::Energy;   // x3_damage.h lists "BFG" under Energy
+        w.fireRate    = 0.3f;                // port: 0.3 shots/s
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;                // port spread 0.0
+        w.recoilDeg   = 6.0f;                // the biggest shove in the game
+        w.range       = 66.0f;               // port 3000 x0.022
+        w.magSize     = 5;                   // port DEFAULT_MAX_AMMO[BFG11k] = 5
+        w.reserveAmmo = 10;
+        w.reloadTime  = 4.0f;                // slowest reload in the roster
+        w.ammoPerShot = 5;                   // port ammoPerShot = 5 — one pickup, one shot
+        w.projSpeed   = 17.5f;               // port 350 x0.05 — slow and menacing
+        w.splashRadius= 5.0f;                // port explosionRadius 100 x0.05
+        w.splashDamage= 90;                  // devastating blast at the center
+        w.secondaryBolts = 8;                // port secondaryBolts = 8
+        w.viewmodelGlb = "WeaponBFG.glb";    // the purpose-built BFG mesh, finally on the BFG
+        w.vmScale     = 0.26f;               // bulkiest energy cannon read
+        w.vmMuzzle    = { -0.003f, 0.528f, 0.864f };  // WeaponBFG.glb emitter tip (MEASURED: tools/weapon_muzzle_probe.py)
+        w.muzzleFx    = "muzzle_plasma";     // green-ish energy discharge
+        w.impactFx    = "impact_explosion";
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav";
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";
+        r.push_back(w);
+    }
+
     // W2-C: every weapon shares the repo-local reload + dry-fire WAVs (committed by
     // the sound department under assets/audio/weapons/; resolveAudio silent-skips
     // if absent). Per-weapon bespoke reload foley can override these later.
@@ -844,7 +1187,13 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     // Consume a round, arm the fire-rate cooldown (from the effective rate), recoil.
     // CHARGE weapons (Lightning) do NOT consume a mag round — their charge pool is
     // drained continuously in tick() while the beam is held (see setBeamHeld).
-    if (!m_infiniteAmmo && !d.usesCharge) s.ammoInMag -= 1;   // IDKFA: never deplete
+    // CANON-12: a shot may cost more than one round (the BFG eats 5 of its 5). Clamp at
+    // 0 so a partially-stocked mag still fires its last shot rather than going negative.
+    const int roundsPerShot = (d.ammoPerShot > 1) ? d.ammoPerShot : 1;
+    if (!m_infiniteAmmo && !d.usesCharge) {
+        s.ammoInMag -= roundsPerShot;   // IDKFA: never deplete
+        if (s.ammoInMag < 0) s.ammoInMag = 0;
+    }
     // PASSIVE REGEN: pulling the trigger INTERRUPTS regen and restarts the cool-down
     // beat. tick() also does this off m_beamHeld (the host's held-fire flag), but doing
     // it here too means the rule holds for ANY fire path — a caller that fires without
@@ -867,6 +1216,13 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
             ray.chain        = false;
             ray.falloffStart = d.falloffStart;
             ray.type         = d.type;          // canon-aliens Adaptive-Hide tag
+            // CANON-12 payloads: railgun pierce, laser continuity, flame burn, freeze slow.
+            ray.pierceTargets    = d.pierceTargets;
+            ray.continuous       = d.continuous;
+            ray.burnDuration     = d.burnDuration;
+            ray.burnDps          = d.burnDps;
+            ray.freezeDuration   = d.freezeDuration;
+            ray.freezeSlowFactor = d.freezeSlowFactor;
             out.rays.push_back(ray);
         }
         // Lightning Gun chain: extra rays the host resolves against NEARBY enemies
@@ -882,19 +1238,65 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
             ray.chain        = true;
             ray.falloffStart = d.falloffStart;
             ray.type         = d.type;          // chain rays inherit the firing weapon's type
+            // Chain links inherit the firing weapon's status payloads too.
+            ray.continuous       = d.continuous;
+            ray.burnDuration     = d.burnDuration;
+            ray.burnDps          = d.burnDps;
+            ray.freezeDuration   = d.freezeDuration;
+            ray.freezeSlowFactor = d.freezeSlowFactor;
             out.rays.push_back(ray);
         }
     } else { // Projectile
-        x3::phys::Vec3 nd = applySpread(dir, d.spreadDeg, rngState);
-        ProjectileSpawn pj;
-        pj.pos    = eye;
-        pj.vel    = x3::phys::Vec3{ nd.x * d.projSpeed, nd.y * d.projSpeed, nd.z * d.projSpeed };
-        pj.damage = d.damage;
-        pj.range  = d.range;
-        pj.splashRadius = d.splashRadius;   // Plasma Rifle: small AoE on impact
-        pj.splashDamage = d.splashDamage;
-        pj.type         = d.type;            // canon-aliens Adaptive-Hide tag
-        out.projectiles.push_back(pj);
+        // ---- MULTI-SPAWN (2026-08-15 weapon-feel lane) -----------------------
+        // A Projectile weapon emits `pellets` spawns, exactly as a Hitscan weapon
+        // emits `pellets` rays. That ONE rule covers both shapes with no per-weapon
+        // special-casing and no name checks:
+        //   * every AIMED projectile weapon (plasma, plasma_rifle, rocket, napalm,
+        //     bfg11k) is authored pellets = 1, so it emits exactly ONE spawn and is
+        //     bit-identical to the pre-lane single-push below it. W17d asserts that.
+        //   * a STREAM weapon (flamethrower 3 puffs, freezeray 4 crystals) emits its
+        //     whole cone as travelling particles instead of collapsing to one bolt.
+        // N is clamped to kMaxStreamSpawns (see weapon.h for why that bound, and for
+        // why holding the trigger cannot grow anything without limit).
+        int n = (d.pellets > 0) ? d.pellets : 1;
+        if (n > kMaxStreamSpawns) n = kMaxStreamSpawns;
+        out.projectiles.reserve((size_t)n);
+        for (int p = 0; p < n; ++p) {
+            // PER-SPAWN CONE JITTER: each particle draws its OWN direction from the
+            // weapon's spread cone off the SAME shared rng stream the hitscan path
+            // uses, so a stream reads as a spraying cone rather than n co-linear
+            // bolts. spreadDeg 0 (every aimed weapon) returns `dir` unchanged.
+            x3::phys::Vec3 nd = applySpread(dir, d.spreadDeg, rngState);
+            ProjectileSpawn pj;
+            pj.pos    = eye;
+            pj.vel    = x3::phys::Vec3{ nd.x * d.projSpeed, nd.y * d.projSpeed, nd.z * d.projSpeed };
+            // PER-PARTICLE DAMAGE: each particle carries the def's full per-pellet
+            // damage, which is exactly what each of the `pellets` hitscan rays carried
+            // before. The conversion is therefore damage-neutral — the roster lane's
+            // tuned DPS band survives it unchanged.
+            pj.damage = d.damage;
+            // STAGGERED LIFETIME: the host despawns a bolt at `range`, so varying the
+            // range per particle is how a stream stops dying as one flat wall. Only a
+            // real stream (n > 1) staggers; a single aimed bolt keeps its def range
+            // EXACTLY, which is what keeps napalm/rocket/plasma bit-identical.
+            //   spread: 0.75x .. 1.00x of range, evenly across the burst.
+            pj.range  = (n > 1) ? d.range * (0.75f + 0.25f * ((float)p / (float)(n - 1)))
+                                : d.range;
+            pj.gravity      = d.projectileGravity;  // ballistic arc (0 = flat; see WeaponDef)
+            pj.splashRadius = d.splashRadius;   // Plasma Rifle: small AoE on impact
+            pj.splashDamage = d.splashDamage;
+            pj.type         = d.type;            // canon-aliens Adaptive-Hide tag
+            // CANON-12 payloads: napalm's ground pool + burn, freeze slow, BFG secondaries.
+            pj.firePoolDuration = d.firePoolDuration;
+            pj.firePoolDps      = d.firePoolDps;
+            pj.firePoolRadius   = d.firePoolRadius;
+            pj.burnDuration     = d.burnDuration;
+            pj.burnDps          = d.burnDps;
+            pj.freezeDuration   = d.freezeDuration;
+            pj.freezeSlowFactor = d.freezeSlowFactor;
+            pj.secondaryBolts   = d.secondaryBolts;
+            out.projectiles.push_back(pj);
+        }
     }
     return out;
 }
@@ -1405,6 +1807,72 @@ bool runPickupSelfTest() {
 }
 
 // ===========================================================================
+// NAPALM FIRE POOLS — the firePool payload consumer (see weapon.h for design).
+// ===========================================================================
+FirePoolSpawn FirePoolSystem::spawn(const x3::phys::Vec3& center, float radius, int dps,
+                                    float duration, SurfaceType surf) {
+    // SURFACE RULE (app/surface_type.h): fire does not survive on water — the
+    // shell lands, hisses, and is gone. Lava needs no pool: it IS the burning
+    // ground already. Everything else (Unknown included: solid by design) burns.
+    if (surf == SurfaceType::Water) return FirePoolSpawn::ExtinguishedWater;
+    if (surf == SurfaceType::Lava)  return FirePoolSpawn::AlreadyBurningLava;
+    // Claim a free slot; if all kMaxFirePools are live, recycle the OLDEST pool
+    // (smallest spawn seq) — the stated bound: at most kMaxFirePools simultaneous,
+    // oldest expires first.
+    int slot = -1;
+    for (int i = 0; i < kMaxFirePools; ++i)
+        if (m_pools[i].remaining <= 0.0f) { slot = i; break; }
+    if (slot < 0) {
+        uint64_t oldSeq = ~0ull;
+        for (int i = 0; i < kMaxFirePools; ++i)
+            if (m_pools[i].seq < oldSeq) { oldSeq = m_pools[i].seq; slot = i; }
+    }
+    Pool& p = m_pools[slot];
+    p.center    = center;
+    p.radius    = (radius > 0.1f) ? radius : 0.1f;
+    p.dps       = (dps > 0) ? dps : 0;
+    p.remaining = (duration > 0.0f) ? duration : 0.0f;
+    p.tickTimer = kFirePoolTickSec;
+    p.dmgAccum  = 0.0f;
+    p.seq       = m_nextSeq++;
+    return FirePoolSpawn::Ignited;
+}
+
+int FirePoolSystem::update(float dt, Tick* out, int maxOut) {
+    if (dt <= 0.0f) return 0;
+    int n = 0;
+    for (int i = 0; i < kMaxFirePools; ++i) {
+        Pool& p = m_pools[i];
+        if (p.remaining <= 0.0f) continue;
+        // dt-SCALED damage accumulation (house rule): the long-run rate is exactly
+        // dps at any frame rate — the tick merely QUANTIZES delivery, it never
+        // changes the total (integer remainder carries to the next tick).
+        p.dmgAccum  += (float)p.dps * dt;
+        p.tickTimer -= dt;
+        while (p.tickTimer <= 0.0f) {
+            const int dmg = (int)p.dmgAccum;
+            if (dmg > 0 && out && n < maxOut) {
+                out[n].center = p.center;
+                out[n].radius = p.radius;
+                out[n].damage = dmg;
+                ++n;
+                p.dmgAccum -= (float)dmg;
+            }
+            p.tickTimer += kFirePoolTickSec;
+        }
+        p.remaining -= dt;
+        if (p.remaining <= 0.0f) { p.remaining = 0.0f; p.dmgAccum = 0.0f; }
+    }
+    return n;
+}
+
+int FirePoolSystem::liveCount() const {
+    int n = 0;
+    for (const Pool& p : m_pools) if (p.remaining > 0.0f) ++n;
+    return n;
+}
+
+// ===========================================================================
 // Headless self-test (--test-weapons). Exercises the data-driven Arsenal with NO
 // window / Vulkan / physics. Covers: roster + switching, fire-rate gating, ammo
 // gating, reload refill, shotgun pellet count, and hitscan-vs-projectile resolve.
@@ -1900,6 +2368,787 @@ bool runWeaponsSelfTest() {
         wcheck(lensOff, "W14e vm_fov 0 == share the world lens (magnification 1, no change)");
         wcheck(bigger && offAxis && magMath,
                "W14f vm_fov 45 vs world 60 magnifies the gun + pushes it off-axis by tan ratio");
+    }
+
+    // =======================================================================
+    // W15/W16 — THE CANONICAL 12. The original game's arsenal (per the C++ port at
+    // D:\GameDev\EscapeLab3D, src/game/game_types.h WeaponType) is:
+    //   Pistol Shotgun Bazooka Laser Plasma ChainGun LightningGun RailGun
+    //   FlameThrower NapalmLauncher FreezeRay BFG11k
+    // These tests assert the roster COVERS all twelve, that every newly-added weapon
+    // carries its own PROBE-MEASURED barrel tip (not a guess, and not a value shared
+    // with a different-length gun), and that each one's distinguishing behaviour
+    // actually reaches the host through ResolvedFire.
+    // =======================================================================
+
+    // ---- W15a: all twelve canon weapons are present in the roster. ---------
+    // The Bazooka is slot "rocket" (there is deliberately no second rocket weapon).
+    {
+        Arsenal a;
+        struct Canon { const char* canonName; const char* slot; };
+        const Canon canon[] = {
+            { "Pistol",         "pistol"       }, { "Shotgun",        "shotgun"      },
+            { "Bazooka",        "rocket"       }, { "Laser",          "laser"        },
+            { "Plasma",         "plasma"       }, { "ChainGun",       "chaingun"     },
+            { "LightningGun",   "lightning"    }, { "RailGun",        "railgun"      },
+            { "FlameThrower",   "flamethrower" }, { "NapalmLauncher", "napalm"       },
+            { "FreezeRay",      "freezeray"    }, { "BFG11k",         "bfg11k"       },
+        };
+        bool allPresent = true;
+        for (const Canon& c : canon) {
+            if (a.indexOf(c.slot) < 0) {
+                allPresent = false;
+                x3::logInfo(std::string("[weapons-test]   MISSING canon weapon ") +
+                            c.canonName + " (expected roster slot '" + c.slot + "')");
+            }
+        }
+        wcheck(allPresent, "W15a all 12 canonical weapons present in the arsenal");
+    }
+
+    // ---- W15b: every new weapon's vmMuzzle IS the probe-MEASURED barrel tip. -
+    // This is the guard against the viewmodel-anchor bug: a guessed or copy-pasted
+    // muzzle puts the gun's barrel line in the wrong place (the shotgun's source model
+    // is 4.4 m — a shared guess was off by metres) and makes the FX spawn off-barrel.
+    // Values are the output of `python tools/weapon_muzzle_probe.py` for each weapon's
+    // OWN viewmodelGlb; re-run that tool if a viewmodel GLB is ever swapped.
+    {
+        Arsenal a;
+        struct Measured { const char* slot; const char* glb; float x, y, z; };
+        const Measured measured[] = {
+            // 2026-08 armory swap: laser/napalm moved to Protofactor models,
+            // freezeray to the cyan cryo reskin — each muzzle RE-MEASURED on the
+            // NEW model (never inherited across a model change).
+            { "laser",        "WeaponSciFiLaserGun.glb",         0.000f, 0.090f, 0.346f },
+            { "railgun",      "WeaponRailgun.glb",               0.000f, 0.494f, 0.909f },
+            // 2026-08 weapon-vfx lane: the Meshy flamethrower landed (assets/
+            // weapon-models @ fc3c22f8) — muzzle RE-MEASURED on the new GLB.
+            { "flamethrower", "WeaponFlameThrower.glb",         -0.001f, 0.490f, 0.868f },
+            { "napalm",       "WeaponSciFiMissileLauncher.glb", -0.000f, 0.165f, 0.538f },
+            { "freezeray",    "WeaponFreezeRayCryo.glb",        -0.000f, 0.122f, 0.523f },
+            { "bfg11k",       "WeaponBFG.glb",                  -0.003f, 0.528f, 0.864f },
+        };
+        bool muzzlesMeasured = true, glbsMatch = true;
+        for (const Measured& m : measured) {
+            const int i = a.indexOf(m.slot);
+            if (i < 0) { muzzlesMeasured = false; continue; }
+            const WeaponDef& d = a.def(i);
+            // The muzzle must be the measurement for the GLB this weapon actually draws —
+            // a muzzle measured off a DIFFERENT model is exactly the bug being guarded.
+            if (d.viewmodelGlb != m.glb) {
+                glbsMatch = false;
+                x3::logInfo(std::string("[weapons-test]   ") + m.slot + " draws " +
+                            d.viewmodelGlb + " but its muzzle was measured on " + m.glb +
+                            " — re-run tools/weapon_muzzle_probe.py");
+            }
+            if (std::fabs(d.vmMuzzle.x - m.x) > 1e-4f ||
+                std::fabs(d.vmMuzzle.y - m.y) > 1e-4f ||
+                std::fabs(d.vmMuzzle.z - m.z) > 1e-4f) {
+                muzzlesMeasured = false;
+                x3::logInfo(std::string("[weapons-test]   ") + m.slot + " vmMuzzle is not the measured value");
+            }
+        }
+        wcheck(muzzlesMeasured, "W15b every canon-12 addition carries its PROBE-MEASURED barrel tip");
+        wcheck(glbsMatch,       "W15c each measured muzzle belongs to the GLB that weapon actually draws");
+    }
+
+    // ---- W15d: the new weapons fire FROM their own muzzle, and the muzzle is --
+    // genuinely per-weapon (a shared guess would collapse these onto one point).
+    // W13a already proves muzzle == vmMuzzle-through-the-viewmodel-matrix for the WHOLE
+    // roster; this pins the specific claim that the SIX ADDITIONS have distinct barrel
+    // reaches rather than all inheriting one default.
+    {
+        Arsenal a;
+        const char* added[] = { "laser", "railgun", "flamethrower", "napalm", "freezeray", "bfg11k" };
+        const float ex = 0.0f, ey = 1.7f, ez = 0.0f;
+        const x3::phys::Vec3 fwd{ 1, 0, 0 };
+        bool allAhead = true, anyDistinct = false;
+        float firstReach = -1.0f;
+        for (const char* nm : added) {
+            const int i = a.indexOf(nm);
+            if (i < 0) { allAhead = false; continue; }
+            a.select(i);
+            const x3::phys::Vec3 m = a.currentMuzzle(ex, ey, ez, 0.0f, 0.0f);
+            const float reach = (m.x - ex) * fwd.x + (m.y - ey) * fwd.y + (m.z - ez) * fwd.z;
+            // The barrel tip must lead the eye (the shot leaves the gun, not the face)
+            // and sit BELOW eye level (the fixed viewmodel-anchor read).
+            if (reach < 0.2f || m.y >= ey) allAhead = false;
+            if (firstReach < 0.0f) firstReach = reach;
+            else if (std::fabs(reach - firstReach) > 1e-3f) anyDistinct = true;
+        }
+        wcheck(allAhead,    "W15d each added weapon's muzzle leads the eye and sits below eye level");
+        wcheck(anyDistinct, "W15e the added weapons have DISTINCT barrel reaches (not one shared guess)");
+    }
+
+    // ---- W16a: RAILGUN PIERCES. The slug must carry a pierce budget through to --
+    // the host on its ray; every other hitscan weapon must NOT (a stray pierce would
+    // silently turn the shotgun into a wall-of-piercing-pellets).
+    {
+        Arsenal a;
+        uint32_t rng = 0x1234u;
+        const int i = a.indexOf("railgun");
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        const bool pierces = shot.fired && !shot.rays.empty() && shot.rays[0].pierceTargets > 0;
+        // Nothing else in the roster pierces.
+        bool othersDontPierce = true;
+        for (int wi = 0; wi < a.count(); ++wi)
+            if (wi != i && a.def(wi).pierceTargets != 0) othersDontPierce = false;
+        wcheck(pierces && othersDontPierce,
+               "W16a RailGun fires a PIERCING slug (pierceTargets reaches the host; nothing else pierces)");
+    }
+
+    // ---- W16b: LASER IS CONTINUOUS. It must be an automatic beam flagged -------
+    // continuous, and fire fast enough that held fire reads as one unbroken line
+    // rather than discrete shots. Contrast with the Lightning Gun, which is a beam
+    // but deliberately NOT continuous (discrete zaps).
+    {
+        Arsenal a;
+        uint32_t rng = 0x2345u;
+        const int i = a.indexOf("laser");
+        const WeaponDef& d = a.def(i);
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        const bool contDef = d.continuous && d.beam && d.automatic && d.fireRate >= 15.0f;
+        const bool contRay = shot.fired && !shot.rays.empty() &&
+                             shot.rays[0].continuous && shot.rays[0].beam;
+        // The distinction from the lightning gun must be real, not nominal.
+        const int li = a.indexOf("lightning");
+        const bool distinct = (li < 0) || !a.def(li).continuous;
+        wcheck(contDef && contRay && distinct,
+               "W16b Laser is a CONTINUOUS beam (flagged through to the host; distinct from lightning)");
+    }
+
+    // ---- W16c: FREEZE RAY APPLIES A SLOW. Every particle must carry a real -----
+    // slow (a factor genuinely below 1) for a real duration, and the weapon must be
+    // feeble on raw damage — the port is explicit that the freeze, not the damage,
+    // is the payload. Nothing else in the roster may freeze.
+    {
+        Arsenal a;
+        uint32_t rng = 0x3456u;
+        const int i = a.indexOf("freezeray");
+        const WeaponDef& d = a.def(i);
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        // 2026-08-15: the particles are PROJECTILES now (see the roster note), so the
+        // payload is asserted on the spawns. The claim under test is unchanged.
+        bool everyRayFreezes = shot.fired && !shot.projectiles.empty() && shot.rays.empty();
+        for (const auto& pj : shot.projectiles)
+            if (!(pj.freezeDuration > 0.0f && pj.freezeSlowFactor < 1.0f &&
+                  pj.freezeSlowFactor > 0.0f)) everyRayFreezes = false;
+        // A control weapon, not a damage weapon: it must be the weakest per-hit gun.
+        bool weakest = true;
+        for (int wi = 0; wi < a.count(); ++wi)
+            if (wi != i && a.def(wi).damage < d.damage) weakest = false;
+        // Cone: the port fires multiple crystalline particles, not one bolt.
+        const bool isCone = (int)shot.projectiles.size() >= 3 && d.spreadDeg > 0.0f;
+        bool othersDontFreeze = true;
+        for (int wi = 0; wi < a.count(); ++wi)
+            if (wi != i && a.def(wi).freezeDuration != 0.0f) othersDontFreeze = false;
+        wcheck(everyRayFreezes && weakest && isCone && othersDontFreeze,
+               "W16c FreezeRay applies a real SLOW on every particle (the payload, not its 5 damage)");
+    }
+
+    // ---- W16d: NAPALM LEAVES AREA DAMAGE. The bolt must carry a burning ground -
+    // pool (duration AND dps AND radius) through to the host — that standing fire is
+    // what separates napalm from the rocket. The rocket must NOT leave one.
+    {
+        Arsenal a;
+        uint32_t rng = 0x4567u;
+        const int i = a.indexOf("napalm");
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        const bool leavesPool = shot.fired && !shot.projectiles.empty() &&
+                                shot.projectiles[0].firePoolDuration > 0.0f &&
+                                shot.projectiles[0].firePoolDps      > 0 &&
+                                shot.projectiles[0].firePoolRadius   > 0.0f;
+        // It must also still be an explosive (the pool is in ADDITION to the blast).
+        const bool alsoExplodes = !shot.projectiles.empty() &&
+                                  shot.projectiles[0].splashRadius > 0.0f;
+        // The rocket is the control: a plain blast with no lingering fire.
+        const int ri = a.indexOf("rocket");
+        const bool rocketHasNoPool = (ri < 0) || a.def(ri).firePoolDuration == 0.0f;
+        wcheck(leavesPool && alsoExplodes && rocketHasNoPool,
+               "W16d NapalmLauncher leaves AREA DAMAGE (burning ground pool + blast; the rocket does not)");
+    }
+
+    // ---- W16e: FLAMETHROWER BURNS, at close range, in a cone. -----------------
+    {
+        Arsenal a;
+        uint32_t rng = 0x5678u;
+        const int i = a.indexOf("flamethrower");
+        const WeaponDef& d = a.def(i);
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        // 2026-08-15: travelling FlamePuffs now, not rays (see the roster note).
+        bool everyRayBurns = shot.fired && !shot.projectiles.empty() && shot.rays.empty();
+        for (const auto& pj : shot.projectiles)
+            if (!(pj.burnDuration > 0.0f && pj.burnDps > 0)) everyRayBurns = false;
+        const bool isCone = (int)shot.projectiles.size() >= 3 && d.spreadDeg >= 10.0f;
+        // Shortest reach in the roster — the burn is paid for with range.
+        bool shortest = true;
+        for (int wi = 0; wi < a.count(); ++wi)
+            if (wi != i && a.def(wi).range < d.range) shortest = false;
+        wcheck(everyRayBurns && isCone && shortest,
+               "W16e FlameThrower applies a BURN DOT in a wide cone at the shortest range in the roster");
+    }
+
+    // ---- W16f: BFG 11k detonates with secondary bolts and eats FIVE rounds. ----
+    // ammoPerShot is the canon scarcity rule (a full 5-round pickup is ONE shot);
+    // if it silently consumed 1 the weapon would be five times as available as designed.
+    {
+        Arsenal a;
+        uint32_t rng = 0x6789u;
+        const int i = a.indexOf("bfg11k");
+        const WeaponDef& d = a.def(i);
+        a.select(i);
+        a.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        const int before = a.state(i).ammoInMag;
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        const int spent = before - a.state(i).ammoInMag;
+        const bool bolts = shot.fired && !shot.projectiles.empty() &&
+                           shot.projectiles[0].secondaryBolts > 0;
+        const bool blast = !shot.projectiles.empty() && shot.projectiles[0].splashRadius > 0.0f;
+        const bool ammoCost = (d.ammoPerShot == 5) && (spent == 5);
+        // Every other weapon still consumes exactly one round per pull.
+        Arsenal b;
+        const int pi = b.indexOf("pistol");
+        b.select(pi);
+        b.tick(5.0f);                    // clear the select cooldown (see Arsenal::select)
+        const int pBefore = b.state(pi).ammoInMag;
+        uint32_t rng2 = 0x789Au;
+        b.fire(eye, fwd, rng2);
+        const bool pistolStillOne = (pBefore - b.state(pi).ammoInMag) == 1;
+        wcheck(bolts && blast && ammoCost && pistolStillOne,
+               "W16f BFG11k detonates with secondary bolts and costs 5 rounds a shot (others still cost 1)");
+    }
+
+    // ---- W16g: the additions did not disturb the existing roster. -------------
+    // Every pre-existing weapon must still carry ZERO of the new canon-12 payloads —
+    // this is the "additive, byte-identical" claim made in the WeaponDef comments,
+    // asserted rather than assumed.
+    {
+        Arsenal a;
+        const char* preExisting[] = { "pistol", "smg", "shotgun", "plasma",
+                                      "chaingun", "plasma_rifle", "lightning", "rocket" };
+        bool untouched = true;
+        for (const char* nm : preExisting) {
+            const int i = a.indexOf(nm);
+            if (i < 0) { untouched = false; continue; }
+            const WeaponDef& d = a.def(i);
+            if (d.pierceTargets != 0 || d.burnDuration != 0.0f || d.burnDps != 0 ||
+                d.freezeDuration != 0.0f || d.firePoolDuration != 0.0f ||
+                d.firePoolDps != 0 || d.secondaryBolts != 0 ||
+                d.ammoPerShot != 1 || d.continuous) {
+                untouched = false;
+                x3::logInfo(std::string("[weapons-test]   pre-existing weapon '") + nm +
+                            "' picked up a canon-12 payload it should not have");
+            }
+        }
+        wcheck(untouched, "W16g the 8 pre-existing weapons are unchanged by the canon-12 additions");
+    }
+
+    // =======================================================================
+    // W17 — WEAPON FEEL (2026-08-15 lane): the napalm arc, the flame/ice streams,
+    // and the Cryo tag. Each of these was a MODEL limitation the roster lane could
+    // not reach from config, so each gets an assertion that the model actually
+    // changed — not merely that a number is present.
+    // =======================================================================
+
+    // ---- W17a: THE GRAVITY DEFAULT IS THE REGRESSION GUARD, PROVEN. -----------
+    // The entire safety claim of WeaponDef::projectileGravity is "default 0.0 leaves
+    // every pre-existing weapon bit-identical". This asserts it in three independent
+    // ways instead of trusting the default:
+    //   (i)  every weapon that did not opt in carries EXACTLY 0.0f, and so does every
+    //        spawn it produces (a stamped-but-wrong value would pass a def-only check);
+    //   (ii) replaying the Phase-B integrator shape (v.y -= g*dt; pos += v*dt) at g==0
+    //        reproduces the OLD flat model's positions to the BIT across a long flight;
+    //   (iii) the deterministic spread stream is untouched — an aimed projectile weapon
+    //        still consumes exactly the rng draws it always did, so no weapon's random
+    //        sequence shifted underneath it.
+    {
+        Arsenal a;
+        uint32_t rngG = 0xA17A17u;
+        bool defsZero = true, spawnsZero = true;
+        for (int wi = 0; wi < a.count(); ++wi) {
+            const WeaponDef& d = a.def(wi);
+            const bool optedIn = (d.name == "napalm" || d.name == "flamethrower");
+            if (!optedIn && d.projectileGravity != 0.0f) {
+                defsZero = false;
+                x3::logInfo("[weapons-test]   '" + d.name + "' picked up a gravity it did not opt into");
+            }
+            if (optedIn) continue;
+            if (d.kind != FireKind::Projectile) continue;
+            a.select(wi); a.tick(20.0f);
+            ResolvedFire s = a.fire(eye, fwd, rngG);
+            for (const ProjectileSpawn& pj : s.projectiles)
+                if (pj.gravity != 0.0f) spawnsZero = false;
+        }
+
+        // (ii) BIT-EXACT trajectory replay. `flat` is the model every legacy bolt was
+        // tuned against (app_run.cpp: pos += vel*dt, no gravity term). `grav` is the
+        // Phase-B1 integrator with the field wired in. At gravity 0 they must agree
+        // EXACTLY — float equality, not a tolerance, because "bit-identical" is the claim.
+        bool replayIdentical = true;
+        {
+            Arsenal b;
+            const int pi2 = b.indexOf("plasma");
+            b.select(pi2); b.tick(20.0f);
+            uint32_t rng3 = 0x5EED01u;
+            ResolvedFire s = b.fire(eye, fwd, rng3);
+            if (s.projectiles.size() != 1) replayIdentical = false;
+            else {
+                const ProjectileSpawn& pj = s.projectiles[0];
+                x3::phys::Vec3 pFlat = pj.pos, vFlat = pj.vel;
+                x3::phys::Vec3 pGrav = pj.pos, vGrav = pj.vel;
+                const float dt = 1.0f / 165.0f;      // the rate that has bitten this project
+                for (int step = 0; step < 400; ++step) {
+                    pFlat.x += vFlat.x * dt; pFlat.y += vFlat.y * dt; pFlat.z += vFlat.z * dt;
+                    vGrav.y -= pj.gravity * dt;      // dt-scaled, never per frame
+                    pGrav.x += vGrav.x * dt; pGrav.y += vGrav.y * dt; pGrav.z += vGrav.z * dt;
+                    if (pFlat.x != pGrav.x || pFlat.y != pGrav.y || pFlat.z != pGrav.z) {
+                        replayIdentical = false; break;
+                    }
+                }
+            }
+        }
+
+        // (iii) rng-stream identity: an aimed projectile weapon has spreadDeg 0, and
+        // applySpread returns early WITHOUT drawing in that case — so firing it must
+        // leave the shared spread stream exactly where it found it. If the multi-spawn
+        // loop ever over-draws, every subsequent shotgun pattern in the game shifts.
+        bool streamUntouched = true;
+        {
+            Arsenal b;
+            const int ri2 = b.indexOf("rocket");
+            b.select(ri2); b.tick(20.0f);
+            uint32_t before = 0x1234ABCDu, rng4 = before;
+            b.fire(eye, fwd, rng4);
+            if (b.def(ri2).spreadDeg == 0.0f && rng4 != before) streamUntouched = false;
+        }
+
+        wcheck(defsZero && spawnsZero && replayIdentical && streamUntouched,
+               "W17a gravity default 0 leaves every non-opted weapon bit-identical (defs, spawns, "
+               "400-step trajectory replay at 165 Hz, and the rng stream)");
+    }
+
+    // ---- W17b: NAPALM ACTUALLY ARCS. -----------------------------------------
+    // Not "carries a number" — the ballistic solution has to bend. Fired LEVEL the
+    // shell must fall measurably below the flat path, and the arc must be sized to the
+    // weapon rather than arbitrary: a 45-degree lob reaches v^2/g, which for a genuine
+    // lobbed weapon lands INSIDE its own despawn range (if it sailed past `range` the
+    // arc would never be seen). Flamethrower is the negative-gravity control.
+    {
+        Arsenal a;
+        uint32_t rng = 0x7A17u;
+        const int i = a.indexOf("napalm");
+        const WeaponDef& d = a.def(i);
+        a.select(i); a.tick(20.0f);
+        ResolvedFire shot = a.fire(eye, fwd, rng);
+        const bool carries = shot.fired && shot.projectiles.size() == 1 &&
+                             shot.projectiles[0].gravity > 0.0f &&
+                             shot.projectiles[0].gravity == d.projectileGravity;
+        // Level shot: integrate and require a real drop.
+        bool arcs = false, monotone = true;
+        if (carries) {
+            const ProjectileSpawn& pj = shot.projectiles[0];
+            x3::phys::Vec3 p = pj.pos, v = pj.vel;
+            const float dt = 1.0f / 120.0f;
+            float lastY = p.y;
+            for (int step = 0; step < 120; ++step) {   // 1 s of flight
+                v.y -= pj.gravity * dt;
+                p.x += v.x * dt; p.y += v.y * dt; p.z += v.z * dt;
+                if (p.y > lastY) monotone = false;      // must never climb on a level shot
+                lastY = p.y;
+            }
+            // After 1 s under 32 m/s^2 the shell is ~16 m lower. Anything under a metre
+            // would be a flat shot wearing a gravity field.
+            arcs = (pj.pos.y - p.y) > 1.0f;
+        }
+        // The lob envelope matches the weapon: v^2/g must sit inside the authored range
+        // (so the arc is usable) but be a real fraction of it (so it is not a mortar).
+        const float lobRange = (d.projSpeed * d.projSpeed) / d.projectileGravity;
+        const bool sized = lobRange < d.range && lobRange > d.range * 0.5f;
+        // Control: the flamethrower's harvested gravity is NEGATIVE (flames rise).
+        const int fi = a.indexOf("flamethrower");
+        const bool flameRises = (fi >= 0) && a.def(fi).projectileGravity < 0.0f;
+        wcheck(carries && arcs && monotone && sized && flameRises,
+               "W17b napalm's spawn carries its harvested gravity and the ballistic solution "
+               "genuinely arcs, sized to its own range (flames rise: negative g)");
+    }
+
+    // ---- W17c: MULTI-SPAWN — N for the streams, EXACTLY ONE for everyone else. --
+    // The "exactly one" half is the regression guard: the host's live fire path still
+    // reads projectiles[0], so any weapon that quietly grew a second spawn would start
+    // silently dropping it. Asserted per weapon, not spot-checked.
+    {
+        Arsenal a;
+        uint32_t rng = 0x11A5u;
+        bool onesOk = true, streamsOk = true, boundedOk = true;
+        for (int wi = 0; wi < a.count(); ++wi) {
+            const WeaponDef& d = a.def(wi);
+            if (d.kind != FireKind::Projectile) continue;
+            a.select(wi); a.tick(20.0f);
+            ResolvedFire s = a.fire(eye, fwd, rng);
+            const int n = (int)s.projectiles.size();
+            if (n > kMaxStreamSpawns) boundedOk = false;     // the hard bound, every weapon
+            const bool isStream = (d.name == "flamethrower" || d.name == "freezeray");
+            if (isStream) {
+                if (n < 2 || n != d.pellets) {
+                    streamsOk = false;
+                    x3::logInfo("[weapons-test]   stream '" + d.name + "' emitted " +
+                                std::to_string(n) + " spawns, expected " + std::to_string(d.pellets));
+                }
+            } else if (n != 1) {
+                onesOk = false;
+                x3::logInfo("[weapons-test]   aimed weapon '" + d.name + "' emitted " +
+                            std::to_string(n) + " spawns, expected exactly 1");
+            }
+        }
+        // A mis-authored def must be CLAMPED, not trusted — prove the bound bites.
+        std::vector<WeaponDef> over = makeDefaultRoster();
+        for (WeaponDef& w : over)
+            if (w.name == "flamethrower") { w.pellets = 999; }
+        Arsenal ov(over);
+        const int oi = ov.indexOf("flamethrower");
+        ov.select(oi); ov.tick(20.0f);
+        uint32_t rng5 = 0x99u;
+        ResolvedFire os = ov.fire(eye, fwd, rng5);
+        const bool clamps = (int)os.projectiles.size() == kMaxStreamSpawns;
+        wcheck(onesOk && streamsOk && boundedOk && clamps,
+               "W17c streams emit N>1 spawns (== pellets), every other weapon emits exactly 1, "
+               "and a runaway pellet count clamps at kMaxStreamSpawns");
+    }
+
+    // ---- W17d: the stream is a real STREAM, not N copies of one bolt. ---------
+    // Per-spawn cone jitter (distinct directions) + staggered lifetimes (distinct
+    // ranges, all inside the authored range) are what stop the burst reading as a
+    // single fat projectile. Aimed weapons must show NEITHER — their one bolt keeps
+    // the def's range EXACTLY, which is half of why they stay bit-identical.
+    {
+        Arsenal a;
+        uint32_t rng = 0xC04Eu;
+        bool jitterOk = true, staggerOk = true;
+        const char* streams[] = { "flamethrower", "freezeray" };
+        for (const char* nm : streams) {
+            const int i = a.indexOf(nm);
+            if (i < 0) { jitterOk = false; continue; }
+            const WeaponDef& d = a.def(i);
+            a.select(i); a.tick(20.0f);
+            ResolvedFire s = a.fire(eye, fwd, rng);
+            if ((int)s.projectiles.size() < 2) { jitterOk = false; continue; }
+            bool anyDiffDir = false, anyDiffRange = false, allInRange = true;
+            for (size_t p = 1; p < s.projectiles.size(); ++p) {
+                const auto& A = s.projectiles[0]; const auto& B = s.projectiles[p];
+                if (A.vel.x != B.vel.x || A.vel.y != B.vel.y || A.vel.z != B.vel.z) anyDiffDir = true;
+                if (A.range != B.range) anyDiffRange = true;
+            }
+            for (const auto& pj : s.projectiles)
+                if (!(pj.range > 0.0f && pj.range <= d.range)) allInRange = false;
+            if (!anyDiffDir) jitterOk = false;
+            if (!anyDiffRange || !allInRange) staggerOk = false;
+        }
+        // Aimed control: napalm's single bolt keeps the authored range untouched.
+        const int ni = a.indexOf("napalm");
+        a.select(ni); a.tick(20.0f);
+        ResolvedFire ns = a.fire(eye, fwd, rng);
+        const bool aimedExact = ns.projectiles.size() == 1 &&
+                                ns.projectiles[0].range == a.def(ni).range;
+        wcheck(jitterOk && staggerOk && aimedExact,
+               "W17d stream spawns have per-particle cone jitter + staggered lifetimes; "
+               "an aimed bolt keeps its authored range exactly");
+    }
+
+    // ---- W17e: THE CRYO TAG. FreezeRay stamps it; NOTHING else does. ----------
+    // The exclusivity half matters as much as the presence half: MonsterSystem keys a
+    // real chase-speed slow off this value, so a second weapon acquiring the tag would
+    // silently gain crowd control. Also pins the APPEND-ONLY property of the enum —
+    // Cryo must not collide with an older row, or every Adaptive-Hide window re-keys.
+    {
+        Arsenal a;
+        uint32_t rng = 0xC0DE01u;
+        const int i = a.indexOf("freezeray");
+        const bool defTagged = (i >= 0) && a.def(i).type == x3::DamageType::Cryo;
+        bool onlyOne = true;
+        for (int wi = 0; wi < a.count(); ++wi)
+            if (wi != i && a.def(wi).type == x3::DamageType::Cryo) onlyOne = false;
+        // Resolve: the tag must survive fire() onto EVERY particle, not just the first.
+        bool everySpawnTagged = false;
+        if (i >= 0) {
+            a.select(i); a.tick(20.0f);
+            ResolvedFire s = a.fire(eye, fwd, rng);
+            everySpawnTagged = s.fired && s.projectiles.size() >= 2;
+            for (const auto& pj : s.projectiles)
+                if (pj.type != x3::DamageType::Cryo) everySpawnTagged = false;
+        }
+        // Append-only: Cryo is a NEW value, distinct from every pre-existing row, and
+        // Count still bounds the enum.
+        const bool appended =
+            x3::DamageType::Cryo != x3::DamageType::None &&
+            x3::DamageType::Cryo != x3::DamageType::Kinetic &&
+            x3::DamageType::Cryo != x3::DamageType::Energy &&
+            x3::DamageType::Cryo != x3::DamageType::Explosive &&
+            x3::DamageType::Cryo != x3::DamageType::Bio &&
+            x3::DamageType::Cryo != x3::DamageType::Melee &&
+            (uint32_t)x3::DamageType::Cryo < (uint32_t)x3::DamageType::Count;
+        wcheck(defTagged && onlyOne && everySpawnTagged && appended,
+               "W17e FreezeRay stamps DamageType::Cryo on every particle; no other weapon does; "
+               "Cryo is appended, not renumbered");
+    }
+
+    // ---- W17f: the engine-side chill MIRRORS the weapon's own numbers. --------
+    // MonsterSystem keys its slow off the TYPE and uses kCryoSlowFactor/kCryoSlowDuration
+    // (the host cannot thread the per-shot payload without app_run.cpp — Phase B). That
+    // duplication is only safe while the two agree, so the drift is asserted, not trusted.
+    {
+        Arsenal a;
+        const int i = a.indexOf("freezeray");
+        const bool mirrored = (i >= 0) &&
+                              a.def(i).freezeSlowFactor == kCryoSlowFactor &&
+                              a.def(i).freezeDuration   == kCryoSlowDuration;
+        wcheck(mirrored,
+               "W17f MonsterSystem's kCryoSlowFactor/kCryoSlowDuration mirror the FreezeRay def");
+    }
+
+    // ==== W18: Phase B — the app_run patch's data contracts, pinned here. ======
+
+    // ---- W18a: the canon 12-key row resolves EVERY canon weapon in the live
+    // arsenal (all 12 selectable by key), with 12 DISTINCT names. ---------------
+    {
+        Arsenal a;
+        bool allResolve = true, distinct = true;
+        for (int i = 0; i < kCanonKeyCount; ++i) {
+            const char* nm = canonKeyWeaponName(i);
+            if (!nm || a.indexOf(nm) < 0) allResolve = false;
+            for (int j = 0; j < i; ++j)
+                if (nm && canonKeyWeaponName(j) &&
+                    std::string(nm) == canonKeyWeaponName(j)) distinct = false;
+        }
+        const bool bounds = canonKeyWeaponName(-1) == nullptr &&
+                            canonKeyWeaponName(kCanonKeyCount) == nullptr;
+        wcheck(allResolve && distinct && bounds,
+               "W18a canon key row: 12 distinct names, every one resolves in the arsenal, "
+               "out-of-range keys return null");
+    }
+
+    // ---- W18b: canon ORDER — 1=Pistol ... 9=FlameThrower, then 0 - = carry
+    // canon slots 10-12 (Napalm / FreezeRay / BFG11k). ---------------------------
+    {
+        const bool order =
+            std::string(canonKeyWeaponName(0))  == "pistol"       &&
+            std::string(canonKeyWeaponName(1))  == "shotgun"      &&
+            std::string(canonKeyWeaponName(2))  == "rocket"       &&   // canon Bazooka
+            std::string(canonKeyWeaponName(8))  == "flamethrower" &&
+            std::string(canonKeyWeaponName(9))  == "napalm"       &&   // the '0' key
+            std::string(canonKeyWeaponName(10)) == "freezeray"    &&   // the '-' key
+            std::string(canonKeyWeaponName(11)) == "bfg11k";           // the '=' key
+        wcheck(order, "W18b canon key ORDER: 1..9 = canon 1-9, 0 - = bind canon slots 10-12");
+    }
+
+    // ---- W18c: the host integrator's ballistic form (v.y -= g*dt; pos += v*dt)
+    // ARCS a napalm spawn and leaves a zero-gravity spawn exactly flat. This
+    // mirrors app_run.cpp's LiveProjectile step (Phase B1) so a regression there
+    // has a headless tripwire on the formula itself. -----------------------------
+    {
+        Arsenal a;
+        bool arcs = false, flatStaysFlat = true;
+        const float dt = 1.0f / 165.0f;   // the house refresh-rate case
+        if (a.selectByName("napalm")) {
+            a.tick(10.0f);
+            ResolvedFire shot = a.fire(eye, fwd, rng);
+            if (!shot.projectiles.empty() && shot.projectiles[0].gravity > 0.0f) {
+                x3::phys::Vec3 p = shot.projectiles[0].pos, v = shot.projectiles[0].vel;
+                const float y0 = p.y, vy0 = v.y;
+                for (int s = 0; s < 165; ++s) {   // 1 simulated second
+                    v.y -= shot.projectiles[0].gravity * dt;
+                    p.x += v.x * dt; p.y += v.y * dt; p.z += v.z * dt;
+                }
+                // Fired level: after 1 s the bolt must have DROPPED below the
+                // flat path by g/2*t^2 (within integration tolerance).
+                const float flatY = y0 + vy0 * 1.0f;
+                arcs = p.y < flatY - 0.25f * shot.projectiles[0].gravity * 0.5f;
+            }
+        }
+        if (a.selectByName("plasma")) {
+            a.tick(10.0f);
+            ResolvedFire shot = a.fire(eye, fwd, rng);
+            if (!shot.projectiles.empty()) {
+                flatStaysFlat = shot.projectiles[0].gravity == 0.0f;
+            } else flatStaysFlat = false;
+        }
+        wcheck(arcs && flatStaysFlat,
+               "W18c integrator form: napalm arcs under v.y-=g*dt at 165 Hz; "
+               "zero-gravity bolts stay flat");
+    }
+
+    // ==== FP: NAPALM FIRE POOLS (weapon-vfx lane) — the firePool payload is ====
+    // finally CONSUMED. Pure logic (FirePoolSystem), no host needed.
+
+    // ---- FP1: a pool spawns, damages at exactly its authored DPS, and expires. -
+    // Stepped at dt = kFirePoolTickSec so the arithmetic is exact: 5.0 s at 25 dps
+    // must deliver 125 damage in 10 ticks and then free the slot.
+    {
+        FirePoolSystem fp;
+        const FirePoolSpawn r = fp.spawn(x3::phys::Vec3{ 1, 0, 2 }, 3.0f, 25, 5.0f,
+                                         SurfaceType::Unknown);
+        int totalDmg = 0, nTicks = 0;
+        FirePoolSystem::Tick out[kMaxFirePools];
+        for (int s = 0; s < 12; ++s) {                       // 6.0 s > the 5.0 s life
+            const int n = fp.update(kFirePoolTickSec, out, kMaxFirePools);
+            for (int t = 0; t < n; ++t) { totalDmg += out[t].damage; ++nTicks; }
+        }
+        wcheck(r == FirePoolSpawn::Ignited && totalDmg == 125 && nTicks == 10 &&
+               fp.liveCount() == 0,
+               "FP1 pool ignites, delivers dps*duration exactly (125 in 10 ticks), expires");
+    }
+
+    // ---- FP2: the SURFACE RULE — water extinguishes, lava needs no pool. ------
+    {
+        FirePoolSystem fp;
+        const bool water = fp.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Water)
+                               == FirePoolSpawn::ExtinguishedWater && fp.liveCount() == 0;
+        const bool lava  = fp.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Lava)
+                               == FirePoolSpawn::AlreadyBurningLava && fp.liveCount() == 0;
+        const bool solid = fp.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Concrete)
+                               == FirePoolSpawn::Ignited && fp.liveCount() == 1;
+        wcheck(water && lava && solid,
+               "FP2 surface rule: Water extinguishes, Lava is already burning, solids ignite");
+    }
+
+    // ---- FP3: the HARD BOUND — kMaxFirePools simultaneous, oldest recycled. ---
+    {
+        FirePoolSystem fp;
+        for (int i = 0; i < kMaxFirePools + 2; ++i)
+            fp.spawn(x3::phys::Vec3{ (float)i, 0, 0 }, 3.0f, 25, 5.0f, SurfaceType::Unknown);
+        bool oldestGone = true, newestAlive = false;
+        for (int i = 0; i < FirePoolSystem::capacity(); ++i) {
+            const auto& p = fp.pool(i);
+            if (p.remaining <= 0.0f) continue;
+            if (p.center.x < 1.5f) oldestGone = false;             // pools 0/1 were recycled
+            if (p.center.x == (float)(kMaxFirePools + 1)) newestAlive = true;
+        }
+        wcheck(fp.liveCount() == kMaxFirePools && oldestGone && newestAlive,
+               "FP3 bound: at most kMaxFirePools pools; overflow recycles the OLDEST");
+    }
+
+    // ---- FP4: dt-CORRECTNESS (house rule) — 60 Hz and 165 Hz agree. -----------
+    {
+        FirePoolSystem a60, a165;
+        a60.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Unknown);
+        a165.spawn(x3::phys::Vec3{}, 3.0f, 25, 5.0f, SurfaceType::Unknown);
+        FirePoolSystem::Tick out[kMaxFirePools];
+        int d60 = 0, d165 = 0;
+        for (int s = 0; s < 360; ++s) {                      // 6.0 s at 60 Hz
+            const int n = a60.update(1.0f / 60.0f, out, kMaxFirePools);
+            for (int t = 0; t < n; ++t) d60 += out[t].damage;
+        }
+        for (int s = 0; s < 990; ++s) {                      // 6.0 s at 165 Hz
+            const int n = a165.update(1.0f / 165.0f, out, kMaxFirePools);
+            for (int t = 0; t < n; ++t) d165 += out[t].damage;
+        }
+        // Same wall time, same total burn to within one tick's rounding.
+        const int diff = (d60 > d165) ? d60 - d165 : d165 - d60;
+        wcheck(diff <= 13 && d60 >= 110 && d60 <= 126 &&
+               a60.liveCount() == 0 && a165.liveCount() == 0,
+               "FP4 pool burn is dt-scaled: 60 Hz and 165 Hz deliver the same total damage");
+    }
+
+    // ---- FP5: END TO END — the napalm SHOT's own payload ignites a pool with ---
+    // the harvested port numbers (5.0 s / 25 dps / 3.0 m: firePoolDuration+DPS 1:1,
+    // radius 60 port-units x0.05 — CreateFirePool in the port's weapon.cpp).
+    {
+        Arsenal a;
+        bool payload = false, ignites = false;
+        if (a.selectByName("napalm")) {
+            a.tick(10.0f);
+            ResolvedFire shot = a.fire(eye, fwd, rng);
+            if (!shot.projectiles.empty()) {
+                const ProjectileSpawn& pj = shot.projectiles[0];
+                payload = pj.firePoolDuration == 5.0f && pj.firePoolDps == 25 &&
+                          pj.firePoolRadius == 3.0f;
+                FirePoolSystem fp;
+                ignites = fp.spawn(eye, pj.firePoolRadius, pj.firePoolDps,
+                                   pj.firePoolDuration, SurfaceType::Unknown)
+                              == FirePoolSpawn::Ignited && fp.liveCount() == 1;
+            }
+        }
+        wcheck(payload && ignites,
+               "FP5 napalm spawn payload (5.0 s / 25 dps / 3.0 m harvested) ignites a pool");
+    }
+
+    // ==== FV: the ELEMENTAL FX consumer rows (weapon-vfx lane). ================
+
+    // ---- FV1: the DamageType-keyed kind rows resolve from the roster's fx ids,
+    // and ONLY the elemental weapons land on them (a stray substring match would
+    // silently re-skin another gun's muzzle).
+    {
+        Arsenal a;
+        using K = x3::game::WeaponFxKind;
+        const int fi = a.indexOf("flamethrower"), zi = a.indexOf("freezeray"),
+                  ni = a.indexOf("napalm");
+        const bool rows = fi >= 0 && zi >= 0 && ni >= 0 &&
+            fxKindFromId(a.def(fi).muzzleFx) == K::Flame &&
+            fxKindFromId(a.def(fi).impactFx) == K::Flame &&
+            fxKindFromId(a.def(zi).muzzleFx) == K::Frost &&
+            fxKindFromId(a.def(zi).impactFx) == K::Frost &&
+            fxKindFromId(a.def(ni).muzzleFx) == K::Napalm &&
+            fxKindFromId(a.def(ni).impactFx) == K::Napalm;
+        bool noStray = true;
+        for (int i = 0; i < a.count(); ++i) {
+            if (i == fi || i == zi || i == ni) continue;
+            const K mk = fxKindFromId(a.def(i).muzzleFx), ik = fxKindFromId(a.def(i).impactFx);
+            if (mk == K::Flame || mk == K::Frost || mk == K::Napalm ||
+                ik == K::Flame || ik == K::Frost || ik == K::Napalm) noStray = false;
+        }
+        wcheck(rows && noStray,
+               "FV1 flame/frost/napalm FX rows resolve from the roster ids; no other weapon strays onto them");
+    }
+
+    // ---- FV2: flame/frost PARTICLE PARAMS in range — fire is an orange-red ----
+    // gradient that GROWS and RISES; ice is cyan-white that SHRINKS and doesn't.
+    {
+        const BoltStyle fl = boltStyleFor(x3::game::WeaponFxKind::Flame);
+        const BoltStyle fr = boltStyleFor(x3::game::WeaponFxKind::Frost);
+        const bool flameOk =
+            fl.r > fl.g && fl.g > fl.b &&        // orange-red at birth
+            fl.r1 < fl.r && fl.g1 < fl.g &&      // cools toward deep red
+            fl.endScale > 1.0f &&                // the flame front EXPANDS
+            fl.rise > 0.0f &&                    // heat rises (matches the -8 m/s^2 data)
+            fl.life > 0.05f && fl.life < 1.0f;
+        const bool frostOk =
+            fr.b > fr.g && fr.g > fr.r &&        // cyan-white
+            fr.endScale < 1.0f &&                // the crystal SHRINKS (sublimates)
+            fr.rise == 0.0f &&                   // ice does not rise
+            fr.life > 0.02f && fr.life < 1.0f;
+        // Legacy kinds must be untouched: no gradient (end == birth), classic 0.7 shrink.
+        const BoltStyle pl = boltStyleFor(x3::game::WeaponFxKind::Plasma);
+        const bool legacyOk = pl.r1 == pl.r && pl.g1 == pl.g && pl.b1 == pl.b &&
+                              pl.endScale == 0.7f && pl.rise == 0.0f;
+        wcheck(flameOk && frostOk && legacyOk,
+               "FV2 flame grows/rises/cools orange->red; frost is cyan and shrinks; legacy bolts untouched");
+    }
+
+    // ---- FV3: the FROST TINT applies while chilled and REVERTS EXACTLY. -------
+    // The fold is pure; drawMonster keys it off isChilled() — the same timer as
+    // the speed slow — so apply/revert cannot drift from the mechanic.
+    {
+        const float base[4] = { 0.8f, 0.7f, 0.6f, 1.0f };
+        float chilled[4] = { base[0], base[1], base[2], base[3] };
+        float warm[4]    = { base[0], base[1], base[2], base[3] };
+        applyFrostTint(chilled, true);
+        applyFrostTint(warm, false);
+        const bool applies = chilled[0] < base[0] &&          // red stolen
+                             chilled[2] > base[2] &&          // blue pushed
+                             chilled[3] == base[3];           // alpha untouched
+        const bool reverts = warm[0] == base[0] && warm[1] == base[1] &&
+                             warm[2] == base[2] && warm[3] == base[3];   // BYTE-exact
+        const bool sane = kFrostTintR < 1.0f && kFrostTintB > 1.0f;
+        wcheck(applies && reverts && sane,
+               "FV3 frost tint: icy shift while chilled, byte-exact identity when not");
     }
 
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +

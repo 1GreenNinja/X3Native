@@ -350,6 +350,11 @@ bool RoadTrees::build(x3::rhi::IRenderDevice& device, const TunnelRoute& route,
                         const char* glb = (rng.next() < 0.5f) ? kBenchGlbA : kBenchGlbB;
                         if (m_art.addGlbInstance(glb, T)) {
                             ++m_benches;
+                            // W-NIGHT: record the site for the campfire pass.
+                            // toward-road = the direction that DECREASES |lat|,
+                            // i.e. -side * (the +lat perpendicular pdx/pdz).
+                            m_benchSites.push_back(BenchSite{
+                                bx, ty, bz, yaw, -side * pdx, -side * pdz });
                             // Coords logged so the eye-gate can aim a camera
                             // at every bench (NO_SLOP rule 2).
                             x3::logInfo("road_trees: bench at (" +

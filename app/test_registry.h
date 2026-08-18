@@ -45,6 +45,7 @@ struct TestFlags {
     bool testLevelLint = false;   // --test-levellint (GATE A: door-seat / junction / cut-span / reach)
     bool testPropClip = false;    // --test-propclip (GATE A ext: dressing prop AABB vs room bounds)
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
+    bool testGrounding = false;   // --test-grounding (character feet vs support surface, app/grounding.h)
     bool testStairNav = false;   // feat/stair-nav: enemy stairwell pathing (S1-S5)
     bool testFilmic = false;      // --test-filmic (composite filmic block: CPU-mirror identity probe)
     bool testGoldenPath = false;
@@ -72,6 +73,7 @@ struct TestFlags {
     bool testWingDressing = false;// --test-wingdressing (F2-F7 wing recipe dressing, headless)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
     bool testSurfaceHandoff = false;// --test-surfacehandoff ([P0-1] surface -> facility handoff)
+    bool testApronLanding = false;// --test-apronlanding (ONE WORLD landing: intro -> canon apron)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;
     bool testTerrain = false, testTerrainPlace = false, testStreaming = false;
@@ -82,6 +84,8 @@ struct TestFlags {
     bool testUnderRiver = false;      // --test-underriver (the river under the mountain)
     bool testTraffic = false;         // --test-traffic (freeway AI traffic)
     bool testGasStation = false;      // --test-gasstation (W-STATIONS forecourts + fuel stub)
+    bool testFactory     = false;     // --test-factory (the works siting + the tickets)
+    bool testInterchange = false;     // --test-interchange (the diamond grade split)
     bool testTunnelDrive = false;      // --test-tunneldrive (drive-through the demo bore, negative-controlled)
     bool testSummitLot   = false;      // --test-summitlot (the pad at the top of the summit spur)
     bool testRidgeRoad   = false;      // --test-ridgeroad (the dirt road along the tops)
@@ -93,6 +97,7 @@ struct TestFlags {
     bool testPackSpiders = false;    // --test-packspiders (pack-harvest arachnids: Lab Skitterer / Venom Brood)
     bool testClone = false;          // --test-clone (THE CLONE: Act-1 finale 3-phase boss + neural collar)
     bool testGallery = false;        // --test-gallery (character-gallery cast + clip cycle)
+    bool testCutaway = false;        // --test-cutaway (Level Architect cutaway model)
     bool testSpireTop = false, testTimeline = false, testDroneHack = false, testSubLevels = false;
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;
@@ -104,6 +109,7 @@ struct TestFlags {
     bool testCompanionCombat = false;   // --test-companion-combat (Sarah ally combat, Lane B)
     bool testVigil = false;
     bool testMission = false, testDestruction = false, testDebris = false, testGpuSkin = false;
+    bool testGibs = false;      // --test-gibs (gib shard meshes: variety/floor/bounded pool)
     bool testMeshlet = false, testGpuCull = false, testCollapse = false, testNav = false;
     bool testVisUnify = false;   // --test-visunify (vis-unify acceptance gate)
     bool testWeapons = false, testScript = false, testVehicle = false, testVehParts = false;
@@ -145,6 +151,20 @@ struct TestFlags {
     std::string listClipsPath;
     std::string demoDialogPath;
 };
+
+// ---------------------------------------------------------------------------
+// --test-grounding — THE CHARACTER-GROUNDING GATE (app/grounding.h).
+//
+// The 0cbe3f89 wiring: parseCli() sets this inline global directly and
+// dispatchTests() reads it first (it predates the EXE split's TestFlags copy
+// and stayed additive/zero-conflict for that reason). Merge 58eb79b3
+// (inspx/la-exe -> integration/playtest-0814) dropped the cli.cpp + this block
+// in its KEEP-BOTH resolution, leaving runGroundingSelfTest() with NO caller —
+// the gate existed but could not be run. Restored 2026-08-16
+// (audit/rifthub-portals). Folds into TestFlags in one line whenever a lane
+// that owns main.cpp wants it.
+// ---------------------------------------------------------------------------
+inline bool g_testGrounding = false;
 
 // Run the headless test ladder. Returns 0/1 (the program exit code) if a test
 // flag matched, or -1 if none matched (main() should continue normal boot).

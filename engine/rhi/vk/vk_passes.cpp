@@ -78,10 +78,10 @@ void VulkanRenderDevice::recordDebrisDrawBody(VkCommandBuffer cmd) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_debrisDrawPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_debrisDrawLayout,
                                 0, 1, &m_debrisDrawSet[m_frameIdx], 0, nullptr);
-        VkDeviceSize zero = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m_debrisCubeVbo, &zero);
-        vkCmdBindIndexBuffer(cmd, m_debrisCubeIbo, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, m_debrisCubeIndexCount, kDebrisCapacity, 0, 0, 0);
+        // No vertex/index buffers: the vertex shader fetches shard geometry from the
+        // shard-set SSBO (draw set binding 2) per gl_VertexIndex, and selects one of
+        // the distinct shard meshes per instance (see shaders/debris.vert).
+        vkCmdDraw(cmd, kDebrisShardVertsMax, kDebrisCapacity, 0, 0);
     }
 
 void VulkanRenderDevice::recordSkinComputeBody(VkCommandBuffer cmd) {
@@ -1597,6 +1597,27 @@ void VulkanRenderDevice::drawHudImage(const FrameContext& fc, TextureHandle tex,
         flushHud(verts, 6, /*texFont=*/-1, /*userTex=*/tex.id);
     }
 
+void VulkanRenderDevice::drawHudImageQuad(const FrameContext& fc, TextureHandle tex,
+                  const float xyPx[8], const float rgba[4]) {
+        if (!fc.valid || !m_hudPipeline || !tex.valid() || !xyPx) return;
+        const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
+                             rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
+        const float fw = (float)std::max(1u, m_extent.width);
+        const float fh = (float)std::max(1u, m_extent.height);
+        auto vert = [&](float px, float py, float u, float v) {
+            return HudVertex{ { (px / fw) * 2.0f - 1.0f, (py / fh) * 2.0f - 1.0f },
+                              { u, v }, { c[0], c[1], c[2], c[3] } };
+        };
+        // Corner order TL,TR,BR,BL of the source image (uv fixed per corner);
+        // same two-triangle split as emitQuad: tl->bl->br, tl->br->tr.
+        const HudVertex tl = vert(xyPx[0], xyPx[1], 0.0f, 0.0f);
+        const HudVertex tr = vert(xyPx[2], xyPx[3], 1.0f, 0.0f);
+        const HudVertex br = vert(xyPx[4], xyPx[5], 1.0f, 1.0f);
+        const HudVertex bl = vert(xyPx[6], xyPx[7], 0.0f, 1.0f);
+        HudVertex verts[6] = { tl, bl, br, tl, br, tr };
+        flushHud(verts, 6, /*texFont=*/-1, /*userTex=*/tex.id);
+    }
+
 void VulkanRenderDevice::drawHudText(const FrameContext& fc, const char* text, float xPx,
                  float yPx, float pxPerGlyph, const float rgba[4]) {
         drawHudTextF(fc, x3::rhi::FontRole::Console, text, xPx, yPx, pxPerGlyph, rgba);
@@ -2119,16 +2140,22 @@ void VulkanRenderDevice::prepareFrameData() {
             }
             // RT soft-shadow lanes (r_rtshadows): read ONLY by the mesh_rt.frag
             // pipelines (bound only when the TLAS is live), so writing them is
-            // free for every other path. Per-frame jitter rotation only while
-            // TAA can integrate it; with TAA off the seed pins to 0 so the
-            // 1-spp penumbra dither is STATIC (no sizzle).
+            // free for every other path.
+            // rtsh1.x (jitter rotation) is PINNED to 0 unconditionally
+            // (fix/interior-shadows, 2026-08-17). It used to be a frame counter
+            // while TAA ran ("TAA integrates the 1-spp noise") — but TAA's
+            // neighborhood clamp can NEVER converge a full-contrast binary
+            // shadow flip, so in live play the penumbra stipple re-rolled every
+            // frame: the incessant cell flashing Tim reported. The shader now
+            // takes a stratified multi-sample estimate with a purely SPATIAL
+            // seed instead — stable frame-over-frame, and stills finally show
+            // exactly what live play shows.
             if (m_rtShadowsWantThisFrame) {
                 sc.rtsh0 = glm::vec4((float)m_rtShadows.tier,
                                      std::tan(glm::radians(m_rtShadows.sunSizeDeg)),
                                      (float)m_rtShadows.pointMax,
                                      m_rtShadows.pointRadius);
-                sc.rtsh1 = glm::vec4(taaWant ? (float)(m_rtshFrameSeed++ & 16383u) : 0.0f,
-                                     0.0f, 0.0f, 0.0f);
+                sc.rtsh1 = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
             }
             // r_debugview rides the reserved rtsh1.w lane (0 = off -> byte-identical).
             sc.rtsh1.w = (float)m_debugView;
@@ -2356,7 +2383,9 @@ void VulkanRenderDevice::prepareFrameData() {
             sky.sunDir   = glm::vec4(sd, 0.0f);
             sky.sunColor = glm::vec4(m_sky.sunColor[0], m_sky.sunColor[1], m_sky.sunColor[2], m_sky.sunIntensity);
             sky.params   = glm::vec4(m_sky.haze, m_sky.exposure, m_skyTime, m_sky.cloud);
-            sky.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], 0.0f);
+            // zenith.w = SkyParams::moon (W-NIGHT): the free lane carries the
+            // "luminary is the moon" flag to sky.frag — moon disc + night clouds.
+            sky.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], m_sky.moon);
             sky.horizon  = glm::vec4(m_sky.horizon[0], m_sky.horizon[1], m_sky.horizon[2], 0.0f);
             std::memcpy(fr.skyMapped, &sky, sizeof(SkyUBO));
         }
@@ -3089,7 +3118,10 @@ bool VulkanRenderDevice::regenIblFromSky() {
         u.sunDir   = glm::vec4(sd, 0.0f);
         u.sunColor = glm::vec4(m_sky.sunColor[0], m_sky.sunColor[1], m_sky.sunColor[2], m_sky.sunIntensity);
         u.params   = glm::vec4(m_sky.haze, m_sky.exposure, m_skyTime, m_sky.enabled ? 1.0f : 0.0f);
-        u.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], 0.0f);
+        // zenith.w = moon flag (kept in step with the main sky UBO fill; the env
+        // bake uses it only to damp the sun-glow term at night — the disc itself
+        // is angularly tiny and contributes nothing to the fill).
+        u.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], m_sky.moon);
         u.horizon  = glm::vec4(m_sky.horizon[0], m_sky.horizon[1], m_sky.horizon[2], 0.0f);
         std::memcpy(m_iblSkyUboMapped, &u, sizeof(u));
 

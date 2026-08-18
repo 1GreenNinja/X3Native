@@ -247,6 +247,9 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_maxHp = tuning.hp;
     m_hp  = tuning.hp;
     m_chaseSpeed = tuning.chaseSpeed;
+    // A (re)built monster is never born chilled — clear any Cryo slow from a prior life.
+    m_cryoSlowMul   = 1.0f;
+    m_cryoSlowTimer = 0.0f;
     for (int i = 0; i < 4; ++i) m_baseTint[i] = tuning.tint[i];
     m_emissiveScale = tuning.emissiveScale;
     m_alive = true;
@@ -774,7 +777,8 @@ FireResult MonsterSystem::applyFireHit(const x3::phys::RayHit& hit,
     // THE SCRIPTED SCENE IS OVER: release any latched interaction clip and treat
     // the shot as a sighting so the AI leaves the tableau state. Runs BEFORE the
     // kill/survive split so it is impossible to add a damage path that forgets it.
-    onDamaged(&eye);
+    // The DamageType rides along so a Cryo hit chills (see onDamaged step 3).
+    onDamaged(&eye, type);
 
     if (dead) {
         // ---- Death: remove the physics body IMMEDIATELY (so subsequent rays
@@ -865,7 +869,7 @@ void MonsterSystem::faceTowards(float tx, float tz) {
 // every damage path, kill or not — a character that has been shot is in combat,
 // and a combat character is never driven by an interaction clip again.
 // ---------------------------------------------------------------------------
-void MonsterSystem::onDamaged(const x3::phys::Vec3* threatPos) {
+void MonsterSystem::onDamaged(const x3::phys::Vec3* threatPos, x3::DamageType type) {
     // (1) Release the scripted calm loop for good. This is the fix for "he
     // pulled out of Anna and faced the wall, bending over": the Struggle clip
     // was still driving the skeleton after he had entered combat.
@@ -886,6 +890,24 @@ void MonsterSystem::onDamaged(const x3::phys::Vec3* threatPos) {
         m_stateTime = 0.0f;
     }
     m_decisionTimer = 0.0f;              // re-decide THIS frame, not up to 0.45 s later
+
+    // (3) CRYO CHILLS (2026-08-15 weapon-feel lane). The Freeze Ray's payload is the
+    // SLOW, not its 5 damage — this is where the slow actually happens.
+    //
+    // ASSIGN, never accumulate. Sustained fire re-runs this every tick; assigning the
+    // factor and resetting the timer means twenty ticks of freeze ray produce exactly
+    // the same 0.35x that one tick does, just held longer. A `*=` here would drive an
+    // enemy to a standstill in under a second and never recover it exactly.
+    //
+    // Deliberately placed AFTER (1) and (2): it must not interact with the pose
+    // release, and it must not gate on m_alive. A Cryo hit that KILLS still runs this
+    // (the field is written, the death branch below the caller is untouched) — a dead
+    // monster's chase speed is never read, so the death path is unaffected either way.
+    // Guarding on m_alive here would be a behavioural difference dressed as safety.
+    if (type == x3::DamageType::Cryo) {
+        m_cryoSlowMul   = kCryoSlowFactor;
+        m_cryoSlowTimer = kCryoSlowDuration;   // REFRESH the window, don't extend it
+    }
 }
 
 int MonsterSystem::clipIndex(ClipSlot slot) const {
@@ -947,8 +969,9 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
     m_dmgWindowHp += dmg;
     m_dormant     = false;   // taking damage WAKES a gated spawn (it fights back)
     // THE SCRIPTED SCENE IS OVER (same rule as the shot path; no threat position
-    // is available for a melee hit — the attacker is already adjacent).
-    onDamaged(nullptr);
+    // is available for a melee hit — the attacker is already adjacent). The
+    // DamageType rides along so a Cryo melee source would chill too.
+    onDamaged(nullptr, type);
     if (dead) {
         m_alive    = false;
         m_dying    = true;
@@ -1182,6 +1205,14 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     if (m_flashTimer > 0.0f) { m_flashTimer -= dt; if (m_flashTimer < 0.0f) m_flashTimer = 0.0f; }
     // Adaptive-Hide (canon-aliens): tick down the type-resist window.
     if (m_adaptiveHideTimer > 0.0f) { m_adaptiveHideTimer -= dt; if (m_adaptiveHideTimer < 0.0f) m_adaptiveHideTimer = 0.0f; }
+    // CRYO SLOW (weapon-feel lane): tick the chill down and, on EXPIRY, write the
+    // literal 1.0f back — restoring the authored speed exactly, because m_chaseSpeed
+    // was never touched in the first place. dt-SCALED (house rule): a per-frame
+    // decrement would expire ~3x faster at 165 Hz than at 60.
+    if (m_cryoSlowTimer > 0.0f) {
+        m_cryoSlowTimer -= dt;
+        if (m_cryoSlowTimer <= 0.0f) { m_cryoSlowTimer = 0.0f; m_cryoSlowMul = 1.0f; }
+    }
 
     // Decay hit-flash.
     if (m_flash > 0.0f) {
@@ -1434,7 +1465,10 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // Patrol walks at a fraction of chase speed (guard-life W4-3) so the beat
     // reads as a WALK (the locomotion blend picks the Walk clip off the lower
     // speed) and the guard never looks like it's charging its own waypoints.
-    const float chaseSpeed = m_chaseSpeed * m_phaseSpeedMul *
+    // m_cryoSlowMul is the Freeze Ray's chill (1.0 unless chilled) — it multiplies in
+    // alongside the boss-phase multiplier and stacks with the patrol walk fraction the
+    // same way, so a chilled enemy is slower in EVERY state, not only while chasing.
+    const float chaseSpeed = m_chaseSpeed * m_phaseSpeedMul * m_cryoSlowMul *
                              (m_ai == AiState::Patrol ? m_patrolSpeedMul : 1.0f);
 
     // ---- GENERAL navigation (optional): when a nav grid is attached, the agent
@@ -2407,6 +2441,10 @@ void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
                       m_baseTint[1] * m_phaseTintMul[1],
                       m_baseTint[2] * m_phaseTintMul[2],
                       m_baseTint[3] };
+    // FROST TINT (weapon-vfx lane): a chilled enemy READS cold — icy blue shift
+    // keyed off the SAME timer as the speed slow, so it applies and reverts
+    // exactly with the mechanic (see kFrostTint* in monster.h).
+    applyFrostTint(tint, isChilled());
     // Toward red: keep R, knock down G/B by the flash amount.
     tint[1] *= (1.0f - 0.85f * flashAmt);
     tint[2] *= (1.0f - 0.85f * flashAmt);
@@ -5843,6 +5881,145 @@ bool runAdaptiveHideSelfTest() {
         const int delta = before - m0.hp();
         ahcheck(delta == 30,
                 "T7 opt-out (resist=0) takes FULL damage on every same-type repeat (3x10=30)");
+    }
+
+    // =====================================================================
+    // C1..C6 — THE CRYO SLOW (2026-08-15 weapon-feel lane). Same suite because
+    // this is the second DamageType-keyed mechanic in the engine and shares its
+    // hook. A helper builds a fresh CHASING monster per case so no case can
+    // inherit another's chill.
+    // =====================================================================
+    auto freshChaser = [&](Scene& s, MonsterSystem& mm, float x) {
+        MonsterSystem::Tuning ct;
+        ct.type       = MonsterType::Guard;
+        ct.hp         = 1000;      // survives every non-lethal case below
+        ct.damage     = 0;         // no player present to attack
+        ct.chaseSpeed = 3.0f;      // a real, non-default speed to restore
+        mm.buildMonsterTuned(s, device, *physics, riggedGlbRoot(),
+                             x3::phys::Vec3{ x, 0.4f, 0.0f }, ct);
+        return ct.chaseSpeed;
+    };
+
+    // ---- C1: a Cryo hit CHILLS; the same hit as any other type does not. ------
+    {
+        Scene s1; MonsterSystem c1; const float base = freshChaser(s1, c1, 16.0f);
+        const bool cleanStart = c1.cryoSlowMul() == 1.0f && !c1.isChilled() &&
+                                c1.effectiveChaseSpeed() == base;
+        c1.takeMeleeDamage(1, s1, *physics, x3::DamageType::Cryo);
+        const bool chilled = c1.isChilled() && c1.cryoSlowMul() == kCryoSlowFactor &&
+                             c1.effectiveChaseSpeed() == base * kCryoSlowFactor;
+        // Negative control: every OTHER type must leave the speed alone. Kinetic is
+        // the one that would silently chill the whole game if the branch were wrong.
+        Scene s2; MonsterSystem c2; const float base2 = freshChaser(s2, c2, 24.0f);
+        c2.takeMeleeDamage(1, s2, *physics, x3::DamageType::Kinetic);
+        c2.takeMeleeDamage(1, s2, *physics, x3::DamageType::Energy);
+        c2.takeMeleeDamage(1, s2, *physics, x3::DamageType::Explosive);
+        c2.takeMeleeDamage(1, s2, *physics, x3::DamageType::Melee);
+        c2.takeMeleeDamage(1, s2, *physics, x3::DamageType::Bio);
+        const bool unchilled = !c2.isChilled() && c2.cryoSlowMul() == 1.0f &&
+                               c2.effectiveChaseSpeed() == base2;
+        ahcheck(cleanStart && chilled && unchilled,
+                "C1 Cryo applies the chase-speed slow; no other DamageType does");
+    }
+
+    // ---- C2: SUSTAINED FIRE REFRESHES, IT DOES NOT STACK. --------------------
+    // The freeze ray fires 12 times a second and is meant to be HELD. A `*=` would
+    // have driven this to 0.35^N — a dead stop in under a second, and a speed that
+    // could never be restored exactly. Hosed for 3 s of game time with the timer
+    // ticking between hits, the multiplier must still be exactly one application.
+    {
+        Scene s3; MonsterSystem c3; const float base = freshChaser(s3, c3, 32.0f);
+        for (int i = 0; i < 36; ++i) {                    // 36 ticks = 3 s at 12/s
+            c3.takeMeleeDamage(1, s3, *physics, x3::DamageType::Cryo);
+            c3.update(1.0f / 12.0f, s3, *physics, x3::phys::Vec3{ 0.0f, 0.0f, 0.0f });
+        }
+        const bool notStacked = c3.cryoSlowMul() == kCryoSlowFactor &&
+                                c3.effectiveChaseSpeed() == base * kCryoSlowFactor;
+        // ...and the window was REFRESHED, not merely survived: after 3 s of a 2.5 s
+        // chill the enemy is still slowed, with close to a full window left.
+        const bool refreshed = c3.isChilled() &&
+                               c3.cryoSlowRemaining() > kCryoSlowDuration * 0.8f;
+        ahcheck(notStacked && refreshed,
+                "C2 sustained Cryo fire REFRESHES the window and never stacks the multiplier");
+    }
+
+    // ---- C3: it EXPIRES and restores the ORIGINAL speed EXACTLY. -------------
+    // Float equality on purpose. m_chaseSpeed is never mutated, so "restore" is a
+    // literal 1.0f write, not an inverse multiply that would leave rounding dust.
+    {
+        Scene s4; MonsterSystem c4; const float base = freshChaser(s4, c4, 40.0f);
+        c4.takeMeleeDamage(1, s4, *physics, x3::DamageType::Cryo);
+        const bool slowedFirst = c4.effectiveChaseSpeed() != base;
+        // Just BEFORE expiry it must still be chilled (no early release).
+        for (int i = 0; i < 20; ++i)                       // 2.0 s of a 2.5 s window
+            c4.update(0.1f, s4, *physics, x3::phys::Vec3{ 0.0f, 0.0f, 0.0f });
+        const bool stillChilled = c4.isChilled() && c4.cryoSlowMul() == kCryoSlowFactor;
+        for (int i = 0; i < 20; ++i)                       // past the window
+            c4.update(0.1f, s4, *physics, x3::phys::Vec3{ 0.0f, 0.0f, 0.0f });
+        const bool restored = !c4.isChilled() && c4.cryoSlowRemaining() == 0.0f &&
+                              c4.cryoSlowMul() == 1.0f &&
+                              c4.effectiveChaseSpeed() == base;   // EXACT
+        ahcheck(slowedFirst && stillChilled && restored,
+                "C3 the chill expires and restores the ORIGINAL chase speed exactly");
+    }
+
+    // ---- C4: dt-CORRECTNESS (house rule; this project got bitten at 165 Hz). --
+    // The chill must last the same WALL TIME at any frame rate. Two monsters, same
+    // 2.4 s of simulated time delivered as 60 Hz steps and as 165 Hz steps, must
+    // agree on still-chilled, and both must release at the same simulated instant.
+    {
+        Scene s5; MonsterSystem c5; freshChaser(s5, c5, 48.0f);
+        Scene s6; MonsterSystem c6; freshChaser(s6, c6, 56.0f);
+        c5.takeMeleeDamage(1, s5, *physics, x3::DamageType::Cryo);
+        c6.takeMeleeDamage(1, s6, *physics, x3::DamageType::Cryo);
+        for (int i = 0; i < 144; ++i)  c5.update(1.0f / 60.0f,  s5, *physics, x3::phys::Vec3{});
+        for (int i = 0; i < 396; ++i)  c6.update(1.0f / 165.0f, s6, *physics, x3::phys::Vec3{});
+        const bool bothStill = c5.isChilled() && c6.isChilled();   // 2.4 s of a 2.5 s window
+        for (int i = 0; i < 12; ++i)   c5.update(1.0f / 60.0f,  s5, *physics, x3::phys::Vec3{});
+        for (int i = 0; i < 33; ++i)   c6.update(1.0f / 165.0f, s6, *physics, x3::phys::Vec3{});
+        const bool bothDone = !c5.isChilled() && !c6.isChilled(); // 2.6 s: both released
+        ahcheck(bothStill && bothDone,
+                "C4 the chill is dt-scaled: 60 Hz and 165 Hz release at the same simulated time");
+    }
+
+    // ---- C5: the DEATH PATH is unaffected by a Cryo hit. ---------------------
+    // onDamaged runs before the kill/survive split, so a lethal Cryo hit writes the
+    // chill AND must still kill exactly like a lethal Kinetic hit. Both are run and
+    // compared rather than one being eyeballed.
+    {
+        MonsterSystem::Tuning dt_;
+        dt_.type = MonsterType::Guard; dt_.hp = 20; dt_.damage = 0; dt_.chaseSpeed = 3.0f;
+        Scene s7; MonsterSystem c7;
+        c7.buildMonsterTuned(s7, device, *physics, riggedGlbRoot(),
+                             x3::phys::Vec3{ 64.0f, 0.4f, 0.0f }, dt_);
+        Scene s8; MonsterSystem c8;
+        c8.buildMonsterTuned(s8, device, *physics, riggedGlbRoot(),
+                             x3::phys::Vec3{ 72.0f, 0.4f, 0.0f }, dt_);
+        c7.takeMeleeDamage(500, s7, *physics, x3::DamageType::Cryo);
+        c8.takeMeleeDamage(500, s8, *physics, x3::DamageType::Kinetic);
+        const bool sameDeath = (c7.alive() == c8.alive()) && !c7.alive() &&
+                               (c7.hp() == c8.hp());
+        // Running the corpse forward must not wake anything up or trip on the chill.
+        for (int i = 0; i < 60; ++i) {
+            c7.update(1.0f / 60.0f, s7, *physics, x3::phys::Vec3{});
+            c8.update(1.0f / 60.0f, s8, *physics, x3::phys::Vec3{});
+        }
+        const bool stayDead = !c7.alive() && !c8.alive();
+        ahcheck(sameDeath && stayDead,
+                "C5 a lethal Cryo hit kills identically to a lethal Kinetic hit (death path untouched)");
+    }
+
+    // ---- C6: a REBUILT monster is never born chilled. ------------------------
+    // buildMonsterTuned is the reuse path (pooled/respawned enemies), so a chill must
+    // not survive into the next life.
+    {
+        Scene s9; MonsterSystem c9; const float base = freshChaser(s9, c9, 80.0f);
+        c9.takeMeleeDamage(1, s9, *physics, x3::DamageType::Cryo);
+        const bool chilled = c9.isChilled();
+        const float base2 = freshChaser(s9, c9, 88.0f);      // rebuild in place
+        const bool reborn = !c9.isChilled() && c9.cryoSlowMul() == 1.0f &&
+                            c9.effectiveChaseSpeed() == base2 && base2 == base;
+        ahcheck(chilled && reborn, "C6 a rebuilt monster starts unchilled at its authored speed");
     }
 
     physics->shutdown();

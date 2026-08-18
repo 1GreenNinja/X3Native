@@ -210,6 +210,37 @@ constexpr float kFootstepMinSpeed  = 0.4f;
 // render 3x3 each frame (see update()).
 constexpr float kChaseSpeed    = 2.5f;
 
+// ---- CRYO SLOW (2026-08-15, weapon-feel lane) -----------------------------
+// A DamageType::Cryo hit multiplies the victim's chase speed by kCryoSlowFactor
+// for kCryoSlowDuration seconds. These MIRROR the Freeze Ray's own WeaponDef
+// (freezeSlowFactor 0.35 / freezeDuration 2.5 in makeDefaultRoster) — the two are
+// kept in step by weapon.cpp's W17f test, which reads both and fails if they drift.
+//
+// WHY CONSTANTS AND NOT THE PER-SHOT PAYLOAD: HitscanRay/ProjectileSpawn already
+// carry freezeDuration/freezeSlowFactor, but the host threads only (damage, type)
+// into MonsterManager::fire — widening that call chain means editing app_run.cpp,
+// which is frozen behind inspx/la-exe. Keying off the TYPE is the honest reach from
+// here; per-shot payload plumbing is a Phase-B follow-on, not a missing default.
+constexpr float kCryoSlowFactor   = 0.35f;  // chase-speed multiplier while chilled
+constexpr float kCryoSlowDuration = 2.5f;   // seconds; REFRESHED (not stacked) per hit
+
+// ---- FROST TINT (2026-08, weapon-vfx lane) --------------------------------
+// The VISUAL half of the chill: a slowed enemy that doesn't look cold reads as
+// lag, not mechanics. While isChilled(), drawMonster folds this icy multiplier
+// into the model tint (red knocked down, blue pushed up); the moment the slow
+// expires the fold is skipped ENTIRELY, so the tint reverts EXACTLY when the
+// speed does — both key off the same m_cryoSlowTimer, they cannot drift.
+// Kept as a pure inline fold so --test-weapons can assert apply/revert headlessly.
+constexpr float kFrostTintR = 0.55f;   // red suppressed — cold steals the warmth
+constexpr float kFrostTintG = 0.95f;   // green nearly untouched
+constexpr float kFrostTintB = 1.45f;   // blue pushed — the icy cast
+inline void applyFrostTint(float tint[4], bool chilled) {
+    if (!chilled) return;              // not chilled == byte-identical tint
+    tint[0] *= kFrostTintR;
+    tint[1] *= kFrostTintG;
+    tint[2] *= kFrostTintB;
+}
+
 // Stop distance (meters, horizontal): the monster crawls toward the player only
 // while horizontal distance exceeds this, so it doesn't grind into the player.
 constexpr float kChaseStopDist = 1.5f;
@@ -691,7 +722,17 @@ public:
     BossPhase phase() const { return m_phase; }
     // Effective (phase-scaled) chase speed + attack damage in the current phase.
     // Useful for the HUD / self-test to observe that enrage actually changed stats.
-    float effectiveChaseSpeed() const { return m_chaseSpeed * m_phaseSpeedMul; }
+    float effectiveChaseSpeed() const { return m_chaseSpeed * m_phaseSpeedMul * m_cryoSlowMul; }
+
+    // ---- CRYO SLOW readout (2026-08-15) -----------------------------------
+    // The live chase-speed multiplier from a Freeze Ray hit: exactly 1.0 when not
+    // chilled, kCryoSlowFactor while chilled. m_chaseSpeed itself is NEVER mutated,
+    // which is what makes "restores the ORIGINAL speed exactly" a structural property
+    // rather than a tuning one — expiry writes the literal 1.0f back.
+    float cryoSlowMul() const { return m_cryoSlowMul; }
+    // Seconds of chill left (0 = not chilled). Ticked down in update().
+    float cryoSlowRemaining() const { return m_cryoSlowTimer; }
+    bool  isChilled() const { return m_cryoSlowTimer > 0.0f; }
     int   effectiveDamage() const;
     // How many Guard adds this boss wants summoned on entering Phase3 (read by the
     // host's phase callback). 0 for non-Boss.
@@ -1078,9 +1119,17 @@ public:
     //      pose) instead of reacting. Seed the alert and force a decision NOW
     //      rather than waiting out the jittered ~0.15-0.45 s cadence.
     //
+    //   3. CRYO CHILLS (2026-08-15, weapon-feel lane). A DamageType::Cryo hit —
+    //      i.e. the Freeze Ray — arms a TIMED chase-speed multiplier. This hook is
+    //      deliberately where it lives: it already runs from BOTH damage paths and
+    //      BEFORE the kill/survive split, so no future damage path can be added
+    //      that silently forgets to chill.
+    //
     // `threatPos` (nullable) is where the damage came from — the shooter's eye
     // on the ray path; null for a melee hit (the attacker is already adjacent).
-    void onDamaged(const x3::phys::Vec3* threatPos);
+    // `type` is the incoming DamageType; only Cryo is acted on (see applyCryoSlow).
+    void onDamaged(const x3::phys::Vec3* threatPos,
+                   x3::DamageType type = x3::DamageType::Kinetic);
 
     // True if the real GLB loaded; false if the procedural fallback box is in use.
     // Valid after buildMonster().
@@ -1263,6 +1312,16 @@ private:
     float m_phaseDamageMul      = 1.0f;
     float m_phaseScaleMul       = 1.0f;
     float m_phaseTintMul[3]     = { 1.0f, 1.0f, 1.0f }; // extra red push per phase
+
+    // ---- CRYO SLOW (2026-08-15, weapon-feel lane) --------------------------
+    // A SEPARATE multiplier layered over m_chaseSpeed rather than an edit to it.
+    // That choice is the whole safety argument: the authored speed is never touched,
+    // so expiry cannot restore an approximation, and a chill landing on an already
+    // chilled enemy ASSIGNS the same factor + refreshes the timer instead of
+    // multiplying again — unbounded stacking under sustained fire is structurally
+    // impossible, not merely guarded against. See applyCryoSlow / update().
+    float m_cryoSlowMul         = 1.0f;   // 1.0 = not chilled
+    float m_cryoSlowTimer       = 0.0f;   // seconds of chill remaining
 
     // ---- Act-1 boss gimmicks (Wave 1) -------------------------------------
     bool  m_allied              = false;  // flipped hostile->allied (drone conversion)
