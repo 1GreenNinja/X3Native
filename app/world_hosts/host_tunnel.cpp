@@ -1272,6 +1272,17 @@ int hostTunnel(HostContext& hc) {
             startPos[2] = stack.cz - stack.pZ * s0
                         + stack.tZ * (stack.medianHalfB + x3::game::kFwyPavedHalfM);
             moved = true;
+        } else if (w == "stackcore" && stackOn) {
+            // UNDER the pile, on the inner tour's right carriageway at the
+            // crossing: four storeys of concrete overhead and the streamer
+            // centred on the middle of the structure, which is what an aerial
+            // capture needs (headless coverage is one radius from the SPAWN,
+            // not from the camera).
+            startPos[0] = stack.cx + stack.pX
+                        * (stack.medianHalfA + x3::game::kFwyPavedHalfM);
+            startPos[2] = stack.cz + stack.pZ
+                        * (stack.medianHalfA + x3::game::kFwyPavedHalfM);
+            moved = true;
         } else if (w == "interchange" && interOn) {
             // On the crossroad, one ramp-landing out, facing the overpass —
             // the streamer centres here, so captures and drives both work.
@@ -1287,7 +1298,8 @@ int hostTunnel(HostContext& hc) {
             x3::logInfo(sb);
         } else {
             x3::logWarn(std::string("--world tunnel: X3_SPAWN=") + w +
-                        " not available (want lot|spur|bore|interchange|stack) — default spawn");
+                        " not available (want lot|spur|bore|interchange|stack|stackcore)"
+                        " — default spawn");
         }
     }
 

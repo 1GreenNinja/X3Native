@@ -500,6 +500,15 @@ FlyoverPlan planFlyoverGaps(RoadSpec& over, float startDatum, float endDatum,
     // cone lands on the terminal floor, the corner is convex and infinitely
     // sharp. One raise-only relaxation fills those to the same K limit —
     // raising can never break the clearance requirements it sits on.
+    // FEASIBILITY, named rather than discovered later as a clearance failure.
+    // T[0] above the terminal datum means the requirement cone reaches the
+    // merge still asking for height: the ramp is too SHORT to climb what it
+    // has to clear at this grade and this K, and no profile exists. Say so.
+    if (T.front() > startDatum + 0.02f || T.back() > endDatum + 0.02f) {
+        out.whyNot = "the flyover is too short to climb what it must clear "
+                     "(the requirement cone reaches its own merge)";
+        return out;
+    }
     out.profile = T;
     out.profile.front() = startDatum;
     out.profile.back()  = endDatum;
@@ -1588,6 +1597,42 @@ StackBuildResult buildStack(const StackResult& st, Scene& scene,
     upload(deckC, &concrete, cemTint,  true);
     upload(paint, nullptr,   paintC,   false);
     out.ok = out.meshCount > 0;
+
+    // CAPTURE ANCHORS. Every number a camera needs, in the boot log, so a
+    // still of this thing is aimed from MEASURED geometry instead of guessed
+    // at (the four eyes-on shots this lane owes: the postcard from the air, a
+    // through-lane at grade looking up the levels, drive height on a high arc
+    // with the parapet in frame, and the base of the tallest pier).
+    {
+        const StackPier* tall = nullptr;
+        for (const StackPier& p : plan.piers)
+            if (!tall || (p.ySoffit - p.yGround) > (tall->ySoffit - tall->yGround))
+                tall = &p;
+        for (int q = 0; q < 4; ++q) {
+            const StackResult::Ramp& rp = st.ramp[q];
+            if (!rp.built || rp.plan.profile.empty()) continue;
+            size_t hi = 0;
+            for (size_t i = 0; i < rp.plan.profile.size(); ++i)
+                if (rp.plan.profile[i] > rp.plan.profile[hi]) hi = i;
+            const size_t j = (hi + 1 < rp.spec.x.size()) ? hi + 1 : hi;
+            const float yaw = std::atan2(rp.spec.z[j] - rp.spec.z[hi],
+                                         rp.spec.x[j] - rp.spec.x[hi]);
+            char cb[220];
+            std::snprintf(cb, sizeof(cb),
+                "stack camera: L%d flyover q%d crest at (%.0f, %.1f, %.0f) "
+                "heading yaw %.3f — drive height is +1.4",
+                rp.level, q, rp.spec.x[hi], rp.plan.profile[hi], rp.spec.z[hi], yaw);
+            x3::logInfo(cb);
+        }
+        char cb2[220];
+        std::snprintf(cb2, sizeof(cb2),
+            "stack camera: centre (%.0f, %.1f, %.0f); tallest pier base "
+            "(%.0f, %.1f, %.0f) rising %.1f m to its cap",
+            st.cx, st.baseSurfaceY, st.cz,
+            tall ? tall->x : st.cx, tall ? tall->yGround : st.baseSurfaceY,
+            tall ? tall->z : st.cz, tall ? (tall->ySoffit - tall->yGround) : 0.0f);
+        x3::logInfo(cb2);
+    }
 
     char b[300];
     std::snprintf(b, sizeof(b),
