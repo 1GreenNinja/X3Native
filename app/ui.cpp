@@ -2079,23 +2079,46 @@ bool runUiSelfTest() {
             check(fwd && ui.focus() == 1, "U38 Tab / Shift+Tab walk the focus ring");
         }
 
-        // ---- U39: TOOLTIP is claimed only by a HOVERED widget.
+        // ---- U39: TOOLTIP is claimed only by a HOVERED widget, AND it actually
+        // PAINTS. Both halves matter: the queue is easy to get right and easy to
+        // leave un-drawn, and a tooltip that silently never renders looks exactly
+        // like a tooltip that was never asked for.
         {
+            // A device that counts HUD draws, so "did anything reach the screen"
+            // is an assertion rather than an eyeball.
+            struct CountingDevice : x3::game::HeadlessRenderDevice {
+                int quads = 0, texts = 0;
+                void drawHudQuad(const x3::rhi::FrameContext&, float, float, float,
+                                 float, const float[4]) override { ++quads; }
+                void drawHudTextF(const x3::rhi::FrameContext&, x3::rhi::FontRole,
+                                  const char*, float, float, float,
+                                  const float[4]) override { ++texts; }
+            };
+            CountingDevice cdev;
+            x3::rhi::FrameContext live{};
+            live.valid = true;              // painting is enabled only on a valid frame
+
             UiContext ui;
             UiInput off{}; off.mouseX = kOff; off.mouseY = kOff;
-            ui.begin(dev, fc, off);
+            ui.begin(cdev, live, off);
             (void)ui.button("a", 0, 0, 100, 40);
             const bool hoveredWhenAway = ui.lastHovered();
-            ui.tooltip("help text");
+            ui.tooltip("help text that is long enough to wrap onto a second line");
             ui.end();
+            const int quadsNoHover = cdev.quads, textsNoHover = cdev.texts;
+
+            cdev.quads = 0; cdev.texts = 0;
             UiInput on{}; on.mouseX = 50.0f; on.mouseY = 20.0f;
-            ui.begin(dev, fc, on);
+            ui.begin(cdev, live, on);
             (void)ui.button("a", 0, 0, 100, 40);
             const bool hoveredWhenOver = ui.lastHovered();
-            ui.tooltip("help text");
+            ui.tooltip("help text that is long enough to wrap onto a second line");
             ui.end();
             check(!hoveredWhenAway && hoveredWhenOver,
                   "U39 tooltip: only the widget actually under the cursor claims it");
+            check(cdev.quads > quadsNoHover && cdev.texts > textsNoHover,
+                  "U39b tooltip: a claimed tooltip actually PAINTS (plate + text), "
+                  "an unclaimed one draws nothing");
         }
     }
 

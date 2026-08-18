@@ -6957,6 +6957,17 @@ int runDefaultHost(HostContext& hc) {
                 if (shotTunePanel) {
                     x3::ui::UiInput tin{};
                     tin.mouseX = -1000.0f; tin.mouseY = -1000.0f;
+                    // X3_TUNE_MOUSE="x,y" parks the cursor ON a row, so the HOVER
+                    // states and the cvar-help TOOLTIP are in the evidence too. A
+                    // tooltip that never renders is a silent failure, and the
+                    // headless gate can only prove it was QUEUED.
+                    if (const char* mp = std::getenv("X3_TUNE_MOUSE")) {
+                        const std::string M(mp);
+                        tin.mouseX = std::strtof(M.c_str(), nullptr);
+                        const size_t cm = M.find(char(44));
+                        if (cm != std::string::npos)
+                            tin.mouseY = std::strtof(M.c_str() + cm + 1, nullptr);
+                    }
                     if (const char* tb = std::getenv("X3_TUNE_TAB")) {
                         // Nudge to the requested tab on the first settle frames:
                         // activating tab N takes a focus move then an activate.
