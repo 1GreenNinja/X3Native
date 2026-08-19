@@ -44,7 +44,7 @@ int hostBodyContact(HostContext& hc);     // --world bodycontact (BODY CONTACT f
 int hostWormhole(HostContext& hc);        // --world wormhole (feast fold: Salvari crystal-matrix tunnel VFX)
 int hostWormholeTransit(HostContext& hc); // --world wormhole-transit (feast fold: S3 autopilot jump ride)
 int hostTractor(HostContext& hc);         // --world tractor (feast fold: intro capital-ship capture beam)
-int hostEchotropolis(HostContext& hc); // --world echotropolis (Echo Harbor: island + city + day-night)
+int hostEchoHarbor(HostContext& hc); // --world echoharbor (+ legacy alias --world echotropolis)
 int hostGallery  (HostContext& hc);   // --world gallery   (CHARACTER GALLERY: walkable cast + clip cycle)
 int hostMines    (HostContext& hc);   // --world mines     (MINE ENTRANCES: Armory rock + glowing mouths)
 int hostCutaway  (HostContext& hc);   // --world cutaway   (LEVEL ARCHITECT: the whole facility in X-ray)

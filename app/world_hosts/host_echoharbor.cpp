@@ -1,11 +1,20 @@
-// --world echotropolis host — F1 P1 app skeleton (Echotropolis: the island in 3D).
+// --world echoharbor host — F1 P1 app skeleton (Echo Harbor: the island in 3D).
+//
+// THE FLAG IS `echoharbor`. `--world echotropolis` is a PERMANENT alias — the
+// internal id this world shipped under for months, still typed by ~350 script,
+// recipe, doc and session-note references that must never break. Both flags
+// route HERE (two rows in world_hosts.cpp's kHostRoutes; the alias is a
+// reasoned kRegistryExclusions entry in app/destinations.cpp). The runtime log
+// lines below still print the `--world echotropolis:` prefix ON PURPOSE:
+// scripts/echo_stream_ab.ps1 parses that exact string out of the log, so the
+// prefix is a wire format, not a label.
 //
 // The strategic ORBIT camera over an open sea. This is a pure CONSUMER of the
 // engine: analytic sky (setSkyParams via TimeOfDay), the Gerstner ocean
 // (setWaterParams — a device-internal 240m patch that re-centers under the camera
 // each frame, so it reads as an infinite sea), and the FPS camera primitive
 // (setCamera). P2: the authored island lands as a baked GLB (EnvArtSystem, see
-// the island block in hostEchotropolis). P3: a live TimeOfDay cycle drives sky/
+// the island block in hostEchoHarbor). P3: a live TimeOfDay cycle drives sky/
 // sun/ambient/water through the art bible's four canonical times (golden/dusk/
 // night/noon — keys 1-4, T pauses, ECHO_TOD pins headless captures). Modeled on host_valley.cpp for the
 // scene/teardown lifecycle, but there is no physics/streamer here — water and sky
@@ -61,7 +70,7 @@
 #include "../rpg_ui.h"                 // WD2 STACK: skills screen + LV/XP HUD chip
 #include "../vehparts.h"               // NFS LAYER: the parts catalog + the build
 #include "../perfshop.h"               // NFS LAYER: the dormant performance shop, live
-#include "../hud.h"                    // ENGINE CONSOLE: D6 IConsole + Hud drop-down front-end
+#include "host_shell.h"                // THE SHARED DEV SHELL: console (~) + pause menu (ESC) + FPS (F3)
 #include "../engine_console.h"         // MULTI-INSTANCE LANE: r_presentmode / r_bgfps + paceFrame
 #include "engine/core/IConsole.h"
 #include "engine/core/x3_cpuzones.h"  // LANE 6 REPLAY: host frame-span CPU zones (splits cpu.host_outside)
@@ -136,11 +145,14 @@ using Heightfield = x3::game::Heightfield;
 double g_scrollY = 0.0;
 void scrollCB(GLFWwindow*, double /*xoff*/, double yoff) { g_scrollY += yoff; }
 
-// ===== CONSOLE (` key) — the ENGINE console (D6 IConsole + app/hud.cpp
-// front-end, same as EFLZ), not a host-local reimplementation. The host
-// registers its world commands on it; these overrides are what those commands
-// poke (-1/negative = keep the env-var default behaviour).
-x3::game::Hud* g_hud = nullptr;          // char-callback target while console open
+// ===== CONSOLE — the SHARED HostShell console (app/world_hosts/host_shell.h).
+// This world used to stand up its OWN IConsole + Hud + ` toggle + ESC pause
+// menu, which is exactly why it had NONE of the ~118 shared commands: no
+// noclip, no god, no help, no r_* catalog. Owner 2026-08-18: "The console and
+// menu should stay consistent across x3native no matter what game." The
+// bespoke implementation is DELETED; the host now registers its world commands
+// on shell.console() like the other 28 hosts do. These overrides are what
+// those commands poke (-1/negative = keep the env-var default behaviour).
 int   g_volOverride = -1;    // console `vol on|off|auto`: -1 env default, else 0/1
 std::string g_playasCapPath; // PLAYAS_DEMO: armed capture to finalize post-endFrame
 std::string g_shotPath;      // console `screenshot`: armed capture to finalize post-endFrame
@@ -163,9 +175,8 @@ struct EchoPostCv {
     float taaSharpen = -1.0f;
 } g_postCv;
 float g_sunOverride = -1.0f; // console `sun <scale>|auto`: <0 = auto ramp
-void charCB(GLFWwindow*, unsigned int c) {
-    if (g_hud && g_hud->consoleOpen()) g_hud->onChar(c);
-}
+// (The host-local charCB console trampoline is GONE — HostShell owns the char,
+// key and scroll callbacks now, chaining to whatever the host installed first.)
 
 // The F1 camera-settings scaffold: one tunable block every controller reads
 // (D1/D3 doctrine). F2 hangs a settings UI + remap table on these fields.
@@ -240,8 +251,11 @@ inline float clampPitch(float p) { return p < kPitchMin ? kPitchMin : (p > kPitc
 // pitch is raised if needed so the camera height (sin(pitch)*radius, since focus.y
 // = 0) never drops below the waterline + minCamHeight — this both keeps the horizon
 // composed and blocks flying under the world at low pitch / small radius.
-void applyOrbitCamera(x3::rhi::IRenderDevice* device, const OrbitRig& r,
-                      float useYaw, float usePitch, float fovDeg, float minCamHeight) {
+// POSE-ONLY form, split out so the shell's noclip seed (HostShell::trackCamera)
+// can ask "where would the orbit camera be this frame?" without also writing it
+// to the device. applyOrbitCamera is this plus the setCamera call.
+void orbitCameraPose(const OrbitRig& r, float useYaw, float usePitch, float minCamHeight,
+                     float& outX, float& outY, float& outZ, float& outYaw, float& outPitch) {
     const float minPitch = std::asin(clampf(minCamHeight / std::max(r.sRadius, 1e-3f), 0.0f, 1.0f));
     if (usePitch < minPitch) usePitch = minPitch;
     const float lookPitch = -usePitch;             // camera pitches DOWN toward the sea
@@ -249,10 +263,18 @@ void applyOrbitCamera(x3::rhi::IRenderDevice* device, const OrbitRig& r,
     const float fwdX = cp * std::cos(useYaw);
     const float fwdY = sp;
     const float fwdZ = cp * std::sin(useYaw);
-    const float camX = r.sFocusX  - fwdX * r.sRadius;
-    const float camY = r.sPivotY  - fwdY * r.sRadius;   // pivot on terrain -> camY = pivotY + sin(pitch)*radius
-    const float camZ = r.sFocusZ  - fwdZ * r.sRadius;
-    device->setCamera(camX, camY, camZ, useYaw, lookPitch, fovDeg);
+    outX   = r.sFocusX - fwdX * r.sRadius;
+    outY   = r.sPivotY - fwdY * r.sRadius;   // pivot on terrain -> camY = pivotY + sin(pitch)*radius
+    outZ   = r.sFocusZ - fwdZ * r.sRadius;
+    outYaw = useYaw;
+    outPitch = lookPitch;
+}
+
+void applyOrbitCamera(x3::rhi::IRenderDevice* device, const OrbitRig& r,
+                      float useYaw, float usePitch, float fovDeg, float minCamHeight) {
+    float camX, camY, camZ, yaw, lookPitch;
+    orbitCameraPose(r, useYaw, usePitch, minCamHeight, camX, camY, camZ, yaw, lookPitch);
+    device->setCamera(camX, camY, camZ, yaw, lookPitch, fovDeg);
 }
 
 // ---- F3 HERO MODE (dive) — HOOK/SPEC ONLY, not implemented (EoS "later" tier). ----
@@ -323,7 +345,7 @@ void applyTodSample(x3::rhi::IRenderDevice* device, const x3::game::TodSample& s
     // ☀ SUN RADIANCE. sky.sunLight defaults to 1.0 and this world never set it, so
     // daylight was no brighter than the ambient floor. Drive it with the day ramp.
     // ⚠ This is a CONTRAST improvement, NOT the "flat towers / no shadows" fix — that
-    // was the SUN ELEVATION (see todCfg.middayElevation in hostEchotropolis, and the
+    // was the SUN ELEVATION (see todCfg.middayElevation in hostEchoHarbor, and the
     // cosE reconstruction in app/tod.cpp). Measured at golden, aerial cam, ratio of
     // fully-lit to fully-shadowed pixels at equal N.L: sunLight 0/0.5/1/2.3/40 ->
     // 1.04 / 1.27 / 1.42 / 1.71 / 1.58 (40 loses to tonemap clipping). The reason
@@ -908,7 +930,7 @@ void drawTalkBubble(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
 
 } // namespace
 
-int hostEchotropolis(HostContext& hc) {
+int hostEchoHarbor(HostContext& hc) {
     auto* device = hc.device;
     GLFWwindow* window = hc.window;
     const bool headless = hc.headless;
@@ -2322,8 +2344,10 @@ int hostEchotropolis(HostContext& hc) {
     }
 
     // ===================== Windowed interactive orbit ===================
+    // Installed BEFORE HostShell::attach so the shell's own scroll callback
+    // chains to it: the shell takes the wheel only while the console is open,
+    // and hands every other notch straight through to the orbit zoom.
     glfwSetScrollCallback(window, scrollCB);
-    glfwSetCharCallback(window, charCB);   // console text input (inert while closed)
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
     double prevTime = glfwGetTime();
     float  waterTime = 0.0f;
@@ -2393,18 +2417,29 @@ int hostEchotropolis(HostContext& hc) {
     bool todPaused = (std::getenv("ECHO_TOD") != nullptr), prevT = false;
     x3::game::TodPhase prevPhase = tod.phase();
 
-    // ESC opens a PAUSE MENU (it never quits the app — Tim's rule 2026-07-11). Only the
-    // menu's QUIT item (click, or press Q) exits. Edge-detected so a held key toggles once.
-    bool menuOpen = false, prevEsc = false, prevQ = false, prevEnter = false, prevLmb = false;
-    // ENGINE CONSOLE: the D6 backend + the shared Hud front-end (same as EFLZ).
-    std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
-    x3::game::Hud hud;
-    bool conQuit = false;
-    hud.init(*console, &conQuit);
-    g_hud = &hud;
-    bool prevGrave = false, prevConBk = false, prevConEnter = false,
-         prevConUp = false, prevConDown = false, prevConTab = false;
-    bool wantQuit = false;
+    bool prevLmb = false;
+
+    // ===================== THE SHARED DEV SHELL ==========================
+    // Console (~), pause menu (ESC — it never quits the app; SHIFT+ESC or the
+    // menu's QUIT row does), FPS/stats overlay (F3), and the ~118 shared
+    // commands: noclip/idclip freefly, god/iddqd/idkfa stubs, the grouped
+    // `help`, and the whole r_* cvar catalog. See host_shell.h.
+    //
+    // WHAT THIS REPLACED. Until now this world stood up its OWN IConsole, its
+    // OWN Hud, its OWN ` toggle + backspace/enter/history/tab edge-detect
+    // block, its OWN char callback trampoline and its OWN hand-drawn ESC pause
+    // panel — ~180 lines that reimplemented the shell badly and, because it
+    // never called registerEngineConsole(), shipped with NONE of the shared
+    // catalog. Typing `noclip` here said "unknown". All of it is deleted; the
+    // world commands below now register on shell.console().
+    HostShell shell;
+    shell.attach(hc);                 // also replays --set onto this console
+    shell.setFreezesSim(true);        // the paused branch below skips ALL sim
+    x3::con::IConsole* console = shell.console();
+    if (!console) {   // attach() no-ops without a window; the headless path returned long ago
+        x3::logError("--world echoharbor: no window — the dev shell could not attach");
+        return 1;
+    }
 
     // ===================== WALK MODE (Phase A) ==========================
     // Press G to drop from the orbit vista INTO a first-person character who WALKS
@@ -3093,51 +3128,46 @@ int hostEchotropolis(HostContext& hc) {
     };
 
     // CVars — the FULL X3Native r_* family (Tim: "Should have everything
-    // X3native has"), same names + docs as app_run so muscle memory transfers.
-    // Type `r_maxfps 120`, `r_ddgi 0`, `r_taa 0`, etc. Synced to the device
-    // every frame below; applyAtmosphere stays the single setPostFX writer.
-    console->registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
-    // MULTI-INSTANCE LANE (Bug 2): r_presentmode + r_bgfps. This host registers
-    // its own catalog rather than the shared one, so it asks for them by name.
-    x3::game::registerMultiInstanceCVars(*console);
+    // X3native has"). It now arrives from the SHARED catalog: HostShell::attach
+    // called registerEngineConsole(), which registers ~116 cvars (r_maxfps,
+    // r_presentmode/r_bgfps, the whole post/RT/DDGI/wetness family) with the
+    // same names and the same help text as the campaign console — so muscle
+    // memory transfers because it is literally the same list, not a hand copy
+    // that drifts. This host used to re-register 38 of them verbatim; that
+    // block is DELETED.
+    //
+    // What survives is only what is TRUE OF THIS WORLD: the one cvar nothing
+    // else owns, and the scene-tuned DEFAULTS that differ from the campaign's.
+    // These are set(), not registerCVar() — the shared catalog owns the name,
+    // the help and the documented default; Echo Harbor owns its starting value.
     console->registerCVar("ws_budget", "2.0", "world-streaming main-thread budget per frame (ms)");
-    console->registerCVar("r_exposure", "1.0", "whole-scene brightness (pre-tonemap exposure multiplier; live)");
-    console->registerCVar("r_tonemap",        "1",    "tonemap operator: 1 = ACES filmic (default), 0 = passthrough clamp (debug A/B)");
-    console->registerCVar("r_bloom",          "1",    "bloom on/off (0 skips the whole downsample/upsample chain)");
-    console->registerCVar("r_bloomintensity", "-1",   "bloom strength override; <0 = keep the scene-tuned value (default)");
-    console->registerCVar("r_bloomthreshold", "-1",   "bloom bright-pass threshold; <0 = keep the scene-tuned value");
-    console->registerCVar("r_autoexposure",   "1",    "auto-exposure (eye adaptation): scene log-luminance drives exposure; r_exposure becomes a bias");
-    console->registerCVar("r_aespeed",        "-1",   "auto-exposure adaptation speed (1/s); <0 = engine default");
-    console->registerCVar("r_aemin",          "-1",   "auto-exposure clamp floor; <0 = engine default");
-    console->registerCVar("r_aemax",          "-1",   "auto-exposure clamp ceiling; <0 = keep the scene-tuned night ramp");
-    console->registerCVar("r_aekey",          "-1",   "auto-exposure target middle-grey key; <0 = engine default");
-    console->registerCVar("r_taa",        "1",    "temporal AA: 1 = jitter + history resolve (default), 0 = off");
-    console->registerCVar("r_taasharpen", "-1",   "post-TAA RCAS-style sharpen; <0 = engine default");
-    console->registerCVar("r_velocity",   "0",    "per-object motion vectors for TAA/DLSS (0 = camera-only reproj)");
-    console->registerCVar("r_rtao",          "0",    "hardware RT ambient occlusion (ray query); 0 = off (raster/SSAO)");
-    console->registerCVar("r_rtao_radius",   "2.0",  "RT AO ray length (meters)");
-    console->registerCVar("r_rtao_rays",     "8",    "RT AO hemisphere rays per pixel (1..32)");
-    console->registerCVar("r_rtao_strength", "0.85", "RT AO applied darkening (1 = full, 0 = off)");
-    console->registerCVar("r_ssr",           "0", "screen-space reflections (needs r_taa 1); 0 = off");
-    console->registerCVar("r_rtreflections", "0", "ray-query reflection fallback where SSR misses (RT hardware only)");
-    console->registerCVar("r_reflquality",   "0", "reflection buffer resolution: 0 = half-res (default), 1 = full-res");
-    console->registerCVar("r_reflintensity", "1", "reflection blend weight scale [0..1] on the IBL-specular replace");
-    console->registerCVar("r_wetness",         "0",    "Surface wetness 0..1 (rain soak); 0 = dry (byte-identical)");
-    console->registerCVar("r_wetness_porosity","1.0",  "How much materials darken when wet");
-    console->registerCVar("r_wetness_puddles", "1.0",  "Cavity/AO pooling strength (0 = uniform coat)");
-    console->registerCVar("r_wetness_minrough","0.06", "Roughness a fully-soaked surface converges to");
-    console->registerCVar("r_ddgi",           "1",    "DDGI probe-grid GI (this world defaults ON; 0 = flat/IBL ambient)");
-    console->registerCVar("r_ddgi_debug",     "0",    "DDGI debug view: 0 = off, 1 = irradiance field, 2 = grid confidence");
-    console->registerCVar("r_ddgi_rays",      "96",   "DDGI rays per probe per frame (16..128)");
-    console->registerCVar("r_ddgi_intensity", "1.0",  "DDGI applied GI scale on the replaced ambient diffuse");
-    console->registerCVar("r_rtshadows",    "0",    "RT soft shadows: 0 = CSM-only, 1 = sun RT, 2 = sun + point lights (district self-shadow known)");
-    console->registerCVar("r_rtsun_size",   "0.6",  "RT sun angular radius (degrees) — penumbra width");
-    console->registerCVar("r_rtpoint_max",  "4",    "RT point-light shadow rays per pixel budget");
-    console->registerCVar("r_rtpoint_size", "0.15", "RT point-light source radius (meters) — penumbra softness");
-    console->registerCVar("r_frustumcull", "1", "CPU per-object frustum cull (0 = draw every instance, no cull)");
-    console->registerCVar("r_cullpath", "0", "GPU cull path: -1 auto, 0 CPU, 1 tier0 gfx-queue, 2 tier1 async, 3 tier2 meshlets");
-    console->registerCVar("r_hzb", "0", "HZB occlusion cull on the GPU path (0 = frustum only)");
-    console->registerCVar("r_skinnedrt", "1", "add visible skinned characters to the RT scene TLAS (0 = static-only TLAS)");
+    {
+        struct Tuned { const char* cvar; const char* value; };
+        static const Tuned kEchoDefaults[] = {
+            // -1 = "keep this world's scene-tuned dynamic value" (the PostFXParams
+            // sentinel): applyAtmosphere drives these per-frame from the TOD ramp,
+            // so a fixed campaign number would freeze the day/night look.
+            { "r_exposure",       "1.0"  },
+            { "r_aespeed",        "-1"   },
+            { "r_aemin",          "-1"   },
+            { "r_aemax",          "-1"   },
+            { "r_aekey",          "-1"   },
+            { "r_bloomthreshold", "-1"   },
+            { "r_taasharpen",     "-1"   },
+            // DDGI is this world's ambient (open sky over an island city): ON.
+            { "r_ddgi",           "1"    },
+            // RT stack OFF by default here — the district self-shadow defect and
+            // the SSR/reflection cost are known; ECHO_RT=1 below opts back in.
+            { "r_rtshadows",      "0"    },
+            { "r_rtreflections",  "0"    },
+            { "r_ssr",            "0"    },
+            // City-scale radii/penumbra, not corridor-scale.
+            { "r_rtao_radius",    "2.0"  },
+            { "r_rtsun_size",     "0.6"  },
+            { "r_rtpoint_size",   "0.15" },
+        };
+        for (const Tuned& t : kEchoDefaults) console->set(t.cvar, t.value);
+    }
     // ECHO_RT=1 (the legacy env opt-in for RT sun shadows + RT AO) seeds the cvars.
     { const char* e = std::getenv("ECHO_RT");
       if (e && e[0] == '1') { console->set("r_rtshadows", "1"); console->set("r_rtao", "1"); } }
@@ -3166,12 +3196,12 @@ int hostEchotropolis(HostContext& hc) {
                     (device->rayTracingSupported() ? " [RT hardware]" : " [no RT — inert]"));
     }
 
-    // --set OVERRIDES. This host builds its OWN console and registers its own
-    // cvars above, and until now it never looked at hc.cliCVars — so `--set`
-    // was a SILENT NO-OP for every cvar in this world, not just new ones. Any
-    // A/B run against --world echotropolis with --set compared a value to
-    // itself. Applied HERE, after registration, because registerCVar seeds the
-    // default and would otherwise stomp the override.
+    // --set OVERRIDES, applied LAST. HostShell::attach(hc) already replayed
+    // hc.cliCVars once onto the shared console, but this world then stamps its
+    // scene-tuned defaults on top (kEchoDefaults above) — which would silently
+    // stomp the operator's `--set r_ddgi 0` and make every A/B run compare a
+    // value to itself, the exact bug this block was written for. Replaying here
+    // makes the CLI the last writer, unconditionally.
     for (const auto& kv : hc.cliCVars) {
         console->set(kv.first, kv.second);
         x3::logInfo("--world echotropolis: --set " + kv.first + " " + kv.second);
@@ -3241,8 +3271,16 @@ int hostEchotropolis(HostContext& hc) {
 
     // ===== CONSOLE world commands (modeled on the Babylon X3Console catalog:
     // tod / tp / pos / camera modes / render toggles; the RPG-side commands
-    // come with their systems). help/clear/quit/fps/stats + CVars are already
-    // registered by hud.init / the D6 backend. =====
+    // come with their systems). Everything SHARED — help/quit/fps/stats/
+    // r_speeds, noclip/idclip, god/iddqd/idkfa/idfa stubs, restart, and the
+    // whole r_* cvar catalog — is already on this console because HostShell's
+    // attach() called registerEngineConsole(). Only WORLD-SPECIFIC commands
+    // belong below. =====
+    // Closing the drop-down from inside a command (a screenshot must not
+    // photograph the console; a teleport should show you where you landed).
+    // hudForCallbacks() is the shell's only handle on the front-end; the host
+    // does not otherwise touch it.
+    auto closeConsole = [&]() { shell.hudForCallbacks().closeConsole(); };
     console->registerCommand("tod", [&](const std::vector<std::string>& a) {
         float f = -1.0f;
         const std::string arg = a.empty() ? "" : a[0];
@@ -3323,7 +3361,7 @@ int hostEchotropolis(HostContext& hc) {
         device->armCapture(p);
         g_shotPath = p;
         console->print(std::string("capturing -> ") + p);
-        hud.closeConsole();   // the shot is of the world, not the console
+        closeConsole();   // the shot is of the world, not the console
     }, "save a screenshot to captures/");
     // ---- console wave 3: the Babylon X3Console catalog, every applicable
     // category with REAL wiring (Tim: "the console HAD hundreds of commands!").
@@ -3389,7 +3427,7 @@ int hostEchotropolis(HostContext& hc) {
                 flyX = s.x; flyY = s.y; flyZ = s.z;
                 flyYaw = s.yaw; flyPitch = s.pitch; flyRoll = 0.0f;
                 console->print(std::string("-> ") + s.name);
-                hud.closeConsole();
+                closeConsole();
                 return;
             }
         }
@@ -3422,7 +3460,7 @@ int hostEchotropolis(HostContext& hc) {
             flyX = a2.pos.x + 5.0f; flyY = a2.pos.y + 1.8f; flyZ = a2.pos.z + 5.0f;
             flyYaw = std::atan2(a2.pos.z - flyZ, a2.pos.x - flyX); flyPitch = -0.1f; flyRoll = 0.0f;
             console->print("-> " + a2.name + " (" + x3::game::archetypeName(a2.arch) + ")");
-            hud.closeConsole();
+            closeConsole();
             return;
         }
         console->print("no citizen matches '" + a[0] + "'");
@@ -3439,11 +3477,8 @@ int hostEchotropolis(HostContext& hc) {
         console->print("X3Native — ECHOTROPOLIS  |  Vulkan GPU-driven  |  DDGI + volumetrics + llama.cpp citizens");
         console->print(std::string("RT hardware: ") + (device->rayTracingSupported() ? "YES" : "no"));
     }, "build/engine info");
-    console->registerCommand("echo", [&](const std::vector<std::string>& a) {
-        std::string s;
-        for (const auto& w : a) { if (!s.empty()) s += " "; s += w; }
-        console->print(s);
-    }, "echo <text>");
+    // (`echo` deleted — it was a byte-for-byte re-registration of the IConsole
+    // builtin the shared console already carries.)
     console->registerCommand("gi", [&](const std::vector<std::string>& a) {
         const std::string arg = a.empty() ? "" : a[0];
         if      (arg == "off")   console->set("r_ddgi", "0");
@@ -3539,8 +3574,20 @@ int hostEchotropolis(HostContext& hc) {
     auto audRand01 = [&audRng](){ audRng ^= audRng << 13; audRng ^= audRng >> 17;
                                   audRng ^= audRng << 5; return (audRng & 0xFFFFFF) / 16777216.0f; };
 
+    // ESC FIRST-REFUSAL (host_shell.h): the shell takes ESC in its key callback,
+    // so without this the host's own overlays would become unclosable — ESC
+    // would open the pause menu on top of an open skill tree instead of
+    // dismissing it. Peel one layer per press, innermost first; return false
+    // once nothing is open and the shell opens its menu.
+    shell.setEscapeHandler([&]() {
+        if (rpgUi.anyOpen())  { rpgUi.closeAll();      return true; }
+        if (buildMode)        { buildMode = false;     return true; }
+        if (cityPanelOpen)    { cityPanelOpen = false; return true; }
+        return false;
+    });
+
     int lastW = (int)hc.W, lastH = (int)hc.H;
-    while (!glfwWindowShouldClose(window) && !wantQuit) {
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         // ===== LANE 6 REPLAY (2026-08): the frame loop is SPAN-TIMED ==========
         // The 0bc0d482 breakdown left 41 % of the frame in an unattributed
         // `cpu.host_outside` row because nothing outside the render device was
@@ -3552,19 +3599,12 @@ int hostEchotropolis(HostContext& hc) {
         // X3_PASSTIMERS=0 / `r_passtimers 0`.
         x3::perf::HostScope zInput(x3::perf::Z_HostInput);
         glfwPollEvents();
-        {
-            const bool esc = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-            if (esc && !prevEsc) {
-                if (hud.consoleOpen()) hud.closeConsole();   // ESC closes console first
-                else { menuOpen = !menuOpen; uiSfx(sfxConfirm, 0.4f); }   // toggle, never break
-            }
-            prevEsc = esc;
-            // CONSOLE toggle (` / ~): quake-style drop-down (engine Hud front-end).
-            const bool gr = glfwGetKey(window, GLFW_KEY_GRAVE_ACCENT) == GLFW_PRESS;
-            if (gr && !prevGrave) hud.toggleConsole();
-            prevGrave = gr;
-            if (conQuit) wantQuit = true;   // console `quit`
-        }
+        // THE SHELL OWNS ` (console), ESC (pause menu / SHIFT+ESC quit), F3
+        // (stats) and `quit`. Must run right after poll and before the host
+        // reads any input, so open/close and pause edges land on THIS frame.
+        // The ~30 lines of hand-rolled edge detection that used to live here
+        // are gone.
+        shell.beginFrame();
 
         double now = glfwGetTime();
         float dt = (float)(now - prevTime); prevTime = now;
@@ -3572,57 +3612,43 @@ int hostEchotropolis(HostContext& hc) {
         if (dt < 1e-5f) dt = 1e-5f;
 
         double mx, my; glfwGetCursorPos(window, &mx, &my);
-        float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+        // Mouse-look/pan deltas are ZEROED while the console or the pause menu
+        // owns input — the cursor is released when the console opens, so a raw
+        // (mx - lastMX) would spin the orbit across the island while you type.
+        // Multiply rather than branch, so the delta consumers below are unchanged.
+        const float look = shell.inputEnabled() ? 1.0f : 0.0f;
+        float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
         lastMX = mx; lastMY = my;
 
-        auto kd  = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
-        auto mbd = [&](int b) { return glfwGetMouseButton(window, b) == GLFW_PRESS; };
+        // THE ONE RULE FOR HOSTS (host_shell.h): gameplay keys and buttons come
+        // through the shell, not glfwGetKey — otherwise `tp 100 200` also walks
+        // the player and toggles fly mode while you type it. Routing the two
+        // lambdas every call site already uses covers the whole host at once.
+        auto kd  = [&](int k) { return shell.key(k); };
+        auto mbd = [&](int b) { return shell.inputEnabled() &&
+                                       glfwGetMouseButton(window, b) == GLFW_PRESS; };
 
-        // ===== CONSOLE (`): the engine drop-down over a frozen frame, like the
-        // pause menu. MUST run before every game key handler — letters you type
-        // (g, v, b...) are console text (fed via charCB), never mode toggles.
-        // Commands apply instantly; the world resumes the moment it closes. =====
-        if (hud.consoleOpen()) {
-            if (glfwGetInputMode(window, GLFW_CURSOR) != GLFW_CURSOR_NORMAL)
-                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-            { const bool bk = kd(GLFW_KEY_BACKSPACE);
-              if (bk && !prevConBk) hud.onBackspace();
-              prevConBk = bk; }
-            { const bool en = kd(GLFW_KEY_ENTER) || kd(GLFW_KEY_KP_ENTER);
-              if (en && !prevConEnter) hud.onEnter(*console);
-              prevConEnter = en; }
-            { const bool up = kd(GLFW_KEY_UP);
-              if (up && !prevConUp) hud.historyPrev();
-              prevConUp = up; }
-            { const bool dn = kd(GLFW_KEY_DOWN);
-              if (dn && !prevConDown) hud.historyNext();
-              prevConDown = dn; }
-            { const bool tb = kd(GLFW_KEY_TAB);
-              if (tb && !prevConTab) hud.complete(*console);
-              prevConTab = tb; }
-            if (kd(GLFW_KEY_PAGE_UP))   hud.consoleScroll(+1);
-            if (kd(GLFW_KEY_PAGE_DOWN)) hud.consoleScroll(-1);
-            if (g_scrollY != 0.0) { hud.consoleScroll((int)(g_scrollY * 3.0)); g_scrollY = 0.0; }
-            auto frame = device->beginFrame();
-            island.draw(*device, frame);
-            props.draw(*device, frame);
-            hud.drawConsole(*device, frame, *console, dt);
-            device->endFrame(frame);
-            fpsAccum += dt; ++fpsFrames;
-            if (fpsAccum >= 1.0) { fpsAccum = 0.0; fpsFrames = 0; }
-            continue;   // world (and its key handlers) frozen while typing
-        }
+        // ===== CONSOLE (`): DELETED — the shell owns it. This block used to
+        // freeze the frame, hand-poll backspace/enter/up/down/tab/pgup/pgdn
+        // with six prev* edge latches, draw a stripped island+props frame and
+        // `continue`. HostShell does all of it from a GLFW key callback, and
+        // draws the panel OVER the real world in shell.draw() at the end of the
+        // loop — the same behaviour the other 28 hosts have. Typing is safe
+        // because kd() above is shell.key(), which is false while the console
+        // holds the keyboard. =====
+
 
         // ===== SKILL TREE (K): the WD2 progression screen over a frozen frame
         // — exactly the console's modal pattern, so no key bleeds into the
         // world while browsing. ESC or K closes. =====
         { const bool kk = kd(GLFW_KEY_K);
-          if (kk && !prevRpgK && !menuOpen) rpgUi.toggleSkills();
+          if (kk && !prevRpgK && !shell.paused()) rpgUi.toggleSkills();
           prevRpgK = kk; }
         if (rpgUi.anyOpen()) {
             if (glfwGetInputMode(window, GLFW_CURSOR) != GLFW_CURSOR_NORMAL)
                 glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-            if (kd(GLFW_KEY_ESCAPE)) rpgUi.closeAll();
+            // ESC arrives through the shell's escape handler (installed below),
+            // which gives this modal first refusal before the pause menu opens.
             x3::game::RpgUi::Input rin{};
             rin.ui.mouseX = (float)mx; rin.ui.mouseY = (float)my;
             rin.ui.mouseDown = mbd(GLFW_MOUSE_BUTTON_LEFT);
@@ -3641,6 +3667,7 @@ int hostEchotropolis(HostContext& hc) {
             props.draw(*device, frame);
             rpgUi.drawSkills(*device, frame, rin, skillTree, progression,
                              applyRpgStats);
+            shell.draw(frame, dt);   // the console still drops over the tree
             device->endFrame(frame);
             fpsAccum += dt; ++fpsFrames;
             if (fpsAccum >= 1.0) { fpsAccum = 0.0; fpsFrames = 0; }
@@ -3687,9 +3714,11 @@ int hostEchotropolis(HostContext& hc) {
               uiSfx(sfxConfirm, 0.6f);
           }
           prevV = v; }
-        // FLY MODE captures the cursor for free mouselook; every other mode shows it.
-        { const int wantCursor = (flyMode && !menuOpen) ? GLFW_CURSOR_DISABLED
-                                                        : GLFW_CURSOR_NORMAL;
+        // FLY MODE captures the cursor for free mouselook; every other mode shows
+        // it. inputEnabled() keeps this from fighting the shell, which releases
+        // the cursor the instant the console or the menu opens.
+        { const int wantCursor = (flyMode && shell.inputEnabled()) ? GLFW_CURSOR_DISABLED
+                                                                   : GLFW_CURSOR_NORMAL;
           if (glfwGetInputMode(window, GLFW_CURSOR) != wantCursor) {
               glfwSetInputMode(window, GLFW_CURSOR, wantCursor);
               glfwGetCursorPos(window, &mx, &my);   // re-baseline: no look snap
@@ -4061,84 +4090,27 @@ int hostEchotropolis(HostContext& hc) {
             flyY = clampf(flyY, 1.5f, 4000.0f);
         }
 
-        // ===== PAUSE MENU: world + camera frozen, menu drawn, only QUIT exits.
-        // Styled panel (Tim: "Menu is text based ugly") built from the same two
-        // HUD primitives everything else uses — quads fake the panel/accents,
-        // hover states light the buttons. Same keys as before: ESC/ENTER resume,
-        // Q or click quits. =====
-        if (menuOpen) {
-            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
-            const float cx = hw * 0.5f, cy = hh * 0.5f;
-            // Panel geometry: a centered card with two full-width buttons.
-            const float pw = 520.0f, ph = 430.0f;
-            const float px2 = cx - pw * 0.5f, py2 = cy - ph * 0.5f;
-            const float bw = pw - 96.0f, bh = 54.0f;
-            const float bx = cx - bw * 0.5f;
-            const float byResume = py2 + 178.0f;
-            const float byQuit   = byResume + bh + 18.0f;
-            const bool overResume = (mx >= bx && mx <= bx + bw && my >= byResume && my <= byResume + bh);
-            const bool overQuit   = (mx >= bx && mx <= bx + bw && my >= byQuit   && my <= byQuit   + bh);
-            const bool lmb = mbd(GLFW_MOUSE_BUTTON_LEFT);
-            const bool qkey = kd(GLFW_KEY_Q);
-            if ((lmb && !prevLmb && overQuit) || (qkey && !prevQ)) wantQuit = true;
-            const bool ent = kd(GLFW_KEY_ENTER);
-            if ((ent && !prevEnter) || (lmb && !prevLmb && overResume)) menuOpen = false;
-            prevLmb = lmb; prevQ = qkey; prevEnter = ent;
-
+        // ===== PAUSE MENU (ESC): the SHARED one. setFreezesSim(true) above told
+        // the shell this host really does stop simulating, so its panel says
+        // PAUSED rather than MENU. RESUME/QUIT, keyboard nav and the hover
+        // states all come from HostShell::drawPauseMenu — the same menu every
+        // other world has (owner: "The console and menu should stay consistent
+        // across x3native no matter what game").
+        //
+        // DELETED HERE: ~80 lines of hand-drawn panel — the halo/card/accent
+        // quads, the two hover-lit buttons with their own hit-testing, the
+        // "ECHO HARBOR / ECHOTROPOLIS 2038 / PAUSED" title block, the key-hint
+        // columns, and the prevQ/prevEnter/prevEsc latches that drove them. The
+        // world keeps rendering behind the menu (island + props + night beams)
+        // exactly as before; only the panel on top is now shared. =====
+        if (shell.paused()) {
+            g_scrollY = 0.0;   // the wheel must not bank orbit zoom while paused
             auto frame = device->beginFrame();
             island.draw(*device, frame);
             props.draw(*device, frame);
             if (tod.sample().cityLightsOn) { beam.draw(*device, frame); fissure.draw(*device, frame); }
-
-            // Palette (the HUD's own language: navy glass, gold title, cyan accents).
-            const float dim[4]    = { 0.01f, 0.02f, 0.04f, 0.72f };   // world dim
-            const float glow[4]   = { 0.10f, 0.55f, 0.70f, 0.10f };   // panel halo
-            const float panel[4]  = { 0.045f, 0.065f, 0.105f, 0.96f };
-            const float edge[4]   = { 0.16f, 0.60f, 0.74f, 0.85f };   // cyan accent
-            const float gold[4]   = { 1.0f, 0.82f, 0.45f, 1.0f };
-            const float white[4]  = { 0.92f, 0.95f, 1.0f, 1.0f };
-            const float dimtxt[4] = { 0.55f, 0.61f, 0.72f, 1.0f };
-            const float faint[4]  = { 0.10f, 0.14f, 0.20f, 1.0f };    // divider
-
-            device->drawHudQuad(frame, 0, 0, (float)hw, (float)hh, dim);
-            // Halo -> panel -> top accent bar -> bottom hairline.
-            device->drawHudQuad(frame, px2 - 10.0f, py2 - 10.0f, pw + 20.0f, ph + 20.0f, glow);
-            device->drawHudQuad(frame, px2, py2, pw, ph, panel);
-            device->drawHudQuad(frame, px2, py2, pw, 4.0f, edge);
-            device->drawHudQuad(frame, px2, py2 + ph - 2.0f, pw, 2.0f, faint);
-
-            // Title block: ECHO HARBOR / ECHOTROPOLIS 2038 / PAUSED chip.
-            device->drawHudText(frame, "ECHO  HARBOR", cx - 11 * 16.0f, py2 + 34.0f, 32.0f, gold);
-            device->drawHudText(frame, "E C H O T R O P O L I S   //   2 0 3 8",
-                                cx - 19 * 8.2f, py2 + 78.0f, 13.0f, dimtxt);
-            { const float chip[4] = { 0.12f, 0.16f, 0.24f, 1.0f };
-              device->drawHudQuad(frame, cx - 52.0f, py2 + 106.0f, 104.0f, 26.0f, chip);
-              device->drawHudText(frame, "PAUSED", cx - 6 * 7.0f, py2 + 112.0f, 14.0f, white); }
-            device->drawHudQuad(frame, px2 + 48.0f, py2 + 152.0f, pw - 96.0f, 1.0f, faint);
-
-            // Buttons: hover fills + a left accent tick on the hot one.
-            const float dangerEdge[4] = { 1.0f, 0.45f, 0.35f, 1.0f };
-            auto button = [&](float byB, const char* label, bool hot, bool danger){
-                const float base[4] = { danger ? 0.16f : 0.07f, danger ? 0.05f : 0.11f,
-                                        danger ? 0.06f : 0.16f, 1.0f };
-                const float hotc[4] = { danger ? 0.34f : 0.10f, danger ? 0.09f : 0.34f,
-                                        danger ? 0.10f : 0.42f, 1.0f };
-                device->drawHudQuad(frame, bx, byB, bw, bh, hot ? hotc : base);
-                if (hot) device->drawHudQuad(frame, bx, byB, 4.0f, bh, danger ? dangerEdge : edge);
-                device->drawHudText(frame, label, bx + 26.0f, byB + 18.0f, 16.0f,
-                                    hot ? white : dimtxt);
-            };
-            button(byResume, "RESUME                                    ENTER", overResume, false);
-            button(byQuit,   "QUIT  TO  DESKTOP                             Q", overQuit,   true);
-
-            // Key hints: two aligned columns under the buttons.
-            const float hintsY = byQuit + bh + 26.0f;
-            device->drawHudText(frame, "1-4  time of day\n5-8  camera views\nT    run clock",
-                                px2 + 64.0f, hintsY, 13.0f, dimtxt);
-            device->drawHudText(frame, "WASD / drag  pan\nwheel  zoom\n`    console",
-                                cx + 30.0f, hintsY, 13.0f, dimtxt);
+            shell.draw(frame, dt);   // console panel + pause menu + FPS/stats
             device->endFrame(frame);
-
             fpsAccum += dt; ++fpsFrames;
             if (fpsAccum >= 1.0) { fpsAccum = 0.0; fpsFrames = 0; }
             continue;   // skip all world sim while paused in the menu
@@ -4440,7 +4412,23 @@ int hostEchotropolis(HostContext& hc) {
         // (Delimited span — the if/else camera chain below is not a single block.)
         x3::perf::HostScope zCam(x3::perf::Z_SimCamera);
         device->setCameraRoll(flyMode ? flyRoll : 0.0f);
-        if (worldCars.driving()) {
+        // NOCLIP (console `noclip` / `idclip`, the shared command this world had
+        // no way to run until now). trackCamera() seeds the freefly from the
+        // pose the host WOULD have used, so switching it on detaches cleanly
+        // instead of jumping to the origin; overrideCamera() then drives and
+        // sets the camera itself, and the host must skip its own chain entirely
+        // that frame.
+        {
+            float tcx, tcy, tcz, tcyaw, tcpit;
+            if (flyMode) { tcx = flyX; tcy = flyY; tcz = flyZ; tcyaw = flyYaw; tcpit = flyPitch; }
+            else if (walkMode && physOk) player.camera(tcx, tcy, tcz, tcyaw, tcpit);
+            else orbitCameraPose(rig, rig.sYaw, rig.sPitch, opt.minCamHeight,
+                                 tcx, tcy, tcz, tcyaw, tcpit);
+            shell.trackCamera(tcx, tcy, tcz, tcyaw, tcpit);
+        }
+        if (shell.overrideCamera(dt, opt.fovDeg)) {
+            // the freefly owns the view this frame
+        } else if (worldCars.driving()) {
             // NFS VIEW CYCLE: the stock chase boom scaled per view; HOOD rides
             // the body (no interior yet — dashboard view lands with the
             // interiors pillar). Mouse orbits every view.
@@ -4888,7 +4876,7 @@ int hostEchotropolis(HostContext& hc) {
             }
 
             // ---- RPG chip: LV + XP sliver (walking/driving, no other surface).
-            if ((walkMode || worldCars.driving()) && !menuOpen && !buildMode)
+            if ((walkMode || worldCars.driving()) && !shell.paused() && !buildMode)
                 rpgUi.drawHudChip(*device, frame, rpgInv, rpgItems, progression, dt);
 
             // CITY PANEL (TAB): the web-parity dashboard, fed by the live counts.
@@ -5064,6 +5052,9 @@ int hostEchotropolis(HostContext& hc) {
             }
         }
         zFans.stop();                                    // LANE 6 span boundary
+        // THE SHELL, ON TOP OF EVERYTHING: console drop-down, pause menu, FPS /
+        // r_stats overlay — last draw before endFrame, so nothing paints over it.
+        shell.draw(frame, dt);
         device->endFrame(frame);
         if (!g_playasCapPath.empty()) {   // PLAYAS_DEMO: finalize the armed copy
             device->captureFrame(g_playasCapPath.c_str());
@@ -5124,7 +5115,8 @@ int hostEchotropolis(HostContext& hc) {
         }
     }
     if (worldCars.built() && phys) worldCars.shutdown(*phys);   // bodies out before physics dies
-    g_hud = nullptr;   // charCB must never touch the dying Hud
+    // (No g_hud teardown any more — HostShell's destructor puts the host's own
+    // GLFW callbacks back and deletes its console.)
     if (audioOn) { for (auto l : audioLoops) eaudio->stopLoop(l); eaudio->shutdown(); }
     device->shutdown();
     if (window) glfwDestroyWindow(window);

@@ -1,7 +1,8 @@
 #include "destinations.h"
 
 #include "engine/core/x3_log.h"
-#include "world_hosts.h"   // dispatchedWorldModes() — the LIVE dispatch table
+#include "world_hosts.h"       // dispatchedWorldModes() — the LIVE dispatch table
+#include "host_shell_lint.h"   // D13: every dispatchable world's host wires the shared shell
 
 #include <algorithm>
 #include <cctype>
@@ -62,6 +63,17 @@ const DispatchExclusion kRegistryExclusions[] = {
     { "ship-interior",
       "alias --world flag: routes to the SAME host as ship-windows "
       "(hostShipWindows); the registry lists the place once, as ship-windows" },
+    // Owner, 2026-08-18: "Echo Harbor should Not be called echotropolis." The
+    // canonical key/flag is now `echoharbor` (row below). `echotropolis` stays
+    // DISPATCHABLE FOREVER — ~350 references across 74 files (scripts, test
+    // recipes, screenshot commands, fleet docs, session notes, the owner's own
+    // memory) type it, and a rename that breaks them all buys nothing. Same
+    // mechanism as ship-interior: one place, one row, an aliased flag.
+    { "echotropolis",
+      "PERMANENT legacy alias --world flag: routes to the SAME host as "
+      "echoharbor (hostEchoHarbor). The internal id this world shipped under "
+      "for months; kept dispatchable so every existing script/recipe/doc that "
+      "types it keeps working. The registry lists the place once, as echoharbor" },
 };
 
 // ---------------------------------------------------------------------------
@@ -101,12 +113,16 @@ const Destination kDest[] = {
 { "river",        "The River Valley",         "The carved river - real, swimmable water. You land on the bank.",       "valley",            DestGroup::Planet,     true  },
 { "ridge",        "The Cliff Ridge",          "The highest ground on the ring out from the tower.",                    "cliffs",            DestGroup::Planet,     true  },
 
-// ECHO HARBOR — the second product. Its host (--world echotropolis) FOLDED
-// into this build at the converge (playtest-consolidated brought host_echotropolis
-// in), so the flag is now LIVE and the row is reachable. The row exists because
-// the directory claims to list every place the game has.
+// ECHO HARBOR — the second product. Its host FOLDED into this build at the
+// converge, so the flag is LIVE and the row is reachable. The row exists
+// because the directory claims to list every place the game has.
 // (DESTINATIONS_REGISTRY.spec §3.3/§6.)
-{ "echotropolis", "Echo Harbor",              "The island city - a second product, now folded into this build (F1 P1: island + open sea).", "echotropolis",  DestGroup::EchoHarbor, true },
+// KEY/FLAG = `echoharbor` (owner 2026-08-18: "Echo Harbor should Not be called
+// echotropolis"). `echotropolis` is a PERMANENT alias on BOTH sides: a
+// kRegistryExclusions dispatch alias above, and a findDestination text alias
+// below — so `--world echotropolis`, `go echotropolis` and every shipped save
+// string still land here.
+{ "echoharbor",   "Echo Harbor",              "The island city - a second product, now folded into this build (F1 P1: island + open sea).", "echoharbor",    DestGroup::EchoHarbor, true },
 
 { "canonlevel",   "Canon World (spawn)",      "THE GAME: tower + elevator + exterior + streamed planet. From spawn.",  "canonlevel",        DestGroup::DevWorld,   false },
 { "intro",        "The Cold Open",            "The canon world, entered through the prologue cutscene.",               "intro",             DestGroup::DevWorld,   false },
@@ -220,7 +236,11 @@ const Destination* findDestination(std::string_view s) {
         // `--world ship-interior` is a live dispatch alias for the ship-windows
         // host; typed TARGETs and old strings with "interior" land on the row.
         { "ship-interior", "ship-windows" }, { "interior", "ship-windows" },
-        { "echo", "echotropolis" }, { "harbor", "echotropolis" },
+        // ECHO HARBOR. `echotropolis` is the PERMANENT legacy id (owner
+        // 2026-08-18) — listed explicitly so a reader sees it is deliberate,
+        // not an accident of the "echo" prefix match.
+        { "echotropolis", "echoharbor" },
+        { "echo", "echoharbor" },   { "harbor", "echoharbor" },
     };
     // Facility floors first: "F3" inside a longer string must not be beaten by a
     // generic alias.
@@ -267,7 +287,7 @@ bool isDispatched(const std::vector<const char*>& dispatched, const char* flag) 
 // fails if one goes stale (missing row, or the row became reachable).
 struct KnownUnreachable { const char* key; const char* why; };
 // Empty since the converge: echotropolis's host folded into this build, so its
-// row is now reachable (worldFlag "echotropolis") and no longer belongs here.
+// row is now reachable (worldFlag "echoharbor") and no longer belongs here.
 // A std::vector so the list can legally be empty (a zero-size C array is
 // ill-formed on MSVC); D9 iterates it and passes vacuously.
 const std::vector<KnownUnreachable> kUnreachableAllowed = {};
@@ -471,7 +491,7 @@ bool runDestinationsSelfTest() {
             "intro",        // EFLZ cold-open entry
             "surface",      // Escaped landing
             "rifthub",      // the hub
-            "echotropolis", // Echo Harbor
+            "echoharbor",   // Echo Harbor (canonical; `echotropolis` alias by D12)
             "space",        // space-combat slice
         };
         bool ok = true;
@@ -487,6 +507,58 @@ bool runDestinationsSelfTest() {
         }
         dtCheck(ok, "D11 product floor: the six product worlds are listed AND dispatched");
     }
+
+    // D12 — LEGACY FLAG ALIASES STAY ALIVE. A rename that silently drops the old
+    //       id is the same class of break as drift: ~350 references across 74
+    //       files type `--world echotropolis`, and `ship-interior` has the same
+    //       deal. For each (legacy -> canonical) pair assert THREE things:
+    //         a) the legacy flag is still really DISPATCHED (the CLI boots it),
+    //         b) it is a reasoned kRegistryExclusions entry (so D7/D8 hold),
+    //         c) findDestination() resolves the legacy TEXT to the canonical row
+    //            (so the console TARGET, the menu and shipped save strings land).
+    {
+        struct LegacyFlag { const char* legacy; const char* canonical; };
+        const LegacyFlag kLegacyFlags[] = {
+            { "echotropolis",   "echoharbor"   },   // owner 2026-08-18 rename
+            { "ship-interior",  "ship-windows" },
+        };
+        bool ok = true;
+        for (const LegacyFlag& lf : kLegacyFlags) {
+            if (!isDispatched(dispatched, lf.legacy)) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   legacy flag --world ") + lf.legacy +
+                             " is NO LONGER DISPATCHED — every script that types it now 404s");
+            }
+            bool excluded = false;
+            for (const DispatchExclusion& e : kRegistryExclusions)
+                if (std::strcmp(e.flag, lf.legacy) == 0 && e.why[0]) excluded = true;
+            if (!excluded) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   legacy flag ") + lf.legacy +
+                             " is not a reasoned kRegistryExclusions alias");
+            }
+            const Destination* d = findDestination(lf.legacy);
+            if (!d || std::strcmp(d->key, lf.canonical) != 0) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   legacy text '") + lf.legacy + "' -> " +
+                             (d ? d->key : "(null)") + ", wanted " + lf.canonical);
+            }
+            const Destination* c = findDestination(lf.canonical);
+            if (!c || std::strcmp(c->key, lf.canonical) != 0) ok = false;
+        }
+        dtCheck(ok, "D12 legacy --world aliases still dispatch, are reasoned, and resolve");
+    }
+
+    // D13 — THE SHELL GATE. The registry's job is "every place the game has,
+    //       reachable and honest"; a world you can dispatch but that has no
+    //       console, no pause menu and none of the ~118 shared commands is
+    //       reachable in name only. Echo Harbor was exactly that for months and
+    //       nothing noticed, so the invariant now has a probe with a proven
+    //       failure mode (app/host_shell_lint.h — it logs its own [hostshell]
+    //       PASS/FAIL lines, including a negative control that goes RED against
+    //       the pre-migration Echo Harbor).
+    dtCheck(runHostShellLint(),
+            "D13 every world host wires the shared HostShell (console/pause/FPS)");
 
     x3::logInfo("destinations: " + std::to_string(dt_pass) + "/" +
                 std::to_string(dt_pass + dt_fail) + " passed");
