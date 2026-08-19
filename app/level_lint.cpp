@@ -201,6 +201,8 @@ struct SealReport {
     int escapes  = 0;      // openings with at least one escaping probe
     int dropped  = 0;      // wall faces dropped by the dedup
     int deckExempt = 0;    // openings onto an open-air deck (invariant does not apply)
+    int views    = 0;      // AUTHORED see-through openings examined (viewports)
+    int viewEscapes = 0;   // of those, ones that look into open void
 };
 
 bool inSealVol(const SealVol& v, float x, float y, float z) {
@@ -214,9 +216,13 @@ bool inSealVol(const SealVol& v, float x, float y, float z) {
 // legacySkipRule = reproduce the pre-2026-08-04 dedup (skip a face on ANY covering
 // neighbour, even one whose wall plane is metres away) — the shipped bug, used as this
 // probe's negative control.
+// legacyWindowRule = reproduce the pre-fix/cell-hole-2 cellObsWindow() span (the stub
+// chosen from the CELL's face run alone, never clipped to the room it claims to look
+// into) — the shipped bug, used as the SEAL-VIEW probe's negative control.
 SealReport sealShell(const CanonFloor& floor,
                      uint32_t forceSkipRoom = kNoRoom, int forceSkipFace = -1,
-                     bool quiet = false, bool legacySkipRule = false) {
+                     bool quiet = false, bool legacySkipRule = false,
+                     bool legacyWindowRule = false) {
     SealReport R;
     const uint32_t nRooms = (uint32_t)floor.rooms.size();
     if (!nRooms) return R;
@@ -389,10 +395,10 @@ SealReport sealShell(const CanonFloor& floor,
 
     // ---- 4. PROBE every opening.
     auto probeOpening = [&](uint32_t ri, int f, float cLo, float cHi, float yLo, float yHi,
-                            const char* what) {
+                            const char* what, bool isView = false) {
         const CanonRoom& r = floor.rooms[ri];
         if (cHi - cLo < 0.05f || yHi - yLo < 0.05f) return;
-        ++R.openings;
+        if (isView) ++R.views; else ++R.openings;
         const bool planeIsX = (f == 0 || f == 1);
         const float plane   = planeIsX ? ((f == 0) ? r.x0() : r.x1())
                                        : ((f == 2) ? r.z0() : r.z1());
@@ -414,11 +420,12 @@ SealReport sealShell(const CanonFloor& floor,
                 if (!in) { ++bad; bx = px; by = y; bz = pz; }
             }
         if (bad) {
-            ++R.escapes;
+            if (isView) ++R.viewEscapes; else ++R.escapes;
             if (R.violations.size() < 40)
                 R.violations.push_back(fmt(
-                    "SEAL-SHELL room %u '%s' face %s (%s): %u/%u probe(s) pass through the opening into "
+                    "%s room %u '%s' face %s (%s): %u/%u probe(s) pass through the opening into "
                     "OPEN VOID — e.g. (%.2f, %.2f, %.2f) lies inside no room, corridor, throat or tube",
+                    isView ? "SEAL-VIEW " : "SEAL-SHELL",
                     ri, r.name.c_str(), kFaceName[f], what, bad, tot, bx, by, bz));
         }
     };
@@ -458,10 +465,41 @@ SealReport sealShell(const CanonFloor& floor,
             }
         }
     }
+
+    // ---- 5. SEAL-VIEW: AUTHORED SEE-THROUGH openings (fix/cell-hole-2, owner playtest
+    // 2026-08-18: "the HOLE in Jake's cell... past the bed and the fixed weapon
+    // location"). The ledger above is built from floor.doorways ALONE — every opening
+    // the probe knows about is a doorway or a dropped wall face. But buildCanonFloor
+    // punches a FOURTH kind of hole that no doorway backs: the cell OBSERVATION WINDOW
+    // (cellObsWindow -> gapZpos, level_loader.cpp), a floor-to-ceiling see-through cut
+    // that is re-sealed only with an INVISIBLE collision box. Nothing saw it:
+    //   * SEAL-SHELL never enumerated it (not a doorway, not a dropped face).
+    //   * SEAL-BAND is a wall-TOP rule; this hole is the full wall, eye level included.
+    //   * every collision gate (grounding / canonplay / doors / propclip / the physics
+    //     walkthrough) reports the wall as SOLID, because it is — the box is there, it
+    //     just is not drawn.
+    // As shipped it glazed x[-1.15, 0.40] of the cell's +Z wall while the Main Hall it
+    // claims to overlook starts at x = 0: three quarters of the viewport looked at raw
+    // void. Probe every authored viewport with the same "what is immediately beyond?"
+    // rule, over its FULL height (a viewport has no lintel).
+    {
+        const CellWindow cw = cellObsWindow(floor, legacyWindowRule);
+        if (cw.valid() && cw.room < nRooms) {
+            const CanonRoom& r = floor.rooms[cw.room];
+            const float runLo = r.x0(), runHi = r.x1();   // wall 3 = +Z, runs in X
+            probeOpening(cw.room, cw.wall,
+                         std::max(runLo, cw.lo), std::min(runHi, cw.hi),
+                         cw.y0, cw.y1, "see-through VIEWPORT (cell observation window)",
+                         /*isView*/true);
+        }
+    }
+
     if (!quiet)
         x3::logInfo(fmt("[levellint] seal-shell: %d opening(s) probed, %d dropped face(s), "
-                        "%d open-air-deck opening(s) exempt, %d escape(s) to open void",
-                        R.openings, R.dropped, R.deckExempt, R.escapes));
+                        "%d open-air-deck opening(s) exempt, %d escape(s) to open void; "
+                        "seal-view: %d authored viewport(s), %d looking into void",
+                        R.openings, R.dropped, R.deckExempt, R.escapes,
+                        R.views, R.viewEscapes));
     return R;
 }
 
@@ -865,6 +903,29 @@ bool runLevelLintSelfTest() {
                         sr.escapes, nc1.escapes,
                         nc1.escapes > sr.escapes ? "red-capable" : "BROKEN",
                         nc2Escapes, nc2Escapes > 0 ? "red-capable" : "BROKEN"));
+
+        // ---- SEAL-VIEW gate (fix/cell-hole-2, owner playtest 2026-08-18: "the HOLE in
+        // Jake's cell.. over to the left, past the bed and the fixed weapon location").
+        // An AUTHORED see-through opening (the cell observation window) must give onto
+        // the interior it claims to overlook. WHY THE OTHER PROBES MISSED IT: SEAL-SHELL
+        // enumerates openings from floor.doorways only, and this hole is not a doorway;
+        // SEAL-BAND is a wall-TOP rule and this is the full wall height; every collision
+        // gate sees a solid wall because the graybox is re-sealed with an INVISIBLE
+        // collision box. sr already carries the live result (the probe runs inside
+        // sealShell); NC re-runs it against the pre-fix unclipped window span, which
+        // MUST go red or the probe is not seeing the defect it exists for.
+        const int ncView = sealShell(floor, kNoRoom, -1, /*quiet*/true, /*legacyDedup*/false,
+                                     /*legacyWindow*/true).viewEscapes;
+        if (ncView <= sr.viewEscapes)
+            rep.violations.push_back(fmt(
+                "SEAL-VIEW NEGATIVE CONTROL FAILED: the legacy (unclipped) observation-window "
+                "rule produced %d void-fronted viewport(s) (baseline %d) — the probe cannot see "
+                "the very defect it was built for", ncView, sr.viewEscapes));
+        rep.sealEscape += sr.viewEscapes;
+        x3::logInfo(fmt("[levellint] seal-view: %d authored viewport(s), %d looking into void; "
+                        "negative control — legacy unclipped span %d void-fronted (%s)",
+                        sr.views, sr.viewEscapes, ncView,
+                        ncView > sr.viewEscapes ? "red-capable" : "BROKEN"));
     }
 
     // ---- SEAL-BAND gate (fix/cell-shell-hole, owner playtest 2026-08-16: "This... is

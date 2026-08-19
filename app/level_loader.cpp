@@ -1198,7 +1198,7 @@ uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
 // + frames it) call this, so the hole and the glass agree exactly. Returns an invalid
 // window (valid()==false) whenever there is no cell, no +Z Main-Hall opening, or no stub
 // wide enough — callers then simply skip the feature and the wall stays solid.
-CellWindow cellObsWindow(const CanonFloor& floor) {
+CellWindow cellObsWindow(const CanonFloor& floor, bool legacyRule) {
     CellWindow w;
     if (!floor.valid()) return w;
     const CanonBeats bt = canonBeats(floor);
@@ -1207,6 +1207,7 @@ CellWindow cellObsWindow(const CanonFloor& floor) {
     // Locate the cell's +Z (Main-Hall) opening: the traversed doorway on the wall plane
     // nearest z1 (skip the corridor/tube kinds — they own a separate throat, not a face).
     float doorC = 0.0f, doorH = 0.0f; bool found = false;
+    uint32_t partner = kNoRoom;
     for (const CanonDoorway& dw : floor.doorways) {
         if (dw.a != bt.jakeCell && dw.b != bt.jakeCell) continue;
         if (dw.kind == DoorwayKind::GapBridge || dw.kind == DoorwayKind::CrossLevel ||
@@ -1214,14 +1215,34 @@ CellWindow cellObsWindow(const CanonFloor& floor) {
         if (dw.axis != 1) continue;                                  // Z-plane wall only
         if (std::fabs(dw.cz - c.z1()) < std::fabs(dw.cz - c.z0())) { // nearer +Z
             doorC = dw.cx; doorH = (dw.cutHalf > 0.05f) ? dw.cutHalf : 0.8f; found = true;
+            partner = (dw.a == bt.jakeCell) ? dw.b : dw.a;
         }
     }
     if (!found) return w;
     // Two stubs flank the door on the +Z run: [x0, doorC-doorH] and [doorC+doorH, x1].
     // Inset each by a jamb margin from the corner + the door reveal, then glaze the wider.
     const float m = 0.35f;
-    const float lLo = c.x0() + m, lHi = (doorC - doorH) - m;
-    const float rLo = (doorC + doorH) + m, rHi = c.x1() - m;
+    float lLo = c.x0() + m, lHi = (doorC - doorH) - m;
+    float rLo = (doorC + doorH) + m, rHi = c.x1() - m;
+    // ---- VOID-FRONTED WINDOW (fix/cell-hole-2, owner playtest 2026-08-18: "the HOLE in
+    // Jake's cell" / "I saw the cell still open to outside"). A SEE-THROUGH opening is
+    // only legal where the space BEYOND it is the partner room's interior. This span was
+    // derived from the CELL's face run alone, and Jake's Cell OVERHANGS the Main Hall by
+    // 1.5 m at -X (cell x[-1.5,5.5] vs hall x[0,44]) — so the "wider" stub the old rule
+    // always picked, x[-1.15,0.40], was 74% clear of the hall footprint. Three quarters
+    // of a floor-to-ceiling armored viewport looked at NOTHING: no room, no corridor, no
+    // earth — raw void, at eye level, dead ahead of the bunk. The invisible collision box
+    // that re-seals the graybox kept the cell escape-proof and hid the defect from every
+    // collision-based gate. CLIP both candidate stubs to the partner's footprint (same
+    // jamb inset) before choosing; a stub with nothing behind it is not glazable and the
+    // wall simply builds SOLID there (LAW 2 — closure, not a patch quad over the crack).
+    // `legacyRule` reproduces the unclipped span: the seal-view lint's negative control.
+    if (!legacyRule && partner != kNoRoom && partner < floor.rooms.size()) {
+        const CanonRoom& p = floor.rooms[partner];
+        const float pLo = p.x0() + m, pHi = p.x1() - m;
+        lLo = std::max(lLo, pLo); lHi = std::min(lHi, pHi);
+        rLo = std::max(rLo, pLo); rHi = std::min(rHi, pHi);
+    }
     const float lW = lHi - lLo, rW = rHi - rLo;
     if (lW < 0.5f && rW < 0.5f) return w;                            // no stub worth glazing
     if (lW >= rW) { w.lo = lLo; w.hi = lHi; } else { w.lo = rLo; w.hi = rHi; }
@@ -1727,59 +1748,96 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     }
 
     // ---- UNDERGROUND EARTH BACKING (owner rule 2026-08-16: the cell block is BELOW
-    // GRADE — "you can see out into the void (which needs to be solid earth, as this
-    // is underground)"). Defense in depth for Jake's Cell: any face with NO doorway
-    // and NO neighboring room beyond it gets a coarse dark-earth occluder slab behind
-    // the shell, so any future gap, clip or camera glitch shows ground instead of
-    // void. Fail closed, show earth. Scoped to the cell this lane sealed; the general
-    // below-grade rule (every F1 exterior face, minus the glass facade + breach cuts)
-    // is filed with the lane report.
+    // GRADE — "you can see out into the void (which needs to be solid earth, as this is
+    // underground)"). Any part of a below-grade room's exterior face with NO opening and
+    // NO neighbouring room beyond it gets a coarse dark-earth occluder slab behind the
+    // shell, so any future gap, clip or camera glitch shows GROUND instead of void. Fail
+    // closed, show earth.
+    //
+    // fix/cell-hole-2 promotes this from ONE face of ONE room to every partnerless SPAN
+    // of every F1 face, for two reasons the first pass got wrong:
+    //   * PER-FACE was too coarse. `neighborBeyond` was a face-wide BOOLEAN, so one small
+    //     neighbour anywhere along a face suppressed the backing for the whole face —
+    //     and Jake's Cell overhangs BOTH the Main Hall (+Z) and WL-2 (-Z) by 1.5 m at -X,
+    //     which is exactly the strip the owner saw through. Spans, not faces.
+    //   * ONE ROOM was too narrow. The rule is a property of being underground, not of
+    //     being Jake's cell.
+    // Scope: floor 1 only (floors 2-7 are the above-grade tower behind a GLASS CURTAIN
+    // WALL — earth there would be wrong) and never the deep cave/sub-level rooms (they
+    // carry their own cavern shell). Faces are sampled at 0.10 m; a partnerless run must
+    // be >= 0.6 m to be worth a slab, and the slab spans only that run (+0.25 m lap), so
+    // a slab can never reach into a neighbouring room the way a room-wide one could.
+    // Occluders are VISIBLE, NON-COLLIDING: the graybox wall stays the collision truth.
     {
-        const uint32_t jr = canonBeats(floor).jakeCell;
-        if (jr != kNoRoom && jr < nRooms) {
-            const CanonRoom& r = floor.rooms[jr];
-            const float earth[4] = { 0.20f, 0.15f, 0.11f, 1.0f };   // dark packed soil
-            auto faceHasDoor = [&](int f) {
-                const std::vector<Gap>* g[4] = { &gapXneg[jr], &gapXpos[jr], &gapZneg[jr], &gapZpos[jr] };
-                return !g[f]->empty();
-            };
-            auto neighborBeyond = [&](int f) {
-                for (uint32_t i = 0; i < nRooms; ++i) {
-                    if (i == jr) continue;
-                    const CanonRoom& n = floor.rooms[i];
-                    if (n.y0() > r.y1() || n.y1() < r.y0()) continue;   // different story
-                    switch (f) {
-                        case 0:  if (n.x1() >= r.x0() - 1.5f && n.x0() < r.x0() &&
-                                     n.z0() < r.z1() && n.z1() > r.z0()) return true; break;
-                        case 1:  if (n.x0() <= r.x1() + 1.5f && n.x1() > r.x1() &&
-                                     n.z0() < r.z1() && n.z1() > r.z0()) return true; break;
-                        case 2:  if (n.z1() >= r.z0() - 1.5f && n.z0() < r.z0() &&
-                                     n.x0() < r.x1() && n.x1() > r.x0()) return true; break;
-                        default: if (n.z0() <= r.z1() + 1.5f && n.z1() > r.z1() &&
-                                     n.x0() < r.x1() && n.x1() > r.x0()) return true; break;
-                    }
-                }
-                return false;
-            };
-            int backed = 0;
-            const float m = 1.5f, off = 0.25f + 0.30f;   // margin past the face; slab offset behind it
-            const float yH = r.h * 0.5f + 1.0f;          // over-tall: covers wall top + slab bands
+        const float earth[4] = { 0.20f, 0.15f, 0.11f, 1.0f };   // dark packed soil
+        const float off = 0.25f + 0.30f;    // slab center offset behind the face plane
+        const float lap = 0.05f;            // tiny run overhang; never past the face run
+        int backed = 0;
+        for (uint32_t ri = 0; ri < nRooms; ++ri) {
+            const CanonRoom& r = floor.rooms[ri];
+            if (r.platform || r.h < 1.8f) continue;
+            if (r.cy < -50.0f) continue;                       // deep cave / sub-level shell
+            if (!floor.roomFloorNum.empty() && ri < floor.roomFloorNum.size() &&
+                floor.roomFloorNum[ri] != 1) continue;         // above grade: glass facade
+            const std::vector<Gap>* faceGaps[4] = { &gapXneg[ri], &gapXpos[ri], &gapZneg[ri], &gapZpos[ri] };
             for (int f = 0; f < 4; ++f) {
-                if (faceHasDoor(f) || neighborBeyond(f)) continue;
-                if (f == 0)      addBox(scene, device, physics, 0.30f, yH, r.d * 0.5f + m,
-                                        r.x0() - off, r.cy, r.cz, floorTex, earth, jr, false, true);
-                else if (f == 1) addBox(scene, device, physics, 0.30f, yH, r.d * 0.5f + m,
-                                        r.x1() + off, r.cy, r.cz, floorTex, earth, jr, false, true);
-                else if (f == 2) addBox(scene, device, physics, r.w * 0.5f + m, yH, 0.30f,
-                                        r.cx, r.cy, r.z0() - off, floorTex, earth, jr, false, true);
-                else             addBox(scene, device, physics, r.w * 0.5f + m, yH, 0.30f,
-                                        r.cx, r.cy, r.z1() + off, floorTex, earth, jr, false, true);
-                ++backed;
+                const bool  planeIsX = (f == 0 || f == 1);
+                const bool  outNeg   = (f == 0 || f == 2);
+                const float plane = (f == 0) ? r.x0() : (f == 1) ? r.x1() : (f == 2) ? r.z0() : r.z1();
+                const float runLo = planeIsX ? r.z0() : r.x0();
+                const float runHi = planeIsX ? r.z1() : r.x1();
+                if (runHi - runLo < 0.6f) continue;
+                // A run coordinate is BACKED when an opening sits on it (a doorway,
+                // breach or viewport looks into real space by construction) or when a
+                // room lies immediately beyond the plane there, at overlapping Y.
+                auto covered = [&](float t) {
+                    for (const Gap& g : *faceGaps[f]) {
+                        const float gh = (g.half > 0.0f ? g.half : kDoorHalf) + 0.30f;
+                        if (t > g.c - gh && t < g.c + gh) return true;
+                    }
+                    for (uint32_t i = 0; i < nRooms; ++i) {
+                        if (i == ri) continue;
+                        const CanonRoom& n = floor.rooms[i];
+                        if (n.y0() > r.y1() + 0.60f || n.y1() < r.y0() - 0.05f) continue;  // different story
+                        const float nRunLo = planeIsX ? n.z0() : n.x0();
+                        const float nRunHi = planeIsX ? n.z1() : n.x1();
+                        if (t < nRunLo || t > nRunHi) continue;                            // not on this run
+                        const float nLo = planeIsX ? n.x0() : n.z0();
+                        const float nHi = planeIsX ? n.x1() : n.z1();
+                        if (outNeg) { if (nHi >= plane - 1.5f && nLo < plane - 0.02f) return true; }
+                        else        { if (nLo <= plane + 1.5f && nHi > plane + 0.02f) return true; }
+                    }
+                    return false;
+                };
+                // Sample the run and emit one slab per contiguous partnerless span.
+                const float step = 0.10f;
+                float spanLo = 0.0f; bool open = false;
+                auto flush = [&](float spanHi) {
+                    if (!open) return;
+                    open = false;
+                    if (spanHi - spanLo < 0.6f) return;
+                    const float a  = std::max(runLo, spanLo - lap);
+                    const float b  = std::min(runHi, spanHi + lap);
+                    const float c  = (a + b) * 0.5f;
+                    const float hh = (b - a) * 0.5f;
+                    const float yLo = r.y0() - 0.30f, yHi = r.y1() + 0.80f;   // covers lid + seal band
+                    const float pc = outNeg ? plane - off : plane + off;
+                    if (planeIsX) addBox(scene, device, physics, 0.30f, (yHi - yLo) * 0.5f, hh,
+                                         pc, (yLo + yHi) * 0.5f, c, floorTex, earth, ri, false, true);
+                    else          addBox(scene, device, physics, hh, (yHi - yLo) * 0.5f, 0.30f,
+                                         c, (yLo + yHi) * 0.5f, pc, floorTex, earth, ri, false, true);
+                    ++backed;
+                };
+                for (float t = runLo + step * 0.5f; t < runHi; t += step) {
+                    if (covered(t)) { flush(t - step * 0.5f); }
+                    else if (!open) { open = true; spanLo = t - step * 0.5f; }
+                }
+                flush(runHi);
             }
-            if (backed)
-                x3::logInfo("buildCanonFloor: EARTH BACKING — " + std::to_string(backed) +
-                            " below-grade occluder slab(s) behind Jake's Cell exterior face(s)");
         }
+        if (backed)
+            x3::logInfo("buildCanonFloor: EARTH BACKING — " + std::to_string(backed) +
+                        " below-grade occluder slab(s) behind partnerless F1 face spans");
     }
 
     // ---- THRESHOLD RAMPS at doored/adjacent/overlap openings with a FLOOR-HEIGHT
