@@ -599,8 +599,12 @@ int x3AppMain(int argc, char** argv) {
     constexpr uint32_t kHeadlessW = 1280, kHeadlessH = 720;
     if (o.winW < 320)  o.winW = 320;
     if (o.winH < 240)  o.winH = 240;
-    const uint32_t W = headless ? kHeadlessW : o.winW;
-    const uint32_t H = headless ? kHeadlessH : o.winH;
+    // ...UNLESS --width/--height were passed explicitly. Without this a headless
+    // capture silently ignored them, so every HUD/menu still in the project was
+    // only ever reviewed at 720p — and a panel that fits at 720p and clips at
+    // 1080p (or vice versa) had no way to be caught.
+    const uint32_t W = (headless && !o.resExplicit) ? kHeadlessW : o.winW;
+    const uint32_t H = (headless && !o.resExplicit) ? kHeadlessH : o.winH;
     // In headless mode we create NO window (no glfwCreateWindow at all). GLFW is
     // still initialized (cheap; some paths poll events) but never opens a surface.
     GLFWwindow* window = nullptr;

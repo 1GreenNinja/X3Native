@@ -60,6 +60,25 @@ public:
         else it->second.value = std::string(value);
     }
 
+    // ---- Introspection (see IConsole.h): the help text and the shipped default
+    // have been stored per cvar all along; these hand them back so a tuning GUI
+    // can show a hover tooltip and offer RESET without duplicating either.
+    std::string cvarHelp(std::string_view name) const override {
+        auto it = m_cvars.find(std::string(name));
+        return it == m_cvars.end() ? std::string() : it->second.help;
+    }
+    std::string cvarDefault(std::string_view name) const override {
+        auto it = m_cvars.find(std::string(name));
+        return it == m_cvars.end() ? std::string() : it->second.def;
+    }
+    std::vector<std::string> cvarNames() const override {
+        std::vector<std::string> out;
+        out.reserve(m_cvars.size());
+        for (const auto& kv : m_cvars) out.push_back(kv.first);
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
     void exec(std::string_view line) override {
         auto args = tokenize(line);
         if (args.empty()) return;
