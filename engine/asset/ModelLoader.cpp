@@ -1880,6 +1880,16 @@ BatchResult runBatch(IModelLoader& loader, IAssetSource& src,
 
 } // namespace
 
+// Ownership query for subsystems that keep their own raw-texture-id teardown
+// ledgers (world_stream's region ledger, env_art's asset table). The cache is
+// keyed by the TAGGED handle, so re-tag the raw id before looking it up.
+// Contract + rationale: IModelLoader.h.
+bool isCacheManagedTexture(uint32_t textureId) {
+    if (!textureId) return false;
+    std::lock_guard<std::mutex> lk(g_texCacheMu);
+    return g_texKeyByHandle.find(kTexTag | (uint64_t)textureId) != g_texKeyByHandle.end();
+}
+
 bool runModelLoaderSelfTest() {
     g_pass = g_fail = g_skip = 0;
     logInfo("[gltf-test] M2 glTF/GLB model loader self-test");

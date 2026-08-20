@@ -12,6 +12,7 @@
 #include "headless_device.h"  // self-test device
 
 #include "engine/core/x3_log.h"
+#include "engine/asset/IModelLoader.h"   // isCacheManagedTexture — W5b ledger guard
 #include "engine/physics/IPhysicsWorld.h"
 
 #include <algorithm>
@@ -225,6 +226,18 @@ void WorldStreamer::captureLedger(Region& r, const Scene& scene) {
         // SEAM 3: an external shared library's textures (the canon RoomDressing's
         // sets) belong to their owner — never in a region ledger, never torn down here.
         if (m_sharedSurf && m_sharedSurf->ownsTexture(t.id)) return;
+        // W5b DOUBLE-FREE FIX: textures held by the process-wide refcounted GLB
+        // cache are owned by the model loader, not by whichever region happened to
+        // reference them first. The SAME converted kit piece is loaded by many
+        // builders across Echotropolis and they all get the SAME handle, so a
+        // per-region destroyTexture() frees a texture other resident regions (and
+        // the boot-time cache's permanent ref) still point at. That is why teardown
+        // measured MORE textures destroyed than created (76 created / 112 destroyed)
+        // while meshes and bodies balanced exactly — meshes are never shared.
+        // The loader releases these on the last Model unload(); see
+        // engine/asset/IModelLoader.h isCacheManagedTexture() and env_art.cpp's
+        // destroy() doctrine, which already solved this for the env-art path.
+        if (x3::asset::isCacheManagedTexture(t.id)) return;
         if (texIds.insert(t.id).second) r.textures.push_back(t);
     };
     for (uint32_t id : r.entities) {
