@@ -89,6 +89,9 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     // line (the ObjectiveSystem free-text lane) instead of the hardcoded Level-1
     // beat list. Default 0 = zero behavior change (the doc is not even loaded).
     console.registerCVar("g_missiondoc", "0", "drive Level-1 objectives from missions/level1.mission.json (x3.mission/1)");
+    // P1-4 canon mission spine: the canon_act1 doc drives the canonlevel objective
+    // line by default (the runner in app_run.cpp gates on this at world build).
+    console.registerCVar("g_canon_missiondoc", "1", "drive canon objectives from missions/canon_act1.mission.json on --world canonlevel (x3.mission/1, P1-4 — default ON)");
     // Portal flood-fill depth: how many OPEN-doorway hops the canonlevel cull floods out
     // from the player's room. Higher = see further down a hall through open doors (more
     // rooms drawn); 1 = current room + direct neighbours only (tight). The flood is also

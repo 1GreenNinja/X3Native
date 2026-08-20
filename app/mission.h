@@ -39,6 +39,7 @@
 namespace x3::game {
 
 class Level1Game;   // level1_game.h — the Level-1 poll adapter reads it
+class CanonPlay;    // canon_play.h — the canon poll adapter reads it (--world canonlevel)
 
 // ===========================================================================
 // The parsed x3.mission/1 document model.
@@ -149,6 +150,23 @@ private:
 void pollLevel1MissionFlags(const Level1Game& game, MissionEventBridge& bridge,
                             StoryFlags& flags);
 
+// Canon poll adapter (P1-4): derive the canon mission flags from the LIVE
+// CanonPlay each tick (edge-latched — flags only ever get set). Sets:
+//   "canon.leftCell"        the player has left Jake's Cell (play.leftCell())
+//   "canon.armed"           the player is armed        (play.armed())
+//   "canon.martinez.dead"   Martinez spawned + dead    (play.martinezSpawned() &&
+//                                                       !play.martinezAlive())
+//   "canon.floor.<n>"       the player stands on floor n (n = 1..7, via the
+//                           host-supplied `playerFloor`; latched, so reaching
+//                           7 once is enough for {"flag":"canon.floor.7"})
+//   kill counters          "kill.<type>.<n>" via `bridge` (same scheme as L1)
+// Pure reads of CanonPlay public queries + one host-computed int; no game state
+// is touched. The rescue/clone/Sarah beats advance on the StoryFlags the canon
+// host already writes (girl.freed.*, clone.defeated, sarah.freed, sarah.extracted)
+// — this adapter only bridges the cell/arm/Martinez/floor beats.
+void pollCanonMissionFlags(const CanonPlay& play, MissionEventBridge& bridge,
+                           StoryFlags& flags, int playerFloor);
+
 // ===========================================================================
 // MissionRunner — the live runner (one active mission).
 // ===========================================================================
@@ -236,5 +254,22 @@ private:
 // Prints "mission: X/Y passed"; returns true iff all pass.
 // ===========================================================================
 bool runMissionSelfTest();
+
+// --test-canonmission (P1-4): the CANON mission spine, asserted headless (no
+// window/Vulkan for the doc walk). Asserts:
+//   * missions/canon_act1.mission.json parses + validates from disk;
+//   * the doc-driven runner walks the FULL canon beat sequence (wake -> arm ->
+//     Martinez -> triage -> climb -> clone -> Sarah -> helipad -> Complete) with
+//     the objective string PRESENT and correct at every step;
+//   * the escaped-path cascade (intro.outcome=escaped + armed -> straight to
+//     Martinez) skips the cell/arm beats without leaving a blank objective;
+//   * NEGATIVE CONTROL: with no flags set the runner holds the wake objective
+//     (never advances, never goes blank mid-game);
+//   * pollCanonMissionFlags on a REAL CanonPlay (canonical JSON permitting):
+//     unarmed + in-cell -> no canon.* flags; cheatArm -> canon.armed; the floor
+//     bridge -> canon.floor.<n>. Skips the CanonPlay section (PASS) when the
+//     canonical tower JSON is absent.
+// Prints "canonmission: X/Y passed"; returns true iff all pass.
+bool runCanonMissionSelfTest();
 
 } // namespace x3::game
