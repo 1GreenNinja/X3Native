@@ -89,6 +89,12 @@ constexpr float kFacilityHalfD= 16.0f;    // facility half-depth  (Z)
 constexpr float kBreachHalfW  = 2.4f;     // entry breach half-width
 constexpr float kEntryReach   = 6.0f;     // distance to the breach that triggers the hand-off
 constexpr float kApproachZ    = -22.0f;   // crossing this advances "approach" objective
+// THE HANDOFF CONTINUITY CONTRACT (see the report on fix/facility-entry-continuity):
+// this host and the canon world are two different hosts, so every render setting
+// they do not SHARE is a discontinuity the player walks through. The play FOV is
+// the cheapest of them: canonlevel's live camera is 60 deg (app_run.cpp), so this
+// host must be 60 too or [E] visibly changes the lens.
+constexpr float kPlayFovDeg   = 60.0f;
 
 // ---------------------------------------------------------------------------
 // [P0-1 EFLZ-GP-1B] SURFACE -> FACILITY HANDOFF (the spec'd trigger + request).
@@ -525,7 +531,11 @@ int hostSurfaceStart(HostContext& hc) {
             phys->step(dt);
             rescue.tick(dt, scene, *phys, player.feet());   // hub NOT reached -> no timers
             scene.update(*phys);
-            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+            // CONTINUITY: 60 deg — the SAME FOV the canon world's play camera uses
+            // (app_run.cpp's main-loop setCamera). This host shipped 70, so pressing
+            // [E] at the breach snapped the lens 10 degrees narrower mid-step: the
+            // single loudest "it switched games" tell in the handoff, and free to fix.
+            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], kPlayFovDeg);
             if (i == kFrames - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
             if (frame.valid) drawWorld(frame, cam[0], cam[1], cam[2], cam[3], cam[4]);
@@ -607,7 +617,7 @@ int hostSurfaceStart(HostContext& hc) {
 
         float cx, cy, cz, cyaw, cpit;
         player.camera(cx, cy, cz, cyaw, cpit);
-        device->setCamera(cx, cy, cz, cyaw, cpit, 70.0f);
+        device->setCamera(cx, cy, cz, cyaw, cpit, kPlayFovDeg);   // FOV parity with canonlevel
 
         auto frame = device->beginFrame();
         if (frame.valid) {

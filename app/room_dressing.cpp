@@ -159,6 +159,19 @@ constexpr float kExteriorAmbient[3] = { 0.42f, 0.44f, 0.50f };
 // exterior lost half its sky fill AND (m_iblSpecular = -1 falls back to this)
 // half its env-specular — the chalky facade / dead glass read.
 constexpr float kExteriorIbl        = 1.0f;
+// UNIFY 0820 — fix/facility-entry-continuity reached the SAME 1.0 by its own
+// route (it read the engine default that `--world surface` runs at, which the
+// owner approved). Same value, same intent, kept ONCE.
+//
+// OPEN QUESTION, NOT SETTLED BY THIS MERGE: that lane also wanted the exterior
+// to run with fog fully OFF (FogParams{}) for byte-parity with `--world
+// surface` across the [E] handoff, where this line runs the tuned thin
+// sky-matched fog below (0.0001/m, cap 0.12). At the door the two differ by
+// ~2% and are indistinguishable; at the 13 km ring they differ by up to 12%.
+// Thin fog was itself tuned against captures on fix/exterior-atmosphere, so
+// deleting it would regress that lane. The real fix is to make BOTH sides of
+// the handoff use the same air — which is an art call for the owner, not a
+// merge resolution. FLAGGED, deliberately left as HEAD.
 
 // Indexed by Zone. Texture sets are AD-3's curated survivors (matlib-verified).
 const Recipe& recipeFor(uint8_t z) {
