@@ -130,7 +130,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         // comments), and the plan calls this out explicitly. Exact == matches,
         // unique flags: a matched arg simply falls through the ladders without
         // re-matching.
-        if (a == "--test-factory") o.testFactory = true;
+        if (a == "--test-factoryannex") o.testFactoryAnnex = true;
         if (a == "--capture-factory") {
             o.captureFactory = true;
             // Optional output GIF path arg (next token, if it isn't another flag).

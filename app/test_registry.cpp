@@ -997,7 +997,7 @@ int dispatchTests(const TestFlags& tf) {
                     "200-207; tick-driven chevron/core/ripple animation) self-test...");
         return x3::game::runRifthubSelfTest() ? 0 : 1;
     }
-    if (tf.testFactory) {
+    if (tf.testFactoryAnnex) {
         x3::logInfo("running CONFECTION ANNEX (5-floor shell + bore + trigger ids "
                     "300-313 + combined Spire/Annex elevator graph through the 4790 "
                     "unlock) self-test...");

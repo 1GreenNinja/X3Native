@@ -105,7 +105,7 @@ struct TestFlags {
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;
     bool testRifthub = false;   // --test-rifthub (Stargate portal hub self-test)
-    bool testFactory = false;   // --test-factory (Confection Annex shell + elevator graph)
+    bool testFactoryAnnex = false;   // --test-factoryannex (Confection Annex shell + elevator graph)
     bool testBasis = false;     // --test-basis (KNOWN_BUGS R3: the MIRROR determinant invariant)
     bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false;
     bool testNet = false, testNetSync = false, testNetInterp = false, testNetPredict = false;

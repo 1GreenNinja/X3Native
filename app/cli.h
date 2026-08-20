@@ -430,7 +430,12 @@ struct CliOptions {
     // combined Spire+Annex elevator graph reaching A5 from F1 through the 4790
     // unlock, tick() animation, onTrigger latches, and create/destroy balance on
     // shutdown. STANDALONE if() in the parser (MSVC C1061 — see the ladder note).
-    bool        testFactory = false;
+    // UNIFY 0820: renamed testFactory -> testFactoryAnnex. Two independent lanes
+    // both claimed `--test-factory`: the Glimvale WORKS siting gate (below in this
+    // struct) and this Confection ANNEX gate. Same name in one struct is a
+    // redefinition; same flag in one dispatch ladder means the first `return`
+    // wins and the second gate NEVER RUNS. The annex is now --test-factoryannex.
+    bool        testFactoryAnnex = false;
     // --test-basis (KNOWN_BUGS R3, THE MIRROR): asserts that EVERY model-instancing
     // basis in the game has a POSITIVE determinant. A negative determinant is a
     // reflection: winding reverses, back-face culling drops the outer shell, and the

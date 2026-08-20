@@ -397,7 +397,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testAct2Desert = o.testAct2Desert;
         _tf.testAct2Caves = o.testAct2Caves;
         _tf.testRifthub = o.testRifthub;
-        _tf.testFactory = o.testFactory;   // STANDALONE dispatch (factory annex)
+        _tf.testFactoryAnnex = o.testFactoryAnnex;   // STANDALONE dispatch (factory annex)
         _tf.testBasis = o.testBasis;
         _tf.testWorldRegions = o.testWorldRegions;
         _tf.testCity = o.testCity;
