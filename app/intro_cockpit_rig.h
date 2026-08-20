@@ -40,6 +40,11 @@ struct IntroCockpitRig {
     // ship, drawn direct (host_space convention) out the canopy each frame.
     x3::asset::Model                         enemyModel, capModel;
     std::vector<x3::asset::ModelDrawable>    enemyDraw, capDraw;
+    // The capital's PHYSICAL gun mounts (feat/overlord-encounter): a base
+    // block + a barrel, built from prims (metres), plus a 1x1 gunmetal
+    // base-color so the PBR route never renders them black (rule 5).
+    x3::rhi::MeshHandle                      gunBaseMesh, gunBarrelMesh;
+    x3::rhi::TextureHandle                   gunTex;
     // MFD/gauge screen entity ids (for the live screen-glow pulse).
     std::vector<uint32_t>                    screenIds;
     // Gate diagnostics.
@@ -48,6 +53,9 @@ struct IntroCockpitRig {
     void shutdown(x3::rhi::IRenderDevice& device) {
         if (mrShared.valid()) device.destroyTexture(mrShared);
         if (mrGlassy.valid()) device.destroyTexture(mrGlassy);
+        if (gunTex.valid())        device.destroyTexture(gunTex);
+        if (gunBaseMesh.valid())   device.destroyMesh(gunBaseMesh);
+        if (gunBarrelMesh.valid()) device.destroyMesh(gunBarrelMesh);
         if (model.ok && loader)      loader->unload(model);
         if (enemyModel.ok && loader) loader->unload(enemyModel);
         if (capModel.ok && loader)   loader->unload(capModel);
@@ -144,11 +152,26 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
 // it, so the capital-death sequence drives this from 1 down to its lights-out
 // floor. Never pass 0 — a fully unlit hull renders as a black cutout in the
 // starfield (X3_WORLD_RULES rule 5), which reads as a hole, not a wreck.
+// `entryBurn` in [0,1] (deorbit-crash death outcome): pushes the whole draw
+// toward re-entry ORANGE — the hit-flash tint alone cannot overpower a pale
+// base map, so this is its own axis. 0 = off (every other caller).
 void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                         const std::vector<x3::asset::ModelDrawable>& draws,
                         const float pos[3], const float fwd[3], const float up[3],
                         float scale, x3::rhi::TextureHandle fallbackMr = {},
-                        float hitFlash = 0.0f, float emisScale = 1.0f);
+                        float hitFlash = 0.0f, float emisScale = 1.0f,
+                        float entryBurn = 0.0f);
+
+// One capital gun mount (feat/overlord-encounter): an armored base block plus
+// a barrel slewed onto `aimDir` (the battery TRACKS the player). `alive=false`
+// draws only a scorched, shrunken stub — the mount was SHOT OFF. `spool` in
+// [0,1] heats the live barrel amber (the telegraph, visible on the hull).
+void drawIntroCapitalGun(x3::rhi::IRenderDevice& device,
+                         const x3::rhi::FrameContext& frame,
+                         x3::rhi::MeshHandle baseMesh, x3::rhi::MeshHandle barrelMesh,
+                         x3::rhi::TextureHandle baseColor, x3::rhi::TextureHandle mr,
+                         const float pos[3], const float aimDir[3],
+                         bool alive, float spool);
 
 // Pulse the MFD/gauge screens' emissive strength (subtle alive flicker). Call
 // once per frame with the running time.

@@ -184,6 +184,11 @@ public:
     void setMode(FlightMode m);
     FlightMode mode() const { return m_mode; }
     const Tuning& tuning() const { return m_tuning; }
+    // Test-only uniform 6DOF speed/velocity multiplier (F5 gate). Scales the
+    // accels + forward/lateral speed caps so A/B-ing the dart feel needs no
+    // rebuild and no re-tune. 1.0 = off.
+    void  setSpeedMul(float m) { m_speedMul = (m > 0.0f ? m : 1.0f); }
+    float speedMul() const     { return m_speedMul; }
 
     // The TRUE ceiling while the antimatter boost is held (maxSpeed *
     // boostSpeedCapMul). Speed/maxSpeed HUD + FX fractions can exceed 1.0 during
@@ -306,6 +311,7 @@ private:
     // then eased back toward Tuning.maxSpeed on release (antimatter overspeed
     // bleed-off — see update()). Seeded to maxSpeed at spawn.
     float m_speedCap = 0.0f;
+    float m_speedMul = 1.0f;   // test-only 6DOF speed multiplier (F5 gate)
 
     // Orientation: stored as a quaternion (x,y,z,w) per CONVENTIONS.md so we
     // accumulate roll cleanly without gimbal-locking. We also keep Euler
