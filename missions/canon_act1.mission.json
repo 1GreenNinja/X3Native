@@ -1,0 +1,75 @@
+{
+  "format": "x3.mission/1",
+  "id": "canon_act1",
+  "title": "ESCAPE FROM LAB ZERO - Act 1: The Tower",
+  "start": "wake",
+  "stages": [
+    {
+      "id": "wake",
+      "objective": "Escape the detention cell",
+      "on_enter": [ { "set": "canon.mission.begun" } ],
+      "advance_when": [
+        { "any": [
+          { "flag": "canon.leftCell" },
+          { "flag": "intro.outcome=escaped" }
+        ] }
+      ],
+      "next": "arm"
+    },
+    {
+      "id": "arm",
+      "objective": "Find a weapon",
+      "advance_when": [ { "flag": "canon.armed" } ],
+      "next": "martinez"
+    },
+    {
+      "id": "martinez",
+      "objective": "Defeat Chief Martinez",
+      "advance_when": [ { "flag": "canon.martinez.dead" } ],
+      "next": "triage"
+    },
+    {
+      "id": "triage",
+      "objective": "Rescue the girls in the Medical Bay",
+      "advance_when": [
+        { "any": [
+          { "flag": "girl.freed.aria" },
+          { "flag": "girl.freed.keisha" },
+          { "flag": "girl.freed.emily" }
+        ] }
+      ],
+      "next": "climb"
+    },
+    {
+      "id": "climb",
+      "objective": "Climb the tower to Floor 7",
+      "advance_when": [ { "flag": "canon.floor.7" } ],
+      "next": "clone"
+    },
+    {
+      "id": "clone",
+      "objective": "Defeat Jake's Clone on Floor 7",
+      "advance_when": [ { "flag": "clone.defeated" } ],
+      "next": "sarah"
+    },
+    {
+      "id": "sarah",
+      "objective": "Free Sarah from the containment field",
+      "advance_when": [ { "flag": "sarah.freed" } ],
+      "next": "helipad"
+    },
+    {
+      "id": "helipad",
+      "objective": "Get Sarah to the Helipad",
+      "advance_when": [ { "flag": "sarah.extracted" } ],
+      "next": "outro"
+    },
+    {
+      "id": "outro",
+      "objective": "TO BE CONTINUED",
+      "advance_when": [ { "flag": "act2.handoff" } ],
+      "on_complete": [ { "fire": "mission_complete", "args": { "mission": "canon_act1" } } ],
+      "next": "end"
+    }
+  ]
+}
