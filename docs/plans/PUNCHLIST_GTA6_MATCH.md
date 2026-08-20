@@ -51,6 +51,29 @@ Ranked by leverage: what makes THAT footage read photoreal, mapped to what we ha
 - [ ] **P7. Nighttime reference pass** — their night footage vs our W-NIGHT + real
       flashlight cone: capture-pair comparison, fix the deltas.
 
+## FROM THE FULL LEAK ROUNDUP (Beebom "everything we spotted")
+Items where we ALREADY have the seed in the tree are marked ◆.
+- [ ] **P8. Wanted system** — star display, cops converge, killing the last pursuer
+      clears the level; GPS tracker on police vehicles. ◆ wanted-lite is Lane 1's
+      brief (hack alarm -> cop converge exists in npcLife).
+- [ ] **P9. Fuel system** — ◆ W-STATIONS shipped refuel prompts + pumps; add a fuel
+      gauge that actually drains and gates the engine.
+- [ ] **P10. Gun-mounted flashlight** — ◆ the engine just gained the spot cone;
+      parent one to the weapon muzzle, toggleable.
+- [ ] **P11. Weapon wheel spec** — 8 weapon slots + 2 healing-item slots (refines P1).
+- [ ] **P12. Healing items w/ diminishing returns** — pills consumable; each use
+      heals less. Pairs with the vendor economy (DODOG precedent).
+- [ ] **P13. Finishers + injury states** — slow-mo cinematic finisher after a stun
+      (extends P5 taser->disarm chain); visible cuts/wounds on the player model.
+- [ ] **P14. Car-theft depth** — key cloning vs window smash choice; vehicle storage
+      at safehouse.
+- [ ] **P15. Grab/wrestle + NPC accessory pickup** — grab a civilian; knock a hat
+      off and wear it. (Citizen-depth pillar #28 material.)
+- [ ] **P16. District danger profile** — hostile NPC zones (their homeless-hostile
+      areas): per-district aggression tuning in npcLife.
+- [ ] **P17. Basketball micro-activity** — one court, one ball, one shot arc near a
+      safehouse. Small, high-charm.
+
 ## VERIFY DISCIPLINE
 Every item gates on an A/B capture against a named reference frame, read at full
 res, before it is called done (capture-review law).
