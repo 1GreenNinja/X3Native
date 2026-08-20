@@ -21,6 +21,7 @@
 //   * headless: settle 24 frames, camera {60, 22, 46, -1.57, -0.30} (three
 //     glass floors + the shaft in frame), exit 0 on capture.
 #include "world_host_common.h"
+#include "host_shell.h"                 // console (~), menu (ESC), FPS (F3) — the SHARED shell (D13/HS1)
 #include "../scene.h"
 #include "../trigger.h"
 #include "../factory_annex.h"
@@ -299,19 +300,31 @@ int hostFactory(HostContext& hc) {
                 "(4790 unlocks the ANNEX; 9999 at A5 = the ROOF BURST), F noclip, Esc quits");
     std::string lastTitle;
     int lastW = (int)hc.W, lastH = (int)hc.H;
-    while (!glfwWindowShouldClose(window)) {
+    // UNIFY 0820: this host was authored on feat/factory-annex BEFORE the
+    // shared-shell migration landed on the other line, so it shipped its own
+    // bare ESC-quits loop and no console/pause/FPS at all — which is exactly
+    // what gate D13 / HS1-HS3 exists to catch, and it caught it. Wired here so
+    // --world factory gets the ~ console, the ESC pause menu, F3 stats and the
+    // ~118 shared commands like every other world.
+    HostShell shell;
+    shell.attach(hc);
+
+    while (!glfwWindowShouldClose(window) && !shell.wantQuit()) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        shell.beginFrame();   // ESC opens the menu; SHIFT+ESC quits
 
         double now = glfwGetTime();
         float fdt = (float)(now - prevTime); prevTime = now;
         if (fdt > 0.1f) fdt = 0.1f;
 
         double mx, my; glfwGetCursorPos(window, &mx, &my);
-        float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+        const float look = shell.inputEnabled() ? 1.0f : 0.0f;   // no mouse-look while typing
+        float ddx = (float)(mx - lastMX) * look, ddy = (float)(my - lastMY) * look;
         lastMX = mx; lastMY = my;
 
-        auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+        // shell.key() is false while the console/menu owns input — which also
+        // keeps the cab KEYPAD DIGITS from being typed into the console.
+        auto kd = [&](int k) { return shell.key(k); };
         const bool spaceNow = kd(GLFW_KEY_SPACE);
         const bool fNow = kd(GLFW_KEY_F);
         if (fNow && !prevF) {
@@ -470,6 +483,7 @@ int hostFactory(HostContext& hc) {
             fafx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
             fafx.submit(*device, frame);
         }
+        shell.draw(frame);
         device->endFrame(frame);
     }
 
