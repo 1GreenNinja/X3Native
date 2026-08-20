@@ -1,0 +1,74 @@
+[
+  {
+    "name": "Idle",
+    "action_id": 0,
+    "task_id": "01a005e8-75ba-7a06-b7bc-fbe109b772a9",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/saurian\\canon_saurian_Idle.glb"
+  },
+  {
+    "name": "Walk",
+    "action_id": 106,
+    "task_id": "01a005e8-7758-7a08-b578-192518507985",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/saurian\\canon_saurian_Walk.glb"
+  },
+  {
+    "name": "Run",
+    "action_id": 16,
+    "task_id": "01a005e8-78ba-70ca-8a7a-6c870d44a472",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/saurian\\canon_saurian_Run.glb"
+  },
+  {
+    "name": "Attack",
+    "action_id": 4,
+    "task_id": "01a005e8-79fe-70cb-a27d-8eccafbe81cb",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/saurian\\canon_saurian_Attack.glb"
+  },
+  {
+    "name": "Attack2",
+    "action_id": 97,
+    "task_id": "01a005e8-7b52-7e65-a5a2-9bdf75f43ebe",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/saurian\\canon_saurian_Attack2.glb"
+  },
+  {
+    "name": "Death",
+    "action_id": 8,
+    "task_id": "01a005e8-7ca9-7a09-844f-6c1d139d1f78",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/saurian\\canon_saurian_Death.glb"
+  },
+  {
+    "name": "Hitreaction",
+    "action_id": 178,
+    "task_id": "01a005e8-7e07-7a0a-aa82-dd3056973063",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/saurian\\canon_saurian_Hitreaction.glb"
+  },
+  {
+    "name": "Taunt",
+    "action_id": 88,
+    "task_id": "01a005e8-7f2d-7de9-a33f-9f7fa9ec895b",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/saurian\\canon_saurian_Taunt.glb"
+  }
+]

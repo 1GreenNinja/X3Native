@@ -88,7 +88,63 @@ void SarahCompanion::build(Scene& scene, x3::rhi::IRenderDevice& device,
     //     locomotion. It carries NO aim/fire and NO death clip, so m_aimClip /
     //     m_deathClip stay -1 and she shoots from the locomotion pose (see driveAnim).
     //     That is a KNOWN art gap, not a wiring bug: bake an Aim + Death clip onto
-    //     AnnaCasual_anim.glb and both are picked up with ZERO code change. ----
+    //     AnnaCasual_anim.glb and both are picked up with ZERO code change.
+    //
+    // STATUS 2026-08-15 — ROOT CAUSE FOUND; DO NOT RE-RIG SARAH THROUGH MESHY.
+    //   Sarah.glb ALREADY carries a Meshy 24-joint skeleton (Hips/LeftUpLeg/.../
+    //   headfront — byte-identical in name AND order to JakeClone_player.glb and
+    //   the canon aliens). Feeding an ALREADY-MESHY-RIGGED mesh back through the
+    //   rigging endpoint DESTROYS it: her 49,976 tris came back as 208. The same
+    //   endpoint left canon_saurian (1 joint), OverLordEnforcer99 (19) and
+    //   BossTheSiren (20) intact, so the trigger is specifically re-rigging an
+    //   existing Meshy rig. 26 credits were spent proving this.
+    //   Three routes tried and all REJECTED, each verified by a grounded
+    //   floor+level-cam render against Sarah.glb's own rest pose as the control:
+    //     1. clips baked on the re-rig, merged onto her ORIGINAL mesh — legs fuse
+    //        into one column (that rig's rest orientations were fitted to the
+    //        208-tri wreck, so its rotations do not mean the same thing on her).
+    //     2. same, with per-bone translation/scale channels stripped and only
+    //        rotations + Hips translation kept — IDENTICAL result, so the
+    //        translations were never the culprit.
+    //     3. JakeClone_player.glb's 20 clips merged by bone name (the 7/27 route,
+    //        via tools/glb-merge-anims.mjs rather than the old Blender script) —
+    //        reproduces the 7/27 "DEFORMS her badly" exactly: she splays and
+    //        inflates. The 7/27 diagnosis was right.
+    //     4. tools/retarget_glb.py — a proper WORLD-SPACE orientation retarget
+    //        (rest pose divided out), written for exactly this case. It FIXES
+    //        her arms: the 94.5 deg LeftArm / 86.2 deg RightArm rest delta vs
+    //        JakeClone stops mattering. Her legs still tear.
+    //
+    //   ROOT CAUSE (measured 2026-08-15) — HER SKELETON IS BROKEN IN THE LEGS,
+    //   and no clip source or retarget method can fix a bad rig. Rest-pose world
+    //   X separation of the leg chains:
+    //                       Sarah    JakeClone
+    //       Left/RightUpLeg  0.080      0.202
+    //       Left/RightLeg    0.115      0.286
+    //       Left/RightFoot   0.075      0.341
+    //   Both her leg chains sit almost on the centreline, and not even
+    //   symmetrically about it (LeftFoot x=+0.014 vs RightFoot x=-0.061). There
+    //   are effectively not two separate legs to drive, so ANY clip that steps
+    //   tears or fuses the mesh — which is why every attempt above failed in the
+    //   legs while the torso read fine.
+    //
+    //   ✅ RESOLVED 2026-08-15 — Sarah_anim.glb IS COMMITTED AND SHE ANIMATES.
+    //   The fix was a RE-RIG OF HER LEGS (tools/refit_leg_rig.py), not more clip
+    //   hunting: it measures the mesh cross-section at each leg joint's own
+    //   height and places the joint at the centroid of its own side, taking the
+    //   UpLeg separation 0.080 -> 0.257. Clips then transfer cleanly off
+    //   JakeClone_player.glb via tools/retarget_glb.py (world-space orientation,
+    //   so the 94.5 deg rest delta no longer matters):
+    //   Idle / Walk / Run / Aim / Death / Hitreaction.
+    //   This block resolves to 'idle=3 walk=5 aim=0 death=1' where every lookup
+    //   used to MISS at -1, and --test-companion-combat passes 18/18.
+    //   Gotchas that cost the most time, if this is ever redone: the glTF
+    //   importer INVENTS bone tails and hers were at z=-35 (they gate automatic
+    //   weighting's volume test), parent_set(ARMATURE_AUTO) is a silent no-op
+    //   under --background so the leg weights are solved in Python instead, and
+    //   these rigs are authored in CENTIMETRES with a 0.01 armature scale.
+    //   Remaining art nit: the pelvis reads slightly broad in motion.
+    //   The F7 path (AnnaCasual.glb) is unchanged — it has its own clips. ----
     std::string file = std::string(modelFile.empty() ? std::string_view("Sarah.glb")
                                                      : modelFile);
     {
