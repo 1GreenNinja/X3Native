@@ -97,6 +97,13 @@ public:
     void setFreeLook(bool f) { m_freeLook = f; }
     bool freeLook() const { return m_freeLook; }
 
+    // LOW-GRAV JUMP SCALE (feat/factory-annex, Fizz Gallery zone): multiplies
+    // the jump take-off velocity. 1.0 (default) is byte-identical to the old
+    // jump; the factory host sets 1.8 while the player stands in the annex's
+    // low-grav trigger volume and 1.0 outside it. Purely additive.
+    void  setJumpScale(float s) { m_jumpScale = (s > 0.0f) ? s : 1.0f; }
+    float jumpScale() const { return m_jumpScale; }
+
     // ---- Stance (crouch / crawl) ------------------------------------------
     // Stand (full eye height + full move speed), Crouch (C, ducked eye + half
     // speed), Prone (Left-Ctrl, crawling eye + a slow crawl). Lowers the camera
@@ -259,6 +266,7 @@ private:
     bool  m_grounded   = false;
     float m_coyote     = 0.0f;   // time-since-grounded countdown (s)
     float m_jumpBuffer = 0.0f;   // remaining jump-buffer window (s)
+    float m_jumpScale  = 1.0f;   // low-grav jump multiplier (see setJumpScale)
     bool  m_spawned    = false;
 
     // Cached feet position from the last update() (camera() has no world arg).

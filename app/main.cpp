@@ -397,6 +397,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testAct2Desert = o.testAct2Desert;
         _tf.testAct2Caves = o.testAct2Caves;
         _tf.testRifthub = o.testRifthub;
+        _tf.testFactory = o.testFactory;   // STANDALONE dispatch (factory annex)
         _tf.testBasis = o.testBasis;
         _tf.testWorldRegions = o.testWorldRegions;
         _tf.testCity = o.testCity;
@@ -584,7 +585,7 @@ int x3AppMain(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.rtMatVerifyShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.rtMatVerifyShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureFactory || o.captureBurst || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -853,6 +854,8 @@ int x3AppMain(int argc, char** argv) {
         _hc.oceanBaseShot    = o.oceanBaseShot;    _hc.oceanBaseShotPath = o.oceanBaseShotPath;
         _hc.cityShot         = o.cityShot;         _hc.cityShotPath     = o.cityShotPath;
         _hc.captureAi        = o.captureAi;        _hc.captureAiDir     = o.captureAiDir;
+        _hc.captureFactory   = o.captureFactory;   _hc.captureFactoryPath = o.captureFactoryPath;
+        _hc.captureBurst     = o.captureBurst;     _hc.captureBurstPath = o.captureBurstPath;
         _hc.captureCrowdSpread = o.captureCrowdSpread; _hc.captureCrowdSpreadDir = o.captureCrowdSpreadDir;
         _hc.captureWalk      = o.captureWalk;      _hc.captureWalkPath  = o.captureWalkPath;
         _hc.captureWalkRig   = o.captureWalkRig;

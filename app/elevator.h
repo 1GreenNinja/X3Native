@@ -33,6 +33,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,11 @@ enum class ElevState : uint32_t {
     DoorsClosing  = 7,
     EmergencyStop = 8,
     Freefall      = 9,
+    // T4 (feat/factory-annex): the scripted ROOF BURST — the 11th state. The cab
+    // punches up a dedicated vertical rail past the roof plane, hovers at the
+    // apex, then hands back to Freefall/EmergencyStop for the return. All ten
+    // original states are untouched.
+    Burst         = 10,
 };
 
 // One earth-strata layer for the scroll display (ported from CFG.STRATA). Y
@@ -112,6 +118,28 @@ public:
                float shaftX, float shaftZ, float cabHalfX, float cabHalfY, float cabHalfZ,
                const std::vector<float>& stopsCenterY, int startStop = 0);
 
+    // -------- ANYWHERE ELEVATOR (3D waypoint graph; additive, T1) ------------
+    // One stop of the 3D graph. `center` is the cab-CENTER world position at the
+    // stop; `hidden` stops stay off callNext()/floor-button cycling until
+    // unlockHidden() (keypad code kAnnexCode) reveals them.
+    struct Stop {
+        x3::phys::Vec3 center;         // cab-CENTER world position at this stop
+        const char*    label = "";     // panel/button label
+        bool           hidden = false; // not in callNext()/button cycling until unlocked
+    };
+    // 3D build: stops + rails (undirected adjacency pairs). Legacy build()
+    // forwards here with x=shaftX,z=shaftZ on every stop and a full vertical
+    // rail chain, so vertical cabs behave byte-identically (m_stopsY is kept as
+    // a derived mirror — m_stopsY[i] = m_stops[i].center.y — so every legacy
+    // read is untouched).
+    bool buildEx(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                 float cabHalfX, float cabHalfY, float cabHalfZ,
+                 const std::vector<Stop>& stops,
+                 const std::vector<std::pair<int, int>>& rails, int startStop = 0);
+    const x3::phys::Vec3& stopCenter(int i) const;   // full 3D stop accessor
+    void unlockHidden();                             // reveals hidden stops (annex rail)
+    bool hiddenUnlocked() const { return m_unlocked; }
+
     // Request travel to a stop index (clamped). No-op while already moving.
     void callTo(int stopIndex);
     // Cycle to the next stop, wrapping high->low. Simple "call" verb for the core.
@@ -143,6 +171,11 @@ public:
     // Advance the cab toward its target; returns the cab's vertical delta this frame
     // (0 when idle). The host adds this to every rider's Y to carry them.
     float update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
+
+    // T2 — the FULL per-frame cab delta (Vec3). Legacy float update() keeps its
+    // exact old semantics (it returns this vector's Y); hosts that ride lateral
+    // rails add carryDelta() to every rider position instead.
+    const x3::phys::Vec3& carryDelta() const { return m_carry; }
 
     bool  built() const { return m_built; }
     // "moving" == any travel/door/emergency/freefall state (NOT Idle / DoorsOpen).
@@ -285,11 +318,23 @@ public:
     void unlockSecret();
     bool secretUnlocked() const { return m_secretUnlocked; }
 
-    // True iff `stopIndex` is a code-locked stop (rift / 4.5) still locked (the OLED
-    // directory shows it as a dead row; the HUD refuses to offer it).
+    // ===== THE ANNEX RAIL (feat/factory-annex) ================================
+    // Hidden graph stops (Stop::hidden) are the Confection Annex's lateral rail:
+    // dead on the directory, skipped by callTo()/callNext(), until the keypad
+    // code below runs unlockHidden() and lights the golden button. Same
+    // machinery as the RIFT/4.5 stops, generalized to the 3D graph. kAnnexCode
+    // deliberately reuses the 4790 numerology (the garage CPU); a rift cab and
+    // an annex cab never share a shaft (the rift gate m_riftStop wins first).
+    static constexpr const char* kAnnexCode = "4790";
+
+    // True iff `stopIndex` is a code-locked stop (rift / 4.5 / hidden annex rail)
+    // still locked (the OLED directory shows it as a dead row; the HUD refuses
+    // to offer it).
     bool stopLocked(int stopIndex) const {
         return (m_riftStop >= 0 && stopIndex == m_riftStop && !m_riftUnlocked) ||
-               (m_secretStop >= 0 && stopIndex == m_secretStop && !m_secretUnlocked);
+               (m_secretStop >= 0 && stopIndex == m_secretStop && !m_secretUnlocked) ||
+               (stopIndex >= 0 && stopIndex < (int)m_stops.size() &&
+                m_stops[stopIndex].hidden && !m_unlocked);
     }
 
     // ----- Keypad (terminal code entry; 1127 = DISCO + descend to the club,
@@ -311,6 +356,25 @@ public:
     // Arm the one-shot CABLE-SLIP freefall scare (see m_slipArmed). Hosts opt in.
     void armCableSlip() { m_slipArmed = true; }
     void freefall();
+
+    // ===== THE BURST (T4 — roof finale, scripted, feat/factory-annex) ========
+    // From the designated burst stop, keypad code 9999 (or armBurst()) seals the
+    // doors and rides the cab UP past the roof plane: on crossing roofY the cab
+    // fires onRoofShatter (the host wires glass debris / FX — the elevator stays
+    // render-pure) EXACTLY ONCE, glides to a hover at apexY, holds 8 s over the
+    // world, then returns via Freefall (the existing state!) until roofY-2 where
+    // the emergency brakes CATCH it and the ride resumes as a normal arrival
+    // back at the burst stop, doors opening.
+    static constexpr const char* kBurstCode = "9999";
+    void setBurst(int fromStop, float roofY, float apexY) {
+        m_burstStop = fromStop; m_burstRoofY = roofY; m_burstApexY = apexY;
+    }
+    void armBurst();
+    // Latched on the roof crossing and NEVER reset (a shattered roof stays
+    // shattered): the callback can only ever fire once per run.
+    bool burstFired() const { return m_burstFired; }
+    // Host callback: the roof SHATTERS here (world position of the cab center).
+    std::function<void(const x3::phys::Vec3&)> onRoofShatter;
 
     // The current facility-relative stratum name for the cab Y (geo-survey OLED).
     const char* currentStratum() const;
@@ -340,7 +404,28 @@ private:
     x3::phys::BodyId m_body;
     x3::phys::Vec3   m_pos{};                 // cab CENTER world pos
     float    m_halfX = 1.5f, m_halfY = 0.15f, m_halfZ = 1.5f;
-    std::vector<float> m_stopsY;              // cab-center Y per stop (low -> high)
+    std::vector<float> m_stopsY;              // DERIVED MIRROR: m_stops[i].center.y
+                                              // (low -> high on legacy vertical cabs)
+
+    // ---- The Anywhere Elevator: 3D waypoint graph (T1) ----
+    std::vector<Stop>             m_stops;    // primary stop store (mirrored into m_stopsY)
+    std::vector<std::vector<int>> m_adj;      // undirected rail adjacency per stop
+    bool m_chainGraph = false;                // built via legacy build() (sorted vertical chain)
+    bool m_unlocked   = false;                // hidden stops revealed (annex code)
+    int  insertStopY(float centerY);          // mirror-preserving insert (disco club stop)
+
+    // ---- Straight-segment 3D motion (T2). One leg = one straight segment; the
+    // EXISTING trapezoid speed profile advances arclength m_s in [0, m_segLen]
+    // instead of m_pos.y. Vertical graphs degenerate to the old math exactly.
+    std::vector<int> m_route;                 // remaining waypoint stops (last == m_target)
+    x3::phys::Vec3   m_segFrom{}, m_segTo{};  // active leg endpoints (world)
+    x3::phys::Vec3   m_segDir{};              // normalized leg direction
+    float            m_segLen = 0.0f;         // leg arclength
+    float            m_s      = 0.0f;         // arclength progressed on the leg
+    x3::phys::Vec3   m_carry{};               // last update()'s full cab delta
+    void  buildRouteTo(int stopIndex);        // BFS over m_adj + collinear collapse
+    void  beginLeg(int stopIndex);            // set the segment from m_pos to a stop
+    int   nearestStopTo3D(const x3::phys::Vec3& p) const;
     int      m_target = 0;
     int      m_curStop = 0;                   // last-arrived/nearest stop (FSM tracking)
     ElevState m_state = ElevState::Idle;
@@ -364,6 +449,16 @@ private:
     // ---- The hidden 4.5 stop (fix/spire-hollow-core) ----
     int         m_secretStop     = -1;    // stop index of level 4.5 (-1 = none on this cab)
     bool        m_secretUnlocked = false; // code 4455 accepted (or a story beat opened it)
+
+    // ---- The Burst (T4 — roof finale) ----
+    int   m_burstStop  = -1;             // launch/return stop (-1 = no burst on this cab)
+    float m_burstRoofY = 0.0f;           // roof plane the cab shatters through
+    float m_burstApexY = 0.0f;           // hover height over the world
+    bool  m_burstPending   = false;      // doors sealing; enter Burst when shut
+    bool  m_burstReturning = false;      // the live Freefall is the burst return
+    bool  m_burstFired     = false;      // latched on the roof crossing (once, ever)
+    int   m_burstPhase = 0;              // 0 = ascend, 1 = apex hold
+    float m_holdT      = 0.0f;           // apex hover timer (8 s)
 
     // ---- Disco / keypad ----
     bool        m_disco = false;
@@ -397,6 +492,9 @@ private:
     // Twin sliding door panels (front +X wall) that part along Z with m_doorPct, an
     // indicator strip above the doors that tints by state, and a floor numeral plate.
     uint32_t m_eDoorL = kNoLink, m_eDoorR = kNoLink, m_eIndicator = kNoLink;
+    // T3 — the GOLDEN BUTTON (annex rail): a panel quad that exists dark from
+    // buildVisuals (emissive 0.05) and LIGHTS (3.0) when code 4790 unlocks.
+    uint32_t m_eGoldBtn = kNoLink;
     // ---- R11 "RIFT HUB GLOW-UP" cab (see the block comment in buildVisuals) --------
     // The cab had NO WALLS: it was a physics platform plus a handful of flat-tinted
     // floating boxes. You could stand in it and see the shaft's graybox around you.

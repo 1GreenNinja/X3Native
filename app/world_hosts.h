@@ -48,6 +48,7 @@ int hostEchoHarbor(HostContext& hc); // --world echoharbor (+ legacy alias --wor
 int hostGallery  (HostContext& hc);   // --world gallery   (CHARACTER GALLERY: walkable cast + clip cycle)
 int hostMines    (HostContext& hc);   // --world mines     (MINE ENTRANCES: Armory rock + glowing mouths)
 int hostCutaway  (HostContext& hc);   // --world cutaway   (LEVEL ARCHITECT: the whole facility in X-ray)
+int hostFactory  (HostContext& hc);   // --world factory   (THE CONFECTION ANNEX + Anywhere Elevator)
 
 // Headless self-test for the gallery cast + clip-cycle (--test-gallery).
 bool runGallerySelfTest();

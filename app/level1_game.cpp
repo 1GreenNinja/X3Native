@@ -1405,6 +1405,138 @@ bool runElevatorSelfTest() {
         check(wraps && home, "E6 callNext wraps top->ground; cab returns to the floor stop");
     }
 
+    // ---- E7: buildEx with a 3D waypoint graph — legacy accessors still sane.
+    // (The Anywhere Elevator: stops are full 3D cab-center positions wired by
+    // rails; the legacy vertical API reads through the m_stopsY mirror.)
+    {
+        ElevatorSystem ev;
+        std::vector<ElevatorSystem::Stop> stops = {
+            { {0.0f,  2.0f, 0.0f}, "F1",    /*hidden*/false },
+            { {0.0f, 12.0f, 0.0f}, "F3",    false },
+            { {60.0f, 12.0f, 0.0f}, "ANNEX", true },   // lateral, hidden until unlock
+        };
+        // rails: 0<->1 vertical, 1<->2 lateral (undirected adjacency pairs).
+        std::vector<std::pair<int, int>> rails = { {0, 1}, {1, 2} };
+        check(ev.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 0),
+              "E7 buildEx 3D graph builds");
+        check(ev.stopCount() == 3 && std::fabs(ev.stopY(2) - 12.0f) < 1e-6f &&
+              std::fabs(ev.stopCenter(2).x - 60.0f) < 1e-6f,
+              "E7b legacy stopY reads the Y of a lateral stop (center intact)");
+    }
+
+    // ---- E8/E9: a lateral leg travels on X with the trapezoid profile (Y flat),
+    // and carryDelta() integrates to the full segment vector (the Vec3 rider
+    // carry — hosts add this to rider positions to carry them sideways).
+    {
+        ElevatorSystem ev;
+        std::vector<ElevatorSystem::Stop> stops = {
+            { {0.0f,  2.0f, 0.0f}, "F1",    false },
+            { {0.0f, 12.0f, 0.0f}, "F3",    false },
+            { {60.0f, 12.0f, 0.0f}, "ANNEX", true },
+        };
+        std::vector<std::pair<int, int>> rails = { {0, 1}, {1, 2} };
+        ev.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 1);
+        ev.enableFsm(true);
+        ev.unlockHidden();
+        ev.callTo(2);                        // from stop 1 (0,12,0) to (60,12,0)
+        float maxYDev = 0.0f, endX = 0.0f;
+        x3::phys::Vec3 acc{};                // E9: carryDelta integrates the leg
+        for (int i = 0; i < 3000; ++i) {     // 50 s at 60 Hz — plenty
+            ev.update(kFixedDt, scene, *physics);
+            const x3::phys::Vec3& d = ev.carryDelta();
+            acc.x += d.x; acc.y += d.y; acc.z += d.z;
+            const float yDev = std::fabs(ev.cabTopY() - (12.0f + 0.25f));
+            if (yDev > maxYDev) maxYDev = yDev;
+            endX = ev.cabCenter().x;
+            if (ev.state() == ElevState::DoorsOpen) break;
+        }
+        check(maxYDev < 0.01f, "E8 lateral leg keeps Y flat");
+        check(std::fabs(endX - 60.0f) < 0.05f, "E8b lateral leg arrives at x=60");
+        check(std::fabs(acc.x - 60.0f) < 0.1f && std::fabs(acc.y) < 0.1f,
+              "E9 carryDelta sums to (60,0,0) across the lateral leg");
+
+        // E9b: BFS multi-leg routing — a call across the corner stop rides the
+        // vertical leg, stops at the corner (deliberate), then the lateral leg.
+        ElevatorSystem ev2;
+        ev2.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 0);
+        ev2.enableFsm(true);
+        ev2.unlockHidden();
+        ev2.callTo(2);                       // 0 -> 1 (corner) -> 2
+        for (int i = 0; i < 6000 && ev2.state() != ElevState::DoorsOpen; ++i)
+            ev2.update(kFixedDt, scene, *physics);
+        check(std::fabs(ev2.cabCenter().x - 60.0f) < 0.05f &&
+              std::fabs(ev2.cabCenter().y - 12.0f) < 0.05f,
+              "E9b BFS routes 0->1->2 across the corner and arrives at (60,12)");
+    }
+
+    // ---- E10: the annex keypad code (4790) reveals the hidden rail. Before the
+    // code a call to the hidden stop is a no-op (the panel does not know the
+    // floor exists); after the code the cab departs for it.
+    {
+        ElevatorSystem ev;
+        std::vector<ElevatorSystem::Stop> stops = {
+            { {0.0f,  2.0f, 0.0f}, "F1",    false },
+            { {0.0f, 12.0f, 0.0f}, "F3",    false },
+            { {60.0f, 12.0f, 0.0f}, "ANNEX", true },
+        };
+        std::vector<std::pair<int, int>> rails = { {0, 1}, {1, 2} };
+        ev.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 1);
+        ev.enableFsm(true);
+        check(!ev.hiddenUnlocked(), "E10 hidden rail starts locked");
+        ev.callTo(2);                        // locked: buzzes, goes nowhere
+        check(ev.state() == ElevState::Idle, "E10b locked hidden stop: callTo is a no-op");
+        // Wrong code first (negative control): 4791 unlocks nothing.
+        ev.keypadDigit(4); ev.keypadDigit(7); ev.keypadDigit(9); ev.keypadDigit(1);
+        check(!ev.hiddenUnlocked(), "E10c wrong code 4791 does NOT unlock the annex rail");
+        ev.keypadDigit(4); ev.keypadDigit(7); ev.keypadDigit(9); ev.keypadDigit(0);
+        check(ev.hiddenUnlocked(), "E10d code 4790 unlocks the annex rail");
+        ev.callTo(2);
+        check(ev.state() != ElevState::Idle, "E10e unlocked hidden stop: the cab departs");
+    }
+
+    // ---- E11: THE BURST (roof finale, scripted). armBurst() from the burst stop
+    // rides the cab up through the roof plane (onRoofShatter fires EXACTLY once),
+    // hovers at the apex, then returns via Freefall -> brakes -> a normal arrival
+    // with the doors opening back at the burst stop — all inside 40 s of sim.
+    {
+        ElevatorSystem ev;
+        std::vector<ElevatorSystem::Stop> stops = {
+            { {0.0f,  2.0f, 0.0f}, "F1", false },
+            { {0.0f, 60.0f, 0.0f}, "A5", false },
+        };
+        std::vector<std::pair<int, int>> rails = { {0, 1} };
+        ev.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 1);
+        ev.enableFsm(true);
+        ev.setBurst(1, /*roofY*/70.0f, /*apexY*/100.0f);
+        int shatters = 0;
+        ev.onRoofShatter = [&](const x3::phys::Vec3&) { ++shatters; };
+        check(!ev.burstFired(), "E11 burstFired starts false");
+        ev.armBurst();
+        bool sawBurst = false, sawFall = false, doneOpen = false;
+        float maxY = -1e9f;
+        for (int i = 0; i < 60 * 40; ++i) {
+            ev.update(kFixedDt, scene, *physics);
+            sawBurst |= (ev.state() == ElevState::Burst);
+            sawFall  |= (ev.state() == ElevState::Freefall);
+            if (ev.cabCenter().y > maxY) maxY = ev.cabCenter().y;
+            if (sawBurst && sawFall && ev.state() == ElevState::DoorsOpen) { doneOpen = true; break; }
+        }
+        check(sawBurst && maxY > 70.0f, "E11b Burst rides the cab past the roof plane");
+        check(ev.burstFired() && shatters == 1, "E11c onRoofShatter fired exactly once");
+        check(sawFall && doneOpen && std::fabs(ev.cabCenter().y - 60.0f) < 0.1f,
+              "E11d Freefall return -> brakes -> DoorsOpen at the burst stop (within 40 s)");
+
+        // E11e: keypad 9999 at the burst stop arms the same sequence (the code
+        // is a no-op on cabs with no burst configured — F4 keeps that green).
+        ElevatorSystem ev2;
+        ev2.buildEx(scene, device, *physics, 1.6f, 0.25f, 1.6f, stops, rails, 1);
+        ev2.enableFsm(true);
+        ev2.setBurst(1, 70.0f, 100.0f);
+        ev2.keypadDigit(9); ev2.keypadDigit(9); ev2.keypadDigit(9); ev2.keypadDigit(9);
+        check(ev2.state() == ElevState::DoorsClosing || ev2.state() == ElevState::Burst,
+              "E11e keypad 9999 at the burst stop arms the burst");
+    }
+
     physics->shutdown();
     x3::logInfo(std::string("[elevator-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

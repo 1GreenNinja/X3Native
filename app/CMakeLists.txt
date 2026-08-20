@@ -93,6 +93,10 @@ add_library(x3app SHARED
     # headless proof set can photograph the dials at all (see gauge_hud.h).
     gauge_hud.cpp
     rifthub.cpp
+    # PHASE 2 (feat/factory-annex): the Confection Annex shell + per-room hooks
+    factory_annex.cpp
+    factory_rooms.cpp
+    world_hosts/host_factory.cpp
     rift_depths.cpp
     rift_console.cpp
     # W-MENU — the ONE destination registry + the world/place selection menu

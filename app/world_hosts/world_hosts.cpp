@@ -72,6 +72,7 @@ const HostRoute kHostRoutes[] = {
     { "tunnel",            hostTunnel          },   // terrain-corridor bore demo
     { "mines",             hostMines           },   // mine-entrance showcase (inspx/mines)
     { "cutaway",           hostCutaway         },   // LEVEL ARCHITECT cutaway view (W-CUTAWAY)
+    { "factory",           hostFactory         },   // the Confection Annex (feat/factory-annex)
 };
 constexpr unsigned kHostRouteCount =
     (unsigned)(sizeof(kHostRoutes) / sizeof(kHostRoutes[0]));
@@ -88,9 +89,9 @@ const char* const kHostRouteFlags[kHostRouteCount] = {
     kHostRoutes[21].flag, kHostRoutes[22].flag, kHostRoutes[23].flag,
     kHostRoutes[24].flag, kHostRoutes[25].flag, kHostRoutes[26].flag,
     kHostRoutes[27].flag, kHostRoutes[28].flag, kHostRoutes[29].flag,
-    kHostRoutes[30].flag,
+    kHostRoutes[30].flag, kHostRoutes[31].flag,
 };
-static_assert(kHostRouteCount == 31, "update kHostRouteFlags when adding a route");
+static_assert(kHostRouteCount == 32, "update kHostRouteFlags when adding a route");
 
 } // namespace
 

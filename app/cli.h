@@ -424,6 +424,13 @@ struct CliOptions {
     // per-trigger activation + allActivated ordering, and that tick() advances
     // the chevron/core/membrane emissive while the stone ring stays static.
     bool        testRifthub = false;
+    // --test-factory (THE CONFECTION ANNEX, feat/factory-annex): builds the annex
+    // shell on a leak-counting HeadlessDevice + Jolt world and asserts the 5-room
+    // shell (entity/mesh counts + spans), the 10 trigger AABBs (ids 300-313), the
+    // combined Spire+Annex elevator graph reaching A5 from F1 through the 4790
+    // unlock, tick() animation, onTrigger latches, and create/destroy balance on
+    // shutdown. STANDALONE if() in the parser (MSVC C1061 — see the ladder note).
+    bool        testFactory = false;
     // --test-basis (KNOWN_BUGS R3, THE MIRROR): asserts that EVERY model-instancing
     // basis in the game has a POSITIVE determinant. A negative determinant is a
     // reflection: winding reverses, back-face culling drops the outer shell, and the
@@ -871,6 +878,24 @@ struct CliOptions {
     // offscreen (no window), like --screenshot. Default outDir: G:\X3Native\ai_action.
     bool        captureAi    = false;
     std::string captureAiDir = "G:/X3Native/ai_action";
+    // Factory bore-ride capture (--capture-factory [out.gif]): build the Confection
+    // Annex + the Anywhere Elevator on the combined graph, ARM THE RIDE IN CODE
+    // (unlockHidden + callTo the annex bore stop), park the camera INSIDE the cab
+    // riding the lateral bore leg (the glass-curtain money shot: five lit floors
+    // sliding past), capture 60 frames, and assemble a 640x360 @ 20 fps looping GIF
+    // at out.gif (PNG frames kept beside it in <out>_frames/). Headless / offscreen,
+    // modeled on --capture-ai. Default: build/factory_bore.gif.
+    bool        captureFactory     = false;
+    std::string captureFactoryPath = "build/factory_bore.gif";
+    // Factory BURST capture (--capture-burst [out.gif]): the roof-burst finale.
+    // Build the Annex + the combined elevator graph with the cab parked at A5
+    // (the burst stop), armBurst() IN CODE, and film the whole scripted beat —
+    // the golden dais, the 2x-accel ascent, the roof SHATTER (GPU debris +
+    // CombatFx, the host-factory FX wiring), and the apex hover over the world.
+    // Two scripted shots (interior dais -> exterior crane at the roofline),
+    // 60 frames -> 640x360 @ 20 fps looping GIF. Default: build/factory_burst.gif.
+    bool        captureBurst     = false;
+    std::string captureBurstPath = "build/factory_burst.gif";
     // Crowd-spread capture (--capture-crowd-spread [outDir]): the anti-crowding proof.
     // Spawn a CLUSTER of guards stacked on nearly one point next to a player reference,
     // step them through the REAL MonsterManager::update (which wires the separation

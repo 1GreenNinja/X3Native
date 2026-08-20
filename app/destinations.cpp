@@ -158,6 +158,7 @@ const Destination kDest[] = {
 // the whole tower from, in X-ray, floor by floor. Listed because the directory
 // claims to list every world the build can dispatch.
 { "cutaway",      "Cutaway View",             "Level Architect: the whole facility in X-ray - stacked floors, hover cards.", "cutaway",  DestGroup::DevWorld,   false },
+{ "factory",      "The Confection Annex",     "Five wonder-room floors behind the wall - ride the Anywhere Elevator.", "factory",           DestGroup::DevWorld,   false },
 };
 constexpr uint32_t kDestCount = (uint32_t)(sizeof(kDest) / sizeof(kDest[0]));
 
