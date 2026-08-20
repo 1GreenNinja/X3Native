@@ -708,6 +708,12 @@
       "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
     },
     {
+      "repo_path": "assets/converted_glb/Vehicles/Wing_02.glb",
+      "sha256": "301b4a911bd9ba132d831a1edcdbc9a78c568280c87215ba357d17ed236486d4",
+      "size": 383856,
+      "source_note": "stage-3 wing pair mesh (armory SciFi Kit Vol 3, textured)"
+    },
+    {
       "repo_path": "assets/converted_glb/mine/barrel.glb",
       "sha256": "596451a948aafdca91c458e5de48b6c6396f6a9c7e5a4460961a87c52135307f",
       "size": 161980,
