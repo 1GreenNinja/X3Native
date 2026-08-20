@@ -440,7 +440,8 @@ void DriveDemo::drawDrawable(const x3::rhi::FrameContext& f,
                           d.alphaMask, d.alphaBlend,
                           x3::rhi::TextureHandle{ d.emissiveTexId },
                           x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
-                          d.clearcoat, d.clearcoatRough);   // car-paint clearcoat lobe
+                          d.clearcoat, d.clearcoatRough, 0.0f, 1.0f,
+                          /*foliage=*/0.0f, d.metallicFactor, d.roughnessFactor);   // car-paint clearcoat lobe + authored MR factors
 }
 
 bool DriveDemo::allWheelsInContact() const {

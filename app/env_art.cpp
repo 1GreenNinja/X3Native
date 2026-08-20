@@ -884,7 +884,8 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                d.detailUvScale,
                                d.clearcoat, d.clearcoatRough,             // car-paint clearcoat lobe
                                /*selfLight=*/0.0f, m_metalClamp,          // BLACK-PROP metallic clamp
-                               m_foliage);                                // vegetation wrap/translucency
+                               m_foliage,                                 // vegetation wrap/translucency
+                               d.metallicFactor, d.roughnessFactor);      // authored glTF MR factors
         }
     }
     // FOLIAGE DENSIFY clones (densifyFoliage): one drawable each, at their own world
@@ -918,7 +919,10 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                            x3::rhi::TextureHandle{ d.emissiveTexId },
                            x3::rhi::TextureHandle{ d.detailTexId },
                            d.detailUvScale,
-                           d.clearcoat, d.clearcoatRough);
+                           d.clearcoat, d.clearcoatRough,
+                           /*selfLight=*/0.0f, m_metalClamp,
+                           m_foliage,
+                           d.metallicFactor, d.roughnessFactor);
     }
     return drawn;
 }
