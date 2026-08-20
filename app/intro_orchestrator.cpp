@@ -169,7 +169,11 @@ std::vector<Beat> defaultIntroBeats() {
 
     // 5) Interactive window 2 — the dogfight (CLIMAX; its skill drives the roll).
     Beat b5; b5.kind = BeatKind::InteractiveWindow; b5.id = "play.dogfight";
-    b5.enemyCount = 4; b5.timeoutSec = 20.0f; b5.isClimax = true; beats.push_back(b5);
+    // MORE TINY SHIPS (owner, live 2026-08-17: "There should be More of the
+    // tiny ships"): the climax escort screen grows 4 -> 9. The per-ship cost
+    // is a handful of draws + a 6DOF tick, and the PVS->TLAS work means the
+    // ones you are not looking at cost effectively nothing.
+    b5.enemyCount = 9; b5.timeoutSec = 20.0f; b5.isClimax = true; beats.push_back(b5);
 
     // 6) Cinematic — the outcome stinger. The span here is the DEFAULT (shot-down)
     //    framing; runInteractiveIntro OVERRIDES clipStart/clipEnd per the rolled
@@ -420,12 +424,19 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // (Newtonian) and only bleeds when you take your hands off the stick for
     // longer than space.assistDelay. Set space.flightAssist=0 for pure Newtonian
     // with no station-keeping at all.
-    const float lvStrafeAccel   = x3::apphost::readTuningFloat("space.strafeAccel",   110.0f);
-    const float lvLinearAccel   = x3::apphost::readTuningFloat("space.linearAccel",   130.0f);
+    // 6DOF DART PASS (owner, live 2026-08-17: "the ship needs to dart around free
+    // space much as the enemy ships do — strafing, rising, sinking, accelerating —
+    // with visible movement vs the huge capital"). The strafe/vertical cap was 160
+    // vs a 360 forward cap, so sideways motion read as the poor cousin; and the
+    // 0.8 station-keep brake bled every dodge the moment the stick released. Raise
+    // lateral/vertical to ~90% of forward, punch the accels, and soften the brake so
+    // the ship SLIDES then settles instead of settling immediately. All dial-able.
+    const float lvStrafeAccel   = x3::apphost::readTuningFloat("space.strafeAccel",   200.0f);
+    const float lvLinearAccel   = x3::apphost::readTuningFloat("space.linearAccel",   170.0f);
     const float lvNoseFollow    = x3::apphost::readTuningFloat("space.noseFollow",      0.0f);
-    const float lvFlightAssist  = x3::apphost::readTuningFloat("space.flightAssist",    0.8f);
-    const float lvAssistDelay   = x3::apphost::readTuningFloat("space.assistDelay",     0.45f);
-    const float lvMaxStrafeSpd  = x3::apphost::readTuningFloat("space.maxStrafeSpeed", 160.0f);
+    const float lvFlightAssist  = x3::apphost::readTuningFloat("space.flightAssist",    0.5f);
+    const float lvAssistDelay   = x3::apphost::readTuningFloat("space.assistDelay",     0.7f);
+    const float lvMaxStrafeSpd  = x3::apphost::readTuningFloat("space.maxStrafeSpeed", 320.0f);
     const float lvTargetHold    = x3::apphost::readTuningFloat("space.targetHold",      1.6f);
     const float lvLookSmoothing = x3::apphost::readTuningFloat("space.lookSmoothing",  22.0f);
     const float lvChaseLagMax   = x3::apphost::readTuningFloat("space.chaseLagMax",     8.0f);
@@ -490,7 +501,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             pos[1] = 14.0f * std::sin(ang);
             pos[2] = 26.0f * std::cos(ang);
         } else {
-            const float u = 0.16f + 0.14f * (float)(i - 2);   // fraction of the lane
+            // Staging spread tightened for the bigger wing (9 ships): the lane
+            // fraction caps at ~0.77 so the deepest escorts screen the capital
+            // without spawning INSIDE her force bubble.
+            const float u = 0.14f + 0.09f * (float)(i - 2);   // fraction of the lane
             pos[0] = 2600.0f * u;                              // toward the capital
             pos[1] = 60.0f * std::sin(ang * 2.1f);
             pos[2] = 90.0f * std::cos(ang * 1.7f);
@@ -624,12 +638,28 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     constexpr float kCapHullR   = 240.0f;   // hull hit/occlusion sphere
     constexpr float kCapBubbleR = 300.0f;   // force-field bounce radius (> hull)
     float capC[3] = { kCapX, 0.0f, 0.0f };
-    float capDriftPhase = 0.0f;             // slow patrol weave; FREEZES when engines die
+    // THE CAPITAL MOVES (owner, live 2026-08-17: "The overlords ship should
+    // move around"). CapitalMotion (ship_damage.h, --test-ship-damage T19-T21)
+    // keeps her on a slow, wide, mass-appropriate arc — phase-driven (patrol /
+    // combat / adrift) — replacing the old ±220 m sine weave. Everything below
+    // keeps reading capC + capHeadCs/Sn, so draw, hardpoints, muzzles, radar,
+    // targeting and the raycast all move WITH her by construction.
+    x3::space::CapitalMotionState capMotion{};
+    x3::space::CapitalMotion::begin(capMotion, capC);
+    // Heading rotation (about Y) from the authored base pose (nose faces -X):
+    // world = capC + R * offset, with R defined by the image of +X = -fwd.
+    float capHeadCs = 1.0f, capHeadSn = 0.0f;   // begin() fwd = (-1,0,0) => identity
+    auto capRot = [&](const float off[3], float out[3]) {
+        out[0] = capC[0] + off[0] * capHeadCs - off[2] * capHeadSn;
+        out[1] = capC[1] + off[1];
+        out[2] = capC[2] + off[0] * capHeadSn + off[2] * capHeadCs;
+    };
     // PHYSICAL HARDPOINTS (the genre's whole capital-kill loop: pick one, FLY
     // there, strafe it). One per x3::space::Subsystem, placed on the hull:
     // engines aft (the FAR side — you must fly around), turret battery ventral,
     // shield generator dorsal, sensor mast on the bow (snipeable from standoff).
-    // Offsets are world-relative to capC (nose faces -X, toward the player).
+    // Offsets are HULL-LOCAL in the base pose (nose -X); capRot resolves them
+    // onto the moving, turning hull.
     struct CapHardpoint { x3::space::Subsystem sub; const char* name;
                           float off[3]; float radius; };
     const CapHardpoint kHard[kMaxSubsystems] = {
@@ -638,11 +668,28 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         { x3::space::Subsystem::ShieldGen, "SHIELD GEN", {  -20.0f, +95.0f,  -40.0f }, 38.0f },
         { x3::space::Subsystem::Sensors,   "SENSORS",    { -210.0f, +40.0f,  -30.0f }, 36.0f },
     };
-    auto hardWorld = [&](int i, float out[3]) {
-        out[0] = capC[0] + kHard[i].off[0];
-        out[1] = capC[1] + kHard[i].off[1];
-        out[2] = capC[2] + kHard[i].off[2];
+    auto hardWorld = [&](int i, float out[3]) { capRot(kHard[i].off, out); };
+    // THE GUN BATTERY MADE PHYSICAL (owner: "big mounted weapons that HURT..
+    // but I can shoot off"). Four VISIBLE mounts clustered on the ventral
+    // battery line around the Turrets blister; each is individually
+    // destructible (CapitalBattery, --test-ship-damage T22) and each kill
+    // routes a quarter of the Turrets subsystem, so the HUD/consequence flow
+    // is unchanged: four sheared guns == "BATTERY SILENCED".
+    x3::space::CapitalBatteryState capBattery{};
+    x3::space::CapitalBattery::init(capBattery);
+    // Mount positions ride the VENTRAL FUSELAGE SPINE (verified against the
+    // SpaceShip4 silhouette in the kill-capture frames — the old Turrets
+    // blister offset at Z+150 floats off the visible hull, which was fine for
+    // an invisible sphere and is NOT fine for visible geometry).
+    const float kGunOff[x3::space::kCapitalGunCount][3] = {
+        { -148.0f, -34.0f, +26.0f },    // bow-starboard
+        {  -72.0f, -44.0f, -30.0f },    // mid-port
+        {   +6.0f, -50.0f, +30.0f },    // amidships-starboard
+        {  +82.0f, -40.0f, -26.0f },    // aft-port
     };
+    constexpr float kGunHitR    = 22.0f;   // per-gun aim sphere (grows w/ range)
+    constexpr float kGunDrawScl = 1.0f;    // gun meshes are authored in metres
+    auto gunWorld = [&](int i, float out[3]) { capRot(kGunOff[i], out); };
     bool subWasDown[kMaxSubsystems] = { false, false, false, false };
     // REACTOR PHASE (all hardpoints dead -> the core cycles EXPOSED/SHIELDED;
     // hull damage x3 while exposed — the fight has acts, not a draining bar).
@@ -651,16 +698,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     constexpr float kReactorCycle = 13.0f;  // 8 s exposed + 5 s shielded
     constexpr float kReactorOpen  = 8.0f;
     const float kReactorOff[3] = { -40.0f, -70.0f, 0.0f };   // ventral wound
-    // CAPITAL TURRET FIRE (the gauntlet): a real telegraph — the battery SPOOLS
-    // for 0.6 s (warning chirp + HUD flash), THEN fires. Killing the Turrets
-    // hardpoint silences it; killing Sensors halves its accuracy. Dodge rule is
-    // ASPECT: transverse velocity to the firing line = misses (legible, learnable).
-    float turretCd = 2.0f, turretSpoolT = -1.0f;
-    int   turretSide = 0;                    // alternating port/starboard muzzle
-    constexpr float kTurretPeriod = 2.4f;
-    constexpr float kTurretSpool  = 0.6f;
+    // CAPITAL BATTERY FIRE (the gauntlet): each of the four PHYSICAL mounts
+    // spools its own 0.6 s telegraph (warning chirp + HUD flash), THEN fires.
+    // Shooting a mount off silences THAT mount; four kills silence the battery
+    // (== Turrets subsystem down); killing Sensors halves accuracy. Dodge rule
+    // is ASPECT: transverse velocity to the firing line = misses (legible,
+    // learnable). Cadence/damage live in CapitalBattery (ship_damage.h).
     constexpr float kTurretRange  = 2200.0f; // beyond this you're safe (standoff sniping)
-    constexpr int   kTurretDamage = 300;
     uint32_t salvoCounter = 0;               // deterministic per-salvo hash stream
     // HUD CALLOUTS — the VO-bark lane. Every line carries its SOURCE (see
     // CalloutSrc above): the prefix and the colour tell the player instantly
@@ -905,26 +949,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         return salvoHash() < pHit;
     };
 
-    // ANATOMICAL CAPITAL HIT — the one funnel every landed capital shot goes
-    // through (live raycast AND the headless competent model): reactor-phase
-    // multiplier on hull damage, subsystem routing, hit FX at the REAL hit
-    // point, distinct-down detection with per-system consequence callouts.
-    auto capitalApplyHit = [&](x3::space::Subsystem sub, const float hitPos[3],
-                               const float hitDir[3]) {
-        const bool reactorOpen = crippled &&
-            std::fmod(reactorT, kReactorCycle) < kReactorOpen;
-        const bool toHull = (sub == x3::space::Subsystem::Count);
-        const int  dmg = (toHull && reactorOpen) ? 90 * 3 : 90;  // owner-locked 90 base
-        x3::space::ShipDamage::applyDamage(capital, dmg, sub);
-        ++localShotsHit;
-        hitConfirmT = 0.15f;
-        if (fxOn) {
-            fxPtr->spawnImpact({ hitPos[0], hitPos[1], hitPos[2] },
-                               { -hitDir[0], -hitDir[1], -hitDir[2] });
-            if (x3::space::ShipDamage::shieldFrac(capital) <= 0.0f)
-                fxPtr->spawnShipSparks({ hitPos[0], hitPos[1], hitPos[2] });
-        }
-        // Distinct-down detection (order-free — the player picks the order now).
+    // Distinct-down detection (order-free — the player picks the order),
+    // shared by capitalApplyHit AND the physical gun-kill path so a Turrets
+    // subsystem downed by EITHER route fires the same consequence flow.
+    auto scanSubsDown = [&]() {
         for (int si = 0; si < kMaxSubsystems; ++si) {
             if (subWasDown[si] ||
                 !x3::space::ShipDamage::subsystemDown(capital, kHard[si].sub))
@@ -945,13 +973,50 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 case x3::space::Subsystem::Engines:
                     pushCallout(kCalloutEnemy, "DREADNOUGHT ENGINES DESTROYED - SHE'S ADRIFT", 0.7f); break;
                 case x3::space::Subsystem::Turrets:
-                    pushCallout(kCalloutEnemy, "DREADNOUGHT TURRETS DESTROYED - BATTERY SILENCED", 0.7f); break;
+                    pushCallout(kCalloutEnemy, "DREADNOUGHT TURRETS DESTROYED - BATTERY SILENCED", 0.7f);
+                    // PHYSICAL <-> MODEL SYNC: if the subsystem died by any
+                    // route while mounts still stand (headless competent
+                    // model / blister wreckage bleed), the standing guns are
+                    // dead metal too — shear them off so the silence reads.
+                    for (int gi2 = 0; gi2 < x3::space::kCapitalGunCount; ++gi2) {
+                        if (!x3::space::CapitalBattery::gunAlive(capBattery, gi2))
+                            continue;
+                        x3::space::CapitalBattery::damageGun(
+                            capBattery, gi2, x3::space::CapitalBattery::kGunHp);
+                        float gw2[3]; gunWorld(gi2, gw2);
+                        if (fxOn) {
+                            fxPtr->spawnExplosion({ gw2[0], gw2[1], gw2[2] }, 12.0f);
+                            fxPtr->spawnSmoke({ gw2[0], gw2[1], gw2[2] });
+                        }
+                    }
+                    break;
                 case x3::space::Subsystem::ShieldGen:
                     pushCallout(kCalloutEnemy, "DREADNOUGHT SHIELD GENERATOR DESTROYED - NO REGEN", 0.7f); break;
                 default:
                     pushCallout(kCalloutEnemy, "DREADNOUGHT SENSORS DESTROYED - THEIR AIM IS GONE", 0.7f); break;
             }
         }
+    };
+    // ANATOMICAL CAPITAL HIT — the one funnel every landed capital shot goes
+    // through (live raycast AND the headless competent model): reactor-phase
+    // multiplier on hull damage, subsystem routing, hit FX at the REAL hit
+    // point, then the shared distinct-down scan above.
+    auto capitalApplyHit = [&](x3::space::Subsystem sub, const float hitPos[3],
+                               const float hitDir[3]) {
+        const bool reactorOpen = crippled &&
+            std::fmod(reactorT, kReactorCycle) < kReactorOpen;
+        const bool toHull = (sub == x3::space::Subsystem::Count);
+        const int  dmg = (toHull && reactorOpen) ? 90 * 3 : 90;  // owner-locked 90 base
+        x3::space::ShipDamage::applyDamage(capital, dmg, sub);
+        ++localShotsHit;
+        hitConfirmT = 0.15f;
+        if (fxOn) {
+            fxPtr->spawnImpact({ hitPos[0], hitPos[1], hitPos[2] },
+                               { -hitDir[0], -hitDir[1], -hitDir[2] });
+            if (x3::space::ShipDamage::shieldFrac(capital) <= 0.0f)
+                fxPtr->spawnShipSparks({ hitPos[0], hitPos[1], hitPos[2] });
+        }
+        scanSubsDown();
     };
     float zapCooldown = 0.0f;   // one zap per bounce, not per frame on the bubble
     float zapFlashT   = 0.0f;   // HUD border cyan flash timer
@@ -1040,6 +1105,24 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         sp.zenith[0]=0.0012f; sp.zenith[1]=0.0012f; sp.zenith[2]=0.0035f;
         sp.horizon[0]=0.0018f; sp.horizon[1]=0.0022f; sp.horizon[2]=0.0050f;
         hc.device->setSkyParams(sp);
+        // SPACE AMBIENT (owner, live 2026-08-17: "space is too bright, washed out
+        // flat"). The sky was near-black but the ambient was never lowered, so the
+        // engine default (0.42,0.44,0.50) flooded the hulls with fill and killed the
+        // sun's directional contrast. Near-black cool fill: the star is the key, the
+        // dark side goes dark, the hull reads as a solid mass instead of a decal.
+        hc.device->setAmbient(0.008f, 0.008f, 0.015f);
+        // CAPITAL SHADOW (owner: "the ships lighting needs some shadow... the
+        // overlord especially"). The intro never turned on cascaded shadows, so the
+        // legacy single ~45 m camera-locked box left the 450 m capital at 2.6 km
+        // with NO sun shadow — the decal look. Cascades to 3.2 km cover the whole
+        // arena. (RT shadows would be higher-res at range; CSM is the established
+        // outdoor-host path — see world_host_common.h applyOutdoorCsm.)
+        x3::rhi::IRenderDevice::CsmParams csm{};
+        csm.enabled  = true;
+        csm.lambda   = 0.75f;
+        csm.distance = 3200.0f;
+        csm.blend    = 0.12f;
+        hc.device->setCsmParams(csm);
     };
     // The star: living-surface core (bake as baseColor AND emissive) + corona.
     auto drawStar = [&](const x3::rhi::FrameContext& frame) {
@@ -1320,6 +1403,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (f2 && !f2Prev) pilot.toggleCameraMode();
                 f2Prev = f2;
             }
+            // F5: test-only 6DOF speed x2 (owner: A/B the dart feel live without a
+            // rebuild). Edge-detected; toggles the uniform speed multiplier 1<->2.
+            {
+                static bool f5Prev = false;
+                const bool f5 = glfwGetKey(hc.window, GLFW_KEY_F5) == GLFW_PRESS;
+                if (f5 && !f5Prev) pilot.setSpeedMul(pilot.speedMul() == 1.0f ? 2.0f : 1.0f);
+                f5Prev = f5;
+            }
             // F9: skip the ENTIRE intro (owner dev shortcut) — latch + bail this
             // beat; the orchestrator returns canon ShotDown at the next boundary.
             if (glfwGetKey(hc.window, GLFW_KEY_F9) == GLFW_PRESS) {
@@ -1403,8 +1494,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 if (step == 1) {
                     // Park on her beam, above the plane, nose swung onto the
                     // hull: the whole 450 m ship in frame with room for the
-                    // break-up to happen INSIDE the shot.
-                    pilot.spawn(*phys, kCapX - 620.0f, 210.0f, 480.0f, tun);
+                    // break-up to happen INSIDE the shot. Positioned OPPOSITE
+                    // the hero planet's sky ray, so the DEORBIT ending falls
+                    // AWAY from the camera (the recession is the read).
+                    pilot.spawn(*phys, kCapX + 430.0f, 190.0f, 880.0f, tun);
                     pilot.addFreeLook(0.0f, 0.0f);
                 }
                 if (step >= 2 && step <= 90) {
@@ -1676,14 +1769,26 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // ---- FORCE FIELDS (owner: "I fly right thru the enemy ship"). The player
         //      bounces off the capital's shield bubble and off each fighter's hull
         //      bubble — a shield BOUNCE (pushOut cancels+reflects inward velocity).
-        // CAPITAL DRIFT (vet pass: "a turret, not a ship"): a slow ±220 m patrol
-        // weave (~2-minute period, majestic, not evasive) — until the ENGINES
-        // hardpoint dies, at which point she freezes dead in space: the most
-        // legible "your choice changed the fight" feedback there is.
-        if (!x3::space::ShipDamage::subsystemDown(capital,
-                x3::space::Subsystem::Engines))
-            capDriftPhase += dt;
-        capC[2] = std::sin(capDriftPhase * 0.045f) * 220.0f;
+        // CAPITAL MOTION (owner: "The overlords ship should move around"): a
+        // slow, wide, phase-driven arc — patrol pace with shields up, answering
+        // the helm once they break — until the ENGINES hardpoint dies, at which
+        // point her speed EASES to a dead stop (adrift): still the most legible
+        // "your choice changed the fight" feedback there is. The kill freezes
+        // her too (the death state machine owns the wreck from there).
+        {
+            const bool adrift = capitalKilled ||
+                x3::space::ShipDamage::subsystemDown(capital,
+                    x3::space::Subsystem::Engines);
+            const bool shieldsDown =
+                x3::space::ShipDamage::shieldFrac(capital) <= 0.0f;
+            x3::space::CapitalMotion::update(capMotion, dt, shieldsDown, adrift);
+            capC[0] = capMotion.pos[0];
+            capC[1] = capMotion.pos[1];
+            capC[2] = capMotion.pos[2];
+            // Heading rotation for every hull-local offset (base nose = -X).
+            capHeadCs = -capMotion.fwd[0];
+            capHeadSn = -capMotion.fwd[2];
+        }
         {
             bool zapped = pilot.pushOut(capC, kCapBubbleR);  // capital hull bubble
             for (uint32_t i = 0; i < enemies.count(); ++i) {
@@ -1748,69 +1853,59 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             }
         }
 
-        // ---- CAPITAL TURRET GAUNTLET (vet pass): the approach is contested. ----
-        // The ventral battery fires every 2.4 s while the player is inside 2.2 km
-        // — with a REAL TELEGRAPH: 0.6 s of spool (warning chirp + HUD flash)
-        // before the bolt, so there is a reaction window, not a tax. Killing the
-        // TURRETS hardpoint silences it forever; killing SENSORS halves its
-        // accuracy; standing off past 2.2 km is safe (that's the sniper option).
+        // ---- CAPITAL BATTERY GAUNTLET: the approach is contested by FOUR
+        // physical gun mounts, each with its own telegraph (0.6 s spool: chirp
+        // + HUD flash) and cadence, staggered so the pressure is continuous
+        // but never a synchronized volley. Shoot a mount off and THAT gun goes
+        // silent forever (fire only ever ceases from destroyed mounts);
+        // killing SENSORS halves accuracy; past 2.2 km you're safe (sniper
+        // option). Timers live in CapitalBattery (--test-ship-damage T22).
         {
-            const bool turretsAlive = !x3::space::ShipDamage::subsystemDown(
-                capital, x3::space::Subsystem::Turrets) && !capitalKilled;
             const float pdx = ppos[0]-capC[0], pdy = ppos[1]-capC[1], pdz = ppos[2]-capC[2];
             const float pDist = std::sqrt(pdx*pdx + pdy*pdy + pdz*pdz);
-            if (turretsAlive && pDist < kTurretRange) {
-                if (turretSpoolT < 0.0f) {                    // idle: run the cooldown
-                    turretCd -= dt;
-                    if (turretCd <= 0.0f) {
-                        turretSpoolT   = kTurretSpool;        // SPOOL: the telegraph
-                        incomingFlashT = kTurretSpool;
-                        play2D(kSfxLock, "turret_spool (incoming warning)",
-                               sndLock, 0.65f, 0.55f);
-                    }
-                } else {
-                    turretSpoolT -= dt;
-                    if (turretSpoolT <= 0.0f) {               // FIRE
-                        turretSpoolT = -1.0f;
-                        turretCd     = kTurretPeriod;
-                        turretSide   = 1 - turretSide;
-                        float muz[3]; hardWorld(1, muz);      // Turrets hardpoint
-                        muz[2] = capC[2] + (turretSide ? 150.0f : -150.0f);
-                        ++localSalvosFaced;
-                        const bool lands = salvoLands(muz, /*turret*/true, ppos, pvel);
-                        // The bolt draws to where it actually goes: the player on
-                        // a hit, or PAST him along his miss-side on a whiff (the
-                        // near-miss streak is the reward for flying the aspect).
-                        float endP[3] = { ppos[0], ppos[1], ppos[2] };
-                        if (!lands) {
-                            const float mh = salvoHash();
-                            endP[0] += (mh - 0.5f) * 120.0f;
-                            endP[1] += (salvoHash() - 0.5f) * 90.0f;
-                            endP[2] += (mh > 0.5f ? 55.0f : -55.0f);
-                        }
-                        play3D(kSfxEnemyLaser, "turret_fire (capital battery)",
-                               sndEnemyLaser, muz, 1.0f, 0.6f);
-                        if (fxOn) {
-                            fxPtr->addTracer({ muz[0], muz[1], muz[2] },
-                                             { endP[0], endP[1], endP[2] },
-                                             x3::game::WeaponFxKind::Default, 1.4f);
-                            fxPtr->spawnShipMuzzle({ muz[0], muz[1], muz[2] },
-                                { endP[0]-muz[0], endP[1]-muz[1], endP[2]-muz[2] });
-                        }
-                        if (lands) {
-                            playerHitSfx(kTurretDamage);
-                            if (fxOn) fxPtr->spawnImpact(
-                                { ppos[0], ppos[1], ppos[2] },
-                                { -pdx / std::max(1.0f, pDist),
-                                  -pdy / std::max(1.0f, pDist),
-                                  -pdz / std::max(1.0f, pDist) });
-                        } else {
-                            ++localSalvosDodged;
-                        }
-                    }
+            const bool inRange = !capitalKilled && pDist < kTurretRange;
+            uint32_t spooled = 0u;
+            const uint32_t firedMask = x3::space::CapitalBattery::update(
+                capBattery, dt, inRange, &spooled);
+            if (spooled) {
+                incomingFlashT = x3::space::CapitalBattery::kGunSpool;
+                play2D(kSfxLock, "turret_spool (incoming warning)",
+                       sndLock, 0.65f, 0.55f);
+            }
+            for (int gi = 0; gi < x3::space::kCapitalGunCount; ++gi) {
+                if (!(firedMask & (1u << gi))) continue;
+                float muz[3]; gunWorld(gi, muz);
+                ++localSalvosFaced;
+                const bool lands = salvoLands(muz, /*turret*/true, ppos, pvel);
+                // The bolt draws to where it actually goes: the player on a
+                // hit, or PAST him along his miss-side on a whiff (the
+                // near-miss streak is the reward for flying the aspect).
+                float endP[3] = { ppos[0], ppos[1], ppos[2] };
+                if (!lands) {
+                    const float mh = salvoHash();
+                    endP[0] += (mh - 0.5f) * 120.0f;
+                    endP[1] += (salvoHash() - 0.5f) * 90.0f;
+                    endP[2] += (mh > 0.5f ? 55.0f : -55.0f);
                 }
-            } else {
-                turretSpoolT = -1.0f;    // out of range / silenced: stand down
+                play3D(kSfxEnemyLaser, "turret_fire (capital battery)",
+                       sndEnemyLaser, muz, 1.0f, 0.6f);
+                if (fxOn) {
+                    fxPtr->addTracer({ muz[0], muz[1], muz[2] },
+                                     { endP[0], endP[1], endP[2] },
+                                     x3::game::WeaponFxKind::Default, 1.4f);
+                    fxPtr->spawnShipMuzzle({ muz[0], muz[1], muz[2] },
+                        { endP[0]-muz[0], endP[1]-muz[1], endP[2]-muz[2] });
+                }
+                if (lands) {
+                    playerHitSfx(x3::space::CapitalBattery::kGunDamage);
+                    if (fxOn) fxPtr->spawnImpact(
+                        { ppos[0], ppos[1], ppos[2] },
+                        { -pdx / std::max(1.0f, pDist),
+                          -pdy / std::max(1.0f, pDist),
+                          -pdz / std::max(1.0f, pDist) });
+                } else {
+                    ++localSalvosDodged;
+                }
             }
         }
         if (incomingFlashT > 0.0f) incomingFlashT -= dt;
@@ -1821,17 +1916,16 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         //  kill-cam, rewind, "30 SECONDS EARLIER", replay, respawn.)
 
         // ---- Targeting feed: the capital ship is the priority hostile contact. ----
-        x3::space::Contact contacts[8]{};
+        x3::space::Contact contacts[16]{};   // capital + up to 15 escorts
         uint32_t nc = 0;
-        // Capital contact at its REAL (drifting) position + its drift velocity,
-        // so the lead pip solves the weave (was a hard-coded 280 — 80 m off the
-        // draw, and dead-stationary while the ship patrolled).
-        const float capVz = x3::space::ShipDamage::subsystemDown(
-                                capital, x3::space::Subsystem::Engines)
-            ? 0.0f : std::cos(capDriftPhase * 0.045f) * 220.0f * 0.045f;
+        // Capital contact at its REAL (moving) position + its TRUE arc velocity,
+        // so the lead pip solves the motion and the 6DOF target hold tracks a
+        // hull that is actually under way (T19: the hold follows a moving
+        // locked target; T20: it stays suspended when aimed away).
         contacts[nc++] = { 1000u, { capC[0], capC[1], capC[2] },
-                                  { 0.0f, 0.0f, capVz }, true }; // capital
-        for (uint32_t i = 0; i < enemies.count() && nc < 8; ++i) {
+                                  { capMotion.vel[0], capMotion.vel[1],
+                                    capMotion.vel[2] }, true }; // capital
+        for (uint32_t i = 0; i < enemies.count() && nc < 16; ++i) {
             const auto& e = enemies.ship(i);
             contacts[nc++] = { 1u + i, { e.pos[0], e.pos[1], e.pos[2] },
                                        { e.vel[0], e.vel[1], e.vel[2] }, true };
@@ -1922,9 +2016,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             if (killCapture) {
                 // Evidence framing: hold the dying capital dead-centre for the
                 // whole sequence regardless of what the lock is doing (the
-                // wreck stops being a "contact" the moment it dies).
+                // wreck stops being a "contact" the moment it dies). The
+                // deorbit wreck FALLS, so frame the falling hull, not the
+                // point where she died.
                 const x3::phys::Vec3 pk = pilot.pos();
-                float dk[3] = { capC[0] - pk.x, capC[1] - pk.y, capC[2] - pk.z };
+                float dk[3] = {
+                    capC[0] + capDeath.planetDir[0] * capDeath.plunge - pk.x,
+                    capC[1] + capDeath.planetDir[1] * capDeath.plunge
+                            - capDeath.sag - pk.y,
+                    capC[2] + capDeath.planetDir[2] * capDeath.plunge - pk.z };
                 const float dkl = std::sqrt(dk[0]*dk[0] + dk[1]*dk[1] + dk[2]*dk[2]);
                 if (dkl > 1.0f) { dk[0]/=dkl; dk[1]/=dkl; dk[2]/=dkl;
                                   pilot.setCameraLookBias(dk, 1.0f); fedBias = true; }
@@ -2055,7 +2155,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     };
                     const float tHull = raySphere(capC, kCapHullR);
                     if (tHull >= 0.0f) { bestT2 = tHull; bestHp = -1; }
+                    const int gunsLeft =
+                        x3::space::CapitalBattery::aliveGuns(capBattery);
                     for (int hi = 0; hi < kMaxSubsystems; ++hi) {
+                        // While any gun mount is standing, the PHYSICAL GUNS
+                        // are the Turrets battery's hit geometry — the old
+                        // abstract blister would double-count it.
+                        if (hi == 1 && gunsLeft > 0) continue;
                         float hw[3]; hardWorld(hi, hw);
                         const float dHp = std::sqrt(
                             (hw[0]-ppos[0])*(hw[0]-ppos[0]) +
@@ -2066,7 +2172,77 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         const float tHp = raySphere(hw, growR);
                         if (tHp >= 0.0f && tHp < bestT2) { bestT2 = tHp; bestHp = hi; }
                     }
-                    if (bestHp != -2) {
+                    // The gun mounts (aim-at-what-you-see growth, same law).
+                    // bestHp encodes a gun as 100 + gunIdx.
+                    for (int gi = 0; gi < x3::space::kCapitalGunCount; ++gi) {
+                        if (!x3::space::CapitalBattery::gunAlive(capBattery, gi))
+                            continue;
+                        float gw[3]; gunWorld(gi, gw);
+                        const float dG = std::sqrt(
+                            (gw[0]-ppos[0])*(gw[0]-ppos[0]) +
+                            (gw[1]-ppos[1])*(gw[1]-ppos[1]) +
+                            (gw[2]-ppos[2])*(gw[2]-ppos[2]));
+                        const float growR = kGunHitR *
+                            std::max(1.0f, std::min(2.5f, dG / 900.0f));
+                        const float tG = raySphere(gw, growR);
+                        if (tG >= 0.0f && tG < bestT2) { bestT2 = tG; bestHp = 100 + gi; }
+                    }
+                    if (bestHp >= 100) {
+                        // A LANDED GUN HIT. Shield up: the bubble soaks it
+                        // (the usual funnel). Shield down: the mount SHEARS
+                        // OFF — visible removal + a quarter of the Turrets
+                        // subsystem routed so the consequence flow (BATTERY
+                        // SILENCED at four kills) is unchanged.
+                        const int gi = bestHp - 100;
+                        const float hitP[3] = { ppos[0] + fw[0]*bestT2,
+                                                ppos[1] + fw[1]*bestT2,
+                                                ppos[2] + fw[2]*bestT2 };
+                        if (x3::space::ShipDamage::shieldFrac(capital) > 0.0f) {
+                            capitalApplyHit(x3::space::Subsystem::Turrets, hitP, fw);
+                        } else {
+                            ++localShotsHit;
+                            hitConfirmT = 0.15f;
+                            if (x3::space::CapitalBattery::damageGun(
+                                    capBattery, gi, 90)) {
+                                float gw[3]; gunWorld(gi, gw);
+                                play3D(kSfxExplosion, "explosion_gun_mount (shot off)",
+                                       sndExplosion, gw, 1.0f, 0.8f);
+                                if (fxOn) {
+                                    fxPtr->spawnExplosion({ gw[0], gw[1], gw[2] }, 14.0f);
+                                    fxPtr->spawnDeath({ gw[0], gw[1], gw[2] });
+                                    fxPtr->spawnShipSparks({ gw[0], gw[1], gw[2] });
+                                    fxPtr->spawnSmoke({ gw[0], gw[1], gw[2] });
+                                    // The GUN ITSELF tumbles away: a heavy
+                                    // debris burst where the mount stood.
+                                    hc.device->gpuDebrisSpawnBurst(gw, 22u, 26.0f,
+                                        6.0f, 2.4f, 0xF001u ^ (uint32_t)(gi * 7919));
+                                }
+                                const int left =
+                                    x3::space::CapitalBattery::aliveGuns(capBattery);
+                                static const char* kGunBark[4] = {
+                                    "DREADNOUGHT GUN MOUNT SHEARED OFF - 3 REMAIN",
+                                    "DREADNOUGHT GUN MOUNT SHEARED OFF - 2 REMAIN",
+                                    "DREADNOUGHT GUN MOUNT SHEARED OFF - 1 REMAINS",
+                                    "DREADNOUGHT LAST GUN MOUNT DESTROYED",
+                                };
+                                pushCallout(kCalloutEnemy,
+                                    kGunBark[std::min(3, std::max(0, 3 - left))], 0.8f);
+                                // Route the quarter into the Turrets subsystem
+                                // (four kills == 120 == subsystem down, which
+                                // fires the existing BATTERY SILENCED flow via
+                                // the shared scan).
+                                x3::space::ShipDamage::applyDamage(
+                                    capital,
+                                    x3::space::CapitalBattery::kSubQuarter,
+                                    x3::space::Subsystem::Turrets);
+                                scanSubsDown();
+                            } else if (fxOn) {
+                                fxPtr->spawnImpact({ hitP[0], hitP[1], hitP[2] },
+                                                   { -fw[0], -fw[1], -fw[2] });
+                                fxPtr->spawnShipSparks({ hitP[0], hitP[1], hitP[2] });
+                            }
+                        }
+                    } else if (bestHp != -2) {
                         const float hitP[3] = { ppos[0] + fw[0]*bestT2,
                                                 ppos[1] + fw[1]*bestT2,
                                                 ppos[2] + fw[2]*bestT2 };
@@ -2135,10 +2311,26 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // the bar). Dead hardpoints burn: smoke + embers streaming from each
         // wound, cadenced so the cost stays bounded (~7 Hz smoke, ~2 Hz ember).
         if (fxOn) {
+            // Dead GUN MOUNTS burn too: the wreck stub streams smoke so the
+            // sheared battery reads at a glance (fire ceased + a wound).
+            for (int gi = 0; gi < x3::space::kCapitalGunCount; ++gi) {
+                if (x3::space::CapitalBattery::gunAlive(capBattery, gi) ||
+                    capitalKilled) continue;
+                float gw[3]; gunWorld(gi, gw);
+                if ((step + gi * 5) % 8 == 0)
+                    fxPtr->spawnShipSmoke({ gw[0], gw[1], gw[2] },
+                                          { 0.0f, 3.5f, 0.0f }, 1.0f);
+                if ((step + gi * 11) % 17 == 0)
+                    fxPtr->spawnShipSparks({ gw[0], gw[1], gw[2] });
+            }
             for (int si = 0; si < kMaxSubsystems; ++si) {
                 if (!subWasDown[si]) continue;
                 float hw[3]; hardWorld(si, hw);
-                if (capitalKilled) { hw[1] -= capDeath.sag; }   // burn rides the wreck down
+                if (capitalKilled) {   // burn rides the wreck down (sag/plunge)
+                    hw[0] += capDeath.planetDir[0] * capDeath.plunge;
+                    hw[1] += capDeath.planetDir[1] * capDeath.plunge - capDeath.sag;
+                    hw[2] += capDeath.planetDir[2] * capDeath.plunge;
+                }
                 // A DEAD TURRET BATTERY BURNS HARDER than a dead sensor mast:
                 // it is the hardpoint whose death the player actually feels
                 // (the gauntlet goes quiet), so it gets the loudest wound.
@@ -2174,9 +2366,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             if (crippled && !capitalKilled &&
                 std::fmod(reactorT, kReactorCycle) < kReactorOpen &&
                 step % 6 == 0) {
-                const float rw[3] = { capC[0] + kReactorOff[0],
-                                      capC[1] + kReactorOff[1],
-                                      capC[2] + kReactorOff[2] };
+                float rw[3]; capRot(kReactorOff, rw);
                 fxPtr->spawnShipEmber({ rw[0], rw[1], rw[2] }, { 0.0f, 2.0f, 0.0f });
             }
         }
@@ -2188,16 +2378,64 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (!capitalKilled && x3::space::ShipDamage::isDestroyed(capital)) {
             capitalKilled     = true;
             m.capitalDestroyed = true;
+            // The drive dies with the ship: the wreck holds the kill point and
+            // the DEATH state machine owns all wreck motion from here (sag /
+            // deorbit plunge), so the draw and the event stream can't diverge.
+            capMotion.speed = 0.0f;
+            capMotion.vel[0] = capMotion.vel[1] = capMotion.vel[2] = 0.0f;
+            // THE TWO AUTHORED ENDINGS (owner: "either crash land on a planet
+            // OR break up in space"), picked per encounter CONTEXT: a dominant
+            // planet in this system's sky (a hero body with real angular size)
+            // -> she DEORBITS toward it under an entry burn; a sky with no such
+            // body -> she breaks up where she floats. Deterministic — derived
+            // from the star-system registry, identical headless and live.
+            // Dev override: X3_CAP_DEATH=breakup|crash.
+            x3::space::DeathOutcome dOut = x3::space::DeathOutcome::BreakupInSpace;
+            float planetDir[3] = { 0.0f, 0.0f, 0.0f };
+            {
+                const x3::starsys::SystemBody* hero = nullptr;
+                for (const auto& b : dfSystem.bodies)
+                    if (b.type != x3::starsys::BodyType::Sun &&
+                        (!hero || b.angularDiameterDeg > hero->angularDiameterDeg))
+                        hero = &b;
+                constexpr float kCrashDiamDeg = 8.0f;   // "a planet NEARBY"
+                if (hero && hero->angularDiameterDeg >= kCrashDiamDeg) {
+                    dOut = x3::space::DeathOutcome::DeorbitCrash;
+                    const float az = hero->azimuthDeg   * 0.01745329252f;
+                    const float el = hero->elevationDeg * 0.01745329252f;
+                    // Sky convention (star_systems.h): az 0 = -Z, +90 = +X.
+                    planetDir[0] =  std::sin(az) * std::cos(el);
+                    planetDir[1] =  std::sin(el);
+                    planetDir[2] = -std::cos(az) * std::cos(el);
+                }
+                if (const char* ov = std::getenv("X3_CAP_DEATH"); ov && *ov) {
+                    if (ov[0] == 'b' || ov[0] == 'B')
+                        dOut = x3::space::DeathOutcome::BreakupInSpace;
+                    else if (ov[0] == 'c' || ov[0] == 'C') {
+                        dOut = x3::space::DeathOutcome::DeorbitCrash;
+                        if (planetDir[0] == 0.0f && planetDir[1] == 0.0f &&
+                            planetDir[2] == 0.0f) {
+                            planetDir[0] = -0.47f; planetDir[1] = 0.13f;
+                            planetDir[2] = -0.87f;   // fallback: hero-world ray
+                        }
+                    }
+                }
+            }
+            const bool deorbit =
+                (dOut == x3::space::DeathOutcome::DeorbitCrash);
             // Hold the window open for the WHOLE sequence (was 2.6 s, which cut
             // to the crash while the ship was still coming apart — the payoff
             // the player just earned happened off-screen), plus a beat of quiet
-            // drifting wreck at the end so the kill lands.
-            capitalDeathHold  = x3::space::CapitalDeathSequence::kDurationSec + 1.6f;
-            x3::logInfo("[intro] *** DREADNOUGHT DESTROYED *** — hull 0 at t=" +
+            // at the end so the kill lands.
+            capitalDeathHold =
+                x3::space::CapitalDeathSequence::durationFor(dOut) + 1.6f;
+            x3::logInfo(std::string("[intro] *** DREADNOUGHT DESTROYED *** — hull 0 at t=") +
                         std::to_string(tNow) + " s after " +
                         std::to_string(localShotsHit) + "/" +
-                        std::to_string(localShotsFired) + " landed shots; "
-                        "intro forks to CAPITAL_KILLED (crash site -> salvage -> "
+                        std::to_string(localShotsFired) + " landed shots; death = " +
+                        (deorbit ? "DEORBIT CRASH (falls to the planet)"
+                                 : "BREAKUP IN SPACE") +
+                        "; intro forks to CAPITAL_KILLED (crash site -> salvage -> "
                         "Lab Zero breach)");
             play3D(kSfxExplosion, "explosion_capital (3D, dreadnought kill)",
                    sndExplosion, capC, 1.0f, 0.55f);   // deep, loud, slow
@@ -2205,14 +2443,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // nothing on screen at all — the only text after the fight was the
             // cold-open's "ANTIMATTER CRITICAL - IGNITING ION DRIVE", which is
             // JAKE'S OWN drive, so a kill and a bare escape looked identical.
-            pushCallout(kCalloutMission, "DREADNOUGHT DESTROYED - SHE'S BREAKING UP", 0.55f);
-            // Arm the staged break-up. The hull's long axis is the ship's own
-            // facing (capFwd = -X, nose toward the player), so the cascade walks
-            // bow -> stern in the direction the player is looking down.
+            pushCallout(kCalloutMission,
+                        deorbit ? "DREADNOUGHT DESTROYED - SHE'S GOING IN"
+                                : "DREADNOUGHT DESTROYED - SHE'S BREAKING UP", 0.55f);
+            // Arm the staged death. The hull's long axis is the ship's own
+            // CURRENT facing (she has been arcing all fight), so the cascade
+            // walks bow -> stern down the real hull.
             {
-                const float axis[3] = { -1.0f, 0.0f, 0.0f };
+                const float axis[3] = { capMotion.fwd[0], capMotion.fwd[1],
+                                        capMotion.fwd[2] };
                 x3::space::CapitalDeathSequence::begin(capDeath, capC, axis,
-                                                       kCapHullR * 0.90f);
+                                                       kCapHullR * 0.90f,
+                                                       dOut, planetDir);
             }
         }
         if (capitalKilled) {
@@ -2488,9 +2730,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // cascade walking the hull -> lights out -> sections shed -> core
             // detonation -> dark tumbling wreck. A single still cannot prove a
             // staged sequence; a frame series can.
+            // (kill window widened to s790: the DEORBIT ending runs 10.6 s of
+            //  hold — fall + entry burn + the impact flash — past the old
+            //  s530 breakup bound.)
             const bool evShot = evDir && *evDir &&
                 (killCapture
-                   ? (step >= 100 && step <= 530 && (step % 6) == 0)
+                   ? (step >= 100 && step <= 790 && (step % 6) == 0)
                    : (step == 60 || step == 180 || step == 420 ||
                       step == 660 || step == 900));
             if (evShot)
@@ -2587,14 +2832,38 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                   e.pos, e.fwd, upW, visScale, cockpit->mrShared,
                                   e.hitFlash / x3::space::shipai::kHitFlashSec);
                 }
-                // The dreadnought at its REAL (drifting) position, at capital
-                // SCALE: ~450 m of hull standing off across the arena (vet pass —
-                // it was a 110 m corvette parked 200 m away; you crossed the whole
-                // fight in under a second and it filled the windshield for free.
-                // Now presence is EARNED by flying the approach).
-                const float capFwd[3] = { -1.0f, 0.0f, 0.0f };
+                // The dreadnought at its REAL (moving) position + CURRENT arc
+                // heading, at capital SCALE: ~450 m of hull under way across
+                // the arena (vet pass — it was a 110 m corvette parked 200 m
+                // away). Presence is EARNED by flying the approach; the arc is
+                // what makes her a SHIP instead of a turret emplacement.
+                const float capFwd[3] = { capMotion.fwd[0], capMotion.fwd[1],
+                                          capMotion.fwd[2] };
                 if (!capitalKilled) {
                     x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw, capC, capFwd, kCapDrawScl, cockpit->mrShared);
+                    // THE GUN MOUNTS — visible, aimable, and REMOVED when shot
+                    // off (a scorched stub remains). Base + barrel per mount;
+                    // the barrel TRACKS the player, which is what makes the
+                    // battery read as weapons rather than greebles.
+                    for (int gi = 0; gi < x3::space::kCapitalGunCount; ++gi) {
+                        float gw[3]; gunWorld(gi, gw);
+                        const bool aliveG =
+                            x3::space::CapitalBattery::gunAlive(capBattery, gi);
+                        // Barrel aim: at the player (alive) / frozen slump (dead).
+                        float aim[3] = { ppos[0]-gw[0], ppos[1]-gw[1], ppos[2]-gw[2] };
+                        const float al2 = std::sqrt(aim[0]*aim[0] + aim[1]*aim[1] +
+                                                    aim[2]*aim[2]);
+                        if (al2 > 1.0f) { aim[0]/=al2; aim[1]/=al2; aim[2]/=al2; }
+                        x3::apphost::drawIntroCapitalGun(*hc.device, frame,
+                            cockpit->gunBaseMesh, cockpit->gunBarrelMesh,
+                            cockpit->gunTex, cockpit->mrShared,
+                            gw, aim, aliveG,
+                            // Spool telegraph: the mount GLOWS as it charges.
+                            aliveG && capBattery.gun[gi].spoolT >= 0.0f
+                                ? 1.0f - capBattery.gun[gi].spoolT /
+                                         x3::space::CapitalBattery::kGunSpool
+                                : 0.0f);
+                    }
                 } else {
                     // ---- THE WRECK -------------------------------------------
                     // Three reads, all driven by the death state machine:
@@ -2625,10 +2894,61 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         wu[0]*cr + kx[0]*sr + dFwd[0]*kd*(1.0f-cr),
                         wu[1]*cr + kx[1]*sr + dFwd[1]*kd*(1.0f-cr),
                         wu[2]*cr + kx[2]*sr + dFwd[2]*kd*(1.0f-cr) };
-                    const float wreckPos[3] = { capC[0], capC[1] - capDeath.sag, capC[2] };
+                    // The wreck rides the death machine: the in-place breakup
+                    // sags off station; the DEORBIT falls down the planet line
+                    // (plunge) under an entry burn — drawn via the hit-flash
+                    // warm tint so the hull READS as re-entry heating, plus a
+                    // burning trail streamed behind it below.
+                    const float wreckPos[3] = {
+                        capC[0] + capDeath.planetDir[0] * capDeath.plunge,
+                        capC[1] + capDeath.planetDir[1] * capDeath.plunge
+                                - capDeath.sag,
+                        capC[2] + capDeath.planetDir[2] * capDeath.plunge };
                     x3::apphost::drawIntroShipBasis(*hc.device, frame, cockpit->capDraw,
                                   wreckPos, dFwd, dUp, kCapDrawScl, cockpit->mrShared,
-                                  /*hitFlash=*/0.0f, /*emisScale=*/capDeath.lights);
+                                  /*hitFlash=*/0.15f * capDeath.burn,
+                                  /*emisScale=*/capDeath.lights +
+                                                1.3f * capDeath.burn,
+                                  /*entryBurn=*/capDeath.burn);
+                    // ENTRY-BURN TRAIL (deorbit only; burn==0 in the breakup):
+                    // embers + smoke shed BEHIND the falling hull along the
+                    // planet line, cadenced so the cost stays bounded.
+                    if (fxOn && capDeath.burn > 0.05f) {
+                        const float back[3] = { -capDeath.planetDir[0],
+                                                -capDeath.planetDir[1],
+                                                -capDeath.planetDir[2] };
+                        if (step % 2 == 0) {
+                            const float toff = (float)((step / 2) % 8) * 34.0f;
+                            fxPtr->spawnShipEmber(
+                                { wreckPos[0] + back[0] * (40.0f + toff),
+                                  wreckPos[1] + back[1] * (40.0f + toff),
+                                  wreckPos[2] + back[2] * (40.0f + toff) },
+                                { back[0] * 34.0f, back[1] * 34.0f, back[2] * 34.0f });
+                        }
+                        // ON-HULL FIRE SHEATH: embers crawling the hull itself
+                        // (deterministic hash spread across the 450 m span), so
+                        // the wreck reads as BURNING, not just trailing.
+                        if (step % 2 == 1) {
+                            const float h1 = std::sin((float)step * 0.731f);
+                            const float h2 = std::sin((float)step * 1.883f);
+                            const float h3 = std::sin((float)step * 2.947f);
+                            fxPtr->spawnShipEmber(
+                                { wreckPos[0] + dFwd[0] * h1 * 190.0f + h2 * 46.0f,
+                                  wreckPos[1] + dFwd[1] * h1 * 190.0f + h3 * 40.0f,
+                                  wreckPos[2] + dFwd[2] * h1 * 190.0f + h2 * 44.0f },
+                                { back[0] * 20.0f + h3 * 6.0f,
+                                  back[1] * 20.0f + h1 * 6.0f,
+                                  back[2] * 20.0f + h2 * 6.0f });
+                        }
+                        if (step % 4 == 0)
+                            fxPtr->spawnShipSmoke(
+                                { wreckPos[0] + back[0] * (110.0f +
+                                      36.0f * (float)((step / 4) % 4)),
+                                  wreckPos[1] + back[1] * 110.0f,
+                                  wreckPos[2] + back[2] * 110.0f },
+                                { back[0] * 26.0f, back[1] * 26.0f, back[2] * 26.0f },
+                                capDeath.burn);
+                    }
                 }
                 if (fxOn) {
                     fxPtr->draw(*hc.device, frame, cx, cy, cz, cyaw, cpit);
@@ -3031,9 +3351,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         const bool reactorOpen = crippled && !capitalKilled &&
                             std::fmod(reactorT, kReactorCycle) < kReactorOpen;
                         if (reactorOpen) {
-                            const float rw[3] = { capC[0] + kReactorOff[0],
-                                                  capC[1] + kReactorOff[1],
-                                                  capC[2] + kReactorOff[2] };
+                            float rw[3]; capRot(kReactorOff, rw);
                             const Proj rp = project(rw);
                             if (rp.vis) {
                                 const float pulse = 8.0f + 4.0f * std::sin(beatT * 9.0f);
@@ -3070,6 +3388,17 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         const float titlePx = 14.0f;
                         const float titleY  = by - titlePx - 12.0f;
                         const float back[4]   = { 0.03f, 0.035f, 0.05f, 0.72f };
+                        // BANNER-REPLACES-BAR LAYOUT (owner, live 2026-08-17:
+                        // "This text, when there are more than one line.. they
+                        // overwrite each other"). The kill banner used to draw
+                        // at 0.10*H — dead on top of the boss bar at 0.105*H
+                        // and its own title line — while the retired bar kept
+                        // drawing under it. Now the DESTROYED state RETIRES the
+                        // bar block entirely (a dead ship needs no health bar)
+                        // and the banner takes over that band; every stacked
+                        // line below advances by its real line height.
+                        float cy2;   // where the callout stack starts (set per state)
+                        if (!capitalKilled) {
                         const float shCol[4]  = { 0.40f, 0.80f, 1.00f, 0.95f };
                         // Hull fill reddens as it drops (green-ish -> hot red).
                         const float hullCol[4] = { 0.95f, 0.22f + 0.55f * hfB, 0.18f, 0.95f };
@@ -3090,13 +3419,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         }
                         // PHASE-AWARE label (the fight has acts): shields -> the
                         // hardpoint hunt -> the reactor cycle. Plus live HULL %.
-                        const bool rOpen = crippled && !capitalKilled &&
+                        const bool rOpen = crippled &&
                             std::fmod(reactorT, kReactorCycle) < kReactorOpen;
                         char bossTag[64];
-                        if (capitalKilled)
-                            std::snprintf(bossTag, sizeof(bossTag),
-                                          "DREADNOUGHT DESTROYED  HULL 0%%");
-                        else if (sfB > 0.0f)
+                        if (sfB > 0.0f)
                             std::snprintf(bossTag, sizeof(bossTag),
                                 "DREADNOUGHT  SHIELDS %d%%  HULL %d%%",
                                 (int)(sfB * 100.0f + 0.5f), (int)(hfB * 100.0f + 0.5f));
@@ -3118,15 +3444,58 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                 bossTag, bx + 2.0f, titleY, titlePx,
                                 rOpen ? redM : (hfB > 0.0f ? amberM : redM));
                         }
-                        // CALLOUT STACK (the radio barks) under the boss bar.
-                        // SOURCE-CODED (the messaging law, see CalloutSrc): the
-                        // prefix + colour say WHOSE event this is before the
-                        // player has finished reading the words. Mission lines
-                        // (the kill) draw larger and brighter than status barks.
-                        // While the kill banner is up it owns the band just
-                        // under the boss bar, so the bark stack steps down to
-                        // clear it instead of printing through it.
-                        float cy2 = by + (capitalKilled ? 118.0f : 40.0f);
+                        cy2 = by + 40.0f;   // barks flow under the bar block
+                        } else {
+                        // ---- THE KILL BANNER (replaces the bar block) -------
+                        // The answer to "did I just win?", stated in words, on
+                        // screen, for the whole death sequence — with the sub-
+                        // line naming the AUTHORED ENDING actually playing.
+                        // Each line advances by its real height; nothing else
+                        // draws in this band while the banner owns it.
+                            const float age =
+                                (x3::space::CapitalDeathSequence::durationFor(
+                                     capDeath.outcome) + 1.6f) - capitalDeathHold;
+                            const float fadeIn  = std::min(1.0f, age / 0.35f);
+                            const float fadeOut = std::min(1.0f, capitalDeathHold / 0.8f);
+                            const float a = fadeIn * fadeOut;
+                            // White-hot (>1 blooms through the post chain).
+                            const float kc[4] = { 1.70f, 1.42f, 0.90f, a };
+                            const float ks[4] = { 0.95f, 0.80f, 0.55f, 0.85f * a };
+                            const char* kMain = "DREADNOUGHT DESTROYED";
+                            const bool deorbitB = capDeath.outcome ==
+                                x3::space::DeathOutcome::DeorbitCrash;
+                            const char* kSub = deorbitB
+                                ? "ENEMY CAPITAL SHIP KILLED - DEORBITING TOWARD THE PLANET"
+                                : "ENEMY CAPITAL SHIP KILLED - BREAKING UP IN SPACE";
+                            // The Enemy face advances ~0.79 * size per glyph
+                            // (measured off a capture); centre via textAdvance
+                            // when available, glyph estimate as the fallback.
+                            const float mainSz = 40.0f, subSz = 17.0f;
+                            const float mainY  = titleY;   // the retired bar's band
+                            const float mainW  = hc.device->textAdvance(
+                                x3::rhi::FontRole::Enemy, kMain, mainSz);
+                            const float subW   = hc.device->textAdvance(
+                                x3::rhi::FontRole::Enemy, kSub, subSz);
+                            const float subY   = mainY + mainSz * 1.25f + 6.0f;
+                            quad((float)winW * 0.5f - mainW * 0.5f - 10.0f,
+                                 mainY - 6.0f, mainW + 20.0f,
+                                 mainSz * 1.25f + subSz * 1.35f + 18.0f, back);
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                kMain, (float)winW * 0.5f - mainW * 0.5f,
+                                mainY, mainSz, kc);
+                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
+                                kSub, (float)winW * 0.5f - subW * 0.5f,
+                                subY, subSz, ks);
+                            // Barks flow BELOW the whole banner block.
+                            cy2 = subY + subSz * 1.35f + 12.0f;
+                        }
+                        // CALLOUT STACK (the radio barks) under the boss bar /
+                        // kill banner. SOURCE-CODED (the messaging law, see
+                        // CalloutSrc): the prefix + colour say WHOSE event this
+                        // is before the player has finished reading the words.
+                        // Mission lines (the kill) draw larger and brighter
+                        // than status barks; every line advances by its real
+                        // line height so two lines can never overprint.
                         for (const auto& cl : callouts) {
                             if (!cl.text || cl.t <= 0.0f) continue;
                             const float a = std::min(1.0f, cl.t / 0.6f);
@@ -3139,42 +3508,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                           calloutPrefix(cl.src), cl.text);
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
                                 line, bx, cy2, sz, cc);
-                            cy2 += mission ? 21.0f : 16.0f;
-                        }
-                        // ---- THE KILL BANNER --------------------------------
-                        // The answer to "did I just win?", stated in words, on
-                        // screen, for the whole death sequence. Nothing else in
-                        // the intro told the player he had destroyed anything:
-                        // the only post-fight text was the cold-open's
-                        // "ANTIMATTER CRITICAL - IGNITING ION DRIVE", which is
-                        // Jake's own drive and plays whether he killed the
-                        // dreadnought or merely slipped away from it.
-                        // (One centred line + a sub-line — no layout change to
-                        // the reticle, brackets or bars, which the combat-feel
-                        // lane owns.)
-                        if (capitalKilled) {
-                            const float age = (x3::space::CapitalDeathSequence::kDurationSec
-                                               + 1.6f) - capitalDeathHold;
-                            const float fadeIn  = std::min(1.0f, age / 0.35f);
-                            const float fadeOut = std::min(1.0f, capitalDeathHold / 0.8f);
-                            const float a = fadeIn * fadeOut;
-                            // White-hot (>1 blooms through the post chain).
-                            const float kc[4] = { 1.70f, 1.42f, 0.90f, a };
-                            const float ks[4] = { 0.95f, 0.80f, 0.55f, 0.85f * a };
-                            const char* kMain = "DREADNOUGHT DESTROYED";
-                            const char* kSub  = "ENEMY CAPITAL SHIP KILLED - SHE'S GOING DOWN";
-                            // The Enemy face advances ~0.79 * size per glyph
-                            // (measured off a capture), so half the run is
-                            // 0.395 * size * length.
-                            constexpr float kAdv = 0.395f;
-                            const float mainSz = 40.0f, subSz = 17.0f;
-                            const float mainY = (float)winH * 0.10f;
-                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
-                                kMain, (float)winW * 0.5f - mainSz * kAdv * 21.0f,
-                                mainY, mainSz, kc);
-                            hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
-                                kSub, (float)winW * 0.5f - subSz * kAdv * 44.0f,
-                                mainY + mainSz * 1.45f, subSz, ks);
+                            cy2 += sz * 1.35f;   // real line height, no overprint
                         }
                         // INCOMING flash while the turret battery spools — the
                         // telegraph: you have 0.6 s to change your line.

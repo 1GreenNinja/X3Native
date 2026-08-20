@@ -708,6 +708,12 @@
       "source_note": "Realistic Car Controller V4 fleet: 11 vehicles, Draco-decoded where required + run through tools/convert_car_glb.py. E46_New carries the cabin (Seats/Dashboard/SteeringWheel/GearHandle/Interior + emissive needles)"
     },
     {
+      "repo_path": "assets/converted_glb/Vehicles/Wing_02.glb",
+      "sha256": "301b4a911bd9ba132d831a1edcdbc9a78c568280c87215ba357d17ed236486d4",
+      "size": 383856,
+      "source_note": "stage-3 wing pair mesh (armory SciFi Kit Vol 3, textured)"
+    },
+    {
       "repo_path": "assets/converted_glb/mine/barrel.glb",
       "sha256": "596451a948aafdca91c458e5de48b6c6396f6a9c7e5a4460961a87c52135307f",
       "size": 161980,
@@ -787,9 +793,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/AnnaBodySuit_anim.glb",
-      "sha256": "af4b819ccf4a9609bda8a6e56f6519771b9fcbae17a63d259803f1d2c4135cfa",
-      "size": 8091724,
-      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+      "sha256": "ab2ad59e0a218dd9a1ddc480970d04367da9eae0e5220ada778b1cebf13e88df",
+      "size": 7916060,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/AnnaCasual.glb",
@@ -823,9 +829,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/BossBreederQueen_anim.glb",
-      "sha256": "cf23c40f9f20460c8e4cdb2593450ebc156816022003045175cdb2284098215d",
-      "size": 19235644,
-      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+      "sha256": "c59c882b0c944038120c9e6ae7682868d20e971b31466d29e11b830d26439f35",
+      "size": 19239576,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/BossTheSiren.glb",
@@ -943,9 +949,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/Oracle_anim.glb",
-      "sha256": "1b3194e4a69ca49e52d55ecdf667830474dc9764cb0618d66977dbf040c0f906",
-      "size": 6997804,
-      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+      "sha256": "50435f6c314b104d8091fdd762b68ac173ebaaded014d1b1de18714414e5d09a",
+      "size": 6920568,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/OverLordEnforcer99.glb",
@@ -961,9 +967,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/RexBouncer_anim.glb",
-      "sha256": "1de1022d4e406180bd47c11c44ef2a7aa2a27ae4d196a8a76e5eadd1624eeedf",
-      "size": 4427512,
-      "source_note": "Meshy animation-library clips (animlib wave 2026-07-27)"
+      "sha256": "28b1481b8130eae38175d976095b9edd97a496b5c0f2a6f77e347be5ddfaa9b8",
+      "size": 4360728,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/SalvariPrincess.glb",
@@ -973,9 +979,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/SalvariPrincess_anim.glb",
-      "sha256": "8d2a274f512c83c841d46a0c040a8a3731798acdffbb1c0dec822748d7cda439",
-      "size": 10683464,
-      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+      "sha256": "079cca7d2f6970f85bc9ffa3e22fb822700586fcbc81661780dfcde52f241d3f",
+      "size": 9955480,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/SpaceShip.glb",
@@ -1081,9 +1087,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/canon_nordic_anim.glb",
-      "sha256": "49bb6843a29c57a24fafaf443aafe2f26d64b7385464144c4295a54398b6ad01",
-      "size": 2382596,
-      "source_note": "animlib restore 2026-07-28: dropped test clips back in (Wave / IdleAlt) for the gallery dev world"
+      "sha256": "ef1865a3c33b6c934ada83ec362cd3412150f12313f69eb8ab81c087bfc1dcd6",
+      "size": 2393248,
+      "source_note": "meshcut wave: geodesic shell ownership re-skin kills wrist-hip membrane"
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez.glb",

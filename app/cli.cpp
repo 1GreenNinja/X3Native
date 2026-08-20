@@ -171,14 +171,17 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-pickup") o.testPickup = true;
         else if (a == "--test-combat") o.testCombat = true;
         else if (a == "--test-deathragdoll") o.testDeathRagdoll = true;
-        // KEEP BOTH (fold wave 3). Two lanes plumbed --test-grounding independently:
-        // trunk sets the inline global (the 0cbe3f89 wiring), ward-tableau sets the
-        // CliOptions field. dispatchTests() reads the GLOBAL, main.cpp mirrors the
-        // FIELD into TestFlags — drop either and one of those two reads silently
-        // goes false again, which is the exact failure mode that left this gate
-        // never running in the first place. So set both.
-        else if (a == "--test-grounding") { x3::apphost::g_testGrounding = true;
-                                            o.testGrounding = true; }
+        // KEEP BOTH SINKS. Two lanes plumbed --test-grounding independently and both
+        // reads are live: the inline global drives dispatchTests() in
+        // test_registry.cpp; the CliOptions field rides main.cpp into
+        // TestFlags::testGrounding. Setting only one silently HALF-runs the gate —
+        // the exact failure mode that left this gate never running at all. Verified
+        // by grep, not assumed. (Unified 0820: both lines had converged on this
+        // same resolution independently; kept once.)
+        else if (a == "--test-grounding") {
+            x3::apphost::g_testGrounding = true;
+            o.testGrounding             = true;
+        }
         else if (a == "--test-audio") o.testAudio = true;
         else if (a == "--test-acoustics") o.testAcoustics = true;
         else if (a == "--test-level1") o.testLevel1 = true;
@@ -187,7 +190,6 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-levellint") o.testLevelLint = true;   // GATE A geometric lint
         else if (a == "--test-propclip") o.testPropClip = true;     // GATE A ext: dressing prop clip audit
         else if (a == "--test-canonplay") o.testCanonPlay = true;
-        else if (a == "--test-grounding") o.testGrounding = true;   // character grounding GATE (app/grounding.h)
         else if (a == "--test-worldswitch") {   // headless canonlevel->flag world-load repro/regression
             if (i + 1 < argc && argv[i + 1][0] != '-') o.worldSwitchTest = argv[++i];
             else o.worldSwitchTest = "streamed";
@@ -265,6 +267,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-chattree") o.testChatTree = true;
         else if (a == "--test-vigil") o.testVigil = true;
         else if (a == "--test-mission") o.testMission = true;
+        else if (a == "--test-canonmission") o.testCanonMission = true;   // P1-4 canon mission spine
         else if (a == "--test-destruction") o.testDestruction = true;
         else if (a == "--test-debris") o.testDebris = true;
         else if (a == "--test-gibs") o.testGibs = true;

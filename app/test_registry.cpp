@@ -1117,6 +1117,12 @@ int dispatchTests(const TestFlags& tf) {
                     "the Level-1 doc-vs-hardcoded objective EQUIVALENCE walk)...");
         return x3::game::runMissionSelfTest() ? 0 : 1;
     }
+    if (tf.testCanonMission) {
+        x3::logInfo("running canon mission spine self-test (P1-4: canon_act1.mission.json "
+                    "parse/validate + the objective walk cell->helipad->outro + negative "
+                    "control + pollCanonMissionFlags on a real CanonPlay)...");
+        return x3::game::runCanonMissionSelfTest() ? 0 : 1;
+    }
     if (tf.testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
         return x3::phys::runDestructionSelfTest() ? 0 : 1;
@@ -1189,7 +1195,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running vehicle CAMERA self-test "
                     "(fly cam tracks hull roll + boat cam fractional roll + swell rocks the hull)...");
         const bool camOk = x3::game::runVehicleCamSelfTest();
-        return (frameworkOk && driveOk && camOk) ? 0 : 1;
+        x3::logInfo("running WINGED FLIGHT / three-stage-secret self-test "
+                    "(NORMAL bottle regression + depletion-once + overdrive A/B vs the "
+                    "accident + wings at 5 s + 700/277 mph terminals + bank-carve + loop + "
+                    "landing/crash/lockout + parachute)...");
+        const bool wingsOk = x3::game::runWingedFlightSelfTest();
+        return (frameworkOk && driveOk && camOk && wingsOk) ? 0 : 1;
     }
     if (tf.testCanonVehicle) {
         x3::logInfo("running WORLD CARS canon-vehicle self-test "
