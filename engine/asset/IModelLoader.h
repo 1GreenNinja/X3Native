@@ -193,6 +193,18 @@ struct ModelDrawable {
     float    detailUvScale = 1.0f;       // detail UV tiling (mesh.frag samples detail at vUV*this)
     float    clearcoat     = 0.0f;       // clearcoat intensity (car paint); 0 = no clearcoat lobe
     float    clearcoatRough = 0.05f;     // clearcoat roughness (mirror-ish lacquer)
+    // glTF pbrMetallicRoughness SCALAR FACTORS. Per spec these MULTIPLY the MR
+    // texture (metallic = mrTex.b * metallicFactor). The loader has parsed them
+    // since forever, but until 2026-08-18 they stopped at Material and never
+    // reached the drawable — so a material with NO MR texture sampled bindless
+    // slot 0, the built-in 1x1 WHITE, and came out metallic=1 roughness=1 no
+    // matter what the artist authored. RECEIPT: E30.glb authors M_Body at
+    // metallic 0.8 / roughness 0.4 and rendered as a chalky fully-rough
+    // full-metal ghost — the owner's 09:45 freeway screenshot is full of them.
+    // 1.0/1.0 are the glTF defaults, so a material that omits them shades
+    // byte-identically to before.
+    float    metallicFactor  = 1.0f;
+    float    roughnessFactor = 1.0f;
     float    baseColorFactor[4] = {1, 1, 1, 1};
     float    nodeTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // node world (column-major)
 };

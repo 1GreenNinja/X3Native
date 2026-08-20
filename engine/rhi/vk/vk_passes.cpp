@@ -1418,7 +1418,8 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
                       TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
                       uint32_t extraFlags, const GlassMaterial* glass,
                       float clearcoat , float clearcoatRough , float selfLight ,
-                      float metallicScale , float foliage ) {
+                      float metallicScale , float foliage ,
+                      float metallicFactor , float roughnessFactor ) {
         // LANE 6: this walk is the cost `docs/screenshots/gpucull/RESULTS.md:46-54`
         // names ("dominated by the immediate-mode drawMesh() submission walk") but
         // never measured against the rest of the frame. Now it is a named bucket —
@@ -1559,7 +1560,16 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
             // carries the per-object metallic CLAMP (mesh.frag multiplies mr.b by it).
             // 1.0 (the default for every call site) is byte-identical to no clamp.
             r.glassParams[3] = metallicScale;
-            r.glassTint[0]   = r.glassTint[1]   = r.glassTint[2]   = r.glassTint[3]   = 0.0f;
+            // glTF MR SCALAR FACTORS ride the opaque path's otherwise-dead glassTint
+            // lanes (glass draws take the `if` branch, so there is no collision).
+            // ZERO MEANS "not supplied" — every pre-2026-08-18 record left these at
+            // 0.0 and mesh.frag must keep shading those byte-identically, so a
+            // genuine authored 0.0 is nudged to a visually identical epsilon rather
+            // than colliding with the sentinel. (A dielectric authoring metallic 0
+            // is the common case, so this lane matters.)
+            r.glassTint[0]   = metallicFactor  > 0.0f ? metallicFactor  : 1e-4f;
+            r.glassTint[1]   = roughnessFactor > 0.0f ? roughnessFactor : 1e-4f;
+            r.glassTint[2]   = r.glassTint[3]  = 0.0f;
         }
         m_drawRecords.push_back(r);
     }

@@ -2791,7 +2791,8 @@ void drawTrafficDrawable(x3::rhi::IRenderDevice& dev, const x3::rhi::FrameContex
                     bc, emis, world, d.alphaMask, d.alphaBlend,
                     x3::rhi::TextureHandle{ d.emissiveTexId },
                     x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
-                    d.clearcoat, d.clearcoatRough, 0.0f, metallicScale);
+                    d.clearcoat, d.clearcoatRough, 0.0f, metallicScale,
+                    /*foliage=*/0.0f, d.metallicFactor, d.roughnessFactor);
 }
 
 // Compose a world matrix from an orthonormal basis, an origin and a scale.
