@@ -878,7 +878,16 @@ void DriveDemo::updateWingFlight(float dt) {
     // and the beast could never slow below the 60 mph retract line.
     const bool airbrake = (m_lastIn.brake > 0.3f) || (m_lastIn.handBrake > 0.3f);
     const float idleFrac = wt.idleThrust / std::max(1.0f, wt.maxThrust);
-    fin.throttle = grounded() ? 0.0f
+    // TAKEOFF vs ROLLOUT. The grounded cut exists so the wheels and brakes own
+    // the LANDING rollout — but applied unconditionally it also made takeoff
+    // impossible: wings deploy on the ground, grounded() zeroes thrust, the car
+    // never accelerates, so it never leaves the ground and stays grounded
+    // forever. MEASURED (--test-vehicle N4 CLIMB DIAG, 2026-08-22):
+    // grounded=YES dY=-0.012 m over 1.5 s of commanded nose-up at full thrust,
+    // which is what failed all seven N4 aerodynamic checks at once.
+    // So: a COMMANDED thrust (SHIFT) overrides the cut and flies you off the
+    // deck; hands-off on the ground still yields to the wheels.
+    fin.throttle = (grounded() && !m_wantNos) ? 0.0f
                  : (m_wantNos ? 1.0f : (airbrake ? 0.0f : idleFrac));
     // ATTITUDE — full authority, never fought: no auto-level anywhere, so a
     // committed roll or loop is the player's to keep (arcade-plane, not sim).
@@ -2215,6 +2224,12 @@ bool runWingedFlightSelfTest() {
             stepCar(*ph, car, in);
         }
         float p1[3]; car.chassisPos(p1);
+        x3::logInfo("[wings-test] N4 CLIMB DIAG: grounded=" +
+                    std::string(car.grounded() ? "YES" : "no") +
+                    " y0=" + std::to_string(p0[1]) + " y1=" + std::to_string(p1[1]) +
+                    " dY=" + std::to_string(p1[1]-p0[1]) +
+                    " fwd_mph=" + std::to_string(car.forwardSpeed()*2.23694f) +
+                    " wings=" + std::string(car.wingsDeployed() ? "OUT" : "in"));
         check(p1[1] > p0[1] + 10.0f, "N4: pitch up under thrust CLIMBS");
         for (int i = 0; i < 60 * 45; ++i) {   // 45 s to terminal
             x3::phys::VehicleInput in{};
