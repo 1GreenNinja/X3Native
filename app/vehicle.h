@@ -236,6 +236,135 @@ public:
     // (post speed-map, post slew). HUD / self-test telemetry.
     float steerNow() const { return m_steerNow; }
 
+    // =========================================================================
+    // NITROUS + THE THREE-STAGE SECRET (owner-blessed, 2026-08-17).
+    // MOVED DOWN from host_tunnel.cpp (the standing law that produced the shared
+    // AnimatedCharacter module: features every world's car should have live in
+    // the SHARED VEHICLE LAYER, not in one host). host_tunnel keeps only the
+    // SHIFT read + HUD/audio hooks; the tank, the kick, the overdrive and the
+    // wings all live here so every world that drives this car gets them.
+    //
+    // THE STORY. The old host-local block had no hysteresis and recharged the
+    // tank even while SHIFT was held, so at empty it oscillated around the
+    // 0.02 threshold and re-fired the 2600 N·s ignition kick every ~3rd frame
+    // (~20 Hz) — ~48 m/s² of raw impulse that took the car to ~379 mph. The
+    // owner fell in love with the bug ("that is a crazy COOL thing"), so it is
+    // now SPEC, rebuilt as a deliberate three-stage secret:
+    //   STAGE 1 — DEPLETION: the instant the tank first empties while spraying,
+    //     nitroJustDepleted() fires once. The host flashes "NITROUS DEPLETED" +
+    //     plays the blow-off PSSSHT. The warning is the secret's camouflage:
+    //     normal players release SHIFT (and the tank recharges as always).
+    //   STAGE 2 — OVERDRIVE (SHIFT held past empty): the accidental threshold
+    //     oscillation becomes an explicit state that fires the SAME 2600 N·s
+    //     kick at a fixed 20 Hz (the accident's measured cadence), tapering in
+    //     over ~1.2 s. overdrive01()/overdriveKickedThisStep() feed the host's
+    //     escalating feedback (FOV punch, gauge flare, rhythmic sputter).
+    //   STAGE 3 — WINGS (held 5 s past empty): wings deploy (wingDeploy01()
+    //     animates, wingsJustDeployed() is the THUNK) and the car becomes a
+    //     winged beast on the engine's FlightController — atmosphere-style:
+    //     bank to turn, full aerobatics (rolls/loops/inverted are never fought),
+    //     700 mph flat out, hands-off drag-equilibrium cruise at 277 mph, no
+    //     stall. Landing at < ~60 mph with wheels down retracts the wings and
+    //     gives the car back (CONTACT LAW resumes — see postStep).
+    // =========================================================================
+    struct NitroTuning {
+        // Stage 0 — the NORMAL bottle. UNCHANGED behavior (regression-gated in
+        // runWingedFlightSelfTest N1): 15 s bottle, ~20 s recharge, one kick
+        // per engagement, +1.1 g shove, x1.19 torque while spraying.
+        float bottleSecs      = 15.0f;   // full tank of continuous spray (Tim)
+        float rechargeSecs    = 20.0f;   // empty -> full off the button (Tim)
+        float kickImpulse     = 2600.0f; // N·s ignition seat-slam (fires ONCE per spray)
+        float shoveForce      = 12000.0f;// N sustained while spraying (~+1.1 g)
+        float sprayTorqueMult = 1.19f;   // 200-shot: +200 hp = x1.19 on this tune
+        // Stage 2 — OVERDRIVE (the accident, made deliberate).
+        float odKickHz        = 20.0f;   // the oscillation re-fired every ~3rd frame at 60
+        float odKickImpulse   = 2600.0f; // N·s, same slam — the feel IS the kick train
+        float odShoveForce    = 4000.0f; // N — the accident's 1/3-duty 12 kN shove, time-averaged
+        float odTaperInSecs   = 1.2f;    // 0 -> full over this long past depletion
+        float odWingsSecs     = 5.0f;    // SHIFT held this long past empty -> WINGS
+    };
+    struct WingTuning {
+        // OWNER NUMBERS ARE SPEC (NO_SLOP rule 8): "speed up to 700mph...
+        // coast at 277mph". Like the turbo's pressure-ratio model, the numbers
+        // must FALL OUT of the physics, not be clamps: terminal velocity is
+        // where thrust equals total drag (quadratic aero + Jolt body damping),
+        // so maxThrust/drag are calibrated so full throttle equilibrates at
+        // 313 m/s (700 mph) and idle thrust at 124 m/s (277 mph). The N4
+        // self-test MEASURES both terminals and gates them — if these numbers
+        // drift from the sim (Jolt damping change etc.), the test names it.
+        float maxThrust  = 36500.0f; // N at full throttle (SHIFT — the overdrive lineage)
+        float idleThrust = 9800.0f;  // N hands-off: drag-equilibrium cruise, restful
+        float drag       = 0.20f;    // quadratic aero N/(m/s)^2 (PAIRED with the two above)
+        // Lift = liftCoeff * |fwdSpeed| * mass, capped at 1.25 g (engine model,
+        // JoltVehicle.cpp FlightController). g/124 => lift equals gravity at
+        // exactly the coast speed: altitude HOLDS at cruise, gentle sink below
+        // it (no stall, ever), gentle climb available above it.
+        float liftCoeff  = 0.0791f;  // = 9.81 / 124 m/s (PAIRED with idleThrust)
+        // Attitude authority (N·m at full input) + damping. Arcade-plane rates:
+        // fast roll, honest pitch (a full-stick loop takes a few seconds),
+        // mild rudder. NEVER auto-levels — a committed roll or loop is the
+        // player's to keep (owner: "bank and roll and all that").
+        float pitchTorque = 9000.0f;
+        float yawTorque   = 6000.0f;
+        float rollTorque  = 16000.0f;
+        float angDamping  = 2.0f;
+        // BANK-TO-TURN: yaw command injected per sin(bank), so rolling into a
+        // bank CARVES the heading (the casual path), while full-roll commits
+        // pass through 90° where sin ~ 1 but pitch input owns the turn. Plus a
+        // mild direct rudder from steer for flat corrections.
+        float carveGain   = 0.9f;
+        float rudderGain  = 0.25f;
+        // ARCADE NOSE-FOLLOW: velocity direction eases toward the nose at this
+        // rate (1/s) so the beast flies where it points (Crimson Skies, not a
+        // momentum brick) — this is what makes loops/rolls track true.
+        float noseFollow  = 1.6f;
+        float deploySecs  = 0.45f;   // wing pop-out animation time (the THUNK)
+        float retractMph  = 60.0f;   // grounded below this -> wings away, car again
+        // CRASH ("Crashing hurts, a lot"): a single-step speed loss above this
+        // while winged+fast = a real crash — wings torn, tumble handed to Jolt,
+        // NOS/overdrive locked out for crashLockSecs.
+        float crashDeltaV    = 18.0f; // m/s lost in one 60 Hz step (~1100 m/s²)
+        float crashMinSpeed  = 40.0f; // only counts as a crash above this (m/s)
+        float crashLockSecs  = 6.0f;  // NOS/overdrive/wings lockout after a crash
+    };
+    NitroTuning&       nitroTuning()       { return m_nitroT; }
+    WingTuning&        wingTuning()        { return m_wingT; }
+
+    // Host input, once per frame BEFORE preStep: SHIFT && throttle > 0.1 (the
+    // exact predicate the old host block used). In WING flight this is the
+    // throttle (the overdrive lineage); on the ground it is the spray button.
+    void setNitroInput(bool wantSpray) { m_wantNos = wantSpray; }
+    // Flight attitude intent, once per frame BEFORE preStep (host: A/D = roll,
+    // S/W (+mouse Y) = pitch up/down). Ignored while wings are retracted.
+    void setFlightInput(float pitchUp, float rollRight) {
+        m_flyPitchIn = pitchUp; m_flyRollIn = rollRight;
+    }
+
+    // ---- State reads (HUD / audio / camera / FX) ----------------------------
+    float nosTank()      const { return m_nosTank; }     // 0..1 (the gauge)
+    bool  nosSpraying()  const { return m_nosSpraying; } // stage-0 spray live
+    float overdrive01()  const { return m_od01; }        // stage-2 taper 0..1
+    float overdriveHeldSecs() const { return m_odHeld; }
+    bool  wingsDeployed() const { return m_wings; }
+    float wingDeploy01()  const { return m_wingPose; }   // 0 stowed .. 1 out
+    bool  grounded() const;                              // any wheel in contact
+    float crashLockout()  const { return m_crashLock; }  // >0 = post-crash lockout
+
+    // ---- Edge events (cleared on read — call once per frame) ----------------
+    bool  nitroJustDepleted()  { const bool e = m_evDepleted;  m_evDepleted  = false; return e; }
+    bool  overdriveKickedThisStep() { const bool e = m_evOdKick; m_evOdKick = false; return e; }
+    bool  wingsJustDeployed()  { const bool e = m_evWingsOut;  m_evWingsOut  = false; return e; }
+    bool  wingsJustRetracted() { const bool e = m_evWingsIn;   m_evWingsIn   = false; return e; }
+    bool  justCrashed()        { const bool e = m_evCrashed;   m_evCrashed   = false; return e; }
+
+    // WING SKIN: textured wing GLB (armory Sci-Fi Kit Vol 3 Wing_02 — dark
+    // paneled fin, 1 embedded texture), drawn mirrored L/R, scaled to a ~2.6 m
+    // swept half-span, animated by wingDeploy01(). Falls back to NO wings
+    // rendered if the GLB is missing (rule 3: no untextured stand-ins — the
+    // flight still works, the mesh just isn't faked).
+    bool skinWings(x3::rhi::IRenderDevice& device, std::string_view glbDir,
+                   std::string_view relPath);
+
     // ---- Per-instance paint tint (WORLD CARS variants) ----------------------
     // Replaces the CLEARCOAT drawables' baseColor RGB (the car-paint panels;
     // glass/tires/trim keep their authored look) so the one live rig matches
@@ -289,11 +418,46 @@ private:
     void  updateTurbo(float dt);         // called from preStep
     void  updateEngineModel(float dt);   // called from preStep
     void  shapeSteering(float dt);       // called from preStep (speed map + slew)
+
+    // ---- NITROUS / OVERDRIVE / WINGS internals (see the public block) -------
+    void  updateNitro(float dt);         // called from preStep (stages 0-2 + deploy)
+    void  updateWingFlight(float dt);    // called from preStep while wings are out
+    void  deployWings();
+    void  retractWings(bool torn);       // torn = crash (instant, no fold animation)
+    NitroTuning m_nitroT;
+    WingTuning  m_wingT;
+    bool  m_wantNos     = false;         // host SHIFT read (setNitroInput)
+    float m_nosTank     = 1.0f;          // 0..1
+    bool  m_nosSpraying = false;
+    float m_odHeld      = 0.0f;          // seconds SHIFT held past empty
+    float m_od01        = 0.0f;          // overdrive taper 0..1
+    float m_odKickClock = 0.0f;          // 20 Hz kick metronome
+    bool  m_wings       = false;
+    float m_wingPose    = 0.0f;          // deploy animation 0..1
+    float m_crashLock   = 0.0f;          // seconds of post-crash lockout left
+    float m_flyPitchIn  = 0.0f;          // host flight intent (setFlightInput)
+    float m_flyRollIn   = 0.0f;
+    float m_prevFlySpeed = 0.0f;         // crash detector: last step's |v|
+    bool  m_evDepleted = false, m_evOdKick = false, m_evWingsOut = false,
+          m_evWingsIn = false, m_evCrashed = false;
+    std::unique_ptr<x3::phys::IVehicleController> m_flyCtl;  // live only while winged
+    // Wing render skin (Wing_02.glb, mirrored). Loaded once via skinWings().
+    bool m_wingSkinned = false;
+    std::unique_ptr<x3::asset::IAssetSource>  m_wingSrc;
+    std::unique_ptr<x3::asset::IModelLoader>  m_wingLoader;
+    x3::asset::Model m_wingModel;
+    std::vector<x3::asset::ModelDrawable> m_wingDrawL;   // node drawables (drawn twice, L/R)
+    void drawWings(const x3::rhi::FrameContext& frame, const float chassisM[16]) const;
+
     TurboParams m_turbo;
     bool  m_turboOn         = true;
     float m_boostPsi        = 0.0f;      // manifold pressure (negative = vacuum)
     float m_turboMult       = 1.0f;      // torque multiplier the turbo is applying
-    float m_userTorqueMult  = 1.0f;      // nitrous / console override, multiplied in
+    float m_userTorqueMult  = 1.0f;      // host/console override (vampire etc.), multiplied in
+    float m_nosTorqueMult   = 1.0f;      // NITROUS 200-shot mult, owned by updateNitro —
+                                         // the host no longer folds x1.19 into
+                                         // setTorqueBoost (PAIRED with host_tunnel's
+                                         // setTorqueBoost call — NO_SLOP rule 4)
     float m_engineRpm       = 800.0f;   // audio engine-model RPM (idle + flywheel lag)
 
     bool  m_tintOn = false;              // paint tint (see setPaintTint)
@@ -335,12 +499,54 @@ private:
                       const x3::asset::ModelDrawable& d, const float world[16]) const;
 };
 
+// ---------------------------------------------------------------------------
+// ParachuteBailout — "Crashing hurts, a lot.. and you need a parachute."
+// P while airborne-with-wings ejects Jake under a canopy: a kinematic drift-
+// down (steerable, CONTACT LAW landing on the terrain field) that any host
+// with a flying car can run. The host draws Jake (shared AnimatedCharacter,
+// fall clip) at pos() while descending and hands control back to its on-foot
+// player at landing. SHARED LAYER on purpose (same law as the wings): no
+// per-host descent math.
+// ---------------------------------------------------------------------------
+class ParachuteBailout {
+public:
+    void deploy(const float pos[3], const float vel[3]);
+    // steerX/steerZ in [-1,1] (world-relative drift intent, e.g. from A/D +
+    // W/S while descending). Returns true while still airborne.
+    bool update(float dt, float steerX, float steerZ);
+    bool active() const { return m_active; }
+    bool landed() const { return m_landed; }
+    void pos(float out[3]) const { out[0]=m_pos[0]; out[1]=m_pos[1]; out[2]=m_pos[2]; }
+    void reset() { m_active = m_landed = false; }
+    // Descent profile: the canopy snaps open over ~0.8 s (initial velocity
+    // bleeds toward the drift), then falls at kSinkRate with kDriftRate of
+    // lateral steer authority.
+    static constexpr float kSinkRate  = 6.5f;   // m/s steady descent
+    static constexpr float kDriftRate = 8.0f;   // m/s max lateral drift
+private:
+    bool  m_active = false, m_landed = false;
+    float m_pos[3] = {0,0,0};
+    float m_vel[3] = {0,0,0};
+};
+
 // Headless game-layer DRIVE self-test (--test-vehicle): spawn the car on a flat
 // static slab, ENTER it (player control handed to the car), throttle N fixed
 // ticks, assert FORWARD DISPLACEMENT + all-wheel ground contact, then EXIT and
 // assert player control is restored (on-foot position placed beside the car).
 // Physics-only (no render device); returns true when every check passes.
 bool runDriveEnterExitSelfTest();
+
+// Headless THREE-STAGE SECRET self-test (--test-vehicle): N1 the NORMAL bottle
+// is regression-gated byte-for-feel (15 s bottle / 20 s recharge / ONE kick per
+// engagement); N2 depletion fires exactly once and the tank stays empty while
+// held; N3 overdrive thrust A/B-measured against a replica of the original
+// threshold-oscillation accident (the feel must survive — mean accel within
+// tolerance, honest numbers logged); N4 wings deploy at 5 s, full throttle
+// terminals at 700 mph, hands-off settles at 277 mph holding altitude, steer
+// banks-and-carves, a committed full-stick loop completes; N5 landing below
+// 60 mph retracts the wings and restores the car + CONTACT LAW; N6 the
+// parachute descends, steers, and lands ON the field.
+bool runWingedFlightSelfTest();
 
 // ---------------------------------------------------------------------------
 // BoatDemo — a buoyant hull floating on a flat ocean at `seaLevel`. `isSub` makes
