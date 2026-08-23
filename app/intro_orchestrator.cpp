@@ -1028,6 +1028,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // across the wing re-sweeps per target — no popping.
     constexpr float kAcquireSec = 1.4f;
     uint32_t lockPrevId = 0; bool lockHad = false; float lockAge = 0.0f;
+    // LOCK-ON MASTER SWITCH readout (DELETE). The mode is ALWAYS shown in the
+    // HUD; this timer only drives a short emphasis pulse right after a toggle
+    // so the change is impossible to miss. dt-driven, never per-frame.
+    constexpr float kLockFlashSecs = 2.0f;
+    float lockModeFlashT = 0.0f;
     // AIM SOVEREIGNTY (owner, live 2026-08-16: "The aim always returns to the
     // overlord ship!!! it should NOT.."): policy gate in front of the 6DOF
     // target hold + camera look bias below. The player's aim always wins — the
@@ -1410,6 +1415,24 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 const bool f5 = glfwGetKey(hc.window, GLFW_KEY_F5) == GLFW_PRESS;
                 if (f5 && !f5Prev) pilot.setSpeedMul(pilot.speedMul() == 1.0f ? 2.0f : 1.0f);
                 f5Prev = f5;
+            }
+            // DELETE: LOCK-ON MASTER SWITCH (owner, 2026-08-18: "that can be
+            // toggled on and off with the Delete key"). ON = the targeting
+            // computer helps hold small craft; OFF = pure manual, nothing may
+            // touch the nose or the reticle, ever. Edge-detected; the state is
+            // shown in the HUD (see the LOCK ON / LOCK OFF readout) so the
+            // player is never guessing which mode they are in.
+            {
+                static bool delPrev = false;
+                const bool del = glfwGetKey(hc.window, GLFW_KEY_DELETE) == GLFW_PRESS;
+                if (del && !delPrev) {
+                    const bool nowOn = targeting.toggleLockEnabled();
+                    lockModeFlashT = kLockFlashSecs;
+                    x3::logInfo(std::string("[space-lock] DELETE -> lock-on ") +
+                                (nowOn ? "ON (fighters only; the capital is never locked)"
+                                       : "OFF (pure manual aim)"));
+                }
+                delPrev = del;
             }
             // F9: skip the ENTIRE intro (owner dev shortcut) — latch + bail this
             // beat; the orchestrator returns canon ShotDown at the next boundary.
@@ -1909,6 +1932,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             }
         }
         if (incomingFlashT > 0.0f) incomingFlashT -= dt;
+        if (lockModeFlashT > 0.0f) lockModeFlashT -= dt;   // DELETE toggle pulse
         for (auto& cl : callouts) if (cl.t > 0.0f) cl.t -= dt;
 
         // (The star's heat/shield/death sim now lives in the SunPhase machine at
@@ -1922,13 +1946,39 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // so the lead pip solves the motion and the 6DOF target hold tracks a
         // hull that is actually under way (T19: the hold follows a moving
         // locked target; T20: it stays suspended when aimed away).
-        contacts[nc++] = { 1000u, { capC[0], capC[1], capC[2] },
-                                  { capMotion.vel[0], capMotion.vel[1],
-                                    capMotion.vel[2] }, true }; // capital
+        //
+        // THE CAPITAL IS LOCK-EXEMPT (owner, 2026-08-18: "We can add a lock on
+        // feature for ships OTHER than the overlord, because it has SPECIFIC
+        // points that need to be shot at"). This is the ROOT-CAUSE fix for the
+        // "the whole VIEW ... stays anchored in one spot" / "it pulls you back
+        // to the overlord SO HARD you can't even fly away" reports: the lock
+        // drove BOTH the nose hold (steerNoseToward) and the camera gaze bias,
+        // so every strafe was answered by a counter-rotation that pinned the
+        // capital to the same screen pixel — zero parallax from the player's
+        // own translation, and forward thrust that kept being re-aimed at the
+        // hull. With the capital ineligible the gaze IS the ship's own nose and
+        // the hull slides across the frame. Scripted capture runs are evidence
+        // shots, not play — they keep the old framing so the reference images
+        // do not move.
+        {
+            x3::space::Contact cap{};
+            cap.id = 1000u;
+            cap.pos[0] = capC[0]; cap.pos[1] = capC[1]; cap.pos[2] = capC[2];
+            cap.vel[0] = capMotion.vel[0]; cap.vel[1] = capMotion.vel[1];
+            cap.vel[2] = capMotion.vel[2];
+            cap.hostile  = true;         // still shootable, still on radar + HUD
+            cap.lockable = captureMode;  // ...but never LOCKABLE in live play
+            contacts[nc++] = cap;
+        }
         for (uint32_t i = 0; i < enemies.count() && nc < 16; ++i) {
             const auto& e = enemies.ship(i);
-            contacts[nc++] = { 1u + i, { e.pos[0], e.pos[1], e.pos[2] },
-                                       { e.vel[0], e.vel[1], e.vel[2] }, true };
+            x3::space::Contact f{};
+            f.id = 1u + i;
+            f.pos[0] = e.pos[0]; f.pos[1] = e.pos[1]; f.pos[2] = e.pos[2];
+            f.vel[0] = e.vel[0]; f.vel[1] = e.vel[1]; f.vel[2] = e.vel[2];
+            f.hostile  = true;
+            f.lockable = true;   // fighters: small + fast, an assist reads as a computer
+            contacts[nc++] = f;
         }
         targeting.setContacts(contacts, nc);
         // Cosmetic lock acquisition for the HUD (does not alter the metrics).
@@ -3000,6 +3050,33 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     }
                     // (The old top-left "LOCK" banner moved onto the target
                     //  bracket itself — see the reticle block below.)
+                    //
+                    // LOCK-ON MODE READOUT (owner: "toggled on and off with the
+                    // Delete key" + "Do not make the player guess which mode
+                    // they are in"). ALWAYS drawn, right under the hull line:
+                    // green "LOCK ON" or grey "LOCK OFF", with a short pulse
+                    // after a toggle. The suffix states the standing rule, so
+                    // aiming at the capital by hand never reads as a bug.
+                    {
+                        const bool lockOn = targeting.lockEnabled();
+                        // Toggle pulse: eased 1 -> 0 over kLockFlashSecs. Time-
+                        // driven (dt), so it reads identically at 60 and 165 Hz.
+                        const float pulse = lockModeFlashT > 0.0f
+                            ? (lockModeFlashT / kLockFlashSecs) : 0.0f;
+                        const float baseA = 0.55f + 0.45f * pulse;
+                        const float onCol[4]  = { 0.35f, 1.0f, 0.55f, baseA };
+                        const float offCol[4] = { 0.72f, 0.74f, 0.78f, baseA };
+                        char lockLine[80];
+                        std::snprintf(lockLine, sizeof(lockLine), "%s  [DEL]%s",
+                                      lockOn ? "LOCK ON" : "LOCK OFF",
+                                      lockOn ? "  (capital: manual aim)" : "");
+                        // Sits below the hull line; the ANTIMATTER BOOST banner
+                        // owns y=68 while held, so drop under it.
+                        const float ly = in.sprint ? 94.0f : 50.0f;
+                        hc.device->drawHudTextF(frame, x3::rhi::FontRole::HudMono,
+                                                lockLine, 24.0f, ly, 15.0f,
+                                                lockOn ? onCol : offCol);
+                    }
                 }
                 // ---- FIGHTER RETICLE + TARGET INDICATORS (combat readability;
                 // owner: "Better targeting reticle!!!"). Everything is built

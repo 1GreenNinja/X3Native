@@ -31,13 +31,26 @@ void TargetingSystem::setContacts(const Contact* c, uint32_t n) {
     count_ = n;
     if (n && c) std::memcpy(contacts_, c, sizeof(Contact) * n);
 
-    // Auto-drop the lock if its contact is no longer present.
+    // Auto-drop the lock if its contact is no longer present — or if the host
+    // has since marked it lock-EXEMPT. The capital is fed as a hostile contact
+    // every frame (radar blip, HUD bracket, shootable) and must still never be
+    // a legal lock, so eligibility is re-checked on every feed, not just once.
     if (locked_) {
-        bool stillThere = false;
+        bool stillLegal = false;
         for (uint32_t i = 0; i < count_; ++i)
-            if (contacts_[i].id == lockedId_) { stillThere = true; break; }
-        if (!stillThere) clearLock();
+            if (contacts_[i].id == lockedId_) {
+                stillLegal = contacts_[i].lockable;
+                break;
+            }
+        if (!stillLegal) clearLock();
     }
+}
+
+void TargetingSystem::setLockEnabled(bool on) {
+    lockEnabled_ = on;
+    // OFF means OFF: drop any standing lock so no consumer (nose hold, camera
+    // look-bias, lead pip, HUD bracket) can read one and contribute anything.
+    if (!on) clearLock();
 }
 
 int TargetingSystem::lockedIndex() const {
@@ -54,12 +67,13 @@ void TargetingSystem::clearLock() {
 
 void TargetingSystem::cycleTarget(int dir) {
     if (dir == 0) return;
-    // Build the ordered list of hostile contact indices.
+    if (!lockEnabled_) { clearLock(); return; }   // master switch OFF
+    // Build the ordered list of LOCKABLE hostile contact indices.
     int hostileIdx[kMaxContacts];
     int h = 0;
     int curPos = -1; // position of the current lock within the hostile list
     for (uint32_t i = 0; i < count_; ++i) {
-        if (!contacts_[i].hostile) continue;
+        if (!contacts_[i].hostile || !contacts_[i].lockable) continue;
         if (locked_ && contacts_[i].id == lockedId_) curPos = h;
         hostileIdx[h++] = (int)i;
     }
@@ -78,6 +92,7 @@ void TargetingSystem::cycleTarget(int dir) {
 }
 
 void TargetingSystem::lockNearest(const float fromPos[3], const float fwd[3]) {
+    if (!lockEnabled_) { clearLock(); return; }   // master switch OFF
     float f[3];
     norm3(fwd, f);
 
@@ -85,7 +100,7 @@ void TargetingSystem::lockNearest(const float fromPos[3], const float fwd[3]) {
     float bestCos = -2.0f;   // larger = more on-axis
     float bestDist = 0.0f;
     for (uint32_t i = 0; i < count_; ++i) {
-        if (!contacts_[i].hostile) continue;
+        if (!contacts_[i].hostile || !contacts_[i].lockable) continue;
         float to[3];
         sub3(contacts_[i].pos, fromPos, to);
         float n[3];

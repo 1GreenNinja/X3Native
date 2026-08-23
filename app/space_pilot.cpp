@@ -1570,6 +1570,230 @@ bool runSpaceSelfTest() {
               "T21d a fresh off-nose lock never yanks the nose (no auto-acquire)");
     }
 
+    // =======================================================================
+    // T22-T24 — THE SPACE-FLIGHT-FEEL LANE (owner, 2026-08-18, verbatim: "The
+    // whole VIEW needs to shift left and right WITH the ship... when strafing
+    // or moving UP or Down... Right now.. the Enemy ships zip and zoom like the
+    // player ship Should, but it stays anchored in one spot.")
+    //
+    // Root cause, located: the camera POSITION was always correct (cameraBasis
+    // builds it from m_pos every frame). The camera ORIENTATION was the bug —
+    // the host fed the locked capital into steerNoseToward() + setCameraLookBias()
+    // every frame, so a strafe was answered by a counter-ROTATION that pinned
+    // the capital to the same screen pixel. Zero parallax from the player's own
+    // translation. These three tests nail down both halves.
+    // =======================================================================
+
+    // T22 — CAMERA POSITION TRACKS SHIP TRANSLATION 1:1. In 1P it is exact. In
+    // 3P the elastic chase spring may LAG, but only by chaseLagMax metres — it
+    // is a bounded offset, never an anchor, so over a long slide the camera
+    // covers the same ground the hull does.
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t{};
+        t.maxStrafeAccel = 110.0f; t.maxLinearAccel = 130.0f;
+        t.flightAssist = 0.0f; t.noseFollow = 0.0f;
+        s.spawn(*w, 0, 0, 0, t);
+        // ---- 1P cockpit: camera position is the ship position, full stop.
+        if (s.isThirdPerson()) s.toggleCameraMode();      // -> 1P
+        float p0[3], f0[3], u0[3];
+        s.cameraBasis(p0, f0, u0);
+        const x3::phys::Vec3 sp0 = s.pos();
+        PlayerInput strafe{}; strafe.moveStrafe = 1.0f; strafe.jumpPressed = true;
+        for (int i = 0; i < 180; ++i) s.update(strafe, kDt, *w);   // 3 s slide + climb
+        float p1[3], f1[3], u1[3];
+        s.cameraBasis(p1, f1, u1);
+        const x3::phys::Vec3 sp1 = s.pos();
+        const float shipD[3] = { sp1.x - sp0.x, sp1.y - sp0.y, sp1.z - sp0.z };
+        const float camD[3]  = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+        const float shipLen = length3(shipD);
+        const float resid[3] = { camD[0]-shipD[0], camD[1]-shipD[1], camD[2]-shipD[2] };
+        x3::logInfo("  [info] T22 1P: ship moved " + std::to_string(shipLen) +
+                    " m, camera moved " + std::to_string(length3(camD)) +
+                    " m, residual " + std::to_string(length3(resid)) + " m");
+        check(shipLen > 100.0f && length3(resid) < 0.01f,
+              "T22 1P camera position tracks ship translation 1:1 (exact)");
+
+        // ---- 3P chase: bounded lag only. The camera must cover essentially the
+        //      same displacement, and the residual must stay under chaseLagMax.
+        auto w2 = makeEmptyWorld();
+        SpacePilotController s2;
+        s2.spawn(*w2, 0, 0, 0, t);
+        if (!s2.isThirdPerson()) s2.toggleCameraMode();   // -> 3P chase
+        s2.update(PlayerInput{}, kDt, *w2);          // seed the chase spring
+        float q0[3], g0[3], h0[3];
+        s2.cameraBasis(q0, g0, h0);
+        const x3::phys::Vec3 r0 = s2.pos();
+        for (int i = 0; i < 180; ++i) s2.update(strafe, kDt, *w2);
+        float q1[3], g1[3], h1[3];
+        s2.cameraBasis(q1, g1, h1);
+        const x3::phys::Vec3 r1 = s2.pos();
+        const float shipD2[3] = { r1.x - r0.x, r1.y - r0.y, r1.z - r0.z };
+        const float camD2[3]  = { q1[0] - q0[0], q1[1] - q0[1], q1[2] - q0[2] };
+        const float res2[3] = { camD2[0]-shipD2[0], camD2[1]-shipD2[1], camD2[2]-shipD2[2] };
+        // The bound: the documented elastic lag clamp (chaseLagMax) PLUS the
+        // speed-stretch of the chase arm (up to 0.35 * chaseDistance as the ship
+        // pulls away from the lens), plus a metre of spring slack. A camera that
+        // were actually ANCHORED would show a residual of ~500 m here, so this
+        // is a bounded-offset assertion with three orders of magnitude of margin.
+        const float lagAllowed = t.chaseLagMax + 0.35f * t.chaseDistance + 1.0f;
+        x3::logInfo("  [info] T22b 3P: ship moved " + std::to_string(length3(shipD2)) +
+                    " m, camera moved " + std::to_string(length3(camD2)) +
+                    " m, residual " + std::to_string(length3(res2)) +
+                    " m (allowed " + std::to_string(lagAllowed) + ")");
+        check(length3(shipD2) > 100.0f && length3(res2) < lagAllowed,
+              "T22b 3P chase camera follows translation to within the elastic lag clamp "
+              "(bounded offset, never an anchor)");
+        w->shutdown(); w2->shutdown();
+    }
+
+    // T23 — THE ACCEPTANCE TEST, Tim's own: STRAFE HARD SIDEWAYS AND THE CAPITAL
+    // MUST VISIBLY SLIDE ACROSS THE FRAME. Two runs over identical geometry and
+    // identical thrust; the only difference is whether the target hold + camera
+    // look-bias are fed. The world point is projected through the real HUD
+    // ViewProjector off the real cameraBasis(), so this measures what the player
+    // actually sees, in pixels.
+    {
+        constexpr float kW = 1920.0f, kH = 1080.0f, kFovY = 60.0f;
+        // 250 m ahead — knife-fight range, where Tim reports the worst of it.
+        const float capital[3] = { 250.0f, 0.0f, 0.0f };
+        auto screenXAfterStrafe = [&](bool feedAssist) {
+            auto w = makeEmptyWorld();
+            SpacePilotController s;
+            SpacePilotController::Tuning t{};
+            t.maxStrafeAccel = 110.0f; t.flightAssist = 0.0f; t.noseFollow = 0.0f;
+            t.maxStrafeSpeed = 160.0f;
+            s.spawn(*w, 0, 0, 0, t);
+            AimSovereignty sov;
+            sov.onNewTarget(0.0f);                 // engaged, on-aim (worst case)
+            PlayerInput strafe{}; strafe.moveStrafe = 1.0f;
+            float startX = 0.0f;
+            for (int i = 0; i < 120; ++i) {        // 2 s of held strafe
+                if (feedAssist) {
+                    const x3::phys::Vec3 p = s.pos();
+                    const float dir[3] = { capital[0]-p.x, capital[1]-p.y, capital[2]-p.z };
+                    const float err  = s.steerNoseToward(dir, 0.0f, kDt);   // probe
+                    const float rate = sov.gate(false, err, 1.6f, kDt);
+                    s.setCameraLookBias(dir, sov.suspended() ? 0.0f : 0.15f);
+                    s.steerNoseToward(dir, rate, kDt);
+                }
+                s.update(strafe, kDt, *w);
+                if (i == 0) {
+                    float cp[3], cf[3], cu[3]; s.cameraBasis(cp, cf, cu);
+                    startX = x3::space::hud::ViewProjector(cp, cf, cu, kFovY, kW, kH)
+                                 .project(capital).sx;
+                }
+            }
+            float cp[3], cf[3], cu[3]; s.cameraBasis(cp, cf, cu);
+            const auto pr = x3::space::hud::ViewProjector(cp, cf, cu, kFovY, kW, kH)
+                                .project(capital);
+            w->shutdown();
+            // Off-screen entirely == it slid all the way out of frame, which is
+            // the strongest possible pass; report it as a full-width slide.
+            return std::pair<float, float>(startX, pr.onScreen ? pr.sx : (startX + kW));
+        };
+        const auto freeRun = screenXAfterStrafe(false);   // capital lock-EXEMPT (the fix)
+        const auto heldRun = screenXAfterStrafe(true);    // the old target-locked behaviour
+        const float slideFree = std::fabs(freeRun.second - freeRun.first);
+        const float slideHeld = std::fabs(heldRun.second - heldRun.first);
+        x3::logInfo("  [info] T23 capital screen-x travel over 2 s of hard strafe: "
+                    "lock-exempt " + std::to_string(slideFree) + " px  vs  "
+                    "target-locked " + std::to_string(slideHeld) + " px (frame " +
+                    std::to_string((int)kW) + " px wide)");
+        check(slideFree > 0.25f * kW,
+              "T23 with the capital lock-exempt, a hard strafe SLIDES it across the frame "
+              "(>25% of frame width) — Tim's acceptance test");
+        check(slideHeld < 0.5f * slideFree,
+              "T23b the old target-locked path pins it near the same screen position "
+              "(that WAS the bug: zero parallax from the player's own translation)");
+    }
+
+    // T24 — NO POSITIONAL PULL. The player thrusts directly AWAY from the
+    // capital and keeps going: range grows every second and never turns over.
+    // T24b then runs the SAME flight with the full assist plumbing fed (as if
+    // the capital were lockable) and asserts the ship still gets away — which
+    // is the evidence that "it pulls you back so hard you can't fly away" was
+    // never a positional tether. The sim integrates pure Newtonian motion; the
+    // only thing the assist ever touched was ORIENTATION. Same bug as the
+    // camera, one fix.
+    {
+        auto w = makeEmptyWorld();
+        SpacePilotController s;
+        SpacePilotController::Tuning t{};
+        t.maxLinearAccel = 130.0f; t.flightAssist = 0.0f; t.noseFollow = 0.0f;
+        s.spawn(*w, 0, 0, 0, t);
+        // The capital sits 250 m BEHIND the spawn heading — i.e. the player has
+        // already turned his back on it and is running. Deliberate geometry: no
+        // ambiguity about where the nose ended up, so a range that ever stops
+        // growing can only mean something is dragging him back.
+        const float capital[3] = { -250.0f, 0.0f, 0.0f };
+        auto rangeNow = [&]{
+            const x3::phys::Vec3 p = s.pos();
+            const float d[3] = { p.x-capital[0], p.y-capital[1], p.z-capital[2] };
+            return length3(d);
+        };
+        PlayerInput thrust{}; thrust.moveFwd = 1.0f;
+        float prev = rangeNow();
+        const float atStart = prev;
+        bool monotonic = true;
+        for (int sec = 0; sec < 10; ++sec) {                    // 10 s of running
+            for (int i = 0; i < 60; ++i) s.update(thrust, kDt, *w);
+            const float r = rangeNow();
+            if (r <= prev) monotonic = false;
+            prev = r;
+        }
+        x3::logInfo("  [info] T24 range to capital after 10 s of thrust away: " +
+                    std::to_string(atStart) + " m -> " + std::to_string(prev) + " m");
+        check(monotonic && prev > atStart + 1000.0f,
+              "T24 the player can fly AWAY from the capital and keep going "
+              "(range grows every second — no positional tether)");
+        w->shutdown();
+
+        // T24b — ESCAPE WITH THE ASSIST FULLY ENGAGED. The worst case for a
+        // hypothetical positional tether: the capital is dead ahead, so the
+        // hold stays ENGAGED (rate > 0) and re-aims the nose at it every single
+        // frame, while the player slides sideways out of the fight. If any
+        // positional mechanism existed anywhere in the assist stack this is
+        // where it would bite. It does not: lateral separation grows every
+        // second under a live, non-zero hold. The assist only ever rotated —
+        // which is why A and D are ONE bug, and why fixing the camera fixes the
+        // "can't fly away" report without a second fix.
+        auto w2 = makeEmptyWorld();
+        SpacePilotController s2;
+        SpacePilotController::Tuning t2 = t;
+        t2.maxStrafeAccel = 110.0f; t2.maxStrafeSpeed = 160.0f;
+        s2.spawn(*w2, 0, 0, 0, t2);
+        const float capAhead[3] = { 250.0f, 0.0f, 0.0f };   // dead ahead: hold engages
+        AimSovereignty sov; sov.onNewTarget(0.0f);
+        PlayerInput slide{}; slide.moveStrafe = 1.0f;
+        float prevSep = 0.0f; bool sepGrows = true; bool holdWasLive = false;
+        for (int sec = 0; sec < 8; ++sec) {                 // 8 s of sliding out
+            for (int i = 0; i < 60; ++i) {
+                const x3::phys::Vec3 p = s2.pos();
+                const float dir[3] = { capAhead[0]-p.x, capAhead[1]-p.y, capAhead[2]-p.z };
+                const float err  = s2.steerNoseToward(dir, 0.0f, kDt);
+                const float rate = sov.gate(false, err, 1.6f, kDt);
+                if (rate > 0.0f) holdWasLive = true;        // the assist really is on
+                s2.setCameraLookBias(dir, sov.suspended() ? 0.0f : 0.15f);
+                s2.steerNoseToward(dir, rate, kDt);
+                s2.update(slide, kDt, *w2);
+            }
+            const x3::phys::Vec3 q = s2.pos();
+            const float d[3] = { q.x-capAhead[0], q.y-capAhead[1], q.z-capAhead[2] };
+            const float sep = length3(d);
+            if (sec > 0 && sep <= prevSep) sepGrows = false;
+            prevSep = sep;
+        }
+        x3::logInfo("  [info] T24b escape under a LIVE hold (assist rate > 0: " +
+                    std::string(holdWasLive ? "yes" : "no") +
+                    "): separation after 8 s = " + std::to_string(prevSep) + " m");
+        check(holdWasLive && sepGrows && prevSep > 400.0f,
+              "T24b the player slides clear even with the hold fully ENGAGED "
+              "(the assist rotates, it never translates — A and D are one bug)");
+        w2->shutdown();
+    }
+
     // T15/T16 — the two systems this defect pass added, folded in so the
     // --test-space gate covers them too (they also have their own flags:
     // --test-spacehud / --test-cockpitsway).
