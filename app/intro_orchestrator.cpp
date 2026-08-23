@@ -443,6 +443,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     const float lvChaseLagRate  = x3::apphost::readTuningFloat("space.chaseLagRate",    7.5f);
     const float lvLookBias      = x3::apphost::readTuningFloat("space.lookBias",        0.15f);
     const float lvSwayStrength  = x3::apphost::readTuningFloat("space.cockpitSway",     1.0f);
+    // CAPITAL LOCK ELIGIBILITY — the A/B lever for the 2026-08-18 camera fix.
+    // 0 (shipped): the capital is NEVER lockable in play, so nothing rotates the
+    // nose or the camera gaze onto it and the hull SLIDES across the frame under
+    // a strafe. 1: restores the old always-lockable behaviour (the "before" side
+    // of the evidence pair, and a one-line revert if the feel is ever disputed).
+    const bool lvCapLockable =
+        x3::apphost::readTuningFloat("space.capitalLockable", 0.0f) > 0.5f;
     tun.maxLinearAccel = lvLinearAccel;
     tun.maxStrafeAccel = lvStrafeAccel;
     tun.noseFollow     = lvNoseFollow;
@@ -464,6 +471,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 " chaseLagRate=" + std::to_string(lvChaseLagRate) +
                 " lookBias=" + std::to_string(lvLookBias) +
                 " cockpitSway=" + std::to_string(lvSwayStrength) +
+                " capitalLockable=" + std::to_string(lvCapLockable ? 1 : 0) +
                 "  (override: X3_SPACE_<KEY>=v or space.<key>=v in x3native_settings.cfg)");
 
     pilot.spawn(*phys, 0.0f, 0.0f, 0.0f, tun);
@@ -531,6 +539,17 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // shipped death sequence, framed and shot at 10 Hz through its whole run.
     const bool killCapture = captureMode && [] {
         const char* k = std::getenv("X3_INTRO_CAPTURE_KILL");
+        return k && *k && *k != '0';
+    }();
+    // X3_INTRO_CAPTURE_FLIGHT=1 — the FLIGHT-FEEL evidence run for the
+    // 2026-08-18 camera fix (Tim: "strafe hard sideways and the capital must
+    // visibly SLIDE ACROSS THE FRAME"). Parks the player on a known standoff
+    // with the dreadnought framed, then HOLDS a hard strafe and shoots a dense
+    // frame series through it. Unlike the other two capture scripts this one
+    // runs the LIVE lock policy, so the frames show what the player gets —
+    // set space.capitalLockable=1 to shoot the "before" side of the pair.
+    const bool flightCapture = captureMode && [] {
+        const char* k = std::getenv("X3_INTRO_CAPTURE_FLIGHT");
         return k && *k && *k != '0';
     }();
     const bool live = interactive || captureMode;
@@ -1033,6 +1052,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // so the change is impossible to miss. dt-driven, never per-frame.
     constexpr float kLockFlashSecs = 2.0f;
     float lockModeFlashT = 0.0f;
+    // FLIGHT-FEEL evidence telemetry (X3_INTRO_CAPTURE_FLIGHT). Records what the
+    // aim assist actually did on the frames the capture shoots, so the A/B pair
+    // reports the MECHANISM (hold rate, aim error, suspension state) and not
+    // just the outcome. Zero cost off the capture path.
+    float fcHoldRate = 0.0f, fcErrRad = 0.0f;
+    bool  fcSuspended = false;
     // AIM SOVEREIGNTY (owner, live 2026-08-16: "The aim always returns to the
     // overlord ship!!! it should NOT.."): policy gate in front of the 6DOF
     // target hold + camera look bias below. The player's aim always wins — the
@@ -1498,7 +1523,49 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // just before the s420 shot (hull hit-flash + sparks + confirm),
             // and hold the trigger through 630-900 so the energy pool visibly
             // drains under sustained fire. Env-gated: normal headless untouched.
-            if (captureMode && killCapture) {
+            if (captureMode && flightCapture) {
+                // ---- FLIGHT-FEEL EVIDENCE RUN (X3_INTRO_CAPTURE_FLIGHT=1) ----
+                // Tim's acceptance test, shot as frames: park on a standoff with
+                // the whole dreadnought in view, settle, then HOLD a hard strafe
+                // and let the series show whether the hull traverses the frame.
+                // Runs the LIVE lock policy (see the contact feed), so this is
+                // the player's view, not a staged framing. Pair it with
+                // X3_SPACE_CAPITALLOCKABLE=1 for the "before" half.
+                fire = false;
+                in.moveFwd = 0.0f;
+                if (step == 1) {
+                    // KNIFE-FIGHT RANGE, deliberately. Tim: "The reticle gets
+                    // pulled to the overlord ship when it's ANY CLOSER than my
+                    // screenshot shows" — the symptom is distance-dependent,
+                    // because the hold only pins the hull while it can out-slew
+                    // the bearing rate, and bearing rate goes as (lateral speed
+                    // / range). A long standoff hides the bug: the sovereignty
+                    // gate breaks on its own and both A/B halves look alike.
+                    // 320 m off her bow is where the complaint lives.
+                    pilot.spawn(*phys, kCapX + 320.0f, 60.0f, 0.0f, tun);
+                }
+                if (step >= 2 && step <= 60) {
+                    // Settle: put the nose ON the hull and keep it there until
+                    // the stick moves. It must land INSIDE AimSovereignty's
+                    // ~8.6 deg engage cone, or the assist starts suspended and
+                    // the "before" half of the A/B silently reproduces nothing.
+                    // That is precisely Tim's condition too: he is aiming AT the
+                    // dreadnought (picking hardpoints off it) when he strafes.
+                    // The capital is under way, so this tracks it rather than
+                    // aiming once at a stale point.
+                    const x3::phys::Vec3 pp0 = pilot.pos();
+                    float d[3] = { capC[0] - pp0.x, capC[1] - pp0.y, capC[2] - pp0.z };
+                    const float dl = std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+                    if (dl > 1.0f) {
+                        d[0]/=dl; d[1]/=dl; d[2]/=dl;
+                        pilot.steerNoseToward(d, 12.0f, dt);
+                    }
+                }
+                // THE TEST: from step 61, hard strafe held for the rest of the
+                // run. If the camera is target-locked the hull stays nailed to
+                // the same pixel; if it is not, the hull slides out of frame.
+                in.moveStrafe = (step >= 61) ? 1.0f : 0.0f;
+            } else if (captureMode && killCapture) {
                 // ---- CAPITAL-KILL EVIDENCE RUN (X3_INTRO_CAPTURE_KILL=1) ----
                 // The combat-readability capture above stages fighters and must
                 // NOT chew the capital down; this run does the opposite. It
@@ -1967,7 +2034,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             cap.vel[0] = capMotion.vel[0]; cap.vel[1] = capMotion.vel[1];
             cap.vel[2] = capMotion.vel[2];
             cap.hostile  = true;         // still shootable, still on radar + HUD
-            cap.lockable = captureMode;  // ...but never LOCKABLE in live play
+            // ...but never LOCKABLE in play. The scripted readability/kill
+            // captures keep the old framing so their reference images do not
+            // move; the FLIGHT capture runs the live rule so its frames are
+            // evidence. space.capitalLockable=1 forces the old behaviour
+            // everywhere (the A/B "before").
+            cap.lockable = lvCapLockable || (captureMode && !flightCapture);
             contacts[nc++] = cap;
         }
         for (uint32_t i = 0; i < enemies.count() && nc < 16; ++i) {
@@ -1996,6 +2068,24 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 // for the whole sequence instead of cycling onto a fighter.
                 if (!targeting.hasLock() || targeting.lockedId() != 1000u)
                     targeting.lockNearest(ppos, pfw);
+            } else if (flightCapture) {
+                // FLIGHT-FEEL A/B run. The SHIPPED half takes the live per-frame
+                // cone pick, which can never land on the capital — that is the
+                // whole point, and it must not be handed a staged lock.
+                //
+                // The "before" half (space.capitalLockable=1) must reproduce the
+                // condition Tim actually flies: nose-on to the dreadnought at
+                // close range with the lock ON IT. A bare cone pick will not do
+                // that here — nine escorts are in frame and one of them is
+                // always fractionally more on-axis than a 450 m hull's centre
+                // point, so the lock skitters onto a fighter and the capital
+                // slides in BOTH halves, proving nothing. So when the capital is
+                // eligible, this run pins the lock to it deliberately.
+                targeting.lockNearest(ppos, pfw);
+                if (lvCapLockable && targeting.lockedId() != 1000u) {
+                    for (uint32_t k = 0; k < nc && targeting.lockedId() != 1000u; ++k)
+                        targeting.cycleTarget(+1);
+                }
             } else if (captureMode && step >= 120) {
                 if (step == 120 || !targeting.hasLock() || targeting.lockedId() == 1000u)
                     targeting.cycleTarget(+1);
@@ -2050,15 +2140,21 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         const float errRad = pilot.steerNoseToward(dirT, 0.0f, dt); // probe only
                         if (!lockHad || targeting.lockedId() != lockPrevId)
                             aimSov.onNewTarget(errRad);   // fresh lock never yanks the nose
-                        const float holdRate = captureMode
+                        // (flightCapture is the exception: it is the A/B evidence
+                        //  run for the camera fix, so it takes the LIVE gate and
+                        //  the LIVE bias — a staged framing would prove nothing.)
+                        const bool scriptedFraming = captureMode && !flightCapture;
+                        const float holdRate = scriptedFraming
                             ? ((lvTargetHold > 0.0f && !lookingNow) ? lvTargetHold : 0.0f)
                             : aimSov.gate(lookingNow, errRad, lvTargetHold, dt);
                         // The camera gaze bias obeys the same suspension — an
                         // aimed-away player keeps his OWN view too, instead of
                         // the gaze creeping back toward the capital.
-                        pilot.setCameraLookBias(dirT, captureMode ? 0.55f
+                        pilot.setCameraLookBias(dirT, scriptedFraming ? 0.55f
                             : (aimSov.suspended() ? 0.0f : lvLookBias));
                         pilot.steerNoseToward(dirT, holdRate, dt);
+                        fcHoldRate = holdRate; fcErrRad = errRad;
+                        fcSuspended = aimSov.suspended();
                     }
                     break;
                 }
@@ -2783,11 +2879,46 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // (kill window widened to s790: the DEORBIT ending runs 10.6 s of
             //  hold — fall + entry burn + the impact flash — past the old
             //  s530 breakup bound.)
+            // FLIGHT-FEEL run: s60 is the settled "before the stick moves"
+            // reference; s75..s300 is the strafe itself at 15-step (0.25 s)
+            // spacing, so the contact sheet reads as one continuous traverse.
+            // The run ends at s300 (see the bounded-capture break below).
             const bool evShot = evDir && *evDir &&
-                (killCapture
+                (flightCapture
+                   ? (step == 60 || (step >= 75 && step <= 300 && (step % 15) == 0))
+                   : killCapture
                    ? (step >= 100 && step <= 790 && (step % 6) == 0)
                    : (step == 60 || step == 180 || step == 420 ||
                       step == 660 || step == 900));
+            // FLIGHT-FEEL run: log the capital's PROJECTED SCREEN POSITION next
+            // to every frame it shoots, through the same ViewProjector the HUD
+            // uses off the same cameraBasis() the raster uses. Eyeballing a dark
+            // contact sheet is not evidence; "the hull went from x=560 px to
+            // x=-140 px" is. The [flight-feel] series is the A/B artefact:
+            // run it once as shipped and once with space.capitalLockable=1.
+            if (evShot && flightCapture) {
+                float fcP[3], fcF[3], fcU[3];
+                pilot.cameraBasis(fcP, fcF, fcU);
+                const x3::space::hud::ViewProjector vp(
+                    fcP, fcF, fcU, pilot.fov(), (float)hc.W, (float)hc.H);
+                const auto pj = vp.project(capC);
+                const x3::phys::Vec3 fp = pilot.pos();
+                const float fd[3] = { capC[0]-fp.x, capC[1]-fp.y, capC[2]-fp.z };
+                x3::logInfo("[flight-feel] " + beat.id + " s" + std::to_string(step) +
+                            " lock=" + (targeting.hasLock()
+                                ? (targeting.lockedId() == 1000u ? "CAPITAL"
+                                   : "fighter" + std::to_string(targeting.lockedId()))
+                                : std::string("none")) +
+                            " capital screen x=" + std::to_string(pj.sx) +
+                            " y=" + std::to_string(pj.sy) +
+                            (pj.onScreen ? " (on-screen)" : " (OFF-SCREEN)") +
+                            "  holdRate=" + std::to_string(fcHoldRate) +
+                            " errDeg=" + std::to_string(fcErrRad * 57.2957795f) +
+                            (fcSuspended ? " SUSPENDED" : " engaged") +
+                            "  range=" + std::to_string(std::sqrt(fd[0]*fd[0] +
+                                fd[1]*fd[1] + fd[2]*fd[2])) +
+                            " m  frame=" + std::to_string((int)hc.W) + "px");
+            }
             if (evShot)
                 hc.device->armCapture((std::string(evDir) + "/live_" + beat.id +
                                        "_s" + std::to_string(step) + ".png").c_str());
@@ -3066,10 +3197,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         const float baseA = 0.55f + 0.45f * pulse;
                         const float onCol[4]  = { 0.35f, 1.0f, 0.55f, baseA };
                         const float offCol[4] = { 0.72f, 0.74f, 0.78f, baseA };
-                        char lockLine[80];
-                        std::snprintf(lockLine, sizeof(lockLine), "%s  [DEL]%s",
-                                      lockOn ? "LOCK ON" : "LOCK OFF",
-                                      lockOn ? "  (capital: manual aim)" : "");
+                        // Keep this SHORT. The dreadnought's own shield/hull
+                        // banner occupies the same band from ~x=300 on, and a
+                        // longer string ran straight underneath it (read from
+                        // the s240 capture). The "why is the capital not
+                        // lockable" note lives on the capital's own label
+                        // instead, where it is in context and cannot collide.
+                        char lockLine[40];
+                        std::snprintf(lockLine, sizeof(lockLine), "%s  [DEL]",
+                                      lockOn ? "LOCK ON" : "LOCK OFF");
                         // Sits below the hull line; the ANTIMATTER BOOST banner
                         // owns y=68 while held, so drop under it.
                         const float ly = in.sprint ? 94.0f : 50.0f;
@@ -3301,8 +3437,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                             bracket(pr.sx, pr.sy, halfPx, isTgt ? 2.0f : 1.0f, col);
                             // CAP / CAP ACQ rides just OUTSIDE the bracket's top-left
                             // corner (owner: "CAP ... draws over the fighter").
+                            // "CAP · MANUAL" while the targeting computer is ON:
+                            // the capital is deliberately never locked (its
+                            // gameplay is picking hardpoints off the hull), so
+                            // say so ON THE SHIP rather than leaving the player
+                            // to wonder why it never brackets red. Off when the
+                            // whole system is off — everything is manual then.
                             hc.device->drawHudTextF(frame, x3::rhi::FontRole::Enemy,
-                                isTgt && !lockedNow ? "CAP ACQ" : "CAP",
+                                isTgt && !lockedNow ? "CAP ACQ"
+                                    : (targeting.lockEnabled() ? "CAP - MANUAL" : "CAP"),
                                 pr.sx - halfPx, pr.sy - halfPx - 34.0f, 12.0f, col);
                             capKeepOut = x3::space::hud::Rect{
                                 pr.sx - halfPx - 4.0f, pr.sy - halfPx - 36.0f,
@@ -3875,7 +4018,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                          "_s" + std::to_string(step) + ".png").c_str());
             // Evidence runs are BOUNDED (nobody is at the controls to cripple the
             // capital or press Esc): end the beat just past the last capture.
-            if (evDir && *evDir && step >= 960) break;
+            if (evDir && *evDir && step >= (flightCapture ? 302 : 960)) break;
 
             // The old "hold this step until wall clock catches up" gate is GONE:
             // the sim now consumes the REAL frame interval (see TIME BASE), so
