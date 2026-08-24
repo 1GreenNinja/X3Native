@@ -620,7 +620,13 @@ void DriveDemo::preStep(float dt) {
         updateWingFlight(dt);
         if (m_flyCtl) m_flyCtl->preStep(dt);
         updateEngineModel(dt);
-        if (m_ctl) m_ctl->preStep(dt);
+        // THE TAKEOFF ROLL. While thrust is COMMANDED and the wheels are still
+        // down, the wheeled constraint must NOT step: its suspension holds the
+        // hull flat on the deck, so the pitch torque cannot raise the nose and
+        // the beast can never leave the ground. Every other winged frame still
+        // steps it, which is what keeps the suspension warm for touchdown and
+        // lets the landing rollout behave like a car.
+        if (m_ctl && !(m_wantNos && grounded())) m_ctl->preStep(dt);
         return;
     }
     shapeSteering(dt); updateTurbo(dt); updateEngineModel(dt); if (m_ctl) m_ctl->preStep(dt);
@@ -2237,6 +2243,21 @@ bool runWingedFlightSelfTest() {
             stepCar(*ph, car, in);
         }
         const float vFull = car.forwardSpeed();
+        {   // WHERE IS THE THRUST GOING? total |v| vs forward-axis v, plus
+            // attitude and altitude — a nose-up hold turns thrust into climb.
+            float lv[3]; ph->getBodyLinearVelocity(car.chassis(), lv);
+            const float vmag = std::sqrt(lv[0]*lv[0]+lv[1]*lv[1]+lv[2]*lv[2]);
+            float qq[4]; ph->getBodyRotation(car.chassis(), qq);
+            float ff[3], uu[3]; vehcam::hullAxes(qq, ff, uu);
+            float rr, pp; vehcam::hullRollPitch(ff, uu, rr, pp);
+            float pz[3]; car.chassisPos(pz);
+            x3::logInfo("[wings-test] N4 THRUST DIAG: |v|=" +
+                        std::to_string(vmag * 2.23694f) + " mph fwdAxis=" +
+                        std::to_string(vFull * 2.23694f) + " mph pitch=" +
+                        std::to_string(pp * 57.2958f) + " deg roll=" +
+                        std::to_string(rr * 57.2958f) + " deg y=" +
+                        std::to_string(pz[1]) + " vy=" + std::to_string(lv[1]));
+        }
         x3::logInfo("[wings-test] N4 FULL THRUST terminal: " +
                     std::to_string(vFull * 2.23694f) + " mph (owner spec 700)");
         check(std::fabs(vFull * 2.23694f - 700.0f) < 70.0f,
