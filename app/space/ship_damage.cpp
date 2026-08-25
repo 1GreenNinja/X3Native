@@ -513,9 +513,12 @@ bool CapitalBattery::damageGun(CapitalBatteryState& s, int i, int amount) {
 // CAPITAL AIM PICK — the ONE ray test shared by the fire path and the hover
 // highlight (item F). See ship_damage.h for why they must be the same test.
 // ===========================================================================
-float CapitalAim::growFactor(float dist) {
-    const float f = dist / kGrowStart;
-    return f < 1.0f ? 1.0f : (f > kGrowMax ? kGrowMax : f);
+float CapitalAim::grownRadius(float radius, float dist) {
+    if (radius <= 0.0f) return 0.0f;
+    const float minR = dist * kMinAngularR;      // the "still a few px" floor
+    const float cap  = radius * kGrowMax;        // never balloon a big part
+    float r = radius < minR ? minR : radius;
+    return r > cap ? cap : r;
 }
 
 CapitalAimResult CapitalAim::pick(const CapitalAimTarget* targets, uint32_t n,
@@ -581,7 +584,7 @@ CapitalAimResult CapitalAim::pick(const CapitalAimTarget* targets, uint32_t n,
         const float dist = std::sqrt(oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2]);
         // Aim-at-what-you-see: small parts grow their acceptance with range,
         // so a blister that is 6 px wide on screen is still hoverable.
-        const float tEnter = entry(t.pos, t.radius * growFactor(dist));
+        const float tEnter = entry(t.pos, grownRadius(t.radius, dist));
         if (tEnter < 0.0f || tEnter >= bestT) continue;
         bestT = tEnter;
         best.kind = t.kind; best.index = t.index; best.t = tEnter;

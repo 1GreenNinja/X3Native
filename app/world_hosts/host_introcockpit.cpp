@@ -376,15 +376,15 @@ void drawIntroCapitalGun(x3::rhi::IRenderDevice& device,
         const float tintA[4] = { 1.0f + 0.55f * hl, 1.0f + 0.60f * hl,
                                  1.0f + 0.75f * hl, 1.0f };
         const float tintD[4] = { 0.28f, 0.26f, 0.25f, 1.0f };   // scorched
-        const float emisA[4] = { 0.10f + 0.75f * hl, 0.11f + 0.90f * hl,
-                                 0.13f + 1.15f * hl, 1.0f };
+        const float emisA[4] = { 0.10f + 0.34f * hl, 0.11f + 0.44f * hl,
+                                 0.13f + 0.60f * hl, 1.0f };
         const float emisD[4] = { 0.05f, 0.02f, 0.01f, 1.0f };   // faint hot metal
         device.drawMeshPBR(frame, baseMesh, baseColor,
                            x3::rhi::TextureHandle{}, mr,
                            alive ? tintA : tintD, alive ? emisA : emisD, T,
                            false, false, x3::rhi::TextureHandle{},
                            x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
-                           /*selfLight=*/alive ? (0.16f + 0.45f * hl) : 0.06f);
+                           /*selfLight=*/alive ? (0.16f + 0.26f * hl) : 0.06f);
     }
     if (!alive) return;   // the gun itself is GONE — stub only
     // BARREL: prim cylinder is +Y-axis; build basis mapping +Y -> aim f.
@@ -401,15 +401,15 @@ void drawIntroCapitalGun(x3::rhi::IRenderDevice& device,
         // The spool telegraph: the barrel heats amber as the shot charges.
         // The hover rim rides COOL-WHITE on top, so "charging" (amber) and
         // "you are aiming at me" (white-blue) never read as the same signal.
-        const float emis[4] = { 0.10f + 1.20f * spool + 0.75f * hl,
-                                0.10f + 0.55f * spool + 0.90f * hl,
-                                0.12f + 0.18f * spool + 1.15f * hl, 1.0f };
+        const float emis[4] = { 0.10f + 1.20f * spool + 0.34f * hl,
+                                0.10f + 0.55f * spool + 0.44f * hl,
+                                0.12f + 0.18f * spool + 0.60f * hl, 1.0f };
         device.drawMeshPBR(frame, barrelMesh, baseColor,
                            x3::rhi::TextureHandle{}, mr,
                            tint, emis, T,
                            false, false, x3::rhi::TextureHandle{},
                            x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
-                           /*selfLight=*/0.16f + 0.5f * spool + 0.45f * hl);
+                           /*selfLight=*/0.16f + 0.5f * spool + 0.26f * hl);
     }
 }
 

@@ -396,11 +396,18 @@ struct CapitalAimResult {
 
 class CapitalAim {
 public:
-    // Range compensation for the acceptance radius (mirrors the fighters'
-    // visCompFactor law so both halves of the game aim the same way).
-    static constexpr float kGrowStart = 900.0f;   // no growth inside this
-    static constexpr float kGrowMax   = 2.5f;     // hard ceiling on the growth
-    static float growFactor(float dist);
+    // ---- RANGE COMPENSATION on the acceptance radius --------------------
+    // "Aim at what you SEE": a part that is only a few pixels wide on screen
+    // must still be hoverable. The rule is stated in ANGULAR terms, not as a
+    // flat distance multiplier, because a capital's parts and a fighter's
+    // parts differ by an order of magnitude in size: a blanket 2.5x at long
+    // range turns a 270 m bay mouth into a 670 m sphere that swallows every
+    // other hardpoint on the ship, while the same 2.5x is exactly right for a
+    // 22 m gun on a corvette. So: grow a part only until it subtends
+    // kMinAngularR, and never past kGrowMax times its authored size.
+    static constexpr float kMinAngularR = 0.012f;  // ~0.7 deg (~15 px at 720p)
+    static constexpr float kGrowMax     = 2.5f;    // hard ceiling on the growth
+    static float grownRadius(float radius, float dist);
 
     // Nearest-entry pick along unit `dir` from `origin`. Returns kind None when
     // the ray misses everything (an honest whiff). `n` may be 0.

@@ -745,10 +745,46 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // hull no longer causes aim problems.
     constexpr float kCapScaleUp = 4.0f;     // THE item-G multiplier, applied once
     constexpr float kCapX       = kIntroArenaX;  // capital standoff on +X (was 2600)
-    constexpr float kCapDrawScl = 140.0f * kCapScaleUp;   // ~1.8 km dreadnought
-    constexpr float kCapHullR   = 240.0f * kCapScaleUp;   // hull hit/occlusion sphere
-    constexpr float kCapBubbleR = 300.0f * kCapScaleUp;   // force-field bounce (> hull)
-    float capC[3] = { kCapX, 0.0f, 0.0f };
+    constexpr float kCapDrawScl = 140.0f * kCapScaleUp;   // ~4.5 km dreadnought
+    // ---- THE HULL, IN THE HULL'S OWN COORDINATES --------------------------
+    // Everything bolted to this ship — hardpoints, gun mounts, bay mouths,
+    // running lights, the drive, the reactor wound — is authored below as a
+    // FRACTION of the real mesh's half-extents rather than as raw metres.
+    // That is not tidiness, it is a bug fix: the shipped offsets were written
+    // against an imagined "450 m dreadnought" and, at ANY scale, put every
+    // marker in empty space beside the ship. The evidence frames showed it
+    // plainly — bay mouths and drive glows floating BELOW the keel, subsystem
+    // markers hanging off the flank. Item F cannot highlight a hardpoint that
+    // is not on the hull, and item G cannot light a bay mouth that is not on
+    // the hull, so the anatomy had to be re-anchored to the actual mesh.
+    //
+    // MEASURED from assets/rigged_glb/SpaceShip4.glb (glTF accessor bounds):
+    //   model X in [-4.013, +4.013], Y in [0, 1.800], Z in [-4.331, +4.331].
+    // Note Y starts at ZERO: the model's ORIGIN IS ITS KEEL, not its centre —
+    // which is exactly why every negative-Y offset in the old layout hung in
+    // the void underneath her.
+    //
+    // AXIS MAP. drawIntroShip sends model +Z along the heading, +Y to world up,
+    // +X to up x fwd; at the base pose the heading is world -X. So in the
+    // capRot frame the offsets below live in (world at base pose):
+    //   x  = STERN-positive along the keel line  (bow is -x)   <- model -Z
+    //   y  = UP from the KEEL, 0 .. kHullTopY                   <- model +Y
+    //   z  = STARBOARD-positive across the beam                 <- model +X
+    constexpr float kHullHalfX = 4.331f * kCapDrawScl;   // bow(-) .. stern(+)
+    constexpr float kHullTopY  = 1.800f * kCapDrawScl;   // keel(0) .. dorsal
+    constexpr float kHullHalfZ = 4.013f * kCapDrawScl;   // port(-) .. starboard(+)
+    // AIM / OCCLUSION / BRACKET sphere. Sized to actually BOUND the visible
+    // hull (the old 240 x scale figure bounded roughly a fifth of it), and
+    // centred at mid-height because the model origin is the keel.
+    constexpr float kCapHullR   = 0.99f * kHullHalfX;    // hull hit/occlusion sphere
+    constexpr float kCapHullCY  = 0.45f * kHullTopY;     // sphere centre above the keel
+    // FORCE FIELD. Deliberately NOT the aim sphere: this is the keep-out that
+    // stops the player flying through her core, and a 2.4 km sphere around a
+    // ship that is only ~1 km TALL would wall him off two kilometres above the
+    // hull. Left at the shipped radius x4 — a core keep-out, not a bounding
+    // volume. (So bubble < aim sphere here, unlike before; that is intended.)
+    constexpr float kCapBubbleR = 300.0f * kCapScaleUp;  // force-field bounce
+    float capC[3] = { kCapX, 0.0f, 0.0f };                // == the KEEL point
     // THE CAPITAL MOVES (owner, live 2026-08-17: "The overlords ship should
     // move around"). CapitalMotion (ship_damage.h, --test-ship-damage T19-T21)
     // keeps her on a slow, wide, mass-appropriate arc — phase-driven (patrol /
@@ -765,6 +801,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         out[1] = capC[1] + off[1];
         out[2] = capC[2] + off[0] * capHeadSn + off[2] * capHeadCs;
     };
+    // THE VISUAL CENTRE OF THE HULL. capC is the model ORIGIN, which on this
+    // mesh is the KEEL — so a bracket, an occlusion sphere or a death blast
+    // anchored at capC sits half a kilometre below the ship it belongs to.
+    // Everything that means "the middle of the vessel" uses this instead.
+    auto capHullCentre = [&](float out[3]) {
+        out[0] = capC[0]; out[1] = capC[1] + kCapHullCY; out[2] = capC[2];
+    };
     // PHYSICAL HARDPOINTS (the genre's whole capital-kill loop: pick one, FLY
     // there, strafe it). One per x3::space::Subsystem, placed on the hull:
     // engines aft (the FAR side — you must fly around), turret battery ventral,
@@ -773,18 +816,20 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // onto the moving, turning hull.
     struct CapHardpoint { x3::space::Subsystem sub; const char* name;
                           float off[3]; float radius; };
-    // ITEM G: every offset + radius below is the shipped value x kCapScaleUp,
-    // written as the multiply so the authored anatomy stays readable and a
-    // future rescale is one constant.
+    // Fractions of the measured half-extents (see the axis map above), so the
+    // anatomy lands ON the hull at any draw scale: engines aft on the drive
+    // deck (the FAR side from the approach — you must fly around), the turret
+    // battery low on the starboard ventral quarter, the shield generator high
+    // on the dorsal spine, the sensor mast forward on the bow.
     const CapHardpoint kHard[kMaxSubsystems] = {
         { x3::space::Subsystem::Engines,   "ENGINES",
-          { +190.0f*kCapScaleUp,   6.0f*kCapScaleUp,    0.0f            }, 42.0f*kCapScaleUp },
+          { +0.62f*kHullHalfX, 0.42f*kHullTopY,  0.00f            }, 0.15f*kHullHalfX },
         { x3::space::Subsystem::Turrets,   "TURRETS",
-          {  -60.0f*kCapScaleUp, -28.0f*kCapScaleUp, +150.0f*kCapScaleUp }, 38.0f*kCapScaleUp },
+          { -0.05f*kHullHalfX, 0.16f*kHullTopY, +0.34f*kHullHalfZ }, 0.13f*kHullHalfX },
         { x3::space::Subsystem::ShieldGen, "SHIELD GEN",
-          {  -20.0f*kCapScaleUp, +95.0f*kCapScaleUp,  -40.0f*kCapScaleUp }, 38.0f*kCapScaleUp },
+          { -0.10f*kHullHalfX, 0.86f*kHullTopY, -0.10f*kHullHalfZ }, 0.13f*kHullHalfX },
         { x3::space::Subsystem::Sensors,   "SENSORS",
-          { -210.0f*kCapScaleUp, +40.0f*kCapScaleUp,  -30.0f*kCapScaleUp }, 36.0f*kCapScaleUp },
+          { -0.66f*kHullHalfX, 0.55f*kHullTopY, -0.08f*kHullHalfZ }, 0.12f*kHullHalfX },
     };
     auto hardWorld = [&](int i, float out[3]) { capRot(kHard[i].off, out); };
     // ROTATE-ONLY companion to capRot: turns a hull-LOCAL direction (a bay's
@@ -803,18 +848,22 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // is unchanged: four sheared guns == "BATTERY SILENCED".
     x3::space::CapitalBatteryState capBattery{};
     x3::space::CapitalBattery::init(capBattery);
-    // Mount positions ride the VENTRAL FUSELAGE SPINE (verified against the
-    // SpaceShip4 silhouette in the kill-capture frames — the old Turrets
-    // blister offset at Z+150 floats off the visible hull, which was fine for
-    // an invisible sphere and is NOT fine for visible geometry).
+    // Mount positions walk the VENTRAL BATTERY LINE, staggered across the beam
+    // so all four are never in one silhouette. Low on the hull (y ~ 0.1 of the
+    // dorsal height) but ABOVE the keel — the old layout used negative y, which
+    // on this mesh is underneath the ship entirely.
     const float kGunOff[x3::space::kCapitalGunCount][3] = {
-        { -148.0f*kCapScaleUp, -34.0f*kCapScaleUp, +26.0f*kCapScaleUp },  // bow-starboard
-        {  -72.0f*kCapScaleUp, -44.0f*kCapScaleUp, -30.0f*kCapScaleUp },  // mid-port
-        {   +6.0f*kCapScaleUp, -50.0f*kCapScaleUp, +30.0f*kCapScaleUp },  // amidships-stbd
-        {  +82.0f*kCapScaleUp, -40.0f*kCapScaleUp, -26.0f*kCapScaleUp },  // aft-port
+        { -0.42f*kHullHalfX, 0.11f*kHullTopY, +0.10f*kHullHalfZ },  // bow-starboard
+        { -0.18f*kHullHalfX, 0.08f*kHullTopY, -0.13f*kHullHalfZ },  // mid-port
+        { +0.06f*kHullHalfX, 0.07f*kHullTopY, +0.13f*kHullHalfZ },  // amidships-stbd
+        { +0.30f*kHullHalfX, 0.10f*kHullTopY, -0.11f*kHullHalfZ },  // aft-port
     };
-    constexpr float kGunHitR    = 22.0f * kCapScaleUp;  // per-gun aim sphere (grows w/ range)
-    constexpr float kGunDrawScl = kCapScaleUp;          // meshes authored at 1x capital scale
+    constexpr float kGunHitR    = 0.075f * kHullHalfX;  // per-gun aim sphere (grows w/ range)
+    // The prim mount is a 22 x 14 x 22 m block with a 30 m barrel, authored for
+    // a corvette. On a 4.5 km hull at 4.2 km that is a 12 px speck: item F
+    // needs it VISIBLY aimable, so the mount is sized to the ship it is bolted
+    // to (~180 m block, ~240 m barrel — about 24 px at engagement range).
+    constexpr float kGunDrawScl = 8.0f;
     auto gunWorld = [&](int i, float out[3]) { capRot(kGunOff[i], out); };
     bool subWasDown[kMaxSubsystems] = { false, false, false, false };
     // ---- ITEM G: LAUNCH BAYS (owner: "More little ships can come out of its
@@ -831,12 +880,12 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     x3::space::CapitalBays::init(capBays);
     struct CapBay { const char* name; float off[3]; float dir[3]; float radius; };
     const CapBay kBay[x3::space::kCapitalBayCount] = {
-        { "BAY A", { -30.0f*kCapScaleUp, -18.0f*kCapScaleUp, +118.0f*kCapScaleUp },
-                   {  0.10f, -0.22f,  0.97f }, 30.0f*kCapScaleUp },   // stbd flank deck
-        { "BAY B", { -30.0f*kCapScaleUp, -18.0f*kCapScaleUp, -118.0f*kCapScaleUp },
-                   {  0.10f, -0.22f, -0.97f }, 30.0f*kCapScaleUp },   // port flank deck
-        { "BAY C", { +122.0f*kCapScaleUp, -46.0f*kCapScaleUp,    0.0f            },
-                   {  0.35f, -0.94f,  0.00f }, 28.0f*kCapScaleUp },   // ventral aft deck
+        { "BAY A", { -0.06f*kHullHalfX, 0.20f*kHullTopY, +0.44f*kHullHalfZ },
+                   {  0.10f, -0.20f,  0.97f }, 0.11f*kHullHalfX },   // stbd flank deck
+        { "BAY B", { -0.06f*kHullHalfX, 0.20f*kHullTopY, -0.44f*kHullHalfZ },
+                   {  0.10f, -0.20f, -0.97f }, 0.11f*kHullHalfX },   // port flank deck
+        { "BAY C", { +0.34f*kHullHalfX, 0.09f*kHullTopY,  0.00f            },
+                   {  0.30f, -0.95f,  0.00f }, 0.10f*kHullHalfX },   // ventral aft deck
     };
     auto bayWorld = [&](int i, float out[3]) { capRot(kBay[i].off, out); };
     bool bayWasDown[x3::space::kCapitalBayCount] = { false, false, false };
@@ -852,7 +901,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // hardpoint-first (~54 s) decisively faster than hull-only (~107 s) — see
     // the capital-pools comment above.
     constexpr int   kReactorMult  = 6;
-    const float kReactorOff[3] = { -40.0f*kCapScaleUp, -70.0f*kCapScaleUp, 0.0f };  // ventral wound
+    // The wound is a hole torn in her VENTRAL midships — low on the hull, not
+    // below it (the old -70 y put it in open space under the keel).
+    const float kReactorOff[3] = { -0.10f*kHullHalfX, 0.05f*kHullTopY, 0.0f };
+    constexpr float kReactorR  = 0.13f * kHullHalfX;   // wound aim/marker radius
     // CAPITAL BATTERY FIRE (the gauntlet): each of the four PHYSICAL mounts
     // spools its own 0.6 s telegraph (warning chirp + HUD flash), THEN fires.
     // Shooting a mount off silences THAT mount; four kills silence the battery
@@ -1226,7 +1278,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             out[n].radius = r; out[n].kind = k; out[n].index = idx;
             out[n].alive = alive; ++n;
         };
-        push(capC, kCapHullR, x3::space::CapitalAimKind::Hull, -1, true);
+        float hullC[3]; capHullCentre(hullC);
+        push(hullC, kCapHullR, x3::space::CapitalAimKind::Hull, -1, true);
         const int gunsLeft = x3::space::CapitalBattery::aliveGuns(capBattery);
         for (int hi = 0; hi < kMaxSubsystems; ++hi) {
             if (hi == 1 && gunsLeft > 0) continue;   // physical mounts own Turrets
@@ -1247,7 +1300,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (crippled && !capitalKilled &&
             std::fmod(reactorT, kReactorCycle) < kReactorOpen) {
             float rw[3]; capRot(kReactorOff, rw);
-            push(rw, 46.0f * kCapScaleUp, x3::space::CapitalAimKind::Reactor, 0, true);
+            push(rw, kReactorR, x3::space::CapitalAimKind::Reactor, 0, true);
         }
         return n;
     };
@@ -1443,7 +1496,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // the hover weights are only ever raised for live parts.
     auto drawCapitalPresence = [&](const x3::rhi::FrameContext& frame) {
         if (!hc.device || !sunMesh.valid() || !cockpit) return;
-        const float S = kCapScaleUp;
+        // Marker sizes are fractions of the hull, like the anatomy above, so a
+        // running light is a running light at any draw scale instead of a
+        // sub-pixel dot on a 4.5 km ship.
+        const float HX = kHullHalfX, TY = kHullTopY, HZ = kHullHalfZ;
         // --- one emissive marker light (unit sphere, radius r, colour c) ---
         auto light = [&](const float off[3], float r, const float c[3], float k) {
             float w[3]; capRot(off, w);
@@ -1476,27 +1532,29 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         const float kAmber[3] = { 1.00f, 0.60f, 0.14f };
         struct RunLight { float off[3]; const float* col; };
         const RunLight kRun[] = {
-            { { -230.0f*S,   5.0f*S,    0.0f    }, kWhite },  // bow tip
-            { { -120.0f*S,  70.0f*S,    0.0f    }, kWhite },  // dorsal spine fwd
-            { {  +20.0f*S,  80.0f*S,    0.0f    }, kWhite },  // dorsal spine aft
-            { { +160.0f*S,  50.0f*S,    0.0f    }, kWhite },  // aft dorsal
-            { {  -20.0f*S, -10.0f*S, +170.0f*S  }, kGreen },  // starboard wingtip
-            { {  -20.0f*S, -10.0f*S, -170.0f*S  }, kRed   },  // port wingtip
-            { { -180.0f*S, -40.0f*S,    0.0f    }, kAmber },  // ventral bow
-            { { +120.0f*S, -55.0f*S,    0.0f    }, kAmber },  // ventral aft
+            { { -0.88f*HX, 0.34f*TY,  0.00f    }, kWhite },  // bow tip
+            { { -0.30f*HX, 0.92f*TY,  0.00f    }, kWhite },  // dorsal spine fwd
+            { { +0.18f*HX, 0.94f*TY,  0.00f    }, kWhite },  // dorsal spine aft
+            { { +0.52f*HX, 0.72f*TY,  0.00f    }, kWhite },  // aft dorsal
+            { { -0.06f*HX, 0.30f*TY, +0.90f*HZ }, kGreen },  // starboard wingtip
+            { { -0.06f*HX, 0.30f*TY, -0.90f*HZ }, kRed   },  // port wingtip
+            { { -0.52f*HX, 0.12f*TY,  0.00f    }, kAmber },  // ventral bow
+            { { +0.38f*HX, 0.10f*TY,  0.00f    }, kAmber },  // ventral aft
         };
-        for (const auto& rl : kRun) light(rl.off, 5.0f*S, rl.col, 2.6f);
+        // Crisp, not bokeh: an untextured emissive sphere blooms hard, so these
+        // are small and only moderately hot — points of light on a dark hull.
+        for (const auto& rl : kRun) light(rl.off, 0.019f*HX, rl.col, 1.5f);
         // ---- WARNING STROBES: slow, out of phase, unmissable against a dark
         //      hull. A ship this size that BLINKS at you is a threat display.
         const float strobe = 0.5f + 0.5f * std::sin(beatT * 2.1f);
         const float strobe2 = 0.5f + 0.5f * std::sin(beatT * 2.1f + 2.4f);
         {
-            const float o1[3] = { -100.0f*S, 95.0f*S, +60.0f*S };
-            const float o2[3] = { -100.0f*S, 95.0f*S, -60.0f*S };
-            const float o3[3] = { +185.0f*S, 22.0f*S,    0.0f   };
-            light(o1, 6.0f*S, kRed,   0.35f + 4.2f * strobe);
-            light(o2, 6.0f*S, kRed,   0.35f + 4.2f * strobe2);
-            light(o3, 6.0f*S, kAmber, 0.35f + 3.0f * strobe2);
+            const float o1[3] = { -0.24f*HX, 0.96f*TY, +0.24f*HZ };
+            const float o2[3] = { -0.24f*HX, 0.96f*TY, -0.24f*HZ };
+            const float o3[3] = { +0.58f*HX, 0.26f*TY,  0.00f    };
+            light(o1, 0.022f*HX, kRed,   0.25f + 2.6f * strobe);
+            light(o2, 0.022f*HX, kRed,   0.25f + 2.6f * strobe2);
+            light(o3, 0.022f*HX, kAmber, 0.25f + 1.9f * strobe2);
         }
         // ---- THE DRIVE: a bank of engine bells, hot blue-white — and DARK
         //      the instant the engines hardpoint dies (the same consequence
@@ -1506,13 +1564,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 capital, x3::space::Subsystem::Engines);
             const float driveCol[3] = { 0.42f, 0.72f, 1.00f };
             const float driveOff[3][3] = {
-                { +205.0f*S, 6.0f*S, +42.0f*S },
-                { +205.0f*S, 6.0f*S,    0.0f   },
-                { +205.0f*S, 6.0f*S, -42.0f*S },
+                { +0.78f*HX, 0.36f*TY, +0.15f*HZ },
+                { +0.80f*HX, 0.36f*TY,  0.00f    },
+                { +0.78f*HX, 0.36f*TY, -0.15f*HZ },
             };
             for (const auto& d : driveOff) {
-                light(d, 15.0f*S, driveCol, drive ? 3.4f : 0.08f);
-                if (drive) { float w[3]; capRot(d, w); halo(w, 26.0f*S, driveCol, 0.55f); }
+                light(d, 0.045f*HX, driveCol, drive ? 2.4f : 0.08f);
+                if (drive) { float w[3]; capRot(d, w); halo(w, 0.062f*HX, driveCol, 0.38f); }
             }
         }
         // ---- THE LAUNCH BAYS: lit mouths, so the player can see where the
@@ -1536,9 +1594,9 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                  f[0]*x[1]-f[1]*x[0] };
             // gunBaseMesh is a 22 x 14 x 22 m box: scale it into a hangar door.
             const float r  = kBay[bi].radius;
-            const float sx = (2.20f * r) / 22.0f;
-            const float sy = (0.70f * r) / 14.0f;
-            const float sz = (0.30f * r) / 22.0f;
+            const float sx = (1.80f * r) / 22.0f;   // deck WIDTH  (box is 22 m)
+            const float sy = (0.60f * r) / 14.0f;   // deck HEIGHT (box is 14 m)
+            const float sz = (0.22f * r) / 22.0f;   // deck DEPTH  (a shallow mouth)
             float T[16] = { x[0]*sx, x[1]*sx, x[2]*sx, 0,
                             u[0]*sy, u[1]*sy, u[2]*sy, 0,
                             f[0]*sz, f[1]*sz, f[2]*sz, 0,
@@ -1556,10 +1614,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
                     /*selfLight=*/0.55f + 0.4f*hl);
                 const float glow[3] = { 1.0f, 0.72f, 0.38f };
-                halo(bw, r * 0.85f, glow, 0.45f);
+                halo(bw, r * 0.48f, glow, 0.32f);
                 if (hl > 0.01f) {
                     const float hc2[3] = { 0.60f, 0.85f, 1.0f };
-                    halo(bw, r * 1.05f, hc2, hl);
+                    halo(bw, r * 0.72f, hc2, hl * 0.8f);
                 }
             } else {
                 // Blown: a scorched, unlit hole. Never highlights again.
@@ -1585,7 +1643,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             if (hoverReactor > 0.01f) {
                 float rw[3]; capRot(kReactorOff, rw);
                 const float hot[3] = { 1.0f, 0.42f, 0.16f };
-                halo(rw, 46.0f * S, hot, hoverReactor);
+                halo(rw, kReactorR, hot, hoverReactor);
             }
         }
     };
@@ -1959,16 +2017,22 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                      pilot.steerNoseToward(d, 12.0f, dt); }
                 }
                 if (step > 90) {
-                    // THE SWEEP: aim at a point that slides along her long axis
-                    // from bow to stern (and a little up and down), so the ray
-                    // crosses the whole anatomy. Slow enough that the eased
-                    // hover has time to bloom on each part.
-                    const float u2 = (float)(step - 90) / 420.0f;   // 0 -> 1
-                    const float t2 = std::min(1.0f, u2);
-                    const float along[3] = { (-1.0f + 2.0f*t2) * 260.0f * kCapScaleUp,
-                                             (0.35f - 0.75f*t2) * 60.0f * kCapScaleUp,
-                                             0.0f };
-                    float aimAt[3]; capRot(along, aimAt);
+                    // THE WALK: step the aim point from hardpoint to hardpoint
+                    // to gun to bay, dwelling on each long enough for the eased
+                    // hover to bloom. A blind straight-line sweep across the
+                    // hull mostly reads "hull" and proves nothing; walking the
+                    // actual anatomy makes the contact sheet a roll-call —
+                    // every station named in the log next to its frame.
+                    constexpr int kDwell = 38;      // steps per station
+                    const int nStations = kMaxSubsystems +
+                        x3::space::kCapitalGunCount + x3::space::kCapitalBayCount;
+                    int si2 = (step - 91) / kDwell;
+                    if (si2 >= nStations) si2 = nStations - 1;
+                    float aimAt[3];
+                    if (si2 < kMaxSubsystems)                 hardWorld(si2, aimAt);
+                    else if (si2 < kMaxSubsystems + x3::space::kCapitalGunCount)
+                                                              gunWorld(si2 - kMaxSubsystems, aimAt);
+                    else  bayWorld(si2 - kMaxSubsystems - x3::space::kCapitalGunCount, aimAt);
                     const x3::phys::Vec3 pp0 = pilot.pos();
                     float d[3] = { aimAt[0]-pp0.x, aimAt[1]-pp0.y, aimAt[2]-pp0.z };
                     const float dl = std::sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
@@ -2374,7 +2438,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             }
         }
         {
-            bool zapped = pilot.pushOut(capC, kCapBubbleR);  // capital hull bubble
+            float bubbleC[3]; capHullCentre(bubbleC);
+            bool zapped = pilot.pushOut(bubbleC, kCapBubbleR);  // capital core keep-out
             for (uint32_t i = 0; i < enemies.count(); ++i) {
                 const auto& es = enemies.ship(i);
                 if (es.hull <= 0) continue;
@@ -3148,7 +3213,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             {
                 const float axis[3] = { capMotion.fwd[0], capMotion.fwd[1],
                                         capMotion.fwd[2] };
-                x3::space::CapitalDeathSequence::begin(capDeath, capC, axis,
+                // Centre the cascade on the HULL, not the keel-level origin,
+                // or the whole break-up walks a line under the ship.
+                float deathC[3]; capHullCentre(deathC);
+                x3::space::CapitalDeathSequence::begin(capDeath, deathC, axis,
                                                        kCapHullR * 0.90f,
                                                        dOut, planetDir);
             }
@@ -3439,7 +3507,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // across her hardpoints with the highlight following the reticle.
             const bool evShot = evDir && *evDir &&
                 (presenceCapture
-                   ? (step == 90 || (step >= 100 && step <= 510 && (step % 20) == 0))
+                   ? (step == 90 || (step >= 91 && step <= 510 &&
+                                     ((step - 91) % 38) == 34))
                    : flightCapture
                    ? (step == 60 || (step >= 75 && step <= 300 && (step % 15) == 0))
                    : killCapture
@@ -3463,7 +3532,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 pilot.cameraBasis(pcP, pcF, pcU);
                 const x3::space::hud::ViewProjector vp2(
                     pcP, pcF, pcU, pilot.fov(), (float)hc.W, (float)hc.H);
-                const auto pj2 = vp2.project(capC);
+                float tlC[3]; capHullCentre(tlC);
+                const auto pj2 = vp2.project(tlC);
                 const char* kindName =
                     capHover.kind == x3::space::CapitalAimKind::Hardpoint ? "HARDPOINT" :
                     capHover.kind == x3::space::CapitalAimKind::Gun       ? "GUN"       :
@@ -4032,7 +4102,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     bool capKeepOutValid = false;
                     {
                         const bool isTgt = lockHad && lockId == 1000u;
-                        const Proj pr = project(capC);
+                        float brC[3]; capHullCentre(brC);
+                        const Proj pr = project(brC);
                         // A WRECK IS NOT A TARGET (handed over by the capital-death
                         // lane): the bracket, the CAP label, the shield/hull bars
                         // and the subsystem pips all kept drawing over the debris
@@ -4326,9 +4397,15 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                 "DREADNOUGHT  SHIELDS %d%%  HULL %d%%",
                                 (int)(sfB * 100.0f + 0.5f), (int)(hfB * 100.0f + 0.5f));
                         else if (!crippled)
+                            // Once the bubble is down the player's job is the
+                            // ANATOMY, so the bar names what is left of it —
+                            // hardpoints AND live launch bays, because silencing
+                            // a bay is the other thing precision buys him.
                             std::snprintf(bossTag, sizeof(bossTag),
-                                "DREADNOUGHT  HARDPOINTS %d/%d  HULL %d%%",
+                                "DREADNOUGHT  HARDPOINTS %d/%d  BAYS %d/%d  HULL %d%%",
                                 kMaxSubsystems - localSubsDestroyed, kMaxSubsystems,
+                                x3::space::CapitalBays::aliveBays(capBays),
+                                x3::space::kCapitalBayCount,
                                 (int)(hfB * 100.0f + 0.5f));
                         else
                             std::snprintf(bossTag, sizeof(bossTag),
