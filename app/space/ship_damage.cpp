@@ -1116,8 +1116,10 @@ bool runShipDamageSelfTest() {
               "T22b every live mount telegraphs + fires on its own cadence");
         check(spoolBeforeFire, "T22c no bolt without its spool telegraph first");
         // Shoot off gun 1: it goes silent FOREVER; the others keep firing.
-        check(CapitalBattery::damageGun(bt, 1, 90),
-              "T22d a landed hit shears the mount (damageGun reports the kill)");
+        check(!CapitalBattery::damageGun(bt, 1, 90) &&
+              !CapitalBattery::damageGun(bt, 1, 90) &&
+               CapitalBattery::damageGun(bt, 1, 90),
+              "T22d a mount takes THREE landed hits to shear (armour, not a bulb)");
         check(!CapitalBattery::gunAlive(bt, 1) &&
               CapitalBattery::aliveGuns(bt) == kCapitalGunCount - 1,
               "T22e the shot-off mount reads dead, the rest read alive");
@@ -1139,8 +1141,8 @@ bool runShipDamageSelfTest() {
         // Turrets subsystem pool (the physical<->model bridge stays exact).
         check(!CapitalBattery::damageGun(bt, 1, 90),
               "T22h a dead mount cannot be killed twice");
-        check(CapitalBattery::kSubQuarter * kCapitalGunCount == 120,
-              "T22i four gun kills == the full 120 HP Turrets subsystem");
+        check(CapitalBattery::kSubQuarter * kCapitalGunCount == kCapitalSubHp,
+              "T22i four gun kills == exactly one whole Turrets subsystem");
     }
 
     // ======================================================================
@@ -1320,15 +1322,16 @@ bool runShipDamageSelfTest() {
     //        At the shipped 420 HP and 90 dmg/hit that is 5 landed hits per
     //        mount, and hits on one mount never bleed into another.
     {
-        ShipDamageModel m = ShipDamage::makeCapital(2400, 12000, 420);
+        ShipDamageModel m = ShipDamage::makeCapital(
+            kCapitalShield, kCapitalHull, kCapitalSubHp);
         m.shield = 0;                       // shield already down (routing gate)
         int hits = 0;
-        while (!ShipDamage::subsystemDown(m, Subsystem::Sensors) && hits < 50) {
+        while (!ShipDamage::subsystemDown(m, Subsystem::Sensors) && hits < 400) {
             ShipDamage::applyDamage(m, 90, Subsystem::Sensors);
             ++hits;
         }
-        check(hits == 5,
-              "T25f a 420 HP hardpoint takes 5 landed 90-dmg hits — sustained fire, not a tap");
+        check(hits == (kCapitalSubHp + 89) / 90,
+              "T25f one hardpoint takes ~15 landed 90-dmg hits — sustained fire, not a tap");
         check(!ShipDamage::subsystemDown(m, Subsystem::Engines) &&
               !ShipDamage::subsystemDown(m, Subsystem::Turrets) &&
               !ShipDamage::subsystemDown(m, Subsystem::ShieldGen),
@@ -1341,33 +1344,37 @@ bool runShipDamageSelfTest() {
     //        through a live shield; the bubble recovers in a lull; and the
     //        generator kill ends the recovery for good.
     {
-        ShipDamageModel m = ShipDamage::makeCapital(2400, 12000, 420);
+        ShipDamageModel m = ShipDamage::makeCapital(
+            kCapitalShield, kCapitalHull, kCapitalSubHp);
         m.hullBleedWhileShielded = 0.08f;
         m.shieldRegenPerSec   = 70.0f;
         m.shieldRegenDelaySec = 6.0f;
-        // ONE enormous hit into a FULL bubble: the shield eats 2400 and the
-        // 2600 of overflow reaches the hull at 8% — 208, not 2600. That factor
-        // is the rule "the shield must drop before hull damage counts", and it
-        // is what makes hosing the hull the slow path rather than the fast one.
-        ShipDamage::applyDamage(m, 5000);
-        check(m.shield == 0 && m.maxHull - m.hull == 208,
-              "T25i overflow through a LIVE shield lands at 8% (2600 -> 208)");
+        // ONE enormous hit into a FULL bubble: the shield eats the whole pool
+        // and the 2000 of overflow reaches the hull at 8% — 160, not 2000.
+        // That factor IS the rule "the shield must drop before hull damage
+        // counts", and it is what makes hosing the hull the slow path.
+        ShipDamage::applyDamage(m, kCapitalShield + 2000);
+        check(m.shield == 0 && m.maxHull - m.hull == 160,
+              "T25i overflow through a LIVE shield lands at 8% (2000 -> 160)");
         // Once the bubble is DOWN the gate is gone: full damage, unscaled, so
         // dropping the shield is a real and visible change of state.
         const int before = m.hull;
         ShipDamage::applyDamage(m, 90);
         check(before - m.hull == 90,
               "T25j with the shield down the SAME hit lands in full (the gate opens)");
-        // 26 hits is exactly what a 2400 bubble costs at 90 dmg — the shield is
-        // a real gate (~18 s of sustained accurate fire), not a speed bump.
-        ShipDamageModel g = ShipDamage::makeCapital(2400, 12000, 420);
+        // Dropping the bubble at 90 dmg a hit is ~67 landed hits — about 12 s
+        // of sustained accurate fire. A real gate, not a speed bump, and it
+        // costs the hull almost nothing on the way through.
+        ShipDamageModel g = ShipDamage::makeCapital(
+            kCapitalShield, kCapitalHull, kCapitalSubHp);
         g.hullBleedWhileShielded = 0.08f;
         int shots = 0;
-        while (g.shield > 0 && shots < 200) { ShipDamage::applyDamage(g, 90); ++shots; }
-        check(shots == 27 && g.maxHull - g.hull < 40,
-              "T25j2 dropping the bubble costs 27 landed hits and barely scratches the hull");
+        while (g.shield > 0 && shots < 900) { ShipDamage::applyDamage(g, 90); ++shots; }
+        check(shots == (kCapitalShield + 89) / 90 && g.maxHull - g.hull < 40,
+              "T25j2 dropping the bubble costs ~67 landed hits, barely scratching the hull");
         // A LULL: the shield comes back, so breaking off hands her the bubble.
-        ShipDamageModel r = ShipDamage::makeCapital(2400, 12000, 420);
+        ShipDamageModel r = ShipDamage::makeCapital(
+            kCapitalShield, kCapitalHull, kCapitalSubHp);
         r.shield = 0; r.timeSinceHit = 0.0f;
         r.shieldRegenPerSec = 70.0f; r.shieldRegenDelaySec = 6.0f;
         for (int i = 0; i < 60 * 12; ++i) ShipDamage::tick(r, 1.0f/60.0f);
@@ -1388,17 +1395,22 @@ bool runShipDamageSelfTest() {
 
     // T25n/T25o — THE TWO TIME-TO-KILL PATHS. The gap between them IS the
     //   design, so it is pinned by a test rather than left to a spreadsheet.
-    //   The player is ENERGY-bound, not cooldown-bound: 12 energy/s regen at
-    //   8 per shot = 1.5 shots/s sustained x 90 dmg = 135 DPS. Both paths are
-    //   simulated at that rate, at 60 Hz, with the shipped pools.
+    //   THE FIRE MODEL IS THE ENGINE'S, MEASURED: the intro tunes
+    //   energyRegenPerSec 20 against laserEnergyCost 2.8 (intro_orchestrator),
+    //   which is 7.1 shots/s of energy — more than the 0.18 s kLaserCdSec
+    //   cooldown allows. So the player is COOLDOWN-bound at 5.56 shots/s x the
+    //   owner-locked 90 damage ~= 500 DPS, NOT energy-bound at 1.5 shots/s.
+    //   Getting that wrong is a 3.7x error in every pool on the ship, so it is
+    //   restated here where the test can see it. Both paths run at 60 Hz.
     {
         constexpr float kDt        = 1.0f / 60.0f;
-        constexpr float kShotEvery = 1.0f / 1.5f;   // sustained, energy-bound
+        constexpr float kShotEvery = 0.18f;         // == space_pilot kLaserCdSec
         constexpr int   kDmg       = 90;
         constexpr float kCycle = 13.0f, kOpen = 8.0f;   // reactor duty cycle
         constexpr int   kMult  = 6;                     // exposed-hull multiplier
         auto fresh = [] {
-            ShipDamageModel m = ShipDamage::makeCapital(2400, 12000, 420);
+            ShipDamageModel m = ShipDamage::makeCapital(
+                kCapitalShield, kCapitalHull, kCapitalSubHp);
             m.hullBleedWhileShielded = 0.08f;
             m.shieldRegenPerSec = 70.0f; m.shieldRegenDelaySec = 6.0f;
             return m;
@@ -1409,7 +1421,7 @@ bool runShipDamageSelfTest() {
         {
             ShipDamageModel m = fresh();
             float acc = 0.0f;
-            while (!ShipDamage::isDestroyed(m) && tHull < 600.0f) {
+            while (!ShipDamage::isDestroyed(m) && tHull < 900.0f) {
                 ShipDamage::tick(m, kDt); tHull += kDt; acc += kDt;
                 if (acc >= kShotEvery) { acc -= kShotEvery;
                                          ShipDamage::applyDamage(m, kDmg); }
@@ -1422,7 +1434,7 @@ bool runShipDamageSelfTest() {
             ShipDamageModel m = fresh();
             float acc = 0.0f, reactorT2 = 0.0f;
             int   next = 0;                 // which mount is being worked
-            while (!ShipDamage::isDestroyed(m) && tHard < 600.0f) {
+            while (!ShipDamage::isDestroyed(m) && tHard < 900.0f) {
                 ShipDamage::tick(m, kDt); tHard += kDt; acc += kDt;
                 bool crippled2 = true;
                 for (int s2 = 0; s2 < (int)Subsystem::Count; ++s2)
@@ -1446,10 +1458,15 @@ bool runShipDamageSelfTest() {
         x3::logInfo("[ship-damage] TTK hardpoint-first " +
                     std::to_string((int)tHard) + " s vs hull-only " +
                     std::to_string((int)tHull) + " s");
-        check(tHard > 25.0f && tHard < 90.0f,
-              "T25n hardpoint-first kills the capital in a real boss-fight minute");
-        check(tHull > tHard * 1.6f,
-              "T25o hosing the HULL is >1.6x slower — hardpoint-first is the lesson");
+        // It has to be a real fight AND it has to FIT THE 70 s CLIMAX WINDOW
+        // with room for misses — a capital that cannot be killed inside its own
+        // encounter is not "harder", it is broken.
+        check(tHard > 30.0f && tHard < 60.0f,
+              "T25n hardpoint-first kills her in ~47 s — a real fight, inside the 70 s window");
+        check(tHull > tHard * 2.0f,
+              "T25o hosing the HULL is >2x slower — hardpoint-first is the lesson");
+        check(tHull > 70.0f,
+              "T25o2 the hull-only slog does NOT fit the climax window (the lesson has teeth)");
     }
 
     // =======================================================================

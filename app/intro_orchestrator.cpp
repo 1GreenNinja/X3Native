@@ -173,7 +173,15 @@ std::vector<Beat> defaultIntroBeats() {
     // tiny ships"): the climax escort screen grows 4 -> 9. The per-ship cost
     // is a handful of draws + a 6DOF tick, and the PVS->TLAS work means the
     // ones you are not looking at cost effectively nothing.
-    b5.enemyCount = 9; b5.timeoutSec = 20.0f; b5.isClimax = true; beats.push_back(b5);
+    // THE WINDOW HAS TO FIT THE FIGHT (an item-F consequence). The capital used
+    // to fall in ~8-14 s, so a 20 s climax was generous. With the item-F pools
+    // it is ~50 s of sustained accurate fire down the hardpoint-first path — a
+    // 20 s window would have made the CapitalKilled outcome literally
+    // unreachable and turned "harder to take down" into "cannot be taken down",
+    // which is not the ask. 70 s fits a clean hardpoint-first run with room for
+    // misses and repositioning, and still does NOT fit the ~107 s hull-only
+    // slog: the window itself now enforces the lesson the encounter teaches.
+    b5.enemyCount = 9; b5.timeoutSec = 70.0f; b5.isClimax = true; beats.push_back(b5);
 
     // 6) Cinematic — the outcome stinger. The span here is the DEFAULT (shot-down)
     //    framing; runInteractiveIntro OVERRIDES clipStart/clipEnd per the rolled
@@ -633,28 +641,23 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // were a detour. That is precisely backwards from what the encounter is
     // for. Four levers, each doing a different job:
     //
-    //   1. SHIELD 2400 — a real gate, not a speed bump. It must come down.
-    //   2. HULL 12000 — hosing it is a genuinely long slog on its own.
-    //   3. PER-HARDPOINT 420 HP (4 x 420 = 1680) — each mount takes sustained
-    //      accurate fire. THIS is where the length of the fight should live.
+    //   1. SHIELD — a real gate, not a speed bump. It must come down.
+    //   2. HULL — hosing it is a genuinely long slog on its own.
+    //   3. PER-HARDPOINT health — each mount takes sustained accurate fire.
+    //      THIS is where the length of the fight should live.
     //   4. hullBleedWhileShielded 0.08 — shots into bare hull through a live
     //      shield land at 8%. Hull damage effectively does not count until the
     //      shield drops, so "drop the shield / kill its generator first" is a
     //      rule the player can feel rather than a tooltip.
     //
-    // Player sustained DPS against her is energy-bound, not cooldown-bound:
-    // 12 energy/s regen / 8 per shot = 1.5 shots/s x 90 dmg = 135 DPS (plus a
-    // ~12-shot opening burst off the full 100 energy). Against that:
-    //   * HARDPOINT-FIRST: 2400 shield + 1680 mounts, then the crippled
-    //     reactor cycle multiplies hull damage x6 while EXPOSED (8 s of every
-    //     13 s) -> ~54 s.
-    //   * HULL-ONLY: 2400 shield + 12000 hull at 1x, never crippled, no
-    //     reactor -> ~107 s.
-    // Two minutes versus one: the gap IS the design. Numbers re-derived in
-    // --test-ship-damage T25e/T25f so a future retune cannot silently invert
-    // the lesson again.
-    auto capital = x3::space::ShipDamage::makeCapital(/*shield*/2400, /*hull*/12000,
-                                                      /*subHp*/420);
+    // The actual numbers, the DPS they are sized against and the resulting
+    // time-to-kill for BOTH strategies live in ship_damage.h next to the
+    // constants, so the arithmetic sits with the values it constrains and
+    // --test-ship-damage T25n/T25o can pin it. Short version: ~47 s working
+    // the anatomy, ~112 s hosing the hull.
+    auto capital = x3::space::ShipDamage::makeCapital(
+        x3::space::kCapitalShield, x3::space::kCapitalHull,
+        x3::space::kCapitalSubHp);
     // The shield gate (see above) + a shield that genuinely RECOVERS in a lull,
     // so breaking off the attack hands her the bubble back and sustained,
     // accurate pressure is the only thing that drops it. Killing the shield

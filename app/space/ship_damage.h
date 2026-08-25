@@ -302,6 +302,31 @@ public:
 // meshes, muzzles, telegraphs and damage resolution.
 inline constexpr int kCapitalGunCount = 4;
 
+// ===========================================================================
+// THE CAPITAL'S POOLS — item F, "it should be HARDer to take down".
+// ===========================================================================
+// Here rather than in the host so the RELATIONSHIPS are compile-time facts
+// (four gun kills must equal exactly one Turrets subsystem) and so a retune
+// cannot silently invert the lesson without --test-ship-damage noticing.
+//
+// The player's sustained output is the thing everything else is sized
+// against, and it is COOLDOWN-bound, not energy-bound: the intro tunes
+// energyRegen 20/s against a 2.8 cost, so the 0.18 s laser cooldown is what
+// actually caps him at 5.56 shots/s x 90 damage ~= 500 DPS. (An earlier pass
+// sized these pools against the DEFAULT 8-per-shot economy — 1.5 shots/s —
+// and was wrong by 3.7x. Measure the weapon, do not assume it.)
+//
+// Against 500 DPS:
+//   HARDPOINT-FIRST ~47 s — drop the 6000 shield (12 s), walk the four 1300 HP
+//     mounts (10 s), then ride the exposed reactor, whose 6x multiplier over
+//     an 8-in-13 duty cycle turns 500 DPS into ~2040 against hull (25 s).
+//   HULL-ONLY ~112 s — 6000 + 50000 at 1x, never crippled, no reactor.
+// The 2.4x gap IS the design, and the 70 s climax window fits the first path
+// and not the second. Pinned by T25n/T25o.
+inline constexpr int kCapitalShield = 6000;
+inline constexpr int kCapitalHull   = 50000;
+inline constexpr int kCapitalSubHp  = 1300;   // PER hardpoint (~14 landed hits)
+
 struct CapitalGun {
     int   hp      = 0;     // <= 0 => shot off (a wreck stub remains)
     int   maxHp   = 0;
@@ -320,13 +345,17 @@ public:
     // ask; shooting guns off is the counterplay that buys it back.
     static constexpr float kGunPeriod = 4.8f;   // per-gun seconds between spools
     static constexpr float kGunSpool  = 0.6f;   // telegraph: spool before the bolt
-    static constexpr int   kGunHp     = 30;     // one landed 90-dmg hit shears a gun
+    // A mount is armour, not a light bulb: three landed 90-dmg hits shear it.
+    // (Was 30 — a single hit — which made the battery free to silence.)
+    static constexpr int   kGunHp     = 270;
     // What one landed capital bolt does to the player (vs 500 shield + 1000
     // hull): ~8 landed bolts kill — at full-battery cadence that is ~10 s of
     // flying straight at her. Aspect dodge (transverse velocity) is the out.
     static constexpr int   kGunDamage = 180;
-    // Quarter of the Turrets subsystem routed per gun kill (4 * 30 == 120).
-    static constexpr int   kSubQuarter = 30;
+    // Quarter of the Turrets subsystem routed per gun kill, DERIVED so the
+    // identity "four sheared mounts == the Turrets subsystem down" can never
+    // drift when the pools are retuned.
+    static constexpr int   kSubQuarter = kCapitalSubHp / kCapitalGunCount;
 
     // Seed all guns alive with staggered first-spool clocks (gun i fires its
     // first bolt at ~1.2 * (i+1) s — the gauntlet opens hot but never as one
@@ -449,7 +478,9 @@ class CapitalBays {
 public:
     // A bay is a soft target compared with a gun mount — it is a hole in the
     // hull, not an armoured turret — but it still costs real sustained fire.
-    static constexpr int   kBayHp        = 240;
+    // Six landed 90-dmg hits close a deck — softer than an armoured gun mount
+    // (it is a hole in the hull, not a turret) but still real sustained fire.
+    static constexpr int   kBayHp        = 540;
     // Base seconds between launches FROM ONE BAY at full hull. Three bays
     // staggered => roughly one fighter every ~3.7 s at the opening cadence.
     static constexpr float kLaunchPeriod = 11.0f;
