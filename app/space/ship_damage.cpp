@@ -82,10 +82,29 @@ void ShipDamage::applyDamage(ShipDamageModel& m, int amount, Subsystem hitSub) {
         sub -= remaining;
         if (sub < 0) sub = 0;          // floored at 0 == "down"
     } else {
-        m.hull -= remaining;
-        if (m.hull < 0) m.hull = 0;    // floored at 0 == destroyed
-        if (m.hull == 0) {
-            x3::logInfo("[ship-damage] HULL 0 — ship destroyed");
+        // THE SHIELD GATE (item F). Overflow from a hit that landed while the
+        // shield was still UP is scaled by hullBleedWhileShielded (1.0 ==
+        // legacy: it all bleeds through, which is every fighter and every
+        // pre-existing caller). A capital sets this LOW so hosing bare hull
+        // through a live bubble is the SLOW path and dropping the shield — or
+        // killing its generator — is the lesson the encounter teaches. Once
+        // the shield is already down, the full amount lands unscaled exactly
+        // as it always has.
+        int toHull = remaining;
+        if (!shieldWasDown) {
+            float k = m.hullBleedWhileShielded;
+            k = k < 0.0f ? 0.0f : (k > 1.0f ? 1.0f : k);
+            toHull = (int)(remaining * k);
+            // A non-zero gate never rounds a landed hit down to nothing: the
+            // player must always see the hull bar move, however slowly.
+            if (toHull <= 0 && k > 0.0f) toHull = 1;
+        }
+        if (toHull > 0) {
+            m.hull -= toHull;
+            if (m.hull < 0) m.hull = 0;    // floored at 0 == destroyed
+            if (m.hull == 0) {
+                x3::logInfo("[ship-damage] HULL 0 — ship destroyed");
+            }
         }
     }
 }
@@ -97,8 +116,11 @@ void ShipDamage::tick(ShipDamageModel& m, float dt) {
     m.timeSinceHit += dt;
 
     // Shield regen resumes only after the delay has fully elapsed since the
-    // last hit. Subsystems intentionally do NOT auto-regen (host must repair).
-    if (m.timeSinceHit >= m.shieldRegenDelaySec && m.shield < m.maxShield) {
+    // last hit, and never at all while regen is SUPPRESSED (the host raises
+    // shieldRegenDisabled when the shield generator subsystem is destroyed).
+    // Subsystems intentionally do NOT auto-regen (host must repair).
+    if (!m.shieldRegenDisabled &&
+        m.timeSinceHit >= m.shieldRegenDelaySec && m.shield < m.maxShield) {
         const int regen = (int)std::ceil(m.shieldRegenPerSec * dt);
         m.shield = clampPool(m.shield + regen, m.maxShield);
     }
@@ -478,6 +500,114 @@ bool CapitalBattery::damageGun(CapitalBatteryState& s, int i, int amount) {
     if (g.hp <= 0) return false;
     g.hp -= amount;
     if (g.hp <= 0) { g.hp = 0; g.spoolT = -1.0f; return true; }
+    return false;
+}
+
+// ===========================================================================
+// CAPITAL AIM PICK — the ONE ray test shared by the fire path and the hover
+// highlight (item F). See ship_damage.h for why they must be the same test.
+// ===========================================================================
+float CapitalAim::growFactor(float dist) {
+    const float f = dist / kGrowStart;
+    return f < 1.0f ? 1.0f : (f > kGrowMax ? kGrowMax : f);
+}
+
+CapitalAimResult CapitalAim::pick(const CapitalAimTarget* targets, uint32_t n,
+                                  const float origin[3], const float dir[3]) {
+    CapitalAimResult best{};
+    if (!targets || n == 0 || !origin || !dir) return best;
+    // Normalize defensively — callers hand us a nose vector built from angles.
+    float d[3] = { dir[0], dir[1], dir[2] };
+    const float dl = std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+    if (dl < 1e-6f) return best;
+    d[0] /= dl; d[1] /= dl; d[2] /= dl;
+
+    float bestT = 1e30f;
+    for (uint32_t i = 0; i < n; ++i) {
+        const CapitalAimTarget& t = targets[i];
+        // A DEAD part is not a target: it never highlights and never claims a
+        // shot (hits there fall through to whatever is behind it — the hull).
+        if (!t.alive || t.kind == CapitalAimKind::None || t.radius <= 0.0f)
+            continue;
+        const float oc[3] = { t.pos[0]-origin[0], t.pos[1]-origin[1],
+                              t.pos[2]-origin[2] };
+        const float tca = oc[0]*d[0] + oc[1]*d[1] + oc[2]*d[2];
+        if (tca < 0.0f) continue;                       // behind the nose
+        const float dist = std::sqrt(oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2]);
+        // Aim-at-what-you-see: the hull's own sphere is already huge and is
+        // never grown (growing it would swallow its own hardpoints); the small
+        // parts grow with range so a 6 px blister stays hoverable.
+        const float r = (t.kind == CapitalAimKind::Hull)
+                            ? t.radius : t.radius * growFactor(dist);
+        const float d2c = oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - tca*tca;
+        if (d2c > r * r) continue;
+        const float tEnter = std::max(0.0f, tca - std::sqrt(r*r - d2c));
+        if (tEnter >= bestT) continue;
+        bestT = tEnter;
+        best.kind = t.kind; best.index = t.index; best.t = tEnter;
+    }
+    return best;
+}
+
+// ===========================================================================
+// CAPITAL LAUNCH BAYS (item G)
+// ===========================================================================
+void CapitalBays::init(CapitalBayState& s) {
+    for (int i = 0; i < kCapitalBayCount; ++i) {
+        s.bay[i].hp = s.bay[i].maxHp = kBayHp;
+        // Staggered opening clocks: bay i throws its first fighter at
+        // ~(i+1) * kLaunchPeriod/kCapitalBayCount seconds, so the three mouths
+        // trickle rather than disgorging one synchronized lump.
+        s.bay[i].cd = kLaunchPeriod * (float)(i + 1) / (float)kCapitalBayCount;
+    }
+}
+
+float CapitalBays::periodFor(float hullFrac) {
+    const float h = hullFrac < 0.0f ? 0.0f : (hullFrac > 1.0f ? 1.0f : hullFrac);
+    // Full hull => the base period; zero hull => kRateFloor of it. Linear and
+    // monotone, so the fight measurably escalates as she loses.
+    return kLaunchPeriod * (kRateFloor + (1.0f - kRateFloor) * h);
+}
+
+uint32_t CapitalBays::update(CapitalBayState& s, float dt, int liveFighters,
+                             float hullFrac, bool enabled) {
+    uint32_t launched = 0u;
+    if (dt <= 0.0f) return launched;
+    int live = liveFighters < 0 ? 0 : liveFighters;
+    const float period = periodFor(hullFrac);
+    for (int i = 0; i < kCapitalBayCount; ++i) {
+        CapitalBay& b = s.bay[i];
+        if (b.hp <= 0) continue;                 // blown: this stream is off
+        b.cd -= dt;                              // dt-integrated, never per-frame
+        if (b.cd > 0.0f) continue;
+        // AT THE CAP: hold the clock at zero (do NOT reset it) so the bay
+        // launches the instant a slot frees — pressure resumes rather than
+        // restarting, and the cap can never be exceeded.
+        if (!enabled || live >= kLiveCap) { b.cd = 0.0f; continue; }
+        launched |= (1u << i);
+        ++live;
+        b.cd = period;
+    }
+    return launched;
+}
+
+bool CapitalBays::bayAlive(const CapitalBayState& s, int i) {
+    if (i < 0 || i >= kCapitalBayCount) return false;
+    return s.bay[i].hp > 0;
+}
+
+int CapitalBays::aliveBays(const CapitalBayState& s) {
+    int n = 0;
+    for (int i = 0; i < kCapitalBayCount; ++i) if (s.bay[i].hp > 0) ++n;
+    return n;
+}
+
+bool CapitalBays::damageBay(CapitalBayState& s, int i, int amount) {
+    if (i < 0 || i >= kCapitalBayCount || amount <= 0) return false;
+    CapitalBay& b = s.bay[i];
+    if (b.hp <= 0) return false;
+    b.hp -= amount;
+    if (b.hp <= 0) { b.hp = 0; b.cd = 0.0f; return true; }
     return false;
 }
 

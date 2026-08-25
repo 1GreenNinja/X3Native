@@ -190,6 +190,13 @@ public:
     // "inward"; the AI re-steers immediately). Starts in Patrol with full hull.
     void spawn(const float pos[3]);
 
+    // BAY LAUNCH (item G — "More little ships can come out of its bays").
+    // Spawn one fighter AT `pos` already heading down unit `dir` and already
+    // carrying `speed` (clamped to kMaxSpeed), so it flies OUT of a carrier's
+    // bay mouth along the launch vector instead of popping into empty space.
+    // Identical to spawn() in every other respect; the AI takes over next tick.
+    void spawnLaunched(const float pos[3], const float dir[3], float speed);
+
     // AI tick. Each live ship runs its state machine against the single player
     // target (playerPos / playerVel): Patrol drifts; Engage steers toward a lead
     // point ahead of the player and closes; Strafe fires when the player is in the

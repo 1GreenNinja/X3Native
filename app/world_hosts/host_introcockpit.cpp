@@ -338,7 +338,7 @@ void drawIntroCapitalGun(x3::rhi::IRenderDevice& device,
                          x3::rhi::MeshHandle baseMesh, x3::rhi::MeshHandle barrelMesh,
                          x3::rhi::TextureHandle baseColor, x3::rhi::TextureHandle mr,
                          const float pos[3], const float aimDir[3],
-                         bool alive, float spool) {
+                         bool alive, float spool, float scale, float highlight) {
     // One capital gun mount: an armored base block + a barrel slewed onto
     // `aimDir` (the guns TRACK the player — that is what reads as a weapon).
     // Destroyed: the barrel is GONE (shot off) and a scorched stub of the base
@@ -361,43 +361,55 @@ void drawIntroCapitalGun(x3::rhi::IRenderDevice& device,
     const float u[3] = { f[1]*x[2] - f[2]*x[1],
                          f[2]*x[0] - f[0]*x[2],
                          f[0]*x[1] - f[1]*x[0] };
-    const float scl = alive ? 1.0f : 0.55f;   // the stub is a shorn remnant
+    const float mScl = scale > 0.01f ? scale : 1.0f;  // mount size == hull size
+    const float scl  = (alive ? 1.0f : 0.55f) * mScl;  // the stub is a shorn remnant
+    // HOVER RIM (item F): the aim ray is ON this mount. A cool-white emissive
+    // lift + a self-light bump outlines the mount against the dark hull, which
+    // is the "this is a real target" tell that REPLACES lock-on for the
+    // capital — nothing is dragged, the player is only told. Clamped, and only
+    // ever applied on the live branch below: a shorn stub never highlights.
+    const float hl = highlight < 0.0f ? 0.0f : (highlight > 1.0f ? 1.0f : highlight);
     // BASE BLOCK (world-axis aligned: it is bolted to the hull).
     {
         float T[16] = { scl, 0, 0, 0,   0, scl, 0, 0,   0, 0, scl, 0,
                         pos[0], pos[1], pos[2], 1.0f };
-        const float tintA[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        const float tintA[4] = { 1.0f + 0.55f * hl, 1.0f + 0.60f * hl,
+                                 1.0f + 0.75f * hl, 1.0f };
         const float tintD[4] = { 0.28f, 0.26f, 0.25f, 1.0f };   // scorched
-        const float emisA[4] = { 0.10f, 0.11f, 0.13f, 1.0f };
+        const float emisA[4] = { 0.10f + 0.75f * hl, 0.11f + 0.90f * hl,
+                                 0.13f + 1.15f * hl, 1.0f };
         const float emisD[4] = { 0.05f, 0.02f, 0.01f, 1.0f };   // faint hot metal
         device.drawMeshPBR(frame, baseMesh, baseColor,
                            x3::rhi::TextureHandle{}, mr,
                            alive ? tintA : tintD, alive ? emisA : emisD, T,
                            false, false, x3::rhi::TextureHandle{},
                            x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
-                           /*selfLight=*/alive ? 0.16f : 0.06f);
+                           /*selfLight=*/alive ? (0.16f + 0.45f * hl) : 0.06f);
     }
     if (!alive) return;   // the gun itself is GONE — stub only
     // BARREL: prim cylinder is +Y-axis; build basis mapping +Y -> aim f.
     // Offset the barrel forward so it protrudes from the base block.
     {
-        const float bl = 1.0f;   // mesh is 30 m long (hy=15 half-height)
+        const float bl = mScl;   // mesh is 30 m long (hy=15 half-height)
         float T[16] = { x[0]*bl, x[1]*bl, x[2]*bl, 0,
                         f[0]*bl, f[1]*bl, f[2]*bl, 0,     // +Y -> aim
                         u[0]*bl, u[1]*bl, u[2]*bl, 0,
-                        pos[0] + f[0]*18.0f, pos[1] + f[1]*18.0f,
-                        pos[2] + f[2]*18.0f, 1.0f };
-        const float tint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                        pos[0] + f[0]*18.0f*mScl, pos[1] + f[1]*18.0f*mScl,
+                        pos[2] + f[2]*18.0f*mScl, 1.0f };
+        const float tint[4] = { 1.0f + 0.55f * hl, 1.0f + 0.60f * hl,
+                                1.0f + 0.75f * hl, 1.0f };
         // The spool telegraph: the barrel heats amber as the shot charges.
-        const float emis[4] = { 0.10f + 1.20f * spool,
-                                0.10f + 0.55f * spool,
-                                0.12f + 0.18f * spool, 1.0f };
+        // The hover rim rides COOL-WHITE on top, so "charging" (amber) and
+        // "you are aiming at me" (white-blue) never read as the same signal.
+        const float emis[4] = { 0.10f + 1.20f * spool + 0.75f * hl,
+                                0.10f + 0.55f * spool + 0.90f * hl,
+                                0.12f + 0.18f * spool + 1.15f * hl, 1.0f };
         device.drawMeshPBR(frame, barrelMesh, baseColor,
                            x3::rhi::TextureHandle{}, mr,
                            tint, emis, T,
                            false, false, x3::rhi::TextureHandle{},
                            x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
-                           /*selfLight=*/0.16f + 0.5f * spool);
+                           /*selfLight=*/0.16f + 0.5f * spool + 0.45f * hl);
     }
 }
 
@@ -405,7 +417,8 @@ void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
                         const std::vector<x3::asset::ModelDrawable>& draws,
                         const float pos[3], const float fwd[3], const float up[3],
                         float scale, x3::rhi::TextureHandle fallbackMr,
-                        float hitFlash, float emisScale, float entryBurn) {
+                        float hitFlash, float emisScale, float entryBurn,
+                        float hullDarken) {
     // FULL-ORIENTATION ship draw (combat readability + the muzzle fix): model
     // +Z -> `fwd` (3D — pitch/roll read on the hull, matching the physics quat
     // the wing muzzles are computed from; the yaw-only legacy draw left the hull
@@ -446,9 +459,17 @@ void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     // Multiplicative on top of the hit-flash tint so the two axes compose;
     // blue is CUT (not just red raised) or a pale hull washes to white.
     const float eb = entryBurn < 0.0f ? 0.0f : (entryBurn > 1.0f ? 1.0f : entryBurn);
-    const float tint[4] = { (1.0f + 2.0f * fl01) * (1.0f + 1.6f * eb),
-                            (1.0f + 0.9f * fl01) * (1.0f + 0.25f * eb),
-                            (1.0f + 0.35f * fl01) * (1.0f - 0.62f * eb),
+    // HULL DARKEN (item G): the ALBEDO axis. A capital passes this well under 1
+    // so its paint reads as a low-albedo mass BLOCKING the starfield rather than
+    // a lit model floating in front of it — and so the sun's terminator carves a
+    // genuinely dark shadow side. Floored above 0: a zero-albedo hull is a black
+    // cutout (a hole in the sky), not a ship. It rides the base tint, so the
+    // hit-flash and entry-burn axes still compose on top of it exactly as before.
+    const float hd = hullDarken < 0.05f ? 0.05f
+                                        : (hullDarken > 4.0f ? 4.0f : hullDarken);
+    const float tint[4] = { (1.0f + 2.0f * fl01) * (1.0f + 1.6f * eb) * hd,
+                            (1.0f + 0.9f * fl01) * (1.0f + 0.25f * eb) * hd,
+                            (1.0f + 0.35f * fl01) * (1.0f - 0.62f * eb) * hd,
                             1.0f };
     // CANON: SHIPS ARE SELF-LIT (Star Trek rule — owner, over a screenshot of his
     // fighter rendering as a black silhouette: "We need the ship to have emissive
@@ -528,20 +549,25 @@ void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
                            x3::rhi::TextureHandle{ dr.detailTexId },
                            dr.detailUvScale,
                            /*clearcoat=*/0.0f, /*clearcoatRough=*/0.05f,
-                           /*selfLight=*/(kIntroShipSelfLight + 0.45f * fl01) * emisK);
+                           // The shadow-side rim fill follows the albedo down
+                           // too — a dark hull with a bright terminator fill
+                           // still reads flat, which is the whole complaint.
+                           /*selfLight=*/(kIntroShipSelfLight + 0.45f * fl01) * emisK * hd);
     }
 }
 
 void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                    const std::vector<x3::asset::ModelDrawable>& draws,
                    const float pos[3], const float fwd[3], float scale,
-                   x3::rhi::TextureHandle fallbackMr) {
+                   x3::rhi::TextureHandle fallbackMr,
+                   float emisScale, float hullDarken) {
     // Legacy yaw-only draw (showcase tableau + the capital): flatten fwd to its
     // XZ heading, world-up — identical matrix to the pre-basis version.
     const float yaw = std::atan2(fwd[2], fwd[0]);
     const float f2[3] = { std::cos(yaw), 0.0f, std::sin(yaw) };
     const float up[3] = { 0.0f, 1.0f, 0.0f };
-    drawIntroShipBasis(device, frame, draws, pos, f2, up, scale, fallbackMr, 0.0f);
+    drawIntroShipBasis(device, frame, draws, pos, f2, up, scale, fallbackMr, 0.0f,
+                       emisScale, /*entryBurn=*/0.0f, hullDarken);
 }
 
 void pulseIntroScreens(IntroCockpitRig& rig, float t) {
