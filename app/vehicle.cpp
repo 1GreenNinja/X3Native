@@ -626,7 +626,28 @@ void DriveDemo::preStep(float dt) {
         // the beast can never leave the ground. Every other winged frame still
         // steps it, which is what keeps the suspension warm for touchdown and
         // lets the landing rollout behave like a car.
-        if (m_ctl && !(m_wantNos && grounded())) m_ctl->preStep(dt);
+        // THE WHEELED CONSTRAINT IS A ROAD SYSTEM. Two cases where it must not
+        // step while the wings are out:
+        //  * the TAKEOFF ROLL (thrust commanded, wheels still down) — its
+        //    suspension holds the hull flat so the nose can never come up;
+        //  * AEROBATIC ATTITUDES — MEASURED: a full-stick loop spun up to
+        //    2.56 rad/s and then stopped dead (w = 0.0007 rad/s at 6 s) at
+        //    61.6 deg nose-up. Nothing in the flight model can arrest rotation
+        //    like that; the constraint was fighting the loop, so the beast just
+        //    climbed instead of going over the top.
+        // It still steps in every level-ish frame, which is what keeps the
+        // suspension warm and lets grounded() see the wheels for the landing
+        // rule — landings happen near level, never at 60 deg of pitch.
+        // Thresholds chosen so ordinary flying never trips this. A banked turn
+        // lives well inside 80 deg of roll (MEASURED: gating at 40 deg suspended
+        // the constraint mid-bank and broke the carve gate), while a loop pushes
+        // straight through 57 deg of pitch.
+        const bool aerobatic = std::fabs(m_hullPitch) > 1.0f ||
+                               std::fabs(m_hullRoll)  > 1.4f;
+        // Jolt runs the constraint from its own step listener, so declining to
+        // call preStep is not enough — it has to be DISABLED to leave the solver.
+        if (m_ctl) m_ctl->setConstraintSuspended(aerobatic);
+        if (m_ctl && !(m_wantNos && grounded()) && !aerobatic) m_ctl->preStep(dt);
         return;
     }
     shapeSteering(dt); updateTurbo(dt); updateEngineModel(dt); if (m_ctl) m_ctl->preStep(dt);
@@ -841,6 +862,17 @@ void DriveDemo::deployWings() {
         return;
     }
     m_wings = true;
+    // THE FLIGHT CONTROLLER OWNS DAMPING (app/space_pilot.cpp:263 does the same,
+    // "we own damping"). Jolt body damping is velocity-LINEAR and is a CAR
+    // setting; at flight speed it dwarfs the quadratic aero model (~10 kN at
+    // 123 m/s vs the 3 kN the tuning asks for), so the owner numbers could never
+    // fall out of thrust==drag. retractWings puts the car values back.
+    m_physics->setBodyDamping(m_chassis, 0.0f, 0.0f);
+    // ...and the CAR aero stops too: the wheeled controller adds its own body
+    // drag (kAeroDrag 1.4, ~7x the flight coefficient) plus spoiler downforce
+    // every frame it steps. Those are ROAD systems. Left running they held
+    // terminal at 296 mph against the owner spec of 700 (MEASURED).
+    if (m_ctl) m_ctl->setAeroSuspended(true);
     m_wingPose = 0.0f;                     // pop-out animation runs in updateWingFlight
     m_evWingsOut = true;                   // host: the THUNK
     {   // seed the crash detector with the CURRENT speed so deploy-frame dV=0
@@ -856,6 +888,10 @@ void DriveDemo::deployWings() {
 void DriveDemo::retractWings(bool torn) {
     if (!m_wings) return;
     m_flyCtl.reset();                      // flight forces off THIS step
+    // PAIRED with deployWings: Jolt defaults back, the car values.
+    if (m_physics && m_chassis.valid()) m_physics->setBodyDamping(m_chassis, 0.05f, 0.05f);
+    if (m_ctl) m_ctl->setAeroSuspended(false);   // road aero back with the wheels
+    if (m_ctl) m_ctl->setConstraintSuspended(false);  // and the constraint rejoins
     m_wings = false;
     if (torn) m_wingPose = 0.0f;           // ripped away — no tidy fold
     m_evWingsIn = true;
@@ -874,6 +910,7 @@ void DriveDemo::updateWingFlight(float dt) {
     float q[4]; m_physics->getBodyRotation(m_chassis, q);
     float f[3], u[3]; vehcam::hullAxes(q, f, u);
     float roll, pitch; vehcam::hullRollPitch(f, u, roll, pitch);
+    m_hullPitch = pitch; m_hullRoll = roll;   // cached for preStep (wheeled-constraint gate)
 
     x3::phys::VehicleInput fin{};
     // THROTTLE — the overdrive lineage: SHIFT = full thrust (700 mph falls out
@@ -897,8 +934,29 @@ void DriveDemo::updateWingFlight(float dt) {
                  : (m_wantNos ? 1.0f : (airbrake ? 0.0f : idleFrac));
     // ATTITUDE — full authority, never fought: no auto-level anywhere, so a
     // committed roll or loop is the player's to keep (arcade-plane, not sim).
-    fin.pitch = std::clamp(m_flyPitchIn, -1.0f, 1.0f);
-    fin.roll  = std::clamp(m_flyRollIn,  -1.0f, 1.0f);
+    // ATTITUDE — the pilot's stick, plus STATIC STABILITY on whichever axis the
+    // pilot is not holding (WingTuning::pitchStab/rollStab, PAIRED there). The
+    // authority term is 1-|stick|, so at full deflection the airframe contributes
+    // NOTHING and a committed loop/roll is untouched — "aerobatics never fought"
+    // survives intact. Hands-off, the nose returns to the horizon and the wings
+    // return level, which is what makes the 277 mph cruise restful and what lets
+    // the 700/277 LEVEL-flight terminals fall out of thrust==drag at all.
+    const float pStick = std::clamp(m_flyPitchIn, -1.0f, 1.0f);
+    const float rStick = std::clamp(m_flyRollIn,  -1.0f, 1.0f);
+    fin.pitch = std::clamp(pStick + (1.0f - std::fabs(pStick)) *
+                           std::clamp(-pitch * wt.pitchStab, -1.0f, 1.0f), -1.0f, 1.0f);
+    // ROLL REFERENCE DIES AT THE VERTICAL. hullRollPitch derives roll from
+    // rightLevel = cross(fwd, worldUp), which degenerates as the nose approaches
+    // straight up or down — precisely what a loop flies through. Holding full
+    // roll authority there makes the stabilizer chase a singular reference and
+    // it fights the loop over the top. Fade it with cos(pitch): full authority
+    // in level flight where "wings level" means something, none at the vertical
+    // where it does not. Pitch needs no such guard — asin(fwd.y) stays well
+    // defined, and reads 0 in INVERTED level flight, so it never fights being
+    // upside down.
+    const float rollRef = std::max(0.0f, std::cos(pitch));
+    fin.roll  = std::clamp(rStick + (1.0f - std::fabs(rStick)) * rollRef *
+                           std::clamp(-roll  * wt.rollStab,  -1.0f, 1.0f), -1.0f, 1.0f);
     // BANK-TO-TURN: yaw injected per sin(bank) carves the heading the way a
     // banked wing does (zero when inverted — sin(180°)=0 — so aerobatics are
     // untouched), plus a mild direct rudder. SIGN: FlightController's +steer
@@ -2320,6 +2378,8 @@ bool runWingedFlightSelfTest() {
             stepCar(*ph, car, in);
         }
         bool wentInverted = false, cameBack = false;
+        float loopMinUpY = 1e9f, loopMaxPitch = -1e9f, loopMinPitch = 1e9f, loopMaxAbsRoll = 0.0f;
+        float loopMaxW = 0.0f, loopWAt6s = -1.0f;
         float minLoopSpeed = 1e9f;
         for (int i = 0; i < 60 * 14; ++i) {
             x3::phys::VehicleInput in{};
@@ -2330,7 +2390,21 @@ bool runWingedFlightSelfTest() {
             if (uu[1] < -0.5f) wentInverted = true;
             if (wentInverted && uu[1] > 0.5f) { cameBack = true; break; }
             minLoopSpeed = std::min(minLoopSpeed, car.forwardSpeed());
+            { float rr2, pp2; vehcam::hullRollPitch(ff, uu, rr2, pp2);
+              loopMinUpY = std::min(loopMinUpY, uu[1]);
+              loopMaxPitch = std::max(loopMaxPitch, pp2);
+              loopMinPitch = std::min(loopMinPitch, pp2);
+              loopMaxAbsRoll = std::max(loopMaxAbsRoll, std::fabs(rr2));
+              float av[3]; ph->getBodyAngularVelocity(car.chassis(), av);
+              const float aw = std::sqrt(av[0]*av[0]+av[1]*av[1]+av[2]*av[2]);
+              loopMaxW = std::max(loopMaxW, aw);
+              if (i == 60*6) loopWAt6s = aw; }
         }
+        x3::logInfo("[wings-test] N4 LOOP DIAG: minUpY=" + std::to_string(loopMinUpY) +
+                    " pitchRange=[" + std::to_string(loopMinPitch*57.2958f) + "," +
+                    std::to_string(loopMaxPitch*57.2958f) + "] deg maxAbsRoll=" +
+                    std::to_string(loopMaxAbsRoll*57.2958f) + " deg maxW=" +
+                    std::to_string(loopMaxW) + " rad/s wAt6s=" + std::to_string(loopWAt6s));
         x3::logInfo("[wings-test] N4 LOOP: inverted=" + std::string(wentInverted ? "YES" : "NO") +
                     " recovered=" + std::string(cameBack ? "YES" : "NO") +
                     " minSpeed=" + std::to_string(minLoopSpeed * 2.23694f) + " mph");

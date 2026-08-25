@@ -408,6 +408,10 @@ public:
         m_tester = nullptr;
     }
 
+    void setAeroSuspended(bool on) override { m_aeroSuspended = on; }
+    void setConstraintSuspended(bool on) override {
+        if (m_constraint) m_constraint->SetEnabled(!on);
+    }
     void setInput(const VehicleInput& in) override { m_in = in; }
 
     void preStep(float dt) override {
@@ -484,7 +488,7 @@ public:
         // shifting past 6th" Tim hears. Quadratic drag makes top speed drag-
         // limited below redline, like a real car (a real engine never hits the
         // limiter while accelerating). F = -c |v| v; c ~1.4 => ~160 mph in 6th.
-        {
+        if (!m_aeroSuspended) {
             const float kAeroDrag = 1.4f;
             JPH::Vec3 vel = m_chassis->GetLinearVelocity();
             const float spd = vel.Length();
@@ -513,7 +517,7 @@ public:
         // live (0 = spoiler off); WheeledTuning::downforce is the plumbing.
         {
             const float v = forwardSpeed();      // the wing sees axial airflow
-            if (std::fabs(v) > 3.0f && m_downforceScale > 0.0f) {
+            if (std::fabs(v) > 3.0f && m_downforceScale > 0.0f && !m_aeroSuspended) {
                 constexpr float kDownforceFrac70    = 0.35f;   // x weight at 70 mph
                 constexpr float kDownforceCap       = 1.10f;   // x weight, max
                 constexpr float kV70                = 31.29f;  // 70 mph in m/s
@@ -824,6 +828,7 @@ private:
     float m_boost = 1.0f;                               // nitrous multiplier (1 = none)
     float m_redlineRPM = kDefaultRedlineRPM;            // adaptive shift band re-derives from this
     float m_thrSm = 0.0f;                               // smoothed throttle (shift-band slider)
+    bool  m_aeroSuspended  = false;   // set while the car is FLYING (see setAeroSuspended)
     float m_downforceScale = 1.0f;                      // spoiler scale (see preStep DOWNFORCE)
     // Roll-rate damping default (N*m*s/rad). 2000 on the ~1083 kg hero car
     // bleeds a slalom's roll transient in ~0.25 s without deadening body

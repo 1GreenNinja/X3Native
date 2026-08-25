@@ -293,8 +293,8 @@ public:
         // self-test MEASURES both terminals and gates them — if these numbers
         // drift from the sim (Jolt damping change etc.), the test names it.
         float maxThrust  = 36500.0f; // N at full throttle (SHIFT — the overdrive lineage)
-        float idleThrust = 9800.0f;  // N hands-off: drag-equilibrium cruise, restful
-        float drag       = 0.20f;    // quadratic aero N/(m/s)^2 (PAIRED with the two above)
+        float idleThrust = 5711.0f;  // = drag * 123.8^2 -> the 277 mph coast  // N hands-off: drag-equilibrium cruise, restful
+        float drag       = 0.3726f;  // = maxThrust / 313^2 -> the 700 mph top    // quadratic aero N/(m/s)^2 (PAIRED with the two above)
         // Lift = liftCoeff * |fwdSpeed| * mass, capped at 1.25 g (engine model,
         // JoltVehicle.cpp FlightController). g/124 => lift equals gravity at
         // exactly the coast speed: altitude HOLDS at cruise, gentle sink below
@@ -307,7 +307,13 @@ public:
         float pitchTorque = 9000.0f;
         float yawTorque   = 6000.0f;
         float rollTorque  = 16000.0f;
-        float angDamping  = 2.0f;
+        // Attitude-rate damping. Sets the LOOP RATE, because at full stick the
+        // rate settles where pitchTorque == angDamping*mass*w. With the road
+        // constraint out of the solver the beast reached 6.8 rad/s — a one-second
+        // loop, faster than noseFollow can swing the velocity, so forward speed
+        // collapsed through the top (MEASURED -16 mph). 4.5 puts a full-stick
+        // loop back in the 2-3 s range where the nose and the flight path agree.
+        float angDamping  = 4.5f;
         // BANK-TO-TURN: yaw command injected per sin(bank), so rolling into a
         // bank CARVES the heading (the casual path), while full-roll commits
         // pass through 90° where sin ~ 1 but pitch input owns the turn. Plus a
@@ -318,6 +324,19 @@ public:
         // rate (1/s) so the beast flies where it points (Crimson Skies, not a
         // momentum brick) — this is what makes loops/rolls track true.
         float noseFollow  = 1.6f;
+        // STATIC STABILITY — "restful cruise wins" (owner, 2026-08-25). A real
+        // airframe self-levels: the tailplane makes nose-up bleed off on its own.
+        // Without it the beast KEEPS whatever attitude the climb left it with
+        // (MEASURED 29.7 deg nose-up, 54.9 deg roll) and spends its thrust on
+        // altitude instead of speed, so the 700/277 terminals — which are
+        // LEVEL-flight equalities — can never fall out of the physics.
+        //
+        // This is NOT auto-level fighting the player. Authority fades to ZERO as
+        // the stick moves (scaled by 1-|input| per axis), so a committed loop or
+        // roll is still entirely the player's to keep — it only acts on the axis
+        // the pilot has LET GO of. Units: input per radian of attitude error.
+        float pitchStab   = 2.5f;   // nose returns to the horizon, hands-off
+        float rollStab    = 2.5f;   // wings return level, hands-off
         float deploySecs  = 0.45f;   // wing pop-out animation time (the THUNK)
         float retractMph  = 60.0f;   // grounded below this -> wings away, car again
         // CRASH ("Crashing hurts, a lot"): a single-step speed loss above this
@@ -348,6 +367,10 @@ public:
     bool  wingsDeployed() const { return m_wings; }
     float wingDeploy01()  const { return m_wingPose; }   // 0 stowed .. 1 out
     bool  grounded() const;                              // any wheel in contact
+    // Hull attitude cached each winged frame by updateWingFlight so preStep can
+    // decide whether the WHEELED constraint has any business running (see there).
+    float m_hullPitch = 0.0f;
+    float m_hullRoll  = 0.0f;
     float crashLockout()  const { return m_crashLock; }  // >0 = post-crash lockout
 
     // ---- Edge events (cleared on read — call once per frame) ----------------
