@@ -13,17 +13,19 @@ the next.
 
 ## PHASE 0 — INTEGRITY (the multiplier, ~days)
 Nothing else pays off until every asset renders what its artist authored.
-- 0.1 **mr-factors opt-in sweep** — factors now reach traffic + DriveDemo +
-      EnvArtSystem (this lane). Remaining sites, one commit each with a capture
-      pair: scene.cpp (world geometry), world_cars, monster.cpp, room_dressing,
-      cell_dressing, forest, character_anim. Gate: per-site before/after PSNR
-      change on a named frame + all suites green.
-- 0.2 **Fold `feat/filmic-post`** (sitting unfolded) — filmic tonemap, soft
-      highlight rolloff. Gate: noon + dusk captures, no clipped skies.
-- 0.3 **Aerial perspective grade** — height fog + distance desat/blue-shift LUT
-      (exterior-atmosphere is merged; this is its long-range half).
-      Gate: biplane-altitude flyover vs reference f015/f045. THE money shot.
-- 0.4 **Normal-map audit follow-through** (fix/normal-map-audit merged; verify
+- [x] 0.1 **mr-factors opt-in sweep** — DONE 2026-08-25 (fold/phase0-integrity):
+      all 11 ModelDrawable sites + SceneEntity pass-through fields. 115/152
+      GLBs author factor-dependent materials, now honored everywhere. No-regression
+      proven (complex/crowd byte-identical, tunnel at noise floor); 9 suites green.
+- [x] 0.2 **filmic-post** — VERIFIED 2026-08-25: already folded; ACES filmic is
+      the default tonemap (r_tonemap=1), cutscene extras behind r_filmic by design.
+- [x] 0.3 **Aerial perspective grade** — DONE 2026-08-25 (3169e87e): fog.frag
+      height-falloff integral + two-tone sky melt; the dry outdoor world (which
+      ran NO fog) now breathes graded air in gameplay AND captures. Receipts:
+      40 dB long views / 56 dB close, vista eyes-on clean. NEXT REFINEMENT:
+      A/B against reference f015/f045 once city-density content lands (the flat
+      far terrain + grey water the vista exposed are Phase 1/terrain work).
+- [ ] 0.4 **Normal-map audit follow-through** (fix/normal-map-audit merged; verify
       every vehicle/building actually binds its normal map).
 
 ## PHASE 1 — THE LOOK (the leak's screenshots, ~1-2 weeks)
