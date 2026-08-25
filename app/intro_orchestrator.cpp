@@ -450,6 +450,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // of the evidence pair, and a one-line revert if the feel is ever disputed).
     const bool lvCapLockable =
         x3::apphost::readTuningFloat("space.capitalLockable", 0.0f) > 0.5f;
+    // ITEM G ART-DIRECTION LEVERS (owner, 2026-08-18: "Bigger, DARKER, and more
+    // ominous"). capDarken scales the dreadnought's base-colour albedo AND its
+    // shadow-side self-light rim; capEmissive scales the per-texel emissive gate
+    // that lights her window rows, strips and nav markings. Dark hull + hot
+    // emissives is the ominous read; a uniformly lit grey hull is the toy read.
+    // Shipped at 0.25 / 0.50 (measured: median hull luminance 93 -> 57 on the
+    // evidence frame while the p99 highlight holds at 241 — the hull goes dark,
+    // the emissives stay hot). They are levers, not constants, for two reasons:
+    // the owner tunes "ominous" by eye, and 1.0/1.0 is the exact BEFORE image
+    // for the darkness A/B without a rebuild.
+    const float lvCapDarken   = x3::apphost::readTuningFloat("space.capDarken",   0.25f);
+    const float lvCapEmissive = x3::apphost::readTuningFloat("space.capEmissive", 0.50f);
     tun.maxLinearAccel = lvLinearAccel;
     tun.maxStrafeAccel = lvStrafeAccel;
     tun.noseFollow     = lvNoseFollow;
@@ -472,6 +484,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 " lookBias=" + std::to_string(lvLookBias) +
                 " cockpitSway=" + std::to_string(lvSwayStrength) +
                 " capitalLockable=" + std::to_string(lvCapLockable ? 1 : 0) +
+                " capDarken=" + std::to_string(lvCapDarken) +
+                " capEmissive=" + std::to_string(lvCapEmissive) +
                 "  (override: X3_SPACE_<KEY>=v or space.<key>=v in x3native_settings.cfg)");
 
     pilot.spawn(*phys, 0.0f, 0.0f, 0.0f, tun);
@@ -509,14 +523,13 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             pos[1] = 14.0f * std::sin(ang);
             pos[2] = 26.0f * std::cos(ang);
         } else {
-            // Staging spread re-tightened for the ITEM-G 4x hull: her force
-            // bubble is now 1.2 km, so the old 0.77 lane fraction (2.0 km out,
-            // i.e. 600 m from her centre) would have spawned the deepest
-            // escorts INSIDE the bubble. The lane now caps at 0.40 — 1.04 km
-            // out, a clear 1.56 km off her hull — and still screens the whole
-            // approach, because the approach itself did not get shorter.
-            const float u = 0.10f + 0.043f * (float)(i - 2);   // fraction of the lane
-            pos[0] = 2600.0f * u;                              // toward the capital
+            // Staging re-fitted for the ITEM-G arena: the lane is now 4.2 km
+            // and her force bubble is 1.2 km, so the fraction caps at 0.58 —
+            // 2.44 km out, a clear 1.76 km off her centre. The wing still
+            // screens the whole approach (the approach got LONGER, not
+            // shorter), and no escort spawns inside the bubble.
+            const float u = 0.12f + 0.066f * (float)(i - 2);   // fraction of the lane
+            pos[0] = kIntroArenaX * u;                         // toward the capital
             pos[1] = 60.0f * std::sin(ang * 2.1f);
             pos[2] = 90.0f * std::cos(ang * 1.7f);
         }
@@ -553,6 +566,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // set space.capitalLockable=1 to shoot the "before" side of the pair.
     const bool flightCapture = captureMode && [] {
         const char* k = std::getenv("X3_INTRO_CAPTURE_FLIGHT");
+        return k && *k && *k != '0';
+    }();
+    // X3_INTRO_CAPTURE_PRESENCE=1 — the ITEM F + G evidence run. Parks the
+    // player on a beam standoff that frames the whole 4x hull (the constraint:
+    // she must be imposing AND wholly visible, or her hardpoints stop being
+    // pickable), then SWEEPS the nose slowly across her from bow to stern so
+    // the reticle crosses each hardpoint, gun mount and bay mouth in turn.
+    // Frames are shot densely through the sweep, so the contact sheet shows
+    // the highlight lighting up part after part — which a single still cannot
+    // prove — against the darkened hull and its lit bays.
+    const bool presenceCapture = captureMode && [] {
+        const char* k = std::getenv("X3_INTRO_CAPTURE_PRESENCE");
         return k && *k && *k != '0';
     }();
     const bool live = interactive || captureMode;
@@ -697,15 +722,29 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // deliberately does NOT move: pushing the ship out to compensate would undo
     // the very thing being asked for. She is now a ~1.8 km hull.
     //
-    // FRAMING CHECK (the constraint that keeps item F playable): at the 2.6 km
-    // standoff she subtends 2*atan(900/2600) = 38 deg — a wall of ship, wholly
-    // inside a ~90 deg FOV, so the player can still see the whole vessel and
-    // pick hardpoints off it. At the closest legal approach (the 1.2 km force
-    // bubble) she reaches ~73 deg: knife-fight range, imposing, still not
-    // frame-filling. The camera fix (item D) + lock exemption (item E) mean a
-    // bigger hull no longer causes aim problems.
+    // FRAMING — THE CONSTRAINT THAT KEEPS ITEM F PLAYABLE. The brief is
+    // explicit: "NOT frame-filling — the player must see the whole vessel to
+    // pick hardpoints off it, so a hull that fills the view defeats the
+    // encounter", and "rescaling changes approach distances, arena geometry".
+    //
+    // MEASURED, not assumed: SpaceShip4.glb is 8.03 x 1.80 x 8.66 model units,
+    // so at the shipped 140 draw scale she was already ~1.1 km of hull — the
+    // "~450 m dreadnought" in the old comment was wrong by more than 2x. At
+    // 4x that is a ~4.5 km vessel, and evidence frames shot at the old 2.6 km
+    // standoff confirmed it: she ran off BOTH edges of the frame.
+    //
+    // So the arena moves out with her, which is the honest reading of "4x
+    // bigger" — the SHIP is 4x, and the encounter geometry is re-fitted around
+    // it. At 4.2 km she spans roughly half the frame width: a wall of ship,
+    // wholly visible, hardpoints pickable. At the closest legal approach (the
+    // 1.2 km force bubble) she swallows the view entirely — which is correct,
+    // because that is knife-fight range, not engagement range. The approach
+    // stays content (~11 s at max burn through the escort screen), and 4.2 km
+    // still clears the 10.5 km planet anchor, the 11 km star and the 15 km far
+    // plane. The camera fix (item D) + lock exemption (item E) mean the bigger
+    // hull no longer causes aim problems.
     constexpr float kCapScaleUp = 4.0f;     // THE item-G multiplier, applied once
-    constexpr float kCapX       = 2600.0f;  // capital standoff on +X (UNCHANGED)
+    constexpr float kCapX       = kIntroArenaX;  // capital standoff on +X (was 2600)
     constexpr float kCapDrawScl = 140.0f * kCapScaleUp;   // ~1.8 km dreadnought
     constexpr float kCapHullR   = 240.0f * kCapScaleUp;   // hull hit/occlusion sphere
     constexpr float kCapBubbleR = 300.0f * kCapScaleUp;   // force-field bounce (> hull)
@@ -1340,16 +1379,16 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // with NO sun shadow — the decal look. (RT shadows would be higher-res at
         // range; CSM is the established outdoor-host path — see
         // world_host_common.h applyOutdoorCsm.)
-        // ITEM G RE-REACH: at 4x the hull is ~1.8 km long standing off at 2.6 km,
-        // so her far end sits at ~3.5 km — past the old 3.2 km cascade distance,
-        // which would have left the stern UNSHADOWED and flat. 4.8 km covers the
-        // whole vessel plus the arena behind it. lambda 0.75 is log-weighted, so
+        // ITEM G RE-REACH: at 4x she is a ~4.5 km hull standing off at 4.2 km,
+        // so her far end sits well past the old 3.2 km cascade distance, which
+        // would have left the whole stern UNSHADOWED and flat. 7 km covers the
+        // vessel plus the arena behind it. lambda 0.75 is log-weighted, so
         // the near cascades keep their resolution; this only re-ranges the last
         // one. Self-shadowing is what sells the mass — it has to actually reach.
         x3::rhi::IRenderDevice::CsmParams csm{};
         csm.enabled  = true;
         csm.lambda   = 0.75f;
-        csm.distance = 4800.0f;
+        csm.distance = 7000.0f;
         csm.blend    = 0.12f;
         hc.device->setCsmParams(csm);
     };
@@ -1895,7 +1934,48 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // just before the s420 shot (hull hit-flash + sparks + confirm),
             // and hold the trigger through 630-900 so the energy pool visibly
             // drains under sustained fire. Env-gated: normal headless untouched.
-            if (captureMode && flightCapture) {
+            if (captureMode && presenceCapture) {
+                // ---- PRESENCE / HOVER EVIDENCE RUN --------------------------
+                // Frame the whole vessel from her beam, then walk the nose down
+                // her length. No firing: item F's requirement is highlight on
+                // HOVER, not on hit, so the frames must prove the highlight
+                // with the trigger untouched the whole run.
+                fire = false;
+                in.moveFwd = 0.0f; in.moveStrafe = 0.0f;
+                if (step == 1) {
+                    // Off her starboard beam and above the plane, at the ARENA
+                    // ENGAGEMENT RANGE — this framing IS the item-G acceptance
+                    // check ("imposing but wholly visible, so its hardpoints
+                    // stay pickable"), so it must be shot from where the player
+                    // actually fights her, not from a flattering distance.
+                    pilot.spawn(*phys, kCapX - 500.0f, 700.0f, 4100.0f, tun);
+                }
+                if (step >= 2 && step <= 90) {
+                    // Settle the nose onto her midships.
+                    const x3::phys::Vec3 pp0 = pilot.pos();
+                    float d[3] = { capC[0]-pp0.x, capC[1]-pp0.y, capC[2]-pp0.z };
+                    const float dl = std::sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+                    if (dl > 1.0f) { d[0]/=dl; d[1]/=dl; d[2]/=dl;
+                                     pilot.steerNoseToward(d, 12.0f, dt); }
+                }
+                if (step > 90) {
+                    // THE SWEEP: aim at a point that slides along her long axis
+                    // from bow to stern (and a little up and down), so the ray
+                    // crosses the whole anatomy. Slow enough that the eased
+                    // hover has time to bloom on each part.
+                    const float u2 = (float)(step - 90) / 420.0f;   // 0 -> 1
+                    const float t2 = std::min(1.0f, u2);
+                    const float along[3] = { (-1.0f + 2.0f*t2) * 260.0f * kCapScaleUp,
+                                             (0.35f - 0.75f*t2) * 60.0f * kCapScaleUp,
+                                             0.0f };
+                    float aimAt[3]; capRot(along, aimAt);
+                    const x3::phys::Vec3 pp0 = pilot.pos();
+                    float d[3] = { aimAt[0]-pp0.x, aimAt[1]-pp0.y, aimAt[2]-pp0.z };
+                    const float dl = std::sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+                    if (dl > 1.0f) { d[0]/=dl; d[1]/=dl; d[2]/=dl;
+                                     pilot.steerNoseToward(d, 16.0f, dt); }
+                }
+            } else if (captureMode && flightCapture) {
                 // ---- FLIGHT-FEEL EVIDENCE RUN (X3_INTRO_CAPTURE_FLIGHT=1) ----
                 // Tim's acceptance test, shot as frames: park on a standoff with
                 // the whole dreadnought in view, settle, then HOLD a hard strafe
@@ -2471,7 +2551,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // move; the FLIGHT capture runs the live rule so its frames are
             // evidence. space.capitalLockable=1 forces the old behaviour
             // everywhere (the A/B "before").
-            cap.lockable = lvCapLockable || (captureMode && !flightCapture);
+            // (PRESENCE capture also takes the LIVE rule: item F's whole point
+            //  is that the capital is never locked, so a staged lock would make
+            //  its evidence frames meaningless.)
+            cap.lockable = lvCapLockable ||
+                           (captureMode && !flightCapture && !presenceCapture);
             contacts[nc++] = cap;
         }
         for (uint32_t i = 0; i < enemies.count() && nc < 16; ++i) {
@@ -2518,6 +2602,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     for (uint32_t k = 0; k < nc && targeting.lockedId() != 1000u; ++k)
                         targeting.cycleTarget(+1);
                 }
+            } else if (presenceCapture) {
+                // NO LOCK AT ALL. The presence/hover run is a manual-aim
+                // demonstration: a held fighter lock would slew the nose and
+                // fight the sweep that is the entire point of the frames.
+                targeting.clearLock();
             } else if (captureMode && step >= 120) {
                 if (step == 120 || !targeting.hasLock() || targeting.lockedId() == 1000u)
                     targeting.cycleTarget(+1);
@@ -2575,7 +2664,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         // (flightCapture is the exception: it is the A/B evidence
                         //  run for the camera fix, so it takes the LIVE gate and
                         //  the LIVE bias — a staged framing would prove nothing.)
-                        const bool scriptedFraming = captureMode && !flightCapture;
+                        const bool scriptedFraming =
+                            captureMode && !flightCapture && !presenceCapture;
                         const float holdRate = scriptedFraming
                             ? ((lvTargetHold > 0.0f && !lookingNow) ? lvTargetHold : 0.0f)
                             : aimSov.gate(lookingNow, errRad, lvTargetHold, dt);
@@ -3343,8 +3433,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // reference; s75..s300 is the strafe itself at 15-step (0.25 s)
             // spacing, so the contact sheet reads as one continuous traverse.
             // The run ends at s300 (see the bounded-capture break below).
+            // PRESENCE run: s90 is the settled framing reference (the "is she
+            // wholly visible at engagement range?" check), then a dense series
+            // through the nose sweep so the sheet reads as one continuous walk
+            // across her hardpoints with the highlight following the reticle.
             const bool evShot = evDir && *evDir &&
-                (flightCapture
+                (presenceCapture
+                   ? (step == 90 || (step >= 100 && step <= 510 && (step % 20) == 0))
+                   : flightCapture
                    ? (step == 60 || (step >= 75 && step <= 300 && (step % 15) == 0))
                    : killCapture
                    ? (step >= 100 && step <= 790 && (step % 6) == 0)
@@ -3356,6 +3452,39 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             // contact sheet is not evidence; "the hull went from x=560 px to
             // x=-140 px" is. The [flight-feel] series is the A/B artefact:
             // run it once as shipped and once with space.capitalLockable=1.
+            // PRESENCE run: log WHAT THE HOVER PICKED next to every frame, plus
+            // the capital's on-screen half-width. A dark contact sheet is not
+            // evidence on its own; "s180 hover=GUN idx=2, hull half-width 340 px
+            // of a 1280 px frame" is — it proves both halves at once: the
+            // highlight is tracking the reticle, and she is imposing yet WHOLLY
+            // VISIBLE (the constraint that keeps her hardpoints pickable at 4x).
+            if (evShot && presenceCapture) {
+                float pcP[3], pcF[3], pcU[3];
+                pilot.cameraBasis(pcP, pcF, pcU);
+                const x3::space::hud::ViewProjector vp2(
+                    pcP, pcF, pcU, pilot.fov(), (float)hc.W, (float)hc.H);
+                const auto pj2 = vp2.project(capC);
+                const char* kindName =
+                    capHover.kind == x3::space::CapitalAimKind::Hardpoint ? "HARDPOINT" :
+                    capHover.kind == x3::space::CapitalAimKind::Gun       ? "GUN"       :
+                    capHover.kind == x3::space::CapitalAimKind::Bay       ? "BAY"       :
+                    capHover.kind == x3::space::CapitalAimKind::Reactor   ? "REACTOR"   :
+                    capHover.kind == x3::space::CapitalAimKind::Hull      ? "hull"      : "-";
+                const x3::phys::Vec3 pq = pilot.pos();
+                const float rd[3] = { capC[0]-pq.x, capC[1]-pq.y, capC[2]-pq.z };
+                x3::logInfo("[presence] s" + std::to_string(step) +
+                            " hover=" + kindName + " idx=" +
+                            std::to_string(capHover.index) +
+                            "  capital screen x=" + std::to_string(pj2.sx) +
+                            " halfPx=" + std::to_string(kCapHullR * pj2.pxPerMetre) +
+                            " frameW=" + std::to_string((int)hc.W) +
+                            "  range=" + std::to_string(std::sqrt(rd[0]*rd[0] +
+                                rd[1]*rd[1] + rd[2]*rd[2])) +
+                            " m  fighters=" + std::to_string(enemies.count()) +
+                            " launched=" + std::to_string(baysLaunched) +
+                            " bays=" + std::to_string(
+                                x3::space::CapitalBays::aliveBays(capBays)));
+            }
             if (evShot && flightCapture) {
                 float fcP[3], fcF[3], fcU[3];
                 pilot.cameraBasis(fcP, fcF, fcU);
@@ -3492,11 +3621,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     // gate, so the only bright things on 1.8 km of hull are its
                     // window rows and light strips. Dark hull + hot emissives
                     // is the ominous read; a uniformly lit grey hull is a toy.
-                    constexpr float kCapHullDarken = 0.34f;
-                    constexpr float kCapHullEmis   = 1.45f;
+                    // (space.capDarken / space.capEmissive — see the lever
+                    //  block at the top; 1.0 / 1.0 is the pre-item-G look.)
                     x3::apphost::drawIntroShip(*hc.device, frame, cockpit->capDraw,
                         capC, capFwd, kCapDrawScl, cockpit->mrShared,
-                        kCapHullEmis, kCapHullDarken);
+                        lvCapEmissive, lvCapDarken);
                     // THE GUN MOUNTS — visible, aimable, and REMOVED when shot
                     // off (a scorched stub remains). Base + barrel per mount;
                     // the barrel TRACKS the player, which is what makes the
@@ -4568,7 +4697,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                          "_s" + std::to_string(step) + ".png").c_str());
             // Evidence runs are BOUNDED (nobody is at the controls to cripple the
             // capital or press Esc): end the beat just past the last capture.
-            if (evDir && *evDir && step >= (flightCapture ? 302 : 960)) break;
+            if (evDir && *evDir && step >= (flightCapture ? 302 :
+                                            presenceCapture ? 520 : 960)) break;
 
             // The old "hold this step until wall clock catches up" gate is GONE:
             // the sim now consumes the REAL frame interval (see TIME BASE), so

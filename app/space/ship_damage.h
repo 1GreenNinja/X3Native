@@ -361,9 +361,14 @@ public:
 // actually hit is a lie, so the highlight and the bullet MUST run the same
 // test. That test lives here, once, as pure logic:
 //
-//   * nearest ENTRY point along the ray wins, so the HULL sphere naturally
-//     OCCLUDES far-side parts — you cannot hover (or snipe) the engines
-//     through 1.8 km of ship, you fly around;
+//   * the HULL is an OCCLUDER, not a competitor. Its sphere is a crude
+//     bounding volume for a long thin ship, so it encloses essentially every
+//     part bolted to the outside of it; a naive nearest-entry sweep therefore
+//     lets the hull win every ray and NOTHING is ever hoverable or hittable.
+//     Instead a part is hidden exactly when it lies on the FAR hemisphere with
+//     respect to the ray — behind the ship's own mass from where the player is
+//     looking. You still cannot snipe the engines through 1.8 km of ship: you
+//     fly around. Among the parts that ARE visible, nearest entry wins;
 //   * a DEAD part is not a target: it is skipped entirely, so a destroyed
 //     mount never highlights again and shots there fall through to the hull
 //     as wreckage damage (exactly the shipped fire-path semantics);

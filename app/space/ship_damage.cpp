@@ -3,6 +3,12 @@
 // Pure value-type logic; no GPU, no physics. See ship_damage.h for the contract.
 #include "ship_damage.h"
 
+// The bay-launch acceptance test (T27) drives the real EnemyShipManager: a
+// fighter that spawns AT a bay mouth and flies OUT along the launch vector is
+// the whole point of item G, and asserting it against the actual manager (not
+// a stand-in) is what makes it a test rather than a restatement.
+#include "ship_ai.h"
+
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -522,6 +528,40 @@ CapitalAimResult CapitalAim::pick(const CapitalAimTarget* targets, uint32_t n,
     if (dl < 1e-6f) return best;
     d[0] /= dl; d[1] /= dl; d[2] /= dl;
 
+    // Ray-vs-sphere entry parameter; < 0 == miss (or behind the nose).
+    auto entry = [&](const float c[3], float r) -> float {
+        const float oc[3] = { c[0]-origin[0], c[1]-origin[1], c[2]-origin[2] };
+        const float tca = oc[0]*d[0] + oc[1]*d[1] + oc[2]*d[2];
+        if (tca < 0.0f) return -1.0f;
+        const float d2c = oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - tca*tca;
+        if (d2c > r * r) return -1.0f;
+        const float e = tca - std::sqrt(r*r - d2c);
+        return e < 0.0f ? 0.0f : e;   // origin inside the sphere => entry now
+    };
+
+    // ---- THE HULL, and what it is FOR ------------------------------------
+    // The hull sphere is a crude BOUNDING volume for a long, thin ship, so it
+    // encloses essentially every hardpoint, gun mount and bay on the vessel.
+    // A naive nearest-entry sweep therefore lets the hull win every single
+    // ray and NOTHING on the ship is ever hoverable or hittable — the parts
+    // are visibly bolted to the outside of a hull the ray has already entered.
+    // (That was live: at the shipped 1x anatomy the ventral gun mounts sat
+    // 154 m out inside a 240 m hull sphere, so the battery could never be
+    // shot off by the ray path at all.)
+    //
+    // So the hull is treated as an OCCLUDER, not a competitor. A part is
+    // hidden by the hull exactly when it lies on the FAR hemisphere with
+    // respect to the ray — behind the ship's own mass from where the player
+    // is looking. That preserves the rule the encounter is built on ("you
+    // cannot snipe the engines through 1.8 km of ship, you fly around") while
+    // making every part on the near side pickable at any scale, which is what
+    // item F needs. Parts within a small margin of the terminator stay
+    // visible so a part sitting on the equator does not flicker.
+    const CapitalAimTarget* hull = nullptr;
+    for (uint32_t i = 0; i < n; ++i)
+        if (targets[i].kind == CapitalAimKind::Hull && targets[i].alive &&
+            targets[i].radius > 0.0f) { hull = &targets[i]; break; }
+
     float bestT = 1e30f;
     for (uint32_t i = 0; i < n; ++i) {
         const CapitalAimTarget& t = targets[i];
@@ -529,22 +569,29 @@ CapitalAimResult CapitalAim::pick(const CapitalAimTarget* targets, uint32_t n,
         // shot (hits there fall through to whatever is behind it — the hull).
         if (!t.alive || t.kind == CapitalAimKind::None || t.radius <= 0.0f)
             continue;
+        if (t.kind == CapitalAimKind::Hull) continue;      // occluder, not a rival
+        if (hull) {
+            const float off[3] = { t.pos[0]-hull->pos[0], t.pos[1]-hull->pos[1],
+                                   t.pos[2]-hull->pos[2] };
+            if (off[0]*d[0] + off[1]*d[1] + off[2]*d[2] > 0.15f * hull->radius)
+                continue;                                  // far side: occluded
+        }
         const float oc[3] = { t.pos[0]-origin[0], t.pos[1]-origin[1],
                               t.pos[2]-origin[2] };
-        const float tca = oc[0]*d[0] + oc[1]*d[1] + oc[2]*d[2];
-        if (tca < 0.0f) continue;                       // behind the nose
         const float dist = std::sqrt(oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2]);
-        // Aim-at-what-you-see: the hull's own sphere is already huge and is
-        // never grown (growing it would swallow its own hardpoints); the small
-        // parts grow with range so a 6 px blister stays hoverable.
-        const float r = (t.kind == CapitalAimKind::Hull)
-                            ? t.radius : t.radius * growFactor(dist);
-        const float d2c = oc[0]*oc[0] + oc[1]*oc[1] + oc[2]*oc[2] - tca*tca;
-        if (d2c > r * r) continue;
-        const float tEnter = std::max(0.0f, tca - std::sqrt(r*r - d2c));
-        if (tEnter >= bestT) continue;
+        // Aim-at-what-you-see: small parts grow their acceptance with range,
+        // so a blister that is 6 px wide on screen is still hoverable.
+        const float tEnter = entry(t.pos, t.radius * growFactor(dist));
+        if (tEnter < 0.0f || tEnter >= bestT) continue;
         bestT = tEnter;
         best.kind = t.kind; best.index = t.index; best.t = tEnter;
+    }
+    if (best.kind != CapitalAimKind::None) return best;
+    // Nothing aimable on the near side — did the ray hit the ship at all?
+    if (hull) {
+        const float tH = entry(hull->pos, hull->radius);
+        if (tH >= 0.0f) { best.kind = CapitalAimKind::Hull; best.index = -1;
+                          best.t = tH; }
     }
     return best;
 }
@@ -1169,6 +1216,336 @@ bool runShipDamageSelfTest() {
                                     DeathOutcome::DeorbitCrash, zero);
         check(d2.outcome == DeathOutcome::BreakupInSpace,
               "T24b a crash with no planet demotes to the space breakup");
+    }
+
+    // =======================================================================
+    // ITEM F — HOVER HIGHLIGHT + "MAKE IT HARD" (owner, 2026-08-18)
+    // =======================================================================
+    // The scale the shipped encounter runs at (kCapScaleUp 4x): a 960 m hull
+    // sphere standing off at 2600 m with 168 m hardpoint blisters. Building
+    // the fixtures at the REAL scale is the point — a highlight test that
+    // passes at toy dimensions proves nothing about the ship in the game.
+    const float kHullR = 960.0f;
+    const float kHardR = 168.0f;
+    const float kCapCtr[3] = { 2600.0f, 0.0f, 0.0f };
+
+    // T25 — the hover pick hits only LIVE mounts, and a destroyed one is
+    //       never picked again (it stops highlighting, permanently).
+    {
+        // A blister hung on the NEAR face of the hull, dead ahead of a player
+        // sitting at the origin: the ray reaches the blister before the hull.
+        const float nearHp[3] = { 2600.0f - kHullR - 40.0f, 0.0f, 0.0f };
+        CapitalAimTarget tg[2] = {
+            { { kCapCtr[0], kCapCtr[1], kCapCtr[2] }, kHullR,
+              CapitalAimKind::Hull, -1, true },
+            { { nearHp[0], nearHp[1], nearHp[2] }, kHardR,
+              CapitalAimKind::Hardpoint, 2, true },
+        };
+        const float eye[3] = { 0.0f, 0.0f, 0.0f };
+        const float fwd[3] = { 1.0f, 0.0f, 0.0f };
+        CapitalAimResult r = CapitalAim::pick(tg, 2, eye, fwd);
+        check(r.kind == CapitalAimKind::Hardpoint && r.index == 2,
+              "T25 the hover pick lands on a LIVE hardpoint, not the hull behind it");
+        // KILL IT. The exact same ray must now fall through to the hull —
+        // a destroyed mount is wreckage: it never highlights again.
+        tg[1].alive = false;
+        r = CapitalAim::pick(tg, 2, eye, fwd);
+        check(r.kind == CapitalAimKind::Hull,
+              "T25b a DESTROYED mount stops highlighting (the ray falls to the hull)");
+        // And with nothing at all to hit, the pick is an honest whiff — the
+        // highlight must not invent a target off to the side.
+        const float away[3] = { -1.0f, 0.0f, 0.0f };
+        r = CapitalAim::pick(tg, 2, eye, away);
+        check(r.kind == CapitalAimKind::None && r.index == -1,
+              "T25c aiming away picks NOTHING (no phantom highlight)");
+    }
+
+    // T25d — the hull OCCLUDES far-side parts: you cannot hover (or snipe)
+    //        the engines through 1.8 km of ship, you fly around. This is the
+    //        property that makes the highlight honest at capital scale.
+    {
+        const float farHp[3] = { 2600.0f + kHullR + 40.0f, 0.0f, 0.0f };  // beyond her
+        CapitalAimTarget tg[2] = {
+            { { kCapCtr[0], kCapCtr[1], kCapCtr[2] }, kHullR,
+              CapitalAimKind::Hull, -1, true },
+            { { farHp[0], farHp[1], farHp[2] }, kHardR,
+              CapitalAimKind::Hardpoint, 0, true },
+        };
+        const float eye[3] = { 0.0f, 0.0f, 0.0f };
+        const float fwd[3] = { 1.0f, 0.0f, 0.0f };
+        const CapitalAimResult r = CapitalAim::pick(tg, 2, eye, fwd);
+        check(r.kind == CapitalAimKind::Hull,
+              "T25d the hull occludes a far-side hardpoint (fly around, don't snipe through)");
+        // Come at the SAME hardpoint from the far side and it is pickable —
+        // proving the occlusion is geometric, not a blanket ban.
+        const float eye2[3] = { 5600.0f, 0.0f, 0.0f };
+        const float back[3] = { -1.0f, 0.0f, 0.0f };
+        const CapitalAimResult r2 = CapitalAim::pick(tg, 2, eye2, back);
+        check(r2.kind == CapitalAimKind::Hardpoint && r2.index == 0,
+              "T25e the same hardpoint IS pickable once you fly around to its side");
+    }
+
+    // T25p — THE REGRESSION GUARD. Real hardpoints are bolted to the OUTSIDE of
+    //   a long thin ship, but the hull's bounding SPHERE encloses all of them
+    //   (the shipped ventral gun mounts sit 617 m out inside a 960 m hull
+    //   sphere). Under a naive nearest-entry sweep the hull wins every ray and
+    //   nothing on the ship is hoverable or hittable at all. A part on the NEAR
+    //   hemisphere must beat the hull even when it is entirely inside its
+    //   bounding sphere — otherwise item F has nothing to highlight.
+    {
+        const float gun[3] = { 2600.0f - 592.0f, -136.0f, 104.0f };   // deep inside
+        CapitalAimTarget tg[2] = {
+            { { kCapCtr[0], kCapCtr[1], kCapCtr[2] }, kHullR,
+              CapitalAimKind::Hull, -1, true },
+            { { gun[0], gun[1], gun[2] }, 88.0f, CapitalAimKind::Gun, 1, true },
+        };
+        float eye[3] = { 0.0f, 0.0f, 0.0f };
+        float fwd[3] = { gun[0]-eye[0], gun[1]-eye[1], gun[2]-eye[2] };
+        const float l = std::sqrt(fwd[0]*fwd[0]+fwd[1]*fwd[1]+fwd[2]*fwd[2]);
+        fwd[0]/=l; fwd[1]/=l; fwd[2]/=l;
+        const CapitalAimResult r = CapitalAim::pick(tg, 2, eye, fwd);
+        check(r.kind == CapitalAimKind::Gun && r.index == 1,
+              "T25p a near-side mount INSIDE the hull bounding sphere is still pickable");
+        // Order must not matter: the hull is an occluder, not a list rival.
+        CapitalAimTarget rev[2] = { tg[1], tg[0] };
+        const CapitalAimResult r2 = CapitalAim::pick(rev, 2, eye, fwd);
+        check(r2.kind == CapitalAimKind::Gun && r2.index == 1,
+              "T25q the pick is order-independent (hull occludes, never competes)");
+    }
+
+    // T25f — PER-HARDPOINT HEALTH: each mount takes sustained accurate fire.
+    //        At the shipped 420 HP and 90 dmg/hit that is 5 landed hits per
+    //        mount, and hits on one mount never bleed into another.
+    {
+        ShipDamageModel m = ShipDamage::makeCapital(2400, 12000, 420);
+        m.shield = 0;                       // shield already down (routing gate)
+        int hits = 0;
+        while (!ShipDamage::subsystemDown(m, Subsystem::Sensors) && hits < 50) {
+            ShipDamage::applyDamage(m, 90, Subsystem::Sensors);
+            ++hits;
+        }
+        check(hits == 5,
+              "T25f a 420 HP hardpoint takes 5 landed 90-dmg hits — sustained fire, not a tap");
+        check(!ShipDamage::subsystemDown(m, Subsystem::Engines) &&
+              !ShipDamage::subsystemDown(m, Subsystem::Turrets) &&
+              !ShipDamage::subsystemDown(m, Subsystem::ShieldGen),
+              "T25g killing one mount leaves the other three at full health");
+        check(m.hull == m.maxHull,
+              "T25h subsystem fire never leaks into the hull pool");
+    }
+
+    // T25i — THE SHIELD GATE + REGEN SUPPRESSION. Hull damage barely counts
+    //        through a live shield; the bubble recovers in a lull; and the
+    //        generator kill ends the recovery for good.
+    {
+        ShipDamageModel m = ShipDamage::makeCapital(2400, 12000, 420);
+        m.hullBleedWhileShielded = 0.08f;
+        m.shieldRegenPerSec   = 70.0f;
+        m.shieldRegenDelaySec = 6.0f;
+        // ONE enormous hit into a FULL bubble: the shield eats 2400 and the
+        // 2600 of overflow reaches the hull at 8% — 208, not 2600. That factor
+        // is the rule "the shield must drop before hull damage counts", and it
+        // is what makes hosing the hull the slow path rather than the fast one.
+        ShipDamage::applyDamage(m, 5000);
+        check(m.shield == 0 && m.maxHull - m.hull == 208,
+              "T25i overflow through a LIVE shield lands at 8% (2600 -> 208)");
+        // Once the bubble is DOWN the gate is gone: full damage, unscaled, so
+        // dropping the shield is a real and visible change of state.
+        const int before = m.hull;
+        ShipDamage::applyDamage(m, 90);
+        check(before - m.hull == 90,
+              "T25j with the shield down the SAME hit lands in full (the gate opens)");
+        // 26 hits is exactly what a 2400 bubble costs at 90 dmg — the shield is
+        // a real gate (~18 s of sustained accurate fire), not a speed bump.
+        ShipDamageModel g = ShipDamage::makeCapital(2400, 12000, 420);
+        g.hullBleedWhileShielded = 0.08f;
+        int shots = 0;
+        while (g.shield > 0 && shots < 200) { ShipDamage::applyDamage(g, 90); ++shots; }
+        check(shots == 27 && g.maxHull - g.hull < 40,
+              "T25j2 dropping the bubble costs 27 landed hits and barely scratches the hull");
+        // A LULL: the shield comes back, so breaking off hands her the bubble.
+        ShipDamageModel r = ShipDamage::makeCapital(2400, 12000, 420);
+        r.shield = 0; r.timeSinceHit = 0.0f;
+        r.shieldRegenPerSec = 70.0f; r.shieldRegenDelaySec = 6.0f;
+        for (int i = 0; i < 60 * 12; ++i) ShipDamage::tick(r, 1.0f/60.0f);
+        check(r.shield > 300,
+              "T25k the shield REGENERATES through a 12 s lull (breaking off is punished)");
+        // SUPPRESSED: with the generator dead the same lull returns nothing.
+        ShipDamageModel s = r;
+        s.shield = 0; s.timeSinceHit = 0.0f; s.shieldRegenDisabled = true;
+        for (int i = 0; i < 60 * 12; ++i) ShipDamage::tick(s, 1.0f/60.0f);
+        check(s.shield == 0,
+              "T25l a dead shield generator SUPPRESSES regen permanently");
+        // The gate is opt-in: fighters and every legacy caller are untouched.
+        ShipDamageModel f = ShipDamage::makeFighter(50, 100);
+        ShipDamage::applyDamage(f, 80);
+        check(f.shield == 0 && f.hull == 70,
+              "T25m the gate defaults OFF — legacy overflow math is unchanged");
+    }
+
+    // T25n/T25o — THE TWO TIME-TO-KILL PATHS. The gap between them IS the
+    //   design, so it is pinned by a test rather than left to a spreadsheet.
+    //   The player is ENERGY-bound, not cooldown-bound: 12 energy/s regen at
+    //   8 per shot = 1.5 shots/s sustained x 90 dmg = 135 DPS. Both paths are
+    //   simulated at that rate, at 60 Hz, with the shipped pools.
+    {
+        constexpr float kDt        = 1.0f / 60.0f;
+        constexpr float kShotEvery = 1.0f / 1.5f;   // sustained, energy-bound
+        constexpr int   kDmg       = 90;
+        constexpr float kCycle = 13.0f, kOpen = 8.0f;   // reactor duty cycle
+        constexpr int   kMult  = 6;                     // exposed-hull multiplier
+        auto fresh = [] {
+            ShipDamageModel m = ShipDamage::makeCapital(2400, 12000, 420);
+            m.hullBleedWhileShielded = 0.08f;
+            m.shieldRegenPerSec = 70.0f; m.shieldRegenDelaySec = 6.0f;
+            return m;
+        };
+        // ---- HULL-ONLY: never touch a hardpoint, so she is never crippled
+        //      and the reactor never opens. The slow path, by construction.
+        float tHull = 0.0f;
+        {
+            ShipDamageModel m = fresh();
+            float acc = 0.0f;
+            while (!ShipDamage::isDestroyed(m) && tHull < 600.0f) {
+                ShipDamage::tick(m, kDt); tHull += kDt; acc += kDt;
+                if (acc >= kShotEvery) { acc -= kShotEvery;
+                                         ShipDamage::applyDamage(m, kDmg); }
+            }
+        }
+        // ---- HARDPOINT-FIRST: drop the shield, walk the four mounts, then
+        //      ride the exposed reactor. The lesson the encounter teaches.
+        float tHard = 0.0f;
+        {
+            ShipDamageModel m = fresh();
+            float acc = 0.0f, reactorT2 = 0.0f;
+            int   next = 0;                 // which mount is being worked
+            while (!ShipDamage::isDestroyed(m) && tHard < 600.0f) {
+                ShipDamage::tick(m, kDt); tHard += kDt; acc += kDt;
+                bool crippled2 = true;
+                for (int s2 = 0; s2 < (int)Subsystem::Count; ++s2)
+                    if (!ShipDamage::subsystemDown(m, (Subsystem)s2)) crippled2 = false;
+                if (crippled2) reactorT2 += kDt;
+                if (acc < kShotEvery) continue;
+                acc -= kShotEvery;
+                if (m.shield > 0) { ShipDamage::applyDamage(m, kDmg); continue; }
+                if (ShipDamage::subsystemDown(m, Subsystem::ShieldGen))
+                    m.shieldRegenDisabled = true;
+                while (next < (int)Subsystem::Count &&
+                       ShipDamage::subsystemDown(m, (Subsystem)next)) ++next;
+                if (next < (int)Subsystem::Count) {
+                    ShipDamage::applyDamage(m, kDmg, (Subsystem)next);
+                } else {
+                    const bool open = std::fmod(reactorT2, kCycle) < kOpen;
+                    ShipDamage::applyDamage(m, open ? kDmg * kMult : kDmg);
+                }
+            }
+        }
+        x3::logInfo("[ship-damage] TTK hardpoint-first " +
+                    std::to_string((int)tHard) + " s vs hull-only " +
+                    std::to_string((int)tHull) + " s");
+        check(tHard > 25.0f && tHard < 90.0f,
+              "T25n hardpoint-first kills the capital in a real boss-fight minute");
+        check(tHull > tHard * 1.6f,
+              "T25o hosing the HULL is >1.6x slower — hardpoint-first is the lesson");
+    }
+
+    // =======================================================================
+    // T26 — ITEM G: THE LAUNCH BAYS
+    // =======================================================================
+    {
+        CapitalBayState b{};
+        CapitalBays::init(b);
+        check(CapitalBays::aliveBays(b) == kCapitalBayCount,
+              "T26 the bays seed alive with staggered launch clocks");
+        // Cadence tightens as she dies, and never inverts.
+        check(CapitalBays::periodFor(0.0f) < CapitalBays::periodFor(1.0f) &&
+              std::fabs(CapitalBays::periodFor(1.0f) -
+                        CapitalBays::kLaunchPeriod) < 1e-4f,
+              "T26b the launch cadence tightens as her hull drops (never inverts)");
+        // Every bay launches on its own clock over a long window.
+        uint32_t seen = 0u; int launches = 0;
+        for (int i = 0; i < 60 * 60; ++i) {
+            const uint32_t mk = CapitalBays::update(b, 1.0f/60.0f, /*live*/0,
+                                                    1.0f, true);
+            seen |= mk;
+            for (int k = 0; k < kCapitalBayCount; ++k) if (mk & (1u<<k)) ++launches;
+        }
+        check(seen == 0x7u && launches >= 12,
+              "T26c all three bays launch, in waves over time (not one lump)");
+        // A BLOWN bay stops launching — for good.
+        CapitalBayState b2{}; CapitalBays::init(b2);
+        check(CapitalBays::damageBay(b2, 1, CapitalBays::kBayHp),
+              "T26d sustained fire blows a bay (damageBay reports the kill)");
+        check(!CapitalBays::bayAlive(b2, 1) &&
+              CapitalBays::aliveBays(b2) == kCapitalBayCount - 1,
+              "T26e the blown bay reads dead, the others read alive");
+        uint32_t after = 0u;
+        for (int i = 0; i < 60 * 60; ++i)
+            after |= CapitalBays::update(b2, 1.0f/60.0f, 0, 1.0f, true);
+        check((after & 0x2u) == 0u && (after & 0x5u) == 0x5u,
+              "T26f a DESTROYED bay never launches again; the rest keep going");
+        check(!CapitalBays::damageBay(b2, 1, CapitalBays::kBayHp),
+              "T26g a dead bay cannot be killed twice");
+        // THE CAP. At the ceiling nothing launches, however long you wait —
+        // escalation is bounded and cannot run away.
+        CapitalBayState b3{}; CapitalBays::init(b3);
+        uint32_t capped = 0u;
+        for (int i = 0; i < 60 * 60; ++i)
+            capped |= CapitalBays::update(b3, 1.0f/60.0f,
+                                          CapitalBays::kLiveCap, 0.0f, true);
+        check(capped == 0u,
+              "T26h at the live-fighter cap the bays hold fire (escalation is bounded)");
+        // And one tick can never blow PAST the cap even with every bay due.
+        CapitalBayState b4{}; CapitalBays::init(b4);
+        for (int i = 0; i < 60 * 60; ++i)
+            CapitalBays::update(b4, 1.0f/60.0f, CapitalBays::kLiveCap - 1, 0.0f, true);
+        int fired = 0;
+        for (int k = 0; k < kCapitalBayCount; ++k)
+            if (CapitalBays::update(b4, 1.0f/60.0f, CapitalBays::kLiveCap - 1,
+                                    0.0f, true) & (1u<<k)) ++fired;
+        check(fired <= 1,
+              "T26i one tick can never launch past the cap (in-tick launches count)");
+    }
+
+    // T27 — a launched fighter is born AT the bay mouth heading OUT along the
+    //       launch vector, never popped into empty space. This is the whole
+    //       difference between "more little ships" and "it has bays".
+    {
+        EnemyShipManager em; em.init(4);
+        const float mouth[3] = { 2600.0f, -180.0f, 470.0f };
+        float dir[3] = { 0.10f, -0.22f, 0.97f };
+        const float dl = std::sqrt(dir[0]*dir[0]+dir[1]*dir[1]+dir[2]*dir[2]);
+        dir[0]/=dl; dir[1]/=dl; dir[2]/=dl;
+        em.spawnLaunched(mouth, dir, 55.0f);
+        check(em.count() == 1u, "T27 a bay launch produces exactly one fighter");
+        const EnemyShip& s = em.ship(0);
+        const float dp = std::sqrt((s.pos[0]-mouth[0])*(s.pos[0]-mouth[0]) +
+                                   (s.pos[1]-mouth[1])*(s.pos[1]-mouth[1]) +
+                                   (s.pos[2]-mouth[2])*(s.pos[2]-mouth[2]));
+        check(dp < 1e-3f, "T27b it spawns AT the bay mouth, not in empty space");
+        const float align = s.fwd[0]*dir[0] + s.fwd[1]*dir[1] + s.fwd[2]*dir[2];
+        const float spd = std::sqrt(s.vel[0]*s.vel[0] + s.vel[1]*s.vel[1] +
+                                    s.vel[2]*s.vel[2]);
+        check(align > 0.999f && std::fabs(spd - 55.0f) < 0.01f,
+              "T27c it leaves ALONG the launch vector with real exit speed");
+        // It must actually clear the hull: after a second of flight it is
+        // measurably farther out along the launch line than it started.
+        const float p0[3] = { s.pos[0], s.pos[1], s.pos[2] };
+        const float far[3] = { 100000.0f, 0.0f, 0.0f };   // player miles away:
+        for (int i = 0; i < 60; ++i) em.update(1.0f/60.0f, far, far);  // stays on course
+        const EnemyShip& s2 = em.ship(0);
+        const float travelled = (s2.pos[0]-p0[0])*dir[0] + (s2.pos[1]-p0[1])*dir[1] +
+                                (s2.pos[2]-p0[2])*dir[2];
+        check(travelled > 30.0f,
+              "T27d it FLIES OUT along the vector (clears the hull, not a hover)");
+        // Degenerate launch vectors are survivable, not a crash or a NaN.
+        const float zero[3] = { 0.0f, 0.0f, 0.0f };
+        em.spawnLaunched(mouth, zero, 55.0f);
+        const EnemyShip& s3 = em.ship(em.count() - 1u);
+        const float l3 = std::sqrt(s3.fwd[0]*s3.fwd[0] + s3.fwd[1]*s3.fwd[1] +
+                                   s3.fwd[2]*s3.fwd[2]);
+        check(std::fabs(l3 - 1.0f) < 1e-4f,
+              "T27e a degenerate launch vector still yields a unit heading");
     }
 
     x3::logInfo("ship-damage: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
