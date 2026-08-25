@@ -200,6 +200,57 @@ static x3::rhi::IRenderDevice::FogParams tunnelAerialFog() {
     return fp;
 }
 
+// r_fog* live-dial merge (Tim 2026-08-25): -1 = keep the host's authored
+// value. Shared by the interactive toggler and the screenshot settle path so
+// `--set r_fogdensity ...` A/Bs and typed console dials hit BOTH.
+static x3::rhi::IRenderDevice::FogParams aerialFogWithCVars(x3::con::IConsole* console) {
+    x3::rhi::IRenderDevice::FogParams fp = tunnelAerialFog();
+    if (!console) return fp;
+    const float d = console->getFloat("r_fogdensity");
+    const float s = console->getFloat("r_fogstart");
+    const float h = console->getFloat("r_fogheight");
+    const float b = console->getFloat("r_fogskyblend");
+    const float m = console->getFloat("r_fogmax");
+    if (d >= 0.0f) fp.density          = d;
+    if (s >= 0.0f) fp.start            = s;
+    if (h >= 0.0f) fp.heightFalloff    = h;
+    if (b >= 0.0f) fp.skyBlendDistance = b;
+    if (m >= 0.0f) fp.maxOpacity       = m;
+    return fp;
+}
+
+// --set r_fog* -> the tunnel host, BOTH routes (the --set audit's two-layer
+// law): the screenshot settle path merges straight from the CLI list (its
+// console does not exist yet), and the interactive loop seeds its console once
+// so typed dials and CLI overrides share one truth. Every application claims
+// + logs, so a run's own output proves what it tested.
+static const char* const kFogCVars[5] = {
+    "r_fogdensity", "r_fogstart", "r_fogheight", "r_fogskyblend", "r_fogmax" };
+
+static x3::rhi::IRenderDevice::FogParams aerialFogWithCli(const HostContext& hc) {
+    x3::rhi::IRenderDevice::FogParams fp = tunnelAerialFog();
+    float* slots[5] = { &fp.density, &fp.start, &fp.heightFalloff,
+                        &fp.skyBlendDistance, &fp.maxOpacity };
+    for (int i = 0; i < 5; ++i)
+        for (const auto& kv : hc.cliCVars)
+            if (kv.first == kFogCVars[i]) {
+                *slots[i] = (float)std::atof(kv.second.c_str());
+                claimHostCVar(kv.first);
+                x3::logInfo("[cvar] tunnel: APPLIED  --set " + kv.first + " " + kv.second);
+            }
+    return fp;
+}
+
+static void seedFogCVarsFromCli(const HostContext& hc, x3::con::IConsole* console) {
+    for (const char* n : kFogCVars)
+        for (const auto& kv : hc.cliCVars)
+            if (kv.first == n) {
+                if (console) console->set(n, kv.second);
+                claimHostCVar(n);
+                x3::logInfo("[cvar] tunnel: APPLIED  --set " + kv.first + " " + kv.second);
+            }
+}
+
 static x3::rhi::IRenderDevice::SkyParams tunnelDemoSky() {
     x3::rhi::IRenderDevice::SkyParams sp{};
     sp.enabled = true;
@@ -2839,8 +2890,9 @@ int hostTunnel(HostContext& hc) {
 
         // Captures breathe the same air as gameplay (Phase 0.3): the aerial fog
         // is set ONCE here because the settle loop below never reaches the
-        // interactive loop's underwater/dry fog toggler.
-        device->setFog(tunnelAerialFog());
+        // interactive loop's underwater/dry fog toggler. r_fog* merges from the
+        // CLI list directly — `console` is still null on this path.
+        device->setFog(aerialFogWithCli(hc));
 
         auto settleAndGrab = [&](const float camIn[5], const std::string& out) -> bool {
             // The eye lives in a MUTABLE copy so shotCam can steer it (see the
@@ -4788,6 +4840,7 @@ int hostTunnel(HostContext& hc) {
     shell.attach(hc);
     shell.setFreezesSim(true);          // this host really does stop the sim on ESC
     console = shell.console();
+    seedFogCVarsFromCli(hc, console);   // --set r_fog* wins in play too
     // ---- CONSOLE MIRRORS THE BOOT STATE (W-MENU find, NO_SLOP rule 4). The
     // shell's live cvar->device push (applyLiveHostRenderCVars, frame 0) runs
     // pushLiveHostCVarsToDevice from the REGISTERED DEFAULTS — r_csm "0",
@@ -6516,10 +6569,21 @@ int hostTunnel(HostContext& hc) {
                 const float wSurf = x3::game::worldWaterLevelAt(cx, cz);
                 const bool under = (wSurf > x3::game::kWorldWaterDry + 1.0f) &&
                                    (cy < wSurf - 0.05f);
-                static bool wasUnder = false, fogInit = false;
-                if (!fogInit || under != wasUnder) {
+                // Change-gated on BOTH the water state and the r_fog* dials, so
+                // a typed cvar re-applies next frame without setFog spam.
+                const float cvD  = console ? console->getFloat("r_fogdensity")  : -1.0f;
+                const float cvS  = console ? console->getFloat("r_fogstart")    : -1.0f;
+                const float cvH  = console ? console->getFloat("r_fogheight")   : -1.0f;
+                const float cvB  = console ? console->getFloat("r_fogskyblend") : -1.0f;
+                const float cvM  = console ? console->getFloat("r_fogmax")      : -1.0f;
+                static bool  wasUnder = false, fogInit = false;
+                static float lv[5] = { -2, -2, -2, -2, -2 };
+                const bool cvChanged = cvD != lv[0] || cvS != lv[1] || cvH != lv[2] ||
+                                       cvB != lv[3] || cvM != lv[4];
+                if (!fogInit || under != wasUnder || (cvChanged && !under)) {
                     fogInit  = true;
                     wasUnder = under;
+                    lv[0] = cvD; lv[1] = cvS; lv[2] = cvH; lv[3] = cvB; lv[4] = cvM;
                     x3::rhi::IRenderDevice::FogParams fp{};
                     if (under) {
                         fp.enabled  = true;
@@ -6528,7 +6592,7 @@ int hostTunnel(HostContext& hc) {
                         fp.start    = 0.15f;
                         fp.maxOpacity = 0.96f;
                     } else {
-                        fp = tunnelAerialFog();   // the dry world's air (Phase 0.3)
+                        fp = aerialFogWithCVars(console);   // the dry world's air (Phase 0.3)
                     }
                     device->setFog(fp);
                 }

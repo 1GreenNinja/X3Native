@@ -135,8 +135,13 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     console.registerCVar("r_bloomthreshold", "1.10", "bloom bright-pass threshold (linear luminance; soft knee)");
     // ---- W2-A2 / AD-1: painterly-lever LIVE OVERRIDES (canonlevel only; -1 = keep
     // the zone's authored value). The zone opt-in itself lives in cell_dressing. ----
-    console.registerCVar("r_fogdensity",     "-1",   "depth-fog extinction per meter override (canonlevel; -1 = keep zone value)");
-    console.registerCVar("r_fogstart",       "-1",   "depth-fog clean-air start meters override (canonlevel; -1 = keep zone value)");
+    console.registerCVar("r_fogdensity",     "-1",   "depth-fog extinction per meter override (canonlevel + outdoor hosts; -1 = keep host value)");
+    console.registerCVar("r_fogstart",       "-1",   "depth-fog clean-air start meters override (canonlevel + outdoor hosts; -1 = keep host value)");
+    // AERIAL PERSPECTIVE dials (Phase 0.3/0.4 — outdoor hosts; -1 = keep the
+    // host's authored value). Live: typed value in, next frame out.
+    console.registerCVar("r_fogheight",      "-1",   "aerial height falloff 1/m (fog thins with altitude; 0 = height-independent, -1 = keep host value)");
+    console.registerCVar("r_fogskyblend",    "-1",   "aerial sky-blend distance m (far fog melts into the horizon color; 0 = single flat color, -1 = keep host value)");
+    console.registerCVar("r_fogmax",         "-1",   "depth-fog far cap 0..1 (no-milky-wash law; -1 = keep host value)");
     console.registerCVar("r_gradestrength",  "-1",   "filmic grade master strength override 0..1 (canonlevel; -1 = keep zone value)");
     console.registerCVar("r_vignette",       "-1",   "vignette strength override 0..0.25 (canonlevel; -1 = keep zone value)");
     console.registerCVar("r_filmic",         "1",    "cinematic filmic post master gate (cutscene vignette/grain/split-tone; 0 = force off for A/B — the look itself only turns on during cutscene playback)");

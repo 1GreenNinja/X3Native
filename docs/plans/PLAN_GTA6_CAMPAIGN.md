@@ -25,8 +25,14 @@ Nothing else pays off until every asset renders what its artist authored.
       40 dB long views / 56 dB close, vista eyes-on clean. NEXT REFINEMENT:
       A/B against reference f015/f045 once city-density content lands (the flat
       far terrain + grey water the vista exposed are Phase 1/terrain work).
-- [ ] 0.4 **Normal-map audit follow-through** (fix/normal-map-audit merged; verify
-      every vehicle/building actually binds its normal map).
+- [x] 0.4 **Normal-map audit follow-through** — DONE 2026-08-25: loader decode
+      failures already fall back + warn; every load now prints a `nrm=X/Y` bind
+      receipt. Content gap quantified: **85/152 GLBs author ZERO normal maps**
+      (all 8 town houses, CTR/Muscle/Skyline, 3 traffic sedans, the sci-fi kits)
+      — list + fix recipe in NORMAL_MAP_AUDIT_0825.md, feeds Phase 1 (Lane B/E).
+- [x] 0.x **r_fog live dials** (Tim's ask) — r_fogdensity/start/height/skyblend/max
+      reach the outdoor host from console AND `--set` (audit-claimed, logged);
+      heavy/off A/Bs at 24.8/27.6 dB from default.
 
 ## PHASE 1 — THE LOOK (the leak's screenshots, ~1-2 weeks)
 - 1.1 Cloud light transport (thickness transmittance + sun rim on W-CLOUDS).

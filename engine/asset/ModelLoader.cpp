@@ -508,11 +508,19 @@ public:
         {
             const double ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t0).count();
+            // Normal-map bind receipt (Phase 0.4): how many materials carry a
+            // real normal map vs shade FLAT. A model whose count drops between
+            // builds means a bind regression; a 0/N model is a content gap
+            // (the 2026-08-25 audit found 85 such GLBs — town houses, CTR,
+            // Muscle, 3 traffic sedans, the sci-fi kits).
+            size_t withNrm = 0;
+            for (const auto& mat : model.materials)
+                if (mat.normalTex != 0) ++withNrm;
             char tb[512];
             std::snprintf(tb, sizeof(tb),
-                "[gltf] loaded %s in %.1f ms (prims=%zu mats=%zu anims=%zu)",
+                "[gltf] loaded %s in %.1f ms (prims=%zu mats=%zu anims=%zu nrm=%zu/%zu)",
                 path.c_str(), ms, model.primitives.size(), model.materials.size(),
-                model.animations.size());
+                model.animations.size(), withNrm, model.materials.size());
             logInfo(tb);
         }
         return model;
