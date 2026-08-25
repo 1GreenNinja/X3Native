@@ -2895,7 +2895,9 @@ void MonsterSystem::drawMonsterAt(x3::rhi::IRenderDevice& device,
                            x3::rhi::TextureHandle{ d.emissiveTexId },
                            x3::rhi::TextureHandle{ d.detailTexId },
                            d.detailUvScale,
-                           d.clearcoat, d.clearcoatRough);
+                           d.clearcoat, d.clearcoatRough,
+                           /*selfLight=*/0.0f, /*metallicScale=*/1.0f,
+                           /*foliage=*/0.0f, d.metallicFactor, d.roughnessFactor);
     }
 }
 

@@ -254,7 +254,9 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
                                e.baseColor, e.emissive, e.transform,
                                /*alphaMask*/ false, /*alphaBlend*/ e.alphaBlend,
                                e.emissiveTex, /*detailTex*/ {}, /*detailUvScale*/ 1.0f,
-                               e.clearcoat, e.clearcoatRough);
+                               e.clearcoat, e.clearcoatRough,
+                               /*selfLight=*/0.0f, /*metallicScale=*/1.0f,
+                               /*foliage=*/0.0f, e.metallicFactor, e.roughnessFactor);
         } else {
             device.drawMeshEmissive(frame, mesh, e.tex, e.baseColor, e.emissive, e.transform);
         }

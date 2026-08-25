@@ -661,7 +661,10 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                    x3::rhi::TextureHandle{ fr.normalTexId },
                                    x3::rhi::TextureHandle{ fr.mrTexId },
                                    bc, emis, fin, fr.alphaMask, fr.alphaBlend,
-                                   x3::rhi::TextureHandle{ fr.emissiveTexId });
+                                   x3::rhi::TextureHandle{ fr.emissiveTexId },
+                                   x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
+                                   0.0f, 1.0f, 0.0f,
+                                   fr.metallicFactor, fr.roughnessFactor);
             }
         }
 
@@ -724,7 +727,10 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                        x3::rhi::TextureHandle{ dr.mrTexId },
                                        dr.baseColorFactor, emis, fin,
                                        dr.alphaMask, dr.alphaBlend,
-                                       x3::rhi::TextureHandle{ dr.emissiveTexId });
+                                       x3::rhi::TextureHandle{ dr.emissiveTexId },
+                                       x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
+                                       0.0f, 1.0f, 0.0f,
+                                       dr.metallicFactor, dr.roughnessFactor);
                 }
             };
             drawSet(ms.fixedDr, nullptr);
@@ -782,7 +788,10 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                emis,
                                fin,
                                dr.alphaMask, dr.alphaBlend,
-                               x3::rhi::TextureHandle{ dr.emissiveTexId });
+                               x3::rhi::TextureHandle{ dr.emissiveTexId },
+                               x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
+                               0.0f, 1.0f, 0.0f,
+                               dr.metallicFactor, dr.roughnessFactor);
         }
 
         // LAW 1 SEAL (QA mainlevel sweep): the pentagon leaf covers only ~72% of the

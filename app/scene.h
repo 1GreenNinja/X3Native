@@ -135,6 +135,11 @@ struct Entity {
     // metal rather than a flat tint. Mirrors env_art/vehicle's drawMeshPBR clearcoat args.
     float                  clearcoat = 0.0f;
     float                  clearcoatRough = 0.05f;
+    // glTF pbrMetallicRoughness scalar factors (multiply the MR texture; 1.0 =
+    // the glTF default AND the legacy sentinel, so every existing entity shades
+    // byte-identically until a fill site copies its ModelDrawable's factors).
+    float                  metallicFactor  = 1.0f;
+    float                  roughnessFactor = 1.0f;
     bool                   transparent = false;
     x3::rhi::IRenderDevice::GlassMaterial glass{};
     uint32_t               tag = (uint32_t)Tag::None;

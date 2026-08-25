@@ -504,7 +504,8 @@ void WorldForests::submitTree(x3::rhi::IRenderDevice& device,
                            d.detailUvScale,
                            d.clearcoat, d.clearcoatRough,
                            /*selfLight=*/0.0f, /*metallicScale=*/1.0f,
-                           /*foliage=*/1.0f);   // canopy wrap + back-translucency
+                           /*foliage=*/1.0f,    // canopy wrap + back-translucency
+                           d.metallicFactor, d.roughnessFactor);
         ++drawn;
     }
 }
