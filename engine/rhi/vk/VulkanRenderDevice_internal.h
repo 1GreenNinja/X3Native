@@ -2743,7 +2743,8 @@ private:
                            float filmicHighlight[4]; // rgb = highlight tint, w = grain px scale
                          };
     // Depth-fog fullscreen pass (ART_BIBLE §5). Push mirrors shaders/fog.frag.
-    struct FogPush { glm::mat4 invProj; glm::vec4 colorDensity; glm::vec4 startMax; };
+    struct FogPush { glm::mat4 invProj; glm::vec4 colorDensity; glm::vec4 startMax;
+                     glm::vec4 upCam; glm::vec4 skyColor; };  // aerial perspective (128 B total)
     // Volumetric light-scattering variant of the same pass (shaders/volumetric.frag).
     // Separate push (and separate pipeline/layout) so the FLAT fog path above is
     // never touched: FogParams::volumetric == false records the original pipeline
@@ -3533,6 +3534,7 @@ private:
     FilmicParams            m_filmic{};          // enabled=false -> composite filmic block inert
     uint32_t                m_filmicFrame = 0;   // per-frame grain-seed advance (the crawl)
     glm::mat4               m_fogInvProjCPU{ 1.0f };  // frame inverse-projection for fog.frag
+    glm::vec4               m_fogUpCamCPU{ 0.0f, 1.0f, 0.0f, 0.0f };  // world-up in view space + cam world Y
     VkPipelineLayout        m_fogLayout = VK_NULL_HANDLE;
     VkPipeline              m_fogPipe   = VK_NULL_HANDLE;
     VkDescriptorSet         m_setFog    = VK_NULL_HANDLE;   // b0 = main depth (TAA depth sampler)

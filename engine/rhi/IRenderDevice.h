@@ -379,6 +379,14 @@ public:
         float density  = 0.0f;                   // extinction per meter (0.002-0.004 = subtle)
         float start    = 0.0f;                   // meters of clean air (viewmodel guard)
         float maxOpacity = 0.85f;                // far-wall cap (no milky wash law)
+        // ---- AERIAL PERSPECTIVE (Phase 0.3; both default INERT) ---------------
+        // skyBlendDistance > 0: fog color blends from `color` (near haze) toward
+        // `skyColor` (the horizon) with distance, so far geometry dissolves into
+        // the sky instead of a flat wall. heightFalloff > 0: density decays
+        // exponentially with world height (thick ground haze, clear at altitude).
+        float skyColor[3] = { 0.0f, 0.0f, 0.0f };
+        float skyBlendDistance = 0.0f;           // meters; 0 = single flat color
+        float heightFalloff    = 0.0f;           // 1/m;    0 = height-independent
         // ---- VOLUMETRIC LIGHT SCATTERING (opt-in; default OFF) ----------------
         // When `volumetric` is false the fog pass runs the ORIGINAL flat
         // Beer-Lambert shader and every frame is byte-identical to the pre-

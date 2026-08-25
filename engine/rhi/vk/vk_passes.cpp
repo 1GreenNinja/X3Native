@@ -2101,6 +2101,15 @@ void VulkanRenderDevice::prepareFrameData() {
             // Depth-fog pass (ART_BIBLE §5): the SAME jitter-inclusive inverse
             // projection SSAO reconstructs with, captured for fog.frag's push.
             m_fogInvProjCPU = su.invProj;
+            // Aerial perspective (Phase 0.3): world-up expressed in VIEW space
+            // (view * (0,1,0,0) = column 1 of the view matrix) + the camera's
+            // world height, so fog.frag can evaluate height-falloff fog without
+            // a second full matrix in the push range.
+            {
+                const glm::mat4 view    = su.invProj * ubo.viewProj;   // inv(proj)*proj*view
+                const glm::mat4 invView = glm::inverse(view);
+                m_fogUpCamCPU = glm::vec4(glm::vec3(view[1]), invView[3].y);
+            }
             // VOLUMETRIC variant: the same jittered camera, inverted all the way to
             // WORLD space (volumetric.frag marches in world so it can project each
             // sample into the sun's lightViewProj and attenuate against world-space

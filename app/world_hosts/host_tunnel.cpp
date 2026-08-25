@@ -182,6 +182,24 @@ static void applySky(x3::rhi::IRenderDevice& dev,
 // Three hand copies of these constants is exactly the drift skyFromWeather's
 // header block documents (NO_SLOP rule 4). X3_CLOUD still overrides the cover
 // for the cloud-pass perf A/Bs.
+// AERIAL PERSPECTIVE (Phase 0.3): the dry outdoor fog. Thin height-falloff
+// haze whose far tone melts into the horizon so the 13 km frame reads as
+// DEPTH instead of pasting far terrain flat on the sky. Shared by the
+// interactive loop (the underwater toggler's dry branch) and the screenshot
+// settle path, so captures photograph the same air the player breathes.
+static x3::rhi::IRenderDevice::FogParams tunnelAerialFog() {
+    x3::rhi::IRenderDevice::FogParams fp{};
+    fp.enabled  = true;
+    fp.color[0] = 0.42f; fp.color[1] = 0.46f; fp.color[2] = 0.52f;
+    fp.skyColor[0] = 0.55f; fp.skyColor[1] = 0.62f; fp.skyColor[2] = 0.75f;
+    fp.density  = 0.00012f;         // gentle: ~26% at 2.5 km, capped below
+    fp.start    = 30.0f;
+    fp.maxOpacity = 0.55f;          // far ridges dissolve, never white out
+    fp.skyBlendDistance = 3000.0f;
+    fp.heightFalloff    = 0.0012f;  // half-density ~580 m up: climb out of the haze
+    return fp;
+}
+
 static x3::rhi::IRenderDevice::SkyParams tunnelDemoSky() {
     x3::rhi::IRenderDevice::SkyParams sp{};
     sp.enabled = true;
@@ -2818,6 +2836,11 @@ int hostTunnel(HostContext& hc) {
             gasStations.fuel().litres = gasStations.fuel().capacityL * 0.35f;
             gasStations.fuel().armed  = true;
         }
+
+        // Captures breathe the same air as gameplay (Phase 0.3): the aerial fog
+        // is set ONCE here because the settle loop below never reaches the
+        // interactive loop's underwater/dry fog toggler.
+        device->setFog(tunnelAerialFog());
 
         auto settleAndGrab = [&](const float camIn[5], const std::string& out) -> bool {
             // The eye lives in a MUTABLE copy so shotCam can steer it (see the
@@ -6493,8 +6516,9 @@ int hostTunnel(HostContext& hc) {
                 const float wSurf = x3::game::worldWaterLevelAt(cx, cz);
                 const bool under = (wSurf > x3::game::kWorldWaterDry + 1.0f) &&
                                    (cy < wSurf - 0.05f);
-                static bool wasUnder = false;
-                if (under != wasUnder) {
+                static bool wasUnder = false, fogInit = false;
+                if (!fogInit || under != wasUnder) {
+                    fogInit  = true;
                     wasUnder = under;
                     x3::rhi::IRenderDevice::FogParams fp{};
                     if (under) {
@@ -6503,6 +6527,8 @@ int hostTunnel(HostContext& hc) {
                         fp.density  = 0.055f;      // ~18 m of green visibility
                         fp.start    = 0.15f;
                         fp.maxOpacity = 0.96f;
+                    } else {
+                        fp = tunnelAerialFog();   // the dry world's air (Phase 0.3)
                     }
                     device->setFog(fp);
                 }

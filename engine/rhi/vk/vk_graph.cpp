@@ -1820,7 +1820,17 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                                             self->m_fogParams.color[2],
                                             self->m_fogParams.density);
                 fp.startMax     = glm::vec4(self->m_fogParams.start,
-                                            self->m_fogParams.maxOpacity, 0.0f, 0.0f);
+                                            self->m_fogParams.maxOpacity,
+                                            self->m_fogParams.skyBlendDistance, 0.0f);
+                fp.upCam        = self->m_fogUpCamCPU;
+                // skyBlendDistance <= 0 pushes the NEAR color as the sky color
+                // too, so the mix in fog.frag is inert regardless of t.
+                const bool aerial = self->m_fogParams.skyBlendDistance > 0.0f;
+                fp.skyColor     = glm::vec4(
+                    aerial ? self->m_fogParams.skyColor[0] : self->m_fogParams.color[0],
+                    aerial ? self->m_fogParams.skyColor[1] : self->m_fogParams.color[1],
+                    aerial ? self->m_fogParams.skyColor[2] : self->m_fogParams.color[2],
+                    std::max(self->m_fogParams.heightFalloff, 0.0f));
                 vkCmdPushConstants(c, self->m_fogLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(fp), &fp);
                 vkCmdDraw(c, 3, 1, 0, 0);
