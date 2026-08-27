@@ -669,6 +669,14 @@ int hostSpace(HostContext& hc) {
         float wormholePreroll = 0.0f;
         if (const char* wt = std::getenv("X3_WORMHOLE_T"))
             wormholePreroll = (float)std::atof(wt);
+        // X3_WORMHOLE_ENTER=<index>: park the ship IN that wormhole's mouth so a
+        // headless run actually takes the transit. The capture path never flies,
+        // so without this the transit leg could only ever be asserted by a unit
+        // test — and "entering one means something" is a claim about the world,
+        // not about a test.
+        int wormholeEnterIdx = -1;
+        if (const char* we = std::getenv("X3_WORMHOLE_ENTER"))
+            wormholeEnterIdx = std::atoi(we);
 
         // The S0/S3 transit spine. Flying into an open throat engages the SAME
         // SpaceLayer state machine and the SAME crystal-matrix WormholeVfx that
@@ -2164,6 +2172,12 @@ int hostSpace(HostContext& hc) {
             // opening phase by phase and be judged as the event it is rather than
             // as one still. The pre-roll also feeds the light rig, so the spill on
             // the hull in the captured frame is the spill at that exact moment.
+            if (wormholeEnterIdx >= 0 && wormholeEnterIdx < wormholes.count()) {
+                const float* wp = wormholes.at(wormholeEnterIdx).pos();
+                pilot.spawn(*sphys, wp[0], wp[1], wp[2]);
+                x3::logInfo("--world space: X3_WORMHOLE_ENTER — ship parked in the mouth of "
+                            + std::string(wormholes.at(wormholeEnterIdx).name()));
+            }
             if (wormholePreroll > 0.0f) {
                 const float wh = 1.0f / 165.0f;
                 const int steps = (int)(wormholePreroll / wh);

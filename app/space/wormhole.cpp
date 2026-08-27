@@ -41,6 +41,9 @@
 #include "wormhole.h"
 
 #include "../ship_comms.h"
+#include "space_layer.h"
+#include "wormhole_transit.h"
+#include "../headless_device.h"   // HeadlessRenderDevice for the transit test
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -1426,6 +1429,57 @@ bool runWormholeFieldSelfTest() {
         // disc, not a sphere.
         const float offAxis[3] = { 100.0f, 60.0f, 0.0f };
         check(f.entered(offAxis) == -1, "W16e the trigger is the MOUTH, not a sphere");
+    }
+
+    // ---- W18: THE TRANSIT ENTERS AND ARRIVES -------------------------------
+    // Not a mock: this drives the REAL S0 SpaceLayer spine and the REAL S3
+    // WormholeTransit runner that `--world wormhole-transit` uses, on a headless
+    // device, so entering a throat in --world space and taking the showcase ride
+    // cannot drift apart.
+    {
+        x3::game::HeadlessRenderDevice hdev;
+        SpaceLayer L;
+        L.init();
+        WormholeTransit wt;
+        const float kDur = 2.0f;
+        wt.init(hdev, L, kDur);
+        check(L.context() == Context::DeepSpace, "W18a the layer starts in DeepSpace");
+        check(!wt.active(), "W18b no transit is running before one is requested");
+
+        WormholeField f;
+        Wormhole w = mk(true, 40);
+        w.forceHeld();
+        f.add(w);
+        f.update(1.0f / 60.0f);
+
+        // Fly the ship INTO the mouth — the same test the host runs each frame.
+        const float mouth[3] = { 100.0f, 0.0f, 0.0f };
+        const int hit = f.entered(mouth);
+        check(hit == 0, "W18c flying into the open throat trips the transit trigger");
+        L.requestWormhole((uint32_t)f.at(hit).id());
+        check(L.context() == Context::WormholeTransit,
+              "W18d entering hands the spine into WormholeTransit");
+
+        // Ride it at 165 Hz. It must complete, and only once.
+        float lastProg = -1.0f;
+        bool  monotonic = true;
+        int   steps = 0;
+        while (L.context() == Context::WormholeTransit && steps < 165 * 10) {
+            L.update(1.0f / 165.0f);
+            const float p = wt.progress();
+            if (p < lastProg - 1e-4f) monotonic = false;
+            lastProg = p;
+            ++steps;
+        }
+        check(steps < 165 * 10, "W18e the transit COMPLETES rather than hanging");
+        check(monotonic, "W18f transit progress ramps monotonically");
+        check(L.context() == Context::DeepSpace,
+              "W18g ... and ARRIVES back in DeepSpace at the destination");
+        // Duration is honoured to within a frame, dt-correctly.
+        const float rode = (float)steps / 165.0f;
+        check(std::fabs(rode - kDur) < 0.05f,
+              "W18h the ride lasts its authored duration at 165 Hz");
+        wt.shutdown(hdev);
     }
 
     // ---- W17: the authored space roster ------------------------------------
