@@ -4,7 +4,8 @@
 // No id Tech / RBDOOM source consulted.
 #include "ui.h"
 #include "hud_panel.h"         // the ONE rounded dark-translucent panel primitive
-#include "headless_device.h"   // shared no-op IRenderDevice (for --test-ui)
+#include "headless_device.h"
+#include "ship_comms.h"        // U41 fold: the ship comms device self-test   // shared no-op IRenderDevice (for --test-ui)
 #include "world_menu.h"        // U31: the world/place selection menu's own gate
 #include "weapon_tuning_menu.h" // U40: the F7 tuning panel own gate
 #include "version_gen.h"       // X3_VERSION_STRING — build stamp on the title screen
@@ -2130,6 +2131,17 @@ bool runUiSelfTest() {
     check(x3::game::runWeaponTuningMenuSelfTest(),
           "U40 tuning panel: roster rows, soak hand-off, anti-drift flash cvar, "
           "clamped dials, RESET, glass colour tab, weapon-free host degradation");
+
+    // ---- U41: THE SHIP COMMS DEVICE ---------------------------------------
+    // Folded in the same way the tuning panel is at U40: the device is a
+    // UiContext customer (button / tabBar / focus ring), so a change to the
+    // widget layer that breaks it must fail THIS test too, not only the
+    // subsystem's own flag. --test-comms remains the detailed suite.
+    check(x3::game::runShipCommsSelfTest(),
+          "U41 ship comms device: store + 64-line backlog cap, the focus model and "
+          "its flight-input restoration gate, on-panel buttons through the real "
+          "UiContext, minimap clearance, wormhole stability advisories, hostile "
+          "lines on real events only, the idle no-content host, the bounded bus");
 
     x3::logInfo(std::string("--test-ui: ") + std::to_string(pass) + " passed, " +
                 std::to_string(fail) + " failed");
