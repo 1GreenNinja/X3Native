@@ -136,6 +136,7 @@ add_library(x3app SHARED
     space/ship_windows.cpp
     space/ship_interior_art.cpp
     space/wormhole_vfx.cpp
+    space/wormhole.cpp
     space/wormhole_transit.cpp
     space/tractor_beam.cpp
     descent_slide.cpp

@@ -69,6 +69,8 @@ struct TestFlags {
     bool testBodyContact = false;     // --test-bodycontact (bone-surface contact + soft indent)
     bool testWormhole = false;        // --test-wormhole (Salvari crystal-matrix VFX)
     bool testWormholeTransit = false; // --test-wormhole-transit (S3 autopilot jump ride)
+    bool testWormholes = false;       // --test-wormholes (space wormhole entities: phase
+                                      // machine, stability visuals, light spill, comms)
     bool testTractor = false;         // --test-tractor (intro capital-ship capture beam)
     bool testDescentSlide = false;// --test-descentslide (Wave 2C track spec + rider sim, headless)
     bool testWingDressing = false;// --test-wingdressing (F2-F7 wing recipe dressing, headless)

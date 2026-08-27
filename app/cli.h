@@ -496,6 +496,9 @@ struct CliOptions {
     bool        testBodyContact = false;
     bool        testWormhole = false;
     bool        testWormholeTransit = false;
+    // feat/wormholes: the SPACE wormhole entities (staged opening phase machine,
+    // stable-vs-unstable visuals, the light spill and the comms advisory wiring).
+    bool        testWormholes = false;
     bool        testTractor = false;
     bool        testDescentSlide = false;
     bool        testWingDressing = false;  // --test-wingdressing (F2-F7 wing recipe pass)

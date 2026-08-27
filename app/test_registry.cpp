@@ -157,6 +157,7 @@
 #include "space/ship_windows.h"   // x3::space::runShipWindowsSelfTest (--test-shipwindows, S6 fold)
 #include "space/wormhole_vfx.h"      // x3::space::runWormholeSelfTest (--test-wormhole, feast fold)
 #include "space/wormhole_transit.h"  // x3::space::runWormholeTransitSelfTest (--test-wormhole-transit)
+#include "space/wormhole.h"          // x3::space::runWormholeFieldSelfTest (--test-wormholes)
 #include "space/tractor_beam.h"      // x3::space::runTractorSelfTest (--test-tractor, feast fold)
 #include "wing_dressing.h"        // x3::game::runWingDressingSelfTest (--test-wingdressing)
 #include "descent_slide.h"        // x3::game::runDescentSlideSelfTest (--test-descentslide, Wave 2C)
@@ -632,6 +633,13 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running Salvari crystal-matrix wormhole (WormholeVfx) self-test "
                     "(feast fold: init/render/shutdown + Tuning clamp + faceted bake, headless)...");
         return x3::space::runWormholeSelfTest() ? 0 : 1;
+    }
+    if (tf.testWormholes) {
+        x3::logInfo("running SPACE WORMHOLE field --test-wormholes self-test "
+                    "(staged opening phase machine + 60/165 Hz equivalence, stable-vs-unstable "
+                    "divergence, emissive cap law, bounded light spill, comms advisory + "
+                    "transit trigger, headless)...");
+        return x3::space::runWormholeFieldSelfTest() ? 0 : 1;
     }
     if (tf.testWormholeTransit) {
         x3::logInfo("running S3 WORMHOLE-TRANSIT self-test (feast fold: SpaceLayer spine "

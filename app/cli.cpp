@@ -688,6 +688,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-shipwindows") o.testShipWindows = true;
         else if (a == "--test-bodycontact") o.testBodyContact = true;
         else if (a == "--test-wormhole") o.testWormhole = true;
+        else if (a == "--test-wormholes") o.testWormholes = true;
         else if (a == "--test-wormhole-transit") o.testWormholeTransit = true;
         else if (a == "--test-tractor") o.testTractor = true;
         else if (a == "--test-descentslide") o.testDescentSlide = true;

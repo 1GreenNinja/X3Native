@@ -340,6 +340,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testBodyContact = o.testBodyContact;
         _tf.testWormhole = o.testWormhole;
         _tf.testWormholeTransit = o.testWormholeTransit;
+        _tf.testWormholes = o.testWormholes;
         _tf.testTractor = o.testTractor;
         _tf.testDescentSlide = o.testDescentSlide;
         _tf.testWingDressing = o.testWingDressing;
