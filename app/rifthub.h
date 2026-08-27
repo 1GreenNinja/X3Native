@@ -20,9 +20,10 @@
 // Stargate-INSPIRED gateway (original procedural design, not a copy) —
 //   * a SUBSTANTIAL, thick RING you walk through (a smooth procedural torus),
 //     industrial weathered metal — the ring itself does NOT glow;
-//   * CHEVRON locking clamps ringing the gate's outer face (one at 12
-//     o'clock, the rest evenly spaced) — machined dark-metal clamp housings
-//     with only a thin amber-lit SLIT strip emitting, the "powered gate" cue;
+//   * an OPERATOR PANEL + a hanging glass HOLOTERMINAL console per gate (the
+//     "powered gate" cue, and the surface you re-aim the rift from). No chevron
+//     clamps — round 7 addendum 2 dropped them; this is our generator, not a
+//     Stargate replica;
 //   * a small octagonal emissive floor-plate (carries the per-destination
 //     accent tint, since the ring itself is neutral metal);
 //   * an EVENT-HORIZON MEMBRANE filling the ring opening: the fable-rock
@@ -59,8 +60,8 @@
 //     particles) + the hall's light shafts.
 // A wider AABB trigger sits underneath. No GLB asset needed.
 //
-// ANIMATION: Rifthub::tick(dt) runs each frame and (a) flickers the amber
-// chevron cores with a slow per-chevron pulse, (b) drives the per-gate blue
+// ANIMATION: Rifthub::tick(dt) runs each frame and (a) advances the membrane
+// flipbook state machine (IDLE / SURGE / OPEN), (b) drives the per-gate blue
 // point light, (c) breathes + slowly ROTATES the plasma membrane disk (the
 // procedural filament texture sweeping around reads as the storm churning),
 // shimmer on the fresnel rim, all emissive writes CLAMPED to the per-layer
@@ -105,17 +106,17 @@ enum class RifthubTrigger : uint32_t {
 constexpr uint32_t kRifthubTrigBase  = 200;
 constexpr uint32_t kRifthubTrigCount = 8;
 
-// One placed portal in the hub. The portal is a thick grey-stone Stargate-style
-// RING (a single circle of N deep tangent box segments) + amber CHEVRON locking
-// clamps on its outer face + an octagonal emissive floor-plate + the
-// event-horizon membrane, anchored at `worldPos`.
-// `triggerId` is the matching RifthubTrigger; `worldName` is the --world flag
-// the host should relaunch with to traverse this rift (NO runtime switch in
-// this draft).
+// One placed portal in the hub. The portal is ONE thick industrial metal gate
+// tube (an authored GLB, falling back to a procedural torus) + an octagonal
+// emissive floor-plate + the event-horizon membrane + its operator panel and
+// hanging holoterminal console, anchored at `worldPos`.
+// `triggerId` is the matching RifthubTrigger; `worldName` is the gate's default
+// destination key. Traversal is REAL: stepping through an OPEN rift teleports
+// you, or loads the destination world (see app_run.cpp's rift block).
 //
 // The host calls Rifthub::tick(dt) each frame to drive the animation — the
-// per-portal entity-id ranges below let tick() poke emissive[3] on the amber
-// chevrons and the membrane layers in-place without re-issuing
+// per-portal entity-id ranges below let tick() poke emissive[3] on the
+// membrane layers and the console in-place without re-issuing
 // render calls. The stone ring is static (authored once, never animated).
 struct RiftPortal {
     const char*    worldName  = "";       // --world flag (e.g. "act2caves")
@@ -124,8 +125,8 @@ struct RiftPortal {
     float          tint[3]    = {1,1,1};  // per-destination accent color
     bool           activated  = false;    // latched when the trigger fires
     // Entity-id ranges. The stone ring is a contiguous span (static, but tracked
-    // so shutdown/self-test can reason about it); the amber chevrons and the
-    // membrane layers are the animated spans tick() pokes.
+    // so shutdown/self-test can reason about it); the membrane layers and the
+    // holo console are the animated spans tick() pokes.
     uint32_t       ringEntFirst = 0;      // first scene entity id in the ring span
     uint32_t       ringEntCount = 0;      // number of stone ring-segment entities
     // (ROUND 6: the procedural CORE DISKS are DELETED. Two bright blue-white
@@ -287,7 +288,7 @@ public:
     // glass can never disagree with where the gate goes.
     void setDestination(uint32_t portalIdx, const std::string& dest);
 
-    // Per-frame animation. Flickers each portal's amber chevrons, pulses the
+    // Per-frame animation. Advances each portal's membrane flipbook state,
     // pulses the per-gate blue light, breathes + slowly rotates the membrane disk,
     // shimmers the fresnel rim (EVERY membrane emissive write clamped to its
     // cap — deep blue must always read, never clip to white), advances the
@@ -449,8 +450,8 @@ private:
     float ringWorldY() const;
 
     // Owned render resources (freed in shutdown()). The portal mesh vector
-    // collects every PER-ENTITY device mesh authored by build() (ring torus,
-    // chevron prisms, floor-plate wedges) so shutdown can free
+    // collects every PER-ENTITY device mesh authored by build() (gate tube,
+    // floor-plate wedges, console housings) so shutdown can free
     // them uniformly. SHARED meshes/textures (one handle referenced by many
     // entities — the membrane disks, the rim ring, the FX beam box, the
     // plasma/vista/mr textures) are tracked separately and freed ONCE.
@@ -584,12 +585,12 @@ private:
 // world and asserts:
 //   * the hub builds with exactly 8 portals (one per --world target);
 //   * each portal owns a trigger volume + a contiguous span of ring/core/
-//     chevron/membrane scene entities;
+//     membrane/console scene entities;
 //   * entering a portal's trigger (via TriggerSystem::update with a point inside
 //     the volume) latches that portal's `activated` flag + the HUD prompt flips
 //     to "Rift activated: <name>" — and only AFTER every portal is entered does
 //     allActivated() become true;
-//   * tick(dt) advances the animation: a chevron + core + plasma-membrane
+//   * tick(dt) advances the animation: a core + plasma-membrane
 //     emissive intensity changes across two ticks at different times (the
 //     pulse is live) AND the plasma disk's transform ROTATES (the storm churns);
 //   * the EMISSIVE CAP LAW (the blown-white v1 fix): across a kawoosh surge +

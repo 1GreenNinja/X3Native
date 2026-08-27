@@ -346,9 +346,9 @@ struct CliOptions {
     bool        testAct2Caves = false;
     // --test-rifthub (RIFTHUB Stargate portal hub): builds the 8-portal hub on a
     // HeadlessDevice + Jolt world and asserts portal count (8), trigger ids
-    // 200-207, valid ring/chevron/core/membrane spans, real --world targets,
-    // per-trigger activation + allActivated ordering, and that tick() advances
-    // the chevron/core/membrane emissive while the stone ring stays static.
+    // 200-207, valid ring/core/membrane spans, real --world targets, per-trigger
+    // activation + allActivated ordering, destination re-aiming + traversal, and
+    // that tick() advances the core/membrane emissive while the gate tube is static.
     bool        testRifthub = false;
     // --test-basis (KNOWN_BUGS R3, THE MIRROR): asserts that EVERY model-instancing
     // basis in the game has a POSITIVE determinant. A negative determinant is a

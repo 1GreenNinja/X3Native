@@ -1612,6 +1612,12 @@ int runDefaultHost(HostContext& hc) {
     bool  riftBuilt    = false;
     bool  riftZonePrev = false;      // edge: restore the room-recipe atmosphere on exit
     float riftTeleCool = 0.0f;       // seconds before a rift may take you again
+    // W-RIFT AUDIO: the hub was SILENT in the canon loop — the full hum/kawoosh/whoosh
+    // rig existed only under the dev host (`--world rifthub`), so in the real game you
+    // walked into a Stargate and heard nothing. Same three committed WAVs, same 3D
+    // placement, driven off the canon loop's own audio system.
+    x3::audio::SoundHandle sndRiftKawoosh{}, sndRiftWhoosh{};
+    std::vector<x3::audio::LoopHandle> riftHumLoops;   // one dormant idle hum per gate
     x3::phys::Vec3 riftRegMin{}, riftRegMax{};   // hub + depths, one AABB (the "in the zone" test)
     // Sub-level R1's floor: below B1, inside the Basalt band, and deliberately clear of
     // the strata offshoots (Granite -55 / Basalt -95) so the corridor bores through
@@ -1803,6 +1809,10 @@ int runDefaultHost(HostContext& hc) {
         // W-RIFT: sub-level R1's meshes/textures (the hub's gates, membranes, holo
         // glass; the approach's shell). The smoketest gates on allocationCount == 0,
         // and this runs on EVERY exit path (headless captures included).
+        // W-RIFT AUDIO: stop the per-gate idle hums BEFORE the hub's meshes go, so a
+        // world switch out of sub-level R1 doesn't leave 8 voices humming in the mixer.
+        if (audio) { for (auto lh : riftHumLoops) audio->stopLoop(lh); }
+        riftHumLoops.clear();
         if (rifthub.built())    rifthub.shutdown(*device);
         if (riftDepths.built()) riftDepths.shutdown(*device);
         if (riftLore.built())   riftLore.shutdown(*device);
@@ -2623,6 +2633,33 @@ int runDefaultHost(HostContext& hc) {
                         riftRegMax = { std::max(kmx.x, hd.origin.x + 21.0f), kRiftFloorY + 12.0f,
                                        std::max(kmx.z, hd.origin.z + 21.0f) };
                         riftBuilt = rifthub.built() && riftDepths.built();
+
+                        // ---- W-RIFT AUDIO: give sub-level R1 its voice ----------------
+                        // A dormant gate HUMS (3D, per-portal, quiet — 78 m of rock and
+                        // the distance model keep it out of the facility above); the
+                        // kawoosh fires on activation and the whoosh on traversal, below.
+                        // A missing device or WAV loads graceful-silent (no crash).
+                        if (riftBuilt && audio) {
+                            const x3::audio::SoundHandle sndRiftHum =
+                                audio->load(x3::game::resolveAudio("rifthub/rifthub_hum.wav"));
+                            sndRiftKawoosh =
+                                audio->load(x3::game::resolveAudio("rifthub/rifthub_kawoosh.wav"));
+                            sndRiftWhoosh =
+                                audio->load(x3::game::resolveAudio("rifthub/rifthub_whoosh.wav"));
+                            if (sndRiftHum.valid()) {
+                                riftHumLoops.reserve(rifthub.portalCount());
+                                for (uint32_t ri = 0; ri < rifthub.portalCount(); ++ri) {
+                                    const auto& pp = rifthub.portal(ri);
+                                    riftHumLoops.push_back(
+                                        audio->startLoop3D(sndRiftHum, pp.worldPos.x,
+                                                           kRiftFloorY + 1.8f, pp.worldPos.z,
+                                                           /*vol*/ 0.22f, /*pitch*/ 1.0f));
+                                }
+                            }
+                            x3::logInfo("[rift] audio: hum x" + std::to_string(riftHumLoops.size()) +
+                                        ", kawoosh=" + (sndRiftKawoosh.valid() ? "yes" : "no") +
+                                        ", whoosh=" + (sndRiftWhoosh.valid() ? "yes" : "no"));
+                        }
 
                         // ---- THE PAYOFF: re-aim the 8 gates at REAL PLACES IN THIS WORLD.
                         // The gates ship pointed at the 8 dev `--world` names. In the ONE
@@ -9497,8 +9534,22 @@ int runDefaultHost(HostContext& hc) {
                         riftDepths.tick(x3::net::kSimDt);
                         // Walking into a gate ACTIVATES it (the kawoosh) — the hub's own
                         // trigger volumes, dispatched here exactly as the dev host does.
-                        for (uint32_t tid : riftTriggers.update({ pfr.x, pfr.y + 1.6f, pfr.z }))
+                        for (uint32_t tid : riftTriggers.update({ pfr.x, pfr.y + 1.6f, pfr.z })) {
                             rifthub.onTrigger(tid);
+                            // THE KAWOOSH: a trigger fires ONCE, on first entry — that is
+                            // the gate blowing open. Placed at the gate that fired.
+                            if (audio && sndRiftKawoosh.valid()) {
+                                for (uint32_t ri = 0; ri < rifthub.portalCount(); ++ri) {
+                                    const auto& pp = rifthub.portal(ri);
+                                    if (pp.triggerId == tid) {
+                                        audio->playSound3D(sndRiftKawoosh, pp.worldPos.x,
+                                                           kRiftFloorY + 1.8f, pp.worldPos.z,
+                                                           /*vol*/ 0.9f);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         // ---- THE PAYOFF: step through an OPEN rift and it TAKES YOU. ----
                         const int tp = (riftTeleCool <= 0.0f)
                             ? rifthub.traversalPortal({ pfr.x, pfr.y + 1.2f, pfr.z })
@@ -9507,6 +9558,15 @@ int runDefaultHost(HostContext& hc) {
                             const std::string dest = rifthub.destination((uint32_t)tp);
                             const x3::game::Destination* dd = x3::game::findDestination(dest);
                             const std::string pretty = dd ? dd->name : dest;
+                            // THE WHOOSH: the body going through. Fires on the traversal
+                            // frame at the gate you stepped into — before the teleport
+                            // moves the listener, so you hear it leave from HERE.
+                            if (audio && sndRiftWhoosh.valid()) {
+                                const auto& tpp = rifthub.portal((uint32_t)tp);
+                                audio->playSound3D(sndRiftWhoosh, tpp.worldPos.x,
+                                                   kRiftFloorY + 1.8f, tpp.worldPos.z,
+                                                   /*vol*/ 0.85f);
+                            }
                             x3::phys::Vec3 to{};
                             std::string why;
                             if (riftDestination(dest, to, &why)) {
