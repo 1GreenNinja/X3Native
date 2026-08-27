@@ -705,10 +705,16 @@ bool runDestinationsSelfTest() {
         //    and no campaign hand-off.
         {
             const auto o = parse({ "X3Space.exe", "--space" });
-            if (!o.spaceProduct || o.worldMode != spaceDefaultWorld() ||
-                o.introOnly || o.introDirect) {
+            // Checked against the ROSTER, not against spaceDefaultWorld() alone:
+            // comparing the router's answer to the same function the router read
+            // would agree with itself no matter how wrong both were.
+            const Destination* landed = findDestination(o.worldMode);
+            if (!o.spaceProduct || o.introOnly || o.introDirect ||
+                o.worldMode != spaceDefaultWorld() ||
+                !landed || !isSpaceDestination(*landed)) {
                 ok = false;
-                x3::logError("[dest-test]   --space did not land in the space default world");
+                x3::logError(std::string("[dest-test]   --space landed in '") + o.worldMode +
+                             "', which is not a SPACE roster world");
             }
         }
         // b) an explicit --world still wins (the exe is a front door, not a cage).
