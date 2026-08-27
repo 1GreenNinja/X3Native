@@ -2038,6 +2038,13 @@ int hostTunnel(HostContext& hc) {
         const bool sk = car.skin(*device, x3::game::convertedGlbRoot(), carSpec.glb);
         x3::logInfo(std::string("[tunnel] hero car: ") + carSpec.name + " (" + carSpec.glb +
                     ") skin " + (sk ? "ON" : "ABSENT - graybox"));
+        // STAGE-3 WING SKIN (the three-stage secret, vehicle.h): armory
+        // Sci-Fi Kit Vol 3 Wing_02 — dark paneled, textured (1 embedded
+        // image), store-served like every converted GLB. Missing file =
+        // wingless flight, never an untextured stand-in (NO_SLOP rule 3).
+        if (!car.skinWings(*device, x3::game::convertedGlbRoot(), "Vehicles/Wing_02.glb"))
+            x3::logWarn("[tunnel] Vehicles/Wing_02.glb missing - the secret flies WINGLESS "
+                        "(run tools/asset_store.py fetch --all)");
         // E46_New is the INTERIOR car: Seats, Dashboard, SteeringWheel,
         // Interior, GearHandle and a pair of emissive Needle_KM / Needle_RPM
         // gauges. Same Wheel_FL/FR/RL/RR names and the same misspelled `Buttom`
@@ -4830,11 +4837,31 @@ int hostTunnel(HostContext& hc) {
     g_weaponScroll = 0.0;
 
     // ---- POWER MULTIPLIERS (host-owned; composed each frame) --------------
-    // setTorqueBoost is ONE multiplier — vampire and nitrous both feed it, so
-    // the host owns the product (NO_SLOP rule 4: paired values are one value).
+    // setTorqueBoost carries the HOST multipliers only (vampire). The NITROUS
+    // x1.19 moved DOWN into DriveDemo::updateNitro with the rest of the bottle
+    // (owner: "That's NOT going to be in host_tunnel lol") — PAIRED with
+    // vehicle.cpp updateTurbo's m_nosTorqueMult compose (NO_SLOP rule 4).
     bool  vampireOn = false;
-    float nosTank   = 1.0f;    // 0..1; ~4 s of continuous spray, slow recharge
+    // HUD mirrors of the vehicle-layer nitro state, refreshed after preStep.
+    float nosTank   = 1.0f;
     bool  nosActive = false;
+
+    // ---- THE THREE-STAGE SECRET, host side (HUD/audio/camera only — the
+    // machinery lives in app/vehicle.cpp: tank, kicks, overdrive, wings,
+    // flight, crash, lockout). --------------------------------------------
+    float depletedFlashT = 0.0f;         // "NITROUS DEPLETED" flash seconds left
+    float crashFlashT    = 0.0f;         // red crash hit
+    float odSputterT     = 0.0f;         // rhythmic overdrive sputter clock
+    x3::game::vehcam::FlyCamState flyCam;   // the Space lane's 6DOF-basis camera math,
+                                            // shared via vehcam::flyChase (reused, not rewritten)
+    float flyFreeYaw = 0.0f, flyFreePitch = 0.0f;   // astronaut free-look (eases home)
+    // PARACHUTE (owner: "P for Parachute" — NOT Space, NOT E).
+    x3::game::ParachuteBailout chute;
+    bool  parachuting = false;
+    bool  pWasDown    = false;
+    x3::rhi::MeshHandle    chuteMesh{};  // procedural gore canopy (built on first deploy)
+    x3::rhi::MeshHandle    chuteLineMesh{};
+    x3::rhi::TextureHandle chuteTex{};
 
     HostShell shell;
     shell.attach(hc);
@@ -5853,7 +5880,10 @@ int hostTunnel(HostContext& hc) {
             }
             // !atPump: at a pump E means REFUEL (W-STATIONS); !eConsumed: a
             // ticket in reach owns the press (W-FACTORY). Both yield to get-in.
-            if (eDown && !eWasDown && carBuilt && !atPump && !eConsumed) {
+            if (eDown && !eWasDown && carBuilt && !atPump && !eConsumed &&
+                !(driving && car.wingsDeployed() && !car.grounded())) {
+                // ^ no stepping OUT of a flying beast at altitude — that door
+                //   is P (parachute). E stays get-in/get-out on the ground.
                 if (driving) {
                     // The whole candidate-raycast spawn + Jake load lives in
                     // stepOutOfCar (shared with the `fly` command).
@@ -6037,39 +6067,64 @@ int hostTunnel(HostContext& hc) {
             in = x3::phys::VehicleInput{};
             in.handBrake = pushing ? 0.0f : 1.0f;
             if (!pushing && std::fabs(car.forwardSpeed()) > 0.4f) in.brake = 1.0f;
+            // Nobody at the wheel = nobody on the bottle: without this, exiting
+            // (or bailing out of) the car with SHIFT held would leave the
+            // vehicle layer's m_wantNos latched on forever.
+            if (carBuilt) { car.setNitroInput(false); car.setFlightInput(0.0f, 0.0f); }
+        }
+        else if (carBuilt && car.wingsDeployed()) {
+            // ==== WINGED FLIGHT (stage 3 of the secret; model in vehicle.cpp).
+            // Atmosphere-style: A/D BANK (the bank carves the heading), S pulls
+            // the stick back / W pushes the nose down, SHIFT = thrust (the
+            // overdrive lineage: 700 mph flat out, hands-off cruises 277),
+            // SPACE = airbrake (the landing lever), P = parachute.
+            in = x3::phys::VehicleInput{};
+            if (kd(GLFW_KEY_SPACE)) in.brake = 1.0f;      // airbrake
+            car.setNitroInput(kd(GLFW_KEY_LEFT_SHIFT));   // SHIFT = flight throttle
+            car.setFlightInput(
+                (kd(GLFW_KEY_S) ? 1.0f : 0.0f) - (kd(GLFW_KEY_W) ? 1.0f : 0.0f),
+                (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f));
+            // P FOR PARACHUTE (owner, verbatim: "i do NOT want SPACE to
+            // parachute out, or E.. Lets make P for Parachute"). Airborne only.
+            const bool pDown = kd(GLFW_KEY_P);
+            if (pDown && !pWasDown && !car.grounded()) {
+                float cq[4]; phys->getBodyRotation(car.chassis(), cq);
+                float cf[3], cu[3]; x3::game::vehcam::hullAxes(cq, cf, cu);
+                float cvel[3]; phys->getBodyLinearVelocity(car.chassis(), cvel);
+                float cp0[3]; car.chassisPos(cp0);
+                float ep[3] = { cp0[0] + cu[0] * 1.6f, cp0[1] + cu[1] * 1.6f,
+                                cp0[2] + cu[2] * 1.6f };
+                chute.deploy(ep, cvel);
+                parachuting = true;
+                driving = false;                          // the car flies on without him
+                car.setNitroInput(false);
+                car.setFlightInput(0.0f, 0.0f);
+                if (!footSpawned) { onFoot.spawn(*phys, ep[0], ep[1], ep[2]); footSpawned = true; }
+                else onFoot.setFeetPosition(*phys, x3::phys::Vec3{ ep[0], ep[1], ep[2] });
+                if (!jakeTried) {   // same load-once recipe as the E exit below
+                    jakeTried = true;
+                    if (jake.load(*device, x3::game::assetRoot() + "/rigged_glb",
+                                  "Jake_44_actions.glb", x3::game::jakeClipTable()))
+                        jakeSwimClipset = jake.swimClipset();
+                    else
+                        x3::logWarn("[tunnel] Jake_44_actions.glb failed to load - no body under the canopy");
+                }
+                x3::logInfo("[tunnel] PARACHUTE — Jake bails out; the beast flies on");
+            }
+            pWasDown = pDown;
         }
         else if (carBuilt) {
             in.throttle = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
             in.steer    = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
             if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
             // ---- NITROUS (Tim: "we need NITROUS for the car.. SHIFT will
-            // engage it.. That will rocket it to 220mph"). Hold SHIFT: +50%
-            // torque on top of vampire and the 35-psi turbo, from a tank —
-            // ~4 s of continuous spray, recharging at a quarter rate off the
-            // button. A punch you spend, not a cheat you hold.
-            {
-                const bool wantNos = kd(GLFW_KEY_LEFT_SHIFT) && in.throttle > 0.1f;
-                nosActive = wantNos && nosTank > 0.02f;
-                static bool nosWasActive = false;
-                if (nosActive) {
-                    float cq[4]; phys->getBodyRotation(car.chassis(), cq);
-                    float fwd[3], up[3];
-                    x3::game::vehcam::hullAxes(cq, fwd, up);
-                    // THE HIT: the instant the bottle lights, one hard kick —
-                    // +2.4 m/s in a frame. That is the seat-slam.
-                    if (!nosWasActive)
-                        phys->applyImpulse(car.chassis(),
-                            x3::phys::Vec3{ fwd[0] * 2600.0f, 0.0f, fwd[2] * 2600.0f });
-                    // THE SHOVE: +1.1 g sustained while spraying (was 0.49 —
-                    // "This nitrous doesnt" slam; now it does).
-                    phys->applyImpulse(car.chassis(),
-                        x3::phys::Vec3{ fwd[0] * 12000.0f * fdt, 0.0f,
-                                        fwd[2] * 12000.0f * fdt });
-                }
-                nosWasActive = nosActive;
-                nosTank += nosActive ? -fdt / 15.0f : fdt / 20.0f;   // 15 s bottle (Tim), ~20 s recharge
-                nosTank = std::min(1.0f, std::max(0.0f, nosTank));
-            }
+            // engage it.. That will rocket it to 220mph"). Hold SHIFT: the
+            // 200-shot from a 15 s bottle. THE MACHINERY MOVED to
+            // DriveDemo::updateNitro (vehicle.cpp) — tank, ignition kick,
+            // shove, torque, the depletion warning, the overdrive past empty
+            // and the wings at 5 s all live in the shared vehicle layer now;
+            // this host only reads SHIFT and dresses the events (HUD/audio).
+            car.setNitroInput(kd(GLFW_KEY_LEFT_SHIFT) && in.throttle > 0.1f);
             // T toggles TRACTION CONTROL (Tim asked for an off switch). Edge
             // triggered. TC trims throttle toward a 0.10 slip target and can cut
             // to 15%, which is great for a clean launch and wrong when you want
@@ -6126,12 +6181,54 @@ int hostTunnel(HostContext& hc) {
         // release) was dead code; the controller just held its last driving
         // input. The send now covers both branches, every frame.
         if (carBuilt) {
-            // Composed power product: vampire (timing) x nitrous (SHIFT). The
-            // turbo's own multiplier stacks inside DriveDemo::updateTurbo.
-            // NOS = A 200 SHOT: against this tune's peak, +200 hp = x1.19.
-            car.setTorqueBoost((vampireOn ? 1.07f : 1.0f) * (nosActive ? 1.19f : 1.0f));
+            // HOST multipliers only: vampire (timing). The NITROUS x1.19 is
+            // composed INSIDE DriveDemo (updateNitro -> m_nosTorqueMult) with
+            // the rest of the moved bottle — do NOT re-add it here (NO_SLOP
+            // rule 4 pair with vehicle.cpp updateTurbo).
+            car.setTorqueBoost(vampireOn ? 1.07f : 1.0f);
             car.setInput(in);
             car.preStep(fdt);
+            // HUD mirrors + STAGE EVENTS (the machinery ran in preStep).
+            nosTank   = car.nosTank();
+            nosActive = car.nosSpraying();
+            // STAGE 1 — "NITROUS DEPLETED": the camouflage warning. A big
+            // blow-off PSSSHT (the bottle exhausting) + the HUD flash drawn in
+            // the cluster block below. Most players let go of SHIFT here.
+            if (car.nitroJustDepleted()) {
+                depletedFlashT = 2.4f;
+                if (audioOn && bovSnd.valid())
+                    audio->playSound2D(bovSnd, 0.85f, 0.80f);   // big, low, emptied
+            }
+            // STAGE 2 — rhythmic sputter riding the kick train (grouped at
+            // ~7 Hz so it reads machine-gun, not buzz), escalating with the
+            // taper. The FOV punch escalates in the camera block below.
+            if (car.overdrive01() > 0.05f) {
+                odSputterT -= fdt;
+                if (car.overdriveKickedThisStep() && odSputterT <= 0.0f) {
+                    odSputterT = 0.14f;
+                    if (audioOn && bovSnd.valid())
+                        audio->playSound2D(bovSnd, 0.10f + 0.18f * car.overdrive01(),
+                                           1.55f + 0.25f * car.overdrive01());
+                }
+            } else {
+                (void)car.overdriveKickedThisStep();   // drain the edge when idle
+                odSputterT = 0.0f;
+            }
+            // STAGE 3 — the THUNK on deploy; a soft fold on retract; the hit
+            // on a crash ("Crashing hurts, a lot").
+            if (car.wingsJustDeployed() && audioOn && bovSnd.valid()) {
+                audio->playSound2D(bovSnd, 1.0f, 0.45f);        // pneumatic SLAM
+                x3::logInfo("[tunnel] WINGS OUT — A/D bank, S pulls up, SHIFT thrust, SPACE airbrake, P parachute");
+            }
+            if (car.wingsJustRetracted() && audioOn && bovSnd.valid())
+                audio->playSound2D(bovSnd, 0.5f, 0.60f);
+            if (car.justCrashed()) {
+                crashFlashT = 1.2f;
+                if (audioOn && bovSnd.valid()) {
+                    audio->playSound2D(bovSnd, 1.0f, 0.30f);    // the deep WHUMP
+                    audio->playSound2D(bovSnd, 0.8f, 0.52f);    // + debris hiss layer
+                }
+            }
         }
         float vp[3] = { startPos[0], startPos[1], startPos[2] };
         if (carBuilt) car.chassisPos(vp);
@@ -6170,6 +6267,27 @@ int hostTunnel(HostContext& hc) {
         }
         phys->step(fdt);
         if (carBuilt) car.postStep(fdt);
+        // ---- PARACHUTE DESCENT (shared ParachuteBailout, vehicle.cpp). Jake
+        // rides the canopy: the Player capsule is pinned to the drift-down
+        // each frame (so the on-foot camera + AnimatedCharacter fall clip just
+        // work), steering with WASD relative to the camera. Landing is CONTACT
+        // LAW by construction (the descent clamps ONTO the field), after which
+        // the normal on-foot machinery owns him — E near the car to re-enter,
+        // if he can find where it came down.
+        if (parachuting && footSpawned) {
+            const float fwd2[2] = { std::cos(camYaw), std::sin(camYaw) };
+            const float sIn = (kd(GLFW_KEY_W) ? 1.0f : 0.0f) - (kd(GLFW_KEY_S) ? 1.0f : 0.0f);
+            const float rIn = (kd(GLFW_KEY_D) ? 1.0f : 0.0f) - (kd(GLFW_KEY_A) ? 1.0f : 0.0f);
+            const float sx = fwd2[0] * sIn + (-fwd2[1]) * rIn;
+            const float sz = fwd2[1] * sIn + ( fwd2[0]) * rIn;
+            chute.update(fdt, sx, sz);
+            float cpn[3]; chute.pos(cpn);
+            onFoot.setFeetPosition(*phys, x3::phys::Vec3{ cpn[0], cpn[1], cpn[2] });
+            if (chute.landed()) {
+                parachuting = false;
+                x3::logInfo("[tunnel] canopy down — boots on the ground");
+            }
+        }
         // RE-SAMPLE THE CHASE TARGET AFTER THE STEP.
         // `vp` above was read BEFORE phys->step(), so the camera was aiming at
         // where the car had been one physics step earlier while the car itself
@@ -6511,9 +6629,17 @@ int hostTunnel(HostContext& hc) {
             float want = 72.0f + 16.0f * t * t;                   // eased, not linear
             // NOS FOV PUNCH: the world stretches away while the bottle sprays
             // — fast in (12/s), lazy out (3/s), +10 degrees on top of speed.
+            // OVERDRIVE escalates it (stage 2: up to +18 total, the world
+            // tearing away), and full flight thrust keeps the stretch.
             static float nosFov = 0.0f;
-            nosFov += ((nosActive ? 10.0f : 0.0f) - nosFov)
-                    * std::min(1.0f, fdt * (nosActive ? 12.0f : 3.0f));
+            float fovPunch = nosActive ? 10.0f : 0.0f;
+            if (carBuilt) {
+                fovPunch = std::max(fovPunch, 10.0f + 8.0f * car.overdrive01());
+                if (car.overdrive01() <= 0.0f && !nosActive) fovPunch = 0.0f;
+                if (car.wingsDeployed() && kd(GLFW_KEY_LEFT_SHIFT)) fovPunch = 12.0f;
+            }
+            const bool punchIn = fovPunch > nosFov;
+            nosFov += (fovPunch - nosFov) * std::min(1.0f, fdt * (punchIn ? 12.0f : 3.0f));
             want += nosFov;
             static float fovNow = 72.0f;
             fovNow += (want - fovNow) * std::min(1.0f, fdt * 3.0f);   // smooth
@@ -6557,6 +6683,57 @@ int hostTunnel(HostContext& hc) {
                     onFootFov += 16.0f * std::min(1.0f, onFoot.jetSpeed() / 134.112f);
                 device->setCamera(cx, cy, cz, camYaw, camPitch,
                                   aimCam ? 62.0f : onFootFov);
+            } else if (carBuilt && driving &&
+                       (car.wingsDeployed() || car.wingDeploy01() > 0.05f)) {
+                // ==== THE 6DOF FLIGHT CAMERA — REUSED, not rewritten. The
+                // owner: "an OG here made [a 6DOF camera fix] for Space, weeks
+                // ago" — that work is SpacePilotController's quaternion basis
+                // camera (ba161419) plus the shared, unit-tested
+                // vehcam::flyChase basis in vehicle.cpp built from it. The
+                // basis rolls/loops with the hull (setCameraBasis, no Euler
+                // pinwheel); the mouse is the astronaut FREE-LOOK — it ORBITS
+                // the beast (the space host's hold-to-freelook pattern) and
+                // eases home to dead-astern when released: fly like a plane,
+                // look like an astronaut.
+                float fq[4]; phys->getBodyRotation(car.chassis(), fq);
+                x3::game::vehcam::flyChase(flyCam, fq, fdt, 0.25f, 6.0f);
+                flyFreeYaw   +=  ddx * 0.0025f;
+                flyFreePitch += -ddy * 0.0025f;
+                if (std::fabs(ddx) + std::fabs(ddy) < 0.5f) {   // ease home when idle
+                    const float hk = 1.0f - std::exp(-2.0f * fdt);
+                    flyFreeYaw *= (1.0f - hk); flyFreePitch *= (1.0f - hk);
+                }
+                flyFreeYaw   = std::clamp(flyFreeYaw,   -2.8f, 2.8f);
+                flyFreePitch = std::clamp(flyFreePitch, -1.2f, 1.2f);
+                auto rot3 = [](const float v[3], const float ax[3], float a, float out[3]) {
+                    // Rodrigues: v cos + (ax x v) sin + ax (ax.v)(1-cos)
+                    const float c = std::cos(a), s = std::sin(a);
+                    const float d = ax[0]*v[0] + ax[1]*v[1] + ax[2]*v[2];
+                    out[0] = v[0]*c + (ax[1]*v[2]-ax[2]*v[1])*s + ax[0]*d*(1.0f-c);
+                    out[1] = v[1]*c + (ax[2]*v[0]-ax[0]*v[2])*s + ax[1]*d*(1.0f-c);
+                    out[2] = v[2]*c + (ax[0]*v[1]-ax[1]*v[0])*s + ax[2]*d*(1.0f-c);
+                };
+                float lf[3], lu[3];
+                // yaw offset about the smoothed up (negated: +up rotation = left)
+                rot3(flyCam.fwd, flyCam.up, -flyFreeYaw, lf);
+                float lr[3] = { lf[1]*flyCam.up[2] - lf[2]*flyCam.up[1],
+                                lf[2]*flyCam.up[0] - lf[0]*flyCam.up[2],
+                                lf[0]*flyCam.up[1] - lf[1]*flyCam.up[0] };
+                const float lrl = std::sqrt(lr[0]*lr[0]+lr[1]*lr[1]+lr[2]*lr[2]);
+                if (lrl > 1e-4f) { lr[0]/=lrl; lr[1]/=lrl; lr[2]/=lrl; }
+                float lf2[3];
+                rot3(lf, lr, flyFreePitch, lf2);
+                rot3(flyCam.up, lr, flyFreePitch, lu);
+                const float boom = 11.0f, lift = 3.0f;
+                float fcx = vp[0] - lf2[0]*boom + lu[0]*lift;
+                float fcy = vp[1] - lf2[1]*boom + lu[1]*lift;
+                float fcz = vp[2] - lf2[2]*boom + lu[2]*lift;
+                {   // ground rule: never under the field when the field is a floor
+                    const float gy = x3::game::terrainHeightAtWorld(fcx, fcz);
+                    if (gy <= vp[1] + 2.0f && fcy < gy + 0.4f) fcy = gy + 0.4f;
+                }
+                device->setCameraBasis(fcx, fcy, fcz, lf2, lu, fovNow);
+                cx = fcx; cy = fcy; cz = fcz;   // precip volume / audio probes follow
             } else {
                 device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
             }
@@ -6937,6 +7114,93 @@ int hostTunnel(HostContext& hc) {
                     }
                 }
 
+                // ---- THE CANOPY (P bailout). Procedural gore dome — a REAL
+                // striped-gore texture generated at first deploy (12 alternating
+                // orange/cream panels with seam lines, not a flat tint — rule 3
+                // honored the way the parachute trade does it), plus four riser
+                // lines from the harness to the rim.
+                if (parachuting && chute.active() && !chute.landed()) {
+                    if (!chuteMesh.valid()) {
+                        // Dome: hemisphere squashed to 0.55, radius 1, apex +Y.
+                        std::vector<x3::rhi::MeshVertex> dv; std::vector<uint32_t> di;
+                        const int NR = 6, NS = 16;
+                        for (int r = 0; r <= NR; ++r) {
+                            const float ph = (float)r / NR * 1.5707963f;   // 0 apex .. pi/2 rim
+                            for (int s2 = 0; s2 <= NS; ++s2) {
+                                const float th = (float)s2 / NS * 6.2831853f;
+                                const float px = std::sin(ph) * std::cos(th);
+                                const float pz = std::sin(ph) * std::sin(th);
+                                const float py = std::cos(ph) * 0.55f;
+                                dv.push_back({{px, py, pz},
+                                              {px, std::cos(ph), pz},
+                                              {(float)s2 / NS, (float)r / NR}});
+                            }
+                        }
+                        for (int r = 0; r < NR; ++r)
+                            for (int s2 = 0; s2 < NS; ++s2) {
+                                const uint32_t a = r * (NS + 1) + s2;
+                                const uint32_t b = a + NS + 1;
+                                di.insert(di.end(), { a, a + 1, b,  b, a + 1, b + 1 });
+                            }
+                        chuteMesh = device->createMesh(dv.data(), (uint32_t)dv.size(),
+                                                       di.data(), (uint32_t)di.size());
+                        std::vector<x3::rhi::MeshVertex> lv2; std::vector<uint32_t> li2;
+                        x3::prims::makeCube(0.5f, lv2, li2);
+                        chuteLineMesh = device->createMesh(lv2.data(), (uint32_t)lv2.size(),
+                                                           li2.data(), (uint32_t)li2.size());
+                        // 12-gore stripe texture, 128x128, u = angle around the
+                        // canopy: alternating panels + darker seams + weave noise.
+                        std::vector<uint8_t> tx(128 * 128 * 4);
+                        for (int y = 0; y < 128; ++y)
+                            for (int x = 0; x < 128; ++x) {
+                                const int gore = (x * 12) / 128;
+                                const bool orange = (gore & 1) == 0;
+                                const int seam = (x * 12) % 128;
+                                const float sd = (seam < 6) ? 0.72f : 1.0f;
+                                const int n = ((x * 7 + y * 13) % 9) - 4;   // weave
+                                uint8_t R2 = (uint8_t)std::clamp((orange ? 226 : 233) * sd + n, 0.0f, 255.0f);
+                                uint8_t G2 = (uint8_t)std::clamp((orange ?  92 : 226) * sd + n, 0.0f, 255.0f);
+                                uint8_t B2 = (uint8_t)std::clamp((orange ?  34 : 214) * sd + n, 0.0f, 255.0f);
+                                uint8_t* p2 = &tx[(y * 128 + x) * 4];
+                                p2[0] = R2; p2[1] = G2; p2[2] = B2; p2[3] = 255;
+                            }
+                        chuteTex = device->createTexture(tx.data(), 128, 128, true);
+                    }
+                    float cpd[3]; chute.pos(cpd);
+                    const float col[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                    const float rC = 3.4f, apexY = cpd[1] + 5.2f;
+                    float cm[16] = { rC,0,0,0, 0,rC,0,0, 0,0,rC,0,
+                                     cpd[0], apexY - rC * 0.55f, cpd[2], 1 };
+                    device->drawMesh(frame, chuteMesh, chuteTex, col, cm);
+                    // Riser lines: harness (shoulders, +1.45 m) to four rim points.
+                    const float lc[4] = { 0.82f, 0.82f, 0.84f, 1.0f };
+                    for (int li = 0; li < 4; ++li) {
+                        const float a2 = (float)li * 1.5707963f + 0.7854f;
+                        const float rx = cpd[0] + std::cos(a2) * rC * 0.92f;
+                        const float rz = cpd[2] + std::sin(a2) * rC * 0.92f;
+                        const float ry = apexY - rC * 0.55f;
+                        const float hx2 = cpd[0], hy2 = cpd[1] + 1.45f, hz2 = cpd[2];
+                        float dx2 = rx - hx2, dy2 = ry - hy2, dz2 = rz - hz2;
+                        const float ll = std::sqrt(dx2*dx2 + dy2*dy2 + dz2*dz2);
+                        if (ll < 0.05f) continue;
+                        dx2 /= ll; dy2 /= ll; dz2 /= ll;
+                        // basis: Y-col = line dir * len, X/Z thin.
+                        float ax2 = -dz2, ay2 = 0.0f, az2 = dx2;
+                        float al = std::sqrt(ax2*ax2 + az2*az2);
+                        if (al < 1e-3f) { ax2 = 1; az2 = 0; al = 1; }
+                        ax2 /= al; az2 /= al;
+                        const float bx2 = dy2*az2 - dz2*ay2 - 0.0f,
+                                    by2 = dz2*ax2 - dx2*az2,
+                                    bz2 = dx2*ay2 - dy2*ax2 + 0.0f;
+                        const float w2 = 0.02f;
+                        float lm[16] = { ax2*w2, ay2*w2, az2*w2, 0,
+                                         dx2*ll, dy2*ll, dz2*ll, 0,
+                                         bx2*w2, by2*w2, bz2*w2, 0,
+                                         (hx2+rx)*0.5f, (hy2+ry)*0.5f, (hz2+rz)*0.5f, 1 };
+                        device->drawMesh(frame, chuteLineMesh, chuteTex, lc, lm);
+                    }
+                }
+
                 // ---- RIFLE HUD: ammo bottom-left; crosshair while aiming
                 // (Hud::drawCrosshair — the existing S7 reticle, not a re-draw).
                 if (rifleArmed) {
@@ -6995,6 +7259,115 @@ int hostTunnel(HostContext& hc) {
             // It reads NEGATIVE off-throttle. A boost gauge pinned at zero
             // whenever you lift is the tell that no manifold model is behind
             // it, and vacuum is where a real one lives most of the time.
+            if (texBoost.valid()) {
+                const float R2  = R * 0.70f;
+                const float bcx = gcx - R - R2 - R * 0.10f;
+                const float bcy = gcy + R - R2;              // bottoms line up
+
+                constexpr float kPsiMin = -10.0f, kPsiMax = 40.0f;   // == the art (35-psi build)
+                const float psi = car.boostPsi();
+                const float bf  = std::min(1.0f, std::max(0.0f,
+                                    (psi - kPsiMin) / (kPsiMax - kPsiMin)));
+
+                static float shownBoost = 0.0f;
+                shownBoost += (bf - shownBoost) * (1.0f - std::exp(-12.0f * fdt));
+
+                device->drawHudImage(frame, texBoost, bcx - R2, bcy - R2,
+                                     2.0f * R2, 2.0f * R2, white);
+                if (texNeedle.valid()) {
+                    const int NF = 64, AT = 8;
+                    int bi = (int)(shownBoost * (NF - 1) + 0.5f);
+                    bi = bi < 0 ? 0 : (bi > NF - 1 ? NF - 1 : bi);
+                    const float u0 = (float)(bi % AT) / (float)AT;
+                    const float v0 = (float)(bi / AT) / (float)AT;
+                    device->drawHudImage(frame, texNeedle, bcx - R2, bcy - R2,
+                                         2.0f * R2, 2.0f * R2, white,
+                                         u0, v0, u0 + 1.0f / AT, v0 + 1.0f / AT);
+                }
+                char bbuf[32];
+                std::snprintf(bbuf, sizeof(bbuf), "%+.1f", (double)psi);
+                const float bp = R2 * 0.26f;
+                const float bw = (float)std::strlen(bbuf) * bp;
+                const bool  over = psi >= 30.0f;   // the art's red band
+                const float bc[4] = { over ? 1.0f : 0.97f, over ? 0.32f : 0.98f,
+                                      over ? 0.24f : 1.0f, 1.0f };
+                device->drawHudText(frame, bbuf, bcx - bw * 0.5f,
+                                    bcy + R2 * 0.26f, bp, bc);
+            }
+
+            if (texNos.valid()) {
+                // ---- NOS TANK — SOLID LUMINESCENT CURVED BAR (Tim: "Curving
+                // bar like NFS had 20 years ago... not beads. solid
+                // luminescent bars"). A 32-state baked-arc atlas (hot core +
+                // glow, husk for the spent span); the frame is picked by tank
+                // level — the needle-atlas pattern applied to a fill. Drains
+                // in ~4 s of spray, RECHARGES off the button in ~16 s.
+                const float R2  = R * 0.70f;
+                const float bcx = gcx - R - R2 - R * 0.10f;
+                const float bcy = gcy + R - R2;
+                const int NF2 = 32, AC = 8;
+                int fi = (int)(nosTank * (NF2 - 1) + 0.5f);
+                fi = fi < 0 ? 0 : (fi > NF2 - 1 ? NF2 - 1 : fi);
+                const float u0 = (float)(fi % AC) / (float)AC;
+                const float v0 = (float)(fi / AC) / 4.0f;
+                // Cell arc radius is 0.86 * half-cell; on screen the arc sits
+                // at 1.22 * R2, so the drawn cell spans 2 * 1.22 / 0.86 * R2.
+                const float side = 2.837f * R2;
+                float tint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                if (nosActive) { tint[0] = 1.25f; tint[1] = 1.15f; }   // spray flare
+                else if (carBuilt && car.overdrive01() > 0.0f) {
+                    // STAGE 2: the spent bar burns hot red, escalating with
+                    // the taper — the gauge itself says something is WRONG
+                    // in the best way.
+                    tint[0] = 1.2f + 0.5f * car.overdrive01();
+                    tint[1] = 0.55f - 0.25f * car.overdrive01();
+                    tint[2] = 0.35f;
+                }
+                device->drawHudImage(frame, texNos, bcx - side * 0.5f, bcy - side * 0.5f,
+                                     side, side, tint, u0, v0, u0 + 1.0f / AC, v0 + 0.25f);
+                const float lp2 = R * 0.085f;
+                const float lc2[4] = { 0.55f, 0.85f, 1.0f, 1.0f };
+                device->drawHudText(frame, "NOS", bcx - R2 * 1.22f - lp2 * 1.2f,
+                                    bcy + R2 * 0.95f, lp2, lc2);
+            }
+
+            // ---- STAGE 1 FLASH: "NITROUS DEPLETED" — the gauges' own visual
+            // language (the boost readout's mono glyphs, amber-to-red), brief
+            // and legible, top-center where the eye already is at 200 mph.
+            // This warning is the secret's camouflage: most players see it,
+            // hear the PSSSHT, and let go of SHIFT. The ones who don't...
+            if (depletedFlashT > 0.0f) {
+                depletedFlashT -= fdt;
+                // 4 Hz blink, always-on for the first half second so it can't
+                // be missed between blinks.
+                const float tLeft = depletedFlashT;
+                const bool on = (2.4f - tLeft) < 0.5f ||
+                                (std::fmod(2.4f - tLeft, 0.25f) < 0.15f);
+                if (on) {
+                    int fw2 = 0, fh2 = 0; glfwGetFramebufferSize(window, &fw2, &fh2);
+                    const char* msg = "NITROUS DEPLETED";
+                    const float gs = (float)fh2 * 0.032f;
+                    const float tw = (float)std::strlen(msg) * gs;
+                    const float k = std::min(1.0f, tLeft / 0.6f);   // fade the tail
+                    const float col[4] = { 1.0f, 0.42f, 0.16f, k };
+                    device->drawHudText(frame, msg, ((float)fw2 - tw) * 0.5f,
+                                        (float)fh2 * 0.26f, gs, col);
+                }
+            }
+            // CRASH HIT ("Crashing hurts, a lot"): a hard red slam that decays.
+            if (crashFlashT > 0.0f) {
+                crashFlashT -= fdt;
+                int fw3 = 0, fh3 = 0; glfwGetFramebufferSize(window, &fw3, &fh3);
+                const float k = std::min(1.0f, crashFlashT / 1.2f);
+                const float rc[4] = { 0.55f, 0.02f, 0.02f, 0.45f * k * k };
+                device->drawHudQuad(frame, 0.0f, 0.0f, (float)fw3, (float)fh3, rc);
+            }
+
+            // ---- THE FUEL GAUGE (W-STATIONS). Drawn by the SAME function the
+            // headless proof capture calls (app/gas_station.h), anchored on this
+            // cluster's tach so it always rides under the dials.
+            x3::game::drawFuelBar(*device, frame, gasStations.fuel(),
+                                  gasStations.refuelling(), R, gcx, gcy);
 
             // THE THERMOMETER. Only when weather is running: a gauge pinned at
             // a constant is worse than no gauge, because it teaches the player

@@ -362,6 +362,22 @@ public:
     // the force model immediately (pre+post) assuming the host steps right after.
     virtual void update(float dt) { preStep(dt); postStep(dt); }
 
+    // SUSPEND THE CAR AERODYNAMICS. While a winged car flies, the FLIGHT
+    // controller owns lift/drag; the wheeled controller must stop adding its own
+    // body drag (kAeroDrag) and spoiler downforce, which are ROAD systems. Left
+    // on, its drag alone is ~7x the flight model's coefficient and pins terminal
+    // velocity far below spec (MEASURED: 296 mph against an owner spec of 700).
+    // A no-op for every controller that has no aero of its own.
+    virtual void setAeroSuspended(bool) {}
+
+    // SUSPEND THE CONSTRAINT ITSELF. Jolt drives VehicleConstraint from a STEP
+    // LISTENER (AddStepListener), not from our preStep, so simply declining to
+    // call preStep does not stop it — MEASURED: a full-stick loop spun to
+    // 2.56 rad/s then was arrested to 0.0007 rad/s at 61.6 deg nose-up, and
+    // gating preStep changed the numbers not at all. Disabling the constraint is
+    // the only thing that actually takes the road system out of the solver.
+    virtual void setConstraintSuspended(bool) {}
+
     // The body this controller drives.
     virtual BodyId body() const = 0;
     virtual VehicleKind kind() const = 0;
