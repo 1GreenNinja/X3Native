@@ -13,6 +13,7 @@
 #include "../scene.h"
 #include "../trigger.h"
 #include "../rifthub.h"
+#include "../ship_comms.h"   // wormhole advisories on the shell comms device
 #include "../player.h"
 #include "../ui.h"                          // R8: the console's glowing control surface
 #include "../audio_root.h"                  // resolveAudio (committed rifthub SFX)
@@ -351,6 +352,14 @@ int hostRifthub(HostContext& hc) {
 
         // Drive the audio listener from the camera + pump the mixer.
         if (rhaudio) { rhaudio->setListener(camX, camY, camZ, camYaw, camPitch); rhaudio->update(fdt); }
+
+        // SHIP COMMS: publish the gates + the eye so the ship AI can post its
+        // wormhole advisories (stable / unstable) as the player closes on one.
+        // The device itself lives on HostShell, so this is the whole wiring.
+        {
+            const float eye[3] = { camX, camY, camZ };
+            x3::game::commsPublishRifthubPortals(rifthub, eye);
+        }
 
         // HUD line (dependency-free): the nearest-rift prompt as the window title.
         std::string prompt;

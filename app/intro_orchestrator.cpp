@@ -25,6 +25,7 @@
 #include <thread>
 
 #include "intro_orchestrator.h"
+#include "ship_comms.h"   // route the encounter's callouts onto the comms channel
 #include "intro_cockpit_rig.h"
 #include "fx.h"
 
@@ -1160,6 +1161,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     (src == kCalloutPlayer ? "PLAYER" :
                      src == kCalloutEnemy  ? "ENEMY"  : "MISSION") + "]: " +
                     calloutPrefix(src) + txt);
+        // SHIP COMMS (feat/ship-comms): every callout this encounter already
+        // makes is ALSO a transmission, so it goes on the comms channel with no
+        // new content invented and no encounter logic touched. The ENEMY channel
+        // is the dreadnought talking; PLAYER/MISSION are the player's own ship AI.
+        // This is a publish, not a behaviour change — the callout ring, the SFX
+        // and the log line above are all untouched.
+        x3::game::commsBus().post(
+            src == kCalloutEnemy ? x3::game::CommsSender::Hostile
+                                 : x3::game::CommsSender::ShipAI,
+            src == kCalloutEnemy ? x3::game::kCommsHostileName
+                                 : x3::game::kCommsShipAiName,
+            txt);
     };
 
     // Deterministic per-salvo hash in [0,1) — NO frame RNG (the intro must stay
@@ -2581,6 +2594,35 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         if (incomingFlashT > 0.0f) incomingFlashT -= dt;
         if (lockModeFlashT > 0.0f) lockModeFlashT -= dt;   // DELETE toggle pulse
         for (auto& cl : callouts) if (cl.t > 0.0f) cl.t -= dt;
+
+        // ---- SHIP COMMS: publish this frame's REAL state --------------------
+        // Read-only polls of state this loop already maintains, handed to the
+        // comms device's director so the ship AI's systems chatter and the
+        // hostile taunts fire on real events instead of a script. Nothing here
+        // writes encounter state; deleting these two calls would change nothing
+        // about the fight.
+        {
+            const float shieldF = pilot.maxShield() > 0
+                                ? (float)pilot.shield() / (float)pilot.maxShield() : 1.0f;
+            const float hullF   = pilot.maxHull() > 0
+                                ? (float)pilot.hull() / (float)pilot.maxHull() : 1.0f;
+            const float energyF = pilot.maxEnergy() > 0.0f
+                                ? pilot.energy() / pilot.maxEnergy() : 1.0f;
+            x3::game::commsBus().publishShip(true, shieldF, hullF, energyF,
+                                             (int)enemies.aliveCount());
+            // FIRST BLOOD is not tracked anywhere, so it is derived here from the
+            // pools this loop already owns: the first frame the player is not at
+            // full strength is the first hit he took.
+            const bool firstHit = (pilot.shield() < pilot.maxShield()) ||
+                                  (pilot.hull()   < pilot.maxHull());
+            x3::game::commsBus().publishEncounter(
+                /*phase*/            localSubsDestroyed,
+                /*firstHit*/         firstHit,
+                /*mountsDestroyed*/  localSubsDestroyed,
+                /*baysLaunching*/    baysLaunched > 0,
+                /*capitalShieldsDown*/ shieldDownCalled,
+                /*reactorBreach*/    capitalKilled);
+        }
 
         // (The star's heat/shield/death sim now lives in the SunPhase machine at
         //  the top of the loop — the host_space spectacle contract: detonation

@@ -103,15 +103,15 @@ const Destination kDest[] = {
 
 { "granite",      "The Descent - Granite",    "Strata offshoot pocket at -55 m.",                                      "strata",            DestGroup::Underworld, true  },
 { "basalt",       "The Descent - Basalt",     "Strata offshoot pocket at -95 m.",                                      "strata",            DestGroup::Underworld, true  },
-{ "obsidian",     "The Descent - Obsidian",   "Strata offshoot pocket at -125 m.",                                     "strata",            DestGroup::Underworld, true  },
+{ "obsidian",     "The Descent - Obsidian",   "Strata offshoot pocket at -125 m.",                                     "strata",            DestGroup::Underworld, true, false  },
 { "crystal",      "The Crystal Veins",        "The glowing crystal offshoot at -155 m.",                               "strata",            DestGroup::Underworld, true  },
-{ "magma",        "The Magma Zone",           "The molten offshoot at -180 m.",                                        "strata",            DestGroup::Underworld, true  },
+{ "magma",        "The Magma Zone",           "The molten offshoot at -180 m.",                                        "strata",            DestGroup::Underworld, true, false  },
 { "club",         "Club 1127",                "The disco at The Deep, Y=-800. Code 1127 in the cab is the long way.",  "club",              DestGroup::Underworld, true  },
 
-{ "crash",        "The Crash Site",           "Where the ship came down, off the +Z breach face.",                     "",                  DestGroup::Planet,     true  },
+{ "crash",        "The Crash Site",           "Where the ship came down, off the +Z breach face.",                     "",                  DestGroup::Planet,     true, false  },
 { "city",         "The City",                 "The streamed metropolis region, out past the apron.",                   "",                  DestGroup::Planet,     true  },
 { "river",        "The River Valley",         "The carved river - real, swimmable water. You land on the bank.",       "valley",            DestGroup::Planet,     true  },
-{ "ridge",        "The Cliff Ridge",          "The highest ground on the ring out from the tower.",                    "cliffs",            DestGroup::Planet,     true  },
+{ "ridge",        "The Cliff Ridge",          "The highest ground on the ring out from the tower.",                    "cliffs",            DestGroup::Planet,     true, false  },
 
 // ECHO HARBOR — the second product. Its host FOLDED into this build at the
 // converge, so the flag is LIVE and the row is reachable. The row exists

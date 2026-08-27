@@ -6,6 +6,8 @@
 #include "ui.h"
 #include "hud_panel.h"
 #include "headless_device.h"
+#include "rifthub.h"        // commsPublishRifthubPortals (the one real portal source)
+#include "destinations.h"    // the registry's new `stable` field
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -733,6 +735,46 @@ void CommsBus::publishPortals(const CommsPortal* portals, int count, const float
     m_snap.portalCount = n;
 }
 
+// ---------------------------------------------------------------------------
+// THE RIFTHUB ADAPTER — the one place in the game with REAL portal positions.
+//
+// Stability is resolved in two layers, because a static table alone would be a
+// label rather than a reading:
+//   1. The AUTHORED baseline: the destination registry's new `stable` field
+//      (destinations.h). Most gates are stable; a handful are authored unstable.
+//   2. The LIVE downgrade: a gate that has COLLAPSED, is imploding, or whose rift
+//      console is running hot (instability() past half) is reported unstable no
+//      matter what the table says. The ship AI reports what the instrument reads.
+// ---------------------------------------------------------------------------
+void commsPublishRifthubPortals(const Rifthub& hub, const float eye[3]) {
+    CommsPortal rows[kCommsMaxPortals];
+    int n = 0;
+    const uint32_t count = hub.portalCount();
+    for (uint32_t i = 0; i < count && n < kCommsMaxPortals; ++i) {
+        const RiftPortal& p = hub.portal(i);
+
+        // Layer 1 — the authored baseline from the destination registry.
+        bool stable = true;
+        const char* label = p.destination.empty() ? p.worldName : p.destination.c_str();
+        if (const Destination* d = findDestination(label)) {
+            stable = d->stable;
+            label  = d->name;
+        }
+        // Layer 2 — the live instrument downgrade.
+        if (p.dead || p.implode > 0.0f) stable = false;
+        if (p.console.instability() > 0.5f) stable = false;
+
+        CommsPortal& row = rows[n++];
+        row.name    = label ? label : "UNCHARTED";
+        row.id      = (int)p.triggerId;
+        row.stable  = stable;
+        row.pos[0]  = p.worldPos.x;
+        row.pos[1]  = p.worldPos.y;
+        row.pos[2]  = p.worldPos.z;
+    }
+    commsBus().publishPortals(rows, n, eye);
+}
+
 void CommsBus::drain(CommsDevice& dev, CommsSnapshot& outSnap) {
     for (auto& p : m_queue) dev.post(p.sender, p.from.c_str(), p.text.c_str());
     m_queue.clear();
@@ -1099,6 +1141,28 @@ bool runShipCommsSelfTest() {
         for (int i = 0; i < 82;  ++i) b.update(1.0f / 165.0f);
         check(std::fabs(a.arrivalGlow() - b.arrivalGlow()) < 0.02f,
               "C41 the arrival glow decays on dt, identically at 60 Hz and 165 Hz");
+    }
+
+    // -----------------------------------------------------------------------
+    // C42-C44 — THE WORMHOLE STABILITY FIELD introduced on the destination
+    // registry by this branch. Asserting it here (rather than only in the
+    // destinations self-test) keeps the field tied to its one consumer.
+    // -----------------------------------------------------------------------
+    {
+        const uint32_t n = destinationCount();
+        check(n > 0, "C42 the destination registry is populated");
+
+        int stable = 0, unstable = 0;
+        for (uint32_t i = 0; i < n; ++i)
+            (destination(i).stable ? stable : unstable)++;
+        check(stable > 0 && unstable > 0,
+              "C43 the registry carries BOTH stable and unstable wormholes");
+
+        // The authored unstable rows, by name, so a silent flip is caught.
+        const Destination* magma = findDestination("magma");
+        const Destination* hub   = findDestination("hub");
+        check(magma && !magma->stable && hub && hub->stable,
+              "C44 authored stability is what the table says (magma unstable, hub stable)");
     }
 
     x3::logInfo("--test-comms: " + std::to_string(g_pass) + " passed, " +

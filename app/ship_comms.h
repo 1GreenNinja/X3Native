@@ -358,6 +358,19 @@ constexpr int kCommsMaxPortals  = 16;
 
 CommsBus& commsBus();     // the process-global instance
 
+// ---------------------------------------------------------------------------
+// RIFTHUB ADAPTER. The rift hub is the one place in the game with REAL portal
+// positions, so it is where the wormhole advisory is actually exercised. This
+// walks its portals into CommsPortal rows and publishes them with the player's
+// eye, resolving each gate's stability from the destination registry's new
+// `stable` field (see destinations.h) and downgrading any gate that is collapsed
+// or whose rift console is running hot — a live instrument reading, not a label.
+//
+// Declared here rather than in rifthub.h so the rift hub keeps knowing nothing
+// about the comms device; the caller is one line in the host's frame loop.
+class Rifthub;   // app/rifthub.h — forward-declared so this header stays light
+void commsPublishRifthubPortals(const Rifthub& hub, const float eye[3]);
+
 // --test-comms: headless self-test of the store, the focus model, the buttons,
 // the backlog cap, the director's edges and the idle host. No GPU, no world.
 bool runShipCommsSelfTest();
