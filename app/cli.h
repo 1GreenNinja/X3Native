@@ -20,7 +20,7 @@ struct CliOptions {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
-         testBlockout = false,
+         testBlockout = false, testCanonEdit = false,   // --test-canonedit: the editor edits THE GAME's level
          testBarrels = false, testGlass = false, testHoloterm = false, testLlm = false, testEditorAi = false, testEcs = false, testEcsRender = false,
          testFrustumCull = false,
          testCombat = false, testAudio = false, testAcoustics = false, testLevel1 = false, testJobs = false,

@@ -22,6 +22,7 @@
 #include "editor.h"
 #include "editor_ai.h"
 #include "editor_armory.h"
+#include "editor_canon.h"
 #include "engine/llm/ILlmSystem.h"
 
 #include "engine/asset/IModelLoader.h"
@@ -90,11 +91,36 @@ public:
     // the converted_glb dir didn't mount. Editor-only.
     void renderModels(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame);
 
+    // ---- THE CANON LEVEL (editor_canon.h) -----------------------------------
+    // OPEN the game's real level (EscapeLab48_AllFloors_v2.project.json) into the editor:
+    // replaces the working document with the canon rooms as brushes and spawns them live
+    // (mesh + static body), tinted by room type. Returns false and leaves the current doc
+    // alone on failure. `path` empty == the path the GAME resolves (canonLevelPath()).
+    bool openCanonLevel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                        x3::phys::IPhysicsWorld& physics, const std::string& path = {});
+
+    // SAVE the working document back out in the canon schema. EXPLICIT ACTION ONLY (the
+    // panel button / a gate script) — it backs the target up before its first write. Pass
+    // a path to write somewhere else (the round-trip gate does). Returns false + `err`.
+    bool saveCanonLevel(std::string* err = nullptr, const std::string& path = {});
+
+    // Show/hide one canon FLOOR in the viewport (a VIEW filter — it touches Scene::visible
+    // only, never the document). 124 rooms stacked 7 storeys high is a tower you cannot
+    // see into; a floor filter is how you actually work on one.
+    void setCanonFloorVisible(const std::string& floorKey, bool visible, x3::game::Scene& scene);
+
     HostMode mode() const { return m_mode; }
     LevelDoc&       doc()       { return m_doc; }
     EditorState&    state()     { return m_state; }
 
 private:
+    // The Canon panel: open / floor filter / room details (name, type, desc) / save.
+    void drawCanonPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                        x3::phys::IPhysicsWorld& physics);
+    // Re-spawn every brush in m_doc into a fresh scene (used by openCanonLevel).
+    void respawnAll(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                    x3::phys::IPhysicsWorld& physics);
+
     // Build/destroy the live Scene entity + Jolt body for a single brush (by index).
     void spawnBrush(int idx, x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                     x3::phys::IPhysicsWorld& physics);
@@ -246,6 +272,13 @@ private:
     // Rebind capture: when set, the next key the user presses rebinds this action.
     bool        m_rebinding = false;
     NudgeAction m_rebindAction = NudgeAction::Count;
+
+    // ---- Canon-level panel state -------------------------------------------
+    std::string m_canonStatus;                 // one-line result of the last open/save
+    bool        m_canonFloorVis[16] = {};      // per-floor viewport visibility (index = floor slot)
+    bool        m_canonConfirmSave  = false;   // the save button is two-step: this IS the game
+    char        m_canonDesc[192]    = {};      // desc edit buffer for the selected room
+    int         m_canonDescFor      = -1;      // which brush m_canonDesc was filled from
 };
 
 } // namespace x3::editor

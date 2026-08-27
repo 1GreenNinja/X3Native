@@ -315,6 +315,19 @@ bool LevelDoc::loadJson(const std::string& path) {
 // ---------------------------------------------------------------------------
 // EditorState
 // ---------------------------------------------------------------------------
+void EditorState::resetForNewDocument() {
+    m_selected  = -1;
+    m_selKind   = SelKind::None;
+    m_selIndex  = -1;
+    m_history.clear();
+    m_undoPos   = 0;
+    m_editing   = false;
+    m_editIndex = -1;
+    m_group     = 0;
+    m_groupStart = 0;
+    m_groupEffects.clear();
+}
+
 void EditorState::select(int index) {
     if (index < 0) { m_selected = -1; return; }
     if (index < (int)m_doc.entities.size()) m_selected = index;

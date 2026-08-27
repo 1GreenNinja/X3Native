@@ -223,6 +223,116 @@ void EditorHost::syncBrushTransform(int idx, x3::game::Scene& scene,
                                         x3::phys::Vec3{ b.pos[0], b.pos[1], b.pos[2] });
 }
 
+// ---------------------------------------------------------------------------
+// THE CANON LEVEL — open / save / floor filter. See app/editor/editor_canon.h.
+// ---------------------------------------------------------------------------
+namespace {
+// A room's viewport colour, by its canon TYPE. A tower of 124 identical grey boxes is
+// unreadable; the type colour is what turns it into a floor plan you can actually work
+// on. VIEW ONLY — `tint` is not part of the canon schema and is never written back.
+void canonRoomTint(const std::string& type, const std::string& name, float out[3]) {
+    struct Row { const char* key; float r, g, b; };
+    static const Row kRows[] = {
+        { "Jake Cell",      0.95f, 0.75f, 0.25f },   // where the player wakes up
+        { "Boss Arena",     0.80f, 0.26f, 0.26f },
+        { "Cell",           0.33f, 0.53f, 0.67f },
+        { "Holding Cell",   0.30f, 0.46f, 0.60f },
+        { "Hallway",        0.62f, 0.55f, 0.42f },
+        { "Connector Hall", 0.55f, 0.49f, 0.38f },
+        { "Elevator Lobby", 0.42f, 0.49f, 0.55f },
+        { "Stairway",       0.46f, 0.52f, 0.58f },
+        { "Security",       0.25f, 0.60f, 0.45f },
+        { "Lab",            0.26f, 0.46f, 0.60f },
+        { "Medical Bay",    0.62f, 0.34f, 0.72f },
+        { "Armory",         0.60f, 0.45f, 0.25f },
+        { "Server Room",    0.30f, 0.62f, 0.62f },
+        { "Archive",        0.52f, 0.44f, 0.62f },
+        { "Office",         0.55f, 0.55f, 0.50f },
+        { "Storage",        0.48f, 0.44f, 0.36f },
+        { "Observation",    0.40f, 0.60f, 0.72f },
+        { "Cave",           0.36f, 0.32f, 0.28f },
+        { "Cave Chamber",   0.32f, 0.30f, 0.26f },
+        { "Underground",    0.30f, 0.28f, 0.26f },
+    };
+    for (const Row& r : kRows) {
+        if (type == r.key) { out[0] = r.r; out[1] = r.g; out[2] = r.b; return; }
+    }
+    (void)name;
+    out[0] = 0.60f; out[1] = 0.60f; out[2] = 0.62f;   // an unknown type still reads
+}
+} // namespace
+
+bool EditorHost::openCanonLevel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                                x3::phys::IPhysicsWorld& physics, const std::string& path) {
+    const std::string src = path.empty() ? canonLevelPath() : path;
+    LevelDoc fresh;
+    std::string err;
+    if (!canonLoad(src, fresh, &err)) {
+        m_canonStatus = "OPEN FAILED: " + err;
+        x3::logWarn("[editor-host] " + m_canonStatus);
+        return false;   // the current document is untouched
+    }
+
+    // Tear down whatever was live (the old doc's meshes + bodies) before we drop it.
+    for (BlockoutBrush& b : m_doc.brushes)
+        teardownLinks(b.sceneEntity, b.body, device, scene, physics);
+
+    for (BlockoutBrush& b : fresh.brushes)
+        if (b.canon.room) canonRoomTint(b.canon.type, b.name, b.tint);
+
+    m_doc = std::move(fresh);
+    m_state.resetForNewDocument();  // a fresh selection + a fresh (empty) undo history
+    m_state.setSnap(true, 0.5f);    // the canon level is authored on a 0.5 m grid
+    m_gridSel = 1;
+    respawnAll(device, scene, physics);
+
+    for (bool& v : m_canonFloorVis) v = true;
+    m_canonConfirmSave = false;
+    m_canonDescFor = -1;
+
+    uint32_t doors = 0;
+    for (const auto& fl : m_doc.canon.floors) doors += (uint32_t)fl.doors.size();
+    char buf[192];
+    std::snprintf(buf, sizeof buf, "OPEN: %d rooms / %d doors / %d floors  (%s)",
+                  (int)m_doc.brushes.size(), (int)doors, (int)m_doc.canon.floors.size(),
+                  src.c_str());
+    m_canonStatus = buf;
+    x3::logInfo(std::string("[editor-host] ") + buf);
+    return true;
+}
+
+void EditorHost::respawnAll(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                            x3::phys::IPhysicsWorld& physics) {
+    for (int i = 0; i < (int)m_doc.brushes.size(); ++i) {
+        m_doc.brushes[(size_t)i].sceneEntity = 0xFFFFFFFFu;
+        m_doc.brushes[(size_t)i].body        = 0;
+        spawnBrush(i, device, scene, physics);
+    }
+}
+
+bool EditorHost::saveCanonLevel(std::string* err, const std::string& path) {
+    const std::string dst = path.empty()
+        ? (m_doc.canon.sourcePath.empty() ? canonLevelPath() : m_doc.canon.sourcePath)
+        : path;
+    std::string e;
+    if (!canonSave(dst, m_doc, &e)) {
+        if (err) *err = e;
+        m_canonStatus = "SAVE FAILED: " + e;
+        return false;
+    }
+    m_canonStatus = "SAVED -> " + dst + "  (backup: " + dst + ".bak)";
+    return true;
+}
+
+void EditorHost::setCanonFloorVisible(const std::string& floorKey, bool visible,
+                                      x3::game::Scene& scene) {
+    for (const BlockoutBrush& b : m_doc.brushes) {
+        if (!b.canon.room || b.canon.floorKey != floorKey) continue;
+        if (b.sceneEntity != 0xFFFFFFFFu && b.sceneEntity < scene.size())
+            scene.get(b.sceneEntity).visible = visible;
+    }
+}
+
 void EditorHost::teardownLinks(uint32_t sceneEntity, uint32_t body,
                                x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                                x3::phys::IPhysicsWorld& physics) {
@@ -327,6 +437,123 @@ void EditorHost::aiPoll() {
     } else {
         m_aiStatus = "the model did not produce a usable plan";
     }
+}
+
+// The CANON panel — this is the one that makes the editor an editor OF THE GAME.
+void EditorHost::drawCanonPanel(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                                x3::phys::IPhysicsWorld& physics) {
+    panelRect(0.185f, 0.045f, 0.200f, 0.470f);
+    ImGui::Begin("Canon Level");
+
+    if (!m_doc.canonOpen()) {
+        ImGui::TextWrapped("THE GAME'S LEVEL — EscapeLab48_AllFloors_v2.project.json.");
+        ImGui::Spacing();
+        if (ImGui::Button("OPEN THE CANON LEVEL", ImVec2(-1, 0)))
+            openCanonLevel(device, scene, physics);
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", canonLevelPath().c_str());
+        if (!m_canonStatus.empty()) {
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", m_canonStatus.c_str());
+        }
+        ImGui::End();
+        return;
+    }
+
+    uint32_t doors = 0;
+    for (const auto& fl : m_doc.canon.floors) doors += (uint32_t)fl.doors.size();
+    ImGui::TextColored(ImVec4(0.4f, 0.86f, 1.0f, 1.0f), "THE GAME'S LEVEL IS OPEN");
+    ImGui::Text("%d rooms  %d doors  %d floors",
+                (int)m_doc.brushes.size(), (int)doors, (int)m_doc.canon.floors.size());
+
+    // ---- FLOOR FILTER (a view filter; it never touches the document) ----
+    ImGui::Separator();
+    ImGui::TextDisabled("Show floors:");
+    for (size_t i = 0; i < m_doc.canon.floors.size() && i < 16; ++i) {
+        const CanonFloorMeta& fl = m_doc.canon.floors[i];
+        char lbl[64];
+        std::snprintf(lbl, sizeof lbl, "%s##fv%d", fl.key.c_str(), (int)i);
+        if (i) ImGui::SameLine();
+        if (ImGui::Checkbox(lbl, &m_canonFloorVis[i]))
+            setCanonFloorVisible(fl.key, m_canonFloorVis[i], scene);
+    }
+
+    // ---- THE SELECTED ROOM: name / type / desc, every edit through the command stack ----
+    ImGui::Separator();
+    const int si = m_state.hasBrushSelection() ? m_state.selIndex() : -1;
+    if (si >= 0 && m_doc.brushes[(size_t)si].canon.room) {
+        BlockoutBrush& b = m_doc.brushes[(size_t)si];
+        ImGui::Text("ROOM: %s", b.name.c_str());
+        ImGui::TextDisabled("floor %s   type %s   id %u",
+                            b.canon.floorKey.c_str(), b.canon.type.c_str(), b.canon.id);
+        ImGui::TextDisabled("center %.1f %.1f %.1f   extents %.1f %.1f %.1f",
+                            b.pos[0], b.pos[1], b.pos[2], b.size[0], b.size[1], b.size[2]);
+
+        // Room TYPE — the canon vocabulary, not free text.
+        static const char* kTypes[] = {
+            "Archive", "Armory", "Boss Arena", "Cave", "Cave Chamber", "Cell",
+            "Connector Hall", "Elevator Lobby", "Hallway", "Holding Cell", "Jake Cell",
+            "Lab", "Medical Bay", "Observation", "Office", "Security", "Server Room",
+            "Stairway", "Storage", "Underground",
+        };
+        if (ImGui::BeginCombo("Type", b.canon.type.c_str())) {
+            for (const char* t : kTypes) {
+                if (ImGui::Selectable(t, b.canon.type == t) && b.canon.type != t) {
+                    m_state.beginBrushEdit(si);     // ONE undo step, through the stack
+                    b.canon.type = t;
+                    canonRoomTint(b.canon.type, b.name, b.tint);
+                    m_state.commitBrushEdit();
+                    respawnBrush(si, device, scene, physics);   // recolour
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        // Room DESC — the story/gameplay text (rescue timers, boss HP). The game does not
+        // read it today; the LEVEL cannot lose it, and now it is editable.
+        if (m_canonDescFor != si) {
+            std::snprintf(m_canonDesc, sizeof m_canonDesc, "%s", b.canon.desc.c_str());
+            m_canonDescFor = si;
+        }
+        ImGui::TextDisabled("desc:");
+        ImGui::PushItemWidth(-1);
+        ImGui::InputText("##canondesc", m_canonDesc, sizeof m_canonDesc);
+        if (ImGui::IsItemActivated())            m_state.beginBrushEdit(si);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            b.canon.desc    = m_canonDesc;
+            b.canon.hasDesc = !b.canon.desc.empty();
+            m_state.commitBrushEdit();
+        }
+        ImGui::PopItemWidth();
+    } else {
+        ImGui::TextDisabled("(select a room — click it, or pick it in the Outliner)");
+    }
+
+    // ---- SAVE. THIS FILE IS THE GAME. Two-step, and it backs the original up. ----
+    ImGui::Separator();
+    const std::vector<std::string> warn = canonSaveWarnings(m_doc);
+    for (const std::string& w : warn)
+        ImGui::TextColored(ImVec4(1.0f, 0.53f, 0.30f, 1.0f), "! %s", w.c_str());
+
+    if (!m_canonConfirmSave) {
+        if (ImGui::Button("SAVE CANON LEVEL...", ImVec2(-1, 0))) m_canonConfirmSave = true;
+        ImGui::TextDisabled("Writes THE GAME'S level. A .bak is kept.");
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.53f, 0.30f, 1.0f),
+                           "This overwrites THE GAME'S level.");
+        if (ImGui::Button("Confirm write")) { saveCanonLevel(); m_canonConfirmSave = false; }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) m_canonConfirmSave = false;
+    }
+    if (ImGui::Button("Reload from disk (discard edits)", ImVec2(-1, 0)))
+        openCanonLevel(device, scene, physics);
+
+    if (!m_canonStatus.empty()) {
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", m_canonStatus.c_str());
+    }
+    ImGui::End();
+    (void)physics;
 }
 
 // ---------------------------------------------------------------------------
@@ -866,6 +1093,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
 
     // ---- Materials palette (Feature 1: click-a-wall texturing). Click a swatch to
     // re-skin the selected brush; the change is ONE undo step + persists in the JSON. ----
+    drawCanonPanel(device, scene, physics);
     drawArmoryPanel(device, scene, physics);
     drawAiPanel(device, scene, physics);
 

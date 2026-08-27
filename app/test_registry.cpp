@@ -72,6 +72,7 @@
 #include "world_cars.h"     // x3::game::runCanonVehicleSelfTest (--test-canonvehicle)
 #include "editor/editor.h"
 #include "editor/editor_ai.h"
+#include "editor/editor_canon.h"
 #include "editor/editor_armory.h"
 #include "editor/editor_host.h"
 #include "barrels.h"
@@ -223,6 +224,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testEditorAi) {
         x3::logInfo("running AI Architect (plan parse/validate/transact) self-test...");
         return x3::editor::runEditorAiSelfTest() ? 0 : 1;
+    }
+    if (tf.testCanonEdit) {
+        x3::logInfo("running CANON-LEVEL EDIT (open / round-trip / edit / undo / the GAME reads it)...");
+        return x3::editor::runCanonEditSelfTest() ? 0 : 1;
     }
     if (tf.testBlockout) {
         x3::logInfo("running Level Architect BLOCKOUT (brushes[] JSON / snap / mesh) self-test...");

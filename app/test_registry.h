@@ -34,6 +34,7 @@ struct TestFlags {
     bool testInteract = false, testPhysprops = false, testRagdollSkin = false;
     bool testEditor = false, testBlockout = false, testLoader = false, testBarrels = false;
     bool testEditorAi = false;   // --test-editor-ai (AI Architect plan validator)
+    bool testCanonEdit = false;  // --test-canonedit (the editor edits THE GAME's canon level)
     bool testGlass = false, testFrustumCull = false, testHoloterm = false;
     bool testSecretRoom = false, testHatch = false, testLlm = false, testEcs = false;
     bool testEcsRender = false, testPickup = false, testCombat = false, testDeathRagdoll = false;

@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace x3::editor {
@@ -54,6 +55,83 @@ struct EditorEntity {
     uint32_t sceneEntity = 0xFFFFFFFFu;
 };
 
+// ---------------------------------------------------------------------------
+// THE CANON LEVEL (EscapeLab48_AllFloors_v2.project.json) — see editor_canon.h.
+//
+// The game's level ships in its OWN schema (rooms n/t/x/y/z/w/h/d/f/desc + doors as
+// room-index PAIRS + 7 floors + a project header). The editor used to speak only its
+// own LevelDoc schema, so it could build levels NEXT TO the game and never edit THE
+// game. Fixing that meant a choice:
+//
+//   (a) an adapter that translates canon -> LevelDoc and back. Measured against the
+//       real file it drops: every room TYPE string, all 72 room `desc` fields (which
+//       carry rescue timers, boss HP and the room's story), ALL 160 DOORS (LevelDoc has
+//       no relational data whatsoever — and doors ARE the level: the game's doorway
+//       resolver, portal PVS and geometric lint are all derived from them), the 7-floor
+//       structure, and the project header. That is not "a few lossy fields"; that is
+//       the level.
+//
+//   (b) teach the editor the canon schema NATIVELY. Chosen.
+//
+// The shape of (b) here: a canon ROOM is, exactly, a BlockoutBrush (world center +
+// full extents — the identity map, no translation). So a canon room is represented as
+// a brush that CARRIES its canon payload (CanonRoomFields, below) inside the brush
+// record, and everything structural/relational (header, floors, doors, per-floor
+// entities/triggers, and every JSON key we do not understand, kept as raw text) lives
+// in LevelDoc::canon.
+//
+// WHY INSIDE THE BRUSH: the undo stack is SNAPSHOT-based (BrushCmd stores a whole
+// BlockoutBrush by value). Putting the canon fields in the brush means the EXISTING
+// command stack is lossless for them for free and needs ZERO changes — undo of a room
+// delete restores its type, its desc and its stable id, so its doors reconnect exactly.
+// A parallel array would have desynced from brushes[] on the first delete.
+// ---------------------------------------------------------------------------
+struct CanonRoomFields {
+    bool        room = false;    // true == this brush IS a canon room (else a plain brush)
+    std::string floorKey;        // "1".."7" — which floor's rooms[] it belongs to
+    std::string type;            // room "t" ("Cell" / "Hallway" / "Boss Arena" / ...)
+    std::string desc;            // room "desc" (story/gameplay text; absent when !hasDesc)
+    bool        hasDesc = false;
+    std::string fField;          // room "f" — opaque to us; preserved verbatim
+    bool        hasF    = false;
+    // STABLE room id. Doors reference THIS, never an array index, so adding, deleting
+    // and undoing rooms can never scramble the level's connectivity.
+    uint32_t    id    = 0;
+    // Original position within its floor's rooms[] (save order). New rooms append.
+    uint32_t    order = 0;
+    // Any room key we do NOT model, as verbatim JSON source text. There are none in the
+    // shipping file — this exists so that a field added by a future LevelArchitect (or by
+    // a hand edit) survives a round-trip through this editor instead of being deleted by
+    // it. We cannot lose a field we never parsed.
+    std::vector<std::pair<std::string, std::string>> extra;
+};
+
+// One canon door: an undirected edge between two rooms, by STABLE id (see above).
+struct CanonDoorEdge { uint32_t a = 0, b = 0; };
+
+// One floor of the canon project. `rawExtra` holds any floor-level key we do not model
+// (entities / triggers / anything a future LevelArchitect adds) as its verbatim JSON
+// text, so a round-trip cannot silently eat it.
+struct CanonFloorMeta {
+    std::string key;                          // "1".."7" (the object key under floors{})
+    std::string nameRaw = "\"\"";             // the floor's "name" value, raw JSON
+    bool        hasName = false;
+    std::vector<CanonDoorEdge>          doors;
+    std::vector<std::pair<std::string, std::string>> rawExtra;  // key -> verbatim JSON
+};
+
+// Everything in the canon project that is NOT a room. Empty/loaded=false on a plain
+// LevelDoc, so nothing about the existing editor changes.
+struct CanonMeta {
+    bool        loaded = false;
+    std::string sourcePath;                   // where it was read from
+    // Every TOP-LEVEL key except "floors", verbatim (version/type/name/engine/created/
+    // currentFloor/...), in file order. We never interpret them; we never lose them.
+    std::vector<std::pair<std::string, std::string>> header;
+    std::vector<CanonFloorMeta> floors;       // in file order
+    uint32_t    nextRoomId = 0;               // id to hand the next room the user adds
+};
+
 // A BLOCKOUT BRUSH (Level Architect P2 greybox). A parametric prototyping solid —
 // a Box or Ramp — drawn with the clean grid material and given STATIC Jolt
 // collision so the greybox is immediately walkable in Play mode. ORIGIN-CENTERED:
@@ -73,6 +151,11 @@ struct BlockoutBrush {
     // Round-trips through the brushes[] JSON so a textured blockout reloads as-authored.
     std::string material;
     bool  collide   = true;              // add a static Jolt body
+    // CANON LEVEL payload (see CanonRoomFields). canon.room == false for an ordinary
+    // blockout brush, which is every brush the editor made before this existed. Because
+    // the undo stack snapshots the WHOLE brush, this round-trips through undo/redo for
+    // free.
+    CanonRoomFields canon;
     // Live links (NOT serialized): the Scene entity id + Jolt body id while editing.
     uint32_t sceneEntity = 0xFFFFFFFFu;
     uint32_t body        = 0;            // x3::phys::BodyId.id (0 == none)
@@ -86,7 +169,12 @@ struct LevelDoc {
     std::vector<EditorEntity> entities;
     // Level Architect P2 BLOCKOUT brushes. A top-level brushes[] array in the JSON,
     // mirroring entities[]. Save/Load round-trips it (type/pos/size/yaw/collide).
+    // When the CANON level is open, its rooms live here too (brush.canon.room == true).
     std::vector<BlockoutBrush> brushes;
+    // Set when THE GAME'S canon level is open in the editor (editor_canon.h). Carries
+    // everything in the canon project that is not a room. Untouched otherwise.
+    CanonMeta canon;
+    bool canonOpen() const { return canon.loaded; }
 
     // Serialize to / parse from the level JSON. saveJson writes a pretty doc;
     // loadJson parses what saveJson emits (a focused subset parser, tolerant of
@@ -304,6 +392,13 @@ public:
 
     LevelDoc&       doc()       { return m_doc; }
     const LevelDoc& doc() const { return m_doc; }
+
+    // A DIFFERENT document has been loaded into the bound LevelDoc (e.g. the canon level
+    // was opened over the working doc). Drop the selection and the ENTIRE undo history:
+    // every command in it snapshots brushes of the OLD document, so undoing one would
+    // splice a dead brush into the new level. EditorState deliberately binds to one
+    // LevelDoc by reference and is not assignable, so this is how a reload is done.
+    void resetForNewDocument();
 
     int  selected() const { return m_selected; }                 // -1 = none
     void select(int index);                                      // clamps; -1 clears

@@ -1010,6 +1010,23 @@ std::string canonProjectJsonPath() {
     // "first existing of {env override, repo-relative, ...}" search that every other
     // asset in the engine goes through, and it is cwd-independent. One source of truth.
     const std::string fromRoot = x3::game::assetRoot() + "/levels/EscapeLab48_AllFloors_v2.project.json";
+    //
+    // X3_CANON_LEVEL — an EXPLICIT, opt-in override, NOT a fallback. It exists so the
+    // Level Editor's round-trip gate can point the GAME'S OWN suites (--test-canonlevel /
+    // --test-canonplay) at a file the EDITOR just wrote — the only assertion that really
+    // proves the editor's output is a level the game can play. It is different in kind
+    // from the L2 landmine above: nothing is guessed and nothing happens unless a human
+    // (or a gate script) sets the variable, and if the named file is missing we fall
+    // straight through to the repo copy rather than silently loading something else.
+    if (const char* ov = std::getenv("X3_CANON_LEVEL")) {
+        std::ifstream f(ov);
+        if (f.good()) {
+            x3::logInfo(std::string("canonProjectJsonPath: X3_CANON_LEVEL override -> ") + ov);
+            return ov;
+        }
+        x3::logWarn(std::string("canonProjectJsonPath: X3_CANON_LEVEL is set but not readable ('") +
+                    ov + "') — using the repo's level");
+    }
     const std::string candidates[] = {
         "assets/levels/EscapeLab48_AllFloors_v2.project.json",   // cwd == repo root (the standard launch)
         fromRoot,                                                // cwd-independent, still THIS repo
