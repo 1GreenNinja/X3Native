@@ -268,6 +268,7 @@ add_library(x3app SHARED
     fx.cpp
     hud.cpp
     hud_panel.cpp
+    ship_comms.cpp
     loading_screen.cpp
     canon_aliens.cpp
     pack_spiders.cpp

@@ -105,6 +105,7 @@
 #include "act2_world.h"
 #include "act2_desert.h"
 #include "act2_caves.h"
+#include "ship_comms.h"                    // --test-comms (the ship comms device)
 #include "rifthub.h"                        // --test-rifthub (Stargate portal hub)
 #include "grounding.h"   // x3::game::runGroundingSelfTest (--test-grounding)
 #include "apron_landing.h" // x3::game::runApronLandingSelfTest (--test-apronlanding, ONE WORLD landing)
@@ -989,6 +990,15 @@ int dispatchTests(const TestFlags& tf) {
                     "that draws the model inside-out and unlit; scans every entity of every "
                     "built world, with negative controls, headless)...");
         return x3::game::runBasisSelfTest() ? 0 : 1;
+    }
+    if (tf.testComms) {
+        x3::logInfo("running SHIP COMMS DEVICE (right-anchored glass comms panel: "
+                    "message store + 64-line backlog cap, the F10 focus model and "
+                    "its flight-input restoration gate, on-panel buttons through the "
+                    "real UiContext, wormhole stability advisories on proximity, "
+                    "hostile taunts on real encounter events, the idle no-content "
+                    "host, and the bounded publish bus) self-test...");
+        return x3::game::runShipCommsSelfTest() ? 0 : 1;
     }
     if (tf.testRifthub) {
         x3::logInfo("running RIFTHUB Stargate portal-hub (8 grey-stone torus gates + "

@@ -424,6 +424,12 @@ struct CliOptions {
     // per-trigger activation + allActivated ordering, and that tick() advances
     // the chevron/core/membrane emissive while the stone ring stays static.
     bool        testRifthub = false;
+    // --test-comms (feat/ship-comms): the SHIP COMMS DEVICE. Store + backlog cap,
+    // the focus model and the flight-input restoration gate, the on-panel buttons
+    // driven through the real UiContext, the director's event edges (wormhole
+    // advisories with stability, hostile taunts on real events and NOT otherwise),
+    // the idle no-content host, and the bounded publish bus. Headless, no GPU.
+    bool        testComms = false;
     // --test-basis (KNOWN_BUGS R3, THE MIRROR): asserts that EVERY model-instancing
     // basis in the game has a POSITIVE determinant. A negative determinant is a
     // reflection: winding reverses, back-face culling drops the outer shell, and the
