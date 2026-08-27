@@ -231,7 +231,13 @@ void CommsDevice::draw(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& device,
     const float panelW = std::clamp(W * 0.235f, 280.0f, 420.0f);
     const float panelH = std::clamp(H * 0.42f,  230.0f, 470.0f);
     const float px0 = W - panelW - kHudMargin;
-    const float py0 = kHudMargin * 2.0f;
+    // TOP EDGE: below the production HUD's MINIMAP RADAR, which is a fixed
+    // 150 px box pinned at (w - 150 - kHudMargin, kHudMargin) in ui.cpp. The
+    // first capture put the device straight through it. Reserving the box rather
+    // than overlapping it is the whole "do not fight the existing HUD" rule, and
+    // it costs nothing in the space hosts, which have no minimap — the device
+    // just sits a little lower and the top-right stays clean.
+    const float py0 = kHudMargin + kCommsMinimapReserve + kHudGap;
     m_rect[0] = px0; m_rect[1] = py0; m_rect[2] = panelW; m_rect[3] = panelH;
 
     const HudPanelTuning& tune = hudPanelTuning();
@@ -940,6 +946,12 @@ bool runShipCommsSelfTest() {
         d.lastRect(px, py, pw, ph);
         check(pw > 0.0f && px > 1920.0f * 0.5f,
               "C16 the panel is RIGHT-anchored and clear of the reticle at centre");
+        // It must clear the production HUD's 150px minimap radar box, pinned at
+        // the top-right. The first capture of this feature drew straight through
+        // it, so this is a regression guard with a real failure behind it.
+        const float mmBottom = kHudMargin + kCommsMinimapReserve;
+        check(py >= mmBottom,
+              "C16b the panel starts BELOW the minimap radar box (no HUD overlap)");
 
         // The button row sits at the bottom of the plate; ACK is the leftmost.
         const float btnY = py + ph - kHudPadY - 22.0f + 11.0f;

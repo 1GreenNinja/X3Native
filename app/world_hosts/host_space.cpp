@@ -1974,6 +1974,18 @@ int hostSpace(HostContext& hc) {
                 g_clock = 3.0f;   // seed the burn flicker off its origin
             }
             const std::string outPath = screenshot ? screenshotPath : std::string("G:/X3Native/captures/space.png");
+            // `--set <cvar> <value>` pairs, read straight off the command line:
+            // this capture path has no IConsole (HostContext carries the raw
+            // pairs, and the console only exists inside the interactive loop).
+            auto commsCVar = [&](const char* name) -> int {
+                for (const auto& kv : hc.cliCVars)
+                    if (kv.first == name) return std::atoi(kv.second.c_str());
+                return 0;
+            };
+            // The comms device's capture-path instance (drawn with the HUD below).
+            x3::game::CommsDevice shotComms;
+            x3::ui::UiContext     shotCommsUi;
+            bool                  shotCommsSeeded = false;
             // Heat telemetry for the HUD (the sequence NEVER runs in headless — the
             // spawn is 48 km off the surface, so heat is ~0 and no death triggers).
             {
@@ -2028,6 +2040,42 @@ int hostSpace(HostContext& hc) {
                         drawShipLights(frame, 0.15f, 1.0f);
                         uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                         drawHud(frame, (float)hw, (float)hh);
+
+                        // THE SHIP COMMS DEVICE. This headless capture path never
+                        // enters the interactive loop (where HostShell draws it),
+                        // so it is drawn here too — otherwise the one world the
+                        // device was designed for could never be reviewed from a
+                        // frame. `--set comms_demo 1` stages a representative feed;
+                        // without it this draws the idle surface.
+                        {
+                            if (!shotCommsSeeded && commsCVar("comms_demo")) {
+                                shotCommsSeeded = true;
+                                using CS = x3::game::CommsSender;
+                                shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                                    "Comms online. I have the channel, Commander.");
+                                shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                                    "STABLE WORMHOLE 640m - THE RIFT HUB. Transit corridor is holding.");
+                                shotComms.post(CS::Hostile, x3::game::kCommsHostileName,
+                                    "You are a long way from anything that will miss you.");
+                                shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                                    "Contact. Capital-class signature, bearing two-seven-zero.");
+                                shotComms.post(CS::Hostile, x3::game::kCommsHostileName,
+                                    "First blood. You fly like something that has never been hunted.");
+                                shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                                    "Shields at thirty percent. Break contact and let them cycle.");
+                                shotComms.post(CS::Hostile, x3::game::kCommsHostileName,
+                                    "Launching. You will not out-fly the whole wing.");
+                                shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                                    "UNSTABLE WORMHOLE 880m - THE MAGMA ZONE. Aperture is "
+                                    "fluctuating - transit not advised.");
+                            }
+                            if (commsCVar("comms_focus") && !shotComms.focused())
+                                shotComms.setFocused(true);
+                            x3::ui::UiInput cin{};
+                            shotCommsUi.begin(*device, frame, cin);
+                            shotComms.draw(shotCommsUi, *device, frame, 1.0f / 60.0f);
+                            shotCommsUi.end();
+                        }
                     }
                 }
                 device->endFrame(frame);

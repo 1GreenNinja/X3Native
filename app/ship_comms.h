@@ -82,6 +82,11 @@ struct CommsMessage {
 // for the whole session. When the cap is hit the OLDEST line is dropped.
 constexpr int kCommsBacklogCap = 64;
 
+// The production HUD pins a 150 px MINIMAP RADAR box at the top-right corner
+// (app/ui.cpp). The comms device starts below it so the two never overlap — this
+// is a measured value from a capture that DID overlap, not a guess.
+constexpr float kCommsMinimapReserve = 150.0f;
+
 // ---------------------------------------------------------------------------
 // THE DEVICE. Store + focus + draw.
 //

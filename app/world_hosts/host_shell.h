@@ -261,6 +261,7 @@ private:
     // The comms device tracks its own click edge: it can be focused while the
     // tuning panel is open, and one shared edge would let each steal the other's.
     bool m_prevMouseForComms = false;
+    bool m_commsDemoSeeded   = false;   // `comms_demo` seeds exactly once
     // True while a slider in the panel is in ctrl+click TYPE mode, so ESC can
     // cancel the edit before it closes the panel.
     bool m_editingInPanel = false;

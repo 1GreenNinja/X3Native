@@ -113,6 +113,18 @@ void HostShell::attach(GLFWwindow* window, x3::rhi::IRenderDevice* device) {
     }
     m_console->print("~ console  |  ESC menu  |  F3 stats  |  noclip freefly  |  SHIFT+ESC quit");
 
+    // ---- SHIP COMMS staging cvars -------------------------------------------
+    // The device is content-driven, so an offscreen capture of an idle world
+    // would only ever prove the idle state. These two let a screenshot run stage
+    // a representative feed and a focus state from the command line
+    // (--set comms_demo 1 --set comms_focus 1), which is how the look is judged
+    // over both a dark space field and a bright scene. Default 0: a normal
+    // process behaves exactly as if they did not exist.
+    m_console->registerCVar("comms_demo", "0",
+        "Seed the ship comms device with a representative transmission set (staging aid).");
+    m_console->registerCVar("comms_focus", "0",
+        "Force the ship comms device into its FOCUSED visual state (staging aid).");
+
     g_shell = this;
     g_window = window;
     g_prevChar   = glfwSetCharCallback(window, shellCharCB);
@@ -494,6 +506,34 @@ void HostShell::drawTuningPanel(const x3::rhi::FrameContext& frame, float dt) {
 // of in one host.
 // ---------------------------------------------------------------------------
 void HostShell::drawComms(const x3::rhi::FrameContext& frame, float dt) {
+    // 0. Staging cvars (see attach). comms_demo seeds ONCE; comms_focus is a
+    //    level, so it can be flipped live from the console while looking at it.
+    if (m_console) {
+        if (!m_commsDemoSeeded && m_console->getInt("comms_demo")) {
+            m_commsDemoSeeded = true;
+            using S = x3::game::CommsSender;
+            m_comms.post(S::ShipAI, x3::game::kCommsShipAiName,
+                         "Comms online. I have the channel, Commander.");
+            m_comms.post(S::ShipAI, x3::game::kCommsShipAiName,
+                         "STABLE WORMHOLE 640m - THE RIFT HUB. Transit corridor is holding.");
+            m_comms.post(S::Hostile, x3::game::kCommsHostileName,
+                         "You are a long way from anything that will miss you.");
+            m_comms.post(S::ShipAI, x3::game::kCommsShipAiName,
+                         "Contact. Capital-class signature, bearing two-seven-zero.");
+            m_comms.post(S::Hostile, x3::game::kCommsHostileName,
+                         "First blood. You fly like something that has never been hunted.");
+            m_comms.post(S::ShipAI, x3::game::kCommsShipAiName,
+                         "Shields at thirty percent. Break contact and let them cycle.");
+            m_comms.post(S::Hostile, x3::game::kCommsHostileName,
+                         "Launching. You will not out-fly the whole wing.");
+            m_comms.post(S::ShipAI, x3::game::kCommsShipAiName,
+                         "UNSTABLE WORMHOLE 880m - THE MAGMA ZONE. Aperture is "
+                         "fluctuating - transit not advised.");
+        }
+        const bool wantFocus = m_console->getInt("comms_focus") != 0;
+        if (wantFocus && !m_comms.focused()) m_comms.setFocused(true);
+    }
+
     // 1. Drain whatever the game published this frame into the device, and pick
     //    up the accumulated state snapshot for the director.
     x3::game::CommsSnapshot snap{};
