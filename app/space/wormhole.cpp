@@ -1694,6 +1694,43 @@ bool runWormholeFieldSelfTest() {
               "W21f an eye AT the mouth (mid-transit) never dims the throat");
     }
 
+    // ---- W22: THE REFRACTION PATH IS dt-STABLE (the 165 Hz law) ------------
+    // W6 pins aperture/core across 60 vs 165 Hz. This pins everything ELSE the
+    // membrane draw consumes, because the refraction pass introduced new
+    // per-layer inputs — the tiling law, the per-layer weights, the grazing fade
+    // — and a frame-rate-dependent term in ANY of them would make the throat boil
+    // at a different rate on a 165 Hz monitor than in a 60 Hz capture.
+    //
+    // The SHADER's turbulence is deliberately not tested here and cannot be: its
+    // only time input is GlassControl.camPos.w, which vk_passes.cpp fills from a
+    // steady_clock in ACCUMULATED SECONDS, never from a frame counter. Two runs
+    // that reach the same wall clock sample identical noise by construction.
+    {
+        Wormhole a = mk(true, 11), b = mk(true, 11);
+        a.forceHeld(); b.forceHeld();
+        // Same wall clock, different step: 3.0 s as 180x(1/60) and as 495x(1/165).
+        for (int i = 0; i < 180; ++i) a.update(1.0f / 60.0f);
+        for (int i = 0; i < 495; ++i) b.update(1.0f / 165.0f);
+
+        bool sameDrive = true, sameTint = true;
+        for (int L = 0; L < kThroatLayers; ++L) {
+            if (std::fabs(a.layerIntensity(L) - b.layerIntensity(L)) > 5e-3f) sameDrive = false;
+            float ta[3], tb[3];
+            a.layerTint(L, ta); b.layerTint(L, tb);
+            for (int c = 0; c < 3; ++c)
+                if (std::fabs(ta[c] - tb[c]) > 5e-3f) sameTint = false;
+        }
+        check(sameDrive,
+              "W22a every throat layer's DRIVE matches at 60 Hz and 165 Hz (same wall clock)");
+        check(sameTint, "W22b every throat layer's TINT matches at 60 Hz and 165 Hz");
+
+        // The grazing fade is pure geometry — no clock at all — so it must agree
+        // EXACTLY, not merely closely.
+        const float e[3] = { 40.0f, 18.0f, 55.0f };
+        check(a.facingFade(e) == b.facingFade(e),
+              "W22c the grazing fade is clock-free and identical at either rate");
+    }
+
     // ---- W20: THE LIGHT SPILL SURVIVED THE LAYER-COUNT CHANGE --------------
     // The refraction pass cut the annulus count 30 -> 14 and moved the throat to
     // the blended path. Neither touches collectLights(), which is what actually
