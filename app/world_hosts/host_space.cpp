@@ -2134,7 +2134,8 @@ int hostSpace(HostContext& hc) {
                 return 0;
             };
             // The comms device's capture-path instance (drawn with the HUD below).
-            x3::game::CommsDevice shotComms;
+            x3::game::CommsDevice   shotComms;
+            x3::game::CommsDirector shotCommsDirector;
             x3::ui::UiContext     shotCommsUi;
             bool                  shotCommsSeeded = false;
             // Heat telemetry for the HUD (the sequence NEVER runs in headless — the
@@ -2235,6 +2236,20 @@ int hostSpace(HostContext& hc) {
                                 shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
                                     "UNSTABLE WORMHOLE 880m - THE MAGMA ZONE. Aperture is "
                                     "fluctuating - transit not advised.");
+                            }
+                            // feat/wormholes: DRAIN THE REAL BUS into the capture
+                            // device. Until now this panel could only ever show
+                            // the eight hard-coded demo strings above — two of
+                            // which were WORMHOLE ADVISORIES written by hand,
+                            // because no wormhole existed to generate one. The
+                            // field publishes live rows every tick now, so the
+                            // captured panel shows the advisory the AEGIS director
+                            // actually produced for the wormhole actually in the
+                            // frame, at its actually-measured range and stability.
+                            {
+                                x3::game::CommsSnapshot snap;
+                                x3::game::commsBus().drain(shotComms, snap);
+                                shotCommsDirector.update(shotComms, snap, (float)dt);
                             }
                             if (commsCVar("comms_focus") && !shotComms.focused())
                                 shotComms.setFocused(true);

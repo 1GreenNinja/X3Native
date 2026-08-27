@@ -296,9 +296,13 @@ std::vector<uint8_t> bakeCoreRGBA(uint32_t n) {
         for (uint32_t x = 0; x < n; ++x) {
             const float fx = ((float)x + 0.5f) / (float)n * 2.0f - 1.0f;
             const float r = std::sqrt(fx * fx + fy * fy);
-            // Soft gaussian-ish core with a long shoulder so bloom has something
-            // to grab beyond the hard edge.
-            float core = std::exp(-r * r * 3.4f);
+            // TIGHT gaussian with a LONG shoulder. At 3.4 the falloff was so wide
+            // that, multiplied by the bloom-phase HDR drive, everything inside
+            // r~0.9 saturated and the flare rendered as a flat white disc with a
+            // hard circular edge — a cut-out, not a flare. At 8.0 only the middle
+            // saturates and the shoulder stays in range, so the burst has an
+            // actual falloff for the bloom chain to bleed.
+            float core = std::exp(-r * r * 8.0f);
             // A touch of filament so it is not a clean airbrush dot.
             float ang = std::atan2(fy, fx) + r * 1.4f;
             const float fil = ridged(std::cos(ang) * 2.6f + 3.3f,
@@ -531,7 +535,7 @@ float Wormhole::coreIntensity() const {
             // an EXPONENTIAL decay for brightness while the SHAPE runs linear.
             const float u = clampf(m_phaseT / m_tuning.bloomSec, 0.0f, 1.0f);
             const float attack = clampf(u / 0.18f, 0.0f, 1.0f);
-            k = kCoreEmissiveCap * attack * std::exp(-2.6f * u);
+            k = 8.5f * attack * std::exp(-2.6f * u);
             break;
         }
         case WormholePhase::Unfurl: {
@@ -888,6 +892,55 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
         dev.drawMeshEmissive(fr, m_rimMesh, m_throatTex, baseFactor, em, m);
     }
 
+    // ---- The SPARK/BLOOM HALO (additive, genuinely soft-edged) ------------
+    // The flare is the loudest beat in the sequence, and on the emissive mesh
+    // path its outer edge is a GEOMETRIC silhouette: drawMeshEmissive is opaque,
+    // so however nicely the baked texture falls off, the disc still stops dead
+    // at its own rim and the capture reads as a white cut-out rather than a
+    // burst. particle.frag has a real radial falloff and a soft-depth fade
+    // (shaders/particle.frag:39-58), so the halo is submitted as ADDITIVE
+    // billboards instead — concentric sizes so the burst has a bright middle and
+    // a wide faint corona for the bloom chain to bleed. Same device call the
+    // rift hub uses for its spark motes; no new pipeline.
+    {
+        const WormholePhase ph = w.phase();
+        const float core = w.coreIntensity();
+        if ((ph == WormholePhase::Spark || ph == WormholePhase::Bloom ||
+             ph == WormholePhase::Closing) && core > 0.01f) {
+            float flareR;
+            if (ph == WormholePhase::Spark) {
+                const float u = clampf(w.phaseTime() / t.sparkSec, 0.0f, 1.0f);
+                flareR = t.radius * (0.05f + 0.16f * u);
+            } else if (ph == WormholePhase::Bloom) {
+                const float u = clampf(w.phaseTime() / t.bloomSec, 0.0f, 1.0f);
+                flareR = t.radius * (0.21f + 1.5f * (1.0f - (1.0f - u) * (1.0f - u)));
+            } else {
+                const float u = clampf(w.phaseTime() / t.closeSec, 0.0f, 1.0f);
+                flareR = t.radius * 0.9f * (1.0f - u);
+            }
+            float tint[3] = { t.coreColor[0], t.coreColor[1], t.coreColor[2] };
+            const float ins = w.instability();
+            for (int c = 0; c < 3; ++c)
+                tint[c] += (kUnstableTint[c] - tint[c]) * ins * 0.6f;
+
+            constexpr int kHaloShells = 4;
+            rhi::IRenderDevice::ParticleInstance halo[kHaloShells];
+            for (int i = 0; i < kHaloShells; ++i) {
+                const float f = (float)i / (float)(kHaloShells - 1);   // 0 tight .. 1 wide
+                halo[i].pos[0] = P[0]; halo[i].pos[1] = P[1]; halo[i].pos[2] = P[2];
+                halo[i].size = flareR * (0.32f + 1.55f * f);
+                // Wide shells are much fainter: that gradient IS the corona.
+                const float a = core * (1.0f - 0.78f * f);
+                halo[i].color[0] = tint[0] * a;
+                halo[i].color[1] = tint[1] * a;
+                halo[i].color[2] = tint[2] * a;
+                halo[i].color[3] = clampf(0.85f - 0.62f * f, 0.0f, 1.0f);
+            }
+            dev.submitParticles(halo, (uint32_t)kHaloShells,
+                                rhi::IRenderDevice::ParticleBlend::Additive);
+        }
+    }
+
     // ---- The CONVERGENCE / SPARK core -------------------------------------
     // NOT a painted dot (the failure mode the hub litigated twice). This is a
     // real disc at a real place: during Spark/Bloom it sits AT the mouth and is
@@ -905,10 +958,12 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
                 coreR = t.radius * (0.012f + 0.045f * u);
                 depth = 0.0f;
             } else if (ph == WormholePhase::Bloom) {
-                // The flare: expands FAST out of the point.
-                const float u = clampf(w.phaseTime() / t.bloomSec, 0.0f, 1.0f);
-                const float e = 1.0f - (1.0f - u) * (1.0f - u);
-                coreR = t.radius * (0.057f + 1.35f * e);
+                // NO opaque disc during the flare. The additive halo above IS the
+                // bloom, and a flat opaque disc inside it is seen EDGE-ON from any
+                // off-axis camera — it drew a hard bright line straight across the
+                // middle of the burst in the capture series. The halo has no
+                // silhouette, so the flare has no seam.
+                coreR = 0.0f;
                 depth = 0.0f;
             } else {
                 // Settled: the convergence at the bottom of the throat.
