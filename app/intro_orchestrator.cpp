@@ -299,6 +299,11 @@ void clearInputState(GLFWwindow* window) {
 // and cinematic.obj's reference would not resolve (LNK2019, been there).
 static bool s_skipAllIntro = false;
 
+// ---- DIRECT-ENTRY latch (see intro_orchestrator.h). Same linkage reasoning as
+// s_skipAllIntro above. Unlike F9 this is NOT reset per run: it describes which
+// PRODUCT is running (X3Space vs X3Engine), not something the player pressed.
+static bool s_introDirectEntry = false;
+
 void playCinematicBeat(x3::apphost::HostContext& hc, const Beat& beat,
                        const x3::cut::Cutscene* cs) {
     x3::logInfo("[intro] beat '" + beat.id + "' (cinematic clip [" +
@@ -5022,8 +5027,15 @@ uint32_t deriveSaveSeed(const x3::game::StoryFlags& flags) {
 void requestSkipAllIntro()      { s_skipAllIntro = true; }
 bool skipAllIntroRequested()    { return s_skipAllIntro; }
 
+// DIRECT-ENTRY accessors (X3Space.exe's `--dogfight` route; see the header).
+void setIntroDirectEntry(bool on) { s_introDirectEntry = on; }
+bool introDirectEntry()           { return s_introDirectEntry; }
+
 IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     x3::logInfo("[intro] runInteractiveIntro: beat sequence start");
+    if (s_introDirectEntry)
+        x3::logInfo("[intro] DIRECT ENTRY: interactive beats only — no cinematic, "
+                    "no stinger, no descent, no campaign flag write");
     s_skipAllIntro = false;   // F9 latch: fresh per run
 
     // Load the cold-open cutscene for the cinematic clips (best-effort; the live
@@ -5067,6 +5079,11 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     Beat outcomeBeat{}; bool haveOutcomeBeat = false;
     for (const Beat& beat : beats) {
         if (s_skipAllIntro) break;   // F9: bail at the beat boundary
+        // DIRECT ENTRY (--dogfight): drop every cinematic beat, including the
+        // deferred outcome stinger below — haveOutcomeBeat stays false, so the
+        // stinger never plays. The interactive beats are untouched: this is the
+        // shipping encounter, entered without the film in front of it.
+        if (s_introDirectEntry && beat.kind == BeatKind::CutsceneClip) continue;
         if (beat.kind == BeatKind::CutsceneClip && beat.id == "cine.outcome") {
             outcomeBeat = beat; haveOutcomeBeat = true; continue;
         }
@@ -5107,9 +5124,13 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     // written exactly like the real path, straight to waking in the cell.
     if (s_skipAllIntro) {
         x3::logInfo("[intro] F9 — SKIP ALL: intro aborted by the owner, canon ShotDown");
-        writeOutcomeFlag(flags, IntroOutcome::ShotDown);
-        flags.clear(kIntroLandedFlag);
-        flags.saveFile(flagsPath);
+        // ...but not into the campaign save when this is the standalone space
+        // product bailing out of a tuning run (see the persist note below).
+        if (!s_introDirectEntry) {
+            writeOutcomeFlag(flags, IntroOutcome::ShotDown);
+            flags.clear(kIntroLandedFlag);
+            flags.saveFile(flagsPath);
+        }
         return IntroOutcome::ShotDown;
     }
 
@@ -5203,7 +5224,9 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
     // then set it iff this run's escape descent actually reached the surface.
     flags.clear(kIntroLandedFlag);
     flags.clear(kIntroWreckFlag);
-    if (escapeLike) {
+    // DIRECT ENTRY skips the descent: it is the hand-off INTO the planet, and
+    // the space product has no planet. The encounter ends where it ends.
+    if (escapeLike && !s_introDirectEntry) {
         const bool landed = runIonDescentBeat(hc);
         if (landed && outcome == IntroOutcome::CapitalKilled) {
             // CRASH-SITE START (owner canon): the dreadnought went down ahead of
@@ -5226,8 +5249,14 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
 
     // Persist the branch flag beside the save (x3::game StoryFlags — the narrative
     // lane app_run.cpp branches on). Saved so a later read (or restart) is stable.
-    writeOutcomeFlag(flags, outcome);
-    flags.saveFile(flagsPath);
+    // DIRECT ENTRY does not persist. X3Space.exe and X3Engine.exe share one
+    // machine and one %LOCALAPPDATA%; a tuning run of the dogfight must not
+    // decide how the owner's campaign save starts Act 1. The outcome is still
+    // computed and RETURNED (the host logs it) — it is just not written down.
+    if (!s_introDirectEntry) {
+        writeOutcomeFlag(flags, outcome);
+        flags.saveFile(flagsPath);
+    }
 
     return outcome;
 }

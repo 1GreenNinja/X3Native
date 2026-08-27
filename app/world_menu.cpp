@@ -25,6 +25,12 @@ int columnFor(DestGroup g, int devSeen, int devTotal) {
     case DestGroup::Underworld:
     case DestGroup::Planet:
     case DestGroup::EchoHarbor: return 1;
+    // OFF-WORLD heads column 2, above the first half of the dev shortcuts. It
+    // does NOT go in column 1: that column already carries THE DESCENT + THE
+    // PLANET + ECHO HARBOR (11 rows, 3 headers) and seven more rows would run
+    // it off the bottom of a 720p panel. Column 2 has the room because moving
+    // these seven OUT of DEV WORLDS shortened the dev list by the same seven.
+    case DestGroup::Space:      return 2;
     default:                    return (devSeen < (devTotal + 1) / 2) ? 2 : 3;
     }
 }

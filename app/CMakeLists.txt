@@ -311,17 +311,25 @@ find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
 target_include_directories(x3app PRIVATE ${MINIAUDIO_INCLUDE_DIRS})
 
 # ---------------------------------------------------------------------------
-# THE TWO FRONT-ENDS.
+# THE THREE FRONT-ENDS.
 #
-# Both are thin launchers over x3app.dll (app/app_entry.h). X3LevelArchitect
-# differs from X3Engine ONLY by injecting "--editor" into argv — it has no host,
-# world or editor code of its own, and must never grow any: the editor has to
-# boot through the shipping path or the split buys us nothing.
+# All three are thin launchers over x3app.dll (app/app_entry.h). X3LevelArchitect
+# differs from X3Engine ONLY by injecting "--editor" into argv; X3Space ONLY by
+# injecting "--space". Neither has host, world or editor code of its own, and
+# neither must ever grow any: the editor and the space product have to boot
+# through the shipping path or the split buys us nothing.
+#
+# X3Space.exe is the SPACE PRODUCT (owner, 2026-08-24: "Can you have the space
+# bit as a standalone, unconnected to the game at large?"). One codebase, one
+# engine, three front doors — an engine fix lands in all three the moment it
+# lands in x3app, which is the only reason a "standalone" is affordable at all.
 # ---------------------------------------------------------------------------
 add_executable(X3Engine         entry_game.cpp)
 add_executable(X3LevelArchitect entry_editor.cpp)
+add_executable(X3Space          entry_space.cpp)
 target_link_libraries(X3Engine         PRIVATE x3app)
 target_link_libraries(X3LevelArchitect PRIVATE x3app)
+target_link_libraries(X3Space          PRIVATE x3app)
 
 # MSVC: auto-export every symbol from the host DLL rather than annotating ~200
 # TUs with __declspec(dllexport). Templates instantiated across the boundary are
@@ -330,16 +338,16 @@ set_target_properties(x3app PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 # WIN32 subsystem but we want a console for logs during dev:
 if(MSVC)
-    set_target_properties(X3Engine X3LevelArchitect PROPERTIES
+    set_target_properties(X3Engine X3LevelArchitect X3Space PROPERTIES
         LINK_FLAGS "/SUBSYSTEM:CONSOLE")
 endif()
 
 # Exes AND the DLLs land in bin/ together — on Windows the loader resolves
 # dependent DLLs from the exe's own directory, so co-locating them is what makes
 # both front-ends launch without a PATH dance. It is also what makes acceptance
-# condition D1 (both exes resolve the SAME asset root) true by construction:
-# assetRoot() walks up from the exe, and both exes sit in the same place.
-set_target_properties(X3Engine X3LevelArchitect x3app PROPERTIES
+# condition D1 (every exe resolves the SAME asset root) true by construction:
+# assetRoot() walks up from the exe, and all three exes sit in the same place.
+set_target_properties(X3Engine X3LevelArchitect X3Space x3app PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 # NOTE (fold merge/flight-modes-to-main): feat/flight-modes-neon carried an

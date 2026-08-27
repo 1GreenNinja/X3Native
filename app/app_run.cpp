@@ -1108,7 +1108,11 @@ int runDefaultHost(HostContext& hc) {
         const bool canonCapableWorld = (worldMode == "canonlevel") || (worldMode == "intro");
         // --test-boottime skips the cold-open: the intro is CONTENT the player watches
         // (a skippable cinematic), not boot work — the gate measures the machine.
-        if (window && introCellWorld && !testBootTime && !skipIntro) {
+        // DIRECT ENTRY (`--dogfight`, X3Space.exe) runs the intro WITHOUT a
+        // window too — headless is how the gate proves the encounter is
+        // reachable with no facility built. Every other path is unchanged:
+        // hc.introOnly is false unless the dogfight route armed it.
+        if ((window || hc.introOnly) && introCellWorld && !testBootTime && !skipIntro) {
             // ---- PHASE 4: INTERACTIVE BRANCHING INTRO. The orchestrator (app/
             // intro_orchestrator.*) OWNS the prologue now: it plays the cinematic
             // beats (via the cutscene player) interleaved with bounded interactive
@@ -1121,7 +1125,35 @@ int runDefaultHost(HostContext& hc) {
             //     builds the real one; for THIS phase it's a STUB that logs + falls
             //     through to the cell, so the branch is wired + testable now.
             // (--skipintro bypasses this whole block -> the canon cell, unchanged.)
+            //
+            // DIRECT ENTRY (`--dogfight`): arm the orchestrator's entry route so
+            // the encounter runs with no cinematic in front of it and no descent
+            // behind it (app/intro_orchestrator.h). Set unconditionally from the
+            // context so a second boot in the same process cannot inherit a
+            // stale latch.
+            x3::intro::setIntroDirectEntry(hc.introDirect);
             const x3::intro::IntroOutcome outcome = x3::intro::runInteractiveIntro(hc);
+
+            // ---- THE SPACE PRODUCT'S EXIT. `--dogfight` is the whole session:
+            // fly the encounter, read the outcome, quit. The campaign's next
+            // move (the apron landing, the cell, the wreck) is exactly what this
+            // product excludes, so return HERE — before a single wall of the
+            // facility is built. Same teardown the surface-start hand-off below
+            // uses (loading screen, physics, device, window, GLFW), so the
+            // allocation gate sees a clean shutdown.
+            if (hc.introOnly) {
+                x3::logInfo(std::string("[space] --dogfight: encounter complete, outcome = ") +
+                            (outcome == x3::intro::IntroOutcome::CapitalKilled ? "CAPITAL_KILLED"
+                             : outcome == x3::intro::IntroOutcome::Escaped     ? "ESCAPED"
+                                                                              : "SHOT_DOWN") +
+                            " — exiting without building the facility");
+                loading.shutdown(*device);
+                physics->shutdown();
+                device->shutdown();
+                if (window) glfwDestroyWindow(window);
+                glfwTerminate();
+                return 0;
+            }
 
             // The interactive intro can be aborted by closing the window mid-beat
             // (a window-close quit). Honor that the same way the old film did.

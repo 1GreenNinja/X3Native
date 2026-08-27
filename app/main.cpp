@@ -612,8 +612,17 @@ int x3AppMain(int argc, char** argv) {
     if (!headless) {
         // NO maximize-by-default (per Tim): open windowed at winW x H (or the saved
         // "SET AS DEFAULT" size). Fullscreen is opt-in via the settings checkbox.
+        // TITLE. A front door needs its own name on it: X3Space.exe is a
+        // separate product, and "which window is which" cannot depend on the
+        // owner remembering which build he launched. The version stamp (git
+        // hash + build time) stays on both — it is the whole reason the title
+        // exists. X3Engine.exe / X3LevelArchitect.exe are byte-identical to
+        // before, since spaceProduct is only ever set by `--space`.
+        const std::string title = o.spaceProduct
+            ? (std::string("X3 SPACE  -  ") + X3_VERSION_STR)
+            : std::string(X3_VERSION_STR);
         window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
-                                  X3_VERSION_STR, nullptr, nullptr);
+                                  title.c_str(), nullptr, nullptr);
         if (!window) {
             x3::logError("glfwCreateWindow failed");
             glfwTerminate();
@@ -943,6 +952,9 @@ int x3AppMain(int argc, char** argv) {
     _hc.reflDnDepth     = o.reflDnDepth;
     _hc.skipIntro       = o.skipIntro;
     _hc.introForce      = o.introForce;        // DEV --intro-force outcome override
+    _hc.spaceProduct    = o.spaceProduct;      // X3Space.exe front door (--space)
+    _hc.introDirect     = o.introDirect;       // --dogfight: encounter without the film
+    _hc.introOnly       = o.introOnly;         // --dogfight: encounter without the facility
     _hc.editorMode      = o.editorMode;
     _hc.fxDemo          = o.fxDemo;
     _hc.fxLightning     = o.fxLightning;

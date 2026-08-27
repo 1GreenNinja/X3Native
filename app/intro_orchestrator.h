@@ -212,6 +212,29 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc);
 void requestSkipAllIntro();
 bool skipAllIntroRequested();
 
+// ---------------------------------------------------------------------------
+// DIRECT ENTRY — the ENTRY ROUTE for X3Space.exe (`--dogfight`).
+//
+// The encounter was never coupled to game state: nothing in intro_orchestrator
+// .cpp reads canonPlay, the canon world, or a save. It is coupled to the
+// SEQUENCE — you reach the dogfight by sitting through the cinematic beats, and
+// you leave it through the outcome stinger into the ion descent and the tower.
+// That cost the owner a full playthrough per judgement of how flying FEELS.
+//
+// This latch cuts the sequence off the encounter and touches nothing else. With
+// it set, runInteractiveIntro:
+//   * runs the INTERACTIVE beats only — CutsceneClip beats are skipped,
+//   * skips the outcome stinger and the ion-pulse descent,
+//   * does NOT write the campaign's StoryFlags file (the standalone product
+//     must not leave fingerprints on the campaign save),
+//   * still runs the identical combat/scoring/outcome core and RETURNS the
+//     outcome, so the encounter being judged is the shipping one.
+//
+// Off by default: X3Engine.exe's prologue is byte-identical. Set once from the
+// host before the call (app/app_run.cpp reads HostContext::introDirect).
+void setIntroDirectEntry(bool on);
+bool introDirectEntry();
+
 // --test-introorch self-test (headless, deterministic, no window/Vulkan): asserts
 // beat sequencing order; deterministic outcome for a fixed (seed, skill); the
 // skill->p mapping bounds (skill 0 -> p=0.07, skill 1 -> p=0.40, monotonic); the

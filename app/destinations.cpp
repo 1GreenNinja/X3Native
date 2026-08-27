@@ -3,6 +3,7 @@
 #include "engine/core/x3_log.h"
 #include "world_hosts.h"       // dispatchedWorldModes() — the LIVE dispatch table
 #include "host_shell_lint.h"   // D13: every dispatchable world's host wires the shared shell
+#include "cli.h"               // D16: the SPACE product's CLI routing, checked against the real parser
 
 #include <algorithm>
 #include <cctype>
@@ -124,6 +125,29 @@ const Destination kDest[] = {
 // string still land here.
 { "echoharbor",   "Echo Harbor",              "The island city - a second product, now folded into this build (F1 P1: island + open sea).", "echoharbor",    DestGroup::EchoHarbor, true },
 
+// ---------------------------------------------------------------------------
+// OFF-WORLD — THE SPACE ROSTER. Every row here is what X3Space.exe carries, and
+// the roster is READ OFF THIS GROUP (destinations.h "THE SPACE ROSTER"), so the
+// product's contents cannot drift from the directory. Regrouped out of DEV
+// WORLDS 2026-08-24: these were never dev shortcuts in the ONE WORLD sense —
+// none of them is a place inside the tower, and together they are a game.
+//
+// The membership rule, so a later reader can apply it without guessing: a row
+// belongs here iff the place is OFF the planet — you are in a ship, on a
+// station, or in the void between them. `gallery` and `showroom` are NOT here
+// (a character gallery on pedestals and an asset showroom interior are staging
+// rooms, not space); `surface`, `intro` and `canonlevel` are NOT here (they are
+// the planet and the campaign, which is exactly what this product excludes).
+// The DREADNOUGHT ENCOUNTER is not a row: it is a beat sequence, reached by the
+// direct-entry route (`--dogfight`, app/cli.cpp) rather than by a world load.
+{ "space",        "Space Combat",             "The 6DOF flight arena over Kethzar Prime: fly the ship, fight the escort.", "space",          DestGroup::Space,      false },
+{ "introcockpit", "Intro Cockpit",            "The cockpit interior: the GLB rig with live content screens.",          "introcockpit",      DestGroup::Space,      false },
+{ "ship-windows", "Ship Interior",            "The walkable ship interior with true-portal space out the windows.",    "ship-windows",      DestGroup::Space,      false },
+{ "spacestation", "The Deep-Space Station",   "Solar+fusion station far from Earth: hangar, corridor, stargate ring.", "spacestation",      DestGroup::Space,      false },
+{ "wormhole",     "Wormhole Tunnel",          "The Salvari crystal-matrix wormhole tunnel VFX slice.",                 "wormhole",          DestGroup::Space,      false },
+{ "wormhole-transit","Wormhole Transit",      "The S3 autopilot jump: ride the wormhole end to end.",                  "wormhole-transit",  DestGroup::Space,      false },
+{ "tractor",      "Tractor Beam",             "The capital ship's tractor beam takes you - the capture.",              "tractor",           DestGroup::Space,      false },
+
 { "canonlevel",   "Canon World (spawn)",      "THE GAME: tower + elevator + exterior + streamed planet. From spawn.",  "canonlevel",        DestGroup::DevWorld,   false },
 { "intro",        "The Cold Open",            "The canon world, entered through the prologue cutscene.",               "intro",             DestGroup::DevWorld,   false },
 { "level1",       "Legacy Spire (level1)",    "The pre-canon hand-coded spire. Reference build.",                      "level1",            DestGroup::DevWorld,   false },
@@ -133,12 +157,6 @@ const Destination kDest[] = {
 { "ocean",        "Ocean Slice",              "The terrain world with the animated sea at sea level.",                 "ocean",             DestGroup::DevWorld,   false },
 { "streamed",     "Streamed Tour World",      "The WorldStreamer's own tour graph (regions.json, with spire_f1).",     "streamed",          DestGroup::DevWorld,   false },
 { "surface",      "Act-1 Surface Landing",    "The cold-open landing slice (the exterior module's other caller).",     "surface",           DestGroup::DevWorld,   false },
-{ "space",        "Space Combat",             "The intro space-combat slice: fly the ship.",                           "space",             DestGroup::DevWorld,   false },
-{ "introcockpit", "Intro Cockpit",            "The cold-open cockpit interior: the GLB rig with live content screens.", "introcockpit",     DestGroup::DevWorld,   false },
-{ "ship-windows", "Ship Interior",            "The walkable ship interior with true-portal space out the windows.",    "ship-windows",      DestGroup::DevWorld,   false },
-{ "wormhole",     "Wormhole Tunnel",          "The Salvari crystal-matrix wormhole tunnel VFX slice.",                 "wormhole",          DestGroup::DevWorld,   false },
-{ "wormhole-transit","Wormhole Transit",      "The S3 autopilot jump: ride the wormhole end to end.",                  "wormhole-transit",  DestGroup::DevWorld,   false },
-{ "tractor",      "Tractor Beam",             "The intro capture: the capital ship's tractor beam takes you.",         "tractor",           DestGroup::DevWorld,   false },
 { "descentslide", "Descent Slide",            "The B1 to -178 m coaster-grade slide ride.",                            "descentslide",      DestGroup::DevWorld,   false },
 { "bodycontact",  "Body Contact Bench",       "Feature bench: rigid rest on surfaces + soft mattress indent.",         "bodycontact",       DestGroup::DevWorld,   false },
 { "showroom",     "Asset Showroom",           "The asset showroom family (models, lighting, companion staging).",      "showroom",          DestGroup::DevWorld,   false },
@@ -149,7 +167,6 @@ const Destination kDest[] = {
 { "physjoint",    "Joint Bench",              "Physics test bench: constraints and joints.",                           "physjoint",         DestGroup::DevWorld,   false },
 { "ragdoll",      "Ragdoll Bench",            "Physics test bench: ragdolls.",                                         "ragdoll",           DestGroup::DevWorld,   false },
 { "fromdoc",      "LevelDoc (live edit)",     "Boot straight into a LevelDoc JSON - the editor loop.",                 "fromdoc",           DestGroup::DevWorld,   false },
-{ "spacestation", "The Deep-Space Station",   "Solar+fusion station far from Earth: hangar, corridor, stargate ring.", "spacestation",      DestGroup::DevWorld,   false },
 { "gallery",      "Character Gallery",        "The cast on pedestals - walk up, press E to cycle every clip.",         "gallery",           DestGroup::DevWorld,   false },
 { "tunnel",       "Terrain Corridor Tunnel",  "Drive a road bored through a hillside - the corridor-depression tech.", "tunnel",            DestGroup::DevWorld,   false },
 { "complex",      "Survival Complex",         "The 7-level survival complex (gamma fold).",                            "complex",           DestGroup::DevWorld,   false },
@@ -190,6 +207,7 @@ const char* destGroupName(DestGroup g) {
     case DestGroup::Underworld: return "THE DESCENT";
     case DestGroup::Planet:     return "THE PLANET";
     case DestGroup::EchoHarbor: return "ECHO HARBOR";
+    case DestGroup::Space:      return "OFF-WORLD";
     case DestGroup::DevWorld:   return "DEV WORLDS";
     default:                    return "?";
     }
@@ -258,6 +276,37 @@ const Destination* findDestination(std::string_view s) {
         if (containsCI(kDest[i].name, s)) return &kDest[i];
     return nullptr;
 }
+
+// ===========================================================================
+// THE SPACE ROSTER (destinations.h) — a VIEW over the table, not a second list.
+// Built once, lazily, by walking kDest for DestGroup::Space. There is no place
+// to add a roster entry except by grouping a row, which is the point.
+// ===========================================================================
+namespace {
+const std::vector<const Destination*>& spaceRoster() {
+    static const std::vector<const Destination*> kRoster = [] {
+        std::vector<const Destination*> v;
+        for (uint32_t i = 0; i < kDestCount; ++i)
+            if (kDest[i].group == DestGroup::Space) v.push_back(&kDest[i]);
+        return v;
+    }();
+    return kRoster;
+}
+} // namespace
+
+uint32_t spaceRosterCount() { return (uint32_t)spaceRoster().size(); }
+
+const Destination& spaceRosterEntry(uint32_t i) {
+    const auto& r = spaceRoster();
+    return *r[i < r.size() ? i : 0];
+}
+
+bool isSpaceDestination(const Destination& d) { return d.group == DestGroup::Space; }
+
+// THE LANDING. X3Space.exe opens in the flight arena — the one place in the
+// roster where you are actually flying the ship, which is the product. Spelled
+// once, here; app/cli.cpp reads it rather than repeating the string.
+const char* spaceDefaultWorld() { return "space"; }
 
 const Destination& cycleDestination(std::string_view from, int step) {
     uint32_t idx = destinationIndex(findDestination(from));
@@ -559,6 +608,152 @@ bool runDestinationsSelfTest() {
     //       the pre-migration Echo Harbor).
     dtCheck(runHostShellLint(),
             "D13 every world host wires the shared HostShell (console/pause/FPS)");
+
+    // =======================================================================
+    // THE SPACE PRODUCT (X3Space.exe). Owner: "Can you have the space bit as a
+    // standalone, unconnected to the game at large?" -> a third thin launcher
+    // over the SAME x3app.dll. These three checks are what make "unconnected"
+    // a measured claim instead of a hopeful one.
+    // =======================================================================
+
+    // D14 — THE ROSTER IS REAL AND IT IS FREE OF THE GAME AT LARGE. Every row
+    //       grouped Space must name a --world this program dispatches (the D2
+    //       honesty gate, applied to the product's own contents), and NONE of
+    //       them may be the facility, the campaign prologue or the other
+    //       product. If a roster row ever needed canonlevel, the standalone
+    //       would be standalone in name only.
+    {
+        bool ok = spaceRosterCount() >= 7;
+        if (!ok) x3::logError("[dest-test]   the space roster is EMPTY or short — "
+                              "no row is grouped DestGroup::Space");
+        // The worlds the space product must NOT drag in. `intro` is the campaign
+        // prologue (it ends by building the tower); `canonlevel` IS the tower;
+        // `echoharbor`/`echotropolis` is the other product entirely.
+        const char* const kForbidden[] = { "canonlevel", "intro", "surface",
+                                           "echoharbor", "echotropolis" };
+        for (uint32_t i = 0; i < spaceRosterCount(); ++i) {
+            const Destination& d = spaceRosterEntry(i);
+            if (!d.worldFlag[0]) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   space roster row '") + d.key +
+                             "' has NO world flag — X3Space cannot dispatch it");
+                continue;
+            }
+            if (!isDispatched(dispatched, d.worldFlag)) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   space roster row '") + d.key +
+                             "' claims --world " + d.worldFlag + " — NO SUCH HOST");
+            }
+            for (const char* f : kForbidden)
+                if (std::strcmp(d.worldFlag, f) == 0) {
+                    ok = false;
+                    x3::logError(std::string("[dest-test]   space roster row '") + d.key +
+                                 "' pulls in --world " + f + " — the space product must "
+                                 "not require the facility, the campaign or Echo Harbor");
+                }
+            // ...and the row must round-trip like every other (findDestination is
+            // how the console TARGET and the menu reach it).
+            if (findDestination(d.key) != &d) ok = false;
+        }
+        dtCheck(ok, "D14 the space roster is live, dispatchable, and free of the facility/campaign");
+    }
+
+    // D15 — X3Space LANDS IN SPACE. The default world is a real key, it is in
+    //       the roster, and it dispatches. The failure this catches is the dumb
+    //       one that would make the whole exe pointless: a space front door that
+    //       opens on canonlevel because nobody overrode the CliOptions default.
+    {
+        const Destination* d = findDestination(spaceDefaultWorld());
+        bool ok = (d != nullptr);
+        if (!ok) {
+            x3::logError(std::string("[dest-test]   spaceDefaultWorld() '") +
+                         spaceDefaultWorld() + "' is not a registry row");
+        } else {
+            if (!isSpaceDestination(*d)) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   default world '") + d->key +
+                             "' is not in the space roster");
+            }
+            if (!d->worldFlag[0] || !isDispatched(dispatched, d->worldFlag)) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   default world '") + d->key +
+                             "' does not dispatch");
+            }
+        }
+        dtCheck(ok, "D15 the space exe's default world is a dispatchable SPACE world");
+    }
+
+    // D16 — THE ROUTING, against the REAL parser. entry_space.cpp injects
+    //       "--space" exactly as entry_editor.cpp injects "--editor"; the direct
+    //       entry `--dogfight` (and its `--world dogfight` spelling) must reach
+    //       the encounter and stop there. Checked by RUNNING parseCli, so a
+    //       change to the flag names cannot pass by agreeing with a comment.
+    {
+        auto parse = [](std::vector<const char*> args) {
+            std::vector<char*> argv;
+            std::vector<std::string> own;
+            own.reserve(args.size());
+            for (const char* a : args) own.emplace_back(a);
+            for (std::string& s : own) argv.push_back(s.data());
+            x3::apphost::CliOptions o;
+            x3::apphost::parseCli((int)argv.size(), argv.data(), o);
+            return o;
+        };
+        bool ok = true;
+
+        // a) `--space` alone lands in the space default, with no encounter route
+        //    and no campaign hand-off.
+        {
+            const auto o = parse({ "X3Space.exe", "--space" });
+            if (!o.spaceProduct || o.worldMode != spaceDefaultWorld() ||
+                o.introOnly || o.introDirect) {
+                ok = false;
+                x3::logError("[dest-test]   --space did not land in the space default world");
+            }
+        }
+        // b) an explicit --world still wins (the exe is a front door, not a cage).
+        {
+            const auto o = parse({ "X3Space.exe", "--space", "--world", "spacestation" });
+            if (o.worldMode != "spacestation") {
+                ok = false;
+                x3::logError("[dest-test]   --space swallowed an explicit --world");
+            }
+        }
+        // c) THE DIRECT ENTRY. Both spellings route into the encounter with
+        //    introOnly set — the flag app_run reads to return AFTER the beats
+        //    instead of falling through into the facility build.
+        for (const char* spelling : { "flag", "world" }) {
+            const auto o = (spelling[0] == 'f')
+                ? parse({ "X3Space.exe", "--space", "--dogfight" })
+                : parse({ "X3Space.exe", "--space", "--world", "dogfight" });
+            if (!o.introOnly || !o.introDirect) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   --dogfight (") + spelling +
+                             " spelling) did not arm the direct encounter route");
+            }
+            // It must resolve to a world the program dispatches, and it must NOT
+            // be left as the literal "dogfight" (there is no such host).
+            if (!isDispatched(dispatched, o.worldMode.c_str())) {
+                ok = false;
+                x3::logError(std::string("[dest-test]   --dogfight left worldMode='") +
+                             o.worldMode + "', which nothing dispatches");
+            }
+        }
+        // d) NEGATIVE CONTROL: a plain launch (no --space) is byte-identical to
+        //    what it always was — canonlevel, no space product, no direct entry.
+        //    If this ever goes green while the others do, the flags are leaking
+        //    into X3Engine.exe and the split has silently changed the game.
+        {
+            const auto o = parse({ "X3Engine.exe" });
+            if (o.spaceProduct || o.introOnly || o.introDirect ||
+                o.worldMode != "canonlevel") {
+                ok = false;
+                x3::logError("[dest-test]   a PLAIN launch is no longer the canon game — "
+                             "the space flags leaked into the default path");
+            }
+        }
+        dtCheck(ok, "D16 --space lands in space and --dogfight reaches the encounter alone");
+    }
 
     x3::logInfo("destinations: " + std::to_string(dt_pass) + "/" +
                 std::to_string(dt_pass + dt_fail) + " passed");

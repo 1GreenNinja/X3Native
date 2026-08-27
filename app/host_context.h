@@ -211,6 +211,15 @@ struct HostContext {
     // shot_down (canon cell), 1 = force escaped (surface stub). Set via the
     // `--intro-force shot_down|escaped` CLI flag / `intro_force` cvar.
     int         introForce = -1;
+    // ---- THE SPACE PRODUCT (X3Space.exe) ----------------------------------
+    // Mirrors CliOptions (app/cli.h) — see the long note there. `spaceProduct`
+    // is which front door this process is; `introDirect` strips the intro's
+    // cinematic sequence off the encounter; `introOnly` makes the host RETURN
+    // when the beats end instead of falling through into the canon world build.
+    // All three default false, so the game and the editor are unchanged.
+    bool        spaceProduct = false;
+    bool        introDirect  = false;
+    bool        introOnly    = false;
     bool        editorMode = false;
     bool        fxDemo = false;
     bool        fxLightning = false;   // --fx-lightning: bolt + arc-impact ACROSS the view
