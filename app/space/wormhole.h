@@ -160,7 +160,17 @@ constexpr int kMaxWormholeLights = 4;
 // ---------------------------------------------------------------------------
 struct WormholeTuning {
     float radius      = 26.0f;   // aperture radius at full open (world units)
-    float throatDepth = 42.0f;   // how far the layer stack recedes along the axis
+    // How far the layer stack recedes along the axis. WAS 42 against a 30 m mouth
+    // radius, which makes the funnel LONGER THAN ITS MOUTH IS WIDE — so at three
+    // quarters the deep end projects 42*sin(45) = 29.7 m sideways against a mouth
+    // that has foreshortened to 30*cos(45) = 21 m, and the last third of the
+    // stack trails out BESIDE the aperture as a row of discrete rings. That is
+    // the tail in the 45-degree captures, and it is the same failure the taper
+    // comment warned about: a hole you can see the tunnel sticking out of is not
+    // a hole. At 26 the tip projects to 18.4 m and stays inside the silhouette
+    // for every angle down to the grazing fade. Head-on this costs nothing — axial
+    // depth does not project — it only shortens the parallax as the camera moves.
+    float throatDepth = 26.0f;
     float spinRate    = 0.28f;   // rad/s of the outermost layer (deeper = faster)
 
     // Phase durations, seconds. heldSec < 0 means "hold open forever".
@@ -241,6 +251,25 @@ public:
     bool  contains(const float p[3]) const;
     // Distance from `p` to the mouth centre.
     float distanceTo(const float p[3]) const;
+
+    // HOW MUCH OF THE THROAT AN EYE AT `p` CAN SEE, 1 (dead head-on) .. 0
+    // (exactly edge-on). This is the fix for the side-on "discrete hoops" read.
+    //
+    // The throat is a STACK OF PARALLEL DISCS, and no amount of blending turns
+    // that into a tunnel: viewed from the side you look ACROSS the stack, every
+    // ring presents its own silhouette, and the effect reads as a slinky. But an
+    // aperture is a thing you look INTO — its interior is only there to be seen
+    // when you can see DOWN it — so the right answer is that the throat fades
+    // out as the view goes grazing, and the wormhole collapses to its rim and its
+    // light spill. That is also what an edge-on hole in space should look like.
+    //
+    // It is measured ONCE for the whole hole, from the axis, on the CPU. A
+    // per-fragment dot(N,V) in the shader cannot do this job: the throat is
+    // ~42 m long, so from a side-on camera 110 m out the MOUTH is edge-on while
+    // the convergence is still 20 degrees open, and a per-fragment fade dissolves
+    // the near rings while leaving the far ones — a stranger artifact than the
+    // one it set out to fix. The aperture has to fade as ONE object.
+    float facingFade(const float p[3]) const;
 
 private:
     char  m_name[32] = "WORMHOLE";

@@ -431,7 +431,7 @@ constexpr float kLayerAlphaDeep  = 0.40f;
 // used would triple the throat's brightness and flatten it to the white disc the
 // whole emissive-cap law exists to prevent. Scale the drive down by the overlap
 // instead of capping harder — capping erases structure, this preserves it.
-constexpr float kMembraneGlowScale = 0.34f;
+constexpr float kMembraneGlowScale = 0.24f;
 
 // THE OFF-SWITCH (X3_WORMHOLE_NOREFRACT=1). Falls the throat + rim back to the
 // exact opaque drawMeshEmissive path they shipped with, so a BEFORE/AFTER pair
@@ -810,6 +810,40 @@ float Wormhole::distanceTo(const float p[3]) const {
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+float Wormhole::facingFade(const float p[3]) const {
+    if (!p) return 1.0f;
+    float toEye[3] = { p[0] - m_pos[0], p[1] - m_pos[1], p[2] - m_pos[2] };
+    const float len = std::sqrt(toEye[0] * toEye[0] + toEye[1] * toEye[1] + toEye[2] * toEye[2]);
+    // An eye AT the mouth sees everything — there is no meaningful axis angle at
+    // zero distance, and this is the moment of transit, which must never dim.
+    if (len < 1e-3f) return 1.0f;
+    for (int c = 0; c < 3; ++c) toEye[c] /= len;
+    // |cos| of the angle between the throat axis and the line of sight. Absolute
+    // because the throat is DOUBLE-WOUND — it reads from both sides, so an eye
+    // behind the mouth is just as head-on as one in front of it.
+    const float facing = std::fabs(toEye[0] * m_axis[0] + toEye[1] * m_axis[1] + toEye[2] * m_axis[2]);
+
+    // SMOOTHSTEP, NOT A POWER CURVE. A pow() fade starts dimming immediately and
+    // robs the THREE-QUARTER view — which is the angle this effect is actually
+    // seen from, and the one that shows the throat off best. A smoothstep holds
+    // full strength out to ~63 degrees off-axis and then collapses over the last
+    // ~27, so the fade only exists where the slinky exists.
+    // The window is set from the angles that actually matter, measured off the
+    // captures rather than picked:
+    //   45 deg off-axis (|cos| 0.707) — the three-quarter hero angle -> 1.00
+    //   60 deg          (0.50)                                       -> 0.77
+    //   70 deg          (0.34)  the "hard side-on" that showed hoops -> 0.38
+    //   80 deg          (0.17)                                       -> 0.06
+    //   90 deg          (0.00)  exactly edge-on                      -> 0.00
+    // An earlier, narrower window (0.05..0.45) held FULL strength all the way to
+    // 63 degrees and so left the hard side-on view still reading as a slinky —
+    // it only fixed the one angle nobody looks from.
+    constexpr float kLo = 0.08f;   // below this: gone
+    constexpr float kHi = 0.70f;   // above this: untouched (45 deg and better)
+    const float u = clampf((facing - kLo) / (kHi - kLo), 0.0f, 1.0f);
+    return u * u * (3.0f - 2.0f * u);
+}
+
 bool Wormhole::contains(const float p[3]) const {
     // You cannot fall into a hole that has not opened. The trigger needs a real
     // aperture, which excludes Dormant/Spark/Bloom outright.
@@ -900,9 +934,13 @@ void WormholeField::render(rhi::IRenderDevice& dev, const rhi::FrameContext& fr,
 // wormhole_vfx were built under.
 void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr,
                             const Wormhole& w, const float eye[3]) const {
-    (void)eye;
     const WormholeTuning& t = w.tuning();
     const float ap = w.aperture();
+    // THE GRAZING FADE (see Wormhole::facingFade). One value for the whole hole,
+    // so the aperture dims as a single object instead of dissolving ring by ring.
+    // Only the membrane path uses it — the opaque A/B control must stay exactly
+    // what shipped, or the before/after pair stops being a fair comparison.
+    const float faceFade = refractionDisabled() ? 1.0f : w.facingFade(eye);
 
     float bx[3], by[3], bz[3];
     basisFromAxis(w.axis(), bx, by, bz);
@@ -981,10 +1019,25 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
                 // the structure still comes from the texture, never from a uniform
                 // term — but the drive is scaled for the fact that ~3 overlapping
                 // rings now ADD instead of one OVERWRITING (kMembraneGlowScale).
-                const float gk = k * kMembraneGlowScale;
+                // The fade scales the DRIVE as well as the coverage. Fading only
+                // the alpha would hold every ring's emissive at full strength as
+                // its coverage vanished, and the throat would dissolve into a set
+                // of bright OUTLINES — a worse version of the artifact this is
+                // here to remove.
+                // DEPTH-WEIGHTED GRAZING FADE. The funnel is 42 m long against a
+                // 30 m mouth radius, so off-axis its DEEP end protrudes past the
+                // mouth's own silhouette — and a hole you can see the tunnel
+                // sticking out of is not a hole (the original taper comment says
+                // exactly this). Those protruding deep rings are the slinky tail
+                // that survives at 45 and 70 degrees even after the whole-hole
+                // fade. So the deeper a ring is, the faster it fades with angle:
+                // head-on you see the full depth, and as the view swings the tail
+                // retracts into the mouth instead of trailing out beside it.
+                const float layerFade = std::pow(faceFade, 1.0f + 2.5f * d);
+                const float gk = k * kMembraneGlowScale * layerFade;
                 const float mFactor[4] = { tint[0] * gk, tint[1] * gk, tint[2] * gk, 1.0f };
                 rhi::IRenderDevice::GlassMaterial gm;
-                gm.opacity    = lm.alpha;
+                gm.opacity    = lm.alpha * layerFade;
                 gm.refraction = kRefractStrength;
                 // Frost grows inward: the deep throat scatters what you see through
                 // it, so the convergence is read through a MILKY column rather than
@@ -1005,7 +1058,13 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
                 // baked filament map instead of flooding the annulus. Same law as
                 // the opaque path, enforced by the shader rather than by restraint.
                 gm.emissiveMap = 1.0f;
-                dev.drawMeshGlass(fr, m_ringMesh, m_throatTex, mFactor, em, gm, m);
+                // THE EMISSIVE FLOOR TAKES THE FADE TOO. It is a separate term
+                // from the base drive, and leaving it unfaded is exactly how a
+                // "faded out" ring comes back as a glowing outline — the coverage
+                // goes to zero while the glow does not, and the shader's
+                // energy-preserving divide hands the difference straight back.
+                const float emM[4] = { tint[0], tint[1], tint[2], floorEm * layerFade };
+                dev.drawMeshGlass(fr, m_ringMesh, m_throatTex, mFactor, emM, gm, m);
             }
         }
     }
@@ -1047,10 +1106,17 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             // the edge, which is the single strongest cue that this is a hole in
             // space and not a disc in front of it. It stays the crispest element
             // (high alpha, only one ring deep) so the aperture keeps a silhouette.
-            const float gk = k * kMembraneGlowScale;
+            // THE RIM KEEPS A FLOOR WHERE THE THROAT DOES NOT. Edge-on, the
+            // interior of the aperture has nothing to show — but the mouth is
+            // still there, and a thin bright ellipse seen edge-on is exactly what
+            // a hole in space should leave behind. Fading the rim to nothing
+            // would delete a wormhole that is still washing the hull with a
+            // 4200-intensity light, which reads as a bug rather than as an angle.
+            const float rimFade = 0.45f + 0.55f * faceFade;
+            const float gk = k * kMembraneGlowScale * rimFade;
             const float mFactor[4] = { tint[0] * gk, tint[1] * gk, tint[2] * gk * 1.06f, 1.0f };
             rhi::IRenderDevice::GlassMaterial gm;
-            gm.opacity     = 0.55f;
+            gm.opacity     = 0.55f * rimFade;
             gm.refraction  = kRefractStrength;
             gm.roughness   = 0.0f;          // the edge stays SHARP, never frosted
             gm.specular    = 0.0f;
@@ -1059,7 +1125,10 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             gm.shimmer     = 0.50f;
             gm.shimmerPhase = 0.31f + (float)(w.id() < 0 ? 0 : w.id()) * 0.137f;
             gm.emissiveMap = 1.0f;
-            dev.drawMeshGlass(fr, m_rimMesh, m_throatTex, mFactor, em, gm, m);
+            // Same law as the throat: the emissive floor takes the fade with the
+            // coverage, or the rim survives as a bright outline of itself.
+            const float emR[4] = { em[0], em[1], em[2], em[3] * rimFade };
+            dev.drawMeshGlass(fr, m_rimMesh, m_throatTex, mFactor, emR, gm, m);
         }
     }
 
@@ -1121,6 +1190,7 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
         const float core = w.coreIntensity();
         if (core > 0.002f) {
             float coreR, depth;
+            float coreScale = 1.0f;   // grazing fade, applied only once settled
             const WormholePhase ph = w.phase();
             if (ph == WormholePhase::Spark) {
                 // A point of light. Deliberately tiny: at range it is a star
@@ -1138,10 +1208,36 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
                 depth = 0.0f;
             } else {
                 // Settled: the convergence at the bottom of the throat.
-                coreR = t.radius * ap * 0.30f;
+                // TIGHTER THAN THE OPAQUE ERA (was 0.30). At 30% of the aperture
+                // radius the convergence is a DISC, not a point, and it fails at
+                // both ends of the angle sweep: head-on the blended layers now
+                // pile their glow on top of it and the middle of the wormhole
+                // goes to a featureless white ball, and at three-quarters it
+                // trails behind the funnel as a separate white PILL that reads as
+                // its own object rather than as the far end of a tunnel. A
+                // convergence should be small enough that the throat around it is
+                // still legible — it is the thing the funnel points AT.
+                coreR = t.radius * ap * 0.17f;
                 depth = t.throatDepth * 0.96f;
+                // THE CONVERGENCE IS INTERIOR, so it takes the grazing fade with
+                // the rest of the throat. Left unfaded it survives edge-on as a
+                // bare white pill floating in space with nothing around it —
+                // which is a worse read than the slinky it replaced. The SPARK
+                // core above is deliberately exempt: it sits AT the mouth, it is
+                // the whole effect at that moment, and it has to be a star that
+                // was not there a second ago from any angle.
+                // It sits at the DEEPEST point of the stack (0.96 of the throat),
+                // so it takes the same depth-weighted fade the deepest annulus
+                // does — it is the very tip of the protruding tail.
+                coreScale = std::pow(faceFade, 3.5f);
             }
-            if (coreR > 0.0001f) {
+            // SKIP, do not draw dark. drawMeshEmissive is OPAQUE: a faded core
+            // still paints its disc, and with the drive scaled toward zero that
+            // disc is BLACK — an edge-on wormhole rendered a dark ellipse
+            // punched out of the starfield, which is a worse artifact than the
+            // bright pill it was there to remove. Below this threshold the
+            // convergence contributes nothing visible, so it must not draw.
+            if (coreR > 0.0001f && capped(core, kCoreEmissiveCap) * coreScale > 0.004f) {
                 const float pos[3] = {
                     P[0] + bz[0] * depth, P[1] + bz[1] * depth, P[2] + bz[2] * depth
                 };
@@ -1151,7 +1247,7 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
                 const float ins = w.instability();
                 for (int c = 0; c < 3; ++c)
                     tint[c] += (kUnstableTint[c] - tint[c]) * ins * 0.6f;
-                const float k = capped(core, kCoreEmissiveCap);
+                const float k = capped(core, kCoreEmissiveCap) * coreScale;
                 const float baseFactor[4] = { tint[0] * k, tint[1] * k, tint[2] * k, 1.0f };
                 // The core is the ONE place a per-object emissive is defensible —
                 // the SPARK has to be visible before any light exists to reveal
@@ -1227,7 +1323,7 @@ void seedSpaceWormholes(WormholeField& field) {
     {
         WormholeTuning t{};
         t.radius      = 30.0f;
-        t.throatDepth = 48.0f;
+        t.throatDepth = 26.0f;   // <= radius: keeps the funnel inside its own silhouette
         t.spinRate    = 0.26f;
         t.heldSec     = -1.0f;          // holds open — this is the usable one
         Wormhole w;
@@ -1245,7 +1341,7 @@ void seedSpaceWormholes(WormholeField& field) {
     {
         WormholeTuning t{};
         t.radius      = 22.0f;
-        t.throatDepth = 34.0f;
+        t.throatDepth = 19.0f;   // same law against the 22 m mouth
         t.spinRate    = 0.34f;
         t.heldSec     = -1.0f;
         Wormhole w;
@@ -1534,6 +1630,68 @@ bool runWormholeFieldSelfTest() {
                 shrinks = false;
         check(shrinks && deep.outerFrac < mouth.outerFrac * 0.2f,
               "W19j the throat still tapers to a funnel, mouth -> convergence");
+    }
+
+    // ---- W21: THE GRAZING FADE (the side-on "discrete hoops" fix) ----------
+    // A stack of parallel discs reads as a slinky from the side. The throat has
+    // to fade as ONE object off ONE axis angle, and this is that law.
+    {
+        Wormhole w = mk(true, 5);            // pos (100,0,0), axis (1,0,0)
+        w.forceHeld();
+
+        // Dead head-on: an eye straight down the axis sees the full throat.
+        const float onAxis[3]  = { -50.0f, 0.0f, 0.0f };
+        // Exactly edge-on: an eye perpendicular to the axis sees across the stack.
+        const float edgeOn[3]  = { 100.0f, 0.0f, 220.0f };
+        // Three-quarter — the angle the effect is actually SEEN from. This one is
+        // the reason the curve is a smoothstep and not a pow: it must be UNTOUCHED.
+        const float threeQ[3]  = { 100.0f - 155.0f, 0.0f, 155.0f };   // 45 deg off-axis
+
+        const float fOn   = w.facingFade(onAxis);
+        const float fEdge = w.facingFade(edgeOn);
+        const float f34   = w.facingFade(threeQ);
+
+        check(fOn > 0.99f, "W21a head-on sees the FULL throat (no fade)");
+        check(fEdge < 0.01f, "W21b edge-on collapses the throat — no slinky of hoops");
+        check(f34 > 0.99f,
+              "W21c the THREE-QUARTER view is untouched (a pow() curve would rob it)");
+
+        // THE ANGLE THAT ACTUALLY FAILED. "Hard side-on" in the bug report is not
+        // a perfect 90 degrees — it is ~70, where every ring still presents a wide
+        // open ellipse and the stack reads as a slinky. A fade that only acts in
+        // the last few degrees fixes the one angle nobody looks from and leaves
+        // the reported defect exactly where it was, so this is pinned separately.
+        const float hardSide[3] = { 100.0f + 200.0f * 0.342f, 0.0f, 200.0f * 0.940f };  // 70 deg
+        const float fHard = w.facingFade(hardSide);
+        check(fHard < 0.55f,
+              "W21g the HARD side-on (70 deg) is substantially faded — the reported defect");
+        check(fHard > 0.05f,
+              "W21h ... but not snapped off: 70 deg still shows a dim aperture, no pop");
+
+        // Monotone: swinging from head-on to edge-on must never brighten.
+        bool mono = true;
+        float prev = 1.01f;
+        for (int i = 0; i <= 24; ++i) {
+            const float th = (float)i / 24.0f * (kPi * 0.5f);   // 0 = on-axis .. 90 deg
+            const float e[3] = { 100.0f + 200.0f * std::cos(th), 0.0f, 200.0f * std::sin(th) };
+            const float f = w.facingFade(e);
+            if (f > prev + 1e-5f) mono = false;
+            prev = f;
+            if (!(f >= 0.0f && f <= 1.0f)) mono = false;
+        }
+        check(mono, "W21d the fade is monotone and bounded 0..1 across the swing");
+
+        // BOTH SIDES. The throat is double-wound — it reads from behind the mouth
+        // too — so an eye on the far side is just as head-on, never faded out.
+        const float behind[3] = { 250.0f, 0.0f, 0.0f };
+        check(w.facingFade(behind) > 0.99f,
+              "W21e the fade is symmetric — the double-wound throat reads from behind");
+
+        // An eye AT the mouth is mid-transit. Dimming there would black the
+        // wormhole out at the exact moment the player flies into it.
+        const float atMouth[3] = { 100.0f, 0.0f, 0.0f };
+        check(w.facingFade(atMouth) > 0.99f,
+              "W21f an eye AT the mouth (mid-transit) never dims the throat");
     }
 
     // ---- W20: THE LIGHT SPILL SURVIVED THE LAYER-COUNT CHANGE --------------

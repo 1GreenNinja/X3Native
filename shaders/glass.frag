@@ -347,8 +347,25 @@ void main() {
         // hoops. Under SRC_ALPHA/ONE_MINUS_SRC_ALPHA the result here is
         //     a*behind + glow + (1-a)*dst
         // so the glow is pre-divided by a to survive the blend's multiply.
-        float a = clamp(vFactor.a, 0.02, 1.0);
-        outColor = vec4(behind + glow / a, a);
+        // NOTE ON THE GRAZING FADE. The side-on "discrete hoops" read is fixed on
+        // the CPU (Wormhole::facingFade, app/space/wormhole.cpp), not here. A
+        // per-fragment dot(N,V) is the wrong instrument: the throat is 42 m long,
+        // so from a side-on camera 110 m away the MOUTH is edge-on while the
+        // convergence is still 20 degrees open, and a per-fragment fade therefore
+        // dissolves the near rings while leaving the far ones — which is a
+        // stranger artifact than the one it replaces. The whole aperture has to
+        // fade as ONE object, off ONE angle measured at its axis, and the CPU is
+        // where that angle is known exactly. It arrives here already folded into
+        // opacity and into the base-colour drive.
+        // The glow is pre-divided by alpha so the blend's multiply gives it back
+        // (see above). The DIVISOR is floored but the OUTPUT ALPHA is not: flooring
+        // the alpha itself breaks the cancellation, and a membrane faded to zero
+        // coverage would emit glow/floor — a 250x amplification that resurrects
+        // every ring as a bright outline exactly where it was supposed to vanish.
+        // Alpha 0 must mean gone, whatever the numerator says.
+        float aRaw = clamp(vFactor.a, 0.0, 1.0);
+        float aDiv = max(aRaw, 0.01);
+        outColor = vec4(behind + glow / aDiv, aRaw);
         return;
     }
 
