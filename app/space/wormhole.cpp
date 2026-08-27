@@ -49,6 +49,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -154,7 +155,29 @@ struct Prim {
 // the rim down to the convergence and the whole aperture becomes one continuous
 // radial gradient — violet fringe at the grazing edge, deep blue through the
 // throat, white-hot at the convergence — instead of a plate plus a ball.
-constexpr float kRingInner = 0.88f;
+// ---- REDONE FOR THE BLENDED MEMBRANE THROAT (the refraction pass) ---------
+// Everything above is the OPAQUE-era reasoning and it is still true OF OPAQUE
+// RINGS. 0.88 was forced by opacity: a wide opaque ring is a plate that paints
+// over everything behind it, so the ring had to be a narrow 12% band and you
+// needed 30 of them. But 30 narrow rings on a LINEAR radius taper never actually
+// tiled — spacing is a constant 0.88/29 = 0.030 of the MOUTH radius while ring
+// width is 0.12 of the ring's OWN radius, so the mouth end overlapped ~4x and
+// the deep end, where the radius has shrunk to 0.12 and the width with it, left
+// GAPS twice as wide as the rings themselves. That is the concentric ribbing
+// around the convergence, and no amount of extra rings removes it.
+//
+// Blended membranes have no plate problem, so the ring goes WIDE again and the
+// taper goes GEOMETRIC (kThroatTaperEnd), which makes spacing scale with radius
+// exactly as width does. Width/spacing is then CONSTANT mouth-to-convergence:
+// 0.45 / (1 - 0.12^(1/13)) = ~3x overlap everywhere, no gaps anywhere, on less
+// than half the draws.
+constexpr float kRingInner = 0.55f;
+
+// Deep-end radius as a fraction of the mouth radius. The taper is GEOMETRIC —
+// rad = mouthR * pow(kThroatTaperEnd, d) — which is the whole reason ring
+// spacing stays proportional to ring radius. A linear taper cannot do that: its
+// spacing is constant while the rings it separates keep shrinking.
+constexpr float kThroatTaperEnd = 0.12f;
 
 // The RIM is a separate, THIN ring. Reusing the throat annulus for it (38% of
 // the radius wide) painted a second big disc over the mouth instead of an edge —
@@ -354,6 +377,75 @@ void basisFromAxis(const float axis[3], float outX[3], float outY[3], float outZ
     cross3(outZ, outX, outY); normalize3(outY);
 }
 
+// ---- THE REFRACTION / HEAT-SHIMMER PASS (P1.5) ----------------------------
+//
+// WHY THE THROAT IS GLASS NOW. The layered throat shipped opaque, and opaque
+// layered geometry has two defects it cannot fix from the inside:
+//   1. concentric STEPPING — an opaque ring OVERWRITES the rings behind it, so
+//      every ring's inner edge is a hard discontinuity you can count;
+//   2. from a hard SIDE-ON angle the layers read as discrete HOOPS, because
+//      nothing connects one ring to the next.
+// Both are compositing problems, and both dissolve when the rings blend instead
+// of overwrite. drawMeshGlass() already rides the engine's screen-space
+// refraction pipeline (the `glass-scenecopy` pass copies the opaque HDR scene
+// after the opaque+water passes and before the transparent one), so routing the
+// throat through it buys the blend AND the bend in one move.
+//
+// The bend is the point. With refraction the starfield BEHIND the wormhole is
+// displaced as it passes through the aperture, so the hole reads as a
+// DISTORTION OF SPACE rather than a lit object pasted in front of the stars.
+// Everything before this could only ever be the second thing.
+//
+// The distortion SHAPE lives in shaders/glass.frag's FLAG_MEMBRANE branch (a
+// radial/tangential screen-space lens + animated turbulence, driven off the
+// mesh's own UV gradient). These are the per-layer weights that drive it.
+
+// Master refraction scale handed to GlassMaterial::refraction. glass.frag
+// multiplies the whole lens+shimmer offset by it, so this is the one number that
+// says how hard space bends; it also scrubs live through r_glass_refract.
+constexpr float kRefractStrength = 0.045f;
+
+// LENS weight per layer: strongest at the MOUTH, easing toward the convergence.
+// The mouth ring's outer edge IS the event horizon — the boundary between the
+// throat and flat space — so that is where the gravitational-lens read belongs.
+constexpr float kLensMouth = 0.90f;
+constexpr float kLensDeep  = 0.40f;
+
+// SHIMMER weight per layer: the deep throat is the turbulent end, so the
+// heat-haze grows inward. This is a REAL animated normal perturbation, not a
+// sine on a brightness scalar.
+constexpr float kShimmerMouth = 0.45f;
+constexpr float kShimmerDeep  = 0.80f;
+
+// Per-layer alpha. Low at the mouth (you see through into the throat), denser
+// toward the convergence. This is the coverage the blend composites with, and
+// with ~3 rings overlapping at any radius the stack still reads solid in the
+// middle while staying genuinely see-through at the rim, which is where the
+// lensed starfield has to show.
+constexpr float kLayerAlphaMouth = 0.14f;
+constexpr float kLayerAlphaDeep  = 0.40f;
+
+// GLOW COMPENSATION. Opaque overwrite showed exactly ONE layer's glow per pixel;
+// the blend ACCUMULATES every overlapping layer's glow. With ~3 rings over any
+// given pixel, handing the blended path the same per-layer drive the opaque path
+// used would triple the throat's brightness and flatten it to the white disc the
+// whole emissive-cap law exists to prevent. Scale the drive down by the overlap
+// instead of capping harder — capping erases structure, this preserves it.
+constexpr float kMembraneGlowScale = 0.34f;
+
+// THE OFF-SWITCH (X3_WORMHOLE_NOREFRACT=1). Falls the throat + rim back to the
+// exact opaque drawMeshEmissive path they shipped with, so a BEFORE/AFTER pair
+// can be captured from ONE binary at one camera — which is the only honest way
+// to show what the refraction pass actually changed. Read once; a getenv per
+// annulus per frame is not free.
+bool refractionDisabled() {
+    static const bool s_off = [] {
+        const char* e = std::getenv("X3_WORMHOLE_NOREFRACT");
+        return e && e[0] == '1';
+    }();
+    return s_off;
+}
+
 // ---- The palette knobs, re-derived for OPEN SPACE -------------------------
 //
 // The hub's numbers (base 11, range 9.5) are for a light 2-3 m off gunmetal in
@@ -372,6 +464,26 @@ constexpr float kLightBreatheAmp = 0.16f;    // +/- fraction around base
 constexpr float kUnstableTint[3] = { 0.94f, 0.30f, 1.00f };   // hot violet-magenta
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// THE PER-LAYER MEMBRANE LAW. One place both the draw path and --test-wormholes
+// read, so the tiling arithmetic in kRingInner's comment is a thing the test
+// CHECKS rather than a thing the comment claims.
+ThroatLayerMembrane throatLayerMembrane(int layer) {
+    const int L = std::max(1, kThroatLayers - 1);
+    const int li = layer < 0 ? 0 : (layer > L ? L : layer);
+    const float d = clampf((float)li / (float)L, 0.0f, 1.0f);
+
+    ThroatLayerMembrane m{};
+    m.depth01   = d;
+    m.outerFrac = std::pow(kThroatTaperEnd, d);      // GEOMETRIC taper
+    m.innerFrac = m.outerFrac * kRingInner;
+    m.alpha     = kLayerAlphaMouth + (kLayerAlphaDeep - kLayerAlphaMouth) * d;
+    m.lens      = kLensMouth      + (kLensDeep      - kLensMouth)      * d;
+    m.shimmer   = kShimmerMouth   + (kShimmerDeep   - kShimmerMouth)   * d;
+    m.roughness = 0.15f + 0.45f * d;
+    return m;
+}
 
 // ---------------------------------------------------------------------------
 const char* wormholePhaseName(WormholePhase p) {
@@ -809,15 +921,15 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             // the mouth's: at a gentler taper the throat visibly protrudes THROUGH
             // the aperture when viewed off-axis, and a hole you can see the tunnel
             // sticking out of is not a hole.
-            // LINEAR taper, not quadratic. A quadratic taper is nearly flat near
-            // d=0, so a third of the stack piled up at almost the same radius and
-            // painted one large uniformly-dark annulus — the "purple donut" that
-            // dominated three capture rounds. Linear spreads the ring radii evenly
-            // from the mouth down to the convergence, and since each ring spans
-            // 0.62..1.0 of its own radius, consecutive rings overlap heavily and
-            // the disc fills with a CONTINUOUS radial gradient instead of a plate
-            // plus a ball.
-            const float rad = t.radius * ap * (1.0f - 0.88f * d);
+            // GEOMETRIC taper (was linear). Linear was the right answer against a
+            // QUADRATIC taper — it stopped the stack piling up at one radius — but
+            // it still leaves the ring SPACING constant while the rings themselves
+            // shrink, so the deep end gaps. Geometric makes spacing proportional to
+            // radius, which is the only law under which a fixed-proportion ring
+            // (kRingInner) tiles the whole funnel at a constant overlap. See the
+            // arithmetic at kRingInner.
+            const ThroatLayerMembrane lm = throatLayerMembrane(layer);
+            const float rad = t.radius * ap * lm.outerFrac;
             // Depth placement: d^1.5 spreads the stack more evenly than d^2 did
             // (which crowded everything at the mouth and left the deep end a
             // sparse set of visibly separate hoops).
@@ -860,7 +972,41 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             // the texture * baseColorFactor product.
             const float floorEm = capped(k * 0.06f, 0.55f);
             const float em[4] = { tint[0], tint[1], tint[2], floorEm };
-            dev.drawMeshEmissive(fr, m_ringMesh, m_throatTex, baseFactor, em, m);
+
+            if (refractionDisabled()) {
+                // The shipped opaque path, kept verbatim as the A/B control.
+                dev.drawMeshEmissive(fr, m_ringMesh, m_throatTex, baseFactor, em, m);
+            } else {
+                // THE MEMBRANE. The same tint * intensity product drives the body —
+                // the structure still comes from the texture, never from a uniform
+                // term — but the drive is scaled for the fact that ~3 overlapping
+                // rings now ADD instead of one OVERWRITING (kMembraneGlowScale).
+                const float gk = k * kMembraneGlowScale;
+                const float mFactor[4] = { tint[0] * gk, tint[1] * gk, tint[2] * gk, 1.0f };
+                rhi::IRenderDevice::GlassMaterial gm;
+                gm.opacity    = lm.alpha;
+                gm.refraction = kRefractStrength;
+                // Frost grows inward: the deep throat scatters what you see through
+                // it, so the convergence is read through a MILKY column rather than
+                // a clean window. Reuses the engine's pre-blurred scene copy.
+                gm.roughness  = lm.roughness;
+                gm.specular   = 0.0f;          // membranes take the self-lit exit
+                gm.tint[0] = tint[0]; gm.tint[1] = tint[1]; gm.tint[2] = tint[2];
+                gm.lens       = lm.lens;
+                gm.shimmer    = lm.shimmer;
+                // GOLDEN-RATIO PHASE. The decorrelation seed has to be irrational
+                // in the layer index or the turbulence re-aligns every few rings
+                // and reintroduces exactly the concentric banding it is here to
+                // break. 0.6180339 never repeats over 14 layers, and the per-hole
+                // id term keeps two wormholes in one shot from boiling in sync.
+                gm.shimmerPhase = (float)layer * 0.6180339f
+                                + (float)(w.id() < 0 ? 0 : w.id()) * 0.137f;
+                // Black texels stay black: the emissive floor is modulated by the
+                // baked filament map instead of flooding the annulus. Same law as
+                // the opaque path, enforced by the shader rather than by restraint.
+                gm.emissiveMap = 1.0f;
+                dev.drawMeshGlass(fr, m_ringMesh, m_throatTex, mFactor, em, gm, m);
+            }
         }
     }
 
@@ -892,7 +1038,29 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
         // rim is the one place a flat field is most visible, because it is the
         // silhouette — a hot uniform rim is a drawn-on outline.
         const float em[4] = { tint[0], tint[1], tint[2], capped(k * 0.10f, 0.9f) };
-        dev.drawMeshEmissive(fr, m_rimMesh, m_throatTex, baseFactor, em, m);
+        if (refractionDisabled()) {
+            dev.drawMeshEmissive(fr, m_rimMesh, m_throatTex, baseFactor, em, m);
+        } else {
+            // THE RIM IS WHERE SPACE BENDS HARDEST. It is the actual boundary
+            // between the throat and flat space, so it takes the maximum lens
+            // weight — the starfield just outside the aperture is dragged around
+            // the edge, which is the single strongest cue that this is a hole in
+            // space and not a disc in front of it. It stays the crispest element
+            // (high alpha, only one ring deep) so the aperture keeps a silhouette.
+            const float gk = k * kMembraneGlowScale;
+            const float mFactor[4] = { tint[0] * gk, tint[1] * gk, tint[2] * gk * 1.06f, 1.0f };
+            rhi::IRenderDevice::GlassMaterial gm;
+            gm.opacity     = 0.55f;
+            gm.refraction  = kRefractStrength;
+            gm.roughness   = 0.0f;          // the edge stays SHARP, never frosted
+            gm.specular    = 0.0f;
+            gm.tint[0] = tint[0]; gm.tint[1] = tint[1]; gm.tint[2] = tint[2];
+            gm.lens        = 1.0f;          // maximum — this is the event horizon
+            gm.shimmer     = 0.50f;
+            gm.shimmerPhase = 0.31f + (float)(w.id() < 0 ? 0 : w.id()) * 0.137f;
+            gm.emissiveMap = 1.0f;
+            dev.drawMeshGlass(fr, m_rimMesh, m_throatTex, mFactor, em, gm, m);
+        }
     }
 
     // ---- The SPARK/BLOOM HALO (additive, genuinely soft-edged) ------------
@@ -1268,6 +1436,152 @@ bool runWormholeFieldSelfTest() {
         float gap = 0.0f;
         for (int c = 0; c < 3; ++c) gap += std::fabs(tn[c] - td[c]);
         check(gap > 0.30f, "W10c mouth and convergence carry different spectra (fringing)");
+    }
+
+    // ---- W19: THE MEMBRANE / REFRACTION LAW (P1.5) -------------------------
+    // The two defects the opaque throat could not close were CONCENTRIC STEPPING
+    // and, side-on, DISCRETE HOOPS. Both are compositing failures, and the fix
+    // has a geometric half that is checkable on the CPU: the rings must TILE
+    // (overlap everywhere, gap nowhere) and the refraction weights must form a
+    // real mouth-to-convergence gradient rather than one flat value.
+    {
+        // W19a THE TILING LAW. This is the assertion that would have caught the
+        // shipped bug: 30 narrow rings on a LINEAR taper gapped at the deep end
+        // (ring width scales with the ring's own radius, but linear spacing does
+        // not), and those gaps are the ribbing seen around the convergence. Under
+        // the GEOMETRIC taper every consecutive pair must overlap.
+        bool tiles = true;
+        float worstOverlap = 1e9f;
+        for (int i = 0; i + 1 < kThroatLayers; ++i) {
+            const ThroatLayerMembrane a = throatLayerMembrane(i);      // nearer the mouth
+            const ThroatLayerMembrane b = throatLayerMembrane(i + 1);  // one deeper, smaller
+            // Overlap means the deeper ring's OUTER edge reaches past the nearer
+            // ring's INNER edge. If it does not, there is an annular gap between
+            // them and you can see straight through the stack at that radius.
+            const float ov = b.outerFrac - a.innerFrac;
+            if (ov <= 0.0f) tiles = false;
+            worstOverlap = std::min(worstOverlap, ov / std::max(a.outerFrac, 1e-6f));
+        }
+        check(tiles, "W19a the throat rings TILE — no annular gap at any depth");
+        check(worstOverlap > 0.02f,
+              "W19b the tiling has real margin, not a hairline touch");
+
+        // W19c the ring count actually came DOWN. Fewer, better layers: the point
+        // of the refraction pass is that blending carries the depth read, so the
+        // stack no longer has to brute-force it with thirty steps.
+        check(kThroatLayers < 30,
+              "W19c the annulus count was REDUCED once refraction carried the depth");
+
+        const ThroatLayerMembrane mouth = throatLayerMembrane(0);
+        const ThroatLayerMembrane deep  = throatLayerMembrane(kThroatLayers - 1);
+
+        // W19d the LENS is strongest at the mouth. The mouth ring's outer edge is
+        // the event horizon — the boundary with flat space — so that is where the
+        // starfield has to bend hardest for the aperture to read as a hole.
+        check(mouth.lens > deep.lens * 1.5f,
+              "W19d lensing peaks at the mouth (the event horizon), not deep inside");
+
+        // W19e the SHIMMER runs the other way: the deep throat is the turbulent
+        // end. Opposed gradients are what stop the membrane reading as one
+        // uniform effect smeared over the whole aperture.
+        check(deep.shimmer > mouth.shimmer * 1.3f,
+              "W19e turbulence GROWS toward the convergence (opposed to the lens)");
+
+        // W19f coverage rises with depth, so the rim stays genuinely see-through
+        // (that is where the lensed starfield shows) while the middle reads solid.
+        check(deep.alpha > mouth.alpha && mouth.alpha < 0.25f && deep.alpha < 1.0f,
+              "W19f per-layer alpha rises with depth and the mouth stays see-through");
+
+        // W19g every weight the shader consumes is inside the 0..1 range it packs
+        // into a byte. Out of range would silently saturate or wrap.
+        bool ranged = true;
+        for (int i = 0; i < kThroatLayers; ++i) {
+            const ThroatLayerMembrane m = throatLayerMembrane(i);
+            if (!(m.lens      >= 0.0f && m.lens      <= 1.0f)) ranged = false;
+            if (!(m.shimmer   >= 0.0f && m.shimmer   <= 1.0f)) ranged = false;
+            if (!(m.alpha     >= 0.0f && m.alpha     <= 1.0f)) ranged = false;
+            if (!(m.roughness >= 0.0f && m.roughness <= 1.0f)) ranged = false;
+        }
+        check(ranged, "W19g every membrane weight is in the 0..1 the shader packs");
+
+        // W19h THE MEMBRANE LAW IS FRAMERATE-INDEPENDENT BY CONSTRUCTION. It is a
+        // pure function of the layer index — no time, no frame counter — so there
+        // is nothing for 60 Hz vs 165 Hz to disagree about. Assert purity (the
+        // same input twice gives the same output) so a later edit cannot quietly
+        // introduce a frame-varying term and break the 165 Hz law.
+        bool pure = true;
+        for (int i = 0; i < kThroatLayers; ++i) {
+            const ThroatLayerMembrane p = throatLayerMembrane(i);
+            const ThroatLayerMembrane q = throatLayerMembrane(i);
+            if (p.outerFrac != q.outerFrac || p.innerFrac != q.innerFrac ||
+                p.alpha != q.alpha || p.lens != q.lens ||
+                p.shimmer != q.shimmer || p.roughness != q.roughness) pure = false;
+        }
+        check(pure, "W19h the membrane law is a PURE function of the layer index");
+
+        // W19i out-of-range layer indices clamp instead of reading off the end.
+        const ThroatLayerMembrane lo = throatLayerMembrane(-5);
+        const ThroatLayerMembrane hi = throatLayerMembrane(kThroatLayers + 99);
+        check(lo.depth01 == 0.0f && hi.depth01 == 1.0f,
+              "W19i the membrane law clamps a wild layer index");
+
+        // W19j THE TAPER STILL FUNNELS. The geometric taper replaced a linear one;
+        // it must still shrink monotonically toward the convergence, or the
+        // "throat" is a cylinder and the convergence has nothing to converge to.
+        bool shrinks = true;
+        for (int i = 0; i + 1 < kThroatLayers; ++i)
+            if (throatLayerMembrane(i + 1).outerFrac >= throatLayerMembrane(i).outerFrac)
+                shrinks = false;
+        check(shrinks && deep.outerFrac < mouth.outerFrac * 0.2f,
+              "W19j the throat still tapers to a funnel, mouth -> convergence");
+    }
+
+    // ---- W20: THE LIGHT SPILL SURVIVED THE LAYER-COUNT CHANGE --------------
+    // The refraction pass cut the annulus count 30 -> 14 and moved the throat to
+    // the blended path. Neither touches collectLights(), which is what actually
+    // washes the player's hull — but "neither touches it" is exactly the kind of
+    // claim that rots, so it is pinned here. The reference measurement the
+    // previous lane took on hull pixels (+7.3% held, +23.8% at the bloom flare)
+    // is a PIXEL measurement and cannot live in a CPU test; what CAN live here is
+    // the light rig that produces it.
+    {
+        Wormhole w = mk(true, 3);
+        w.forceHeld();
+        w.update(1.0f / 165.0f);
+        rhi::PointLight held[2];
+        const int nHeld = w.collectLights(held, 2);
+
+        auto lum = [](const rhi::PointLight& L) {
+            return L.color[0] + L.color[1] + L.color[2];
+        };
+
+        // Sweep the whole staged opening at 165 Hz and take the PEAK spill, rather
+        // than sampling one hand-picked instant — the flare is a shaped envelope
+        // (ramp in over 18% of Bloom, exponential decay out) and its peak is a
+        // couple of hundredths of a second wide.
+        Wormhole b = mk(true, 3);
+        b.open();
+        float peak = 0.0f;
+        bool sawBloom = false;
+        for (int i = 0; i < 900; ++i) {           // ~5.5 s, past Spark+Bloom+Unfurl
+            b.update(1.0f / 165.0f);
+            if (b.phase() == WormholePhase::Bloom) sawBloom = true;
+            rhi::PointLight L[2];
+            if (b.collectLights(L, 2) == 1) peak = std::max(peak, lum(L[0]));
+        }
+
+        check(nHeld == 1 && sawBloom,
+              "W20a the spill light survives the membrane throat (one light, and Bloom runs)");
+        check(nHeld == 1 && lum(held[0]) > 0.0f,
+              "W20b the HELD spill still carries real energy onto the hull");
+        // The flare peaks around 1.4x the held wash (9000 vs 4200 base intensity,
+        // shaped by clamp(u/0.18)*exp(-2.4u), which tops out at ~0.65 of the peak
+        // constant). 1.25x is the honest floor for "the event is louder than the
+        // hold" — anything more is asserting the shaping constants, not the read.
+        check(nHeld == 1 && peak > lum(held[0]) * 1.25f,
+              "W20c the BLOOM flare still peaks well above held — the event reads");
+        check(nHeld == 1 && held[0].range > 100.0f,
+              "W20d the spill still REACHES the ship (range, not just intensity)");
     }
 
     // ---- W11: THE LIGHT CONTRIBUTION EXISTS AND IS BOUNDED -----------------

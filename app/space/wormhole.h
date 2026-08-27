@@ -105,7 +105,39 @@ const char* wormholePhaseName(WormholePhase p);
 
 // How many concentric annuli make the throat. Each is real geometry at a real
 // depth — this is what buys parallax instead of a billboard.
-constexpr int kThroatLayers = 30;
+//
+// WAS 30, NOW 14. Thirty was the count the OPAQUE layered throat needed, and it
+// still stepped: opaque annuli OVERWRITE rather than composite, so every ring's
+// inner edge was a hard discontinuity and you could count the rings. Piling on
+// more rings could only make the steps finer, never remove them. Now that the
+// throat draws through the alpha-blended MEMBRANE path (drawMeshGlass with
+// GlassMaterial::lens/::shimmer), the rings COMPOSITE, so the count is free to
+// drop to whatever tiles the disc — and 14 wide rings on a GEOMETRIC taper tile
+// it with no gaps at the deep end, which 30 narrow rings on a LINEAR taper did
+// not (see kRingInner in wormhole.cpp for that arithmetic). Fewer, better layers.
+constexpr int kThroatLayers = 14;
+
+// ---- THE PER-LAYER MEMBRANE LAW (the refraction pass, P1.5) ---------------
+// Geometry + refraction weights for one throat annulus. A PURE FUNCTION of the
+// layer index: no time, no frame counter, no wormhole state. That is what makes
+// it testable, and it is why a 60 Hz and a 165 Hz run build byte-identical
+// membranes (the only time-varying part of the effect is the shader's
+// turbulence, which is driven by ACCUMULATED SECONDS, not by frames).
+//
+// `outerFrac`/`innerFrac` are the ring's radii as a fraction of the MOUTH
+// radius. They exist so the tiling law can be asserted rather than asserted-in-a-
+// comment: consecutive rings must OVERLAP for every layer, or the throat shows
+// the concentric gaps that the 30-layer linear taper had at its deep end.
+struct ThroatLayerMembrane {
+    float depth01;      // 0 = mouth, 1 = the convergence end
+    float outerFrac;    // ring outer radius / mouth radius
+    float innerFrac;    // ring inner radius / mouth radius
+    float alpha;        // blend coverage handed to GlassMaterial::opacity
+    float lens;         // gravitational-lens weight  (GlassMaterial::lens)
+    float shimmer;      // turbulence weight          (GlassMaterial::shimmer)
+    float roughness;    // frost / scatter through the membrane
+};
+ThroatLayerMembrane throatLayerMembrane(int layer);
 
 // EMISSIVE CAP LAW (lifted from the rift hub's blown-white fix). Every emissive
 // strength written by this file is clamped to one of these. They are ABOVE 1.0

@@ -912,6 +912,34 @@ public:
         // baseColor (a display's image IS its emission mask), so it costs no extra
         // binding and no extra sample.
         float emissiveMap = 0.0f;
+        // ---- ENERGY MEMBRANE (lens + shimmer), all 0..1, both default 0 -------
+        // Both zero (every existing pane) leaves the MEMBRANE flag bit unset and
+        // the fragment path byte-identical. Set either and this glass stops being
+        // a flat sheet and becomes a LIVING DISTORTION OF SPACE: the screen-space
+        // refraction lookup is driven by the surface's own radial/tangential
+        // frame instead of the flat normal projection, so the scene behind it
+        // bends around the aperture and boils.
+        //
+        // Written for the wormhole throat, kept GENERAL on purpose — the rift-hub
+        // gates are the obvious second customer (what that system calls "shimmer"
+        // today is only a sine on an emissive scalar; this is the real thing).
+        //
+        // REQUIREMENT: the mesh's UV must be authored with v = RADIAL position
+        // across the surface (0 = inner edge, 1 = outer rim) and u = angle. The
+        // shader takes the screen-space gradient of v as the outward radial
+        // direction, which is what makes the effect work from any camera angle
+        // without knowing the object's centre or axis. An annulus or a radial
+        // disc satisfies this; an arbitrary mesh does not.
+        //
+        // `refraction` remains the MASTER strength for both (and still scrubs
+        // live through r_glass_refract).
+        float lens    = 0.0f;   // 0 = off .. 1 = full gravitational-lens pull + swirl
+        float shimmer = 0.0f;   // 0 = off .. 1 = full animated heat-haze turbulence
+        // Decorrelation seed, 0..1. Two membranes with DIFFERENT phases sample the
+        // turbulence in different places, so a stack of them does not line up into
+        // concentric banding. Quantised to 1/255; wraps freely (any fractional
+        // part is fine). Irrelevant when shimmer == 0.
+        float shimmerPhase = 0.0f;
     };
 
     // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's

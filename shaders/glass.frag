@@ -116,6 +116,45 @@ layout(location = 13) flat in vec4 vGlassTint;    // rgb = tint, a = emissiveMap
 layout(location = 0) out vec4 outColor;
 
 const uint FLAG_GLASS = 2u;
+// MEMBRANE (bit5, kFlagMembrane). An ENERGY-MEMBRANE glass surface: instead of
+// the flat normal-projected bend the pane path uses, it gets a RADIAL/TANGENTIAL
+// screen-space LENS plus animated TURBULENCE, so the scene behind it warps and
+// LIVES. Built for the wormhole throat; any glass surface can opt in via
+// GlassMaterial::lens / ::shimmer, which is how the rift-hub gates become its
+// second customer. Both zero on every existing pane -> the bit is never set and
+// this path is byte-identical to before.
+const uint FLAG_MEMBRANE = 32u;
+
+// ---- Membrane turbulence noise -------------------------------------------
+// Value noise -> fbm, the SAME shape as the CPU-side bake in
+// app/space/wormhole.cpp (integer lattice, smoothstep interpolant, octave sum on
+// a NON-INTEGER lacunarity so nothing lines up on the axes). Keeping the two the
+// same shape is why the animated shimmer reads as the same material the baked
+// filaments do rather than as a second, unrelated texture sliding over them.
+float mHash(vec2 p) {
+    vec2 i = floor(p);
+    return fract(sin(dot(i, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+float mNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 s = f * f * (3.0 - 2.0 * f);            // == valueNoise()'s interpolant
+    float a = mHash(i);
+    float b = mHash(i + vec2(1.0, 0.0));
+    float c = mHash(i + vec2(0.0, 1.0));
+    float d = mHash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
+}
+
+float mFbm(vec2 p) {
+    float sum = 0.0, amp = 0.5;
+    for (int o = 0; o < 4; ++o) {
+        sum += amp * mNoise(p);
+        amp *= 0.5;
+        p   *= 2.02;                              // non-integer lacunarity
+    }
+    return sum;
+}
 
 // Sun direction is PER-SCENE (cam.sunDir, filled from SkyParams — defaults to
 // the old hardcoded (0.4,1,0.3) when no sky is set, so indoor worlds are
@@ -217,6 +256,99 @@ void main() {
         vec3 glow = vEmissive.rgb * vEmissive.a * texel * tint * rim;
         const float kAddA = 0.035;
         outColor = vec4(glow / kAddA, kAddA);
+        return;
+    }
+
+    // ---- ENERGY MEMBRANE: screen-space LENSING + heat-shimmer -------------
+    // The wormhole-throat path (and any other surface that opts in). Everything
+    // below returns early: a membrane is SELF-LIT, so it never runs the shadow
+    // taps, the clustered light loop or the IBL reflection — which is both a
+    // large saving on a heavily-overdrawn stack of annuli AND the correct look.
+    // Running an energy membrane through the light loop is exactly how the
+    // previous OPAQUE attempt became a flat violet plate: the wormhole's own
+    // ~4200-intensity point light sits metres from the throat and blasts every
+    // annulus to one uniform value, and a uniform value cannot carry structure.
+    if ((vFlags & FLAG_MEMBRANE) != 0u) {
+        // Params ride the SPARE terrain-pack1 lane (a membrane is never TERRAIN,
+        // and clearcoat/self-light are opaque-only, so nothing collides). Three
+        // bytes: shimmer, lens, and a per-object decorrelation PHASE.
+        float shimmerAmt = float( vTerrainPack.x        & 0xFFu) / 255.0;
+        float lensAmt    = float((vTerrainPack.x >>  8) & 0xFFu) / 255.0;
+        float phase      = float((vTerrainPack.x >> 16) & 0xFFu) / 255.0;
+
+        vec2 sUV = gl_FragCoord.xy * g.screen.xy;
+        vec3 emisMaskM = mix(vec3(1.0), texel, clamp(vGlassTint.a, 0.0, 1.0));
+        vec3 glow = body + vEmissive.rgb * vEmissive.a * emisMaskM;
+
+        vec3 behind = vec3(0.0);
+        if (g.screen.w > 0.5) {
+            // THE SCREEN-SPACE RADIAL FRAME, taken from the UV gradient.
+            // vUV.y runs radially across the annulus (0 = inner edge, facing the
+            // convergence; 1 = outer rim), so its SCREEN-SPACE gradient IS the
+            // outward radial direction — for any camera angle, without needing
+            // the object's centre, its axis, or one extra varying. vUV.x (the
+            // angle) is deliberately NOT differentiated: it wraps 0->1 at the
+            // seam and its derivative explodes there.
+            vec2 gradV = vec2(dFdx(vUV.y), dFdy(vUV.y));
+            float g2 = dot(gradV, gradV);
+            vec2 radial  = (g2 > 1e-12) ? gradV * inversesqrt(g2) : vec2(0.0, 1.0);
+            vec2 tangent = vec2(-radial.y, radial.x);
+
+            // SEAM-FREE TURBULENCE. An atan-style angular coordinate cannot be fed
+            // to 2D noise — the -pi/+pi wrap leaves a visible radial seam.
+            // Embedding the angle on the UNIT CIRCLE and sampling there is
+            // continuous. Same trick the CPU bake uses; the most reusable line in
+            // either file.
+            float ang = vUV.x * 6.28318530718;
+            vec2  emb = vec2(cos(ang), sin(ang)) * 3.0;
+            // The per-object PHASE decorrelates neighbouring layers. Without it
+            // every annulus in a stack samples the same noise at the same place,
+            // and the turbulence itself lines up into concentric banding — the
+            // exact artifact this pass exists to dissolve.
+            emb += vec2(phase * 37.0, phase * 61.0);
+            // dt-CORRECT: g.camPos.w is ACCUMULATED SECONDS off a steady_clock,
+            // never a frame counter, so a 60 Hz and a 165 Hz run that reach the
+            // same wall clock sample identical turbulence.
+            float t = g.camPos.w;
+            float nA = mFbm(emb + vec2( 1.7, vUV.y * 2.2 - t * 0.45));
+            float nB = mFbm(emb + vec2(-4.3, vUV.y * 2.2 + t * 0.31));
+            vec2 turb = vec2(nA, nB) * 2.0 - 1.0;              // [-1, 1]
+
+            // LENS: strongest at the RIM (v -> 1), easing to nothing at the inner
+            // edge, so the bend is a HALO around the aperture rather than a
+            // uniform smear across it. Space is most distorted where the throat
+            // meets flat space, and that gradient is the whole read.
+            float prof = vUV.y * vUV.y;
+            vec2 off = -radial * (lensAmt * 1.15 * prof)     // pull the scene inward
+                     +  tangent * (lensAmt * 0.55 * prof);   // + a swirl drag
+            // SHIMMER in the membrane's OWN radial/tangential frame, so the
+            // turbulence follows the throat instead of the screen axes.
+            off += (radial * turb.x + tangent * turb.y) * (shimmerAmt * 0.85);
+            // `refraction` is the master scale (and scrubs live via r_glass_refract).
+            vec2 sampUV = clamp(sUV + off * refraction, vec2(0.0), vec2(1.0));
+
+            vec3 sharp = textureLod(sceneCopy, sampUV, 0.0).rgb;
+            if (g.screen.z > 0.5 && roughness > 0.001) {
+                vec3 frost = textureLod(sceneFrost, sampUV, 0.0).rgb;
+                sharp = mix(sharp, frost, smoothstep(0.0, 0.85, roughness));
+            }
+            behind = sharp * mix(vec3(1.0), tint, 0.75);
+        }
+        // else: GRACEFUL DEGRADATION. No scene copy this frame (target creation
+        // failed, or the copy pass was skipped) -> there is nothing to bend, so
+        // the membrane falls back to its own emissive body over whatever the
+        // alpha blend reveals. Flatter, but never black and never a garbage tap.
+
+        // ALPHA-BLENDED, NOT REPLACED. The pane path outputs alpha 1 and REPLACES
+        // the pixel, which is right for one sheet of glass — but a stack of
+        // membranes must COMPOSITE, and a replace lets the nearest layer paint
+        // over every layer behind it. That is precisely the opaque-overwrite
+        // mechanism that made 30 stacked annuli read as discrete concentric
+        // hoops. Under SRC_ALPHA/ONE_MINUS_SRC_ALPHA the result here is
+        //     a*behind + glow + (1-a)*dst
+        // so the glow is pre-divided by a to survive the blend's multiply.
+        float a = clamp(vFactor.a, 0.02, 1.0);
+        outColor = vec4(behind + glow / a, a);
         return;
     }
 
