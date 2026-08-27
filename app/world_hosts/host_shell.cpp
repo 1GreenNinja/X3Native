@@ -173,6 +173,15 @@ bool HostShell::onKey(int key, int action, int mods) {
         // closed the window, so the reflex key is now the safe one and leaving
         // takes a deliberate two-key press (or the menu's QUIT row).
         if (shift) { m_quit = true; return true; }
+        // THE COMMS DEVICE gets ESC before anything else, because it is the
+        // cheapest thing to be stuck in and the one whose focus costs the player
+        // his flight controls. One press, instantly back to flying.
+        if (m_comms.focused()) {
+            x3::game::commsRouteKey(m_comms, x3::game::CommsKey::Escape);
+            if (!m_paused && !m_wtune.isOpen())
+                glfwSetInputMode(m_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            return true;
+        }
         // The tuning panel is a modal too: ESC steps back out of it before it
         // means "open the menu". It also feeds the panel an escape edge first,
         // so ESC abandons a half-typed slider value rather than closing the whole
@@ -210,6 +219,41 @@ bool HostShell::onKey(int key, int action, int mods) {
             glfwSetInputMode(m_window, GLFW_CURSOR,
                              m_wtune.isOpen() ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
         return true;
+    }
+
+    // ---- F10: THE SHIP COMMS DEVICE -----------------------------------------
+    // F10/F11/F12 were the only completely unbound keys left in the project, so
+    // the comms device takes F10 — adjacent to F7's tuning panel, which is the
+    // same family of shell overlays (takes the keyboard, releases the cursor,
+    // does NOT pause the sim). The device is always VISIBLE; F10 only decides
+    // who owns the keyboard.
+    if (key == GLFW_KEY_F10) {
+        m_comms.toggleFocus();
+        if (!m_paused)
+            glfwSetInputMode(m_window, GLFW_CURSOR,
+                             (m_comms.focused() || m_wtune.isOpen())
+                                 ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+        return true;
+    }
+
+    // While the COMMS DEVICE holds focus it owns the keyboard (except the keys
+    // handled above: the console toggle, ESC, F3, F7 and F10 itself). Routing
+    // goes through the shared commsRouteKey() so the shell and --test-comms
+    // agree on exactly which keys the device eats.
+    if (m_comms.focused()) {
+        using CK = x3::game::CommsKey;
+        CK ck = CK::Other;
+        switch (key) {
+            case GLFW_KEY_UP:   case GLFW_KEY_PAGE_UP:   ck = CK::ScrollUp;   break;
+            case GLFW_KEY_DOWN: case GLFW_KEY_PAGE_DOWN: ck = CK::ScrollDown; break;
+            case GLFW_KEY_TAB:                           ck = CK::NextFilter; break;
+            case GLFW_KEY_ENTER: case GLFW_KEY_KP_ENTER:
+            case GLFW_KEY_SPACE:                         ck = CK::Ack;        break;
+            case GLFW_KEY_H:                             ck = CK::Hail;       break;
+            default:                                     ck = CK::Other;      break;
+        }
+        x3::game::commsRouteKey(m_comms, ck);
+        return true;    // nothing leaks to the host while the device is focused
     }
 
     // While the panel is up it owns the keyboard (except the keys handled above:
@@ -286,7 +330,13 @@ bool HostShell::key(int glfwKey) const {
     // arrow/WASD nav must not also drive the car or the player. (The SIM keeps
     // running — only input is taken. That is the difference between this panel
     // and the pause menu, and it is deliberate: the soak has to keep firing.)
-    if (!m_window || m_paused || m_hud.consoleOpen() || m_wtune.isOpen()) return false;
+    // The COMMS DEVICE joins the console, the menu and the tuning panel as a
+    // keyboard owner. Same shared gate as inputEnabled(), so the poll path and
+    // the mouse-look path can never disagree about who has the keyboard.
+    if (!m_window) return false;
+    if (!x3::game::commsFlightInputEnabled(m_paused, m_hud.consoleOpen(),
+                                           m_wtune.isOpen(), m_comms.focused()))
+        return false;
     return glfwGetKey(m_window, glfwKey) == GLFW_PRESS;
 }
 
@@ -375,6 +425,11 @@ void HostShell::draw(const x3::rhi::FrameContext& frame, float dt) {
 
     // Console over the menu: it is the one overlay that has to stay reachable
     // from every state.
+    // The comms device draws UNDER the console (the console is the developer
+    // surface and must always be readable over everything) and OVER the world's
+    // own HUD. Every shell-wired host therefore gets it with no host edit.
+    drawComms(frame, dt);
+
     m_hud.drawConsole(*m_device, frame, *m_console, dt);
     m_hud.drawFps(*m_device, frame, *m_console, dt);
     m_hud.drawStats(*m_device, frame, *m_console, dt);
@@ -428,6 +483,55 @@ void HostShell::drawTuningPanel(const x3::rhi::FrameContext& frame, float dt) {
     m_ui.end();
     // So ESC can cancel a half-typed value before it closes the panel (onKey).
     m_editingInPanel = m_ui.editingValue();
+}
+
+// ---------------------------------------------------------------------------
+// THE SHIP COMMS DEVICE. Drains the publish bus, runs the director, draws.
+//
+// This runs for EVERY shell-wired host, every frame, whether or not anything is
+// publishing. A world that says nothing gets the idle device — never a missing
+// surface and never a crash. That is the whole point of putting it here instead
+// of in one host.
+// ---------------------------------------------------------------------------
+void HostShell::drawComms(const x3::rhi::FrameContext& frame, float dt) {
+    // 1. Drain whatever the game published this frame into the device, and pick
+    //    up the accumulated state snapshot for the director.
+    x3::game::CommsSnapshot snap{};
+    x3::game::commsBus().drain(m_comms, snap);
+
+    // 2. The director turns state deltas into authored lines (wormhole
+    //    advisories, hostile taunts, ship-AI systems chatter). It posts nothing
+    //    at all for a default snapshot.
+    m_commsDirector.update(m_comms, snap, dt);
+
+    // 3. Input. The device only accepts the mouse while it HOLDS FOCUS; unfocused
+    //    it is a display, and a zeroed snapshot means its buttons cannot be
+    //    hovered or activated by a cursor that is captured for flight anyway.
+    x3::ui::UiInput in{};
+    if (m_comms.focused()) {
+        double mx = 0.0, my = 0.0;
+        glfwGetCursorPos(m_window, &mx, &my);
+        int wW = 0, wH = 0, fbW = 0, fbH = 0;
+        glfwGetWindowSize(m_window, &wW, &wH);
+        glfwGetFramebufferSize(m_window, &fbW, &fbH);
+        // Cursor pos is in WINDOW coords; the UI lays out in FRAMEBUFFER pixels.
+        // They differ on a HiDPI display, and a panel that ignored the scale
+        // would put its buttons where the cursor is not.
+        const float sx = (wW > 0) ? (float)fbW / (float)wW : 1.0f;
+        const float sy = (wH > 0) ? (float)fbH / (float)wH : 1.0f;
+        in.mouseX = (float)mx * sx;
+        in.mouseY = (float)my * sy;
+        const bool down = glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        in.mouseDown    = down;
+        in.mousePressed = down && !m_prevMouseForComms;
+        m_prevMouseForComms = down;
+    } else {
+        m_prevMouseForComms = false;
+    }
+
+    m_commsUi.begin(*m_device, frame, in);
+    m_comms.draw(m_commsUi, *m_device, frame, dt);
+    m_commsUi.end();
 }
 
 void HostShell::drawPauseMenu(const x3::rhi::FrameContext& frame) {
