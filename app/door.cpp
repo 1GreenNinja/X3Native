@@ -211,26 +211,20 @@ void DoorSystem::loadDoorMesh(x3::rhi::IRenderDevice& device, std::string_view c
     if (m_doorModel.ok) {
         m_doorDrawables = x3::asset::makeDrawables(m_doorModel);
         m_meshOk = !m_doorDrawables.empty();
-        // B5 — SM_Door_A SHIPS A NEAR-WHITE ALBEDO, and DoorSystem owns this mesh, so the
-        // defect is GAME-WIDE. MEASURED off T_Door_A_Dif (not guessed): the door BODY is
-        // 42% of the texels at mean sRGB 227 -> a LINEAR ALBEDO of 0.768. Fresh snow is
-        // ~0.85. A painted institutional door is ~0.30. A 0.77-albedo door reflects 77% of
-        // every photon that reaches it, so it scorches hot against any honest rig while the
-        // ~0.25-albedo walls beside it sit correctly dark — the same over-unity crutch as
-        // the 1.08 cot and the black rifthub tube (docs/KNOWN_BUGS.md, "VALUE, NOT LUMENS").
+        // B5 — SM_Door_A SHIPS A NEAR-WHITE ALBEDO (the slab measures 0.768 linear; an
+        // institutional door is ~0.30 and snow is 0.85). That renormalization USED to
+        // happen right here, as a hand-picked `baseColorFactor *= 0.42f` on this one mesh.
         //
-        // Renormalize with glTF's OWN albedo multiplier (baseColor = factor x texture, in
-        // LINEAR space) rather than rewriting the GLB: the .glb is Git-LFS tracked and the
-        // asset itself is not corrupt — our USE of it was never normalized. 0.768 x 0.42 =
-        // 0.32 linear (~0.60 sRGB), the exact value that fixed the rifthub tube.
+        // IT NOW HAPPENS IN THE LOADER, BY LAW, FOR THE WHOLE KIT — see KNOWN_BUGS B5 and
+        // `ModelLoader::normalizeKitAlbedo`. The hand fix was correct about this door and
+        // blind to everything else: `SM_DoorFrame_A` carries the SAME 0.768 atlas and,
+        // being loaded by `env_art` instead of here, kept shipping over-unity — a corrected
+        // slab sitting inside a blown-out frame. Nine call sites load this kit.
         //
-        // NOTE this is a VALUE fix, not a hue fix. It is NOT what made the door read pink —
-        // that was a misplaced red light (see cell_dressing.cpp). Proof: scaling the albedo
-        // moved the door's brightness but its R-G held at +57. Fix the light for hue, the
-        // albedo for value; do not confuse the two.
-        constexpr float kDoorAlbedoScale = 0.42f;
-        for (auto& dr : m_doorDrawables)
-            for (int k = 0; k < 3; ++k) dr.baseColorFactor[k] *= kDoorAlbedoScale;
+        // DO NOT RE-ADD A SCALE HERE. The loader measures the map's bright plateau and
+        // derives the factor (0.32/0.768 = 0.417 — it reproduces the 0.42 that was picked
+        // by hand). A second scale at this call site would DOUBLE-APPLY and drive the door
+        // to 0.175 linear, which is asphalt.
     }
     if (m_meshOk)
         x3::logInfo("[door] loaded " + std::string(kDoorGlbRel) + " — " +

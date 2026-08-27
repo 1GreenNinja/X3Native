@@ -148,8 +148,142 @@ def main():
     check(magenta_fraction(paint) == 0.0 and yellow_fraction(paint) == 0.0,
           "NEG the probes do NOT fire on the gold hazard paint (194,160,65)")
 
+    albedo_gate()
+
     print("\n%s — %d failure(s)" % ("GREEN" if not fails else "RED", len(fails)))
     return 0 if not fails else 1
+
+
+# ===========================================================================
+# B5 — THE OVER-UNITY ALBEDO GATE
+#
+# A base colour is a PHYSICAL quantity: the fraction of light a surface reflects.
+# The kit packs were authored for a bright showroom preview, and the L5 metal crutch
+# (a full metal has no diffuse lobe) hid it for months. When L5 was clamped and the
+# diffuse lobe came back, the kit started blowing out at close range. THE CLAMP
+# EXPOSED B5; IT DID NOT CAUSE IT. The fix is the VALUE — never the lamp, never the
+# roughness, and never putting the metal back.
+#
+#   K6  the LAW is in force in the engine: ModelLoader carries the ceiling, the target,
+#       and every pack this gate measures — and door.cpp does NOT still carry its old
+#       hand-picked scale (which would DOUBLE-APPLY on top of the loader's).
+#   K7  no kit material's base colour, AS THE ENGINE WILL USE IT, exceeds the ceiling.
+#   NEG2  the probe can FAIL: a synthetic near-white (0.768 — the measured SM_Door_A
+#       slab) must come back HOT, and an honest 0.30 institutional grey must NOT.
+# ===========================================================================
+CEILING = 0.45   # nothing man-made in a detention facility reflects more than this
+TARGET  = 0.32   # the value the door was hand-fixed to and shipped at
+FLOOR   = 0.15   # a map needing a HARDER scale than this is a white sheet, not a tuning
+                 # problem — a factor would be papering over art that must be re-authored.
+PACKS   = ["SciFi_Warehouse_Kit", "ModularSciFi_Interior", "Detention", "SciFiKit3"]
+LUMA    = np.array([0.2126, 0.7152, 0.0722])
+
+
+def srgb_to_linear(c):
+    c = np.asarray(c, dtype=np.float64) / 255.0
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def albedo_p95(rgb):
+    """The BRIGHT PLATEAU of a base-colour map, in LINEAR light.
+
+    p95, not the mean, and that distinction IS the bug: an atlas is many regions, and
+    T_Door_A_Dif's mean is a respectable 0.397 precisely because a dark trim region
+    averages away a white door slab that is 44% of the texels. The p95 recovers 0.768
+    — the exact value the door was diagnosed at by hand. A mean-based gate would have
+    called the blown-out door GREEN.
+    """
+    return float(np.percentile(srgb_to_linear(rgb) @ LUMA, 95))
+
+
+def albedo_scale(p95):
+    """The engine's law (ModelLoader::normalizeKitAlbedo), reimplemented independently."""
+    return min(1.0, TARGET / p95) if p95 > CEILING else 1.0
+
+
+def albedo_gate():
+    # ---- K6: the law is actually IN FORCE in the engine.
+    src = open(os.path.join("engine", "asset", "ModelLoader.cpp"), encoding="utf-8").read()
+    check("kAlbedoCeiling = %.2ff" % CEILING in src,
+          "K6 ModelLoader carries the %.2f albedo ceiling" % CEILING)
+    check("kAlbedoTarget  = %.2ff" % TARGET in src or "kAlbedoTarget = %.2ff" % TARGET in src,
+          "K6 ModelLoader carries the %.2f albedo target" % TARGET)
+    check("normalizeKitAlbedo" in src, "K6 ModelLoader still CALLS normalizeKitAlbedo")
+    for p in PACKS:
+        check('"%s"' % p in src, "K6 ModelLoader's kit-pack list covers %s" % p)
+    # The double-apply trap: the door's per-call-site scale MUST be gone now that the
+    # loader does this by law, or SM_Door_A lands at 0.175 linear — asphalt.
+    door = open(os.path.join("app", "door.cpp"), encoding="utf-8").read()
+    check("kDoorAlbedoScale" not in door,
+          "K6 door.cpp does NOT re-scale the albedo itself (the loader does it by law; "
+          "a second scale here would DOUBLE-APPLY)")
+
+    # ---- K7: every kit material lands under the ceiling.
+    print("\nB5 albedo gate — kit base colours, LINEAR (ceiling %.2f, target %.2f)\n" % (
+        CEILING, TARGET))
+    print("  %-21s %-26s %-20s %6s %6s %6s" % (
+        "pack", "glb", "material", "raw", "scale", "final"))
+    n_hot = 0
+    for pack in PACKS:
+        d = os.path.join("assets", "converted_glb", pack)
+        if not os.path.isdir(d):
+            check(False, "K7 pack %s not found (run tools/asset_store.py fetch --all)" % pack)
+            continue
+        for f in sorted(x for x in os.listdir(d) if x.lower().endswith(".glb")):
+            g = GLTF2().load(os.path.join(d, f))
+            blob = g.binary_blob()
+            if g.skins:
+                continue   # A CHARACTER IS NOT A WALL — the loader exempts skinned models.
+            for mi, m in enumerate(g.materials or []):
+                p = m.pbrMetallicRoughness
+                name = m.name or "mat%d" % mi
+                fac = list(p.baseColorFactor) if (p and p.baseColorFactor) else [1, 1, 1, 1]
+                fl = float(np.dot(np.array(fac[:3]), LUMA))
+                if p is not None and p.baseColorTexture is not None:
+                    raw = albedo_p95(decode(g, blob, p.baseColorTexture.index)) * fl
+                else:
+                    raw = fl   # no map: the factor IS the albedo
+                s = albedo_scale(raw)
+                final = raw * s
+                if s < 1.0:
+                    n_hot += 1
+                    print("  %-21s %-26s %-20s %6.3f %6.3f %6.3f  <== renormalized" % (
+                        pack, f[:26], name[:20], raw, s, final))
+                tag = "%s/%s/%s" % (pack, f, name)
+                check(final <= CEILING + 1e-3,
+                      "K7 %s base colour %.3f linear is under the %.2f ceiling "
+                      "(institutional ~0.30; snow is 0.85)" % (tag, final, CEILING))
+                check(s >= FLOOR,
+                      "K7 %s needs only a sane factor (x%.3f >= %.2f) — a map needing more "
+                      "is a WHITE SHEET and must be re-authored, not scaled" % (tag, s, FLOOR))
+    print("\n  %d material(s) renormalized by the loader's law" % n_hot)
+    check(n_hot > 0, "K7 the law is actually DOING something (%d materials renormalized — "
+                     "if this is 0, the packs changed and the gate is measuring nothing)"
+                     % n_hot)
+
+    # ---- NEG2: THE NEGATIVE CONTROL. The probe must be able to go RED.
+    print("\nnegative control (the albedo probe MUST fire on a near-white surface)")
+    # The measured SM_Door_A slab: sRGB 227 -> 0.768 linear. A door is not snow.
+    white = np.full((64, 64, 3), 227, np.uint8)
+    wp95 = albedo_p95(white)
+    check(abs(wp95 - 0.768) < 0.01,
+          "NEG2 the probe MEASURES the door slab correctly (sRGB 227 -> %.3f linear, "
+          "expected 0.768)" % wp95)
+    check(wp95 > CEILING,
+          "NEG2 the probe FIRES on the 0.768 near-white door slab (%.3f > %.2f) — if this "
+          "did not go RED, K7 above would prove nothing" % (wp95, CEILING))
+    check(albedo_scale(wp95) < 1.0 and abs(wp95 * albedo_scale(wp95) - TARGET) < 1e-3,
+          "NEG2 the law CORRECTS it to the institutional band (%.3f -> %.3f)" % (
+              wp95, wp95 * albedo_scale(wp95)))
+    # ...and does NOT fire on an honest institutional grey. A gate that condemns every
+    # surface is as useless as one that condemns none.
+    grey = np.full((64, 64, 3), 149, np.uint8)     # sRGB 149 -> ~0.30 linear
+    gp95 = albedo_p95(grey)
+    check(0.25 <= gp95 <= 0.35, "NEG2 the honest institutional grey measures %.3f linear "
+                                "(the 0.25-0.35 painted-wall band)" % gp95)
+    check(albedo_scale(gp95) == 1.0,
+          "NEG2 the probe does NOT fire on an honest 0.30 surface (a gate that condemns "
+          "everything is a gate that measures nothing)")
 
 
 if __name__ == "__main__":

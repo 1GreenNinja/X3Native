@@ -120,6 +120,103 @@ struct DecodedImage { std::vector<uint8_t> rgba; int w = 0, h = 0; };
 std::mutex g_decodedMu;
 std::unordered_map<uint64_t, DecodedImage> g_decodedCache;
 
+// ---------------------------------------------------------------------------
+// KNOWN_BUGS B5 — OVER-UNITY KIT ALBEDO. A surface's base colour is a physical
+// quantity: the fraction of light it reflects. The third-party art packs ship
+// base-colour maps authored for a bright showroom preview, not for a windowless
+// detention block — `SM_Door_A`'s slab measures **0.768 linear**, and the two
+// warehouse lamps measure **0.985** (i.e. a 98.5% reflector: brighter than fresh
+// snow, which is 0.85). Nothing man-made in this facility reflects like that.
+//
+// The metal crutch (L5) HID this: a full metal has no diffuse lobe, so the hot
+// albedo never showed. The moment the L5 clamp handed the diffuse lobe back, the
+// kit started blowing out at close range. **The clamp EXPOSED B5; it did not
+// cause it** — so the fix is the VALUE, not the lamp and not the metalness.
+//
+// We measure the map's BRIGHT PLATEAU (p95 of linear luminance), not its mean:
+// an atlas is many regions, and the mean of `T_Door_A_Dif` is a respectable 0.397
+// precisely because a dark trim region averages away a 44%-of-texels white slab.
+// The p95 recovers 0.768 — the exact figure the door was diagnosed at by hand.
+// ---------------------------------------------------------------------------
+std::mutex g_colorStatMu;
+std::unordered_map<uint64_t, float> g_colorP95;   // texture key -> p95 LINEAR luma
+
+inline float srgbToLinear(float c) {
+    return (c <= 0.04045f) ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+// 256-entry sRGB->linear LUT (magic static: thread-safe init).
+struct SrgbLut {
+    float v[256];
+    SrgbLut() { for (int i = 0; i < 256; ++i) v[i] = srgbToLinear(i / 255.0f); }
+};
+const SrgbLut& srgbLut() { static SrgbLut L; return L; }
+
+// p95 of the LINEAR luminance of an sRGB colour texture, via a 256-bin histogram.
+// Subsampled 4x4 (1/16 of the texels) — a percentile is unmoved by that and it keeps
+// the cost off the boot path. Recorded for EVERY sRGB colour decode, not just base
+// colour: the texture cache is keyed by bytes, so if the same image is decoded first
+// through some other slot the base-colour lookup would otherwise miss silently.
+void recordColorStat(uint64_t key, const uint8_t* rgba, int w, int h) {
+    if (!rgba || w <= 0 || h <= 0) return;
+    {
+        std::lock_guard<std::mutex> lk(g_colorStatMu);
+        if (g_colorP95.count(key)) return;
+    }
+    const SrgbLut& lut = srgbLut();
+    uint32_t hist[256] = {};
+    uint64_t n = 0;
+    const int step = (w >= 8 && h >= 8) ? 4 : 1;
+    for (int y = 0; y < h; y += step) {
+        for (int x = 0; x < w; x += step) {
+            const uint8_t* p = rgba + (static_cast<size_t>(y) * w + x) * 4;
+            const float lin = 0.2126f * lut.v[p[0]] + 0.7152f * lut.v[p[1]] +
+                              0.0722f * lut.v[p[2]];
+            int b = static_cast<int>(lin * 255.0f + 0.5f);
+            hist[b < 0 ? 0 : (b > 255 ? 255 : b)] += 1;
+            ++n;
+        }
+    }
+    if (!n) return;
+    const uint64_t want = static_cast<uint64_t>(0.95 * static_cast<double>(n));
+    uint64_t acc = 0;
+    int bin = 255;
+    for (int i = 0; i < 256; ++i) { acc += hist[i]; if (acc >= want) { bin = i; break; } }
+    std::lock_guard<std::mutex> lk(g_colorStatMu);
+    g_colorP95.emplace(key, static_cast<float>(bin) / 255.0f);
+}
+
+bool lookupColorStat(uint64_t key, float& out) {
+    std::lock_guard<std::mutex> lk(g_colorStatMu);
+    auto it = g_colorP95.find(key);
+    if (it == g_colorP95.end()) return false;
+    out = it->second;
+    return true;
+}
+
+// B5 — REAL-WORLD REFLECTANCE BANDS (measure against these; do not guess):
+//   fresh snow ~0.85 · white paint ~0.75 · painted institutional wall ~0.25-0.35 ·
+//   concrete ~0.20-0.30 · painted steel door ~0.25-0.35 · asphalt ~0.05-0.10.
+// NOTHING man-made in a detention facility exceeds ~0.45 linear. A door is not snow.
+constexpr float kAlbedoCeiling = 0.45f;  // above this, the material IS the bug
+constexpr float kAlbedoTarget  = 0.32f;  // land the plateau mid-institutional-band
+// 0.32 is not a taste call: it is the value the door was hand-fixed to and shipped at
+// (0.768 x 0.42 = 0.3226, `fix/honest-lighting-rooms`). Deriving the scale from the
+// measurement REPRODUCES that human-approved number to three decimals (0.32/0.768 =
+// 0.417 vs the hand-picked 0.42) — which is the evidence that the law is the right one.
+
+// The third-party art packs this law governs. Scoped ON PURPOSE: our OWN authored art
+// (weapons, the rift gate, planets, the showroom) is calibrated and must not be swept,
+// and a bright albedo is only a bug when the surface is claiming to be a wall.
+bool isKitPack(const std::string& p) {
+    static const char* const kKitDirs[] = {
+        "SciFi_Warehouse_Kit", "ModularSciFi_Interior", "Detention", "SciFiKit3",
+    };
+    for (const char* d : kKitDirs)
+        if (p.find(d) != std::string::npos) return true;
+    return false;
+}
+
 // Bump the refcount of an already-cached texture handle (used when a cached
 // MODEL instance shares the template's textures). Returns false if the handle
 // is not cache-tracked (should not happen; logged by the caller).
@@ -375,6 +472,7 @@ public:
         };
         Model model;
         const std::string path(virtualPath);
+        m_path = path;   // B5: buildMaterials needs to know WHICH PACK this came from
 
         if (!m_assets) {
             logError("[gltf] no IAssetSource provided");
@@ -559,12 +657,13 @@ private:
     // occlusion) are linear and must NOT be sRGB-decoded (doing so corrupts normals + PBR).
     // isNormal only selects the fallback default (flat-normal vs white) on decode failure.
     uint64_t resolveTexture(const cgltf_texture_view& tv, GpuUploader& up,
-                            bool isNormal, bool srgb) {
+                            bool isNormal, bool srgb, uint64_t* outKey = nullptr) {
         if (!tv.texture) return 0; // no texture bound at all
-        return resolveTexture(tv.texture, up, isNormal, srgb);
+        return resolveTexture(tv.texture, up, isNormal, srgb, outKey);
     }
 
-    uint64_t resolveTexture(const cgltf_texture* tex, GpuUploader& up, bool isNormal, bool srgb) {
+    uint64_t resolveTexture(const cgltf_texture* tex, GpuUploader& up, bool isNormal, bool srgb,
+                            uint64_t* outKey = nullptr) {
         const cgltf_image* img = nullptr;
         bool ktx2 = false;
         if (tex->has_basisu && tex->basisu_image) { img = tex->basisu_image; ktx2 = true; }
@@ -626,6 +725,7 @@ private:
         // character/weapon GLB is loaded once per spawned instance.
         const uint64_t key = sampledBytesKey(bytes, len, 1469598103934665603ull)
                              ^ (srgb ? 0x9E3779B97F4A7C15ull : 0ull);
+        if (outKey) *outKey = key;   // B5: the caller measures this map's albedo
 
         // DECODE-PREWARM mode (no device yet): decode into the transient decoded-
         // image cache and return a minted placeholder; the real boot load consumes
@@ -638,6 +738,7 @@ private:
             int w = 0, h = 0, comp = 0;
             stbi_uc* px = stbi_load_from_memory(bytes, static_cast<int>(len), &w, &h, &comp, 4);
             if (px) {
+                if (srgb) recordColorStat(key, px, w, h);   // B5
                 DecodedImage d;
                 d.rgba.assign(px, px + (size_t)w * h * 4);
                 d.w = w; d.h = h;
@@ -657,12 +758,14 @@ private:
                     DecodedImage d = std::move(it->second);
                     g_decodedCache.erase(it);
                     lk.unlock();
+                    if (srgb) recordColorStat(key, d.rgba.data(), d.w, d.h);   // B5
                     return up.uploadTexture(d.rgba.data(), d.w, d.h, srgb);
                 }
             }
             int w = 0, h = 0, comp = 0;
             stbi_uc* px = stbi_load_from_memory(bytes, static_cast<int>(len), &w, &h, &comp, 4);
             if (!px) return 0;
+            if (srgb) recordColorStat(key, px, w, h);   // B5
             uint64_t hnd = up.uploadTexture(px, w, h, srgb);
             stbi_image_free(px);
             return hnd;
@@ -672,6 +775,49 @@ private:
             return isNormal ? up.defaultNormal() : up.defaultWhite();
         }
         return handle;
+    }
+
+    // ---- KNOWN_BUGS B5 — RENORMALIZE AN OVER-UNITY KIT ALBEDO ---------------------
+    // Applied through glTF's OWN `baseColorFactor` (baseColor = factor x texture, in
+    // LINEAR space) — NOT by rewriting the .glb. The GLBs are Git-LFS / asset-store
+    // served and the maps are not corrupt; our USE of them was never normalized. A
+    // scalar on the factor also PRESERVES RELIEF: every grime streak, panel seam and
+    // hazard stripe keeps its ratio to its neighbours. Flattening the texture's
+    // internal contrast would be a different — and worse — bug.
+    //
+    // This lives in the LOADER because the loader is the ONE place that sees every
+    // material. The door was fixed by hand at ONE call site (`door.cpp`), and the very
+    // next prop to use that same atlas (`SM_DoorFrame_A`, the frame AROUND the fixed
+    // slab) shipped at 0.768 anyway. Nine call sites load this kit. A per-call-site
+    // fix is nine crutches and a tenth waiting to be forgotten.
+    void normalizeKitAlbedo(Material& m, uint64_t bcKey, const cgltf_data& data,
+                            const char* matName) {
+        if (!isKitPack(m_path)) return;   // policy: the third-party art packs only
+        // A CHARACTER IS NOT A WALL. Skin, hair and cloth are not institutional
+        // surfaces and the 0.45 ceiling is not a statement about them. (`Detention/`
+        // holds the captives as well as the hospital bed; they measure 0.02-0.06
+        // linear and would not trip the ceiling anyway — this is belt and braces.)
+        if (data.skins_count > 0) return;
+
+        static const float kW[3] = { 0.2126f, 0.7152f, 0.0722f };
+        float facLuma = 0.0f;
+        for (int k = 0; k < 3; ++k) facLuma += kW[k] * m.baseColor[k];
+
+        float texP95 = 1.0f;              // no map => the factor IS the albedo
+        if (bcKey && !lookupColorStat(bcKey, texP95))
+            return;                       // map never decoded: measure nothing, change nothing
+
+        const float p95 = texP95 * facLuma;
+        if (p95 <= kAlbedoCeiling) return;             // already honest — left alone
+        const float s = kAlbedoTarget / p95;
+        for (int k = 0; k < 3; ++k) m.baseColor[k] *= s;
+
+        char b[256];
+        std::snprintf(b, sizeof(b),
+            "[gltf] B5: %s / %s albedo p95 %.3f linear (ceiling %.2f — an institutional "
+            "surface is ~0.30, snow is 0.85); baseColorFactor x%.3f -> %.3f",
+            m_path.c_str(), matName, p95, kAlbedoCeiling, s, kAlbedoTarget);
+        warnOnce(b);
     }
 
     void buildMaterials(const cgltf_data& data, Model& model, GpuUploader& up) {
@@ -684,7 +830,9 @@ private:
                 for (int k = 0; k < 4; ++k) m.baseColor[k] = pbr.base_color_factor[k];
                 m.metallic  = pbr.metallic_factor;
                 m.roughness = pbr.roughness_factor;
-                m.baseColorTex = resolveTexture(pbr.base_color_texture, up, /*isNormal*/false, /*srgb*/true);
+                uint64_t bcKey = 0;   // B5: identifies the decoded base-colour map
+                m.baseColorTex = resolveTexture(pbr.base_color_texture, up, /*isNormal*/false, /*srgb*/true, &bcKey);
+                normalizeKitAlbedo(m, bcKey, data, cm.name ? cm.name : "?");
                 m.mrTex        = resolveTexture(pbr.metallic_roughness_texture, up, false, /*srgb*/false); // DATA: linear
                 // Metallic material with NO MR texture (only scalar factors — common in Unity
                 // GLB exports): synthesize a 1x1 MR map from the factors (glTF: roughness=G,
@@ -1198,6 +1346,7 @@ private:
     rhi::IRenderDevice* m_dev = nullptr;
     IAssetSource*       m_assets = nullptr;
     bool                m_prewarm = false;        // decode-prewarm mode (no device)
+    std::string         m_path;                   // model in flight (B5 kit-albedo scope)
     std::unordered_set<std::string> m_warned; // de-dupes per-model warnings
     // BOOT-TIME model cache: when non-null (real-device load in flight),
     // buildPrimitives copies each uploaded prim's verts/indices here.
