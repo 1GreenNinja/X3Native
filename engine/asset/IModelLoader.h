@@ -106,6 +106,13 @@ struct Material {
     bool     alphaBlend   = false;
     bool     alphaMask    = false;   // glTF alphaMode==MASK (alpha-cutout)
     float    alphaCutoff  = 0.5f;
+    // FOLIAGE (Phase 1.5): 1.0 when the loader recognizes this material as
+    // leaves/vegetation (mesh.frag then wraps the diffuse + adds warm sun-
+    // through-canopy translucency). Decided AT PARSE where the glTF material
+    // name is in hand: leaf-token name match, else the classic cutout +
+    // double-sided signature for UNNAMED materials only (so hair cards and
+    // chain-link fences, which are named, stay excluded). 0 = not foliage.
+    float    foliage      = 0.0f;
 };
 
 // Node hierarchy. glTF convention is kept (right-handed, +Y up, -Z forward,
@@ -205,6 +212,11 @@ struct ModelDrawable {
     // byte-identically to before.
     float    metallicFactor  = 1.0f;
     float    roughnessFactor = 1.0f;
+    // Loader-recognized vegetation (Material::foliage): pass to drawMeshPBR's
+    // foliage param so every tree/bush GLB gets canopy wrap + translucency
+    // regardless of which draw path it rides. 0 = not foliage (the default —
+    // every existing drawable shades byte-identically).
+    float    foliage         = 0.0f;
     float    baseColorFactor[4] = {1, 1, 1, 1};
     float    nodeTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // node world (column-major)
 };

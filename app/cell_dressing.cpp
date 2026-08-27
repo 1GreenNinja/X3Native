@@ -1291,7 +1291,7 @@ void CellDressing::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
                                d.detailUvScale,
                                d.clearcoat, d.clearcoatRough,
                                /*selfLight=*/0.0f, /*metallicScale=*/1.0f,
-                               /*foliage=*/0.0f, d.metallicFactor, d.roughnessFactor);
+                               d.foliage, d.metallicFactor, d.roughnessFactor);
         }
     }
     // ---- ATMOSPHERE: light shafts (soft translucent glass) + dust motes (emissive) ---

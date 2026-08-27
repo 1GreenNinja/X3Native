@@ -50,6 +50,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -784,6 +785,25 @@ private:
             m.alphaBlend   = (cm.alpha_mode == cgltf_alpha_mode_blend);
             m.alphaMask    = (cm.alpha_mode == cgltf_alpha_mode_mask);
             m.alphaCutoff  = (cm.alpha_cutoff > 0.0f) ? cm.alpha_cutoff : 0.5f;
+            // FOLIAGE recognition (Phase 1.5, Material::foliage doc): decide here,
+            // the one place the glTF material NAME is in hand. Named materials
+            // must match a leaf token ("tree" guarded against "street"); unnamed
+            // cutout+double-sided materials get the classic-signature fallback.
+            {
+                std::string nm = cm.name ? cm.name : "";
+                for (char& c : nm) c = (char)std::tolower((unsigned char)c);
+                static const char* const kLeafTokens[] = {
+                    "leaf", "leaves", "foliage", "branch", "frond", "canopy",
+                    "bush", "plant", "palm", "grass", "ivy", "hedge", "needle",
+                    "pine", "oak", "poplar", "birch", "fern", "flower", "shrub" };
+                bool leafy = false;
+                for (const char* t : kLeafTokens)
+                    if (nm.find(t) != std::string::npos) { leafy = true; break; }
+                if (!leafy && nm.find("tree") != std::string::npos &&
+                    nm.find("street") == std::string::npos) leafy = true;
+                if (nm.empty()) leafy = m.alphaMask && m.doubleSided;
+                if (leafy) m.foliage = 1.0f;
+            }
             model.materials.push_back(m);
         }
     }
@@ -1444,6 +1464,7 @@ bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[
         d.clearcoatRough = mat.clearcoatRough;
         d.metallicFactor  = mat.metallic;    // glTF spec: these MULTIPLY the MR
         d.roughnessFactor = mat.roughness;   // texture. Parsed at load; now delivered.
+        d.foliage         = mat.foliage;     // loader-recognized vegetation (Phase 1.5)
     }
     for (int i = 0; i < 16; ++i) d.nodeTransform[i] = nodeWorld[i];
     // SKINNED primitives: strip the mesh-node world SCALE. Per the glTF spec a

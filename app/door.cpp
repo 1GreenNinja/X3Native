@@ -790,7 +790,7 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                dr.alphaMask, dr.alphaBlend,
                                x3::rhi::TextureHandle{ dr.emissiveTexId },
                                x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
-                               0.0f, 1.0f, 0.0f,
+                               0.0f, 1.0f, dr.foliage,
                                dr.metallicFactor, dr.roughnessFactor);
         }
 
