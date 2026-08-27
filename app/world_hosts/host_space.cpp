@@ -13,6 +13,10 @@
 #include "../fx.h"
 #include "../asset_root.h"
 #include "../space_pilot.h"
+#include "../space/wormhole.h"           // feat/wormholes: the space wormhole entities
+#include "../space/space_layer.h"        // S0 spine — the transit state machine
+#include "../space/wormhole_transit.h"   // S3 runner + the crystal-matrix ride
+#include "../ship_comms.h"               // the AEGIS wormhole-stability advisory bus
 #include "../settings_io.h"   // readFlightMode (persisted Settings-menu / console pick)
 #include "../audio_root.h"    // resolveAudio(...) — flight engine hum / boost / mode blip WAVs
 #include "engine/audio/IAudioSystem.h"
@@ -237,7 +241,16 @@ int hostSpace(HostContext& hc) {
         // SUN-HEAT light that ramps up as you dive toward the star. Slots 3-4 are
         // refreshed every frame via updateDynamicLights() below, which re-uploads all
         // five with setPointLights (the device caches its own copy).
-        x3::rhi::PointLight plights[5];
+        // feat/wormholes: the rig grows from 5 to 5 + kMaxWormholeLights. A
+        // wormhole that does not light the world is a sticker, so the field's
+        // spill is a FIRST-CLASS member of this rig, not an afterthought — and it
+        // is BOUNDED (WormholeField::collectLights can never return more than
+        // kMaxWormholeLights, which --test-wormholes asserts). Device cap is 64;
+        // this rig is 9.
+        constexpr int kStaticLights = 5;
+        constexpr int kTotalLights  = kStaticLights + x3::space::kMaxWormholeLights;
+        x3::rhi::PointLight plights[kTotalLights];
+        int liveLightCount = kStaticLights;
         // Key light: a "sun" anchored near the fleet so attenuation is gentle.
         plights[0].pos[0] =  120.0f; plights[0].pos[1] = 120.0f; plights[0].pos[2] = 120.0f;
         plights[0].range  =  600.0f;
@@ -252,7 +265,7 @@ int hostSpace(HostContext& hc) {
         plights[2].color[0] = 24.0f; plights[2].color[1] = 19.0f; plights[2].color[2] = 13.0f;
         // Slots 3-4 start dark; updateDynamicLights fills them once the pilot exists.
         plights[3] = {}; plights[4] = {};
-        device->setPointLights(plights, 5);
+        device->setPointLights(plights, (uint32_t)liveLightCount);
 
         // ---- Player ship (the SpacePilotController) -----------------------
         // FLIGHT MODE: seed from the persisted Settings-menu / console pick (the
@@ -623,6 +636,51 @@ int hostSpace(HostContext& hc) {
         auto combatFxOwned = std::make_unique<x3::game::CombatFx>();
         x3::game::CombatFx& combatFx = *combatFxOwned;
         combatFx.init(*device);
+
+        // ================= feat/wormholes — THE WORMHOLES =====================
+        // Two of them (one stable, one not), seeded from the shared roster in
+        // app/space/wormhole.cpp so the world and the self-test cannot drift.
+        // They are HELD OPEN by default, because the player should be able to fly
+        // out and find them. X3_WORMHOLE_OPEN=1 instead runs the staged opening
+        // live from Dormant — that is how the opening sequence gets captured.
+        x3::space::WormholeField wormholes;
+        wormholes.init(*device);
+        // X3_WORMHOLE_OFF=1 seeds NOTHING — an A/B control for measuring exactly
+        // what this feature costs (draw calls, lights, sync hazards) against the
+        // same binary, instead of against a differently-built one.
+        {
+            const char* off = std::getenv("X3_WORMHOLE_OFF");
+            if (!(off && off[0] == '1')) {
+                x3::space::seedSpaceWormholes(wormholes);
+                const char* staged = std::getenv("X3_WORMHOLE_OPEN");
+                const bool  stage  = staged && staged[0] == '1';
+                for (int i = 0; i < wormholes.count(); ++i) {
+                    if (stage) wormholes.at(i).open();
+                    else       wormholes.at(i).forceHeld();
+                }
+            }
+        }
+        // X3_WORMHOLE_T=<seconds>: pre-roll the field before the capture frame so
+        // a HEADLESS shot can land anywhere on the staged opening. The capture
+        // path renders ONE frame, so a staged event can only be judged honestly
+        // as a SERIES of runs at different t — this is the knob that makes that
+        // series possible. Pre-rolled at a fixed 1/165 s step, so the frames the
+        // series produces are the frames the 165 Hz game actually shows.
+        float wormholePreroll = 0.0f;
+        if (const char* wt = std::getenv("X3_WORMHOLE_T"))
+            wormholePreroll = (float)std::atof(wt);
+
+        // The S0/S3 transit spine. Flying into an open throat engages the SAME
+        // SpaceLayer state machine and the SAME crystal-matrix WormholeVfx that
+        // `--world wormhole-transit` drives — one implementation, two entrances.
+        x3::space::SpaceLayer spaceLayer;
+        spaceLayer.init();
+        x3::space::WormholeTransit transit;
+        transit.init(*device, spaceLayer, /*durationSec=*/5.0f);
+        bool  transitEngaged = false;   // true from entry until arrival
+        int   transitFrom    = -1;      // which wormhole swallowed us
+        float transitClock   = 0.0f;
+        float commsPublishAcc = 0.0f;   // the advisory is a ~10 Hz duty, not per-frame
 
         const float dt = 1.0f / 60.0f;
 
@@ -1145,7 +1203,100 @@ int hostSpace(HostContext& hc) {
             plights[4].pos[0]=hp.x; plights[4].pos[1]=hp.y; plights[4].pos[2]=hp.z;
             plights[4].range = 120.0f;
             plights[4].color[0]=hi*1.0f; plights[4].color[1]=hi*0.45f; plights[4].color[2]=hi*0.12f;
-            device->setPointLights(plights, 5);
+            // [5..] THE WORMHOLE SPILL. This is the claim the whole effect stands
+            // or falls on: the wormhole is not merely bright, it LIGHTS things.
+            // Its lights go into the same rig as the key/fill/rim, so the same
+            // mesh.frag point-light loop that shades the hull sees them — which
+            // means the spill reaches the ship's PBR material by exactly the path
+            // every other light in this world already takes. Bounded by
+            // collectLights (never more than kMaxWormholeLights), so the count
+            // cannot run away as wormholes are added.
+            const int wn = wormholes.collectLights(&plights[kStaticLights],
+                                                   kTotalLights - kStaticLights);
+            for (int i = kStaticLights + wn; i < kTotalLights; ++i) plights[i] = {};
+            liveLightCount = kStaticLights + wn;
+            device->setPointLights(plights, (uint32_t)liveLightCount);
+        };
+
+        // ---- feat/wormholes: one tick + one draw, shared by BOTH loops -------
+        // Defined once and called from the headless capture path and the windowed
+        // loop alike, so a capture cannot diverge from what the player sees. That
+        // divergence is exactly how a "staged event" ends up judged from a still
+        // that the game never actually renders.
+
+        // TICK. dt-correct end to end: the phase machine drains `fdt`, the comms
+        // advisory runs on a wall-clock accumulator rather than a frame count, and
+        // the transit clock is integrated, never incremented.
+        auto tickWormholes = [&](float fdt, const x3::phys::Vec3& shipPos) {
+            wormholes.update(fdt);
+
+            // THE COMMS HOOK. feat/ship-comms left exactly this seam: build the
+            // rows, publish them with the player's eye, and the AEGIS director
+            // does the proximity test and names the stability out loud. One call.
+            // Duty-cycled to ~10 Hz because the advisory is edge-triggered with
+            // hysteresis — publishing at 165 Hz would be 16x the work for the
+            // identical result.
+            commsPublishAcc += fdt;
+            if (commsPublishAcc >= 0.1f) {
+                commsPublishAcc = 0.0f;
+                const float eye[3] = { shipPos.x, shipPos.y, shipPos.z };
+                wormholes.publishToComms(eye);
+            }
+
+            // THE TRANSIT. Flying into an open throat engages the S0 SpaceLayer
+            // spine; the S3 WormholeTransit runner drives it to completion and the
+            // ship ARRIVES somewhere else. Entering one means something.
+            if (!transitEngaged) {
+                const float p[3] = { shipPos.x, shipPos.y, shipPos.z };
+                const int hit = wormholes.entered(p);
+                if (hit >= 0) {
+                    transitEngaged = true;
+                    transitFrom    = hit;
+                    transitClock   = 0.0f;
+                    spaceLayer.requestWormhole((uint32_t)wormholes.at(hit).id());
+                    char line[160];
+                    std::snprintf(line, sizeof(line),
+                                  "Threshold crossed - %s. Autopilot has the helm; "
+                                  "hold for translation.",
+                                  wormholes.at(hit).name());
+                    x3::game::commsBus().post(x3::game::CommsSender::ShipAI,
+                                              x3::game::kCommsShipAiName, line);
+                    x3::logInfo(std::string("--world space: WORMHOLE TRANSIT engaged -> ") +
+                                wormholes.at(hit).name());
+                }
+            } else {
+                transitClock += fdt;
+                spaceLayer.update(fdt);
+                if (!transit.active() || transit.progress() >= 1.0f) {
+                    // ARRIVAL. The ride is over and the ship is somewhere new —
+                    // pilot.spawn() is the same public reposition the Respawn beat
+                    // already uses, so no space_pilot internals are touched.
+                    transitEngaged = false;
+                    const bool stable = transitFrom >= 0 &&
+                                        wormholes.at(transitFrom).stable();
+                    // A stable corridor lands you clean; an unstable one throws
+                    // you out somewhere else entirely. The field MEANS something.
+                    if (stable) pilot.spawn(*sphys, -140.0f,  22.0f,  -60.0f);
+                    else        pilot.spawn(*sphys,  -90.0f, -110.0f,  210.0f);
+                    x3::game::commsBus().post(
+                        x3::game::CommsSender::ShipAI, x3::game::kCommsShipAiName,
+                        stable ? "Translation complete. We are through, Commander."
+                               : "Translation complete - corridor collapsed mid-transit. "
+                                 "We are NOT where we intended to be.");
+                    x3::logInfo(std::string("--world space: WORMHOLE TRANSIT arrived (") +
+                                (stable ? "stable" : "UNSTABLE") + " corridor)");
+                    transitFrom = -1;
+                }
+            }
+        };
+
+        // DRAW. The wormholes themselves always; the crystal-matrix throat rushing
+        // past on top of them while a transit is running.
+        auto drawWormholes = [&](const x3::rhi::FrameContext& frame,
+                                 const x3::phys::Vec3& eyePos, float tSec) {
+            const float eye[3] = { eyePos.x, eyePos.y, eyePos.z };
+            wormholes.render(*device, frame, eye);
+            if (transitEngaged) transit.render(*device, frame, nullptr, tSec);
         };
 
         // ---- PLAYER-SHIP lights: engine glow + red/green/white nav beacons ------
@@ -2006,12 +2157,26 @@ int hostSpace(HostContext& hc) {
                     device->setSkyParams(skyP);
                 }
             }
+            // feat/wormholes: PRE-ROLL the staged opening to X3_WORMHOLE_T before
+            // the settle frames, at the real 165 Hz step. The capture path renders
+            // a single frame, so this is what lets a SERIES of runs walk the
+            // opening phase by phase and be judged as the event it is rather than
+            // as one still. The pre-roll also feeds the light rig, so the spill on
+            // the hull in the captured frame is the spill at that exact moment.
+            if (wormholePreroll > 0.0f) {
+                const float wh = 1.0f / 165.0f;
+                const int steps = (int)(wormholePreroll / wh);
+                for (int i = 0; i < steps; ++i) tickWormholes(wh, pilot.pos());
+            }
             // Settle: a few frames so the lights register + the meshes upload.
             const int kFrames = 16;
             for (int i = 0; i < kFrames; ++i) {
                 glfwPollEvents();
                 sphys->step(dt);
                 combatFx.update(dt);
+                // Ticked BEFORE the light rig upload so the spill in this frame is
+                // this frame's spill, not the previous one's.
+                tickWormholes(dt, pilot.pos());
                 updateDynamicLights(pilot.pos(), pilot.forward(), pilot.up(), pilot.right());
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
                 if (i == kFrames - 1) device->armCapture(outPath.c_str());
@@ -2037,6 +2202,8 @@ int hostSpace(HostContext& hc) {
                         drawSpeedFx(frame);
                         drawSun(frame, x3::phys::Vec3{ cam[0], cam[1], cam[2] });
                         drawFlares(frame);
+                        drawWormholes(frame, x3::phys::Vec3{ cam[0], cam[1], cam[2] },
+                                      wormholePreroll);
                         drawShipLights(frame, 0.15f, 1.0f);
                         uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                         drawHud(frame, (float)hw, (float)hh);
@@ -2084,6 +2251,8 @@ int hostSpace(HostContext& hc) {
             if (wrote) x3::logInfo("--world space: wrote " + outPath);
             else       x3::logError("--world space: capture FAILED");
             combatFx.shutdown(*device);
+            transit.shutdown(*device);
+            wormholes.shutdown(*device);
             device->destroyMesh(dustMesh); device->destroyMesh(sunMesh); device->destroyMesh(glowDiscMesh);
             device->destroyMesh(plasmaMeshA); device->destroyMesh(plasmaMeshB);
             device->destroyTexture(sunTex);
@@ -2265,6 +2434,9 @@ int hostSpace(HostContext& hc) {
                 sphys->step(fdt);
                 combatFx.update(fdt);
                 updateDust(fdt);
+                // feat/wormholes: the phase machine, the AEGIS advisory and the
+                // transit trigger, all off the real wall-clock fdt.
+                tickWormholes(fdt, pilot.pos());
                 // Flying: records the approach + detects crossing INTO the sun core
                 // (flips to InsideSun, engages the shield, fires the flash). InsideSun:
                 // keeps recording/heat/HUD live and detects either the 17s expiry
@@ -2390,7 +2562,8 @@ int hostSpace(HostContext& hc) {
                 }
             }
 
-            // Player-key + sun-heat follow lights (refreshed each frame).
+            // Player-key + sun-heat follow lights + the WORMHOLE SPILL (refreshed
+            // each frame; the spill is why the effect lights the hull at all).
             updateDynamicLights(pilot.pos(), pilot.forward(), pilot.up(), pilot.right());
 
             auto frame = device->beginFrame();
@@ -2434,6 +2607,10 @@ int hostSpace(HostContext& hc) {
                 } else if (phase == Phase::Replay) {
                     drawReplayShip(frame, phaseT / kReplaySecs, x3::phys::Vec3{ cx, cy, cz });   // fly the approach in
                 }
+                // feat/wormholes: drawn in EVERY phase (like the sun and flares) —
+                // a wormhole opening out in the black does not stop happening
+                // because the player is mid-killcam.
+                drawWormholes(frame, x3::phys::Vec3{ cx, cy, cz }, g_clock);
                 drawHud(frame, (float)cw, (float)chh);
                 if (paused) drawPauseMenu(frame, (float)cw, (float)chh, menuSel);
                 drawCinematic(frame, (float)cw, (float)chh);       // no-op unless a flash/phase overlay is active
@@ -2446,6 +2623,12 @@ int hostSpace(HostContext& hc) {
         if (humLoop.valid())    saudio->stopLoop(humLoop);
         saudio->shutdown();
         combatFx.shutdown(*device);
+        transit.shutdown(*device);
+        wormholes.shutdown(*device);
+        // glowDiscMesh was destroyed only on the headless path; this list had
+        // been missing it since the sun pass. Added while adding ours, because
+        // allocationCount=0 at teardown is a gate condition.
+        device->destroyMesh(glowDiscMesh);
         device->destroyMesh(dustMesh); device->destroyMesh(sunMesh);
         device->destroyMesh(plasmaMeshA); device->destroyMesh(plasmaMeshB);
         device->destroyTexture(sunTex);

@@ -105,7 +105,7 @@ const char* wormholePhaseName(WormholePhase p);
 
 // How many concentric annuli make the throat. Each is real geometry at a real
 // depth — this is what buys parallax instead of a billboard.
-constexpr int kThroatLayers = 14;
+constexpr int kThroatLayers = 30;
 
 // EMISSIVE CAP LAW (lifted from the rift hub's blown-white fix). Every emissive
 // strength written by this file is clamped to one of these. They are ABOVE 1.0
@@ -128,7 +128,7 @@ constexpr int kMaxWormholeLights = 4;
 // ---------------------------------------------------------------------------
 struct WormholeTuning {
     float radius      = 26.0f;   // aperture radius at full open (world units)
-    float throatDepth = 110.0f;  // how far the layer stack recedes along -axis
+    float throatDepth = 42.0f;   // how far the layer stack recedes along the axis
     float spinRate    = 0.28f;   // rad/s of the outermost layer (deeper = faster)
 
     // Phase durations, seconds. heldSec < 0 means "hold open forever".
@@ -284,7 +284,8 @@ private:
     // Shared geometry. `m_ringMesh` is a unit annulus (inner radius
     // kRingInner, outer 1.0) used for every throat layer AND the rim;
     // `m_discMesh` is a unit disc used for the convergence core / spark.
-    rhi::MeshHandle    m_ringMesh{};
+    rhi::MeshHandle    m_ringMesh{};   // wide annulus — the throat layers
+    rhi::MeshHandle    m_rimMesh{};    // THIN annulus — the event-horizon edge
     rhi::MeshHandle    m_discMesh{};
     rhi::TextureHandle m_throatTex{};   // filamentary swirl (u=angle, v=radius)
     rhi::TextureHandle m_coreTex{};     // radial white-hot falloff

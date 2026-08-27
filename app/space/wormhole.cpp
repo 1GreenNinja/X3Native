@@ -138,16 +138,35 @@ struct Prim {
 // Inner radius of the shared annulus, as a fraction of the outer radius. The
 // throat layers are scaled copies of this one ring, so the hole in the middle
 // is what lets you SEE the next layer down — this constant is the parallax.
-constexpr float kRingInner = 0.62f;
+// THE LAYERS TILE; THEY DO NOT STACK. This was 0.62 for three capture rounds
+// and that is what produced the "purple donut": at 0.62 the NEAREST ring is an
+// opaque plate covering 62%-100% of the radius, drawn last, painting its single
+// flat mouth-tint over every deeper layer underneath it. The interior could only
+// show through inside r<0.62, which is exactly the blue ball that kept appearing
+// inside a violet plate.
+//
+// At 0.88 each ring is a NARROW BAND roughly 3x the radial spacing between
+// consecutive layers: wide enough that they overlap with no seams, narrow enough
+// that each one occupies its own annulus. The 30 rings then TILE the disc from
+// the rim down to the convergence and the whole aperture becomes one continuous
+// radial gradient — violet fringe at the grazing edge, deep blue through the
+// throat, white-hot at the convergence — instead of a plate plus a ball.
+constexpr float kRingInner = 0.88f;
+
+// The RIM is a separate, THIN ring. Reusing the throat annulus for it (38% of
+// the radius wide) painted a second big disc over the mouth instead of an edge —
+// which is most of what made the first capture read as a flat lilac plate.
+constexpr float kRimInner = 0.93f;
 
 // A DOUBLE-WOUND unit annulus in the local XY plane (normal +Z), inner radius
 // kRingInner, outer 1.0. Double winding is the hub's law (rifthub.cpp:734-750):
 // one entity that reads correctly from both sides, so flying THROUGH the throat
 // does not black the far side out.
 // UV: u = angle around the ring [0,1], v = radial position [0,1] (0 inner).
-Prim makeAnnulus(uint32_t segs) {
+Prim makeAnnulus(uint32_t segs, float innerR) {
     Prim m;
     segs = std::max<uint32_t>(segs, 8u);
+    innerR = clampf(innerR, 0.0f, 0.99f);
     m.verts.reserve((size_t)(segs + 1) * 2);
     m.index.reserve((size_t)segs * 12);
     for (uint32_t s = 0; s <= segs; ++s) {
@@ -155,7 +174,7 @@ Prim makeAnnulus(uint32_t segs) {
         const float th = u * kTau;
         const float c = std::cos(th), sn = std::sin(th);
         rhi::MeshVertex vi{};   // inner
-        vi.pos[0] = c * kRingInner; vi.pos[1] = sn * kRingInner; vi.pos[2] = 0.0f;
+        vi.pos[0] = c * innerR; vi.pos[1] = sn * innerR; vi.pos[2] = 0.0f;
         vi.normal[2] = 1.0f; vi.uv[0] = u; vi.uv[1] = 0.0f;
         rhi::MeshVertex vo{};   // outer
         vo.pos[0] = c; vo.pos[1] = sn; vo.pos[2] = 0.0f;
@@ -222,22 +241,39 @@ std::vector<uint8_t> bakeThroatRGBA(uint32_t w, uint32_t h) {
         for (uint32_t x = 0; x < w; ++x) {
             const float u = ((float)x + 0.5f) / (float)w;   // angle around the ring
             float ang = u * kTau;
-            ang += v * 2.6f;                                 // spiral twist
+            ang += v * 3.4f;                                 // spiral twist
             // THE SEAM-FREE EMBEDDING (rifthub.cpp:862-864).
-            const float sx = std::cos(ang) * 3.1f;
-            const float sy = std::sin(ang) * 3.1f;
-            const float fil  = ridged(sx + v * 1.7f + 5.1f, sy + v * 1.7f + 8.7f, 5, 0x09E4u);
-            const float body = fbm(sx * 0.7f + 1.3f, sy * 0.7f + v * 2.4f + 6.6f, 4, 0x7EAAu);
+            const float sx = std::cos(ang) * 5.0f;
+            const float sy = std::sin(ang) * 5.0f;
+            // ANISOTROPY IS WHAT MAKES IT A TUNNEL. The radial coordinate is fed
+            // in only WEAKLY (0.30, not 1.7), so a filament stays coherent as v
+            // sweeps outward: the structure becomes SPOKES running radially in
+            // toward the convergence, curved by the spiral twist above.
+            // With the radial coordinate at full strength the filaments decorrelate
+            // ring-by-ring and the result is concentric banding, which the eye
+            // reads as a convex DOME rather than a throat you could fall into.
+            // That is the single difference between the two reads.
+            const float fil  = ridged(sx + v * 0.30f + 5.1f, sy + v * 0.30f + 8.7f, 5, 0x09E4u);
+            const float body = fbm(sx * 0.5f + 1.3f, sy * 0.5f + v * 0.9f + 6.6f, 4, 0x7EAAu);
             // Threshold + gain: distinct tendrils, not grey haze.
+            // Threshold + gain, then SQUARED: the extra sharpening is what keeps
+            // the filaments distinct tendrils on a near-black field instead of a
+            // grey haze. The multiply by an HDR baseColorFactor amplifies whatever
+            // contrast the bake has, so the bake has to HAVE contrast.
             float t = fil - 0.44f;
             if (t < 0.0f) t = 0.0f;
             t *= 2.4f; if (t > 1.0f) t = 1.0f;
+            t = t * t;
             // Brightest at the INNER edge (v -> 0), alive to the outer rim.
             const float env = 0.26f + 0.74f * (1.0f - v) * (1.0f - v);
-            // Deep blue body -> white-blue filaments.
-            const float baseR =  8.0f +  28.0f * body;
-            const float baseG = 26.0f +  64.0f * body;
-            const float baseB = 104.0f + 118.0f * body;
+            // Deep blue body -> white-blue filaments. The BODY is deliberately
+            // dark: it is multiplied by an HDR baseColorFactor downstream, so a
+            // bright body becomes a washed plate while a dark one lets only the
+            // filaments reach bloom. First capture had the body at B=104..222 and
+            // read as a flat pearl; this is a quarter of that.
+            const float baseR =  3.0f +  13.0f * body;
+            const float baseG = 10.0f +  33.0f * body;
+            const float baseB = 34.0f +  74.0f * body;
             const float filR = 208.0f, filG = 234.0f, filB = 255.0f;
             const float R = (baseR + (filR - baseR) * t) * env;
             const float G = (baseG + (filG - baseG) * t) * env;
@@ -536,7 +572,14 @@ float Wormhole::layerIntensity(int layer) const {
     // Deeper layers are HOTTER: the stack builds a gradient toward the
     // convergence, which is what makes a set of flat rings read as a tunnel
     // with a bright far end rather than as a pile of stickers.
-    float k = 0.85f + 2.9f * d * d;
+    //
+    // The mouth end is driven MUCH darker than the obvious 0.85 baseline,
+    // because these annuli sit only metres from the wormhole's own point light
+    // and get its full inverse-square blast. At the first tuning they rendered
+    // as a solid violet plate with no filament structure at all, regardless of
+    // emissive, because the LIT term was doing it. Near-black albedo at the
+    // mouth is what lets the throat read as an opening rather than a disc.
+    float k = 0.62f + 3.2f * d * d;
 
     // Rolling internal motion: a wave travelling DOWN the throat. Each layer is
     // phase-offset by its depth, so the brightness crest runs away from the
@@ -570,13 +613,19 @@ void Wormhole::layerTint(int layer, float outRgb[3]) const {
     const float* fringe = m_tuning.fringeColor;
     const float* wall   = m_tuning.wallColor;
     const float* core   = m_tuning.coreColor;
+    // The fringe is a NARROW band at the very mouth. Given half the throat it
+    // reads as a purple donut, which is a different effect from the one wanted:
+    // the Bajoran throat is overwhelmingly blue-white and only FRINGES at the
+    // grazing edge. 0.15 is the width that keeps the spectrum without letting it
+    // own the shot.
+    constexpr float kFringeBand = 0.15f;
     for (int c = 0; c < 3; ++c) {
         float v;
-        if (d < 0.45f) {
-            const float u = d / 0.45f;
+        if (d < kFringeBand) {
+            const float u = d / kFringeBand;
             v = fringe[c] + (wall[c] - fringe[c]) * u;
         } else {
-            const float u = (d - 0.45f) / 0.55f;
+            const float u = (d - kFringeBand) / (1.0f - kFringeBand);
             v = wall[c] + (core[c] - wall[c]) * u;
         }
         outRgb[c] = v;
@@ -667,9 +716,12 @@ bool Wormhole::contains(const float p[3]) const {
 void WormholeField::init(rhi::IRenderDevice& dev) {
     if (m_initialized) return;
 
-    Prim ring = makeAnnulus(72);
+    Prim ring = makeAnnulus(72, kRingInner);
     m_ringMesh = dev.createMesh(ring.verts.data(), (uint32_t)ring.verts.size(),
                                 ring.index.data(), (uint32_t)ring.index.size());
+    Prim rim = makeAnnulus(96, kRimInner);
+    m_rimMesh = dev.createMesh(rim.verts.data(), (uint32_t)rim.verts.size(),
+                               rim.index.data(), (uint32_t)rim.index.size());
     Prim disc = makeDisc(64);
     m_discMesh = dev.createMesh(disc.verts.data(), (uint32_t)disc.verts.size(),
                                 disc.index.data(), (uint32_t)disc.index.size());
@@ -682,13 +734,14 @@ void WormholeField::init(rhi::IRenderDevice& dev) {
     std::vector<uint8_t> cp = bakeCoreRGBA(256);
     m_coreTex = dev.createTexture(cp.data(), 256, 256, /*srgb=*/false);
 
-    m_initialized = m_ringMesh.valid() && m_discMesh.valid() &&
+    m_initialized = m_ringMesh.valid() && m_rimMesh.valid() && m_discMesh.valid() &&
                     m_throatTex.valid() && m_coreTex.valid();
     if (!m_initialized) x3::logError("WormholeField::init: GPU resource creation failed");
 }
 
 void WormholeField::shutdown(rhi::IRenderDevice& dev) {
     if (m_ringMesh.valid())  { dev.destroyMesh(m_ringMesh);    m_ringMesh = {}; }
+    if (m_rimMesh.valid())   { dev.destroyMesh(m_rimMesh);     m_rimMesh = {}; }
     if (m_discMesh.valid())  { dev.destroyMesh(m_discMesh);    m_discMesh = {}; }
     if (m_throatTex.valid()) { dev.destroyTexture(m_throatTex); m_throatTex = {}; }
     if (m_coreTex.valid())   { dev.destroyTexture(m_coreTex);   m_coreTex = {}; }
@@ -744,11 +797,24 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             const int L = std::max(1, kThroatLayers - 1);
             const float d = (float)layer / (float)L;      // 0 = mouth, 1 = deep
 
-            // Radius tapers toward the far end -> a funnel, not a cylinder.
-            const float rad = t.radius * ap * (1.0f - 0.72f * d * d);
-            // Depth placement is quadratic so the near layers crowd the mouth
-            // (where parallax is strongest) and the far ones stretch away.
-            const float depth = t.throatDepth * d * d;
+            // Radius tapers toward the far end -> a funnel, not a cylinder. The
+            // taper is AGGRESSIVE (0.86) so the funnel's silhouette stays inside
+            // the mouth's: at a gentler taper the throat visibly protrudes THROUGH
+            // the aperture when viewed off-axis, and a hole you can see the tunnel
+            // sticking out of is not a hole.
+            // LINEAR taper, not quadratic. A quadratic taper is nearly flat near
+            // d=0, so a third of the stack piled up at almost the same radius and
+            // painted one large uniformly-dark annulus — the "purple donut" that
+            // dominated three capture rounds. Linear spreads the ring radii evenly
+            // from the mouth down to the convergence, and since each ring spans
+            // 0.62..1.0 of its own radius, consecutive rings overlap heavily and
+            // the disc fills with a CONTINUOUS radial gradient instead of a plate
+            // plus a ball.
+            const float rad = t.radius * ap * (1.0f - 0.88f * d);
+            // Depth placement: d^1.5 spreads the stack more evenly than d^2 did
+            // (which crowded everything at the mouth and left the deep end a
+            // sparse set of visibly separate hoops).
+            const float depth = t.throatDepth * d * std::sqrt(d);
 
             // Per-layer spin: deeper layers turn FASTER. Two rings at different
             // rates seen through each other is what makes the interior churn.
@@ -774,11 +840,19 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             // in HDR and bloom, dark valleys stay near black, so the throat keeps
             // its internal contrast instead of washing to a flat field.
             const float baseFactor[4] = { tint[0] * k, tint[1] * k, tint[2] * k, 1.0f };
-            // The per-object emissive term rides at a FRACTION of the same
-            // value, capped. It lifts the whole annulus just enough to survive
-            // the unlit black of space without erasing the texture's contrast.
-            const float em[4] = { tint[0], tint[1], tint[2],
-                                  capped(k * 0.45f, kLayerEmissiveCap) };
+            // PER-OBJECT EMISSIVE IS A THIN CHROMATIC FLOOR, NOT THE BRIGHTNESS.
+            // mesh.frag adds `emissive.rgb * emissive.a` UNIFORMLY across the
+            // annulus, so it cannot carry structure — it can only wash it away.
+            // The first pass of this effect drove it at k*0.45 (up to ~2.7) and
+            // the capture came back a flat lilac plate with a smooth pearl in the
+            // middle: no filaments, no throat, everything at RGB ~230,228,249.
+            // sky_stars.cpp:357 and wormhole_vfx.cpp:302 both pass emissive ZERO
+            // for exactly this reason and say so in comments. This keeps a small
+            // TINTED floor (so the deep layers, which the mouth light barely
+            // reaches, do not go black) and hands every bit of structure back to
+            // the texture * baseColorFactor product.
+            const float floorEm = capped(k * 0.06f, 0.55f);
+            const float em[4] = { tint[0], tint[1], tint[2], floorEm };
             dev.drawMeshEmissive(fr, m_ringMesh, m_throatTex, baseFactor, em, m);
         }
     }
@@ -805,10 +879,13 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
         // "layers escalate at different rates" discipline (its rim takes 55% of
         // the kawoosh while the disk takes 100%), so the surge has internal
         // structure instead of every layer spiking together.
-        const float k = capped(w.coreIntensity() * 0.55f + 0.9f, kRimEmissiveCap);
+        const float k = capped(w.coreIntensity() * 0.30f + 0.35f, kRimEmissiveCap);
         const float baseFactor[4] = { tint[0] * k, tint[1] * k, tint[2] * k * 1.06f, 1.0f };
-        const float em[4] = { tint[0], tint[1], tint[2], capped(k * 0.6f, kRimEmissiveCap) };
-        dev.drawMeshEmissive(fr, m_ringMesh, m_throatTex, baseFactor, em, m);
+        // Same law as the layers: a thin tinted floor, never the brightness. The
+        // rim is the one place a flat field is most visible, because it is the
+        // silhouette — a hot uniform rim is a drawn-on outline.
+        const float em[4] = { tint[0], tint[1], tint[2], capped(k * 0.10f, 0.9f) };
+        dev.drawMeshEmissive(fr, m_rimMesh, m_throatTex, baseFactor, em, m);
     }
 
     // ---- The CONVERGENCE / SPARK core -------------------------------------
@@ -850,8 +927,13 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
                     tint[c] += (kUnstableTint[c] - tint[c]) * ins * 0.6f;
                 const float k = capped(core, kCoreEmissiveCap);
                 const float baseFactor[4] = { tint[0] * k, tint[1] * k, tint[2] * k, 1.0f };
+                // The core is the ONE place a per-object emissive is defensible —
+                // the SPARK has to be visible before any light exists to reveal
+                // it — but it is still held well under the texture-driven term so
+                // the convergence keeps its filament structure instead of
+                // becoming the white pearl the first capture produced.
                 const float em[4] = { tint[0], tint[1], tint[2],
-                                      capped(k * 0.8f, kCoreEmissiveCap) };
+                                      capped(k * 0.14f, 1.8f) };
                 dev.drawMeshEmissive(fr, m_discMesh, m_coreTex, baseFactor, em, m);
             }
         }
@@ -919,11 +1001,17 @@ void seedSpaceWormholes(WormholeField& field) {
     {
         WormholeTuning t{};
         t.radius      = 30.0f;
-        t.throatDepth = 130.0f;
+        t.throatDepth = 48.0f;
         t.spinRate    = 0.26f;
         t.heldSec     = -1.0f;          // holds open — this is the usable one
         Wormhole w;
-        const float pos[3]  = { 260.0f, 18.0f, -70.0f };
+        // Placed just BEYOND the decor fleet (x in [30,80]) rather than far out:
+        // at ~130 m its spill actually dominates the fleet's key light instead of
+        // being a rounding error on it. pointAtten is w^2/(d^2+1) (see
+        // shaders/inc/mesh_lighting.glsl:36) — inverse-square is unforgiving, and
+        // "it lights the world" has to survive that arithmetic, not just be
+        // asserted. Sited so an approaching ship sees it open against empty sky.
+        const float pos[3]  = { 170.0f, 25.0f, -55.0f };
         const float axis[3] = { 0.86f, 0.06f, -0.51f };   // throat recedes away from origin
         w.configure("THE GAMMA CORRIDOR", pos, axis, /*stable=*/true, /*id=*/900, t);
         field.add(w);
@@ -931,7 +1019,7 @@ void seedSpaceWormholes(WormholeField& field) {
     {
         WormholeTuning t{};
         t.radius      = 22.0f;
-        t.throatDepth = 95.0f;
+        t.throatDepth = 34.0f;
         t.spinRate    = 0.34f;
         t.heldSec     = -1.0f;
         Wormhole w;
