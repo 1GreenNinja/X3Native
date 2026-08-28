@@ -3,6 +3,7 @@
 #include "settings_io.h"   // readWindowSize (saved window default)
 #include "test_registry.h" // g_testGrounding (--test-grounding; see the note there)
 #include "car_roster.h"    // --car <id> validation against the real roster
+#include "destinations.h"  // spaceDefaultWorld() — X3Space.exe's landing world, spelled once
 #include "engine/core/x3_log.h"
 #include <string>
 #include <string_view>
@@ -417,6 +418,16 @@ void parseCli(int argc, char** argv, CliOptions& o) {
                 o.benchFrames = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
         }
         else if (a == "--editor") o.editorMode = true;
+        // ---- THE SPACE PRODUCT (X3Space.exe; app/entry_space.cpp) -----------
+        // `--space` is injected by the launcher the same way `--editor` is. It
+        // only picks the default world + the window title (see the epilogue);
+        // an explicit --world after it still wins, because a front door that
+        // locks you in is worse than no front door.
+        else if (a == "--space") o.spaceProduct = true;
+        // `--dogfight` — DIRECT ENTRY to the dreadnought encounter, no cinematic
+        // and no facility on the way out. `--world dogfight` is the same thing
+        // (handled in the epilogue) because that is what a person types.
+        else if (a == "--dogfight") { o.introDirect = true; o.introOnly = true; }
         else if (a == "--print-assetroot") o.printAssetRoot = true;
         else if (a == "--test-routeframe") o.testRouteFrame = true;
         else if (a == "--test-roadnetwork") o.testRoadNetwork = true;
@@ -713,6 +724,29 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             }
         }
     }
+
+    // ---- THE SPACE PRODUCT: world routing, AFTER the loop -------------------
+    // Two rewrites, in this order, because the second must see what the first
+    // decided:
+    //
+    //  1. `--world dogfight` is a SYNONYM for `--dogfight`. There is no host
+    //     called "dogfight" and there must not be one — the encounter is a beat
+    //     sequence the orchestrator owns, not a world you load — so the flag is
+    //     resolved to the world that runs those beats (`intro`) plus the two
+    //     latches that strip the cinematic and the hand-off. Resolving it HERE
+    //     (rather than leaving "dogfight" to reach dispatch) is what keeps it
+    //     off the unrecognized-flag path, which silently boots legacy level1.
+    //
+    //  2. `--space` picks the landing world — but only when the caller did not
+    //     name one. `--world` sets worldExplicit, and so does the dogfight
+    //     rewrite, so both of those beat the default.
+    if (o.worldMode == "dogfight") { o.introDirect = true; o.introOnly = true; }
+    if (o.introOnly || o.introDirect) {
+        o.worldMode     = "intro";   // the world whose host runs the intro beats
+        o.worldExplicit = true;      // ...and it outranks the --space default
+    }
+    if (o.spaceProduct && !o.worldExplicit)
+        o.worldMode = x3::game::spaceDefaultWorld();
 
     // ---- VULKAN VALIDATION GATE: environment fallbacks ---------------------
     // Applied AFTER the arg loop so an explicit flag always wins over the env.

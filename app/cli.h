@@ -743,6 +743,27 @@ struct CliOptions {
     // outcome (QA/tests). -1 = none (roll the skill-biased {chance}); 0 = force the
     // canon SHOT_DOWN cell start; 1 = force the ESCAPED surface-landing start.
     int         introForce   = -1;
+    // ---- THE SPACE PRODUCT (X3Space.exe) ----------------------------------
+    // `--space`, injected by app/entry_space.cpp exactly as entry_editor.cpp
+    // injects `--editor`. It is a FRONT DOOR, not a fork: the flag changes the
+    // default world (to x3::game::spaceDefaultWorld()) and the window title,
+    // and nothing else. Everything the other two exes can do still works from
+    // this one, because it IS the same x3AppMain in the same x3app.dll.
+    bool        spaceProduct = false;
+    // `--dogfight` (also spelled `--world dogfight`): DIRECT ENTRY to the
+    // dreadnought encounter. Owner's actual problem, all week: every judgement
+    // of how space FEELS cost a full intro playthrough, because the encounter
+    // sits behind the cold-open's cinematic beats and hands off into the
+    // facility on the way out. This route arms two things:
+    //   introDirect — the orchestrator plays the INTERACTIVE beats only: no
+    //     cinematic clips, no outcome stinger, no ion descent, and no write to
+    //     the campaign's StoryFlags file (a standalone product must not leave
+    //     fingerprints on the campaign save).
+    //   introOnly   — app_run returns when the beats end instead of falling
+    //     through into the canon world build. No facility, no campaign.
+    // Both default false, so X3Engine.exe's prologue is byte-identical.
+    bool        introDirect  = false;
+    bool        introOnly    = false;
     std::string cutsceneFile;                  // empty = the shipped cold open
     float       cueTime      = 0.0f;
     bool        cutsceneShot = false;

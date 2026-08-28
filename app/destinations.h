@@ -47,6 +47,8 @@ enum class DestGroup : uint8_t {
     Planet,         // the streamed exterior (crash site / city / river / ridge)
     EchoHarbor,     // ECHO HARBOR — the second product (its host ships on the
                     // echotropolis line; listed here so the directory tells the truth)
+    Space,          // OFF-WORLD — the space product's roster (X3Space.exe). See
+                    // the SPACE ROSTER block at the bottom of this header.
     DevWorld,       // a `--world` dev shortcut with no place in the one world
     Count
 };
@@ -92,6 +94,40 @@ uint32_t destinationIndex(const Destination* d);
 // Cycle helper for the rift console: the entry `step` places after `from` (wrapping).
 // `from` may be any string the registry can resolve; an unresolvable one starts at 0.
 const Destination& cycleDestination(std::string_view from, int step);
+
+// ===========================================================================
+// THE SPACE ROSTER — every place X3Space.exe carries.
+//
+// Owner, 2026-08-24: "Can you have the space bit as a standalone, unconnected
+// to the game at large?" — answered as a THIRD THIN LAUNCHER over the same
+// x3app.dll (app/entry_space.cpp, alongside entry_game.cpp / entry_editor.cpp),
+// NOT as a fork. One codebase, one engine, three front doors.
+//
+// The roster is DERIVED FROM THIS TABLE — every row whose group is
+// DestGroup::Space — and never hand-listed anywhere. A hand list is exactly the
+// drift that D2/D7 exist to kill one layer up: the moment a space world lands
+// with a row and no roster entry (or the reverse), the product's contents are a
+// lie no one notices. Add `DestGroup::Space` to a row and X3Space carries it.
+//
+// The gates that hold it honest live in runDestinationsSelfTest():
+//   D14 — every roster row names a --world the program really dispatches, and
+//         NONE of them is the facility (canonlevel), the campaign prologue
+//         (intro) or the other product (echoharbor). The space product must not
+//         require the game at large — that is the whole ask.
+//   D15 — spaceDefaultWorld() is a real registry key, IS in the roster, and is
+//         dispatchable: X3Space lands in a SPACE world, never canonlevel.
+//   D16 — the CLI routes `--space` to that default world and `--dogfight` /
+//         `--world dogfight` straight into the encounter with no facility build.
+// ===========================================================================
+uint32_t spaceRosterCount();
+const Destination& spaceRosterEntry(uint32_t i);
+
+// True iff `d` is part of the space product's roster.
+bool isSpaceDestination(const Destination& d);
+
+// The registry key X3Space.exe lands in when no --world is given (D15 pins it
+// to a roster row). app/cli.cpp reads THIS — the default is not spelled twice.
+const char* spaceDefaultWorld();
 
 // Headless self-test (folded into --test-rifthub): asserts the table is non-empty,
 // every key/name is unique and non-empty, findDestination round-trips every
