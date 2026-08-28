@@ -940,6 +940,29 @@ public:
         // concentric banding. Quantised to 1/255; wraps freely (any fractional
         // part is fine). Irrelevant when shimmer == 0.
         float shimmerPhase = 0.0f;
+        // ---- EVENT-HORIZON LENS PROFILE, 0..1, default 0 ---------------------
+        // Selects WHICH radial deflection profile `lens` drives. Both profiles pull
+        // the sampled background INWARD along the surface's own screen-space radial
+        // axis (sampling inward is what makes the background APPEAR pushed outward,
+        // which is the direction real gravitational deflection works). They differ
+        // only in how the magnitude varies across v:
+        //
+        //   0 (default, every existing surface): THROAT profile, magnitude ~ v^2.
+        //     Zero at the inner edge, maximum at the outer rim. Byte-identical to
+        //     what shipped — a bend that is a halo around an aperture's edge.
+        //
+        //   1: HORIZON profile, magnitude ~ 1/(1 + 3v) — the thin-lens 1/theta
+        //     deflection law. Maximum at the INNER edge, falling outward. Authored
+        //     for an annulus whose inner edge sits ON an event horizon and which
+        //     extends outward into flat space: deflection strongest right at the
+        //     horizon, dying with distance, which PILES THE BACKGROUND UP INTO AN
+        //     EINSTEIN RING at that inner rim instead of smearing it uniformly.
+        //     Use it OUTSIDE a horizon; use 0 on anything looking INTO an aperture.
+        //
+        // Intermediate values cross-fade. Quantised to 1/255. A non-zero value on
+        // its own is enough to flag the membrane path, so a pure lensing halo needs
+        // no shimmer.
+        float horizon = 0.0f;
     };
 
     // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's

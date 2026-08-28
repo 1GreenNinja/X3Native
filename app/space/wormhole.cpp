@@ -346,6 +346,61 @@ std::vector<uint8_t> bakeCoreRGBA(uint32_t n) {
     return px;
 }
 
+// EINSTEIN RING / LENSING HALO map. u = angle, v = radial across the halo
+// annulus (0 = kHaloInnerFrac of the mouth radius, 1 = kHaloOuterFrac).
+//
+// TWO THINGS ARE BAKED HERE, and they are one thing physically. Light grazing a
+// horizon deflects by ~1/theta, so background sky from a wide annulus is swept
+// into a narrow band at the photon radius: that band IS the Einstein ring, and
+// outside it the deflection dies off smoothly into flat space. So the profile is
+// a sharp asymmetric bump at kEinsteinFrac riding on a monotone outward decay —
+// the ring is the PEAK of the halo, not a separate ellipse stroked on top of it.
+//
+// THE BUMP IS ASYMMETRIC ON PURPOSE. Inward of the peak the fall is FAST (that
+// side is the horizon itself — light there is captured, there is nothing behind
+// it to see); outward it is SLOW (deflected sky thinning with distance). A
+// symmetric gaussian reads as a neon hoop; this reads as an EDGE with a glow
+// bleeding off it, which is what the reference images actually show.
+//
+// ANGULARLY UNIFORM. Not laziness — a hard requirement of the billboard (see the
+// roll note in Wormhole::horizonBasis): the impostor's roll about the view axis
+// is not continuous at every camera bearing, so ANY angular content baked here
+// could pop as the camera crosses one. Radial content cannot, because it is
+// roll-invariant. The ring's life therefore comes from the shader's animated
+// turbulence and from the lensed starfield moving through it, which is where it
+// should come from anyway.
+std::vector<uint8_t> bakeHaloRGBA(uint32_t w, uint32_t h) {
+    std::vector<uint8_t> px((size_t)w * h * 4, 0);
+    auto clamp8 = [](float v) { return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : (int)v)); };
+    // Where the ring's peak lands in the halo annulus's own v coordinate.
+    const float vPeak = (kEinsteinFrac - kHaloInnerFrac) / (kHaloOuterFrac - kHaloInnerFrac);
+    for (uint32_t y = 0; y < h; ++y) {
+        const float v  = ((float)y + 0.5f) / (float)h;
+        const float dv = v - vPeak;
+        const float sig  = dv < 0.0f ? 0.055f : 0.200f;
+        const float ring = std::exp(-(dv * dv) / (2.0f * sig * sig));
+        // What is left of the deflected sky well past the photon radius. Ends
+        // near 0.1 at the outer edge so the halo has somewhere to END instead of
+        // a cut line across the starfield.
+        const float glow = 0.14f * std::exp(-clampf(dv, 0.0f, 1.0f) * 3.1f);
+        // An inner shoulder so the band does not simply stop at the horizon: the
+        // smear has to CROSS the rim or the ring reads as a painted outline.
+        const float inner = 0.10f * clampf(1.0f + dv * 5.0f, 0.0f, 1.0f);
+        const float a = clampf(ring + glow + inner, 0.0f, 1.6f);
+        // A real Einstein ring is the STARFIELD concentrated, so it goes toward
+        // WHITE where it piles up, not toward the wormhole's own blue.
+        const float hot = clampf(ring, 0.0f, 1.0f);
+        const float R = (108.0f + 140.0f * hot) * a;
+        const float G = (150.0f + 100.0f * hot) * a;
+        const float B = (222.0f +  33.0f * hot) * a;
+        for (uint32_t x = 0; x < w; ++x) {
+            uint8_t* p = &px[((size_t)y * w + x) * 4];
+            p[0] = clamp8(R); p[1] = clamp8(G); p[2] = clamp8(B); p[3] = 255;
+        }
+    }
+    return px;
+}
+
 // Compose a column-major 4x4 from an orthonormal basis + origin + uniform scale.
 void composeXform(float m[16], const float cx[3], const float cy[3], const float cz[3],
                   const float t[3], float sx, float sy, float sz) {
@@ -432,6 +487,40 @@ constexpr float kLayerAlphaDeep  = 0.40f;
 // whole emissive-cap law exists to prevent. Scale the drive down by the overlap
 // instead of capping harder — capping erases structure, this preserves it.
 constexpr float kMembraneGlowScale = 0.24f;
+
+// ---- THE EVENT-HORIZON IMPOSTOR WEIGHTS -----------------------------------
+//
+// The halo's lens weight is the MAXIMUM (1.0) and it runs the HORIZON deflection
+// profile (GlassMaterial::horizon = 1), which is the 1/theta law. That pairing is
+// the Einstein ring: the profile decides WHERE the background piles up, the
+// weight decides HOW HARD, and the bake decides what colour it is when it gets
+// there. Change any one of the three and the ring stops being a ring.
+constexpr float kHaloLens    = 1.00f;
+constexpr float kHaloShimmer = 0.30f;   // a little boil so the ring is not a decal
+// The halo needs MORE master refraction than the throat does: the throat's bend
+// is read against its own lit membrane, but the halo's is read against BARE
+// STARFIELD, where a 0.045 offset is a couple of pixels and simply invisible.
+// This is the number that makes the starfield visibly wrap.
+constexpr float kHaloRefract = 0.115f;
+
+// The horizon INTERIOR takes the ordinary throat profile (horizon = 0), whose
+// v^2 shape is strongest at the rim — which on a disc means the smear is
+// strongest exactly where it meets the ring, and dies to nothing at the centre.
+// That is the correct interior gradient and it comes for free from the profile
+// that already shipped.
+constexpr float kHorizonLens      = 0.55f;
+constexpr float kHorizonShimmer   = 0.62f;
+// FROSTED HARD. The interior of a horizon is not a window: frosting the scene
+// copy turns a starfield (sparse bright points on black) into near-black, which
+// is what makes the disc read as a HOLE rather than as a pane. The darkness is
+// the blurred starfield, not a painted black disc — so it still carries the
+// smeared light of whatever is actually behind the wormhole.
+constexpr float kHorizonRoughness = 0.88f;
+// The interior's own emissive drive, as a fraction of the mouth layer's. Kept
+// LOW: this element is large and always on, and it is exactly the kind of
+// full-aperture surface that turns into the flat lilac plate the emissive-cap
+// law exists to prevent (docs/screenshots/wormholes/_BEFORE_emissive_wash.png).
+constexpr float kHorizonGlowScale = 0.085f;
 
 // THE OFF-SWITCH (X3_WORMHOLE_NOREFRACT=1). Falls the throat + rim back to the
 // exact opaque drawMeshEmissive path they shipped with, so a BEFORE/AFTER pair
@@ -844,6 +933,167 @@ float Wormhole::facingFade(const float p[3]) const {
     return u * u * (3.0f - 2.0f * u);
 }
 
+// ===========================================================================
+// THE EVENT HORIZON. See the block comment above kHorizonDiscFrac in the header
+// for why a wormhole is a sphere and why a billboard is that sphere exactly.
+// ===========================================================================
+
+float Wormhole::horizonRadius() const {
+    return m_tuning.radius * aperture() * kHorizonDiscFrac;
+}
+
+float Wormhole::haloOuterRadius() const {
+    return m_tuning.radius * aperture() * kHaloOuterFrac;
+}
+
+float Wormhole::horizonAlpha(const float p[3]) const {
+    const float ap = aperture();
+    if (ap <= 0.001f) return 0.0f;
+    // EXACTLY COMPLEMENTARY TO THE THROAT. facingFade is the throat's read; this
+    // is what the horizon has to supply in its place. Written as one lerp off
+    // that single number so the two can never both fall away at some angle
+    // nobody happened to capture — which is precisely how the 90-degree hole got
+    // missed the first time.
+    const float ff = facingFade(p);
+    const float a = kHorizonAlphaHeadOn + (kHorizonAlphaGrazing - kHorizonAlphaHeadOn) * (1.0f - ff);
+    // The aperture gates it: a hole that has not opened has no horizon. Scaled by
+    // ap rather than gated by it so the horizon grows WITH the unfurl instead of
+    // popping in at some threshold.
+    return a * ap;
+}
+
+float Wormhole::einsteinCoverage() const {
+    // NO EYE TERM. This is the contract that answers the 90-degree defect: the
+    // ring reads identically from every direction because nothing in it knows
+    // what direction you are looking from.
+    return kEinsteinAlpha * aperture();
+}
+
+float Wormhole::einsteinDrive() const {
+    // The ring is a HORIZON feature, so it tracks the aperture, not the
+    // convergence core — an Einstein ring exists whenever the horizon does, and
+    // it does not flare with the throat's internal beats. It takes a share of the
+    // core drive only as a floor-lifting term so the ring is visible during the
+    // Unfurl before the throat has settled.
+    const float ap = aperture();
+    if (ap <= 0.001f) return 0.0f;
+    const float k = 0.85f + 0.16f * coreIntensity();
+    // Unstable holes swing the ring with everything else, so a wavering wormhole
+    // wavers ALL the way out to its Einstein radius rather than only in the middle.
+    const float ins = instability();
+    const float sw  = 1.0f + (waver(m_time * 1.7f, 0x51E1u) - 0.5f) * 0.55f * ins;
+    return capped(k * ap * sw, kRimEmissiveCap);
+}
+
+void Wormhole::horizonBasis(const float p[3], float outX[3], float outY[3], float outZ[3]) const {
+    // outZ points from the hole toward the eye. THIS IS THE WHOLE TRICK: because
+    // the plane spanned by outX/outY is always perpendicular to the line of
+    // sight, the disc drawn in it projects to a circle of its own radius for
+    // EVERY camera. No foreshortening exists to fade away from.
+    float toEye[3] = { 0.0f, 0.0f, 1.0f };
+    if (p) {
+        toEye[0] = p[0] - m_pos[0]; toEye[1] = p[1] - m_pos[1]; toEye[2] = p[2] - m_pos[2];
+    }
+    const float len2 = toEye[0] * toEye[0] + toEye[1] * toEye[1] + toEye[2] * toEye[2];
+    if (len2 < 1e-8f) {
+        // An eye AT the centre: no view direction exists. Fall back to the hole's
+        // own frame so the basis is still orthonormal and the draw is still valid.
+        basisFromAxis(m_axis, outX, outY, outZ);
+        return;
+    }
+    const float inv = 1.0f / std::sqrt(len2);
+    for (int c = 0; c < 3; ++c) outZ[c] = toEye[c] * inv;
+
+    // ROLL REFERENCE. The impostor is rotationally symmetric geometry carrying a
+    // rotationally UNIFORM bake (see bakeHaloRGBA), so its roll about outZ is
+    // very nearly unobservable — the only thing that sees it is the shader's
+    // turbulence, which is low-contrast boil. That is what buys the right to use
+    // a reference with a switch in it rather than paying for a continuous frame.
+    //
+    // The reference is the hole's OWN local X, which is fixed in world space, so
+    // an orbiting camera gets a smoothly rolling impostor. It degenerates only
+    // when the eye lies along that local X; within ~10 degrees of that one
+    // bearing the reference switches to local Y. The switch changes the roll of a
+    // boiling noise field and nothing else.
+    float bx[3], by[3], bz[3];
+    basisFromAxis(m_axis, bx, by, bz);
+    const float dx = std::fabs(bx[0] * outZ[0] + bx[1] * outZ[1] + bx[2] * outZ[2]);
+    const float* ref = (dx > 0.985f) ? by : bx;
+
+    // Gram-Schmidt the reference against the view direction, then complete.
+    const float d = ref[0] * outZ[0] + ref[1] * outZ[1] + ref[2] * outZ[2];
+    for (int c = 0; c < 3; ++c) outX[c] = ref[c] - outZ[c] * d;
+    normalize3(outX);
+    cross3(outZ, outX, outY);
+    normalize3(outY);
+}
+
+// Projected minor/major extent of a circle of world radius `r` lying in the plane
+// spanned by (ex, ey), as seen down `view`. Computed by sampling the circle and
+// projecting onto a screen basis — the arithmetic a renderer does, not a formula
+// asserted about it, so a future change to the basis construction shows up here.
+static float projectedAspect(const float ex[3], const float ey[3], const float view[3], float r) {
+    if (r <= 0.0f) return 0.0f;
+    // A screen basis perpendicular to the view.
+    float sx[3], sy[3];
+    const float upA[3] = { 0.0f, 1.0f, 0.0f };
+    const float upB[3] = { 1.0f, 0.0f, 0.0f };
+    const float* up = (std::fabs(view[1]) > 0.98f) ? upB : upA;
+    cross3(up, view, sx); normalize3(sx);
+    cross3(view, sx, sy); normalize3(sy);
+    float minX = 1e30f, maxX = -1e30f, minY = 1e30f, maxY = -1e30f;
+    constexpr int kSamples = 256;
+    for (int i = 0; i < kSamples; ++i) {
+        const float th = (float)i * (kTau / (float)kSamples);
+        const float c = std::cos(th) * r, s = std::sin(th) * r;
+        const float w0 = ex[0] * c + ey[0] * s;
+        const float w1 = ex[1] * c + ey[1] * s;
+        const float w2 = ex[2] * c + ey[2] * s;
+        const float px = w0 * sx[0] + w1 * sx[1] + w2 * sx[2];
+        const float py = w0 * sy[0] + w1 * sy[1] + w2 * sy[2];
+        minX = std::min(minX, px); maxX = std::max(maxX, px);
+        minY = std::min(minY, py); maxY = std::max(maxY, py);
+    }
+    const float w = maxX - minX, h = maxY - minY;
+    const float lo = std::min(w, h), hi = std::max(w, h);
+    return hi > 1e-6f ? lo / hi : 0.0f;
+}
+
+float Wormhole::horizonProjectedAspect(const float p[3]) const {
+    float ex[3], ey[3], ez[3];
+    horizonBasis(p, ex, ey, ez);
+    // ez already points at the eye; the view direction is its negation, and the
+    // aspect is symmetric in that sign.
+    return projectedAspect(ex, ey, ez, std::max(horizonRadius(), 1e-3f));
+}
+
+float Wormhole::mouthProjectedAspect(const float p[3]) const {
+    // THE DEFECT, QUANTIFIED. The mouth ring lies in the plane perpendicular to
+    // the THROAT AXIS, which is fixed in world space — so it foreshortens to
+    // |cos(angle off axis)| and vanishes edge-on. Every element the wormhole had
+    // before this lane lived in that plane, and this is the number that says why
+    // the 90-degree frame was empty.
+    float bx[3], by[3], bz[3];
+    basisFromAxis(m_axis, bx, by, bz);
+    float view[3] = { 0.0f, 0.0f, 1.0f };
+    if (p) {
+        view[0] = p[0] - m_pos[0]; view[1] = p[1] - m_pos[1]; view[2] = p[2] - m_pos[2];
+        if (view[0] * view[0] + view[1] * view[1] + view[2] * view[2] < 1e-8f) {
+            view[0] = bz[0]; view[1] = bz[1]; view[2] = bz[2];
+        }
+    }
+    normalize3(view);
+    return projectedAspect(bx, by, view, std::max(m_tuning.radius * aperture(), 1e-3f));
+}
+
+float Wormhole::horizonSignature(const float p[3]) const {
+    // A SIZE times a COVERAGE. A signature that stayed non-zero because one pixel
+    // somewhere still drew would not be worth asserting, so the silhouette radius
+    // is in the product: the assertion is that there is a BIG thing with real
+    // coverage on it, from every angle.
+    return horizonRadius() * (horizonAlpha(p) + einsteinCoverage());
+}
+
 bool Wormhole::contains(const float p[3]) const {
     // You cannot fall into a hole that has not opened. The trigger needs a real
     // aperture, which excludes Dormant/Spark/Bloom outright.
@@ -879,6 +1129,25 @@ void WormholeField::init(rhi::IRenderDevice& dev) {
     m_discMesh = dev.createMesh(disc.verts.data(), (uint32_t)disc.verts.size(),
                                 disc.index.data(), (uint32_t)disc.index.size());
 
+    // THE HORIZON IMPOSTOR, as a RADIAL disc: makeAnnulus with inner radius 0, so
+    // v runs 0 at the centre to 1 at the rim. m_discMesh cannot be reused for
+    // this — its UV inscribes the disc in [0,1]^2, so its v is a Cartesian axis,
+    // and the membrane shader would take the gradient of a Cartesian axis as its
+    // "radial" direction and smear the whole aperture one way. The inner ring
+    // collapses to a point, which leaves one degenerate zero-area triangle per
+    // segment; the rasteriser drops them and the lens profile is v^2, so nothing
+    // is drawn or bent at the singular point either.
+    Prim horizon = makeAnnulus(96, 0.0f);
+    m_horizonMesh = dev.createMesh(horizon.verts.data(), (uint32_t)horizon.verts.size(),
+                                   horizon.index.data(), (uint32_t)horizon.index.size());
+    // The lensing halo. Its outer radius is kHaloOuterFrac of the mouth, so its
+    // inner radius as a fraction OF ITSELF is the ratio of the two fractions.
+    // 128 segments, not 72: this ring's silhouette is the crispest curve in the
+    // effect and faceting on it would read immediately.
+    Prim halo = makeAnnulus(128, kHaloInnerFrac / kHaloOuterFrac);
+    m_haloMesh = dev.createMesh(halo.verts.data(), (uint32_t)halo.verts.size(),
+                                halo.index.data(), (uint32_t)halo.index.size());
+
     // 512 (angle) x 256 (radial): the angular axis carries the filament detail,
     // so it gets the resolution. Linear, not sRGB — these texels are multiplied
     // by an HDR baseColorFactor on the emissive path.
@@ -886,9 +1155,16 @@ void WormholeField::init(rhi::IRenderDevice& dev) {
     m_throatTex = dev.createTexture(tp.data(), 512, 256, /*srgb=*/false);
     std::vector<uint8_t> cp = bakeCoreRGBA(256);
     m_coreTex = dev.createTexture(cp.data(), 256, 256, /*srgb=*/false);
+    // 8 x 512: the halo bake is ANGULARLY UNIFORM (see bakeHaloRGBA), so all the
+    // resolution belongs on the radial axis and the angular axis needs only
+    // enough texels to survive filtering. The ring's inner falloff is the sharpest
+    // gradient in the effect and it is what 512 rows are for.
+    std::vector<uint8_t> hp = bakeHaloRGBA(8, 512);
+    m_haloTex = dev.createTexture(hp.data(), 8, 512, /*srgb=*/false);
 
     m_initialized = m_ringMesh.valid() && m_rimMesh.valid() && m_discMesh.valid() &&
-                    m_throatTex.valid() && m_coreTex.valid();
+                    m_horizonMesh.valid() && m_haloMesh.valid() &&
+                    m_throatTex.valid() && m_coreTex.valid() && m_haloTex.valid();
     if (!m_initialized) x3::logError("WormholeField::init: GPU resource creation failed");
 }
 
@@ -896,8 +1172,14 @@ void WormholeField::shutdown(rhi::IRenderDevice& dev) {
     if (m_ringMesh.valid())  { dev.destroyMesh(m_ringMesh);    m_ringMesh = {}; }
     if (m_rimMesh.valid())   { dev.destroyMesh(m_rimMesh);     m_rimMesh = {}; }
     if (m_discMesh.valid())  { dev.destroyMesh(m_discMesh);    m_discMesh = {}; }
+    // allocationCount=0 at teardown is a gate condition, so the two horizon
+    // meshes and the halo bake are destroyed here beside the rest — a new
+    // resource that is created but never freed is how that gate gets broken.
+    if (m_horizonMesh.valid()) { dev.destroyMesh(m_horizonMesh); m_horizonMesh = {}; }
+    if (m_haloMesh.valid())    { dev.destroyMesh(m_haloMesh);    m_haloMesh = {}; }
     if (m_throatTex.valid()) { dev.destroyTexture(m_throatTex); m_throatTex = {}; }
     if (m_coreTex.valid())   { dev.destroyTexture(m_coreTex);   m_coreTex = {}; }
+    if (m_haloTex.valid())   { dev.destroyTexture(m_haloTex);   m_haloTex = {}; }
     m_initialized = false;
 }
 
@@ -945,6 +1227,79 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
     float bx[3], by[3], bz[3];
     basisFromAxis(w.axis(), bx, by, bz);
     const float* P = w.pos();
+
+    // THE IMPOSTOR BASIS — one per wormhole per frame, built from the eye, and
+    // the reason 0/45/70/90/180 degrees are the same shot. Both horizon elements
+    // ride it. Skipped entirely on the opaque A/B control path so the BEFORE
+    // frame stays exactly what shipped.
+    float hx[3], hy[3], hz[3];
+    const bool wantHorizon = !refractionDisabled();
+    if (wantHorizon) w.horizonBasis(eye, hx, hy, hz);
+
+    // ---- THE EVENT-HORIZON INTERIOR --------------------------------------
+    // Drawn FIRST, behind everything: head-on it is a faint wash the throat sits
+    // in front of, and only as the throat's own read runs out does it come
+    // forward and become the wormhole. It is the element that is still there at
+    // 90 and 180 degrees, and it is dark on purpose — the frosted scene copy of a
+    // starfield is near-black, so this reads as a HOLE that still carries the
+    // smeared light of whatever is genuinely behind it, rather than as a painted
+    // black disc.
+    if (wantHorizon && ap > 0.001f) {
+        const float hAlpha = w.horizonAlpha(eye);
+        if (hAlpha > 0.004f) {
+            // Slow counter-roll so the interior churns. Off w.time(), which is
+            // ACCUMULATED SECONDS — never a frame count (the 165 Hz law).
+            const float ang = w.time() * t.spinRate * -0.45f;
+            const float ca = std::cos(ang), sa = std::sin(ang);
+            float rx[3], ry[3];
+            for (int c = 0; c < 3; ++c) {
+                rx[c] = hx[c] * ca + hy[c] * sa;
+                ry[c] = -hx[c] * sa + hy[c] * ca;
+            }
+            const float R = w.horizonRadius();
+            float m[16];
+            composeXform(m, rx, ry, hz, P, R, R, 1.0f);
+
+            float tint[3];
+            // A MID-THROAT tint, not the mouth's. The interior of the horizon is
+            // what you are seeing INTO, so it takes the colour of the deep throat
+            // rather than of the violet fringe at the rim — and it still carries
+            // the instability slide, which is how an unstable hole stays
+            // distinguishable from a stable one at angles where the throat that
+            // used to carry that signal is no longer drawn.
+            w.layerTint(kThroatLayers / 3, tint);
+            // The interior's drive RAMPS AS THE THROAT LEAVES: head-on it must
+            // not veil the funnel, grazing it is the only structure left.
+            const float ramp = 0.55f + 0.75f * (1.0f - faceFade);
+            const float gk = w.layerIntensity(0) * kHorizonGlowScale * ramp;
+            const float mFactor[4] = { tint[0] * gk, tint[1] * gk, tint[2] * gk, 1.0f };
+
+            rhi::IRenderDevice::GlassMaterial gm;
+            gm.opacity    = hAlpha;
+            gm.refraction = kRefractStrength;
+            gm.roughness  = kHorizonRoughness;
+            gm.specular   = 0.0f;
+            gm.tint[0] = tint[0]; gm.tint[1] = tint[1]; gm.tint[2] = tint[2];
+            gm.lens    = kHorizonLens;
+            gm.shimmer = kHorizonShimmer;
+            // horizon = 0: the THROAT deflection profile (v^2), whose maximum is
+            // at the rim. On a disc that puts the smear exactly where the interior
+            // meets the Einstein ring and takes it to nothing at the centre —
+            // which is the correct interior gradient, obtained free from the
+            // profile that already shipped.
+            gm.horizon      = 0.0f;
+            gm.shimmerPhase = 0.4404f + (float)(w.id() < 0 ? 0 : w.id()) * 0.137f;
+            gm.emissiveMap  = 1.0f;
+            const float em[4] = { tint[0], tint[1], tint[2],
+                                  capped(gk * 0.20f, 0.28f) };
+            // alphaBlend: this is a large translucent shell standing in front of
+            // the starfield and the decor fleet, which is the case the flag is
+            // documented for — keep it OUT of the depth pre-pass so it cannot
+            // occlude the very scene it exists to bend.
+            dev.drawMeshGlass(fr, m_horizonMesh, m_throatTex, mFactor, em, gm, m,
+                              /*alphaBlend=*/true);
+        }
+    }
 
     // ---- The layered throat (far end first) -------------------------------
     if (ap > 0.001f) {
@@ -1112,7 +1467,15 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             // a hole in space should leave behind. Fading the rim to nothing
             // would delete a wormhole that is still washing the hull with a
             // 4200-intensity light, which reads as a bug rather than as an angle.
-            const float rimFade = 0.45f + 0.55f * faceFade;
+            // WAS 0.45 + 0.55*fade. The 0.45 floor existed because this rim was
+            // the ONLY thing left edge-on and deleting it deleted a wormhole that
+            // was still washing the hull with light. The Einstein ring now holds
+            // that job — and it holds it as a CIRCLE, where this ring seen edge-on
+            // is a bright BAR drawn straight across the horizon's silhouette. So
+            // the floor comes down to where it belongs: this element is the
+            // aperture's mouth, it foreshortens because a mouth does, and it is
+            // allowed to.
+            const float rimFade = 0.14f + 0.86f * faceFade;
             const float gk = k * kMembraneGlowScale * rimFade;
             const float mFactor[4] = { tint[0] * gk, tint[1] * gk, tint[2] * gk * 1.06f, 1.0f };
             rhi::IRenderDevice::GlassMaterial gm;
@@ -1129,6 +1492,82 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             // coverage, or the rim survives as a bright outline of itself.
             const float emR[4] = { em[0], em[1], em[2], em[3] * rimFade };
             dev.drawMeshGlass(fr, m_rimMesh, m_throatTex, mFactor, emR, gm, m);
+        }
+    }
+
+    // ---- THE EINSTEIN RING / LENSING HALO ---------------------------------
+    // The headline. One billboarded annulus spanning kHaloInnerFrac..
+    // kHaloOuterFrac of the mouth radius, running the HORIZON deflection profile
+    // (GlassMaterial::horizon = 1) at maximum lens weight, so the starfield
+    // behind the wormhole is swept from a wide annulus of sky into a narrow band
+    // at the photon radius. That band is the Einstein ring; the bake shapes it
+    // (bakeHaloRGBA), the shader's 1/theta profile puts the light there, and this
+    // draw says how hard.
+    //
+    // IT TAKES NO FACING FADE AT ALL. Not an omission — the entire point. A real
+    // wormhole's ring does not know which way you are looking at it, and this is
+    // the element that makes the 90-degree and 180-degree frames read as a hole
+    // in space rather than as light spill.
+    if (wantHorizon && ap > 0.02f) {
+        const float drive = w.einsteinDrive();
+        const float cov   = w.einsteinCoverage();
+        if (drive > 0.004f && cov > 0.004f) {
+            const float ang = w.time() * t.spinRate * 0.22f;
+            const float ca = std::cos(ang), sa = std::sin(ang);
+            float rx[3], ry[3];
+            for (int c = 0; c < 3; ++c) {
+                rx[c] = hx[c] * ca + hy[c] * sa;
+                ry[c] = -hx[c] * sa + hy[c] * ca;
+            }
+            const float R = w.haloOuterRadius();
+            float m[16];
+            composeXform(m, rx, ry, hz, P, R, R, 1.0f);
+
+            // NEAR-NEUTRAL, and that matters more than it looks. glass.frag mixes
+            // the sampled scene toward `tint` at 0.75 strength, so a saturated
+            // tint here would repaint the lensed STARFIELD in the wormhole's own
+            // blue — and a ring made of restained stars is a decal. Kept close to
+            // white so what wraps around the rim is recognisably the sky that was
+            // behind it. Only the instability slide colours it, because that
+            // signal has to survive at every angle too.
+            float tint[3] = { 0.82f, 0.90f, 1.00f };
+            const float ins = w.instability();
+            for (int c = 0; c < 3; ++c)
+                tint[c] += (kUnstableTint[c] - tint[c]) * ins * 0.55f;
+
+            // ONE halo, so there is NO overlap to compensate for — kMembraneGlow-
+            // Scale's 0.24 exists to divide out ~3 stacked annuli and applying it
+            // here would just make the ring dim. The bake's own peak-to-shoulder
+            // ratio (~10:1) is what separates the hot ring from the faint halo, so
+            // the drive can sit where the ring blooms and the shoulder does not.
+            constexpr float kHaloGlowScale = 0.90f;
+            const float gk = drive * kHaloGlowScale;
+            const float mFactor[4] = { tint[0] * gk, tint[1] * gk, tint[2] * gk, 1.0f };
+
+            rhi::IRenderDevice::GlassMaterial gm;
+            gm.opacity    = cov;
+            // MORE master refraction than the throat gets. The throat's bend is
+            // read against its own lit membrane; this one is read against BARE
+            // STARFIELD, where 0.045 is a couple of pixels and simply invisible.
+            gm.refraction = kHaloRefract;
+            gm.roughness  = 0.0f;      // the ring must stay CRISP — never frosted
+            gm.specular   = 0.0f;
+            gm.tint[0] = tint[0]; gm.tint[1] = tint[1]; gm.tint[2] = tint[2];
+            gm.lens       = kHaloLens;
+            gm.shimmer    = kHaloShimmer;
+            gm.horizon    = 1.0f;      // the 1/theta law — this is the ring
+            gm.shimmerPhase = 0.7181f + (float)(w.id() < 0 ? 0 : w.id()) * 0.137f;
+            gm.emissiveMap  = 1.0f;
+            // The floor stays TINY. This element is bright, large and always on,
+            // which is exactly the profile of the surface that produced
+            // docs/screenshots/wormholes/_BEFORE_emissive_wash.png. Every bit of
+            // the ring's brightness comes from texture * baseColorFactor, where
+            // the bake's radial profile can carry it; a per-object emissive is
+            // uniform across the annulus and could only flatten the ring into a
+            // solid lilac washer.
+            const float em[4] = { tint[0], tint[1], tint[2], capped(gk * 0.08f, 0.22f) };
+            dev.drawMeshGlass(fr, m_haloMesh, m_haloTex, mFactor, em, gm, m,
+                              /*alphaBlend=*/true);
         }
     }
 
@@ -1989,6 +2428,170 @@ bool runWormholeFieldSelfTest() {
         check(std::fabs(rode - kDur) < 0.05f,
               "W18h the ride lasts its authored duration at 165 Hz");
         wt.shutdown(hdev);
+    }
+
+    // ---- W19..W22: THE EVENT HORIZON IS NON-DEGENERATE AT EVERY ANGLE ------
+    //
+    // This is the acceptance test for the whole lane, and it is deliberately a
+    // MEASUREMENT rather than a "does it draw". The refraction lane's honest gap
+    // was "at exactly 90 degrees the wormhole is essentially invisible", and the
+    // only way to know that has been closed — and to know it stays closed — is a
+    // number that a flat aperture cannot produce.
+    //
+    // The camera sweeps the five angles the review asks for, measured off the
+    // throat axis, at a fixed 110 m: 0 (head-on), 45 (the hero three-quarter),
+    // 70 (the reported hard side-on), 90 (exactly edge-on) and 180 (from behind).
+    {
+        Wormhole w = mk(true, 50);
+        w.forceHeld();
+        w.update(1.0f / 60.0f);
+
+        const float P[3] = { 100.0f, 0.0f, 0.0f };   // matches mk()
+        const float A[3] = { 1.0f, 0.0f, 0.0f };     // ... and its axis
+        const float U[3] = { 0.0f, 1.0f, 0.0f };     // a perpendicular to swing through
+        const float kDist = 110.0f;
+        auto eyeAt = [&](float deg, float out[3]) {
+            const float r = deg * kPi / 180.0f;
+            const float c = std::cos(r), s = std::sin(r);
+            for (int i = 0; i < 3; ++i) out[i] = P[i] + kDist * (A[i] * c + U[i] * s);
+        };
+        const float kAngles[5] = { 0.0f, 45.0f, 70.0f, 90.0f, 180.0f };
+
+        // W19a: THE IMPOSTOR HAS NO EDGE-ON VIEW. Its projected minor/major axis
+        // ratio is 1 at every angle, because a sphere's silhouette is a circle
+        // from everywhere and a camera-facing disc is that silhouette exactly.
+        bool aspectFlat = true;
+        for (float deg : kAngles) {
+            float e[3]; eyeAt(deg, e);
+            if (std::fabs(w.horizonProjectedAspect(e) - 1.0f) > 1e-3f) aspectFlat = false;
+        }
+        check(aspectFlat,
+              "W19a the horizon impostor projects to a CIRCLE at 0/45/70/90/180 degrees");
+
+        // W19b: ... and the same measurement on the OLD geometry is the defect.
+        // The axis-aligned mouth foreshortens to |cos|, which is what made the
+        // 90-degree frame empty. Both numbers come out of the same projector, so
+        // this is a comparison and not two unrelated claims.
+        {
+            float e0[3], e90[3];
+            eyeAt(0.0f, e0); eyeAt(90.0f, e90);
+            const float m0 = w.mouthProjectedAspect(e0);
+            const float m90 = w.mouthProjectedAspect(e90);
+            check(m0 > 0.99f && m90 < 0.02f,
+                  "W19b the AXIS-ALIGNED mouth collapses edge-on (the defect, measured)");
+        }
+
+        // W19c: the visible signature — silhouette radius x coverage — survives
+        // the whole sweep. Not "non-zero": at least 60% of the head-on read, so a
+        // wormhole that technically drew one dim pixel edge-on would still fail.
+        {
+            float sig[5];
+            for (int i = 0; i < 5; ++i) {
+                float e[3]; eyeAt(kAngles[i], e);
+                sig[i] = w.horizonSignature(e);
+            }
+            float lo = sig[0];
+            for (int i = 1; i < 5; ++i) lo = std::min(lo, sig[i]);
+            check(lo > 0.0f && lo >= sig[0] * 0.60f,
+                  "W19c the horizon signature holds >= 60% of head-on across the sweep");
+            // And it does not merely hold — it GROWS as the throat's own read
+            // leaves, which is the cross-fade working rather than two effects
+            // that happen to both be on.
+            float e0[3], e90[3];
+            eyeAt(0.0f, e0); eyeAt(90.0f, e90);
+            check(w.horizonSignature(e90) > w.horizonSignature(e0),
+                  "W19d the horizon takes OVER as the view goes grazing");
+        }
+
+        // W19e: the thing it is taking over FROM really does leave. If facingFade
+        // did not collapse at 90 there would be nothing for the horizon to fix and
+        // this whole lane would be decoration.
+        {
+            float e0[3], e90[3];
+            eyeAt(0.0f, e0); eyeAt(90.0f, e90);
+            check(w.facingFade(e0) > 0.99f && w.facingFade(e90) < 0.01f,
+                  "W19e the throat's grazing fade still collapses edge-on (as designed)");
+            check(w.horizonAlpha(e90) > w.horizonAlpha(e0) * 2.0f,
+                  "W19f ... and the horizon interior is what stands in for it");
+        }
+
+        // W20: THE EINSTEIN RING TAKES NO ANGLE TERM AT ALL. This is the contract
+        // the 90-degree fix rests on, so it is asserted directly rather than
+        // inferred from the signature.
+        {
+            const float cov0 = w.einsteinCoverage();
+            const float drv0 = w.einsteinDrive();
+            check(cov0 > 0.1f && drv0 > 0.1f, "W20a a held wormhole has a live Einstein ring");
+            // The ring's coverage takes no eye argument AT ALL — that is enforced
+            // by its signature, so what is worth asserting is the consequence: at
+            // 90 degrees, where every axis-aligned element has foreshortened away,
+            // the ring is still carrying a real share of what is on screen. If the
+            // ring ever picked up an angle term this is the check that would move.
+            float e90[3]; eyeAt(90.0f, e90);
+            const float ringPart = w.horizonRadius() * cov0;
+            const float total90  = w.horizonSignature(e90);
+            check(total90 > 0.0f && ringPart / total90 > 0.35f,
+                  "W20b the Einstein ring carries a real share of the EDGE-ON read");
+            // An absolute floor, in world units of silhouette. A ratio alone can be
+            // satisfied by two small numbers.
+            float e180[3]; eyeAt(180.0f, e180);
+            check(w.horizonSignature(e90)  > w.tuning().radius * 0.30f &&
+                  w.horizonSignature(e180) > w.tuning().radius * 0.30f,
+                  "W20c the 90 and 180 degree reads clear an ABSOLUTE size x coverage floor");
+        }
+
+        // W21: stable vs unstable must still be tellable apart AT 90 DEGREES,
+        // where the throat that used to carry that signal is no longer drawn.
+        {
+            Wormhole s = mk(true, 51);  s.forceHeld();
+            Wormhole u = mk(false, 52); u.forceHeld();
+            float swingS = 0.0f, swingU = 0.0f;
+            float minS = 1e30f, maxS = -1e30f, minU = 1e30f, maxU = -1e30f;
+            // 150 frames = 2.5 s. mk() authors heldSec = 3.0, so a longer run
+            // would tip both holes into CLOSING and measure the collapse instead
+            // of the hold.
+            for (int i = 0; i < 150; ++i) {
+                s.update(1.0f / 60.0f); u.update(1.0f / 60.0f);
+                minS = std::min(minS, s.einsteinDrive()); maxS = std::max(maxS, s.einsteinDrive());
+                minU = std::min(minU, u.einsteinDrive()); maxU = std::max(maxU, u.einsteinDrive());
+            }
+            swingS = maxS - minS; swingU = maxU - minU;
+            check(swingU > swingS * 3.0f + 0.01f,
+                  "W21a an UNSTABLE hole's Einstein ring fluctuates, a stable one's does not");
+            float ts[3], tu[3];
+            s.layerTint(kThroatLayers / 3, ts);
+            u.layerTint(kThroatLayers / 3, tu);
+            // The unstable ramp slides off blue toward violet-magenta: red up,
+            // green down relative to the stable hole.
+            check(tu[0] > ts[0] && tu[1] < ts[1],
+                  "W21b ... and its horizon interior slides off blue toward violet");
+        }
+
+        // W22: the horizon terms obey the 165 Hz law like everything else. The
+        // ring's waver is a hash of ACCUMULATED TIME, so two framerates that
+        // reach the same wall clock must sample the same curve.
+        {
+            Wormhole a = mk(false, 53), b = mk(false, 53);
+            a.forceHeld(); b.forceHeld();
+            // 2.0 s, safely inside mk()'s 3.0 s hold.
+            for (int i = 0; i < 60 * 2; ++i)  a.update(1.0f / 60.0f);
+            for (int i = 0; i < 165 * 2; ++i) b.update(1.0f / 165.0f);
+            float e[3]; eyeAt(70.0f, e);
+            check(std::fabs(a.einsteinDrive() - b.einsteinDrive()) < 5e-3f,
+                  "W22a the Einstein ring agrees at 60 Hz and 165 Hz at t=2s");
+            check(std::fabs(a.horizonSignature(e) - b.horizonSignature(e)) < 5e-3f,
+                  "W22b the horizon signature agrees at 60 Hz and 165 Hz at t=2s");
+        }
+
+        // W23: a DORMANT hole has no horizon. The impostor is always-facing, which
+        // is exactly the property that would let it survive a close() it should
+        // not have, so the aperture gate is asserted rather than assumed.
+        {
+            Wormhole d = mk(true, 54);   // never opened
+            float e[3]; eyeAt(90.0f, e);
+            check(d.horizonSignature(e) == 0.0f && d.einsteinDrive() == 0.0f,
+                  "W23 a DORMANT wormhole draws no horizon and no ring");
+        }
     }
 
     // ---- W17: the authored space roster ------------------------------------

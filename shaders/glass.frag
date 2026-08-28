@@ -270,11 +270,18 @@ void main() {
     // annulus to one uniform value, and a uniform value cannot carry structure.
     if ((vFlags & FLAG_MEMBRANE) != 0u) {
         // Params ride the SPARE terrain-pack1 lane (a membrane is never TERRAIN,
-        // and clearcoat/self-light are opaque-only, so nothing collides). Three
-        // bytes: shimmer, lens, and a per-object decorrelation PHASE.
+        // and clearcoat/self-light are opaque-only, so nothing collides). FOUR
+        // bytes: shimmer, lens, a per-object decorrelation PHASE, and the HORIZON
+        // profile selector. Byte 3 was the last free one in the lane; using it
+        // keeps the 160-byte ObjectData stride untouched, which is non-negotiable
+        // (depth/shadow/velocity/probe vertex shaders all share that stride).
         float shimmerAmt = float( vTerrainPack.x        & 0xFFu) / 255.0;
         float lensAmt    = float((vTerrainPack.x >>  8) & 0xFFu) / 255.0;
         float phase      = float((vTerrainPack.x >> 16) & 0xFFu) / 255.0;
+        // GlassMaterial::horizon — WHICH radial deflection profile the lens drives.
+        // 0 on every surface that existed before this, so the branch below is
+        // byte-identical for them.
+        float horizonAmt = float((vTerrainPack.x >> 24) & 0xFFu) / 255.0;
 
         vec2 sUV = gl_FragCoord.xy * g.screen.xy;
         vec3 emisMaskM = mix(vec3(1.0), texel, clamp(vGlassTint.a, 0.0, 1.0));
@@ -318,7 +325,23 @@ void main() {
             // edge, so the bend is a HALO around the aperture rather than a
             // uniform smear across it. Space is most distorted where the throat
             // meets flat space, and that gradient is the whole read.
-            float prof = vUV.y * vUV.y;
+            float profThroat = vUV.y * vUV.y;
+            // THE EVENT-HORIZON PROFILE (horizonAmt -> 1). A surface whose INNER
+            // edge sits ON a horizon and which extends outward into flat space
+            // wants the OPPOSITE gradient: thin-lens deflection goes as 1/theta,
+            // so it is maximal right at the horizon and dies with distance. That
+            // 1/theta law is what makes an EINSTEIN RING: the deflection sweeps
+            // background from a wide annulus of sky into a narrow bright band at
+            // the inner rim, instead of smearing it uniformly the way a linear or
+            // v^2 profile does. `v` here IS theta measured outward from the
+            // horizon, so 1/(1 + 3v) is the law directly, normalised to 1 at the
+            // rim. The x3.2 magnitude is what makes the wrap READ as a wrap
+            // rather than as a soft blur.
+            float profHorizon = 3.2 / (1.0 + 3.0 * vUV.y);
+            float prof = mix(profThroat, profHorizon, horizonAmt);
+            // Sampling INWARD is what makes the background appear pushed OUTWARD,
+            // which is the direction light actually deflects around a mass. Same
+            // sign for both profiles — only the magnitude law differs.
             vec2 off = -radial * (lensAmt * 1.15 * prof)     // pull the scene inward
                      +  tangent * (lensAmt * 0.55 * prof);   // + a swirl drag
             // SHIMMER in the membrane's OWN radial/tangential frame, so the

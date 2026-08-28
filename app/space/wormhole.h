@@ -139,6 +139,87 @@ struct ThroatLayerMembrane {
 };
 ThroatLayerMembrane throatLayerMembrane(int layer);
 
+// ---------------------------------------------------------------------------
+// THE EVENT HORIZON — WHY A WORMHOLE IS A SPHERE AND NOT A DISC
+// ---------------------------------------------------------------------------
+// The refraction pass closed the stepping and the discrete-hoop artifacts and
+// then reported the one defect it could not close: at exactly 90 degrees the
+// wormhole was essentially invisible, light spill only. `facingFade` is what
+// makes that true — and it was the RIGHT fix for a stack of parallel discs,
+// because a stack of parallel discs seen edge-on genuinely is a slinky and
+// fading it out was better than showing it.
+//
+// But it treats the symptom. A real wormhole HAS NO EDGE-ON VIEW. It is not an
+// aperture cut in a plane; it is a SPHERICAL EVENT HORIZON — a ball of radius
+// r_s whose surface carries the gravitationally lensed image of the far side.
+// There is no orientation from which it foreshortens, because a sphere's
+// silhouette is a circle of the same radius from every direction. That is
+// exactly why Interstellar's Gargantua and the Bajoran wormhole read as holes in
+// space rather than as portals on a wall, and it is the whole difference between
+// "it vanishes at 90 degrees" and "it reads as a hole from anywhere".
+//
+// THE GEOMETRY CHOSEN: A BILLBOARDED IMPOSTOR, WHICH IS NOT AN APPROXIMATION.
+// A sphere of radius R projects to a disc of radius R for every camera. So a
+// CAMERA-FACING disc of radius R is not a cheap stand-in for the sphere's
+// silhouette — it IS the sphere's silhouette, exactly, at every angle, for one
+// draw instead of a tessellated shell's hundreds. Three properties fall out that
+// a real shell would have had to fight for:
+//
+//   * NO DEGENERATE VIEW BY CONSTRUCTION. There is no angle at which a billboard
+//     foreshortens, so 0 / 45 / 70 / 90 / 180 degrees are geometrically the same
+//     shot. That is the acceptance test, satisfied by the geometry rather than
+//     by a tuning curve.
+//   * THE MEMBRANE SHADER'S RADIAL FRAME NEVER COLLAPSES. glass.frag takes the
+//     screen-space gradient of v as its outward radial axis. On the axis-aligned
+//     throat annuli that gradient degenerates as the ring goes edge-on — which is
+//     the deeper reason the side view had nothing to show. On a billboard, v's
+//     screen-space gradient is the true screen radial direction always.
+//   * A REAL SHELL WOULD HAVE BROKEN THAT FRAME. A UV sphere's v is latitude
+//     from a pole; seen from the side its screen gradient runs top-to-bottom, not
+//     outward from the silhouette centre, so the lens would smear vertically
+//     instead of wrapping. The impostor is the only form of this that keeps the
+//     angle-agnostic property the refraction lane was built on.
+//
+// WHAT THE THROAT IS FOR NOW. The layered funnel is kept, unchanged, with its
+// grazing fade intact: head-on it is the THROAT YOU FALL INTO, and the staged
+// opening and the approach shot are its job. The horizon is the object; the
+// throat is what you see through it when you are looking down it. They
+// cross-fade: the throat owns the head-on read, the horizon interior ramps up as
+// the throat's read runs out, and the ring and halo below never fade at all.
+// ---------------------------------------------------------------------------
+
+// The impostor disc's radius as a fraction of the mouth radius. 1.0 — the
+// horizon is the aperture, not a shell around it.
+constexpr float kHorizonDiscFrac = 1.00f;
+
+// The LENSING HALO is one annulus spanning kHaloInnerFrac..kHaloOuterFrac of the
+// mouth radius, and it carries the EINSTEIN RING as its own brightest band
+// (peaking at kEinsteinFrac). They are one object because they are one physical
+// thing: the ring is not a decoration drawn on the halo, it is the place in the
+// halo where the 1/theta deflection law piles a wide annulus of background sky
+// into a narrow bright band. Splitting them into two draws would have meant two
+// meshes, two textures and a hand-tuned brightness relationship between them.
+//
+// The inner edge sits slightly INSIDE the horizon so the deflection's peak lands
+// under the silhouette edge rather than beside it — the smear has to cross the
+// rim, or the ring reads as a painted-on outline.
+constexpr float kHaloInnerFrac = 0.86f;
+constexpr float kHaloOuterFrac = 1.62f;
+constexpr float kEinsteinFrac  = 1.02f;
+
+// Interior coverage of the horizon disc. HEAD-ON it is a faint wash BEHIND the
+// throat (the throat is the read at that angle and the disc must not veil it);
+// GRAZING it is the whole wormhole. The ramp is 1 - facingFade, so it is exactly
+// complementary to the throat's own fade and the two never both fall away.
+constexpr float kHorizonAlphaHeadOn  = 0.20f;
+constexpr float kHorizonAlphaGrazing = 0.74f;
+
+// Coverage of the lensing halo / Einstein ring. FLAT IN ANGLE — no facingFade
+// term reaches these, by design. This is the element that answers "make sure the
+// wormhole is visible from the event horizon much like a real one": a real one's
+// ring does not know which way you are looking at it.
+constexpr float kEinsteinAlpha = 0.60f;
+
 // EMISSIVE CAP LAW (lifted from the rift hub's blown-white fix). Every emissive
 // strength written by this file is clamped to one of these. They are ABOVE 1.0
 // on purpose — the engine has a real bloom chain and this effect is supposed to
@@ -271,6 +352,49 @@ public:
     // one it set out to fix. The aperture has to fade as ONE object.
     float facingFade(const float p[3]) const;
 
+    // ---- THE EVENT HORIZON (see the block comment above kHorizonDiscFrac) ---
+
+    // World radius of the impostor disc, and of the lensing halo's outer edge.
+    // Neither takes an eye: a sphere's silhouette radius is not a function of
+    // where you stand, and these are the numbers that say so.
+    float horizonRadius() const;
+    float haloOuterRadius() const;
+
+    // Interior coverage of the horizon disc for an eye at `p`. Ramps from
+    // kHorizonAlphaHeadOn to kHorizonAlphaGrazing as the view goes grazing —
+    // exactly complementary to facingFade, so the throat handing over its read
+    // and the horizon taking it up are the same number.
+    float horizonAlpha(const float p[3]) const;
+
+    // Coverage and HDR drive of the Einstein ring / lensing halo. NEITHER TAKES
+    // AN EYE. That is the contract, not an oversight: the ring is the element
+    // that must read identically at 0 and at 90 degrees.
+    float einsteinCoverage() const;
+    float einsteinDrive() const;
+
+    // The BILLBOARD BASIS the impostor is drawn with: outX/outY span the impostor
+    // plane, outZ points from the wormhole toward `p`. The draw path and the
+    // tests build it through this one function so a test cannot pass against
+    // geometry the renderer does not actually use.
+    void  horizonBasis(const float p[3], float outX[3], float outY[3], float outZ[3]) const;
+
+    // THE NON-DEGENERACY MEASUREMENTS. Both project a circle into the plane
+    // perpendicular to the line of sight and return minor/major extent:
+    //   * horizonProjectedAspect — the BILLBOARD impostor. 1.0 at EVERY angle.
+    //   * mouthProjectedAspect   — the AXIS-ALIGNED mouth ring, i.e. what the
+    //     wormhole was before this. |cos(angle off axis)|, which is 0 edge-on.
+    // The pair is the measurement, not the claim: the second one is the defect,
+    // quantified, and the first is its absence in the same units.
+    float horizonProjectedAspect(const float p[3]) const;
+    float mouthProjectedAspect(const float p[3]) const;
+
+    // ONE number for "there is a visible hole in space here, seen from `p`":
+    // silhouette radius (world units) x peak composited coverage on it. Asserted
+    // non-degenerate at 0/45/70/90/180 by --test-wormholes. It is deliberately a
+    // product of a SIZE and a COVERAGE — a signature that stayed non-zero only
+    // because something drew at one pixel would not be worth asserting.
+    float horizonSignature(const float p[3]) const;
+
 private:
     char  m_name[32] = "WORMHOLE";
     float m_pos[3]   = { 0, 0, 0 };
@@ -346,10 +470,20 @@ private:
     // kRingInner, outer 1.0) used for every throat layer AND the rim;
     // `m_discMesh` is a unit disc used for the convergence core / spark.
     rhi::MeshHandle    m_ringMesh{};   // wide annulus — the throat layers
-    rhi::MeshHandle    m_rimMesh{};    // THIN annulus — the event-horizon edge
+    rhi::MeshHandle    m_rimMesh{};    // THIN annulus — the aperture's mouth edge
     rhi::MeshHandle    m_discMesh{};
+    // THE HORIZON IMPOSTOR. `m_horizonMesh` is a RADIAL DISC (an annulus with
+    // inner radius 0), so its v runs 0 at the centre to 1 at the rim — the
+    // membrane shader's required parameterisation, which the inscribed-UV
+    // m_discMesh does NOT satisfy (its v is a Cartesian axis, not a radius).
+    // `m_haloMesh` is the lensing annulus that carries the Einstein ring.
+    rhi::MeshHandle    m_horizonMesh{};
+    rhi::MeshHandle    m_haloMesh{};
     rhi::TextureHandle m_throatTex{};   // filamentary swirl (u=angle, v=radius)
     rhi::TextureHandle m_coreTex{};     // radial white-hot falloff
+    // The halo/Einstein profile across v. ANGULARLY UNIFORM ON PURPOSE — see
+    // the note on the billboard roll in horizonBasis().
+    rhi::TextureHandle m_haloTex{};
 
     void drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr,
                  const Wormhole& w, const float eye[3]) const;

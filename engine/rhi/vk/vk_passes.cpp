@@ -1561,17 +1561,25 @@ void VulkanRenderDevice::drawMeshInternal(const FrameContext& fc, MeshHandle mes
             //   bits  0-7  = shimmer      * 255
             //   bits  8-15 = lens         * 255
             //   bits 16-23 = shimmerPhase * 255   (layer decorrelation seed)
-            // Both knobs zero -> the bit is never set, glass.frag takes the ordinary
-            // pane path, and every existing surface is byte-identical.
+            //   bits 24-31 = horizon      * 255   (WHICH radial deflection profile)
+            // The pack1 lane was already carrying three of its four bytes; byte 3
+            // was the one still free, and the horizon profile is a per-object
+            // SELECTOR, which is exactly what a spare byte is for. THE 160-BYTE
+            // ObjectData STRIDE IS UNCHANGED — depth/shadow/velocity/probe vertex
+            // shaders all share it and none of them may be touched.
+            // All three knobs zero -> the bit is never set, glass.frag takes the
+            // ordinary pane path, and every existing surface is byte-identical.
             const float lensC = glass->lens    < 0.0f ? 0.0f : (glass->lens    > 1.0f ? 1.0f : glass->lens);
             const float shimC = glass->shimmer < 0.0f ? 0.0f : (glass->shimmer > 1.0f ? 1.0f : glass->shimmer);
-            if (lensC > 0.001f || shimC > 0.001f) {
+            const float horiC = glass->horizon < 0.0f ? 0.0f : (glass->horizon > 1.0f ? 1.0f : glass->horizon);
+            if (lensC > 0.001f || shimC > 0.001f || horiC > 0.001f) {
                 // The phase is a decorrelation SEED, not a magnitude: wrap into 0..1
                 // so a caller can hand it a raw layer index without normalising, and
                 // so it can never saturate at 255.
                 const float ph = glass->shimmerPhase - std::floor(glass->shimmerPhase);
                 r.flags |= kFlagMembrane;
-                r.terrainPack1 = ((uint32_t)(ph    * 255.0f + 0.5f) << 16)
+                r.terrainPack1 = ((uint32_t)(horiC * 255.0f + 0.5f) << 24)
+                               | ((uint32_t)(ph    * 255.0f + 0.5f) << 16)
                                | ((uint32_t)(lensC * 255.0f + 0.5f) <<  8)
                                |  (uint32_t)(shimC * 255.0f + 0.5f);
             }
