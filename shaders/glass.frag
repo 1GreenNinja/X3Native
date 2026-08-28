@@ -335,9 +335,18 @@ void main() {
             // the inner rim, instead of smearing it uniformly the way a linear or
             // v^2 profile does. `v` here IS theta measured outward from the
             // horizon, so 1/(1 + 3v) is the law directly, normalised to 1 at the
-            // rim. The x3.2 magnitude is what makes the wrap READ as a wrap
-            // rather than as a soft blur.
-            float profHorizon = 3.2 / (1.0 + 3.0 * vUV.y);
+            // rim.
+            //
+            // NORMALISED TO 1 AT THE RIM, deliberately the same peak as the
+            // throat profile. It was 3.2 for one capture round and that was a
+            // mistake with a visible signature: 3.2 x the throat's peak, on top of
+            // a master refraction already 2.6x the throat's, put ~10% OF THE
+            // SCREEN of displacement into the halo. The result was not a lens, it
+            // was a grey smear disc — the whole band sampling the same distant
+            // patch of sky. The magnitude belongs in kHaloRefract, where one
+            // number governs it and r_glass_refract can scrub it; the profile's
+            // job is only the SHAPE.
+            float profHorizon = 1.0 / (1.0 + 3.0 * vUV.y);
             float prof = mix(profThroat, profHorizon, horizonAmt);
             // Sampling INWARD is what makes the background appear pushed OUTWARD,
             // which is the direction light actually deflects around a mass. Same

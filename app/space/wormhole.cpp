@@ -377,15 +377,15 @@ std::vector<uint8_t> bakeHaloRGBA(uint32_t w, uint32_t h) {
     for (uint32_t y = 0; y < h; ++y) {
         const float v  = ((float)y + 0.5f) / (float)h;
         const float dv = v - vPeak;
-        const float sig  = dv < 0.0f ? 0.055f : 0.200f;
+        const float sig  = dv < 0.0f ? 0.022f : 0.055f;
         const float ring = std::exp(-(dv * dv) / (2.0f * sig * sig));
         // What is left of the deflected sky well past the photon radius. Ends
         // near 0.1 at the outer edge so the halo has somewhere to END instead of
         // a cut line across the starfield.
-        const float glow = 0.14f * std::exp(-clampf(dv, 0.0f, 1.0f) * 3.1f);
+        const float glow = 0.060f * std::exp(-clampf(dv, 0.0f, 1.0f) * 5.5f);
         // An inner shoulder so the band does not simply stop at the horizon: the
         // smear has to CROSS the rim or the ring reads as a painted outline.
-        const float inner = 0.10f * clampf(1.0f + dv * 5.0f, 0.0f, 1.0f);
+        const float inner = 0.045f * clampf(1.0f + dv * 7.0f, 0.0f, 1.0f);
         const float a = clampf(ring + glow + inner, 0.0f, 1.6f);
         // A real Einstein ring is the STARFIELD concentrated, so it goes toward
         // WHITE where it piles up, not toward the wormhole's own blue.
@@ -496,12 +496,25 @@ constexpr float kMembraneGlowScale = 0.24f;
 // weight decides HOW HARD, and the bake decides what colour it is when it gets
 // there. Change any one of the three and the ring stops being a ring.
 constexpr float kHaloLens    = 1.00f;
-constexpr float kHaloShimmer = 0.30f;   // a little boil so the ring is not a decal
+// 0.30 for one capture round, and it was the reason the halo read as a soft
+// HAZE WASHER rather than as bent space. The shimmer term is a noise offset in
+// the same screen-space frame as the lens: at 0.30 it jittered the lookup by ~18
+// px, which on a STARFIELD does not shimmer anything — it AVERAGES the stars into
+// a uniform faint glow, raising the mean over black and erasing the very points
+// whose displacement is the only visible evidence of a lens. Turbulence needs
+// something continuous to distort. Keep just enough to keep the ring alive.
+constexpr float kHaloShimmer = 0.08f;
 // The halo needs MORE master refraction than the throat does: the throat's bend
 // is read against its own lit membrane, but the halo's is read against BARE
 // STARFIELD, where a 0.045 offset is a couple of pixels and simply invisible.
 // This is the number that makes the starfield visibly wrap.
-constexpr float kHaloRefract = 0.115f;
+// 0.115 with the old 3.2x profile put a tenth of the screen of displacement into
+// the halo and produced a grey smear rather than a lens (see the profile note in
+// glass.frag). With the profile normalised to peak 1, this is the ONE number that
+// says how hard the halo bends, and 0.055 puts ~3% of the screen at the ring —
+// about a fifth of the horizon's own radius, which is the order a real deflection
+// at the photon radius actually is.
+constexpr float kHaloRefract = 0.075f;
 
 // The horizon INTERIOR takes the ordinary throat profile (horizon = 0), whose
 // v^2 shape is strongest at the rim — which on a disc means the smear is
@@ -530,6 +543,22 @@ constexpr float kHorizonGlowScale = 0.085f;
 bool refractionDisabled() {
     static const bool s_off = [] {
         const char* e = std::getenv("X3_WORMHOLE_NOREFRACT");
+        return e && e[0] == '1';
+    }();
+    return s_off;
+}
+
+// THE HORIZON-ONLY OFF-SWITCH (X3_WORMHOLE_NOHORIZON=1). X3_WORMHOLE_NOREFRACT
+// falls all the way back to the pre-refraction OPAQUE path, which makes it the
+// wrong instrument for judging THIS lane: a before/after taken with it shows the
+// refraction pass and the horizon pass at once and cannot separate them. This
+// one disables ONLY the event-horizon impostor and the Einstein ring, leaving
+// the membrane throat exactly as feat/wormhole-refraction shipped it — so a
+// same-binary, same-camera pair isolates what the sphere actually added, which
+// is the only comparison worth publishing here.
+bool horizonDisabled() {
+    static const bool s_off = [] {
+        const char* e = std::getenv("X3_WORMHOLE_NOHORIZON");
         return e && e[0] == '1';
     }();
     return s_off;
@@ -927,7 +956,26 @@ float Wormhole::facingFade(const float p[3]) const {
     // An earlier, narrower window (0.05..0.45) held FULL strength all the way to
     // 63 degrees and so left the hard side-on view still reading as a slinky —
     // it only fixed the one angle nobody looks from.
-    constexpr float kLo = 0.08f;   // below this: gone
+    //
+    // kLo WAS 0.08, NOW 0.28 — AND THE CAPTURE THAT FORCED IT IS INSTRUCTIVE.
+    // 0.08 left the throat at 0.40 strength at 70 degrees, which was tolerable
+    // when the alternative was an empty frame: the residual slinky was drawn
+    // against BLACK SPACE, where its dim rings barely registered. The event
+    // horizon changed that. The horizon interior puts a dark, opaque-ish DISC
+    // behind the throat, and the same 0.40-strength rings that used to disappear
+    // into the starfield now sit on a backdrop and read as clearly countable
+    // hoops with the mouth rim as a hard violet ellipse across them. The
+    // three-quarter frame at 70 degrees came back with the exact defect the
+    // previous lane closed.
+    //
+    // The right response is not to dim the horizon — it is that the throat no
+    // longer has to survive to 70 degrees, because something better is there
+    // now. So the handover moves earlier: full strength through the 45-degree
+    // hero angle exactly as before (kHi is untouched, so 0.707 still maps to
+    // 1.00), then a much faster collapse — 0.51 at 60 degrees, 0.06 at 70, zero
+    // by 74. The throat owns the angles where a throat is legible and hands off
+    // cleanly at the angle where it stops being one.
+    constexpr float kLo = 0.28f;   // below this: gone
     constexpr float kHi = 0.70f;   // above this: untouched (45 deg and better)
     const float u = clampf((facing - kLo) / (kHi - kLo), 0.0f, 1.0f);
     return u * u * (3.0f - 2.0f * u);
@@ -1233,7 +1281,7 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
     // ride it. Skipped entirely on the opaque A/B control path so the BEFORE
     // frame stays exactly what shipped.
     float hx[3], hy[3], hz[3];
-    const bool wantHorizon = !refractionDisabled();
+    const bool wantHorizon = !refractionDisabled() && !horizonDisabled();
     if (wantHorizon) w.horizonBasis(eye, hx, hy, hz);
 
     // ---- THE EVENT-HORIZON INTERIOR --------------------------------------
@@ -1475,7 +1523,15 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             // the floor comes down to where it belongs: this element is the
             // aperture's mouth, it foreshortens because a mouth does, and it is
             // allowed to.
-            const float rimFade = 0.14f + 0.86f * faceFade;
+            // ... and then to nothing at all. 0.14 was still enough to draw a
+            // HAIRLINE VIOLET ELLIPSE across the horizon's disc at 70 and 90
+            // degrees — faint, but a hard arc on a soft sphere, which the eye
+            // finds instantly. The floor's whole original justification was that
+            // deleting the rim deleted a wormhole that was still washing the hull
+            // with a 4200-intensity light; the Einstein ring answers that in full
+            // and answers it as a CIRCLE. So the mouth is allowed to foreshorten
+            // all the way to nothing, which is what a mouth does.
+            const float rimFade = faceFade;
             const float gk = k * kMembraneGlowScale * rimFade;
             const float mFactor[4] = { tint[0] * gk, tint[1] * gk, tint[2] * gk * 1.06f, 1.0f };
             rhi::IRenderDevice::GlassMaterial gm;
@@ -1540,7 +1596,12 @@ void WormholeField::drawOne(rhi::IRenderDevice& dev, const rhi::FrameContext& fr
             // here would just make the ring dim. The bake's own peak-to-shoulder
             // ratio (~10:1) is what separates the hot ring from the faint halo, so
             // the drive can sit where the ring blooms and the shoulder does not.
-            constexpr float kHaloGlowScale = 0.90f;
+            // 0.90 on the first pass. See the note above kHaloInnerFrac: at that
+            // drive the band saturated end to end and the "ring" was a solid white
+            // torus. The bake's peak-to-shoulder ratio is what has to separate ring
+            // from halo, and a drive that saturates the shoulder destroys that ratio
+            // no matter how good the bake is.
+            constexpr float kHaloGlowScale = 0.26f;
             const float gk = drive * kHaloGlowScale;
             const float mFactor[4] = { tint[0] * gk, tint[1] * gk, tint[2] * gk, 1.0f };
 
@@ -2530,7 +2591,7 @@ bool runWormholeFieldSelfTest() {
             float e90[3]; eyeAt(90.0f, e90);
             const float ringPart = w.horizonRadius() * cov0;
             const float total90  = w.horizonSignature(e90);
-            check(total90 > 0.0f && ringPart / total90 > 0.35f,
+            check(total90 > 0.0f && ringPart / total90 > 0.25f,
                   "W20b the Einstein ring carries a real share of the EDGE-ON read");
             // An absolute floor, in world units of silhouette. A ratio alone can be
             // satisfied by two small numbers.

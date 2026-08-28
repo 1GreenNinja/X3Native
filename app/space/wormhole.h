@@ -203,9 +203,18 @@ constexpr float kHorizonDiscFrac = 1.00f;
 // The inner edge sits slightly INSIDE the horizon so the deflection's peak lands
 // under the silhouette edge rather than beside it — the smear has to cross the
 // rim, or the ring reads as a painted-on outline.
+//
+// THE FIRST TUNE OF THESE WAS WRONG AND THE CAPTURE SAID SO IMMEDIATELY. At
+// outer 1.62 with a 0.20 outer sigma the halo was 0.15 mouth-radii of falloff
+// on a ring already 0.76 radii wide, and at the drive it was given the whole
+// band saturated: the 90-degree frame came back as a fat blown-white TORUS with
+// a blue pill in it — a glowing portal decal, and the same flat-plate failure
+// the emissive-cap law exists to prevent, arriving through the base-colour term
+// instead of through the emissive one. A real Einstein ring is THIN and sits
+// essentially at the photon radius. These are the numbers after that capture.
 constexpr float kHaloInnerFrac = 0.86f;
-constexpr float kHaloOuterFrac = 1.62f;
-constexpr float kEinsteinFrac  = 1.02f;
+constexpr float kHaloOuterFrac = 1.40f;
+constexpr float kEinsteinFrac  = 1.045f;
 
 // Interior coverage of the horizon disc. HEAD-ON it is a faint wash BEHIND the
 // throat (the throat is the read at that angle and the disc must not veil it);
@@ -218,7 +227,7 @@ constexpr float kHorizonAlphaGrazing = 0.74f;
 // term reaches these, by design. This is the element that answers "make sure the
 // wormhole is visible from the event horizon much like a real one": a real one's
 // ring does not know which way you are looking at it.
-constexpr float kEinsteinAlpha = 0.60f;
+constexpr float kEinsteinAlpha = 0.42f;
 
 // EMISSIVE CAP LAW (lifted from the rift hub's blown-white fix). Every emissive
 // strength written by this file is clamped to one of these. They are ABOVE 1.0
