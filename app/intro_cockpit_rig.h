@@ -137,7 +137,8 @@ bool buildIntroCombatArt(IntroCockpitRig& rig, x3::rhi::IRenderDevice& device);
 void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                    const std::vector<x3::asset::ModelDrawable>& draws,
                    const float pos[3], const float fwd[3], float scale,
-                   x3::rhi::TextureHandle fallbackMr = {});
+                   x3::rhi::TextureHandle fallbackMr = {},
+                   float emisScale = 1.0f, float hullDarken = 1.0f);
 
 // FULL-ORIENTATION variant (combat readability): model +Z -> `fwd` (3D, so the
 // hull pitches/banks with the flight path — matching the physics basis the wing
@@ -155,23 +156,37 @@ void drawIntroShip(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
 // `entryBurn` in [0,1] (deorbit-crash death outcome): pushes the whole draw
 // toward re-entry ORANGE — the hit-flash tint alone cannot overpower a pale
 // base map, so this is its own axis. 0 = off (every other caller).
+// `hullDarken` (default 1 = unchanged) multiplies the base-colour tint AND the
+// selfLight rim — the ALBEDO axis, deliberately separate from `emisScale`.
+// It exists for item G ("Bigger, darker, and more ominous"): a capital wants a
+// low-albedo hull that reads as a SILHOUETTE BLOCKING THE STARFIELD with a
+// genuinely dark shadow side, while its window rows, running lights and bay
+// mouths stay hot (raise emisScale for that). Dark hull + hot emissives is the
+// ominous read; a uniformly lit grey hull is the toy read. Never pass 0 — a
+// fully unlit hull is a black cutout, not a ship (X3_WORLD_RULES rule 5).
 void drawIntroShipBasis(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                         const std::vector<x3::asset::ModelDrawable>& draws,
                         const float pos[3], const float fwd[3], const float up[3],
                         float scale, x3::rhi::TextureHandle fallbackMr = {},
                         float hitFlash = 0.0f, float emisScale = 1.0f,
-                        float entryBurn = 0.0f);
+                        float entryBurn = 0.0f, float hullDarken = 1.0f);
 
 // One capital gun mount (feat/overlord-encounter): an armored base block plus
 // a barrel slewed onto `aimDir` (the battery TRACKS the player). `alive=false`
 // draws only a scorched, shrunken stub — the mount was SHOT OFF. `spool` in
 // [0,1] heats the live barrel amber (the telegraph, visible on the hull).
+// `scale` sizes the mount to the hull it is bolted to (the meshes are authored
+// in metres at the ORIGINAL capital scale, so a 4x hull needs 4x mounts).
+// `highlight` in [0,1] is the item-F HOVER RIM: the player's aim ray is on this
+// mount right now, so it lights up. Hover, not hit — and only ever on a LIVE
+// mount, because a dead one is wreckage and must never read as a target again.
 void drawIntroCapitalGun(x3::rhi::IRenderDevice& device,
                          const x3::rhi::FrameContext& frame,
                          x3::rhi::MeshHandle baseMesh, x3::rhi::MeshHandle barrelMesh,
                          x3::rhi::TextureHandle baseColor, x3::rhi::TextureHandle mr,
                          const float pos[3], const float aimDir[3],
-                         bool alive, float spool);
+                         bool alive, float spool,
+                         float scale = 1.0f, float highlight = 0.0f);
 
 // Pulse the MFD/gauge screens' emissive strength (subtle alive flicker). Call
 // once per frame with the running time.

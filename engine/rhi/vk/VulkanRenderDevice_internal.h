@@ -745,6 +745,14 @@ private:
     // instead of leaving the away-side flat black. No packed lane needed — a fixed
     // shader intensity; the flag alone gates it. Every non-foliage draw is unchanged.
     static constexpr uint32_t kFlagFoliage = 1u << 4;
+    // ENERGY MEMBRANE (GlassMaterial::lens / ::shimmer). glass.frag swaps its flat
+    // normal-projected refraction for a radial/tangential screen-space LENS plus
+    // animated turbulence, and takes an early self-lit exit (no shadow taps, no
+    // light loop, no IBL). GLASS-only, so the SPARE pack1 lane is free to carry
+    // its three bytes: {phase<<16 | lens<<8 | shimmer}, each 0..255. Clearcoat and
+    // ship-self-light own pack1/pack2 on the OPAQUE path only, and a membrane is
+    // never TERRAIN, so nothing collides. Every non-membrane draw is unchanged.
+    static constexpr uint32_t kFlagMembrane = 1u << 5;
 
     // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
     struct DrawRecord {

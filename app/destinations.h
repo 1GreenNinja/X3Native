@@ -60,6 +60,19 @@ struct Destination {
     const char* worldFlag;   // `--world <flag>` that builds it standalone ("" = none)
     DestGroup   group;
     bool        canonAnchor; // the canon world can teleport you here (no load)
+
+    // ---- WORMHOLE STABILITY (INTRODUCED BY feat/ship-comms, 2026-08-24) -----
+    // Tim's comms spec: "the ship AI will notify you of unstable or stable
+    // wormholes nearby". No stability concept existed anywhere in the data, so
+    // this field is NEW. Stating that plainly rather than implying it was always
+    // here: the ship comms device is currently its ONLY reader, and nothing about
+    // routing, traversal or the menus consults it, so it is additive and inert
+    // outside that device.
+    //
+    // DEFAULTS TO TRUE so all ~50 pre-existing rows keep a sane value without
+    // being touched; the handful that are authored UNSTABLE say so explicitly in
+    // the table, and the reason is written next to them.
+    bool        stable = true;
 };
 
 uint32_t           destinationCount();

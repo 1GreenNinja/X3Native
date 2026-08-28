@@ -17,12 +17,21 @@ namespace x3::space {
 
 // One radar/targeting contact. The host rebuilds the contact list every frame
 // (positions/velocities in world space). `hostile` gates which contacts are
-// lockable + how a blip is drawn.
+// shootable + how a blip is drawn; `lockable` gates whether the LOCK may ever
+// select it.
 struct Contact {
     uint32_t id;
     float    pos[3];
     float    vel[3];
     bool     hostile;
+    // LOCK ELIGIBILITY (owner design call, 2026-08-18: "We can add a lock on
+    // feature for ships OTHER than the overlord, because it has SPECIFIC points
+    // that need to be shot at"). A contact can be a hostile you shoot at and
+    // still be INELIGIBLE for the lock: the capital's gameplay is picking
+    // individual hardpoints off a huge hull, and any assist that pulls the
+    // reticle toward hull centre fights that outright. Defaults TRUE, so every
+    // pre-existing producer keeps its exact behaviour.
+    bool     lockable = true;
 };
 
 // The lead-the-target firing solution for a projectile of a given speed: where
@@ -46,15 +55,25 @@ public:
     uint32_t contactCount() const { return count_; }
     const Contact& contact(uint32_t i) const { return contacts_[i]; }
 
+    // ---- Lock master switch (DELETE key) ----------------------------------
+    // Owner: "that can be toggled on and off with the Delete key." When OFF the
+    // system holds NO lock and refuses to acquire one, so every consumer that
+    // keys off hasLock() — nose hold, camera look-bias, lead pip — contributes
+    // exactly zero. Player sovereignty is absolute in this mode.
+    void setLockEnabled(bool on);
+    bool lockEnabled() const { return lockEnabled_; }
+    bool toggleLockEnabled() { setLockEnabled(!lockEnabled_); return lockEnabled_; }
+
     // ---- Lock management --------------------------------------------------
-    // Cycle the lock to the next (+1) / previous (-1) HOSTILE contact, skipping
-    // friendlies. With no lock, +1 picks the first hostile, -1 the last. A no-op
-    // when there are no hostile contacts.
+    // Cycle the lock to the next (+1) / previous (-1) LOCKABLE hostile contact,
+    // skipping friendlies and lock-exempt contacts. With no lock, +1 picks the
+    // first, -1 the last. A no-op when there are none (or when lock is OFF).
     void cycleTarget(int dir);
 
-    // Lock the "best" hostile inside the forward cone from `fromPos` looking
-    // along `fwd`: the most on-axis hostile (tightest angle to the boresight),
-    // ties broken by nearer range. No-op if none are in front.
+    // Lock the "best" LOCKABLE hostile inside the forward cone from `fromPos`
+    // looking along `fwd`: the most on-axis one (tightest angle to the
+    // boresight), ties broken by nearer range. No-op if none are in front, or
+    // when lock is OFF.
     void lockNearest(const float fromPos[3], const float fwd[3]);
 
     void     clearLock();
@@ -89,6 +108,7 @@ private:
     uint32_t count_ = 0;
     bool     locked_ = false;
     uint32_t lockedId_ = 0;
+    bool     lockEnabled_ = true;   // DELETE toggles; ON is the shipped default
 
     // index of lockedId_ in contacts_, or -1.
     int lockedIndex() const;

@@ -44,6 +44,7 @@
 #include "../hud.h"
 #include "../ui.h"
 #include "../weapon_tuning_menu.h"
+#include "../ship_comms.h"
 #include "../host_context.h"
 
 #include <cstddef>
@@ -87,7 +88,13 @@ public:
         // The tuning panel owns the keyboard AND releases the cursor, so a host
         // that keeps integrating mouse deltas would spin the view while you drag
         // a slider — exactly the bug this flag exists to prevent for the console.
-        return !m_paused && !m_hud.consoleOpen() && !m_wtune.isOpen();
+        //
+        // The COMMS DEVICE joins them on the same terms. Routing it through the
+        // shared pure gate (ship_comms.h) rather than repeating the condition is
+        // what lets --test-comms assert the flight-input contract on the very
+        // function the game runs.
+        return x3::game::commsFlightInputEnabled(
+            m_paused, m_hud.consoleOpen(), m_wtune.isOpen(), m_comms.focused());
     }
 
     // Gameplay-safe key poll. False while the console or the pause menu holds
@@ -150,6 +157,12 @@ public:
     }
     bool tuningPanelOpen() const { return m_wtune.isOpen(); }
 
+    // ---- The ship comms device --------------------------------------------
+    // Exposed so a host can post its own traffic directly. Most content arrives
+    // through x3::game::commsBus() instead, which needs no shell pointer.
+    x3::game::CommsDevice& comms() { return m_comms; }
+    bool commsFocused() const { return m_comms.focused(); }
+
     // Convenience: register a command that reads one float argument. The huge
     // majority of tuning commands have this shape, and spelling out the arg
     // parsing 20 times per host is how hosts end up with none of them.
@@ -199,6 +212,7 @@ private:
     void setPaused(bool on);
     void drawPauseMenu(const x3::rhi::FrameContext& frame);
     void drawTuningPanel(const x3::rhi::FrameContext& frame, float dt);
+    void drawComms(const x3::rhi::FrameContext& frame, float dt);
 
     GLFWwindow*             m_window  = nullptr;
     x3::rhi::IRenderDevice* m_device  = nullptr;
@@ -206,6 +220,14 @@ private:
     x3::game::Hud           m_hud;
     x3::ui::UiContext       m_ui;
     x3::game::WeaponTuningMenu m_wtune;   // F7 tuning panel (every host gets one)
+    // THE SHIP COMMS DEVICE (feat/ship-comms) — every host gets one, exactly like
+    // the console and the tuning panel. It has its OWN UiContext rather than
+    // sharing m_ui: UiContext carries a persistent focus ring, and the comms
+    // device can be focused WHILE the tuning panel is open, so one shared ring
+    // would let the two surfaces fight over the focused index.
+    x3::game::CommsDevice   m_comms;
+    x3::game::CommsDirector m_commsDirector;
+    x3::ui::UiContext       m_commsUi;
 
     bool m_paused     = false;
     bool m_quit       = false;
@@ -236,6 +258,10 @@ private:
     char m_typed[x3::ui::UiInput::kMaxTyped] = {};
     int  m_typedCount = 0;
     bool m_prevMouseForPanel = false;
+    // The comms device tracks its own click edge: it can be focused while the
+    // tuning panel is open, and one shared edge would let each steal the other's.
+    bool m_prevMouseForComms = false;
+    bool m_commsDemoSeeded   = false;   // `comms_demo` seeds exactly once
     // True while a slider in the panel is in ctrl+click TYPE mode, so ESC can
     // cancel the edit before it closes the panel.
     bool m_editingInPanel = false;

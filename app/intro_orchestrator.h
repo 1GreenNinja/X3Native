@@ -144,6 +144,14 @@ struct SkillMetrics {
 // Number of destructible capital-ship subsystems (mirrors x3::space::Subsystem::Count).
 inline constexpr int kMaxSubsystems = 4;
 
+// THE ARENA: how far down +X the dreadnought stands off from the player's
+// spawn. ONE source of truth, because two places need it and they must not
+// drift: the escort screen is staged as fractions of this lane, and the
+// capital itself is placed at it. Widened from 2.6 km to 4.2 km for the item-G
+// 4x rescale — a ~4.5 km hull ran off both edges of the frame at the old
+// standoff, and item F needs the whole vessel visible to pick hardpoints off.
+inline constexpr float kIntroArenaX = 4200.0f;
+
 // Map raw metrics -> a normalized skillScore in [0,1] (clamped). Pure; the weights
 // are documented at kSkillWeights in the .cpp. Exposed for the self-test.
 float skillScore(const SkillMetrics& m);

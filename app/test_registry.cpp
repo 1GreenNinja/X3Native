@@ -105,6 +105,7 @@
 #include "act2_world.h"
 #include "act2_desert.h"
 #include "act2_caves.h"
+#include "ship_comms.h"                    // --test-comms (the ship comms device)
 #include "rifthub.h"                        // --test-rifthub (Stargate portal hub)
 #include "grounding.h"   // x3::game::runGroundingSelfTest (--test-grounding)
 #include "apron_landing.h" // x3::game::runApronLandingSelfTest (--test-apronlanding, ONE WORLD landing)
@@ -156,6 +157,7 @@
 #include "space/ship_windows.h"   // x3::space::runShipWindowsSelfTest (--test-shipwindows, S6 fold)
 #include "space/wormhole_vfx.h"      // x3::space::runWormholeSelfTest (--test-wormhole, feast fold)
 #include "space/wormhole_transit.h"  // x3::space::runWormholeTransitSelfTest (--test-wormhole-transit)
+#include "space/wormhole.h"          // x3::space::runWormholeFieldSelfTest (--test-wormholes)
 #include "space/tractor_beam.h"      // x3::space::runTractorSelfTest (--test-tractor, feast fold)
 #include "wing_dressing.h"        // x3::game::runWingDressingSelfTest (--test-wingdressing)
 #include "descent_slide.h"        // x3::game::runDescentSlideSelfTest (--test-descentslide, Wave 2C)
@@ -632,6 +634,13 @@ int dispatchTests(const TestFlags& tf) {
                     "(feast fold: init/render/shutdown + Tuning clamp + faceted bake, headless)...");
         return x3::space::runWormholeSelfTest() ? 0 : 1;
     }
+    if (tf.testWormholes) {
+        x3::logInfo("running SPACE WORMHOLE field --test-wormholes self-test "
+                    "(staged opening phase machine + 60/165 Hz equivalence, stable-vs-unstable "
+                    "divergence, emissive cap law, bounded light spill, comms advisory + "
+                    "transit trigger, headless)...");
+        return x3::space::runWormholeFieldSelfTest() ? 0 : 1;
+    }
     if (tf.testWormholeTransit) {
         x3::logInfo("running S3 WORMHOLE-TRANSIT self-test (feast fold: SpaceLayer spine "
                     "requestWormhole -> WormholeTransit -> DeepSpace, monotonic progress ramp, "
@@ -989,6 +998,15 @@ int dispatchTests(const TestFlags& tf) {
                     "that draws the model inside-out and unlit; scans every entity of every "
                     "built world, with negative controls, headless)...");
         return x3::game::runBasisSelfTest() ? 0 : 1;
+    }
+    if (tf.testComms) {
+        x3::logInfo("running SHIP COMMS DEVICE (right-anchored glass comms panel: "
+                    "message store + 64-line backlog cap, the F10 focus model and "
+                    "its flight-input restoration gate, on-panel buttons through the "
+                    "real UiContext, wormhole stability advisories on proximity, "
+                    "hostile taunts on real encounter events, the idle no-content "
+                    "host, and the bounded publish bus) self-test...");
+        return x3::game::runShipCommsSelfTest() ? 0 : 1;
     }
     if (tf.testRifthub) {
         x3::logInfo("running RIFTHUB Stargate portal-hub (8 grey-stone torus gates + "
@@ -1642,6 +1660,121 @@ int dispatchTests(const TestFlags& tf) {
             Contact gone[1] = { { 20u, { 200.0f, 40.0f, 0.0f }, { 0,0,0 }, true } };
             ts.setContacts(gone, 1);
             check(!ts.hasLock(), "T8d lock auto-drops when locked contact leaves the feed");
+        }
+
+        // ------------------------------------------------------------------
+        // T9 — LOCK EXEMPTION: the capital is a hostile you shoot at, on the
+        // radar and on the HUD, and STILL never a legal lock (owner design
+        // call: its gameplay is picking individual hardpoints off the hull, so
+        // an assist that drags the reticle to hull centre fights the encounter).
+        // ------------------------------------------------------------------
+        {
+            // The capital sits dead on the boresight and DOMINATES every
+            // "nearest / most on-axis" heuristic — which is exactly why it used
+            // to win the lock every single frame at any range.
+            Contact scene[3]{};
+            scene[0] = { 1000u, { 50.0f, 0.0f, 0.0f }, { 0,0,0 }, true };  // capital, dead ahead, nearest
+            scene[0].lockable = false;                                     // ...and EXEMPT
+            scene[1] = { 1u,  { 400.0f,  60.0f, 0.0f }, { 0,0,0 }, true }; // fighter, off-axis, far
+            scene[2] = { 2u,  { 500.0f, -90.0f, 0.0f }, { 0,0,0 }, true }; // fighter, further off-axis
+            const float from[3] = { 0.0f, 0.0f, 0.0f };
+            const float fwd[3]  = { 1.0f, 0.0f, 0.0f };
+
+            TargetingSystem ts;
+            ts.setContacts(scene, 3);
+            ts.lockNearest(from, fwd);
+            check(ts.hasLock() && ts.lockedId() != 1000u,
+                  "T9 lockNearest never locks the exempt capital even when it is "
+                  "nearest AND dead on the boresight");
+            check(ts.lockedId() == 1u,
+                  "T9b lockNearest falls through to the most on-axis LOCKABLE fighter");
+
+            // Cycling must walk the fighters only — no amount of pressing the
+            // cycle key can land the lock on the capital.
+            TargetingSystem tc;
+            tc.setContacts(scene, 3);
+            bool everCapital = false;
+            for (int i = 0; i < 12; ++i) {
+                tc.cycleTarget(+1);
+                if (tc.hasLock() && tc.lockedId() == 1000u) everCapital = true;
+            }
+            for (int i = 0; i < 12; ++i) {
+                tc.cycleTarget(-1);
+                if (tc.hasLock() && tc.lockedId() == 1000u) everCapital = true;
+            }
+            check(!everCapital,
+                  "T9c cycleTarget can never reach the exempt capital in either direction");
+
+            // AT ANY RANGE: the original bug was distance-dependent (a huge hull
+            // close in subtends a big angle), so sweep from knife-fight to long
+            // range and assert the capital is never picked at any of them.
+            bool capAtSomeRange = false;
+            for (float r = 60.0f; r <= 3000.0f; r += 60.0f) {
+                Contact sc[2]{};
+                sc[0] = { 1000u, { r, 0.0f, 0.0f }, { 0,0,0 }, true };
+                sc[0].lockable = false;
+                sc[1] = { 1u, { r + 200.0f, 30.0f, 0.0f }, { 0,0,0 }, true };
+                TargetingSystem tr;
+                tr.setContacts(sc, 2);
+                tr.lockNearest(from, fwd);
+                if (tr.hasLock() && tr.lockedId() == 1000u) capAtSomeRange = true;
+            }
+            check(!capAtSomeRange,
+                  "T9d the capital is lock-exempt at ALL ranges (60 m .. 3 km sweep)");
+
+            // A lock held on a contact the host later marks exempt is DROPPED on
+            // the next feed — eligibility is re-checked every frame, not once.
+            Contact all[2]{};
+            all[0] = { 1000u, { 50.0f, 0.0f, 0.0f }, { 0,0,0 }, true };  // lockable (capture run)
+            all[1] = { 1u,    { 400.0f, 60.0f, 0.0f }, { 0,0,0 }, true };
+            TargetingSystem td;
+            td.setContacts(all, 2);
+            td.lockNearest(from, fwd);
+            const bool heldCap = td.hasLock() && td.lockedId() == 1000u;
+            all[0].lockable = false;              // live play: exemption comes on
+            td.setContacts(all, 2);
+            check(heldCap && !td.hasLock(),
+                  "T9e a standing lock is dropped the moment its contact becomes exempt");
+        }
+
+        // ------------------------------------------------------------------
+        // T10 — DELETE MASTER SWITCH: with lock OFF the system holds no lock and
+        // refuses to acquire one, so every consumer (nose hold, camera gaze
+        // bias, lead pip) reads hasLock()==false and contributes exactly zero.
+        // ------------------------------------------------------------------
+        {
+            const float from[3] = { 0.0f, 0.0f, 0.0f };
+            const float fwd[3]  = { 1.0f, 0.0f, 0.0f };
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            check(ts.lockEnabled(), "T10 lock-on is ON by default");
+
+            ts.lockNearest(from, fwd);
+            check(ts.hasLock(), "T10b lock acquires normally while ON");
+
+            const bool nowOff = ts.toggleLockEnabled();          // DELETE
+            check(!nowOff && !ts.lockEnabled(), "T10c DELETE toggles lock-on OFF");
+            check(!ts.hasLock(), "T10d toggling OFF drops the standing lock immediately");
+
+            // While OFF, nothing may acquire — not a cone pick, not a cycle, not
+            // a fresh contact feed.
+            ts.lockNearest(from, fwd);
+            ts.cycleTarget(+1);
+            ts.cycleTarget(-1);
+            ts.setContacts(cs, 4);
+            ts.lockNearest(from, fwd);
+            check(!ts.hasLock(),
+                  "T10e with lock OFF no acquisition path can produce a lock (assist is exactly zero)");
+
+            // The lead pip — the other assist consumer — must go dead too.
+            const LeadSolution s = ts.computeLead(from, 600.0f);
+            check(!s.valid, "T10f with lock OFF computeLead returns no firing solution");
+
+            const bool backOn = ts.toggleLockEnabled();          // DELETE again
+            check(backOn && ts.lockEnabled(), "T10g DELETE toggles lock-on back ON");
+            ts.lockNearest(from, fwd);
+            check(ts.hasLock() && ts.lockedId() == 10u,
+                  "T10h assist resumes normally on the next acquisition after re-enabling");
         }
 
         x3::logInfo("targeting: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");

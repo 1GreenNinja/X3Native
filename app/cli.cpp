@@ -243,6 +243,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-act2desert") o.testAct2Desert = true;
         else if (a == "--test-act2caves") o.testAct2Caves = true;
         else if (a == "--test-rifthub") o.testRifthub = true;
+        else if (a == "--test-comms") o.testComms = true;
         else if (a == "--test-basis") o.testBasis = true;
         else if (a == "--test-tod") o.testTod = true;
         else if (a == "--test-weather") o.testWeather = true;
@@ -687,6 +688,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-shipwindows") o.testShipWindows = true;
         else if (a == "--test-bodycontact") o.testBodyContact = true;
         else if (a == "--test-wormhole") o.testWormhole = true;
+        else if (a == "--test-wormholes") o.testWormholes = true;
         else if (a == "--test-wormhole-transit") o.testWormholeTransit = true;
         else if (a == "--test-tractor") o.testTractor = true;
         else if (a == "--test-descentslide") o.testDescentSlide = true;

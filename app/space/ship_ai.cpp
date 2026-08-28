@@ -89,6 +89,23 @@ void EnemyShipManager::spawn(const float pos[3]) {
     ships_.push_back(s);
 }
 
+void EnemyShipManager::spawnLaunched(const float pos[3], const float dir[3],
+                                     float speed) {
+    // A BAY LAUNCH, not a pop-in (item G). The fighter appears AT the bay mouth
+    // already pointing down the launch vector and already carrying exit speed,
+    // so it flies OUT of the hull instead of materializing in empty space. The
+    // AI takes over on the very next tick — it steers from whatever velocity it
+    // is handed, so the launch reads as a boost off the deck and then a turn
+    // onto the player.
+    spawn(pos);
+    EnemyShip& s = ships_.back();
+    float d[3] = { dir[0], dir[1], dir[2] };
+    normalize3(d);   // leaves a unit +X on a degenerate vector (safe default)
+    const float sp = clampf(speed, 0.0f, shipai::kMaxSpeed);
+    s.fwd[0] = d[0]; s.fwd[1] = d[1]; s.fwd[2] = d[2];
+    s.vel[0] = d[0] * sp; s.vel[1] = d[1] * sp; s.vel[2] = d[2] * sp;
+}
+
 uint32_t EnemyShipManager::count() const { return (uint32_t)ships_.size(); }
 uint32_t EnemyShipManager::aliveCount() const { return (uint32_t)ships_.size(); }
 

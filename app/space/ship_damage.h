@@ -49,6 +49,21 @@ struct ShipDamageModel {
     int   subHp[(int)Subsystem::Count]    = { 0, 0, 0, 0 };
     int   subMaxHp[(int)Subsystem::Count] = { 0, 0, 0, 0 };
     bool  hasSubsystems = false;
+
+    // ---- THE SHIELD GATE (item F: "shields must drop before hull damage
+    //      counts, so hosing the hull is the SLOW path") --------------------
+    // Fraction of shield-OVERFLOW damage that still reaches the hull on a hit
+    // that landed while the shield was UP. 1.0 == legacy behaviour (every
+    // fighter and every pre-existing caller): all overflow bleeds through.
+    // A capital sets this LOW, so shooting bare hull through a live shield
+    // barely scratches it and the player is taught to drop the shield — or
+    // kill its generator — first. Clamped to [0,1] on use.
+    float hullBleedWhileShielded = 1.0f;
+    // SUPPRESSION / hard shutdown of shield regen. tick() never regenerates
+    // while this is set — the host raises it when the shield-generator
+    // subsystem dies ("NO REGEN"), which is what makes generator-first a real
+    // strategy instead of flavour text.
+    bool  shieldRegenDisabled = false;
 };
 
 // Stateless operations over a ShipDamageModel. Everything is a free function in
@@ -287,6 +302,31 @@ public:
 // meshes, muzzles, telegraphs and damage resolution.
 inline constexpr int kCapitalGunCount = 4;
 
+// ===========================================================================
+// THE CAPITAL'S POOLS — item F, "it should be HARDer to take down".
+// ===========================================================================
+// Here rather than in the host so the RELATIONSHIPS are compile-time facts
+// (four gun kills must equal exactly one Turrets subsystem) and so a retune
+// cannot silently invert the lesson without --test-ship-damage noticing.
+//
+// The player's sustained output is the thing everything else is sized
+// against, and it is COOLDOWN-bound, not energy-bound: the intro tunes
+// energyRegen 20/s against a 2.8 cost, so the 0.18 s laser cooldown is what
+// actually caps him at 5.56 shots/s x 90 damage ~= 500 DPS. (An earlier pass
+// sized these pools against the DEFAULT 8-per-shot economy — 1.5 shots/s —
+// and was wrong by 3.7x. Measure the weapon, do not assume it.)
+//
+// Against 500 DPS:
+//   HARDPOINT-FIRST ~47 s — drop the 6000 shield (12 s), walk the four 1300 HP
+//     mounts (10 s), then ride the exposed reactor, whose 6x multiplier over
+//     an 8-in-13 duty cycle turns 500 DPS into ~2040 against hull (25 s).
+//   HULL-ONLY ~112 s — 6000 + 50000 at 1x, never crippled, no reactor.
+// The 2.4x gap IS the design, and the 70 s climax window fits the first path
+// and not the second. Pinned by T25n/T25o.
+inline constexpr int kCapitalShield = 6000;
+inline constexpr int kCapitalHull   = 50000;
+inline constexpr int kCapitalSubHp  = 1300;   // PER hardpoint (~14 landed hits)
+
 struct CapitalGun {
     int   hp      = 0;     // <= 0 => shot off (a wreck stub remains)
     int   maxHp   = 0;
@@ -305,13 +345,17 @@ public:
     // ask; shooting guns off is the counterplay that buys it back.
     static constexpr float kGunPeriod = 4.8f;   // per-gun seconds between spools
     static constexpr float kGunSpool  = 0.6f;   // telegraph: spool before the bolt
-    static constexpr int   kGunHp     = 30;     // one landed 90-dmg hit shears a gun
+    // A mount is armour, not a light bulb: three landed 90-dmg hits shear it.
+    // (Was 30 — a single hit — which made the battery free to silence.)
+    static constexpr int   kGunHp     = 270;
     // What one landed capital bolt does to the player (vs 500 shield + 1000
     // hull): ~8 landed bolts kill — at full-battery cadence that is ~10 s of
     // flying straight at her. Aspect dodge (transverse velocity) is the out.
     static constexpr int   kGunDamage = 180;
-    // Quarter of the Turrets subsystem routed per gun kill (4 * 30 == 120).
-    static constexpr int   kSubQuarter = 30;
+    // Quarter of the Turrets subsystem routed per gun kill, DERIVED so the
+    // identity "four sheared mounts == the Turrets subsystem down" can never
+    // drift when the pools are retuned.
+    static constexpr int   kSubQuarter = kCapitalSubHp / kCapitalGunCount;
 
     // Seed all guns alive with staggered first-spool clocks (gun i fires its
     // first bolt at ~1.2 * (i+1) s — the gauntlet opens hot but never as one
@@ -332,6 +376,145 @@ public:
     // Apply damage to gun i. Returns true exactly when THIS call destroyed it
     // (hp crossed to <= 0). No-op on a dead gun / bad index / amount <= 0.
     static bool damageGun(CapitalBatteryState&, int i, int amount);
+};
+
+// ===========================================================================
+// CAPITAL AIM PICK — ONE ray test shared by the fire path AND the per-frame
+// hover HIGHLIGHT (item F, owner 2026-08-18: "The turrets and engine mounts
+// and other things can highlight when aiming at them on the capital ship").
+// ===========================================================================
+//
+// The capital is deliberately EXEMPT from lock-on (item E): aiming at it is a
+// manual skill. So the game has to TEACH what is aimable. The answer is a
+// hover highlight — but a highlight that disagrees with what a shot would
+// actually hit is a lie, so the highlight and the bullet MUST run the same
+// test. That test lives here, once, as pure logic:
+//
+//   * the HULL is an OCCLUDER, not a competitor. Its sphere is a crude
+//     bounding volume for a long thin ship, so it encloses essentially every
+//     part bolted to the outside of it; a naive nearest-entry sweep therefore
+//     lets the hull win every ray and NOTHING is ever hoverable or hittable.
+//     Instead a part is hidden exactly when it lies on the FAR hemisphere with
+//     respect to the ray — behind the ship's own mass from where the player is
+//     looking. You still cannot snipe the engines through 1.8 km of ship: you
+//     fly around. Among the parts that ARE visible, nearest entry wins;
+//   * a DEAD part is not a target: it is skipped entirely, so a destroyed
+//     mount never highlights again and shots there fall through to the hull
+//     as wreckage damage (exactly the shipped fire-path semantics);
+//   * acceptance radius GROWS with range by the same aim-at-what-you-see law
+//     the fighters use (shipai::visCompFactor), so a part that is 6 px wide
+//     on screen is still hoverable.
+//
+// Cost: one ray-sphere per candidate — ~12 spheres for the whole dreadnought,
+// once per frame. No render pass, no readback, no picking buffer.
+enum class CapitalAimKind : uint32_t { None, Hull, Hardpoint, Gun, Bay, Reactor };
+
+struct CapitalAimTarget {
+    float pos[3]   = { 0.0f, 0.0f, 0.0f };  // world centre
+    float radius   = 0.0f;                  // base acceptance radius (m)
+    CapitalAimKind kind = CapitalAimKind::None;
+    int   index    = -1;                    // which hardpoint / gun / bay
+    bool  alive    = true;                  // dead parts are never picked
+};
+
+struct CapitalAimResult {
+    CapitalAimKind kind = CapitalAimKind::None;
+    int   index = -1;
+    float t     = 0.0f;   // ray parameter of the entry point (metres)
+};
+
+class CapitalAim {
+public:
+    // ---- RANGE COMPENSATION on the acceptance radius --------------------
+    // "Aim at what you SEE": a part that is only a few pixels wide on screen
+    // must still be hoverable. The rule is stated in ANGULAR terms, not as a
+    // flat distance multiplier, because a capital's parts and a fighter's
+    // parts differ by an order of magnitude in size: a blanket 2.5x at long
+    // range turns a 270 m bay mouth into a 670 m sphere that swallows every
+    // other hardpoint on the ship, while the same 2.5x is exactly right for a
+    // 22 m gun on a corvette. So: grow a part only until it subtends
+    // kMinAngularR, and never past kGrowMax times its authored size.
+    static constexpr float kMinAngularR = 0.012f;  // ~0.7 deg (~15 px at 720p)
+    static constexpr float kGrowMax     = 2.5f;    // hard ceiling on the growth
+    static float grownRadius(float radius, float dist);
+
+    // Nearest-entry pick along unit `dir` from `origin`. Returns kind None when
+    // the ray misses everything (an honest whiff). `n` may be 0.
+    static CapitalAimResult pick(const CapitalAimTarget* targets, uint32_t n,
+                                 const float origin[3], const float dir[3]);
+};
+
+// ===========================================================================
+// CAPITAL LAUNCH BAYS — "More little ships can come out of its bays"
+// (owner, 2026-08-18; item G).
+// ===========================================================================
+//
+// A spawn COUNT is a number; a bay is a place. Fighters that appear at a lit
+// bay mouth and fly OUT along its launch vector make the capital read as a
+// carrier that is PRODUCING the threat, and they give precision a second
+// reward: a bay is a destructible hardpoint, and killing it shuts that stream
+// off for good. That is item F's "hardpoint-first is the fast path" lesson
+// restated in the one currency the player feels — fewer things shooting him.
+//
+// Escalation is bounded on TWO axes so it can never run away:
+//   * a hard LIVE-FIGHTER CAP (kLiveCap): no bay launches while the arena is
+//     already at cap, whatever the cadence says;
+//   * a per-bay cadence that only tightens to kRateFloor of the base period
+//     at zero hull — the fight gets hotter as she dies, it does not avalanche.
+// Pure value type: deterministic, dt-integrated (never per-frame), headless.
+inline constexpr int kCapitalBayCount = 3;
+
+struct CapitalBay {
+    int   hp    = 0;      // <= 0 => bay blown; it never launches again
+    int   maxHp = 0;
+    float cd    = 0.0f;   // seconds until this bay's next launch
+};
+
+struct CapitalBayState {
+    CapitalBay bay[kCapitalBayCount];
+};
+
+class CapitalBays {
+public:
+    // A bay is a soft target compared with a gun mount — it is a hole in the
+    // hull, not an armoured turret — but it still costs real sustained fire.
+    // Six landed 90-dmg hits close a deck — softer than an armoured gun mount
+    // (it is a hole in the hull, not a turret) but still real sustained fire.
+    static constexpr int   kBayHp        = 540;
+    // Base seconds between launches FROM ONE BAY at full hull. Three bays
+    // staggered => roughly one fighter every ~3.7 s at the opening cadence.
+    static constexpr float kLaunchPeriod = 11.0f;
+    // Cadence floor as a fraction of the base period at zero hull (item G:
+    // "optionally tie rate to health/phase"). 0.45 == a bit over twice the
+    // opening rate when she is dying.
+    static constexpr float kRateFloor    = 0.45f;
+    // THE CAP. Total live hostile fighters allowed in the arena at once,
+    // counting the authored escort screen. No bay launches at or above it.
+    static constexpr int   kLiveCap      = 14;
+
+    // Seed all bays alive with STAGGERED first-launch clocks so the three
+    // mouths never disgorge in one synchronized lump.
+    static void init(CapitalBayState&);
+
+    // Per-bay launch period at `hullFrac` in [0,1]. Monotone: lower hull =>
+    // shorter period (she throws fighters harder as she loses).
+    static float periodFor(float hullFrac);
+
+    // Advance the bay clocks by dt and return a BITMASK of bays that launched
+    // this tick. `liveFighters` is the arena count BEFORE this tick; launches
+    // inside this call count against the cap too, so one tick can never blow
+    // past kLiveCap. `enabled` gates the whole thing (capital dead / out of
+    // the encounter). A bay held at the cap keeps its clock at zero and fires
+    // the instant a slot frees — pressure resumes, it does not reset.
+    static uint32_t update(CapitalBayState&, float dt, int liveFighters,
+                           float hullFrac, bool enabled);
+
+    static bool bayAlive(const CapitalBayState&, int i);
+    static int  aliveBays(const CapitalBayState&);
+
+    // Apply damage to bay i. Returns true exactly when THIS call blew it
+    // (hp crossed to <= 0). No-op on a dead bay / bad index / amount <= 0.
+    static bool damageBay(CapitalBayState&, int i, int amount);
 };
 
 // ---- --test-ship-damage self-test (>=8 sub-checks, no window/Vulkan) --------

@@ -102,6 +102,7 @@
 #include "rift_depths.h"  // W-RIFT: the landing + the approach corridor to it
 #include "destinations.h" // W-MENU: the ONE registry of every place the game has
 #include "world_menu.h"
+#include "ship_comms.h"                     // F10 SHIP COMMS DEVICE (shared with HostShell)
 #include "weapon_tuning_menu.h"                // F7 TUNING PANEL (shared with HostShell)   // W-MENU: the world / place selection screen (F6 + pause)
 #include "club1127.h"
 #include "club_listen.h"   // CLUB LISTEN MODE: cvars + console bind (live-beat drive)
@@ -5346,6 +5347,10 @@ int runDefaultHost(HostContext& hc) {
         // X3_TUNE_TAB=0|1 picks the page, X3_TUNE_SOAK=<weapon> lights the soak
         // readout so the "it is FIRING right now" state is in the evidence too.
         x3::game::WeaponTuningMenu shotTune;
+    // The comms device's capture-path instance (see the draw block below).
+    x3::game::CommsDevice shotComms;
+    x3::ui::UiContext     shotCommsUi;
+    bool                  shotCommsSeeded = false;
         x3::ui::UiContext          shotTuneUi;
         const bool shotTunePanel = std::getenv("X3_TUNE_PANEL") != nullptr;
         if (shotTunePanel) {
@@ -7020,6 +7025,42 @@ int runDefaultHost(HostContext& hc) {
                     shotTuneUi.begin(*device, frame, tin);
                     shotTune.draw(shotTuneUi, *console, dt);
                     shotTuneUi.end();
+                }
+
+                // THE SHIP COMMS DEVICE in the capture, for the same reason the
+                // tuning panel is here: this offscreen path draws its own HUD and
+                // never enters the interactive loop, so a device that only drew in
+                // the loop could never be reviewed from a frame. `comms_demo`
+                // stages a representative feed; with it off this draws the idle
+                // surface, which is itself the thing worth proving.
+                {
+                    if (!shotCommsSeeded && console && console->getInt("comms_demo")) {
+                        shotCommsSeeded = true;
+                        using CS = x3::game::CommsSender;
+                        shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                            "Comms online. I have the channel, Commander.");
+                        shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                            "STABLE WORMHOLE 640m - THE RIFT HUB. Transit corridor is holding.");
+                        shotComms.post(CS::Hostile, x3::game::kCommsHostileName,
+                            "You are a long way from anything that will miss you.");
+                        shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                            "Contact. Capital-class signature, bearing two-seven-zero.");
+                        shotComms.post(CS::Hostile, x3::game::kCommsHostileName,
+                            "First blood. You fly like something that has never been hunted.");
+                        shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                            "Shields at thirty percent. Break contact and let them cycle.");
+                        shotComms.post(CS::Hostile, x3::game::kCommsHostileName,
+                            "Launching. You will not out-fly the whole wing.");
+                        shotComms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                            "UNSTABLE WORMHOLE 880m - THE MAGMA ZONE. Aperture is "
+                            "fluctuating - transit not advised.");
+                    }
+                    if (console && console->getInt("comms_focus") && !shotComms.focused())
+                        shotComms.setFocused(true);
+                    x3::ui::UiInput cin{};
+                    shotCommsUi.begin(*device, frame, cin);
+                    shotComms.draw(shotCommsUi, *device, frame, dt);
+                    shotCommsUi.end();
                 }
 
                 // --screenshot-alert: the alert indicator + lockdown red frame.
@@ -8716,6 +8757,23 @@ int runDefaultHost(HostContext& hc) {
     x3::game::WeaponTuningMenu weaponTune;
     x3::ui::UiContext   tuneUi;         // its own context (the world map's pattern)
     bool  prevTuneKey = false;
+
+    // ---- F10: THE SHIP COMMS DEVICE --------------------------------------------
+    // The SAME x3::game::CommsDevice HostShell owns, for exactly the reason the
+    // tuning panel above gives: this loop predates HostShell and wires its own
+    // console, so it wires its own device too. ONE class, both places — otherwise
+    // the campaign would be the one place in x3native without the comms channel,
+    // which is precisely the drift Tim's "consistent no matter what game" rule and
+    // the host-shell lint exist to stop.
+    //
+    // Like the tuning panel it does NOT freeze the sim and DOES take the keyboard
+    // while focused.
+    x3::game::CommsDevice   comms;
+    x3::game::CommsDirector commsDirector;
+    x3::ui::UiContext       commsUi;    // its own context (same pattern again)
+    bool  prevCommsKey   = false;
+    bool  prevCommsMouse = false;
+    bool  commsDemoSeeded = false;
     bool  prevTuneMouse = false;
     bool  prevTuneNavUp = false, prevTuneNavDown = false, prevTuneNavLeft = false;
     bool  prevTuneNavRight = false, prevTuneNavAct = false, prevTuneTab = false;
@@ -8944,6 +9002,7 @@ int runDefaultHost(HostContext& hc) {
             return !consoleOpen && !uiMenuActive && !termMode && !codeMode && !worldMapOpen &&
                    !worldMenu.isOpen() && !riftConsoleOpen /* W-MENU / W-RIFT capture */ &&
                    !weaponTune.isOpen() /* F7: its nav keys must not also walk Jake */ &&
+                   !comms.focused() /* F10: the comms device owns the keyboard while focused */ &&
                    !rpgUi.anyOpen() /* [W9-3 RPG] */ &&
                    glfwGetKey(window, k) == GLFW_PRESS;
         };
@@ -9078,6 +9137,20 @@ int runDefaultHost(HostContext& hc) {
                               rawKey(GLFW_KEY_F7);
             if (tNow && !prevTuneKey) weaponTune.toggle();
             prevTuneKey = tNow;
+
+            // F10 — SHIP COMMS FOCUS. Same gating set as F7: nothing else may be
+            // capturing the keyboard. ESC releases it below.
+            const bool cNow = !consoleOpen && !termMode && !codeMode &&
+                              !chatTrees.active() && !worldMapOpen &&
+                              !worldMenu.isOpen() && !riftConsoleOpen &&
+                              !rpgUi.anyOpen() &&
+                              rawKey(GLFW_KEY_F10);
+            if (cNow && !prevCommsKey) comms.toggleFocus();
+            prevCommsKey = cNow;
+            // While focused, ESC is the instant way back to walking/flying. Read
+            // RAW: the capture gate the device itself closes would eat this key.
+            if (comms.focused() && rawKey(GLFW_KEY_ESCAPE))
+                x3::game::commsRouteKey(comms, x3::game::CommsKey::Escape);
 
             // The pause menu's TRAVEL button routes here too: open the directory and
             // hand it the screen (the pause overlay steps aside).
@@ -13078,6 +13151,60 @@ int runDefaultHost(HostContext& hc) {
                         x3::logWarn(std::string("[worldmenu] refused ") + d.key + ": " + why);
                     }
                 }
+            }
+
+            // ================================================================
+            // F10 — THE SHIP COMMS DEVICE. Drawn EVERY frame (unlike the tuning
+            // panel, which only exists while open): it is a persistent instrument,
+            // and a world with nothing to say shows its idle surface rather than
+            // vanishing. Same drain -> director -> draw order HostShell uses.
+            // ================================================================
+            {
+                // Staging seed, mirroring HostShell's (see host_shell.cpp): lets a
+                // capture stage a representative feed via `--set comms_demo 1`.
+                if (!commsDemoSeeded && console && console->getInt("comms_demo")) {
+                    commsDemoSeeded = true;
+                    using CS = x3::game::CommsSender;
+                    comms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                               "Comms online. I have the channel, Commander.");
+                    comms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                               "STABLE WORMHOLE 640m - THE RIFT HUB. Transit corridor is holding.");
+                    comms.post(CS::Hostile, x3::game::kCommsHostileName,
+                               "You are a long way from anything that will miss you.");
+                    comms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                               "Contact. Capital-class signature, bearing two-seven-zero.");
+                    comms.post(CS::Hostile, x3::game::kCommsHostileName,
+                               "First blood. You fly like something that has never been hunted.");
+                    comms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                               "Shields at thirty percent. Break contact and let them cycle.");
+                    comms.post(CS::Hostile, x3::game::kCommsHostileName,
+                               "Launching. You will not out-fly the whole wing.");
+                    comms.post(CS::ShipAI, x3::game::kCommsShipAiName,
+                               "UNSTABLE WORMHOLE 880m - THE MAGMA ZONE. Aperture is "
+                               "fluctuating - transit not advised.");
+                }
+                if (console && console->getInt("comms_focus") && !comms.focused())
+                    comms.setFocused(true);
+
+                x3::game::CommsSnapshot csnap{};
+                x3::game::commsBus().drain(comms, csnap);
+                commsDirector.update(comms, csnap, dt);
+
+                x3::ui::UiInput cin{};
+                if (comms.focused()) {
+                    double cmx = 0.0, cmy = 0.0; glfwGetCursorPos(window, &cmx, &cmy);
+                    cin.mouseX = (float)cmx; cin.mouseY = (float)cmy;
+                    const bool cLmb =
+                        glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                    cin.mouseDown    = cLmb;
+                    cin.mousePressed = cLmb && !prevCommsMouse;
+                    prevCommsMouse   = cLmb;
+                } else {
+                    prevCommsMouse = false;
+                }
+                commsUi.begin(*device, frame, cin);
+                comms.draw(commsUi, *device, frame, dt);
+                commsUi.end();
             }
 
             // ================================================================
