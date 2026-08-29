@@ -535,75 +535,75 @@
     },
     {
       "repo_path": "assets/converted_glb/Town/Billboard_1.glb",
-      "sha256": "8116b207269ccc6255f4822875efad1caa43e898af45328c67ed114ca2e8c0eb",
-      "size": 508480,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "0fb6d982e96d420c385f160a38316f89e50ebb8610008d89ddf285b036ad6c61",
+      "size": 2287284,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/Billboard_2.glb",
-      "sha256": "64359d4f0ab58955a049f072587791846085e37ada94b9f7df8ebd3ae6480240",
-      "size": 523572,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "88b43323686647069b3ce2cb19cfdc82ea49d90ea0f45aeb3b5b6924291088ea",
+      "size": 2302372,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/House_1_Red.glb",
-      "sha256": "bd0b90ebf5c5e5905c9f8edba64085dd963f30fc614e116f2ee50a96e90ad63e",
-      "size": 595960,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "5da72fdfd5ae204085f6d46be4b22c740c3330665fc608c659d9aeddeace2a71",
+      "size": 1821856,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/House_1_White.glb",
-      "sha256": "7910c88392ac94def87162057e1debc7a6303aae0b533c172ffecc5434f67ebe",
-      "size": 616564,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "deb5aee60b102d54a1afa6c295e1d8dd2e7f02db41a07cc0bb138e3304707cde",
+      "size": 1897308,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/House_2_Red.glb",
-      "sha256": "0236261950b0a23a636f2617b075aa42ee9124ba3a4df6ee7aaf2f5b50cc16e7",
-      "size": 476252,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "ce5c1860875a0a261617b6d44e5aba6ab4a22672deb2630b86e758ed904b5c93",
+      "size": 2239036,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/House_2_White.glb",
-      "sha256": "05a4445308d6e4c905019ae3b3d85d37d9cb9b4c98bc5cadeb5fa98690bbac67",
-      "size": 496856,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "7c73cb40bf477fa583b8274a3cc0419adda86c0f63533b44addefbadad6a6cf7",
+      "size": 2314492,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/House_3_Red.glb",
-      "sha256": "1ac45aefd40872a712715ce06addcd8928fa1eadafbfe475b4f4d9e29271c55c",
-      "size": 621212,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "a5da3cb248c3e86746334afead2599526c669f90a4556907c6db25c28e385c4e",
+      "size": 1847148,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/House_3_White.glb",
-      "sha256": "377361b980a755539f588466c3f0c574ffb19a99cd49728d345a4a2c0864d210",
-      "size": 641816,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "478eae2a70e1ae74cce6ac93cce7a3139fd6e6ac9fe45edd01cb633c4bffe0dd",
+      "size": 1922604,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/House_4_Red.glb",
-      "sha256": "7885caad905d944be7148e6d1198678a869c795878fbbcc6c550e740e8ca3573",
-      "size": 950348,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "e674cc022b894644ac484cbf6caeb17f25956c0d9c8320db7fa19bfcc66d40c8",
+      "size": 2713176,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/House_4_White.glb",
-      "sha256": "2f492491c287f447a61c97ffd59a6aa082bcc248a123cfa45606196bbf6a1050",
-      "size": 970952,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "d6594412b9c5b618f9e7cc3b1cb0000cd40e6bd6d4f71d366b93e9b2c181fc75",
+      "size": 2788632,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/Light_2.glb",
-      "sha256": "ce9c3096c1689fbb979b1dda4916d2d421ec181b7e8f81d2ff0decdc25b7adb4",
-      "size": 267376,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "19b5caf59863aee05e54bb9f56f86b0f7435552dde418dce0a3f73e5cbf85ee5",
+      "size": 317288,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Town/Wood_Fence.glb",
-      "sha256": "d006d6d33cb2c2632f7bc59a1608e60881290f4751941e077b2f5663381f30ba",
-      "size": 131228,
-      "source_note": "W-TOWN kit v2: Complete Racing Game URP pack, textures injected by material name (tools/town_assets.py)"
+      "sha256": "8cb08f3fd3c7f82f53bfe77589c5fba928cc0bf8abb9456862fd6df8347c52cb",
+      "size": 654260,
+      "source_note": "town houses/fence/lamp/billboards with NORMAL MAPS (Phase 1 burn-down: albedo-derived + Light_2 pack normal)"
     },
     {
       "repo_path": "assets/converted_glb/Vehicles/CTR.glb",
