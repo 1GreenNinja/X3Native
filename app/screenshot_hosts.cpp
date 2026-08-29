@@ -29,6 +29,7 @@
 #include "app_run.h"        // applyRtaoCVarsForTest: pushes r_csm to the device
 #include "engine/rhi/Csm.h" // kNumCascades (perf receipt line)
 #include "ocean_base.h"        // W3-4: --screenshot-oceanbase undersea vantage
+#include "fish.h"           // --screenshot-water: reef schools under the surface
 #include "city.h"              // W8-3: --screenshot-city district vantage
 #include "street_lights.h"     // content wiring: --screenshot-city night lamp grid
 #include "engine/rhi/ClusterLights.h"  // kMaxSceneLights
@@ -3440,6 +3441,56 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
         wp.sunDir[0] = sp.sunDir[0]; wp.sunDir[1] = sp.sunDir[1]; wp.sunDir[2] = sp.sunDir[2];
         device->setWaterParams(wp);
 
+        // REEF FISH. Not stand-ins (NO_SLOP rule 3): these are the same
+        // pose-baked rigged GLB species the river already swims
+        // (Fish_Bream/Perch/Pike/Rudd, 4-bone spine, baked swim cycle), placed
+        // over the shallow bed and TINTED into reef livery through
+        // FishSchoolDesc::tint. Real geometry, real animation, reef colours —
+        // and the point of the shot is that you can SEE them through the water.
+        x3::game::FishSystem fish;
+        fish.setModelDir(x3::game::riggedGlbRoot());
+        // THE REAL BED, not a constant. Feeding a flat seaLevel-3.2 put fish
+        // UNDERNEATH the terrain wherever the ground was shallower than that —
+        // they built, they drew, and the ground hid every one of them. The bed
+        // query is terrainHeightAtWorld, the same field the water itself tests.
+        fish.setWaterQuery([seaLevel](float, float) { return seaLevel; });
+        fish.setBedQuery  ([](float x, float z) {
+            return x3::game::terrainHeightAtWorld(x, z);
+        });
+        x3::game::FishConfig fcfg;
+        fcfg.activeRadius   = 260.0f;   // the rig camera is not the player
+        fcfg.depthMin       = 0.35f;
+        fcfg.depthBelowSurf = 0.40f;
+        fcfg.size           = 0.85f;
+        struct ReefSchool { float dx, dz; uint32_t n; float spread; float r, g, b; };
+        // DOWN THE ACTUAL VIEW RAY. Engine convention is -Z FORWARD
+        // (CLAUDE.md AXES), so a camera at yaw looks along
+        // (sin(yaw), 0, -cos(yaw)). At sunYaw = atan2(0.3, 0.4) that is
+        // (0.60, 0, -0.80) — dz goes NEGATIVE. Every earlier placement used
+        // positive dz and sat squarely behind the lens, which is why 64 fish
+        // built, drew, and appeared in no frame. Laid out at t = 10..30 m along
+        // that ray with a lateral spread, over the flooded basin.
+        const ReefSchool reef[] = {
+            //  dx = -30 + 0.60*t (+across),  dz = 6 - 0.80*t (+across)
+            { -24.0f,  -2.0f, 16, 3.0f, 1.00f, 0.42f, 0.10f },   // clownfish orange  t=10
+            { -21.5f,  -7.0f, 14, 2.6f, 1.00f, 0.86f, 0.16f },   // yellow tang       t=15
+            { -25.0f, -10.0f, 12, 2.4f, 0.16f, 0.62f, 1.00f },   // blue chromis      t=19
+            { -18.0f, -12.0f, 12, 2.2f, 1.00f, 0.30f, 0.62f },   // magenta anthias   t=22
+            { -22.0f, -17.0f, 12, 2.8f, 0.30f, 1.00f, 0.72f },   // green-teal        t=27
+        };
+        for (const ReefSchool& r : reef) {
+            x3::game::FishSchoolDesc sd;
+            sd.centerX = fx + r.dx; sd.centerZ = fz + r.dz;
+            sd.count = r.n; sd.spread = r.spread;
+            sd.heading = 0.6f; sd.speed = 0.55f;
+            sd.tint[0] = r.r; sd.tint[1] = r.g; sd.tint[2] = r.b;
+            fcfg.schools.push_back(sd);
+        }
+        fish.build(fcfg, oscene, *device);
+        x3::logInfo("--screenshot-water: reef schools " +
+                    std::to_string(fish.schoolCount()) + ", fish " +
+                    std::to_string(fish.fishCount()));
+
         const float dt = 1.0f / 60.0f;
         const int kFrames = 220, kWarmup = 120;
         for (int i = 0; i < kFrames; ++i) {
@@ -3447,6 +3498,7 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
             ophys->step(dt);
             const float focusX = (i == 1) ? (fx + 40.0f) : fx;
             ostream.update(oscene, *device, *ophys, focusX, fz);
+            fish.update(dt, oscene, x3::phys::Vec3{ fx - 22.0f, seaLevel, fz - 9.0f });
             wp.time = (float)i * dt;
             device->setWaterParams(wp);
             // LOOK DOWN INTO IT. At a grazing angle Schlick sends almost everything
@@ -3457,6 +3509,8 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
             // close it back to a surface. So the verification camera looks DOWN
             // across the shoreline, where shallow bed and deep channel sit in one
             // frame and the extinction gradient is the thing being photographed.
+            // The framing that works (see the header comment): down across the
+            // shoreline, shallow bed and deep channel in one frame.
             device->setCamera(fx - 30.0f, seaLevel + 11.0f, fz + 6.0f,
                               sunYaw, -34.0f, 70.0f);
 
