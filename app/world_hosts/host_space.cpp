@@ -3099,6 +3099,23 @@ int hostSpace(HostContext& hc) {
                 }
                 prevI = iNow;
 
+                // X ABORTS A TRANSIT IN FLIGHT. The abort path has to be REACHABLE,
+                // not just unit-tested: a jump you cannot get out of is the exact
+                // shape of a soft-lock. The transit completes on its next tick, the
+                // S0 spine lands back in DeepSpace (never in limbo), AEGIS says so,
+                // and the host puts the ship back beside the mouth it entered - in
+                // the departure system, with the sky untouched, because you never
+                // reached the far side.
+                {
+                    static bool prevAbort = false;
+                    const bool xNow = kd(GLFW_KEY_X);
+                    if (xNow && !prevAbort && transitEngaged) {
+                        transit.abort();
+                        x3::logInfo("--world space: transit ABORT requested (X)");
+                    }
+                    prevAbort = xNow;
+                }
+
                 // LMB laser (rising edge -> fire one bolt, log on success).
                 bool lmbNow = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
                 if (lmbNow && !prevLmb && pilot.fireLaser(fdt)) {
