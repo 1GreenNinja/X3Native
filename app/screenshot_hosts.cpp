@@ -112,6 +112,7 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
     const bool terrainShot = hc.terrainShot;      const std::string& terrainShotPath = hc.terrainShotPath;
     const bool csmShot = hc.csmShot;              const std::string& csmShotDir = hc.csmShotDir;
     const bool oceanShot = hc.oceanShot;          const std::string& oceanShotPath = hc.oceanShotPath;
+    const bool waterShot = hc.waterShot;          const std::string& waterShotPath = hc.waterShotPath;
     const bool oceanBaseShot = hc.oceanBaseShot;  const std::string& oceanBaseShotPath = hc.oceanBaseShotPath;
     const bool cityShot = hc.cityShot;            const std::string& cityShotPath = hc.cityShotPath;
     const bool captureAi = hc.captureAi;          const std::string& captureAiDir = hc.captureAiDir;
@@ -3376,6 +3377,101 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
         streamer.shutdown(tscene, *device, *tphys);
         tjobs->shutdown();
         tphys->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
+    // ---- WATER VERIFICATION RIG (--screenshot-water [path.png]) ------------
+    // WHY THIS EXISTS. --screenshot-ocean leaves WaterParams::clarity at its 0
+    // default, which water.frag documents as "the historic OPAQUE surface" — so
+    // it renders opaque water and the whole depth-colour path is INERT in it.
+    // The rivers the game actually ships set clarity (host_tunnel: 0.60 surface,
+    // 0.78 underground, "you should SEE the carved bed"), and until now nothing
+    // could photograph that. A shading model nobody can look at cannot be tuned,
+    // and the owner's verdict on water was that it is the worst thing in the game.
+    //
+    // So: the SAME streamed terrain the ocean rig floods, but with the RIVER's
+    // real parameters, and a camera down at the waterline looking along a
+    // shoreline — the one framing where the depth gradient is legible, because
+    // the eye can see shallow and deep in the same frame.
+    if (waterShot) {
+        x3::logInfo("--screenshot-water: river-parameter water over a shoreline -> " + waterShotPath);
+
+        // Own world, same shape as the ocean rig below it.
+        std::unique_ptr<x3::jobs::IJobSystem> ojobs(x3::jobs::createJobSystem());
+        ojobs->init(0);
+        std::unique_ptr<x3::phys::IPhysicsWorld> ophys(x3::phys::createPhysicsWorld());
+        ophys->init();
+        x3::game::Scene oscene;
+        x3::game::TerrainStreamer ostream;
+        x3::game::TerrainConfig ocfg;
+        const float sunYaw = std::atan2(0.3f, 0.4f);
+        float fx = 40.0f, fz = -10.0f;
+        ostream.init(oscene, *device, *ophys, ojobs.get(), ocfg, fx, fz, /*radius=*/8);
+
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.40f; sp.sunDir[1] = 1.00f; sp.sunDir[2] = 0.30f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+
+        const float seaLevel = 14.0f;
+        x3::rhi::IRenderDevice::WaterParams wp{};
+        wp.enabled = true;
+        wp.seaLevel = seaLevel;
+        // THE RIVER'S OWN NUMBERS (host_tunnel.cpp), not invented ones — the rig
+        // is only worth having if it photographs what the game renders.
+        wp.deepColor[0]    = 0.012f; wp.deepColor[1]    = 0.055f; wp.deepColor[2]    = 0.060f;
+        wp.shallowColor[0] = 0.050f; wp.shallowColor[1] = 0.150f; wp.shallowColor[2] = 0.140f;
+        wp.clarity  = 0.60f;      // THE POINT OF THE RIG
+        wp.specular = 5.0f;
+        wp.fresnel  = 0.012f;
+        wp.amplitude = 0.11f; wp.steepness = 0.30f; wp.waveLength = 7.0f; wp.speed = 1.0f;
+        wp.sunDir[0] = sp.sunDir[0]; wp.sunDir[1] = sp.sunDir[1]; wp.sunDir[2] = sp.sunDir[2];
+        device->setWaterParams(wp);
+
+        const float dt = 1.0f / 60.0f;
+        const int kFrames = 220, kWarmup = 120;
+        for (int i = 0; i < kFrames; ++i) {
+            glfwPollEvents();
+            ophys->step(dt);
+            const float focusX = (i == 1) ? (fx + 40.0f) : fx;
+            ostream.update(oscene, *device, *ophys, focusX, fz);
+            wp.time = (float)i * dt;
+            device->setWaterParams(wp);
+            // LOOK DOWN INTO IT. At a grazing angle Schlick sends almost everything
+            // to REFLECTION, so the surface reads as sky and the depth colour is
+            // invisible no matter how good it is — the first framing of this rig
+            // proved that the hard way. water.frag says it plainly: the bed, the
+            // fish and a swimmer read THROUGH FACE-ON water, and grazing angles
+            // close it back to a surface. So the verification camera looks DOWN
+            // across the shoreline, where shallow bed and deep channel sit in one
+            // frame and the extinction gradient is the thing being photographed.
+            device->setCamera(fx - 30.0f, seaLevel + 11.0f, fz + 6.0f,
+                              sunYaw, -34.0f, 70.0f);
+
+            if (i == kFrames - 1) device->armCapture(waterShotPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) oscene.render(*device, frame);
+            device->endFrame(frame);
+        }
+        const bool wrote = device->captureFrame(waterShotPath.c_str());
+        if (wrote) {
+            const x3::rhi::RenderStats st = device->stats();
+            char rb[256];
+            std::snprintf(rb, sizeof(rb),
+                "--screenshot-water: wrote %s | seaLevel=%.1f clarity=%.2f resident=%u draws=%u tris=%u",
+                waterShotPath.c_str(), seaLevel, wp.clarity, ostream.residentCount(),
+                st.drawCalls, st.triangles);
+            x3::logInfo(rb);
+        } else x3::logError("--screenshot-water: capture FAILED");
+
+        ostream.shutdown(oscene, *device, *ophys);
+        ojobs->shutdown();
+        ophys->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
         glfwTerminate();
