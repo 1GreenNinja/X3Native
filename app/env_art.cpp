@@ -884,7 +884,7 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                d.detailUvScale,
                                d.clearcoat, d.clearcoatRough,             // car-paint clearcoat lobe
                                /*selfLight=*/0.0f, m_metalClamp,          // BLACK-PROP metallic clamp
-                               m_foliage,                                 // vegetation wrap/translucency
+                               std::max(m_foliage, d.foliage),            // host knob OR loader-recognized leaves
                                d.metallicFactor, d.roughnessFactor);      // authored glTF MR factors
         }
     }
@@ -921,7 +921,7 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                            d.detailUvScale,
                            d.clearcoat, d.clearcoatRough,
                            /*selfLight=*/0.0f, m_metalClamp,
-                           m_foliage,
+                           std::max(m_foliage, d.foliage),
                            d.metallicFactor, d.roughnessFactor);
     }
     return drawn;

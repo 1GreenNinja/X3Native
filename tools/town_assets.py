@@ -158,8 +158,8 @@ PROP_PAINT = {
     # here would clip under ACES per X3_WORLD_RULES rule 5).
     "Light":         {"color": [0.86, 0.82, 0.70, 1.0], "mr": (0.0, 0.45)},
     "Cement":        {"tex": os.path.join(BLD, "TCom_Roads0059_1_seamless_M.jpg"), "mr": (0.0, 0.93)},
-    "Billboard":     {"tex": os.path.join(PACK, "Billboards", "Materials", "Billboard_1.png"), "mr": (0.0, 0.55)},
-    "Red_Billboard": {"tex": os.path.join(PACK, "Billboards", "Materials", "Billboard_2.png"), "mr": (0.0, 0.55)},
+    "Billboard":     {"tex": os.path.join(PACK, "Billboards", "Materials", "Billboard_1.png"), "mr": (0.0, 0.55), "flat": True},
+    "Red_Billboard": {"tex": os.path.join(PACK, "Billboards", "Materials", "Billboard_2.png"), "mr": (0.0, 0.55), "flat": True},
     "White_Plastic": {"color": [0.80, 0.80, 0.78, 1.0], "mr": (0.0, 0.55)},
 }
 
@@ -259,6 +259,45 @@ def encode_texture(path):
     return buf.getvalue(), "image/jpeg"
 
 
+def find_pack_normal(src):
+    """A real normal map shipped beside the albedo, if the pack has one.
+    Handles both `X_Normal.ext` beside `X.ext` and `X_Normal` beside
+    `X_Diffuse` (the Light 2 convention)."""
+    base, ext = os.path.splitext(src)
+    stems = [base + "_Normal", base + "_N", base + "_nrm"]
+    if base.endswith("_Diffuse"):
+        stems.insert(0, base[: -len("_Diffuse")] + "_Normal")
+    for stem in stems:
+        for e in (ext, ".png", ".tif", ".jpg", ".tga"):
+            if os.path.exists(stem + e):
+                return stem + e
+    return None
+
+
+def gen_normal_bytes(path, strength=2.2):
+    """Derive a tangent-space normal map from the albedo (Phase 1 burn-down:
+    the racing pack ships NO normals for the houses). Luminance -> light blur
+    (kills photo noise) -> Sobel-style gradients -> glTF green-up encode.
+    Correct for the strongly height-correlated tiling surfaces these are
+    (clapboard, shingle, brick); printed art opts out via spec["flat"]."""
+    im = Image.open(path).convert("L")
+    if max(im.size) > MAX_DIM:
+        s = MAX_DIM / max(im.size)
+        im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
+    h = np.asarray(im, dtype=np.float32) / 255.0
+    h = (np.roll(h, 1, 0) + np.roll(h, -1, 0) + np.roll(h, 1, 1) + np.roll(h, -1, 1) + 4.0 * h) / 8.0
+    gx = (np.roll(h, -1, 1) - np.roll(h, 1, 1)) * strength
+    gy = (np.roll(h, -1, 0) - np.roll(h, 1, 0)) * strength
+    nz = np.ones_like(h)
+    inv = 1.0 / np.sqrt(gx * gx + gy * gy + nz * nz)
+    # Image y runs DOWN while glTF tangent-space green runs UP: +gy flips it.
+    n = np.stack([(-gx * inv) * 0.5 + 0.5, (gy * inv) * 0.5 + 0.5, (nz * inv) * 0.5 + 0.5], axis=-1)
+    out = Image.fromarray(np.clip(n * 255.0 + 0.5, 0, 255).astype(np.uint8), "RGB")
+    buf = BytesIO()
+    out.save(buf, "PNG", optimize=True)   # PNG: JPEG blocking would dent the normals
+    return buf.getvalue(), "image/png"
+
+
 def repaint(gltf, bin_, paint, label):
     """Point every material at its real texture / authored constants."""
     cache = {}
@@ -289,6 +328,18 @@ def repaint(gltf, bin_, paint, label):
                 cache[src] = len(gltf["textures"]) - 1
             pbr["baseColorTexture"] = {"index": cache[src], "texCoord": 0}
             pbr["baseColorFactor"] = [1.0, 1.0, 1.0, 1.0]
+            # NORMAL MAP (Phase 1 burn-down: 85/152 GLBs shipped flat; the town
+            # houses were on the priority list). Real pack normal when one
+            # exists (Light 2), albedo-derived otherwise; signs opt out (flat).
+            if not spec.get("flat"):
+                nkey = src + "|nrm"
+                if nkey not in cache:
+                    npath = find_pack_normal(src)
+                    raw, mime = encode_texture(npath) if npath else gen_normal_bytes(src)
+                    img = add_image(gltf, bin_, raw, mime)
+                    gltf.setdefault("textures", []).append({"source": img, "sampler": samp})
+                    cache[nkey] = len(gltf["textures"]) - 1
+                mat["normalTexture"] = {"index": cache[nkey], "texCoord": 0}
         else:
             pbr.pop("baseColorTexture", None)
             pbr["baseColorFactor"] = spec["color"]
