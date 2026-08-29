@@ -124,6 +124,75 @@ static TubeMesh buildTube(float radius, float length, uint32_t facets, uint32_t 
     return m;
 }
 
+// ---------------------------------------------------------------------------
+// MULTI-OCTAVE FILAMENT FIELD (the movie-grade pass).
+//
+// A single scrolling sine is the game-grade tell. Real plasma/energy imagery
+// carries structure at several scales at once: broad lobes, mid filament, fine
+// grit. This is a small tileable value-noise fBm over (u = angle, v = axis),
+// SEAMLESS around u (the lattice wraps at `period`) so the tube has no visible
+// vertical seam, and stretched hard along v so features read as FILAMENTS
+// running down the tunnel rather than as blobs.
+// ---------------------------------------------------------------------------
+static float vhash2(int x, int y, int period) {
+    // Wrap x into `period` so the field is seamless around the ring.
+    x = ((x % period) + period) % period;
+    uint32_t h = (uint32_t)(x * 374761393) ^ (uint32_t)(y * 668265263);
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= (h >> 16);
+    return (float)(h & 0xFFFFFFu) / (float)0xFFFFFF;
+}
+
+static float smoothstepf(float a) { return a * a * (3.0f - 2.0f * a); }
+
+// One octave of tileable value noise. `fu` cells around the ring (must be an
+// integer for the wrap to work), `fv` cells along the axis.
+static float valueNoise(float u, float v, int fu, float fv) {
+    const float x = u * (float)fu;
+    const float y = v * fv;
+    const int xi = (int)std::floor(x), yi = (int)std::floor(y);
+    const float xf = smoothstepf(x - (float)xi), yf = smoothstepf(y - (float)yi);
+    const float a = vhash2(xi,     yi,     fu);
+    const float b = vhash2(xi + 1, yi,     fu);
+    const float c = vhash2(xi,     yi + 1, fu);
+    const float d = vhash2(xi + 1, yi + 1, fu);
+    const float ab = a + (b - a) * xf;
+    const float cd = c + (d - c) * xf;
+    return ab + (cd - ab) * yf;
+}
+
+// Filamentary fBm: three octaves, each ~2.4x the previous frequency, weighted so
+// the broad band carries the shape and the fine band only glints. `detail`
+// shifts the whole stack up in frequency (the per-shell knob); `grain` weights
+// the top octave (near zero on the wall shell, dominant on the inner grain
+// shell). Returned in [0,1].
+static float filamentFbm(float u, float v, float detail, float grain) {
+    detail = std::max(0.25f, detail);
+    const int   f0 = std::max(3, (int)std::lround(6.0f  * detail));
+    const int   f1 = std::max(4, (int)std::lround(15.0f * detail));
+    const int   f2 = std::max(5, (int)std::lround(37.0f * detail));
+    // v frequencies are LOW relative to u so features stretch into filaments.
+    const float n0 = valueNoise(u, v, f0, 2.2f  * detail);
+    const float n1 = valueNoise(u, v, f1, 6.0f  * detail);
+    const float n2 = valueNoise(u, v, f2, 17.0f * detail);
+    const float w0 = 0.62f, w1 = 0.27f, w2 = 0.11f + grain * 0.9f;
+    const float s  = (n0 * w0 + n1 * w1 + n2 * w2) / (w0 + w1 + w2);
+    // Ridge the field: |2n-1| inverted turns smooth lobes into CRESTS with dark
+    // lanes between them — the filament read, and it puts most of the energy in
+    // thin bright lines instead of a uniform haze.
+    const float ridge = 1.0f - std::fabs(2.0f * s - 1.0f);
+    return std::clamp(ridge, 0.0f, 1.0f);
+}
+
+// SOFT ROLLOFF (Reinhard). Replaces the old hard clamp in the bake: the top of
+// the range compresses instead of clipping, so the hottest region of the
+// convergence still has gradient INSIDE it rather than being a flat white patch
+// with no detail. `peak` is the asymptote (< 1.0), so no texel ever saturates.
+static float softRolloff(float x, float peak) {
+    if (x <= 0.0f) return 0.0f;
+    return peak * (x / (1.0f + x));
+}
+
 // Crystal-matrix brightness/color at (theta around ring, zNorm along axis).
 // Returns linear RGB (HDR-ish). Shared by the bake and the test reference.
 static void evalCrystal(float theta, float zNorm, const WormholeVfx::Tuning& t,
@@ -137,10 +206,17 @@ static void evalCrystal(float theta, float zNorm, const WormholeVfx::Tuning& t,
     float fi     = std::floor(facetF);
     float jit    = hash1(fi * 1.37f);
 
-    // Energy STREAKS along the axis: bright axial ridges (baked; scrolled by the
-    // emissive pulse at runtime). A few sine harmonics keep it crystalline-busy.
+    // Energy STREAKS along the axis. WAS a single sine harmonic — one frequency,
+    // which is exactly the uniform-octave tell. Now the sine carries only the
+    // broad rhythm and a three-octave FILAMENT fBm carries the structure, so the
+    // wall has shape, filament and grain at once instead of one repeating band.
+    const float u  = theta / kTau;
     float streak = 0.5f + 0.5f * std::sin(zNorm * kTau * 6.0f + facetF * 0.7f);
     streak = std::pow(streak, 3.0f);
+    const float fil = filamentFbm(u, zNorm, t.detail, t.grain);
+    // Filament crests dominate; the sine survives as a slow modulation under
+    // them so the two frequencies beat against each other rather than lining up.
+    streak = std::clamp(0.30f * streak + 0.92f * std::pow(fil, 2.1f), 0.0f, 1.6f);
 
     // WHITE-HOT convergence: the far end (zNorm -> 1) gets hotter. The bake stores
     // a moderate gradient; render() raises it with `progress`.
@@ -165,7 +241,16 @@ static void evalCrystal(float theta, float zNorm, const WormholeVfx::Tuning& t,
     r += t.coreColor[0] * core;
     g += t.coreColor[1] * core;
     b += t.coreColor[2] * core;
-    outR = r; outG = g; outB = b;
+    // SOFT ROLLOFF, not a clamp. The bake used to hard-clamp to 1.0, which turned
+    // the whole convergence end into a flat white plate with no structure inside
+    // it — the single loudest "this is a game effect" signal there is. Compressing
+    // instead keeps a gradient all the way to the hottest texel, and because the
+    // rolloff is applied per channel with a shared drive the HUE survives (a hot
+    // blue crest desaturates toward white gradually rather than snapping to it).
+    const float peak = (t.peak > 0.05f && t.peak < 1.0f) ? t.peak : 0.94f;
+    outR = softRolloff(r, peak);
+    outG = softRolloff(g, peak);
+    outB = softRolloff(b, peak);
 }
 
 // Bake the crystal-matrix texture. U = angle around the ring, V = distance along
@@ -202,6 +287,13 @@ WormholeVfx::Tuning clampTuning(const WormholeVfx::Tuning& in) {
     if (!(t.radius > 0.0f))       t.radius        = 0.1f;
     if (!(t.flowSpeed >= 0.0f))   t.flowSpeed     = 0.0f;
     if (!(t.facetDensity >= 3.0f))t.facetDensity  = 3.0f;
+    // Multi-frequency bake controls. `peak` MUST stay strictly below 1.0 — that
+    // is what guarantees no baked texel saturates and therefore that the hottest
+    // region of the tunnel keeps gradient instead of clipping to flat white.
+    if (!(t.detail >= 0.25f))     t.detail        = 0.25f;
+    if (!(t.grain  >= 0.0f))      t.grain         = 0.0f;
+    if (t.grain > 1.0f)           t.grain         = 1.0f;
+    if (!(t.peak > 0.05f) || t.peak >= 1.0f) t.peak = 0.94f;
     return t;
 }
 
@@ -218,25 +310,62 @@ float WormholeVfx::sampleFacetBrightness(float theta, float zNorm, const Tuning&
 // ---------------------------------------------------------------------------
 // init / shutdown / setOrigin
 // ---------------------------------------------------------------------------
+// Per-shell recipe: radius as a fraction of the tuned radius, bake feature
+// frequency, grain weight, facet count. Shell 0 is the OPAQUE wall (broad, the
+// depth cue); 1 and 2 are additive glass at progressively finer detail. The
+// radii are deliberately NOT evenly spaced — an on-axis camera gets more
+// parallax separation from a tight inner shell than from an evenly-stepped one.
+namespace {
+struct ShellRecipe { float radiusMul; float detail; float grain; float facetMul; };
+const ShellRecipe kShellRecipe[kWormholeShells] = {
+    { 1.00f, 1.00f, 0.10f, 1.00f },   // WALL     — broad filament, slow
+    { 0.72f, 2.70f, 0.35f, 0.75f },   // FILAMENT — mid twist, counter-rolls
+    { 0.46f, 6.50f, 1.00f, 0.55f },   // GRAIN    — fine sparks, fastest
+};
+} // namespace
+
 void WormholeVfx::init(rhi::IRenderDevice& dev, const Tuning& t) {
     if (m_initialized) return;
     const Tuning c = clampTuning(t);
 
-    // Faceted tube. `facetDensity` panes around the ring (the crystalline read);
-    // rings along the axis tessellate the length so the camera always has facets
-    // immediately ahead. 64 axial rings over a long tunnel keeps the streaks crisp.
-    const uint32_t facets = std::max<uint32_t>(3u, (uint32_t)std::lround(c.facetDensity));
-    const uint32_t rings  = 64;
-    TubeMesh tube = buildTube(c.radius, c.length, facets, rings);
-    m_mesh = dev.createMesh(tube.verts.data(), (uint32_t)tube.verts.size(),
-                            tube.index.data(), (uint32_t)tube.index.size());
+    // THREE CONCENTRIC SHELLS. Faceted tubes: `facetDensity` panes around the
+    // ring (the crystalline read); 64 axial rings over the length keeps the
+    // filaments crisp immediately ahead of the camera. Each shell bakes its OWN
+    // texture at its own feature frequency — that is where the multi-scale
+    // detail comes from, since the RHI exposes no custom fragment pipeline.
+    bool ok = true;
+    for (int s = 0; s < kWormholeShells; ++s) {
+        const ShellRecipe& rec = kShellRecipe[s];
+        const float    rad    = c.radius * rec.radiusMul;
+        const uint32_t facets = std::max<uint32_t>(
+            3u, (uint32_t)std::lround(c.facetDensity * rec.facetMul));
+        const uint32_t rings  = 64;
+        TubeMesh tube = buildTube(rad, c.length, facets, rings);
+        m_shellMesh[s] = dev.createMesh(tube.verts.data(), (uint32_t)tube.verts.size(),
+                                        tube.index.data(), (uint32_t)tube.index.size());
+        m_shellRadius[s] = rad;
 
-    // Bake the crystal-matrix texture. 512 (U, around) x 1024 (V, along axis):
-    // the axis carries the streak/convergence detail so it gets the higher res.
-    std::vector<uint8_t> bake = bakeCrystalRGBA(/*w=*/512, /*h=*/1024, c);
-    m_tex = dev.createTexture(bake.data(), 512, 1024, /*srgb=*/false);
+        Tuning sc = c;
+        sc.detail = c.detail * rec.detail;
+        sc.grain  = std::min(1.0f, c.grain + rec.grain);
+        // The inner shells are ADDITIVE, so their bakes are pushed DARKER on
+        // average (mostly black with bright crests). Otherwise three stacked
+        // layers sum into exactly the uniform wash this effect must never be.
+        if (s > 0) {
+            sc.peak = c.peak * (s == 1 ? 0.85f : 0.72f);
+        }
+        // 512 (U, around) x 1024 (V, along axis): the axis carries the filament
+        // and convergence detail, so it gets the higher resolution.
+        std::vector<uint8_t> bake = bakeCrystalRGBA(/*w=*/512, /*h=*/1024, sc);
+        m_shellTex[s] = dev.createTexture(bake.data(), 512, 1024, /*srgb=*/false);
+        ok = ok && m_shellMesh[s].valid() && m_shellTex[s].valid();
+    }
 
-    m_initialized = m_mesh.valid() && m_tex.valid();
+    // Shell 0's handles are the legacy mesh()/texture() surface.
+    m_mesh = m_shellMesh[0];
+    m_tex  = m_shellTex[0];
+
+    m_initialized = ok;
     m_lastTuning  = c;
     if (!m_initialized) {
         x3::logError("WormholeVfx::init: mesh or texture creation failed");
@@ -247,10 +376,24 @@ void WormholeVfx::setOrigin(float ox, float oy, float oz) {
     m_ox = ox; m_oy = oy; m_oz = oz;
 }
 
+void WormholeVfx::setRoll(float rad) { m_roll = rad; }
+
+float WormholeVfx::shellRadius(int shell) const {
+    if (shell < 0) shell = 0;
+    if (shell >= kWormholeShells) shell = kWormholeShells - 1;
+    return m_shellRadius[shell];
+}
+
 void WormholeVfx::shutdown(rhi::IRenderDevice& dev) {
-    if (m_mesh.valid()) { dev.destroyMesh(m_mesh); m_mesh = rhi::MeshHandle{}; }
-    if (m_tex.valid())  { dev.destroyTexture(m_tex); m_tex = rhi::TextureHandle{}; }
+    for (int s = 0; s < kWormholeShells; ++s) {
+        if (m_shellMesh[s].valid()) { dev.destroyMesh(m_shellMesh[s]);   m_shellMesh[s] = rhi::MeshHandle{}; }
+        if (m_shellTex[s].valid())  { dev.destroyTexture(m_shellTex[s]); m_shellTex[s]  = rhi::TextureHandle{}; }
+        m_shellRadius[s] = 0.0f;
+    }
+    m_mesh = rhi::MeshHandle{};
+    m_tex  = rhi::TextureHandle{};
     m_initialized = false;
+    m_roll = 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,28 +426,98 @@ void WormholeVfx::render(rhi::IRenderDevice& dev, const rhi::FrameContext& fr,
     m_lastCore = coreStrength;
     const float strength = coreStrength * flow;
 
-    // Model: translate the tunnel mouth to the placed origin (no rotation -- the
-    // tube is authored along +Z; S3 can pre-rotate by composing into setOrigin's
-    // world if needed, but the showcase flies straight down +Z).
+    // Legacy showcase draw: all three shells at the placed origin. The inner two
+    // counter-roll against the wall even here, so `--world wormhole` shows the
+    // same multi-frequency motion the ride does.
+    const float o[3] = { m_ox, m_oy, m_oz };
+    for (int s = 0; s < kWormholeShells; ++s) {
+        const float sign = (s % 2 == 0) ? 1.0f : -1.0f;
+        const float rate = 0.10f + 0.16f * (float)s;
+        (void)strength;   // renderShell derives its own per-shell flow pulse
+        renderShell(dev, fr, s, o, m_roll + sign * timeSec * rate,
+                    /*gain=*/1.0f, timeSec, progress);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// renderShell — ONE concentric shell at ONE origin. The ride's building block.
+// ---------------------------------------------------------------------------
+void WormholeVfx::renderShell(rhi::IRenderDevice& dev, const rhi::FrameContext& fr,
+                              int shell, const float origin[3], float rollRad,
+                              float gain, float timeSec, float progress) {
+    if (!m_initialized || !origin) return;
+    if (shell < 0) shell = 0;
+    if (shell >= kWormholeShells) shell = kWormholeShells - 1;
+    if (!m_shellMesh[shell].valid() || !m_shellTex[shell].valid()) return;
+
+    const Tuning& c = m_lastTuning;
+    progress = std::clamp(progress, 0.0f, 1.0f);
+    gain     = std::max(0.0f, gain);
+
+    // Model = T(origin) * Rz(roll). The tube is centred on X/Y and runs along
+    // +Z, so Rz is a pure spin of the throat about its own axis; the translation
+    // then places the mouth (and, when the caller offsets X/Y, banks the whole
+    // tunnel laterally around whatever is inside it).
+    const float cr = std::cos(rollRad), sr = std::sin(rollRad);
     const float m[16] = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        m_ox, m_oy, m_oz, 1.0f
+         cr,        sr,        0.0f, 0.0f,
+        -sr,        cr,        0.0f, 0.0f,
+         0.0f,      0.0f,      1.0f, 0.0f,
+         origin[0], origin[1], origin[2], 1.0f
     };
-    // baseColorFactor: the per-pixel crystal texel is MULTIPLIED by this -- bright
-    // streaks/glints/convergence land at ~strength (HDR -> bloom) while the dark
-    // facet valleys stay near-black, so the tunnel reads as faceted crystal with
-    // contrast (not a flat bloomed field). A slight blue bias keeps it Salvari.
-    const float baseFactor[4] = {
-        strength, strength, strength * 1.08f, 1.0f
-    };
-    // Per-object EMISSIVE ZERO: a uniform emissive would add a flat glow to EVERY
-    // facet (mesh.frag adds it independent of the texture), washing out the crystal
-    // contrast + blooming the whole frame white. The per-pixel texture is the sole
-    // brightness source; albedo*lighting + the HDR baseColor carry the glow.
-    const float emissive[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    dev.drawMeshEmissive(fr, m_mesh, m_tex, baseFactor, emissive, m);
+
+    // ENERGY-FLOW PULSE, per shell. Each shell pulses at its OWN rate and phase
+    // so the three layers never breathe in unison — the thing that would collapse
+    // three frequencies back into one.
+    const float rateMul = 1.0f + 0.85f * (float)shell;
+    const float phase   = 1.37f * (float)shell;
+    const float flow    = 1.0f + 0.22f * std::sin(timeSec * c.flowSpeed * rateMul + phase);
+
+    // kBaseGlow lifts the baked crystal (linear, peak < 1 by construction) into
+    // the HDR bloom range; progress sharpens it toward white-hot convergence.
+    // Brightness comes from BLOOM ON STRUCTURED CONTENT — a per-pixel texture
+    // multiplied by an HDR factor — never from a uniform per-object lift.
+    const float kBaseGlow  = 2.2f;
+    const float shellGlow  = (shell == 0) ? 1.0f : (shell == 1 ? 0.62f : 0.38f);
+    const float coreStr    = kBaseGlow * (1.0f + 1.4f * progress * progress);
+    const float strength   = coreStr * flow * gain * shellGlow;
+    m_lastCore     = coreStr;
+    m_lastProgress = progress;
+
+    if (shell == 0) {
+        // THE WALL: opaque, through the emissive path. baseColorFactor carries the
+        // HDR; the per-object emissive stays ZERO. A uniform emissive would add a
+        // flat glow to every facet independent of the texture, washing out the
+        // contrast and blooming the frame white — the failure this effect has lost
+        // three separate iterations to. Do not "fix" darkness by lifting it here.
+        const float baseFactor[4] = { strength, strength, strength * 1.08f, 1.0f };
+        const float emissive[4]   = { 0.0f, 0.0f, 0.0f, 0.0f };
+        dev.drawMeshEmissive(fr, m_shellMesh[0], m_shellTex[0], baseFactor, emissive, m);
+        return;
+    }
+
+    // THE INNER SHELLS: ADDITIVE glass with the shell's own texture bound, so the
+    // contribution is emissive * TEXEL — black texels stay black and the layers
+    // COMPOSITE over the wall instead of occluding it. `additive` doubles as the
+    // view-angle rim-fade exponent: a low value keeps the shell readable at the
+    // grazing angles an on-axis camera sees most of the tube through.
+    rhi::IRenderDevice::GlassMaterial gm{};
+    gm.opacity    = 0.0f;                 // additive mode ignores it; keep it clear
+    gm.refraction = 0.0f;
+    gm.specular   = 0.0f;
+    gm.additive   = (shell == 1) ? 0.55f : 0.22f;
+    gm.tint[0] = 1.0f; gm.tint[1] = 1.0f; gm.tint[2] = 1.0f;
+    const float baseFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    // A slight spectral split between the layers: the mid shell keeps the Salvari
+    // blue, the grain shell pushes violet, so the stack has colour depth instead
+    // of three copies of one hue.
+    const float tintR = (shell == 1) ? 0.86f : 0.95f;
+    const float tintG = (shell == 1) ? 0.94f : 0.70f;
+    const float tintB = 1.12f;
+    const float emissive[4] = { strength * tintR, strength * tintG,
+                                strength * tintB, 1.0f };
+    dev.drawMeshGlass(fr, m_shellMesh[shell], m_shellTex[shell], baseFactor, emissive,
+                      gm, m, /*alphaBlend=*/true);
 }
 
 // ---------------------------------------------------------------------------

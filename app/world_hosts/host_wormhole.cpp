@@ -54,9 +54,29 @@ int hostWormholeTransit(HostContext& hc) {
     x3::space::SpaceLayer L;
     L.init();
     x3::space::WormholeTransit wt;
-    const float kDuration = 6.0f;
+    const float kDuration = 8.5f;
     wt.init(*device, L, kDuration);
-    L.requestWormhole(/*destSystemId=*/42u);
+    // The showcase rides the SAME plan shape the live world uses, so this world
+    // and `--world space`'s transit are one implementation with two entrances.
+    {
+        x3::space::TransitPlan pl;
+        pl.corridorName = "THE GAMMA CORRIDOR";
+        pl.fromSystem   = "Kethzar Prime";
+        pl.toSystem     = "Sirius";
+        pl.toSystemId   = "sirius";
+        pl.distanceLy   = 8.6f;
+        pl.stable       = true;
+        wt.begin(pl);
+    }
+    L.requestWormhole(/*destSystemId=*/900u);
+    // Engine yaw convention (docs/COORDINATES.md): forward = (cos yaw, 0, sin yaw),
+    // so yaw = pi/2 looks DOWN +Z, the axis the crystal tube is authored along.
+    // This showcase used to pass yaw 0 with the camera sliding along +Z: it stood
+    // inside the tube and looked SIDEWAYS at the wall, which is why it never read
+    // as a tunnel. The camera now sits on the axis and the throat is assembled
+    // around it.
+    const float kAxisYaw = 1.57079633f;
+    const float kAnchor[3] = { 0.0f, 0.0f, 0.0f };
 
     if (hc.headless) {
         const std::string outPath = hc.screenshot ? hc.screenshotPath
@@ -68,15 +88,15 @@ int hostWormholeTransit(HostContext& hc) {
             glfwPollEvents();
             L.update(dt);
             t += dt;
-            float camZ = 4.0f + t * 6.0f;
-            device->setCamera(0.0f, 0.0f, camZ, 0.0f, 0.0f, 75.0f);
+            device->setCamera(kAnchor[0], kAnchor[1], kAnchor[2],
+                              kAxisYaw, 0.0f, 65.0f + wt.fovPunchDeg());
             if (hc.shotCamOverride) {
                 device->setCamera(hc.shotCam[0], hc.shotCam[1], hc.shotCam[2],
                                   hc.shotCam[3], hc.shotCam[4], 75.0f);
             }
             if (i == kFrames - 1) device->armCapture(outPath.c_str());
             auto frame = device->beginFrame();
-            if (frame.valid) wt.render(*device, frame, nullptr, t);
+            if (frame.valid) wt.renderTunnel(*device, frame, kAnchor, t);
         device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(outPath.c_str());
@@ -112,10 +132,10 @@ int hostWormholeTransit(HostContext& hc) {
         L.update(dt);
         int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
         if (cw != lastWsWT || chh != lastHsWT) { lastWsWT = cw; lastHsWT = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
-        float camZ = 4.0f + t * 6.0f;
-        device->setCamera(0.0f, 0.0f, camZ, 0.0f, 0.0f, 75.0f);
+        device->setCamera(kAnchor[0], kAnchor[1], kAnchor[2],
+                          kAxisYaw, 0.0f, 65.0f + wt.fovPunchDeg());
         auto frame = device->beginFrame();
-        if (frame.valid) wt.render(*device, frame, nullptr, t);
+        if (frame.valid) wt.renderTunnel(*device, frame, kAnchor, t);
         shell.draw(frame);
         device->endFrame(frame);
     }

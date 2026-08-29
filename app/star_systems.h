@@ -57,6 +57,23 @@ struct StarSystem {
     float                   distanceLy; // light-years from Sol
     float                   starColor[3];
     const char*             starClass;  // e.g. "G2V", "K2V", "M6.5V red dwarf"
+    // ---- THE STAR AS A RENDERED BODY AND AS A LIGHT (feat/wormhole-transit-ride)
+    // Star COLOUR was already a per-system property, but nothing said how BIG or
+    // how BRIGHT the star is, so every system would have rendered the same disc
+    // under a different tint. Interstellar transit made that a gap worth closing:
+    // arriving somewhere else has to read as a different place at a glance, and
+    // the single strongest cue is the star itself — a dim little red dwarf is not
+    // an amber hypergiant, and no amount of sky tint substitutes for that.
+    //
+    // Both are RATIOS against the reference star, Kethzar Prime (the system the
+    // `--world space` dogfight is set in), so 1.0/1.0 reproduces exactly what
+    // that world already renders and every value is read as "relative to home".
+    //   starRadiusMul  — the rendered disc radius, x the reference.
+    //   starLuminosity — the key-light intensity the star casts, x the reference.
+    //                    This is what makes a different star CHANGE THE SCENE
+    //                    (hull shading, not just the skybox).
+    float                   starRadiusMul  = 1.0f;
+    float                   starLuminosity = 1.0f;
     std::vector<SystemBody> bodies;
 };
 

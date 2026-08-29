@@ -30,6 +30,7 @@ static std::vector<StarSystem> buildTable() {
     // -- Sol (home; G2V) ----------------------------------------------------
     t.push_back({
         "sol", "Sol", 0.0f, { 1.00f, 0.96f, 0.86f }, "G2V",
+        /*radiusMul=*/0.55f, /*luminosity=*/1.15f,
         {
             { BodyType::Sun,          28.0f, 16.0f, 3.5f, "Sol" },
             { BodyType::Terrestrial, -22.0f, 22.0f, 7.0f, "Earth" },
@@ -41,6 +42,7 @@ static std::vector<StarSystem> buildTable() {
     // -- Alpha Centauri (real, 4.37 ly; G2V + K1V pair) ---------------------
     t.push_back({
         "alpha_centauri", "Alpha Centauri", 4.37f, { 1.00f, 0.93f, 0.80f }, "G2V + K1V",
+        /*radiusMul=*/0.58f, /*luminosity=*/1.10f,
         {
             { BodyType::Sun,          10.0f, 20.0f, 3.8f, "Rigil Kentaurus" },
             { BodyType::Terrestrial,  62.0f, 26.0f, 5.5f, "Proxima b" },
@@ -51,6 +53,7 @@ static std::vector<StarSystem> buildTable() {
     // -- Tau Ceti (real, 11.9 ly; G8.5V, several rocky worlds) --------------
     t.push_back({
         "tau_ceti", "Tau Ceti", 11.9f, { 1.00f, 0.90f, 0.72f }, "G8.5V",
+        /*radiusMul=*/0.50f, /*luminosity=*/0.95f,
         {
             { BodyType::Sun,         -18.0f, 18.0f, 3.4f, "Tau Ceti" },
             { BodyType::Terrestrial,  34.0f, 24.0f, 6.0f, "Tau Ceti e" },
@@ -62,6 +65,7 @@ static std::vector<StarSystem> buildTable() {
     // -- Epsilon Eridani ("Eridani", real, 10.5 ly; K2V orange, a gas giant) -
     t.push_back({
         "epsilon_eridani", "Epsilon Eridani", 10.5f, { 1.00f, 0.72f, 0.42f }, "K2V",
+        /*radiusMul=*/0.46f, /*luminosity=*/0.80f,
         {
             { BodyType::Sun,          24.0f, 17.0f, 3.6f, "Eridani" },
             { BodyType::Gas,        -130.0f, 26.0f, 8.5f, "Eridani b (AEgir)" },
@@ -73,6 +77,7 @@ static std::vector<StarSystem> buildTable() {
     // -- Wolf 359 (real, 7.86 ly; M6.5V red dwarf, dim) ---------------------
     t.push_back({
         "wolf_359", "Wolf 359", 7.86f, { 1.00f, 0.45f, 0.30f }, "M6.5V red dwarf",
+        /*radiusMul=*/0.30f, /*luminosity=*/0.42f,
         {
             { BodyType::Sun,          -8.0f, 15.0f, 2.6f, "Wolf 359" },
             { BodyType::Ice,          48.0f, 28.0f, 3.0f, "Wolf 359 b" },
@@ -83,12 +88,32 @@ static std::vector<StarSystem> buildTable() {
     // -- TRAPPIST-1 (real, 40.7 ly; M8V ultracool dwarf, PACKED rocky worlds) -
     t.push_back({
         "trappist_1", "TRAPPIST-1", 40.7f, { 1.00f, 0.42f, 0.28f }, "M8V red dwarf",
+        /*radiusMul=*/0.26f, /*luminosity=*/0.38f,
         {
             { BodyType::Sun,           0.0f, 14.0f, 2.4f, "TRAPPIST-1" },
             { BodyType::Terrestrial,  30.0f, 22.0f, 5.5f, "TRAPPIST-1e" },
             { BodyType::Ice,          58.0f, 30.0f, 3.4f, "TRAPPIST-1f" },
             { BodyType::Terrestrial,  84.0f, 20.0f, 4.5f, "TRAPPIST-1g" },
             { BodyType::Lava,        -34.0f, 24.0f, 3.0f, "TRAPPIST-1b" },
+        }
+    });
+
+    // -- Sirius (real, 8.6 ly; A1V BLUE-WHITE, brightest star in Earth's sky) --
+    //    ADDED for the wormhole-transit lane. The registry had amber, orange and
+    //    two red dwarfs but nothing on the HOT side of the sequence — so every
+    //    possible arrival from amber Kethzar was a shift within one half of the
+    //    spectrum. A blue-white A-type is the far end: a bigger, hotter, harder
+    //    star that cannot be mistaken for home at a glance, which is exactly what
+    //    "the transit took you somewhere else" has to read as in a single frame.
+    //    Sirius B, the white-dwarf companion, hangs as a tiny hot pinpoint.
+    t.push_back({
+        "sirius", "Sirius", 8.60f, { 0.72f, 0.82f, 1.00f }, "A1V blue-white",
+        /*radiusMul=*/1.30f, /*luminosity=*/1.85f,
+        {
+            { BodyType::Sun,           38.0f, 13.0f, 5.2f, "Sirius A" },       // blue-white primary
+            { BodyType::Ice,          -52.0f, 11.0f, 6.5f, "Sirius A-II" },    // glacial, close in
+            { BodyType::Gas,          148.0f, 15.0f, 8.0f, "Sirius A-V" },
+            { BodyType::Moon,        -128.0f, 20.0f, 1.4f, "Sirius B (white dwarf)" },
         }
     });
 
@@ -103,6 +128,7 @@ static std::vector<StarSystem> buildTable() {
     //    turns, a body drifts through the view. The hero lava world is huge.
     t.push_back({
         "kethzar_prime", "Kethzar Prime", 214.0f, { 1.00f, 0.62f, 0.20f }, "K0 hypergiant (Kethzar)",
+        /*radiusMul=*/1.00f, /*luminosity=*/1.00f,   // THE REFERENCE STAR
         {
             { BodyType::Sun,          45.0f, 12.0f,  4.6f, "Kethzar" },       // amber star, near the plane
             { BodyType::Lava,        -35.0f,  9.0f, 12.0f, "Kethzar II" },    // the HERO world — dominant
@@ -164,6 +190,13 @@ bool validateRegistry(std::string* err) {
         for (int c = 0; c < 3; ++c)
             if (s.starColor[c] < 0.0f || s.starColor[c] > 1.0f)
                 return fail(tag + "star colour out of [0,1]");
+        // The star as a RENDERED BODY and as a LIGHT. Both are ratios against the
+        // reference star, so 0 or a wild value would silently black out or blow out
+        // an arrival sky - worth failing the registry over rather than shipping.
+        if (!(s.starRadiusMul > 0.0f) || s.starRadiusMul > 8.0f)
+            return fail(tag + "star radius multiplier out of (0,8]");
+        if (!(s.starLuminosity > 0.0f) || s.starLuminosity > 8.0f)
+            return fail(tag + "star luminosity out of (0,8]");
         if (s.bodies.empty())    return fail(tag + "no bodies");
         int nSun = 0, nOther = 0;
         for (const SystemBody& b : s.bodies) {

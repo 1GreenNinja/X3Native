@@ -17,12 +17,14 @@
 #include "../space/space_layer.h"        // S0 spine — the transit state machine
 #include "../space/wormhole_transit.h"   // S3 runner + the crystal-matrix ride
 #include "../ship_comms.h"               // the AEGIS wormhole-stability advisory bus
+#include "../star_systems.h"             // x3::starsys — the star a transit lands you under
 #include "../settings_io.h"   // readFlightMode (persisted Settings-menu / console pick)
 #include "../audio_root.h"    // resolveAudio(...) — flight engine hum / boost / mode blip WAVs
 #include "engine/audio/IAudioSystem.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>   // std::getenv / std::atoi (X3_SUN_DIVE_TEST variant parse)
+#include <cstring>   // std::strlen / std::strstr (the transit HUD overflow field)
 #include <filesystem>
 #include <vector>
 
@@ -266,6 +268,111 @@ int hostSpace(HostContext& hc) {
         // Slots 3-4 start dark; updateDynamicLights fills them once the pilot exists.
         plights[3] = {}; plights[4] = {};
         device->setPointLights(plights, (uint32_t)liveLightCount);
+
+        // ===================== THE LOCAL STAR ================================
+        // `--world space` is set in KETHZAR PRIME (x3::starsys::kDogfightSystemId):
+        // the amber hypergiant the sun disc, the key/fill/rim rig and the sky were
+        // all tuned against. A wormhole transit LANDS YOU SOMEWHERE ELSE, and the
+        // single cue that makes that read in one glance is the star — a different
+        // colour, a different brightness, and a key light on the hull that changes
+        // with it. A retinted skybox alone is wallpaper; a retinted KEY LIGHT is a
+        // different place.
+        //
+        // Everything below is INERT until a transit arrives: `starChanged` is false,
+        // so every colour and every light is exactly the authored Kethzar value and
+        // the departure frame is byte-identical to what shipped.
+        const x3::starsys::StarSystem* homeSys =
+            x3::starsys::findSystem(x3::starsys::kDogfightSystemId);
+        float       starRGB[3]   = { 1.0f, 0.62f, 0.20f };  // current local star colour
+        float       starLumRatio = 1.0f;                    // x the reference star
+        bool        starChanged  = false;                   // has a transit re-dressed us?
+        std::string systemName   = homeSys ? homeSys->name : "Kethzar Prime";
+        std::string systemClass  = homeSys ? homeSys->starClass : "K0 hypergiant";
+        if (homeSys) {
+            starRGB[0] = homeSys->starColor[0];
+            starRGB[1] = homeSys->starColor[1];
+            starRGB[2] = homeSys->starColor[2];
+        }
+        // The AUTHORED Kethzar key/fill/rim, kept so the per-system retint is a
+        // ratio against the tuned rig rather than a replacement for it.
+        const float baseKey[3]  = { plights[0].color[0], plights[0].color[1], plights[0].color[2] };
+        const float baseFill[3] = { plights[1].color[0], plights[1].color[1], plights[1].color[2] };
+        const float baseRim[3]  = { plights[2].color[0], plights[2].color[1], plights[2].color[2] };
+        const float baseSkyInt  = skyP.sunIntensity;
+
+        // Re-chromatise an AUTHORED Kethzar-amber colour for the current star.
+        //
+        // It would be easy and wrong to multiply the authored triple by a colour
+        // ratio: the amber ramp has near-zero blue, so any ratio big enough to make
+        // a blue star blue destroys the carefully tuned limb/shell falloff. Instead
+        // this preserves the authored LUMINANCE exactly — every gradient, every
+        // limb-darkening cue, every shell step survives — and swaps only the CHROMA
+        // for the local star's. The result is normalised by its own max channel
+        // rather than clamped per channel, so a hot star cannot flatten to pure
+        // white: it lands ON the star's colour instead of clipping past it.
+        auto starCol = [&](float r, float g, float b, float out3[3]) {
+            if (!starChanged) { out3[0] = r; out3[1] = g; out3[2] = b; return; }
+            const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+            const float sl  = std::max(0.05f, 0.2126f * starRGB[0] +
+                                              0.7152f * starRGB[1] +
+                                              0.0722f * starRGB[2]);
+            const float k = lum * std::min(1.35f, std::max(0.55f, starLumRatio)) / sl;
+            float v[3] = { k * starRGB[0], k * starRGB[1], k * starRGB[2] };
+            const float mx = std::max(v[0], std::max(v[1], v[2]));
+            if (mx > 1.0f) { v[0] /= mx; v[1] /= mx; v[2] /= mx; }
+            out3[0] = v[0]; out3[1] = v[1]; out3[2] = v[2];
+        };
+        // Emissive DRIVE multiplier for the star's body. Bounded hard: the sun's
+        // own notes record that pushing the core emissive past ~1.7 blows the whole
+        // disc over the bloom knee into a flat pale wafer with no granulation left.
+        // A brighter star gets a brighter star, not a white hole in the frame.
+        auto starEmMul = [&]() -> float {
+            return starChanged ? std::min(1.25f, std::max(0.55f, starLumRatio)) : 1.0f;
+        };
+
+        // ARRIVE somewhere. Re-dresses the star colour, the star's LIGHT (key/fill/
+        // rim + the sky's directional key, which is what actually shades the hull),
+        // and the starfield phase, so the sky overhead is a different arrangement of
+        // stars under a different-coloured sun. Called once per arrival.
+        auto applySystem = [&](const char* sysId) -> bool {
+            const x3::starsys::StarSystem* s = sysId ? x3::starsys::findSystem(sysId) : nullptr;
+            if (!s || !homeSys) return false;
+            starRGB[0] = s->starColor[0];
+            starRGB[1] = s->starColor[1];
+            starRGB[2] = s->starColor[2];
+            starLumRatio = (homeSys->starLuminosity > 0.01f)
+                         ? s->starLuminosity / homeSys->starLuminosity : 1.0f;
+            systemName   = s->name;
+            systemClass  = s->starClass;
+            starChanged  = true;
+            // THE SKY. sunColor is the analytic sky's own star disc + its
+            // directional key; sunIntensity is how hard that key shades hulls.
+            const float ei = std::min(1.6f, std::max(0.35f, starLumRatio));
+            skyP.sunColor[0] = starRGB[0];
+            skyP.sunColor[1] = starRGB[1];
+            skyP.sunColor[2] = starRGB[2];
+            skyP.sunIntensity = baseSkyInt * ei;
+            // A whisper of the star's chroma into the deep-space floor, so even the
+            // black between the stars is not the black of the system you left.
+            skyP.zenith[0]  = 0.0022f + 0.0016f * starRGB[0];
+            skyP.zenith[1]  = 0.0022f + 0.0016f * starRGB[1];
+            skyP.zenith[2]  = 0.0030f + 0.0020f * starRGB[2];
+            skyP.horizon[0] = 0.0030f + 0.0020f * starRGB[0];
+            skyP.horizon[1] = 0.0034f + 0.0022f * starRGB[1];
+            skyP.horizon[2] = 0.0044f + 0.0028f * starRGB[2];
+            device->setSkyParams(skyP);
+            // THE STARFIELD. The analytic sky's procedural stars rotate with sky
+            // time, so a large jump in phase is a genuinely DIFFERENT arrangement of
+            // stars overhead — not the same sky with a filter over it. Derived from
+            // the system id, so a given destination always has its own sky.
+            uint32_t hsh = 2166136261u;
+            for (const char* c = s->id; *c; ++c) { hsh ^= (uint32_t)(unsigned char)*c; hsh *= 16777619u; }
+            device->setSkyTime(10.0f + (float)(hsh % 9973u) * 0.037f);
+            x3::logInfo(std::string("--world space: ARRIVED in ") + s->name + " (" + s->starClass +
+                        ") star=(" + std::to_string(starRGB[0]) + "," + std::to_string(starRGB[1]) +
+                        "," + std::to_string(starRGB[2]) + ") keyLum x" + std::to_string(starLumRatio));
+            return true;
+        };
 
         // ---- Player ship (the SpacePilotController) -----------------------
         // FLIGHT MODE: seed from the persisted Settings-menu / console pick (the
@@ -684,11 +791,61 @@ int hostSpace(HostContext& hc) {
         x3::space::SpaceLayer spaceLayer;
         spaceLayer.init();
         x3::space::WormholeTransit transit;
-        transit.init(*device, spaceLayer, /*durationSec=*/5.0f);
+        // 5 s was a fade with a world swap behind it. 8.5 s is a RIDE: a violent
+        // entry punch, a long stretch inside the throat with the instruments off
+        // their scales, and a bloom out the far side. Long enough to be a journey,
+        // short enough that the player never wants the helm back.
+        transit.init(*device, spaceLayer, /*durationSec=*/8.5f);
         bool  transitEngaged = false;   // true from entry until arrival
         int   transitFrom    = -1;      // which wormhole swallowed us
         float transitClock   = 0.0f;
         float commsPublishAcc = 0.0f;   // the advisory is a ~10 Hz duty, not per-frame
+
+        // ================= WHERE EACH CORRIDOR ACTUALLY GOES ==================
+        // The field seeds two holes (wormhole.cpp seedSpaceWormholes): THE GAMMA
+        // CORRIDOR (stable, id 900) and THE DERELICT APERTURE (unstable, id 901).
+        // Until now requestWormhole() DISCARDED its destination argument and both
+        // ends of the jump were the same star system - the transit was a loop.
+        //
+        //   THE GAMMA CORRIDOR    -> SIRIUS. Amber K0 hypergiant to A1V BLUE-WHITE:
+        //     the far end of the spectrum from home, so "we are somewhere else" is
+        //     legible in a single frame from the colour of the star alone.
+        //   THE DERELICT APERTURE -> plotted for Tau Ceti, ARRIVES at WOLF 359.
+        //     An unstable corridor does not put you where you aimed. A dim little
+        //     M6.5V red dwarf is as far from a blue-white A-type as the registry
+        //     goes, so the two destinations cannot be confused with each other
+        //     either.
+        auto planFor = [&](const x3::space::Wormhole& w) {
+            x3::space::TransitPlan pl;
+            pl.corridorName = w.name();
+            pl.fromSystem   = systemName.c_str();
+            pl.stable       = w.stable();
+            const char* wantId = (w.id() == 901) ? "tau_ceti" : "sirius";
+            // An UNSTABLE corridor lands you somewhere other than the plot. The
+            // AEGIS script says so; the sky proves it.
+            const char* gotId  = pl.stable ? wantId : "wolf_359";
+            const x3::starsys::StarSystem* want = x3::starsys::findSystem(wantId);
+            const x3::starsys::StarSystem* got  = x3::starsys::findSystem(gotId);
+            pl.toSystem   = want ? want->name : "Sirius";     // what AEGIS PLOTTED
+            pl.toSystemId = got  ? got->id    : "sirius";     // where you ARRIVE
+            pl.distanceLy = want ? want->distanceLy : 8.6f;
+            return pl;
+        };
+
+        // ================= THE RIDE FRAME ====================================
+        // The transit plays in its own stretch of world, far from the fleet and the
+        // star, with the world scene NOT drawn: for eight and a half seconds the
+        // throat IS the frame. Assembling the tunnel around a fixed anchor (rather
+        // than around wherever the player happened to enter) keeps the coordinates
+        // small, so the walls never lose precision no matter how far out the
+        // wormhole sat.
+        const x3::phys::Vec3 kTransitAnchor{ 0.0f, 9000.0f, 0.0f };
+        // Engine yaw convention (docs/COORDINATES.md): forward = (cos yaw, 0, sin
+        // yaw), so yaw = pi/2 looks down +Z - which is the axis the crystal tube is
+        // authored along. Looking DOWN the tunnel, not across it. (The old
+        // --world wormhole-transit showcase used yaw 0: it stood inside the tube
+        // and looked sideways at the wall.)
+        const float kTransitYaw = 1.57079633f;
 
         const float dt = 1.0f / 60.0f;
 
@@ -957,12 +1114,17 @@ int hostSpace(HostContext& hc) {
                 // SATURATED (low green/blue) on purpose: a pale/gold halo reads as a
                 // bright ring hugging the core, a saturated-orange one melts into the
                 // corona (learned the hard way — the gold version popped a ring).
-                const float r = 1.0f;
-                const float g = 0.40f - 0.30f * f;
-                const float b = 0.11f - 0.09f * f;
+                // THE LOCAL STAR: starCol() preserves this authored luminance ramp
+                // exactly (limb -> outer falloff, the whole reason the corona melts
+                // instead of ringing) and swaps only the CHROMA for the star we are
+                // actually under. Before any transit it is the identity.
+                float cc[3];
+                starCol(1.0f, std::max(0.0f, 0.40f - 0.30f * f),
+                              std::max(0.0f, 0.11f - 0.09f * f), cc);
+                const float r = cc[0], g = cc[1], b = cc[2];
                 sphereMatrix(kSunCenter, kSunRadius * s, m);
                 const float bc[4] = { r, std::max(0.0f,g), std::max(0.0f,b), 1.0f };
-                const float em[4] = { r, std::max(0.0f,g), std::max(0.0f,b), 0.7f };
+                const float em[4] = { r, std::max(0.0f,g), std::max(0.0f,b), 0.7f * starEmMul() };
                 x3::rhi::IRenderDevice::GlassMaterial gm{};
                 gm.opacity = op; gm.roughness = 1.0f; gm.specular = 0.0f;
                 gm.refraction = 0.0f;   // NO screen-space distortion — the default 0.03 refracts
@@ -980,12 +1142,13 @@ int hostSpace(HostContext& hc) {
             const float churnFade = shellCamFade(kSunRadius * 1.006f);   // bullseye fix
             if (churnFade > 0.01f) {
                 sphereMatrixYaw(kSunCenter, kSunRadius * 1.006f, churnYaw, m);
-                const float bc[4] = { 1.0f, 0.55f, 0.22f, 1.0f };
-                const float em[4] = { 1.0f, 0.55f, 0.22f, 0.35f * churnFade };
+                float ch[3]; starCol(1.0f, 0.55f, 0.22f, ch);
+                const float bc[4] = { ch[0], ch[1], ch[2], 1.0f };
+                const float em[4] = { ch[0], ch[1], ch[2], 0.35f * churnFade * starEmMul() };
                 x3::rhi::IRenderDevice::GlassMaterial gm{};
                 gm.opacity = 0.09f * churnFade; gm.roughness = 1.0f; gm.specular = 0.0f;
                 gm.refraction = 0.0f;   // no lens edge (see corona note above)
-                gm.tint[0]=1.0f; gm.tint[1]=0.55f; gm.tint[2]=0.22f;
+                gm.tint[0]=ch[0]; gm.tint[1]=ch[1]; gm.tint[2]=ch[2];
                 device->drawMeshGlass(frame, sunMesh, sunTex, bc, em, gm, m,
                                       /*alphaBlend=*/true);   // BLEND partition: skip depth pre-pass
             }
@@ -1002,7 +1165,8 @@ int hostSpace(HostContext& hc) {
             const float shimmer = 1.0f
                 + 0.05f * std::sin(g_clock * (6.2831853f / 5.3f))
                 + 0.03f * std::sin(g_clock * (6.2831853f / 7.7f) + 1.7f);
-            const float cbc[4] = { 1.0f, 0.62f, 0.28f, 1.0f };
+            float coreC[3]; starCol(1.0f, 0.62f, 0.28f, coreC);
+            const float cbc[4] = { coreC[0], coreC[1], coreC[2], 1.0f };
             // v4: nudge 1.05 -> 1.20. Slightly hotter base so the gold cell cores +
             // faculae bloom a touch harder, while the deep-orange lanes still hold the
             // granulation (kept well under the 2.9 "white wafer" regime). The BLINDING
@@ -1012,7 +1176,7 @@ int hostSpace(HostContext& hc) {
             // so drop the emissive 1.20 -> 0.95 to hold the limb JUST below the bloom
             // knee — the disc reads bright saturated gold (no dark ring), while the
             // white-gold cell cores + faculae + the hotspot stack own the blinding core.
-            const float cem[4] = { 1.0f, 0.62f, 0.28f, 0.95f * shimmer };
+            const float cem[4] = { coreC[0], coreC[1], coreC[2], 0.95f * shimmer * starEmMul() };
             device->drawMeshPBR(frame, sunMesh, sunTex, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
                                 cbc, cem, m, /*alphaMask=*/false, /*alphaBlend=*/false, sunTex);
 
@@ -1050,6 +1214,11 @@ int hostSpace(HostContext& hc) {
                 auto glowDisc = [&](float frac, float emStr, float cr, float cg, float cb) {
                     const float half = frac * discAng * dB;
                     if (half < 1.0f) return;
+                    // THE LOCAL STAR, at the single choke point every halo/hotspot
+                    // disc goes through: the gold-to-white glare ramp keeps its
+                    // authored brightness curve and takes the star's chroma.
+                    { float gc[3]; starCol(cr, cg, cb, gc); cr = gc[0]; cg = gc[1]; cb = gc[2];
+                      emStr *= starEmMul(); }
                     float mm[16];
                     composeBasis(mm, bru, toCam, bup, half, 1.0f, half, sprC);
                     const float bcf[4] = { cr, cg, cb, 1.0f };
@@ -1192,6 +1361,36 @@ int hostSpace(HostContext& hc) {
         // ---- Dynamic point lights: player-key (follows ship) + sun-heat ---------
         auto updateDynamicLights = [&](const x3::phys::Vec3& sPos, const x3::phys::Vec3& f,
                                        const x3::phys::Vec3& u, const x3::phys::Vec3& r) {
+            // [0..2] THE STAR'S LIGHT. This is the claim "you arrived somewhere else"
+            // stands or falls on: the key/fill/rim rig is what SHADES THE HULL, so a
+            // different star has to change these, not just the skybox. Same authored
+            // intensities and positions; the chroma and the luminosity ratio come from
+            // the star. Identity until a transit lands (starChanged == false).
+            {
+                const float base[3][3] = {
+                    { baseKey[0],  baseKey[1],  baseKey[2]  },
+                    { baseFill[0], baseFill[1], baseFill[2] },
+                    { baseRim[0],  baseRim[1],  baseRim[2]  },
+                };
+                for (int li = 0; li < 3; ++li) {
+                    if (!starChanged) {
+                        plights[li].color[0] = base[li][0];
+                        plights[li].color[1] = base[li][1];
+                        plights[li].color[2] = base[li][2];
+                        continue;
+                    }
+                    // Preserve each light's authored INTENSITY (its max channel) and
+                    // re-chromatise: the rig keeps its exposure, the scene changes hue.
+                    const float mx = std::max(base[li][0], std::max(base[li][1], base[li][2]));
+                    float c[3]; starCol(base[li][0] / std::max(1e-4f, mx),
+                                        base[li][1] / std::max(1e-4f, mx),
+                                        base[li][2] / std::max(1e-4f, mx), c);
+                    const float gainL = std::min(1.7f, std::max(0.40f, starLumRatio));
+                    plights[li].color[0] = c[0] * mx * gainL;
+                    plights[li].color[1] = c[1] * mx * gainL;
+                    plights[li].color[2] = c[2] * mx * gainL;
+                }
+            }
             // [3] PLAYER KEY — offset up + behind + to the camera side so the hull
             // silhouette reads while flying. Subtle (lit metal, not a floodlight).
             const x3::phys::Vec3 kp{ sPos.x + u.x*6.0f - f.x*4.0f + r.x*5.0f,
@@ -1261,40 +1460,68 @@ int hostSpace(HostContext& hc) {
                     transitEngaged = true;
                     transitFrom    = hit;
                     transitClock   = 0.0f;
+                    // Tell the transit WHERE IT IS GOING before arming the spine.
+                    transit.begin(planFor(wormholes.at(hit)));
                     spaceLayer.requestWormhole((uint32_t)wormholes.at(hit).id());
-                    char line[160];
-                    std::snprintf(line, sizeof(line),
-                                  "Threshold crossed - %s. Autopilot has the helm; "
-                                  "hold for translation.",
-                                  wormholes.at(hit).name());
-                    x3::game::commsBus().post(x3::game::CommsSender::ShipAI,
-                                              x3::game::kCommsShipAiName, line);
                     x3::logInfo(std::string("--world space: WORMHOLE TRANSIT engaged -> ") +
-                                wormholes.at(hit).name());
+                                wormholes.at(hit).name() + " -> " +
+                                transit.plan().toSystemId);
                 }
             } else {
                 transitClock += fdt;
                 spaceLayer.update(fdt);
-                if (!transit.active() || transit.progress() >= 1.0f) {
-                    // ARRIVAL. The ride is over and the ship is somewhere new —
-                    // pilot.spawn() is the same public reposition the Respawn beat
-                    // already uses, so no space_pilot internals are touched.
-                    transitEngaged = false;
-                    const bool stable = transitFrom >= 0 &&
-                                        wormholes.at(transitFrom).stable();
-                    // A stable corridor lands you clean; an unstable one throws
-                    // you out somewhere else entirely. The field MEANS something.
-                    if (stable) pilot.spawn(*sphys, -140.0f,  22.0f,  -60.0f);
-                    else        pilot.spawn(*sphys,  -90.0f, -110.0f,  210.0f);
-                    x3::game::commsBus().post(
-                        x3::game::CommsSender::ShipAI, x3::game::kCommsShipAiName,
-                        stable ? "Translation complete. We are through, Commander."
-                               : "Translation complete - corridor collapsed mid-transit. "
-                                 "We are NOT where we intended to be.");
-                    x3::logInfo(std::string("--world space: WORMHOLE TRANSIT arrived (") +
-                                (stable ? "stable" : "UNSTABLE") + " corridor)");
-                    transitFrom = -1;
+            }
+
+            // AEGIS narrates the jump. The transit AUTHORS the lines (departure,
+            // mid-corridor, the extra collapse warning an unstable hole earns, and
+            // arrival); the host only relays them onto the bus, so the windowed loop
+            // and the headless capture path cannot drift apart on what was said.
+            {
+                x3::space::TransitCommsLine cl;
+                while (transit.popComms(cl)) {
+                    x3::game::commsBus().post(x3::game::CommsSender::ShipAI,
+                                              x3::game::kCommsShipAiName, cl.text);
+                    x3::logInfo(std::string("[AEGIS] ") + cl.text);
                 }
+            }
+
+            // ARRIVAL. The ride is over and the ship is somewhere new. pilot.spawn()
+            // is the same public reposition the Respawn beat already uses, so no
+            // space_pilot internals are touched -- but it takes a Tuning, and passing
+            // the DEFAULT one (as this did) silently reset the player's flight feel
+            // on every jump. Carry the mode and the tuning across.
+            if (transit.arrivalPending()) {
+                transit.consumeArrival();
+                transitEngaged = false;
+                const bool aborted = transit.lastArrivalAborted();
+                const x3::game::FlightMode keepMode = pilot.mode();
+                const x3::game::SpacePilotController::Tuning keepTune = pilot.tuning();
+                if (aborted) {
+                    // An aborted transit must leave the player in a VALID world, not
+                    // in limbo: spat back out beside the mouth they entered, in the
+                    // system they departed from, with the sky untouched.
+                    float bx = 40.0f, by = 30.0f, bz = 40.0f;
+                    if (transitFrom >= 0) {
+                        const float* wp = wormholes.at(transitFrom).pos();
+                        bx = wp[0] - 90.0f; by = wp[1] + 26.0f; bz = wp[2] - 90.0f;
+                    }
+                    pilot.spawn(*sphys, bx, by, bz, keepTune);
+                    x3::logInfo("--world space: WORMHOLE TRANSIT ABORTED - "
+                                "returned to the departure side");
+                } else {
+                    // THE JOURNEY LANDS. Re-dress the local star (colour, luminosity,
+                    // and the key light that actually shades the hull) and the
+                    // starfield for the arrival system, then put the ship down a long
+                    // way from where it left.
+                    applySystem(transit.plan().toSystemId);
+                    pilot.spawn(*sphys, -1420.0f, 260.0f, 1180.0f, keepTune);
+                    // The corridor you came through does not follow you: close the
+                    // field behind the jump so the arrival sky belongs to the new
+                    // system rather than carrying the departure system's furniture.
+                    for (int wi = 0; wi < wormholes.count(); ++wi) wormholes.at(wi).close();
+                }
+                pilot.setMode(keepMode);
+                transitFrom = -1;
             }
         };
 
@@ -1304,7 +1531,299 @@ int hostSpace(HostContext& hc) {
                                  const x3::phys::Vec3& eyePos, float tSec) {
             const float eye[3] = { eyePos.x, eyePos.y, eyePos.z };
             wormholes.render(*device, frame, eye);
-            if (transitEngaged) transit.render(*device, frame, nullptr, tSec);
+            (void)tSec;   // the transit owns its own frame now (drawTransitFrame)
+        };
+
+        // =====================================================================
+        // THE RIDE. Everything below is what turns the transit from a fade into a
+        // journey you are INSIDE of.
+        //
+        // Old behaviour, for the record: the tunnel mesh was drawn ONCE, at the
+        // WORLD ORIGIN, along +Z, with setOrigin() never called and the camera
+        // still on the player's chase cam somewhere else entirely. The player kept
+        // full control of a ship that was nowhere near the tube. Nothing about it
+        // was a ride.
+        //
+        // Now: the camera and the ship are placed on the tunnel axis at a dedicated
+        // anchor, the throat is assembled AROUND them out of scrolling multi-shell
+        // copies, the tunnel's own light rig lights the hull (you are inside the
+        // source, so the spill is the dominant light in frame), and the streak
+        // layer runs at full stretch. The world scene is NOT drawn: for the length
+        // of the jump, the throat is the entire frame.
+        // =====================================================================
+
+        // Where the camera and the ship sit during a transit, and how wide the lens
+        // is. The camera stays ON the axis and the TUNNEL banks around it (see
+        // WormholeTransit::bankX/bankY), which is the read the brief asked for:
+        // the tunnel rolls around the ship rather than the ship wandering the tube.
+        auto transitCamera = [&](float& cx, float& cy, float& cz,
+                                 float& cyaw, float& cpit, float& cfov) {
+            const float el = transit.elapsed();
+            cx = kTransitAnchor.x;
+            cy = kTransitAnchor.y;
+            cz = kTransitAnchor.z;
+            // A very small drift so the shot is never mechanically locked. Kept
+            // tiny: big camera moves inside a tunnel read as nausea, not speed.
+            cyaw = kTransitYaw + 0.026f * std::sin(el * 0.47f);
+            cpit = 0.030f * std::sin(el * 0.83f + 1.3f);
+            // FOV PUNCHES WIDE under acceleration. The pilot's own fovBase/fovMax
+            // are the vocabulary here (space_pilot.h) - read, not fought: the ride
+            // starts from the pilot's resting FOV and pushes past its speed ceiling,
+            // because this is faster than the ship can fly.
+            const float fovBase = pilot.tuning().fovBase;
+            cfov = fovBase + transit.fovPunchDeg();
+        };
+
+        // The ship, riding the corridor ahead of the camera. It BANKS with the
+        // tunnel but lags it (secondary motion trailing primary), and rolls on its
+        // own slower rhythm, so hull and walls never move in lockstep.
+        auto transitShipMatrix = [&](float m[16]) {
+            const float el = transit.elapsed();
+            const float ride = transit.ride01();
+            // Ship roll: its own period, and it LAGS the tunnel's bank.
+            const float br = (0.42f * std::sin(el * 0.58f) +
+                              0.19f * std::sin(el * 1.29f + 1.2f)) * ride;
+            // Nose drift, small, on yet another period.
+            const x3::phys::Vec3 f = vnorm(x3::phys::Vec3{
+                0.055f * std::sin(el * 0.91f), 0.042f * std::sin(el * 0.68f + 1.0f), 1.0f });
+            const x3::phys::Vec3 upRef{ std::sin(br), std::cos(br), 0.0f };
+            const x3::phys::Vec3 r = vnorm(vcross(f, upRef));
+            const x3::phys::Vec3 u = vnorm(vcross(r, f));
+            // Sit the hull down-and-ahead of the eye so the convergence point is
+            // visible past it: the tunnel needs a readable CENTRE, and the ship
+            // silhouetted against that centre is the composition.
+            const float lag = 0.55f;   // the hull trails the tunnel's swing
+            const x3::phys::Vec3 pos{
+                kTransitAnchor.x + transit.bankX() * lag,
+                kTransitAnchor.y + transit.bankY() * lag - 2.6f,
+                kTransitAnchor.z + 27.0f
+            };
+            shipMatrix(pos, f, u, r, m);
+        };
+
+        // THE TUNNEL'S LIGHT. The exterior lane's headline claim was that a wormhole
+        // does not merely glow, it LIGHTS things (its spill measured +7.41% on hull
+        // pixels). Inside the throat you are surrounded by the source, so the spill
+        // must be the DOMINANT light in frame, not a rim accent: eight lights on a
+        // ring at the wall radius, plus one hot light at the convergence ahead, all
+        // riding the ride curve and the corridor's spectrum. They go into the same
+        // plights rig every other light in this world uses, so they reach the hull's
+        // PBR material by exactly the same path.
+        auto transitLights = [&]() {
+            const float el   = transit.elapsed();
+            const float ride = transit.ride01();
+            const int kRing = 8;
+            int n = 0;
+            // Salvari blue-violet, pushed toward violet on an unstable corridor.
+            const bool unst = !transit.plan().stable;
+            const float cr = unst ? 0.78f : 0.42f;
+            const float cg = unst ? 0.34f : 0.62f;
+            const float cb = 1.00f;
+            for (int i = 0; i < kRing && n < kTotalLights; ++i) {
+                // The ring ROTATES with the throat, so the highlights sweep around
+                // the hull instead of sitting still on it.
+                const float ang = (float)i / (float)kRing * 6.2831853f + transit.rollRad();
+                const float rad = 9.5f;
+                // Each light also slides along the axis at its own rate, so the hull
+                // reads a travelling wash rather than a static ring.
+                const float za = 6.0f + 26.0f * (0.5f + 0.5f * std::sin(el * 1.7f + (float)i));
+                x3::rhi::PointLight& L = plights[n++];
+                L = {};
+                L.pos[0] = kTransitAnchor.x + std::cos(ang) * rad;
+                L.pos[1] = kTransitAnchor.y + std::sin(ang) * rad;
+                L.pos[2] = kTransitAnchor.z + za;
+                L.range  = 62.0f;
+                // Per-light flicker on its own phase: the walls are not a lamp.
+                const float fl = 0.72f + 0.28f * std::sin(el * 3.1f + (float)i * 1.9f);
+                const float I  = 46.0f * ride * fl;
+                L.color[0] = cr * I; L.color[1] = cg * I; L.color[2] = cb * I;
+            }
+            if (n < kTotalLights) {
+                // THE CONVERGENCE. The bright point down the axis: the composition's
+                // centre, and a hard key that rims the hull from dead ahead.
+                x3::rhi::PointLight& L = plights[n++];
+                L = {};
+                L.pos[0] = kTransitAnchor.x;
+                L.pos[1] = kTransitAnchor.y;
+                L.pos[2] = kTransitAnchor.z + 150.0f;
+                L.range  = 400.0f;
+                const float I = 150.0f * ride;
+                L.color[0] = 0.86f * I; L.color[1] = 0.90f * I; L.color[2] = 1.00f * I;
+            }
+            for (int i = n; i < kTotalLights; ++i) plights[i] = {};
+            device->setPointLights(plights, (uint32_t)n);
+        };
+
+        // Near-field specks streaming down the corridor. This REUSES the host's
+        // existing sense-of-speed machinery (dustMesh + the 3-segment comet taper
+        // that fakes a bright-head/faint-tail ramp), driven off the transit's ride
+        // curve instead of the pilot's speed, rather than standing up a second
+        // streak system that would inevitably look like a different effect.
+        auto drawTransitStreaks = [&](const x3::rhi::FrameContext& frame) {
+            const float ride = transit.streakDrive();
+            if (ride < 0.02f) return;
+            const x3::phys::Vec3 vd{ 0.0f, 0.0f, -1.0f };   // toward the camera
+            const x3::phys::Vec3 uax{ 1.0f, 0.0f, 0.0f };
+            const x3::phys::Vec3 vax{ 0.0f, 1.0f, 0.0f };
+            const float segOff[3] = { -0.55f, 0.0f, 0.55f };
+            const float segThk[3] = {  1.00f, 0.72f, 0.50f };
+            const float segStr[3] = {  1.00f, 0.55f, 0.28f };
+            const int   kN = 190;
+            const float span = 260.0f;        // axial length of the speck field
+            for (int i = 0; i < kN; ++i) {
+                const float h1 = hashF((uint32_t)(i * 3 + 11));
+                const float h2 = hashF((uint32_t)(i * 5 + 23));
+                const float h3 = hashF((uint32_t)(i * 7 + 37));
+                // Specks live in an annulus between the ship and the wall, so they
+                // read as material rushing past rather than as stars on the surface.
+                const float ang = h1 * 6.2831853f + transit.rollRad() * 0.35f;
+                const float rad = 2.6f + h2 * 8.2f;
+                // Scroll: each speck rides the SAME integrated axial distance the
+                // walls do (so nothing drifts out of sync), at its own rate.
+                const float rate = 1.4f + h3 * 2.2f;
+                float z = span * h3 + 40.0f - std::fmod(transit.axialDistance() * rate, span);
+                while (z < -30.0f) z += span;
+                const x3::phys::Vec3 c{
+                    kTransitAnchor.x + std::cos(ang) * rad + transit.bankX() * 0.4f,
+                    kTransitAnchor.y + std::sin(ang) * rad + transit.bankY() * 0.4f,
+                    kTransitAnchor.z + z };
+                // Fade at both ends of the field: nothing pops into or out of being.
+                const float fadeIn  = smooth01(-28.0f, 6.0f, z);
+                const float fadeOut = 1.0f - smooth01(span * 0.78f, span, z);
+                const float fade = fadeIn * fadeOut;
+                if (fade < 0.02f) continue;
+                const float halfLen = 0.9f + 7.5f * ride * (0.5f + h1);
+                const float thick   = 0.045f + 0.075f * h2;
+                // Cool blue-white, with a violet minority - the corridor's palette.
+                const float base[4] = { (h2 < 0.75f) ? 0.72f : 0.86f,
+                                        (h2 < 0.75f) ? 0.86f : 0.62f,
+                                        1.0f, 1.0f };
+                const float S = (0.5f + 2.4f * ride) * (0.35f + 0.9f * h1) * fade;
+                for (int sg = 0; sg < 3; ++sg) {
+                    const float str = S * segStr[sg];
+                    if (str < 0.02f) continue;
+                    const x3::phys::Vec3 cc{ c.x, c.y, c.z + halfLen * segOff[sg] };
+                    float m[16];
+                    composeBasis(m, uax, vax, vd, thick * segThk[sg], thick * segThk[sg],
+                                 std::max(thick, halfLen * 0.45f), cc);
+                    const float emis[4] = { base[0], base[1], base[2], str };
+                    device->drawMeshEmissive(frame, dustMesh, x3::rhi::TextureHandle{}, base, emis, m);
+                }
+            }
+        };
+
+        // The whole transit frame: walls, streaks, ship. Called INSTEAD of the world
+        // draw, from both the windowed loop and the headless capture path, so a
+        // capture cannot show a ride the player never gets.
+        auto drawTransitWorld = [&](const x3::rhi::FrameContext& frame, float tSec) {
+            const float cam[3] = { kTransitAnchor.x, kTransitAnchor.y, kTransitAnchor.z };
+            transit.renderTunnel(*device, frame, cam, tSec);
+            drawTransitStreaks(frame);
+            float sm[16]; transitShipMatrix(sm);
+            drawShipAt(frame, sm, 1.5f);
+        };
+
+        // ---- THE INSTRUMENTS OFF THEIR SCALES ------------------------------
+        // The detail the owner named, and the one that sells the shot: the readouts
+        // tell the player the game KNOWS this is not normal flight. Same HUD path as
+        // the flight telemetry (drawHudTextF / drawHudQuad), same corner, so it
+        // reads as the ship's own instruments failing to cope rather than as a
+        // separate title card.
+        //
+        // OVERFLOW IS LITERAL. Each value is formatted into a FIXED-WIDTH field; if
+        // the number does not fit, the field is filled with '#' and tagged OVR -
+        // which is what an instrument with no scale left actually does.
+        auto drawTransitHud = [&](const x3::rhi::FrameContext& frame, float W, float H) {
+            using x3::rhi::FontRole;
+            const float wash = transit.membraneWash01();
+            // MEMBRANE WASH at the two crossings, in the corridor's own colour.
+            if (wash > 0.002f) {
+                const bool unst = !transit.plan().stable;
+                const float c[4] = { unst ? 0.62f : 0.42f,
+                                     unst ? 0.30f : 0.64f, 1.0f, wash };
+                device->drawHudQuad(frame, 0, 0, W, H, c);
+            }
+
+            const bool  unst = !transit.plan().stable;
+            const float acc[4]  = { unst ? 1.00f : 0.42f, unst ? 0.42f : 0.86f, 1.0f, 1.0f };
+            const float dim[4]  = { acc[0]*0.75f, acc[1]*0.75f, acc[2]*0.85f, 0.92f };
+            const float bg[4]   = { 0.02f, 0.02f, 0.05f, 0.55f };
+
+            // Banner: what is happening and where it is meant to end.
+            {
+                char t[96];
+                std::snprintf(t, sizeof(t), "TRANSLATION  %s", transit.plan().corridorName);
+                const float px = 30.0f;
+                const float tw = device->textAdvance(FontRole::Title, t, px);
+                const float tx = W * 0.5f - tw * 0.5f;
+                device->drawHudQuad(frame, tx - 18.0f, 16.0f, tw + 36.0f, px + 26.0f, bg);
+                device->drawHudTextF(frame, FontRole::Title, t, tx, 24.0f, px, acc);
+                char sub[128];
+                std::snprintf(sub, sizeof(sub), "%s  ->  %s      AUTOPILOT HAS THE HELM",
+                              transit.plan().fromSystem, transit.plan().toSystem);
+                const float sp = 14.0f;
+                const float sw = device->textAdvance(FontRole::HudMono, sub, sp);
+                device->drawHudTextF(frame, FontRole::HudMono, sub,
+                                     W * 0.5f - sw * 0.5f, 24.0f + px + 6.0f, sp, dim);
+            }
+
+            // Fixed-width field with real overflow behaviour.
+            auto field = [](char* out, size_t n, double v, int width, const char* unit) {
+                char num[64];
+                std::snprintf(num, sizeof(num), "%.0f", v);
+                if ((int)std::strlen(num) > width) {
+                    // No scale left. Fill the field and say so.
+                    for (int i = 0; i < width; ++i) num[i] = '#';
+                    num[width] = '\0';
+                    std::snprintf(out, n, "%s %s OVR", num, unit);
+                } else {
+                    std::snprintf(out, n, "%*s %s", width, num, unit);
+                }
+            };
+
+            double pos[3]; transit.readPos(pos);
+            char l[6][96];
+            char f1[64], f2[64], f3[64], f4[64];
+            field(f1, sizeof(f1), pos[0], 9, "m");
+            field(f2, sizeof(f2), pos[1], 9, "m");
+            field(f3, sizeof(f3), pos[2], 9, "m");
+            field(f4, sizeof(f4), transit.readSpeedMs(), 9, "m/s");
+            std::snprintf(l[0], sizeof(l[0]), "POS X %s", f1);
+            std::snprintf(l[1], sizeof(l[1]), "POS Y %s", f2);
+            std::snprintf(l[2], sizeof(l[2]), "POS Z %s", f3);
+            std::snprintf(l[3], sizeof(l[3]), "VEL   %s", f4);
+            std::snprintf(l[4], sizeof(l[4]), "      %8.1f c", transit.readSpeedC());
+            std::snprintf(l[5], sizeof(l[5]), "DIST  %8.4f ly   ETA %4.1fs",
+                          (double)transit.distanceRemainLy(), (double)transit.etaSec());
+            const float tpx = 17.0f;
+            const float bx = 20.0f, by = H - 158.0f;
+            const float tbg[4] = { 0.02f, 0.03f, 0.05f, 0.62f };
+            device->drawHudQuad(frame, bx - 10.0f, by - 10.0f, 360.0f, 152.0f, tbg);
+            for (int i = 0; i < 6; ++i) {
+                // The three POS lines and VEL flash once they are past legibility -
+                // the instrument admitting it cannot render the number.
+                const bool over = (std::strstr(l[i], "OVR") != nullptr);
+                float col[4] = { dim[0], dim[1], dim[2], 0.95f };
+                if (over) {
+                    const float fl = (std::sin(g_clock * 11.0f + (float)i) > 0.0f) ? 1.0f : 0.55f;
+                    col[0] = 1.0f; col[1] = 0.55f; col[2] = 0.25f; col[3] = fl;
+                }
+                device->drawHudText(frame, l[i], bx, by + 21.0f * (float)i, tpx, col);
+            }
+            // Corridor-progress bar: the one readout that stays sane, so the player
+            // can see the ride END even while everything else is off its scale.
+            const float barW = 330.0f, barH = 6.0f, barY = by + 21.0f * 6.0f + 6.0f;
+            const float bbg[4] = { 0.10f, 0.15f, 0.20f, 0.7f };
+            device->drawHudQuad(frame, bx, barY, barW, barH, bbg);
+            const float fill[4] = { acc[0], acc[1], acc[2], 0.95f };
+            device->drawHudQuad(frame, bx, barY, barW * transit.progress(), barH, fill);
+            // Stage tag, right of the bar.
+            {
+                char st[48];
+                std::snprintf(st, sizeof(st), "%s", x3::space::transitStageName(transit.stage()));
+                device->drawHudTextF(frame, FontRole::HudMono, st, bx + barW + 14.0f,
+                                     barY - 6.0f, 15.0f, dim);
+            }
         };
 
         // ---- PLAYER-SHIP lights: engine glow + red/green/white nav beacons ------
@@ -2181,7 +2700,11 @@ int hostSpace(HostContext& hc) {
             if (wormholePreroll > 0.0f) {
                 const float wh = 1.0f / 165.0f;
                 const int steps = (int)(wormholePreroll / wh);
-                for (int i = 0; i < steps; ++i) tickWormholes(wh, pilot.pos());
+                // g_clock rides the pre-roll too: every time-driven part of the look
+                // (the shell flow pulses, the streak scroll, the flicker) is a
+                // function of accumulated time, so a frame captured at t must be the
+                // frame the 165 Hz game shows at t - not the same scene at t = 0.
+                for (int i = 0; i < steps; ++i) { tickWormholes(wh, pilot.pos()); g_clock += wh; }
             }
             // Settle: a few frames so the lights register + the meshes upload.
             const int kFrames = 16;
@@ -2192,13 +2715,31 @@ int hostSpace(HostContext& hc) {
                 // Ticked BEFORE the light rig upload so the spill in this frame is
                 // this frame's spill, not the previous one's.
                 tickWormholes(dt, pilot.pos());
+                // THE RIDE, HEADLESS. A single still cannot judge a ride, so the
+                // capture path plays the SAME transit the windowed loop does and
+                // X3_WORMHOLE_T walks the series across it (entry -> mid -> exit).
+                // Same camera, same lights, same draw - a capture that diverged
+                // from the live ride would be worth nothing.
+                if (transitEngaged) {
+                    transitLights();
+                    float tcx, tcy, tcz, tcyaw, tcpit, tcfov;
+                    transitCamera(tcx, tcy, tcz, tcyaw, tcpit, tcfov);
+                    device->setCamera(tcx, tcy, tcz, tcyaw, tcpit, tcfov);
+                } else {
                 updateDynamicLights(pilot.pos(), pilot.forward(), pilot.up(), pilot.right());
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
+                }
                 if (i == kFrames - 1) device->armCapture(outPath.c_str());
                 if (insideShot) g_clock += (float)dt;   // pan the plasma across settle frames
                 auto frame = device->beginFrame();
                 if (frame.valid) {
-                    if (insideShot) {
+                    if (transitEngaged) {
+                        // INSIDE THE THROAT. The world scene is not drawn: for the
+                        // length of the jump the tunnel IS the frame.
+                        drawTransitWorld(frame, g_clock);
+                        uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                        drawTransitHud(frame, (float)hw, (float)hh);
+                    } else if (insideShot) {
                         // Interior-only capture: the plasma dome wrapping the camera,
                         // with the molten wash over it (as the live InsideSun does).
                         drawInterior(frame, x3::phys::Vec3{ cam[0], cam[1], cam[2] });
@@ -2569,6 +3110,15 @@ int hostSpace(HostContext& hc) {
                 }
                 if (!tracked) { cx = cineCamPos.x; cy = cineCamPos.y; cz = cineCamPos.z; cyaw = cineYaw; cpit = cinePit; }
                 device->setCamera(cx, cy, cz, cyaw, cpit, tracked ? 55.0f : 60.0f);
+            } else if (transitEngaged) {
+                // THE RIDE CAMERA. Autopilot has the helm, so the camera does too:
+                // on the tunnel axis, looking down the corridor, lens punching wide
+                // under acceleration. The pilot's own camera/aim path is untouched -
+                // this host simply does not ask it for a camera while the ship is
+                // inside a wormhole.
+                float tfov = 65.0f;
+                transitCamera(cx, cy, cz, cyaw, cpit, tfov);
+                device->setCamera(cx, cy, cz, cyaw, cpit, tfov);
             } else {
                 pilot.camera(cx, cy, cz, cyaw, cpit);
                 device->setCamera(cx, cy, cz, cyaw, cpit, pilot.fov());
@@ -2593,10 +3143,24 @@ int hostSpace(HostContext& hc) {
 
             // Player-key + sun-heat follow lights + the WORMHOLE SPILL (refreshed
             // each frame; the spill is why the effect lights the hull at all).
-            updateDynamicLights(pilot.pos(), pilot.forward(), pilot.up(), pilot.right());
+            if (transitEngaged) transitLights();
+            else updateDynamicLights(pilot.pos(), pilot.forward(), pilot.up(), pilot.right());
 
             auto frame = device->beginFrame();
             if (frame.valid) {
+                // THE TRANSIT OWNS THE FRAME. For the length of a jump the world
+                // scene, the star and the wormhole field are all somewhere the
+                // player no longer is: they are inside the throat. Drawing the
+                // departure system's furniture over the tunnel is exactly what made
+                // the old transit read as a fade with a world behind it.
+                if (transitEngaged) {
+                    drawTransitWorld(frame, g_clock);
+                    drawTransitHud(frame, (float)cw, (float)chh);
+                    if (paused) drawPauseMenu(frame, (float)cw, (float)chh, menuSel);
+                    shell.draw(frame);
+                    device->endFrame(frame);
+                    continue;
+                }
                 // World: the near-field scene only when NOT on the external kill-cam.
                 if (!cineNow) {
                     drawScene(frame);
