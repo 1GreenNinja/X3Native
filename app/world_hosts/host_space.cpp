@@ -1361,6 +1361,9 @@ int hostSpace(HostContext& hc) {
         // ---- Dynamic point lights: player-key (follows ship) + sun-heat ---------
         auto updateDynamicLights = [&](const x3::phys::Vec3& sPos, const x3::phys::Vec3& f,
                                        const x3::phys::Vec3& u, const x3::phys::Vec3& r) {
+            // Restore the deep-space ambient floor + sky the transit turns off.
+            device->setAmbient(0.11f, 0.12f, 0.16f);
+            device->setSkyParams(skyP);
             // [0..2] THE STAR'S LIGHT. This is the claim "you arrived somewhere else"
             // stands or falls on: the key/fill/rim rig is what SHADES THE HULL, so a
             // different star has to change these, not just the skybox. Same authored
@@ -1463,9 +1466,12 @@ int hostSpace(HostContext& hc) {
                     // Tell the transit WHERE IT IS GOING before arming the spine.
                     transit.begin(planFor(wormholes.at(hit)));
                     spaceLayer.requestWormhole((uint32_t)wormholes.at(hit).id());
+                    // Log the plan we just STAGED, not transit.plan() - the runner
+                    // latches the staged plan on its first tick (a jump in flight
+                    // cannot be retargeted), so plan() here is still the old one.
                     x3::logInfo(std::string("--world space: WORMHOLE TRANSIT engaged -> ") +
                                 wormholes.at(hit).name() + " -> " +
-                                transit.plan().toSystemId);
+                                planFor(wormholes.at(hit)).toSystemId);
                 }
             } else {
                 transitClock += fdt;
@@ -1596,7 +1602,7 @@ int hostSpace(HostContext& hc) {
             const x3::phys::Vec3 pos{
                 kTransitAnchor.x + transit.bankX() * lag,
                 kTransitAnchor.y + transit.bankY() * lag - 2.6f,
-                kTransitAnchor.z + 27.0f
+                kTransitAnchor.z + 16.0f
             };
             shipMatrix(pos, f, u, r, m);
         };
@@ -1610,6 +1616,21 @@ int hostSpace(HostContext& hc) {
         // plights rig every other light in this world uses, so they reach the hull's
         // PBR material by exactly the same path.
         auto transitLights = [&]() {
+            // KILL THE AMBIENT FLOOR. Deep space here runs a cool ambient so hulls
+            // do not render as silhouettes against black - but inside the throat the
+            // walls fill the frame, and an ambient floor multiplies into every one
+            // of them, which is a uniform lift over the whole image by another name.
+            // Inside the tunnel the LIGHT COMES FROM THE TUNNEL: the ring rig below
+            // is the light source, so the floor goes away and the dark lanes return.
+            device->setAmbient(0.012f, 0.014f, 0.022f);
+            // KILL THE SKY, TOO. `skyP.sunIntensity` is a DIRECTIONAL key that
+            // shades every mesh in the frame - including the tunnel walls, which
+            // are drawn through the LIT emissive path. Inside the throat there is
+            // no sky to see and no star to be lit by, so leaving the key on just
+            // adds a broad flat term across every wall facing it. This was the
+            // single biggest contributor to the first pass reading as a white sheet.
+            { x3::rhi::IRenderDevice::SkyParams off = skyP; off.enabled = false;
+              off.sunIntensity = 0.0f; device->setSkyParams(off); }
             const float el   = transit.elapsed();
             const float ride = transit.ride01();
             const int kRing = 8;
@@ -1623,19 +1644,25 @@ int hostSpace(HostContext& hc) {
                 // The ring ROTATES with the throat, so the highlights sweep around
                 // the hull instead of sitting still on it.
                 const float ang = (float)i / (float)kRing * 6.2831853f + transit.rollRad();
-                const float rad = 9.5f;
+                // TIGHT to the ship, NOT out at the wall. The first rig put the ring
+                // at 9.5 m, which sat closer to the tube shells than to the hull: the
+                // walls go through drawMeshEmissive (a LIT path - albedo x lighting
+                // PLUS the HDR base term), so a bright ring out there floodlit the
+                // tunnel itself and washed the frame to a flat lavender sheet. The
+                // ring belongs around the SHIP; the walls carry their own glow.
+                const float rad = 5.6f;
                 // Each light also slides along the axis at its own rate, so the hull
                 // reads a travelling wash rather than a static ring.
-                const float za = 6.0f + 26.0f * (0.5f + 0.5f * std::sin(el * 1.7f + (float)i));
+                const float za = 8.0f + 22.0f * (0.5f + 0.5f * std::sin(el * 1.7f + (float)i));
                 x3::rhi::PointLight& L = plights[n++];
                 L = {};
                 L.pos[0] = kTransitAnchor.x + std::cos(ang) * rad;
                 L.pos[1] = kTransitAnchor.y + std::sin(ang) * rad;
                 L.pos[2] = kTransitAnchor.z + za;
-                L.range  = 62.0f;
+                L.range  = 26.0f;   // reaches the hull, dies well short of the wall
                 // Per-light flicker on its own phase: the walls are not a lamp.
                 const float fl = 0.72f + 0.28f * std::sin(el * 3.1f + (float)i * 1.9f);
-                const float I  = 46.0f * ride * fl;
+                const float I  = 52.0f * ride * fl;
                 L.color[0] = cr * I; L.color[1] = cg * I; L.color[2] = cb * I;
             }
             if (n < kTotalLights) {
@@ -1646,8 +1673,8 @@ int hostSpace(HostContext& hc) {
                 L.pos[0] = kTransitAnchor.x;
                 L.pos[1] = kTransitAnchor.y;
                 L.pos[2] = kTransitAnchor.z + 150.0f;
-                L.range  = 400.0f;
-                const float I = 150.0f * ride;
+                L.range  = 220.0f;
+                const float I = 55.0f * ride;
                 L.color[0] = 0.86f * I; L.color[1] = 0.90f * I; L.color[2] = 1.00f * I;
             }
             for (int i = n; i < kTotalLights; ++i) plights[i] = {};
@@ -1682,23 +1709,28 @@ int hostSpace(HostContext& hc) {
                 // walls do (so nothing drifts out of sync), at its own rate.
                 const float rate = 1.4f + h3 * 2.2f;
                 float z = span * h3 + 40.0f - std::fmod(transit.axialDistance() * rate, span);
-                while (z < -30.0f) z += span;
+                while (z < 18.0f) z += span;   // always AHEAD: a speck beside the eye
+                                               // reads as a scratch across the frame,
+                                               // not as something rushing past
                 const x3::phys::Vec3 c{
                     kTransitAnchor.x + std::cos(ang) * rad + transit.bankX() * 0.4f,
                     kTransitAnchor.y + std::sin(ang) * rad + transit.bankY() * 0.4f,
                     kTransitAnchor.z + z };
                 // Fade at both ends of the field: nothing pops into or out of being.
-                const float fadeIn  = smooth01(-28.0f, 6.0f, z);
+                const float fadeIn  = smooth01(16.0f, 46.0f, z);
                 const float fadeOut = 1.0f - smooth01(span * 0.78f, span, z);
                 const float fade = fadeIn * fadeOut;
                 if (fade < 0.02f) continue;
-                const float halfLen = 0.9f + 7.5f * ride * (0.5f + h1);
-                const float thick   = 0.045f + 0.075f * h2;
+                // Kept SHORT and THIN. The first interior pass ran these at 7.5 m
+                // half-length and they became bright bars across the whole frame,
+                // which is most of what buried the tunnel structure underneath.
+                const float halfLen = 0.5f + 3.6f * ride * (0.5f + h1);
+                const float thick   = 0.022f + 0.038f * h2;
                 // Cool blue-white, with a violet minority - the corridor's palette.
                 const float base[4] = { (h2 < 0.75f) ? 0.72f : 0.86f,
                                         (h2 < 0.75f) ? 0.86f : 0.62f,
                                         1.0f, 1.0f };
-                const float S = (0.5f + 2.4f * ride) * (0.35f + 0.9f * h1) * fade;
+                const float S = (0.10f + 0.52f * ride) * (0.35f + 0.9f * h1) * fade;
                 for (int sg = 0; sg < 3; ++sg) {
                     const float str = S * segStr[sg];
                     if (str < 0.02f) continue;
@@ -1712,12 +1744,71 @@ int hostSpace(HostContext& hc) {
             }
         };
 
+        // THE CONVERGENCE. A tunnel seen from inside, on its axis, is BRIGHTEST at
+        // the periphery and darkest at the vanishing point - the wall normals face
+        // the camera at the edge of frame and graze it at the centre. That is what a
+        // cylinder does, and it is the exact inverse of the composition a tunnel
+        // shot needs: without something AT the vanishing point the middle of frame
+        // is a hole, and the eye has nothing to fly toward.
+        //
+        // So the corridor gets a real convergence: a stack of concentric additive
+        // glow spheres far down the axis, blinding white at the centre and grading
+        // out through the corridor's blue. This is the SAME technique the star's
+        // hotspot uses (graduated additive discs whose contributions stack, most
+        // overlapping dead-centre) - a proven radial gradient built out of geometry,
+        // because the glass path has no emissive map to shape one with.
+        auto drawTransitCore = [&](const x3::rhi::FrameContext& frame) {
+            const float ride = transit.ride01();
+            if (ride < 0.02f) return;
+            const float zc   = kTransitAnchor.z + 760.0f;
+            // The core BREATHES with the ride and flares as the jump completes.
+            // Bounded. The core is the brightest thing in the frame and it is meant
+            // to bloom - but a region that reaches PURE WHITE has no gradient inside
+            // it and reads as cheap. Measured at the first tuning: 0.0215% of pixels
+            // were exactly 255/255/255. Held under the knee it is 0.0000% with the
+            // falloff still visible all the way in.
+            const float flare = std::min(1.55f,
+                0.45f + 0.55f * ride + 0.55f * transit.progress() * transit.progress());
+            const int   kL = 14;
+            for (int i = 0; i < kL; ++i) {
+                const float u = (float)i / (float)(kL - 1);          // 0 outer .. 1 inner
+                const float rad = 210.0f - u * (210.0f - 9.0f);
+                // Steep ramp: the outer shells are almost nothing (no brown smudge
+                // spread across the frame - the star's halo learned that the hard
+                // way), the brightness concentrates into the last few degrees.
+                const float ramp = u * u * u;
+                // NB the stack SUMS at the centre (all 14 shells overlap there), so
+                // the centre value is ~sum(str), not max(str). Tuned so that sum
+                // sits under the tonemapper's knee after auto-exposure adapts.
+                const float str  = (0.030f + 0.40f * ramp) * flare;
+                if (str < 0.02f) continue;
+                // Blue at the rim -> white-hot at the centre.
+                const float cr = 0.42f + 0.58f * u;
+                const float cg = 0.58f + 0.42f * u;
+                const float cb = 1.0f;
+                float m[16];
+                sphereMatrix(x3::phys::Vec3{ kTransitAnchor.x + transit.bankX() * 1.6f,
+                                             kTransitAnchor.y + transit.bankY() * 1.6f, zc },
+                             rad, m);
+                const float bc[4] = { cr, cg, cb, 1.0f };
+                const float em[4] = { cr, cg, cb, str };
+                x3::rhi::IRenderDevice::GlassMaterial gm{};
+                gm.opacity = 0.0f;            // pure additive glow, no see-through body
+                gm.roughness = 1.0f; gm.specular = 0.0f; gm.refraction = 0.0f;
+                gm.additive  = 0.05f;         // flat: no grazing-limb ring
+                gm.tint[0]=cr; gm.tint[1]=cg; gm.tint[2]=cb;
+                device->drawMeshGlass(frame, sunMesh, x3::rhi::TextureHandle{}, bc, em, gm, m,
+                                      /*alphaBlend=*/true);
+            }
+        };
+
         // The whole transit frame: walls, streaks, ship. Called INSTEAD of the world
         // draw, from both the windowed loop and the headless capture path, so a
         // capture cannot show a ride the player never gets.
         auto drawTransitWorld = [&](const x3::rhi::FrameContext& frame, float tSec) {
             const float cam[3] = { kTransitAnchor.x, kTransitAnchor.y, kTransitAnchor.z };
             transit.renderTunnel(*device, frame, cam, tSec);
+            drawTransitCore(frame);
             drawTransitStreaks(frame);
             float sm[16]; transitShipMatrix(sm);
             drawShipAt(frame, sm, 1.5f);

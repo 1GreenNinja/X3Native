@@ -166,7 +166,10 @@ float WormholeTransit::membraneWash01() const {
     const float in  = smooth01(0.0f, e0 * 0.80f, elapsed_)
                     * (1.0f - smooth01(e0 * 0.80f, e0 + 0.30f, elapsed_));
     const float out = smooth01(e1 + 0.25f, duration_ - 0.08f, elapsed_);
-    return std::min(0.86f, in * 0.72f + out * 0.86f);
+    // Capped well below opaque. A wash that saturates is a cut, not a crossing —
+    // the tunnel has to stay visible THROUGH the flash or the transition reads as
+    // a loading screen. (First pass ran to 0.86 and erased the exit entirely.)
+    return std::min(0.52f, in * 0.42f + out * 0.52f);
 }
 
 float WormholeTransit::streakDrive() const {
@@ -437,16 +440,33 @@ void WormholeTransit::renderTunnel(rhi::IRenderDevice& dev, const rhi::FrameCont
         const float frac = dist - std::floor(dist / len) * len;
         const float z0   = -frac;
         const float roll = roll_ * rollMul[s] + timeSec * 0.04f * (float)(s + 1);
-        // Copies at k = -1 (behind), 0, 1, 2 (ahead). -1 keeps the walls present
-        // in peripheral vision; 2 gives ~2 tube lengths of forward depth, which
-        // is what puts a readable vanishing centre in the frame.
-        for (int k = -1; k <= 2; ++k) {
+        // HOW FAR THE CORRIDOR REACHES. The first pass tiled two tube lengths
+        // ahead and left a HOLE at the centre of frame: looking down the axis, the
+        // rays nearest the centre travel furthest before they hit a wall, so a
+        // tunnel that stops at 400 m has no geometry where the vanishing point is
+        // supposed to be — and a hole is the exact opposite of a readable centre.
+        // kAhead tube lengths is what actually closes the corridor to a point.
+        const int kAhead = 9;
+        for (int k = -1; k < kAhead; ++k) {
             const float oz = z0 + (float)k * len;
-            // FADE the farthest copy in over its own length so geometry enters
-            // rather than pops. The near copies are at full gain.
-            float gain = 1.0f;
-            if (k == 2) gain = 1.0f - smooth01(0.0f, len, frac) * 0.55f;
-            if (k == -1) gain = 0.70f;   // behind the eye: present, not competing
+            // THE DEPTH RAMP is the composition. The near walls fill most of the
+            // frame at grazing angles; drawn at full gain they bloom over
+            // everything and the eye has nothing to hold (measured: mean frame
+            // luminance 0.85, standard deviation 0.08 — a white sheet with a ship
+            // on it). So gain RISES with distance: dark structured lanes close to
+            // the hull, the hot convergence far down the axis. The ramp is a power
+            // curve rather than linear, so the brightness builds the way depth in a
+            // real tunnel does instead of stepping ring by ring.
+            float gain;
+            if (k < 0) {
+                gain = 0.045f;                       // behind the eye: peripheral only
+            } else {
+                const float u = (float)k / (float)(kAhead - 1);
+                gain = 0.085f + 1.05f * std::pow(u, 0.85f);
+            }
+            // FADE the farthest copy in over its own length so no ring of geometry
+            // ever pops into existence at the end of the corridor.
+            if (k == kAhead - 1) gain *= 1.0f - smooth01(0.0f, len, frac) * 0.5f;
             const float origin[3] = {
                 camPos[0] + bx * bankMul[s],
                 camPos[1] + by * bankMul[s],

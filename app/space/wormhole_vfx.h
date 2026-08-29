@@ -88,6 +88,14 @@ public:
         // brightest region still has gradient inside it instead of clipping to a
         // flat white patch with no detail — the film-vs-game tell.
         float peak = 0.94f;
+        // AXIAL CONVERGENCE WEIGHT, 0..1. The bake brightens toward v = 1 (the
+        // far, "convergence" end) - right for a tunnel seen END ON, wrong for one
+        // TILED down an axis: every copy's dark mouth then abuts the previous
+        // copy's bright far end and the corridor reads as a stack of black donuts.
+        // The interior ride bakes its shells nearly flat (see kShellRecipe) and
+        // gets its depth from the per-copy gain ramp instead, which is continuous.
+        // 1.0 is the authored end-on look and the default, so nothing else changes.
+        float converge = 1.0f;
     };
 
     // Build the faceted tunnel mesh + bake the crystal-matrix texture through the

@@ -216,18 +216,23 @@ static void evalCrystal(float theta, float zNorm, const WormholeVfx::Tuning& t,
     const float fil = filamentFbm(u, zNorm, t.detail, t.grain);
     // Filament crests dominate; the sine survives as a slow modulation under
     // them so the two frequencies beat against each other rather than lining up.
-    streak = std::clamp(0.30f * streak + 0.92f * std::pow(fil, 2.1f), 0.0f, 1.6f);
+    streak = std::clamp(0.26f * streak + 0.96f * std::pow(fil, 2.7f), 0.0f, 1.6f);
 
     // WHITE-HOT convergence: the far end (zNorm -> 1) gets hotter. The bake stores
     // a moderate gradient; render() raises it with `progress`.
-    float conv = std::pow(std::clamp(zNorm, 0.0f, 1.0f), 2.5f);
+    float conv = t.converge * std::pow(std::clamp(zNorm, 0.0f, 1.0f), 2.5f);
 
     // Compose: blue WALL base + purple ACCENT at glints + white-hot CORE at the
     // convergence end and along the brightest streaks. The wall keeps a modest
     // floor (so the near tube still reads as dim blue crystal) but the streaks +
     // glints carry the contrast so the multiply-by-HDR-baseColor path blooms the
     // BRIGHT facets without washing the whole tube to white.
-    float wall = 0.18f + 0.55f * streak;             // streak modulates wall brightness
+    // WAS 0.18 + 0.55*streak. That 0.18 FLOOR is a uniform lift by another name:
+    // with three shells and four axial copies stacking, a floor of 0.18 per layer
+    // is most of a mid-grey sheet before any structure is drawn at all. Dropping
+    // the floor and steepening the crest is what puts the DARK LANES back between
+    // the filaments, and dark lanes are the only reason bright ones read as bright.
+    float wall = 0.045f + 0.70f * streak;            // streak modulates wall brightness
     float r = t.wallColor[0] * wall;
     float g = t.wallColor[1] * wall;
     float b = t.wallColor[2] * wall;
@@ -294,6 +299,8 @@ WormholeVfx::Tuning clampTuning(const WormholeVfx::Tuning& in) {
     if (!(t.grain  >= 0.0f))      t.grain         = 0.0f;
     if (t.grain > 1.0f)           t.grain         = 1.0f;
     if (!(t.peak > 0.05f) || t.peak >= 1.0f) t.peak = 0.94f;
+    if (!(t.converge >= 0.0f))    t.converge      = 0.0f;
+    if (t.converge > 1.0f)        t.converge      = 1.0f;
     return t;
 }
 
@@ -346,6 +353,9 @@ void WormholeVfx::init(rhi::IRenderDevice& dev, const Tuning& t) {
         m_shellRadius[s] = rad;
 
         Tuning sc = c;
+        // Nearly flat along the axis: the ride TILES these, so a strong end-on
+        // convergence gradient would band the corridor (see Tuning::converge).
+        sc.converge = 0.14f;
         sc.detail = c.detail * rec.detail;
         sc.grain  = std::min(1.0f, c.grain + rec.grain);
         // The inner shells are ADDITIVE, so their bakes are pushed DARKER on
@@ -478,7 +488,13 @@ void WormholeVfx::renderShell(rhi::IRenderDevice& dev, const rhi::FrameContext& 
     // Brightness comes from BLOOM ON STRUCTURED CONTENT — a per-pixel texture
     // multiplied by an HDR factor — never from a uniform per-object lift.
     const float kBaseGlow  = 2.2f;
-    const float shellGlow  = (shell == 0) ? 1.0f : (shell == 1 ? 0.62f : 0.38f);
+    // Inner shells are ADDITIVE and cover the whole frame from an on-axis camera,
+    // so they stack with the wall AND with each other AND with every axial copy.
+    // The first interior pass drove them at 0.62/0.38 and the result was a flat
+    // lavender whiteout: mean frame luminance 0.85 with a standard deviation of
+    // 0.08, i.e. no contrast anywhere. They are decoration ON the wall, not a
+    // second wall — 0.30/0.16 is what leaves the dark lanes intact.
+    const float shellGlow  = (shell == 0) ? 1.0f : (shell == 1 ? 0.30f : 0.16f);
     const float coreStr    = kBaseGlow * (1.0f + 1.4f * progress * progress);
     const float strength   = coreStr * flow * gain * shellGlow;
     m_lastCore     = coreStr;
@@ -505,7 +521,13 @@ void WormholeVfx::renderShell(rhi::IRenderDevice& dev, const rhi::FrameContext& 
     gm.opacity    = 0.0f;                 // additive mode ignores it; keep it clear
     gm.refraction = 0.0f;
     gm.specular   = 0.0f;
-    gm.additive   = (shell == 1) ? 0.55f : 0.22f;
+    // The rim-fade exponent acts on dot(N, toCamera). For an inside-out tube seen
+    // ON AXIS that dot is sin(screen angle): LARGE at the periphery, near zero at
+    // the vanishing point. So a high exponent brightens exactly the part of frame
+    // that should be dark and darkens the centre - the opposite of the depth read.
+    // Keep it low so the shells contribute nearly flat and the composition is set
+    // by the per-copy gain ramp and the convergence core instead.
+    gm.additive   = (shell == 1) ? 0.10f : 0.06f;
     gm.tint[0] = 1.0f; gm.tint[1] = 1.0f; gm.tint[2] = 1.0f;
     const float baseFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
     // A slight spectral split between the layers: the mid shell keeps the Salvari
