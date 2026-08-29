@@ -13,8 +13,11 @@ void VulkanRenderDevice::addBloomPasses(RgResource rgHdr, RgResource* rgMip) {
             // raw HDR scene otherwise — `rgHdr` is already the right resource;
             // pick the matching pre-written descriptor set) or the previous mip.
             RgResource srcRes = firstPass ? rgHdr : rgMip[i - 1];
+            // Motion blur wins over TAA when it ran: the bloom chain must bloom the
+            // BLURRED image, not the pre-blur resolve.
             VkDescriptorSet srcSet = firstPass
-                ? (m_taaActiveThisFrame ? m_setTaaOut : m_setHdr)
+                ? (m_mbActiveThisFrame ? m_setMbOut
+                                       : (m_taaActiveThisFrame ? m_setTaaOut : m_setHdr))
                 : m_setMip[i - 1];
             // Source resolution (1/texel) for the filter taps.
             VkExtent2D srcExt = firstPass ? m_extent : m_bloomMips[i - 1].extent;
@@ -421,6 +424,28 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             rgTaaOut = m_graph.importImage("taa.out", m_taaOutImg,
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
             rgTaaHist = m_graph.importImage("taa.hist", m_taaHistImg, m_taaHistState);
+        }
+        // MOTION BLUR (delta #1). Gated on the VELOCITY pass having run this frame:
+        // the whole point of the effect is per-object motion, and with no velocity
+        // buffer there is nothing to read -- so "velocity unavailable" degrades to
+        // "the passes are never built", which is byte-identical to a build without
+        // the feature (rgPostSrc below keeps pointing at the TAA output). All three
+        // targets are fully overwritten every frame -> imported UNDEFINED, no
+        // cross-frame state to track.
+        const bool mbOn = velOn && m_post.motionBlur
+                       && (m_mbTilePipe != VK_NULL_HANDLE) && (m_mbNeighPipe != VK_NULL_HANDLE)
+                       && (m_mbBlurPipe != VK_NULL_HANDLE)
+                       && (m_mbTileImg != VK_NULL_HANDLE) && (m_mbNeighImg != VK_NULL_HANDLE)
+                       && (m_mbOutImg != VK_NULL_HANDLE);
+        m_mbActiveThisFrame = mbOn;
+        RgResource rgMbTile = {}, rgMbNeigh = {}, rgMbOut = {};
+        if (mbOn) {
+            rgMbTile  = m_graph.importImage("mb.tile", m_mbTileImg,
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            rgMbNeigh = m_graph.importImage("mb.neighbor", m_mbNeighImg,
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            rgMbOut   = m_graph.importImage("mb.out", m_mbOutImg,
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         }
         RgResource rgGiRaw = {}, rgGiAccumW = {}, rgGiAccumH = {}, rgGiDenoise = {}, rgGiPrevDepth = {};
         if (giOn) {
@@ -1935,8 +1960,162 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             m_graph.addPass(std::move(hc));
         }
 
-        // The image AE/bloom/composite read: TAA output when on, raw HDR otherwise.
-        const RgResource rgPostSrc = taaOn ? rgTaaOut : rgHdr;
+        // ================================================================
+        // MOTION BLUR (delta #1) — three passes, HERE and nowhere else.
+        // ----------------------------------------------------------------
+        // AFTER taa-history-copy so the blurred frame never enters the TAA
+        // history (a blurred history feeds back and smears permanently), and
+        // BEFORE auto-exposure/bloom so the bloom chain blooms the blurred
+        // image, which is what a real lens does. No existing pass moves.
+        //
+        //   1  mb-tilemax       velocity + depth -> tile-max  (grid res)
+        //   2  mb-neighbormax   tile-max         -> neigh-max (grid res)
+        //   3  mb-blur          scene+vel+depth+neigh -> mb.out (full res)
+        //
+        // 1 and 2 are the velocity dilation that lets a fast object bleed past
+        // its own silhouette; 3 is the depth-ordered reconstruction filter.
+        // See shaders/mb_*.frag and engine/rhi/MotionBlur.h.
+        const RgResource rgBlurSrc = taaOn ? rgTaaOut : rgHdr;
+        if (mbOn) {
+            // ---- 1: tile max -------------------------------------------------
+            m_mbTileAttach = VkRenderingAttachmentInfo{};
+            m_mbTileAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_mbTileAttach.imageView = m_mbTileView;
+            m_mbTileAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_mbTileAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // fully written
+            m_mbTileAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc t1{};
+            t1.name = "mb-tilemax";
+            t1.addUse(ResourceUse{
+                rgMbTile, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            t1.addUse(ResourceUse{
+                rgVel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            t1.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            t1.usesDynamicRendering = true;
+            m_mbTileRenderInfo = VkRenderingInfo{};
+            m_mbTileRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_mbTileRenderInfo.renderArea = { {0,0}, m_mbGridExtent };
+            m_mbTileRenderInfo.layerCount = 1;
+            m_mbTileRenderInfo.colorAttachmentCount = 1;
+            m_mbTileRenderInfo.pColorAttachments = &m_mbTileAttach;
+            t1.renderInfo = m_mbTileRenderInfo;
+            t1.recordCtx = this;
+            t1.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                self->postViewport(c, self->m_mbGridExtent);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_mbTilePipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_mbTileLayout,
+                                        0, 1, &self->m_mbTileSet[self->m_frameIdx], 0, nullptr);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(t1));
+
+            // ---- 2: neighbour max --------------------------------------------
+            m_mbNeighAttach = VkRenderingAttachmentInfo{};
+            m_mbNeighAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_mbNeighAttach.imageView = m_mbNeighView;
+            m_mbNeighAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_mbNeighAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            m_mbNeighAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc t2{};
+            t2.name = "mb-neighbormax";
+            t2.addUse(ResourceUse{
+                rgMbNeigh, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            t2.addUse(ResourceUse{
+                rgMbTile, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            t2.usesDynamicRendering = true;
+            m_mbNeighRenderInfo = VkRenderingInfo{};
+            m_mbNeighRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_mbNeighRenderInfo.renderArea = { {0,0}, m_mbGridExtent };
+            m_mbNeighRenderInfo.layerCount = 1;
+            m_mbNeighRenderInfo.colorAttachmentCount = 1;
+            m_mbNeighRenderInfo.pColorAttachments = &m_mbNeighAttach;
+            t2.renderInfo = m_mbNeighRenderInfo;
+            t2.recordCtx = this;
+            t2.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                self->postViewport(c, self->m_mbGridExtent);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_mbNeighPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_mbNeighLayout,
+                                        0, 1, &self->m_mbNeighSet[self->m_frameIdx], 0, nullptr);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(t2));
+
+            // ---- 3: reconstruction -------------------------------------------
+            m_mbOutAttach = VkRenderingAttachmentInfo{};
+            m_mbOutAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_mbOutAttach.imageView = m_mbOutView;
+            m_mbOutAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_mbOutAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            m_mbOutAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc t3{};
+            t3.name = "mb-blur";
+            t3.addUse(ResourceUse{
+                rgMbOut, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            t3.addUse(ResourceUse{
+                rgBlurSrc, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            t3.addUse(ResourceUse{
+                rgVel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            t3.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            t3.addUse(ResourceUse{
+                rgMbNeigh, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            t3.usesDynamicRendering = true;
+            m_mbOutRenderInfo = VkRenderingInfo{};
+            m_mbOutRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_mbOutRenderInfo.renderArea = { {0,0}, m_extent };
+            m_mbOutRenderInfo.layerCount = 1;
+            m_mbOutRenderInfo.colorAttachmentCount = 1;
+            m_mbOutRenderInfo.pColorAttachments = &m_mbOutAttach;
+            t3.renderInfo = m_mbOutRenderInfo;
+            t3.recordCtx = this;
+            t3.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                self->postViewport(c, self->m_extent);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_mbBlurPipe);
+                // The colour source differs with TAA, and descriptor writes are
+                // static -> two pre-written set variants, picked here.
+                VkDescriptorSet set = self->m_taaActiveThisFrame
+                                    ? self->m_mbBlurSetTaa[self->m_frameIdx]
+                                    : self->m_mbBlurSetHdr[self->m_frameIdx];
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_mbBlurLayout,
+                                        0, 1, &set, 0, nullptr);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(t3));
+        }
+
+        // The image AE/bloom/composite read: the motion-blur output when the blur
+        // ran, else the TAA output when TAA is on, else the raw HDR scene.
+        const RgResource rgPostSrc = mbOn ? rgMbOut : (taaOn ? rgTaaOut : rgHdr);
 
         // ================================================================
         // AUTO-EXPOSURE + BLOOM CHAIN + HDR COMPOSITE (HDR pipeline).
@@ -2037,8 +2216,10 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_compositePipe);
                 // TAA on: binding 0 samples the TAA RESOLVE output instead of the
                 // raw HDR scene (same layout, alternate pre-written set).
-                VkDescriptorSet compSet = self->m_taaActiveThisFrame
-                    ? self->m_setCompositeTaa : self->m_setComposite;
+                VkDescriptorSet compSet = self->m_mbActiveThisFrame
+                    ? self->m_setCompositeMb
+                    : (self->m_taaActiveThisFrame ? self->m_setCompositeTaa
+                                                  : self->m_setComposite);
                 vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_compositeLayout,
                                         0, 1, &compSet, 0, nullptr);
                 CompositePush cp{};

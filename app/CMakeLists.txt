@@ -397,6 +397,12 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/fog.frag
     ${CMAKE_SOURCE_DIR}/shaders/volumetric.frag
     ${CMAKE_SOURCE_DIR}/shaders/taa_resolve.frag
+    # MOTION BLUR (delta #1): tile-max / neighbour-max velocity dilation + the
+    # depth-ordered reconstruction filter. Absent .spv => the pipelines fail to
+    # create, the passes are never built, and the post chain is unchanged.
+    ${CMAKE_SOURCE_DIR}/shaders/mb_tilemax.frag
+    ${CMAKE_SOURCE_DIR}/shaders/mb_neighbormax.frag
+    ${CMAKE_SOURCE_DIR}/shaders/mb_blur.frag
     ${CMAKE_SOURCE_DIR}/shaders/autoexposure.comp
     ${CMAKE_SOURCE_DIR}/shaders/depth.vert
     ${CMAKE_SOURCE_DIR}/shaders/depth_cutout.vert

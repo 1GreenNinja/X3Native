@@ -1044,7 +1044,10 @@ void VulkanRenderDevice::recordAutoExposureBody(VkCommandBuffer c) {
         vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_aePipe);
         // TAA on: meter the TAA RESOLVE output (what the composite will show)
         // instead of the raw jittered HDR scene (alternate pre-written set).
-        VkDescriptorSet aeSet = m_taaActiveThisFrame ? m_aeSetTaa : m_aeSet;
+        // Motion blur on: meter the BLURRED image, which is what the composite
+        // will actually show (the same reason the TAA variant exists).
+        VkDescriptorSet aeSet = m_mbActiveThisFrame ? m_aeSetMb
+                              : (m_taaActiveThisFrame ? m_aeSetTaa : m_aeSet);
         vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_aeLayout,
                                 0, 1, &aeSet, 0, nullptr);
         vkCmdPushConstants(c, m_aeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -2023,6 +2026,63 @@ void VulkanRenderDevice::prepareFrameData() {
                                   m_velPrevJitterNdc.x, m_velPrevJitterNdc.y);
             std::memcpy(m_velUboMapped[m_frameIdx], &vu, sizeof(VelUBO));
             m_velPrevJitterNdc = curJitNdc;   // for next frame's prev-jitter lane
+        }
+
+        // ---- MOTION BLUR UBO (delta #1) --------------------------------------
+        // Written whenever the feature is on and the velocity pass wants to run
+        // this frame; buildAndExecuteGraph makes the authoritative call (the same
+        // split as velWant above). ONE UBO feeds all three stages, so the shutter
+        // scale cannot drift between the tile reduction and the reconstruction.
+        const bool mbWant = velWant && m_post.motionBlur
+                         && (m_mbBlurPipe != VK_NULL_HANDLE) && (m_mbOutImg != VK_NULL_HANDLE);
+        if (mbWant && m_mbUboMapped[m_frameIdx]) {
+            // THE dt SOURCE. Headless (every --screenshot*/--test path) uses a
+            // FIXED delta so captures are reproducible run over run -- the same
+            // reasoning as the auto-exposure headless snap and the frame-counter
+            // TAA jitter phase. r_mb_dt overrides both, which is what makes
+            // framerate invariance assertable headlessly.
+            float dt = m_post.mbDt;
+            if (!(dt > 0.0f)) {
+                if (m_headless) {
+                    dt = 1.0f / ((m_post.mbRefFps > 0.0f) ? m_post.mbRefFps
+                                                          : x3::rhi::kMotionBlurDefaultRefFps);
+                } else {
+                    const double tNow = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                    dt = (m_mbPrevTime >= 0.0) ? (float)(tNow - m_mbPrevTime) : 0.0f;
+                    m_mbPrevTime = tNow;
+                    if (dt < 0.0f)  dt = 0.0f;
+                    if (dt > 0.25f) dt = 0.25f;   // stall guard on the CLOCK, not on the rule
+                }
+            }
+            const float scale = x3::rhi::motionBlurVelocityScale(dt, m_post.mbShutter, m_post.mbRefFps);
+            const float maxPx = x3::rhi::motionBlurMaxRadius(m_post.mbMaxBlur);
+            const int   taps  = x3::rhi::motionBlurClampSamples(m_post.mbSamples);
+            const float softZ = (m_post.mbSoftZ > 0.0f) ? m_post.mbSoftZ : 0.05f;
+
+            MbUBO mu{};
+            // UNJITTERED pair: the velocity buffer this pass reads is itself
+            // jitter-free, so the sky/no-geometry fallback must be reconstructed in
+            // the same convention or the two disagree by a sub-pixel wobble.
+            mu.invViewProjCur = glm::inverse(unjitteredVP);
+            mu.viewProjPrev   = m_taaHistoryValid ? m_taaPrevVP : unjitteredVP;
+            mu.params0 = glm::vec4(1.0f / (float)std::max(1u, m_extent.width),
+                                   1.0f / (float)std::max(1u, m_extent.height),
+                                   scale, maxPx);
+            // Dither phase 0 in headless (bit-reproducible captures); a frame
+            // COUNTER otherwise, so the residual tap grain integrates away over a
+            // few frames in an interactive session. Never a wall clock.
+            mu.params1 = glm::vec4((float)taps,
+                                   m_headless ? 0.0f : (float)(m_mbFrameNum % 64u),
+                                   1.0f, softZ);
+            // zLinA / zLinB: the projection terms that linearise the depth buffer,
+            // linearZ = B / (d + A). `proj` carries this frame's TAA jitter, but
+            // the jitter is added ONLY to proj[2][0] / proj[2][1], so these two
+            // terms are identical in the jittered and unjittered matrices.
+            mu.params2 = glm::vec4((float)m_extent.width, (float)m_extent.height,
+                                   proj[2][2], proj[3][2]);
+            std::memcpy(m_mbUboMapped[m_frameIdx], &mu, sizeof(MbUBO));
+            m_mbFrameNum++;
         }
         // ---- SSR/RT reflections: activate for THIS frame --------------------
         // Decided here (not in buildAndExecuteGraph) because (a) the SSAO control

@@ -5,6 +5,10 @@
 // hidden in the .cpp so game/Lua code never sees the graphics API.
 #include <cstdint>
 #include <cmath>
+// Motion-blur constants + the shutter/dt rule. Pure, header-only, Vulkan-free —
+// included so the r_mb_* defaults below cannot drift from the bound the shaders
+// and the test battery are written against.
+#include "MotionBlur.h"
 
 namespace x3::rhi {
 
@@ -637,6 +641,35 @@ public:
                                        // camera-only reprojection (pre-velocity
                                        // behavior). No-op when taa is off or
                                        // velocity.spv is absent (graceful fallback).
+        // ---- MOTION BLUR (r_motionblur / r_mb_*) --------------------------
+        // The SECOND consumer of the per-object velocity buffer: a tile-max /
+        // neighbour-max / reconstruction chain between taa-history-copy and
+        // auto-exposure. DEFAULT OFF -- it changes every frame of every world,
+        // so it is opted into rather than discovered, and every existing
+        // determinism basin stays byte-identical. Requires `velocity` (and
+        // therefore `taa`); when velocity is unavailable the whole chain is
+        // skipped, which IS the byte-identical fallback.
+        bool  motionBlur     = false;  // r_motionblur
+        float mbShutter      = kMotionBlurDefaultShutter;  // r_mb_shutter: exposure fraction AT mbRefFps
+                                       // (0.5 = the film 180-degree shutter)
+        float mbRefFps       = kMotionBlurDefaultRefFps;   // r_mb_reffps: the reference framerate the
+                                       // shutter fraction is quoted against. Blur
+                                       // strength is dt-normalised to this, so the
+                                       // look is IDENTICAL at 30, 60 and 165 Hz.
+        int   mbSamples      = kMotionBlurDefaultSamples;  // r_mb_samples: taps along the blur vector
+        float mbMaxBlur      = 0.0f;   // r_mb_maxblur: blur length cap in pixels;
+                                       // <=0 = the dilation's exact bound
+                                       // (kMotionBlurTile * kMotionBlurReach)
+        float mbSoftZ        = 0.05f;  // r_mb_softz: relative depth band for the
+                                       // tap-ordering test (a fraction of the
+                                       // centre pixel's view distance)
+        float mbDt           = 0.0f;   // r_mb_dt: FIXED frame delta in seconds for
+                                       // the blur normalisation. 0 = measure it
+                                       // from a steady clock (interactive). The
+                                       // override is what makes framerate
+                                       // invariance testable headlessly and what
+                                       // keeps headless captures reproducible.
+
         bool  filmicAllowed  = true;   // r_filmic: master gate on the cinematic
                                        // filmic post (setFilmic). Default TRUE so
                                        // headless/screenshot paths that never call
@@ -1873,6 +1906,11 @@ public:
         CVarOpt<bool>  taa;
         CVarOpt<float> taaSharpen;
         CVarOpt<bool>  velocity, filmicAllowed;
+        // Motion blur (r_motionblur / r_mb_shutter / r_mb_reffps / r_mb_samples /
+        // r_mb_maxblur / r_mb_softz / r_mb_dt)
+        CVarOpt<bool>  motionBlur;
+        CVarOpt<float> mbShutter, mbRefFps, mbMaxBlur, mbSoftZ, mbDt;
+        CVarOpt<int>   mbSamples;
 
         // RT soft shadows (r_rtshadows / r_rtsun_size / r_rtpoint_*)
         CVarOpt<int>   rtsTier;
@@ -1925,6 +1963,10 @@ public:
             aeKey.stamp(p.aeKey);               taa.stamp(p.taa);
             taaSharpen.stamp(p.taaSharpen);     velocity.stamp(p.velocity);
             filmicAllowed.stamp(p.filmicAllowed);
+            motionBlur.stamp(p.motionBlur);     mbShutter.stamp(p.mbShutter);
+            mbRefFps.stamp(p.mbRefFps);         mbSamples.stamp(p.mbSamples);
+            mbMaxBlur.stamp(p.mbMaxBlur);       mbSoftZ.stamp(p.mbSoftZ);
+            mbDt.stamp(p.mbDt);
         }
         void apply(RtShadowParams& p) const {
             if (!active) return;

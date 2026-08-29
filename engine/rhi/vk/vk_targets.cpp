@@ -334,6 +334,35 @@ bool VulkanRenderDevice::createBloomTargets() {
         }
         m_velState = ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
 
+        // ---- MOTION BLUR targets (delta #1) ---------------------------------
+        // Tile grid = ceil(extent / kMotionBlurTile). Two RG16F grid targets
+        // (tile-max, neighbour-max) plus one full-res HDR output. Failure is
+        // NON-FATAL for the same reason the velocity target's is: the passes are
+        // then never built and the post chain keeps reading the TAA output, which
+        // is byte-identical to a build without motion blur.
+        m_mbGridExtent.width  = std::max(1u, (W + (uint32_t)x3::rhi::kMotionBlurTile - 1u)
+                                             / (uint32_t)x3::rhi::kMotionBlurTile);
+        m_mbGridExtent.height = std::max(1u, (H + (uint32_t)x3::rhi::kMotionBlurTile - 1u)
+                                             / (uint32_t)x3::rhi::kMotionBlurTile);
+        {
+            const VkImageUsageFlags gridUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                                              | VK_IMAGE_USAGE_SAMPLED_BIT;
+            const bool ok =
+                   createColorTarget(kMotionBlurTileFormat, m_mbGridExtent.width, m_mbGridExtent.height,
+                                     gridUsage, m_mbTileImg, m_mbTileAlloc, m_mbTileView)
+                && createColorTarget(kMotionBlurTileFormat, m_mbGridExtent.width, m_mbGridExtent.height,
+                                     gridUsage, m_mbNeighImg, m_mbNeighAlloc, m_mbNeighView)
+                && createColorTarget(kHdrFormat, W, H,
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                                     | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                     m_mbOutImg, m_mbOutAlloc, m_mbOutView);
+            if (!ok) {
+                logError("[rhi] motion-blur targets create failed — motion blur disabled "
+                         "(post chain unchanged)");
+                destroyMotionBlurTargets();
+            }
+        }
+
         // Bloom mips: mip0 = half res, each subsequent halves again (min 1px).
         uint32_t mw = W, mh = H;
         for (uint32_t i = 0; i < kBloomMips; ++i) {
@@ -413,8 +442,21 @@ void VulkanRenderDevice::destroyBloomTargets() {
         if (m_velView) { vkDestroyImageView(m_dev.device, m_velView, nullptr); m_velView = VK_NULL_HANDLE; }
         if (m_velImg)  { vmaDestroyImage(m_alloc, m_velImg, m_velAlloc); m_velImg = VK_NULL_HANDLE; m_velAlloc = nullptr; }
         m_velState = ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+        destroyMotionBlurTargets();
         if (m_hdrView) { vkDestroyImageView(m_dev.device, m_hdrView, nullptr); m_hdrView = VK_NULL_HANDLE; }
         if (m_hdrImg)  { vmaDestroyImage(m_alloc, m_hdrImg, m_hdrAlloc); m_hdrImg = VK_NULL_HANDLE; m_hdrAlloc = nullptr; }
+    }
+
+// Motion-blur targets only (tile grid + neighbour grid + blurred output). Split
+// out of destroyBloomTargets so the non-fatal create path can unwind a partial
+// allocation with the same code the teardown uses -- one definition, no drift.
+void VulkanRenderDevice::destroyMotionBlurTargets() {
+        if (m_mbTileView)  { vkDestroyImageView(m_dev.device, m_mbTileView, nullptr); m_mbTileView = VK_NULL_HANDLE; }
+        if (m_mbTileImg)   { vmaDestroyImage(m_alloc, m_mbTileImg, m_mbTileAlloc); m_mbTileImg = VK_NULL_HANDLE; m_mbTileAlloc = nullptr; }
+        if (m_mbNeighView) { vkDestroyImageView(m_dev.device, m_mbNeighView, nullptr); m_mbNeighView = VK_NULL_HANDLE; }
+        if (m_mbNeighImg)  { vmaDestroyImage(m_alloc, m_mbNeighImg, m_mbNeighAlloc); m_mbNeighImg = VK_NULL_HANDLE; m_mbNeighAlloc = nullptr; }
+        if (m_mbOutView)   { vkDestroyImageView(m_dev.device, m_mbOutView, nullptr); m_mbOutView = VK_NULL_HANDLE; }
+        if (m_mbOutImg)    { vmaDestroyImage(m_alloc, m_mbOutImg, m_mbOutAlloc); m_mbOutImg = VK_NULL_HANDLE; m_mbOutAlloc = nullptr; }
     }
 
 bool VulkanRenderDevice::createGlassResources() {
@@ -643,20 +685,77 @@ bool VulkanRenderDevice::createPost() {
             logError("[rhi] TAA depth sampler failed"); return false;
         }
 
+        // MOTION BLUR set layouts (delta #1). Three stages, three layouts:
+        //   tile   b0 = velocity, b1 = depth, b2 = MbUBO
+        //   neigh  b0 = tile-max
+        //   blur   b0 = scene colour, b1 = velocity, b2 = depth, b3 = neighbour-max,
+        //          b4 = MbUBO
+        // All fragment stage; the whole chain is fullscreen-triangle raster, which
+        // reuses createFullscreenPipeline unchanged rather than adding a compute
+        // path with its own storage-image plumbing.
+        {
+            VkDescriptorSetLayoutBinding mt[3]{};
+            for (uint32_t i = 0; i < 2; ++i) {
+                mt[i].binding = i; mt[i].descriptorCount = 1;
+                mt[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                mt[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            }
+            mt[2].binding = 2; mt[2].descriptorCount = 1;
+            mt[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            mt[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo smt{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            smt.bindingCount = 3; smt.pBindings = mt;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &smt, nullptr, &m_mbTileSetLayout) != VK_SUCCESS) {
+                logError("[rhi] motion-blur tile set layout failed"); return false;
+            }
+            VkDescriptorSetLayoutBinding mn{};
+            mn.binding = 0; mn.descriptorCount = 1;
+            mn.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            mn.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo smn{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            smn.bindingCount = 1; smn.pBindings = &mn;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &smn, nullptr, &m_mbNeighSetLayout) != VK_SUCCESS) {
+                logError("[rhi] motion-blur neighbour set layout failed"); return false;
+            }
+            VkDescriptorSetLayoutBinding mbb[5]{};
+            for (uint32_t i = 0; i < 4; ++i) {
+                mbb[i].binding = i; mbb[i].descriptorCount = 1;
+                mbb[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                mbb[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            }
+            mbb[4].binding = 4; mbb[4].descriptorCount = 1;
+            mbb[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            mbb[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo smb{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            smb.bindingCount = 5; smb.pBindings = mbb;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &smb, nullptr, &m_mbBlurSetLayout) != VK_SUCCESS) {
+                logError("[rhi] motion-blur blur set layout failed"); return false;
+            }
+        }
+
         // Descriptor pool: (HDR set + kBloomMips mip sets + TAA-out set)
         // single-sampler sets + 2 composite sets (2 samplers + 1 SSBO each: raw-HDR
         // + TAA variants) + 2 auto-exposure sets (1 sampler + 1 SSBO each) + the
         // per-frame TAA resolve sets (4 samplers + 1 UBO each: scene/hist/depth +
         // the #4 velocity sampler at b4). Sized exactly; no UPDATE_AFTER_BIND.
-        const uint32_t single = 1 + kBloomMips + 1 + 1; // HDR + each mip + TAA out + fog(depth)
+        //
+        // MOTION BLUR adds, PER FRAME IN FLIGHT: a tile set (2 samplers + 1 UBO),
+        // a neighbour set (1 sampler), and TWO blur sets (4 samplers + 1 UBO each,
+        // one bound to the TAA output and one to the raw HDR target) -- so
+        // 11 samplers, 3 UBO descriptors and 4 sets per frame. It also adds THREE
+        // frame-independent downstream variants (bloom / AE / composite reading the
+        // BLURRED image): 1 + 1 + 2 = 4 samplers, 2 SSBOs, 3 sets. Sized exactly
+        // here: allocating one more set than this arithmetic allows fails outright.
+        const uint32_t single = 1 + kBloomMips + 1 + 1 + 1; // HDR + mips + TAA out + fog(depth) + MB out
         VkDescriptorPoolSize ps[3]{
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-              single + 2*2 + 1*2 + 4*kFramesInFlight },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         4 },
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
+              single + 2*3 + 1*3 + 4*kFramesInFlight + 11*kFramesInFlight },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         6 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight + 3*kFramesInFlight },
         };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = single + 4 + kFramesInFlight; pci.poolSizeCount = 3; pci.pPoolSizes = ps;
+        pci.maxSets = single + 6 + kFramesInFlight + 4*kFramesInFlight;
+        pci.poolSizeCount = 3; pci.pPoolSizes = ps;
         if (x3CreateDescriptorPool(&pci, nullptr, &m_postPool) != VK_SUCCESS) {
             logError("[rhi] post desc pool failed"); return false;
         }
@@ -671,6 +770,8 @@ bool VulkanRenderDevice::createPost() {
             if (!alloc1(m_setMip[i])) { logError("[rhi] post set alloc (mip) failed"); return false; }
         if (!alloc1(m_setTaaOut)) { logError("[rhi] post set alloc (taa-out) failed"); return false; }
         if (!alloc1(m_setFog))    { logError("[rhi] post set alloc (fog) failed");     return false; }
+        // Motion blur: the bloom chain's first-pass source when the blur ran.
+        if (!alloc1(m_setMbOut))  { logError("[rhi] post set alloc (mb-out) failed");  return false; }
         {
             VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_postSetLayout2;
@@ -679,6 +780,9 @@ bool VulkanRenderDevice::createPost() {
             }
             if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setCompositeTaa) != VK_SUCCESS) {
                 logError("[rhi] post set alloc (composite-taa) failed"); return false;
+            }
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setCompositeMb) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (composite-mb) failed"); return false;
             }
         }
         {
@@ -689,6 +793,9 @@ bool VulkanRenderDevice::createPost() {
             }
             if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_aeSetTaa) != VK_SUCCESS) {
                 logError("[rhi] post set alloc (auto-exposure-taa) failed"); return false;
+            }
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_aeSetMb) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (auto-exposure-mb) failed"); return false;
             }
         }
         // Per-frame TAA resolve sets + their host-mapped UBOs (matrices change
@@ -711,6 +818,38 @@ bool VulkanRenderDevice::createPost() {
                 logError("[rhi] TAA UBO alloc failed"); return false;
             }
             m_taaUboMapped[i] = ainfo.pMappedData;
+        }
+
+        // Per-frame MOTION BLUR sets + one host-mapped MbUBO per frame in flight.
+        // ONE UBO buffer feeds all three stages of that frame, so the dt/shutter
+        // scale physically cannot differ between the tile reduction and the
+        // reconstruction filter.
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto allocMb = [&](VkDescriptorSetLayout layout, VkDescriptorSet& out, const char* what) -> bool {
+                VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+                ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &layout;
+                if (vkAllocateDescriptorSets(m_dev.device, &ai, &out) != VK_SUCCESS) {
+                    logError(std::string("[rhi] post set alloc (motion-blur ") + what + ") failed");
+                    return false;
+                }
+                return true;
+            };
+            if (!allocMb(m_mbTileSetLayout,  m_mbTileSet[i],    "tile"))      return false;
+            if (!allocMb(m_mbNeighSetLayout, m_mbNeighSet[i],   "neighbour")) return false;
+            if (!allocMb(m_mbBlurSetLayout,  m_mbBlurSetTaa[i], "blur/taa"))  return false;
+            if (!allocMb(m_mbBlurSetLayout,  m_mbBlurSetHdr[i], "blur/hdr"))  return false;
+
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(MbUBO); bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo ainfo{};
+            if (x3vmaCreateBuffer(&bci, &aci, &m_mbUboBuf[i], &m_mbUboAlloc[i], &ainfo) != VK_SUCCESS) {
+                logError("[rhi] motion-blur UBO alloc failed"); return false;
+            }
+            m_mbUboMapped[i] = ainfo.pMappedData;
         }
 
         // Auto-exposure SSBO: 16 bytes { adapted, avgLog, pad, pad }, persistent
@@ -840,6 +979,50 @@ bool VulkanRenderDevice::createPost() {
                 return false;
         }
 
+        // MOTION BLUR (delta #1): three fullscreen pipelines. NON-FATAL as a unit
+        // -- if any .spv is missing (a build where the shaders were not registered,
+        // or a partial deploy) every handle is cleared and the graph never builds
+        // the passes, leaving the post chain byte-identical to a build without the
+        // feature. This is the velocity pass's graceful-degradation idiom, not the
+        // TAA pipeline's fatal one: motion blur must never brick startup.
+        {
+            bool mbOk = true;
+            auto mkLayout = [&](VkDescriptorSetLayout setLayout, VkPipelineLayout& out) {
+                VkPipelineLayoutCreateInfo li{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+                li.setLayoutCount = 1; li.pSetLayouts = &setLayout;
+                if (vkCreatePipelineLayout(m_dev.device, &li, nullptr, &out) != VK_SUCCESS) {
+                    out = VK_NULL_HANDLE; mbOk = false;
+                }
+            };
+            mkLayout(m_mbTileSetLayout,  m_mbTileLayout);
+            mkLayout(m_mbNeighSetLayout, m_mbNeighLayout);
+            mkLayout(m_mbBlurSetLayout,  m_mbBlurLayout);
+            if (mbOk) {
+                mbOk = createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\mb_tilemax.frag.spv",
+                                                m_mbTileLayout, kMotionBlurTileFormat,
+                                                /*additiveBlend=*/false, m_mbTilePipe)
+                    && createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\mb_neighbormax.frag.spv",
+                                                m_mbNeighLayout, kMotionBlurTileFormat,
+                                                /*additiveBlend=*/false, m_mbNeighPipe)
+                    && createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\mb_blur.frag.spv",
+                                                m_mbBlurLayout, kHdrFormat,
+                                                /*additiveBlend=*/false, m_mbBlurPipe);
+            }
+            if (!mbOk) {
+                logWarn("[rhi] motion-blur pipelines unavailable (mb_*.frag.spv missing?) — "
+                        "r_motionblur is a no-op; post chain unchanged");
+                if (m_mbTilePipe)   { vkDestroyPipeline(m_dev.device, m_mbTilePipe, nullptr);   m_mbTilePipe = VK_NULL_HANDLE; }
+                if (m_mbNeighPipe)  { vkDestroyPipeline(m_dev.device, m_mbNeighPipe, nullptr);  m_mbNeighPipe = VK_NULL_HANDLE; }
+                if (m_mbBlurPipe)   { vkDestroyPipeline(m_dev.device, m_mbBlurPipe, nullptr);   m_mbBlurPipe = VK_NULL_HANDLE; }
+                if (m_mbTileLayout) { vkDestroyPipelineLayout(m_dev.device, m_mbTileLayout, nullptr);  m_mbTileLayout = VK_NULL_HANDLE; }
+                if (m_mbNeighLayout){ vkDestroyPipelineLayout(m_dev.device, m_mbNeighLayout, nullptr); m_mbNeighLayout = VK_NULL_HANDLE; }
+                if (m_mbBlurLayout) { vkDestroyPipelineLayout(m_dev.device, m_mbBlurLayout, nullptr);  m_mbBlurLayout = VK_NULL_HANDLE; }
+            } else {
+                logInfo("[rhi] motion blur pipelines ready (tile-max / neighbour-max / "
+                        "depth-ordered reconstruction; r_motionblur, default OFF)");
+            }
+        }
+
         logInfo("[rhi] HDR post pipeline ready (R16G16B16A16_SFLOAT scene + " +
                 std::to_string(kBloomMips) + "-mip bloom + TAA resolve + ACES composite)");
         return true;
@@ -940,6 +1123,11 @@ void VulkanRenderDevice::writePostDescriptors() {
         write1(m_setHdr, m_hdrView);
         for (uint32_t i = 0; i < kBloomMips; ++i) write1(m_setMip[i], m_bloomMips[i].view);
         write1(m_setTaaOut, m_taaOutView);   // bloom bright-pass source when TAA is on
+        // Motion blur: the bloom bright-pass source on frames the blur ran, so
+        // the bloom chain blooms the BLURRED image (what a real lens does).
+        // Placeholder to the TAA view when the blur target failed to create, so
+        // the binding is never dangling (the passes are gated off in that case).
+        write1(m_setMbOut, m_mbOutView ? m_mbOutView : m_taaOutView);
         // Fog pass: b0 = the MAIN DEPTH buffer sampled as data (same sampler +
         // DEPTH_READ_ONLY layout the TAA resolve uses for its depth binding).
         {
@@ -1006,6 +1194,34 @@ void VulkanRenderDevice::writePostDescriptors() {
         atw[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; atw[1].pBufferInfo = &db;
         vkUpdateDescriptorSets(m_dev.device, 2, atw, 0, nullptr);
 
+        // MOTION-BLUR variants of the same two sets: b0 = the BLURRED scene.
+        // Written unconditionally (with a TAA-view placeholder if the blur target
+        // is absent) so neither set is ever bound with a dangling descriptor.
+        {
+            VkDescriptorImageInfo m0{ m_postSampler, m_mbOutView ? m_mbOutView : m_taaOutView,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet mw[3]{};
+            mw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            mw[0].dstSet = m_setCompositeMb; mw[0].dstBinding = 0; mw[0].descriptorCount = 1;
+            mw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; mw[0].pImageInfo = &m0;
+            mw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            mw[1].dstSet = m_setCompositeMb; mw[1].dstBinding = 1; mw[1].descriptorCount = 1;
+            mw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; mw[1].pImageInfo = &d1;
+            mw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            mw[2].dstSet = m_setCompositeMb; mw[2].dstBinding = 2; mw[2].descriptorCount = 1;
+            mw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; mw[2].pBufferInfo = &db;
+            vkUpdateDescriptorSets(m_dev.device, 3, mw, 0, nullptr);
+
+            VkWriteDescriptorSet amw[2]{};
+            amw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            amw[0].dstSet = m_aeSetMb; amw[0].dstBinding = 0; amw[0].descriptorCount = 1;
+            amw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; amw[0].pImageInfo = &m0;
+            amw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            amw[1].dstSet = m_aeSetMb; amw[1].dstBinding = 1; amw[1].descriptorCount = 1;
+            amw[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; amw[1].pBufferInfo = &db;
+            vkUpdateDescriptorSets(m_dev.device, 2, amw, 0, nullptr);
+        }
+
         // Per-frame TAA resolve sets: b0 = current HDR scene, b1 = history,
         // b2 = scene depth (sampled as data in DEPTH_READ_ONLY), b3 = that
         // frame's TAA UBO. Views change on resize -> rewritten here every time.
@@ -1036,6 +1252,69 @@ void VulkanRenderDevice::writePostDescriptors() {
             rw[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; rw[4].pImageInfo = &r4;
             vkUpdateDescriptorSets(m_dev.device, 5, rw, 0, nullptr);
         }
+
+        // ---- MOTION BLUR sets (delta #1) -------------------------------------
+        // Rewritten on every resize, exactly like the TAA sets above. Same
+        // placeholder discipline: a null velocity/grid view falls back to the HDR
+        // view so no binding is ever dangling (the passes are gated off in that
+        // case, but a descriptor written into a set that gets bound must be valid).
+        if (m_mbTileImg && m_mbNeighImg && m_mbOutImg) {
+            VkDescriptorImageInfo mVel  { m_postSampler, m_velView ? m_velView : m_hdrView,
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo mDep  { m_taaDepthSampler, m_depthView,
+                                          VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo mTile { m_postSampler, m_mbTileView,
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo mNeigh{ m_postSampler, m_mbNeighView,
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo mTaa  { m_postSampler, m_taaOutView,
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo mHdr  { m_postSampler, m_hdrView,
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+                if (!m_mbTileSet[i] || !m_mbUboBuf[i]) continue;
+                VkDescriptorBufferInfo mb{ m_mbUboBuf[i], 0, VK_WHOLE_SIZE };
+                auto imgWrite = [](VkDescriptorSet set, uint32_t b, const VkDescriptorImageInfo* info) {
+                    VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+                    w.dstSet = set; w.dstBinding = b; w.descriptorCount = 1;
+                    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = info;
+                    return w;
+                };
+                auto uboWrite = [](VkDescriptorSet set, uint32_t b, const VkDescriptorBufferInfo* info) {
+                    VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+                    w.dstSet = set; w.dstBinding = b; w.descriptorCount = 1;
+                    w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w.pBufferInfo = info;
+                    return w;
+                };
+                VkWriteDescriptorSet tw2[3] = {
+                    imgWrite(m_mbTileSet[i], 0, &mVel),
+                    imgWrite(m_mbTileSet[i], 1, &mDep),
+                    uboWrite(m_mbTileSet[i], 2, &mb),
+                };
+                vkUpdateDescriptorSets(m_dev.device, 3, tw2, 0, nullptr);
+
+                VkWriteDescriptorSet nw = imgWrite(m_mbNeighSet[i], 0, &mTile);
+                vkUpdateDescriptorSets(m_dev.device, 1, &nw, 0, nullptr);
+
+                VkWriteDescriptorSet bwT[5] = {
+                    imgWrite(m_mbBlurSetTaa[i], 0, &mTaa),
+                    imgWrite(m_mbBlurSetTaa[i], 1, &mVel),
+                    imgWrite(m_mbBlurSetTaa[i], 2, &mDep),
+                    imgWrite(m_mbBlurSetTaa[i], 3, &mNeigh),
+                    uboWrite(m_mbBlurSetTaa[i], 4, &mb),
+                };
+                vkUpdateDescriptorSets(m_dev.device, 5, bwT, 0, nullptr);
+
+                VkWriteDescriptorSet bwH[5] = {
+                    imgWrite(m_mbBlurSetHdr[i], 0, &mHdr),
+                    imgWrite(m_mbBlurSetHdr[i], 1, &mVel),
+                    imgWrite(m_mbBlurSetHdr[i], 2, &mDep),
+                    imgWrite(m_mbBlurSetHdr[i], 3, &mNeigh),
+                    uboWrite(m_mbBlurSetHdr[i], 4, &mb),
+                };
+                vkUpdateDescriptorSets(m_dev.device, 5, bwH, 0, nullptr);
+            }
+        }
     }
 
 void VulkanRenderDevice::destroyPost() {
@@ -1046,6 +1325,20 @@ void VulkanRenderDevice::destroyPost() {
         if (m_taaDepthSampler){ vkDestroySampler(m_dev.device, m_taaDepthSampler, nullptr); m_taaDepthSampler = VK_NULL_HANDLE; }
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             if (m_taaUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_taaUboBuf[i], m_taaUboAlloc[i]); m_taaUboBuf[i] = VK_NULL_HANDLE; m_taaUboAlloc[i] = nullptr; m_taaUboMapped[i] = nullptr; }
+        }
+        // Motion blur (delta #1): three pipelines, three pipeline layouts, three
+        // set layouts, one UBO ring. The SETS die with m_postPool below.
+        if (m_mbTilePipe)       { vkDestroyPipeline(m_dev.device, m_mbTilePipe, nullptr); m_mbTilePipe = VK_NULL_HANDLE; }
+        if (m_mbNeighPipe)      { vkDestroyPipeline(m_dev.device, m_mbNeighPipe, nullptr); m_mbNeighPipe = VK_NULL_HANDLE; }
+        if (m_mbBlurPipe)       { vkDestroyPipeline(m_dev.device, m_mbBlurPipe, nullptr); m_mbBlurPipe = VK_NULL_HANDLE; }
+        if (m_mbTileLayout)     { vkDestroyPipelineLayout(m_dev.device, m_mbTileLayout, nullptr); m_mbTileLayout = VK_NULL_HANDLE; }
+        if (m_mbNeighLayout)    { vkDestroyPipelineLayout(m_dev.device, m_mbNeighLayout, nullptr); m_mbNeighLayout = VK_NULL_HANDLE; }
+        if (m_mbBlurLayout)     { vkDestroyPipelineLayout(m_dev.device, m_mbBlurLayout, nullptr); m_mbBlurLayout = VK_NULL_HANDLE; }
+        if (m_mbTileSetLayout)  { vkDestroyDescriptorSetLayout(m_dev.device, m_mbTileSetLayout, nullptr); m_mbTileSetLayout = VK_NULL_HANDLE; }
+        if (m_mbNeighSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_mbNeighSetLayout, nullptr); m_mbNeighSetLayout = VK_NULL_HANDLE; }
+        if (m_mbBlurSetLayout)  { vkDestroyDescriptorSetLayout(m_dev.device, m_mbBlurSetLayout, nullptr); m_mbBlurSetLayout = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_mbUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_mbUboBuf[i], m_mbUboAlloc[i]); m_mbUboBuf[i] = VK_NULL_HANDLE; m_mbUboAlloc[i] = nullptr; m_mbUboMapped[i] = nullptr; }
         }
         if (m_aePipe)         { vkDestroyPipeline(m_dev.device, m_aePipe, nullptr); m_aePipe = VK_NULL_HANDLE; }
         if (m_aeLayout)       { vkDestroyPipelineLayout(m_dev.device, m_aeLayout, nullptr); m_aeLayout = VK_NULL_HANDLE; }
