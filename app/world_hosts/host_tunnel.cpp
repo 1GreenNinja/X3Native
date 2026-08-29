@@ -2763,7 +2763,12 @@ int hostTunnel(HostContext& hc) {
         // See-through shallows (WaterParams::clarity): the bed, the fish and a
         // swimmer's body read THROUGH face-on water; depth + grazing angles
         // close it back to a surface. 0 would be the legacy opaque plane.
-        wpr.clarity   = 0.60f;
+        // ERR HIGH ON CLARITY (owner, 2026-08-28). The see-through ceiling that
+        // made anything past six metres opaque is gone, so clarity now buys real
+        // visibility instead of just thinning the shallows. The SURFACE river is
+        // the everyday water: clear enough to read the bed, the fish and a
+        // swimmer, still unmistakably a river.
+        wpr.clarity   = 0.82f;
         // W-NIGHT: the river glints to the LIVE luminary (sun by day, moon at
         // night), not to a phantom 14:00 sun that set hours ago.
         wpr.sunDir[0] = todSunDir[0]; wpr.sunDir[1] = todSunDir[1]; wpr.sunDir[2] = todSunDir[2];
@@ -2788,7 +2793,12 @@ int hostTunnel(HostContext& hc) {
             wpr.sunDir[0] = 0.12f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.10f;
             wpr.specular  = 0.0f;    // wound out by `enclosed` anyway; say it
             wpr.fresnel   = 0.020f;
-            wpr.clarity   = 0.78f;   // you should SEE the carved bed
+            // THE SHOWPIECE WATER. Down here there is no silt, no runoff and no
+            // weather — a cavern pool is the clearest water in the world, and the
+            // owner asked for somewhere that is "very, very nice and clear". At
+            // 0.94 the carved bed, the rock beaches and anything swimming read
+            // straight through tens of metres of it.
+            wpr.clarity   = 0.94f;
             // A river swell, not a storm. 0.26/0.55 over a 5.5 m wavelength
             // pinched the Gerstner crests into shards in the first capture.
             wpr.amplitude = 0.11f;
