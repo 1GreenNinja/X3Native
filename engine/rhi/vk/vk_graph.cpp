@@ -438,6 +438,17 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                        && (m_mbTileImg != VK_NULL_HANDLE) && (m_mbNeighImg != VK_NULL_HANDLE)
                        && (m_mbOutImg != VK_NULL_HANDLE);
         m_mbActiveThisFrame = mbOn;
+        // ONE-SHOT PROOF THE CHAIN ACTUALLY RAN. Without it a "0 sync hazards with
+        // motion blur on" claim is unfalsifiable: r_motionblur 1 is a silent no-op
+        // whenever r_velocity is 0, TAA is off, or no depth pre-pass consumer is
+        // enabled, so a clean validation run would look identical to one where the
+        // passes were never built. Every sync/VUID report must quote this line.
+        if (mbOn && !m_mbLoggedActive) {
+            m_mbLoggedActive = true;
+            logInfo("[rhi] motion-blur chain ACTIVE this frame (mb-tilemax -> mb-neighbormax "
+                    "-> mb-blur; grid " + std::to_string(m_mbGridExtent.width) + "x" +
+                    std::to_string(m_mbGridExtent.height) + " tiles)");
+        }
         RgResource rgMbTile = {}, rgMbNeigh = {}, rgMbOut = {};
         if (mbOn) {
             rgMbTile  = m_graph.importImage("mb.tile", m_mbTileImg,

@@ -2919,6 +2919,7 @@ private:
     VmaAllocation    m_mbUboAlloc[kFramesInFlight]  = {};
     void*            m_mbUboMapped[kFramesInFlight] = {};
     bool             m_mbActiveThisFrame = false;
+    bool             m_mbLoggedActive    = false;   // one-shot "the chain ran" proof
     double           m_mbPrevTime = -1.0;   // steady_clock seconds (interactive dt source)
     uint32_t         m_mbFrameNum = 0;      // dither phase (frame counter, not wall clock)
     VkRenderingAttachmentInfo m_mbTileAttach{};
