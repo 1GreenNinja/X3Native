@@ -2016,14 +2016,33 @@ void VulkanRenderDevice::prepareFrameData() {
         // Velocity UBO: UNJITTERED current + previous viewProj (the MV endpoints)
         // + the two frames' jitter in NDC (subtracted defensively in the shader;
         // zero against unjittered matrices). NDC jitter = pixel-jitter * 2 / extent.
+        //
+        // KNOWN DEFECT IN THE VELOCITY BUFFER, surfaced by adding a second
+        // consumer (motion blur) and NOT fixed here. velocity.frag's header states
+        // its jitter lanes are "0 by construction" because the matrices it is fed
+        // are unjittered -- but this fill passes the REAL per-frame jitter, so the
+        // shader subtracts a jitter that was never added. The motion vector it
+        // writes is therefore
+        //     trueVel_uv - (jitPrevNdc - jitCurNdc) * 0.5
+        // i.e. up to ~1 PIXEL of spurious motion on a completely static camera.
+        // TAA absorbs it (sub-pixel, inside the Catmull-Rom + neighbourhood clamp),
+        // which is why nobody has seen it; motion blur does not, because a static
+        // camera must be EXACTLY the identity function there.
+        //
+        // Correcting it at the source would change every r_velocity 1 capture, so
+        // it belongs in its own lane with its own A/B. Motion blur instead cancels
+        // the term for ITSELF, using the same two jitter values, via
+        // MbUBO::params3 below. m_velPrevJitterNdc is captured HERE because the
+        // block below overwrites it.
+        const glm::vec2 curJitNdc(jit.x * 2.0f / (float)std::max(1u, m_extent.width),
+                                  jit.y * 2.0f / (float)std::max(1u, m_extent.height));
+        const glm::vec2 prevJitNdcForMb = m_velPrevJitterNdc;
         if (velWant && m_velUboMapped[m_frameIdx]) {
-            const glm::vec2 curJitNdc(jit.x * 2.0f / (float)std::max(1u, m_extent.width),
-                                      jit.y * 2.0f / (float)std::max(1u, m_extent.height));
             VelUBO vu{};
             vu.viewProjCurUnjit  = unjitteredVP;
             vu.viewProjPrevUnjit = m_taaHistoryValid ? m_taaPrevVP : unjitteredVP;
             vu.jitter = glm::vec4(curJitNdc.x, curJitNdc.y,
-                                  m_velPrevJitterNdc.x, m_velPrevJitterNdc.y);
+                                  prevJitNdcForMb.x, prevJitNdcForMb.y);
             std::memcpy(m_velUboMapped[m_frameIdx], &vu, sizeof(VelUBO));
             m_velPrevJitterNdc = curJitNdc;   // for next frame's prev-jitter lane
         }
@@ -2081,6 +2100,12 @@ void VulkanRenderDevice::prepareFrameData() {
             // terms are identical in the jittered and unjittered matrices.
             mu.params2 = glm::vec4((float)m_extent.width, (float)m_extent.height,
                                    proj[2][2], proj[3][2]);
+            // Jitter-delta correction, ADDED to every sampled motion vector to undo
+            // the over-subtraction documented above. NDC -> UV is a factor of 0.5.
+            // With TAA off (no jitter) both terms are zero and this is a no-op.
+            mu.params3 = glm::vec4((prevJitNdcForMb.x - curJitNdc.x) * 0.5f,
+                                   (prevJitNdcForMb.y - curJitNdc.y) * 0.5f,
+                                   0.0f, 0.0f);
             std::memcpy(m_mbUboMapped[m_frameIdx], &mu, sizeof(MbUBO));
             m_mbFrameNum++;
         }

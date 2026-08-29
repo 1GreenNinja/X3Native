@@ -142,6 +142,10 @@ add_library(x3app SHARED
     descent_slide.cpp
     basis_test.cpp
     prim_light_test.cpp
+    # MOTION-DOMAIN lane: the reusable camera-on-rails verification rig, and the
+    # --test-motionblur gate that uses it.
+    motion_rig.cpp
+    motion_blur_test.cpp
     cluster_light_test.cpp
     world_hosts/host_descentslide.cpp
     world_hosts/host_shipwindows.cpp

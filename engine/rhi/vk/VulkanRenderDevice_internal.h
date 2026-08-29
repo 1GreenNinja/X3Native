@@ -2896,6 +2896,7 @@ private:
         glm::vec4 params0;          // texelW, texelH, velocityScale, maxBlurPixels
         glm::vec4 params1;          // sampleCount, ditherPhase, velocityValid, softZ
         glm::vec4 params2;          // extentW, extentH, zLinA (P[2][2]), zLinB (P[3][2])
+        glm::vec4 params3;          // xy = jitter-delta correction (UV), zw = unused
     };
     VkDescriptorSetLayout m_mbTileSetLayout  = VK_NULL_HANDLE;  // b0 vel, b1 depth, b2 UBO
     VkDescriptorSetLayout m_mbNeighSetLayout = VK_NULL_HANDLE;  // b0 tile

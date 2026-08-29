@@ -37,6 +37,7 @@
 #include "asset_root.h"                    // portable assetRoot() (assets-LFS)
 #include "room_dressing.h"                 // recipeSurfaceSets() (boot prewarm, task #4)
 #include "prim_light_test.h"               // --test-primlight: ONE LIGHTING PATH (prim vs GLB radiance parity)
+#include "motion_blur_test.h"              // --test-motionblur: motion-domain rig + motion-blur resolve pass
 #include "geolod_shot.h"                   // --screenshot-geolod: Lane 5 mesh-LOD proof capture
 #include "cluster_light_test.h"            // --test-clusterlights: froxel grid + r_clusterlights 0-vs-1 bit identity
 #include "surface_library.h"               // prewarmSurfaceSetsAsync (boot prewarm, task #4)
@@ -586,7 +587,7 @@ int x3AppMain(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.rtMatVerifyShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.rtMatVerifyShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testMotionBlur || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -759,6 +760,19 @@ int x3AppMain(int argc, char** argv) {
     // the contact sheet and exit before any host machinery spins up. ----
     if (o.testPrimLight) {
         const int rc = x3::game::runPrimLightTest(*device, o.primLightShotPath);
+        device.reset();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return rc;
+    }
+
+    // ---- --test-motionblur: the MOTION-DOMAIN gate. Same shape as
+    // --test-primlight (self-contained probe scene on the real device, no world
+    // build). It proves the verification RIG can see a temporal effect -- and
+    // that it does NOT report a static camera as blurred -- before it uses that
+    // rig to gate the motion-blur pass itself. ----
+    if (o.testMotionBlur) {
+        const int rc = x3::game::runMotionBlurTest(*device, o.motionBlurOutDir);
         device.reset();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();

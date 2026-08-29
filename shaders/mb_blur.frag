@@ -68,6 +68,7 @@ layout(set = 0, binding = 4) uniform MbUBO {
     vec4  params0;   // x,y = 1/extent   z = velocityScale   w = maxBlurPixels
     vec4  params1;   // x = sampleCount  y = ditherPhase     z = velocityValid  w = softZ (relative)
     vec4  params2;   // x,y = extent px  z = zLinA (P[2][2]) w = zLinB (P[3][2])
+    vec4  params3;   // x,y = jitter-delta correction (UV)   z,w = unused
 } mb;
 
 layout(location = 0) in  vec2 vUV;
@@ -92,7 +93,11 @@ vec2 cameraMotionUV(vec2 uv, float depth) {
 
 // Velocity at a UV in dt-normalised PIXELS, with the sky substitution applied.
 vec2 velocityPixels(vec2 uv, float depth, vec2 extent) {
-    vec2 v = texture(velTex, uv).rg;
+    // + mb.params3.xy undoes the velocity pass' jitter over-subtraction, so a
+    // static camera reads EXACTLY zero motion (see vk_passes.cpp's VelUBO fill;
+    // without it a still frame carries ~1 px of spurious jitter velocity and the
+    // identity guarantee below is only approximate). Zero when jitter is off.
+    vec2 v = texture(velTex, uv).rg + mb.params3.xy;
     if (depth >= 0.999999) v = cameraMotionUV(uv, depth);
     vec2  px  = v * mb.params0.z * extent;
     float len = length(px);
@@ -117,7 +122,13 @@ void main() {
     const int   S      = int(mb.params1.x);
     const float softZ  = mb.params1.w;
 
-    const vec3 centerColor = texture(colorTex, vUV).rgb;
+    // texelFetch, NOT texture(): the early-out below must be EXACTLY the identity
+    // function, and a filtered fetch is not. vUV lands on the texel centre in
+    // theory, but barycentric interpolation puts it a few ULPs off in practice,
+    // so a bilinear tap leaks a ~1e-7 weight from a neighbour -- enough to flip
+    // the odd 8-bit value after tonemapping and to break the static-camera
+    // bit-identity claim the rig asserts. Measured: it did.
+    const vec3 centerColor = texelFetch(colorTex, ivec2(gl_FragCoord.xy), 0).rgb;
 
     // Neighbourhood dominant velocity for this pixel's tile.  Sampled at the tile
     // centre (NEAREST on a grid-sized target) so every pixel in a tile agrees.
@@ -126,8 +137,10 @@ void main() {
     const vec2 vN     = texture(neighborTex, gridUV).rg;
     const float lenN  = length(vN);
 
-    // NOTHING NEAR THIS PIXEL MOVED -> identity.  This is the static-camera
-    // negative control, enforced in the shader rather than asserted in a doc.
+    // NOTHING NEAR THIS PIXEL MOVED -> IDENTITY, bit for bit.  This is the
+    // static-camera negative control, enforced in the shader rather than asserted
+    // in a doc: with the fetch above being exact, a still frame from a still
+    // camera comes out of this pass byte-identical to the way it went in.
     if (lenN < 0.5) { outColor = vec4(centerColor, 1.0); return; }
 
     const float depthX = texture(depthTex, vUV).r;

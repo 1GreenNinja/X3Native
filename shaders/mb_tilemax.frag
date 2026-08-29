@@ -55,6 +55,7 @@ layout(set = 0, binding = 2) uniform MbUBO {
     vec4  params0;         // x,y = 1/extent   z = velocityScale   w = maxBlurPixels
     vec4  params1;         // x = sampleCount  y = ditherPhase     z = velocityValid  w = softZ
     vec4  params2;         // x,y = extent px  z = zLinA (P[2][2]) w = zLinB (P[3][2])
+    vec4  params3;         // x,y = jitter-delta correction (UV)   z,w = unused
 } mb;
 
 layout(location = 0) out vec2 outTileMax;   // pixels, dt-normalised
@@ -91,7 +92,9 @@ void main() {
             ivec2 p = tileOrigin + ivec2(x, y);
             if (p.x >= extent.x || p.y >= extent.y) continue;
 
-            vec2  px  = texelFetch(velTex, p, 0).rg * scale * vec2(extent);
+            // + mb.params3.xy undoes the velocity pass' jitter over-subtraction
+            // (see vk_passes.cpp's VelUBO fill). Zero when TAA jitter is off.
+            vec2  px  = (texelFetch(velTex, p, 0).rg + mb.params3.xy) * scale * vec2(extent);
             float len = length(px);
             if (len > maxPx) { px *= maxPx / max(len, 1e-6); len = maxPx; }
             if (len > bestLen) { bestLen = len; best = px; }
