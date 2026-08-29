@@ -3426,7 +3426,14 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
         // is only worth having if it photographs what the game renders.
         wp.deepColor[0]    = 0.012f; wp.deepColor[1]    = 0.055f; wp.deepColor[2]    = 0.060f;
         wp.shallowColor[0] = 0.050f; wp.shallowColor[1] = 0.150f; wp.shallowColor[2] = 0.140f;
-        wp.clarity  = 0.60f;      // THE POINT OF THE RIG
+        // THE POINT OF THE RIG. Default is the surface river's own 0.60;
+        // X3_WATER_CLARITY sweeps it so murky-vs-crystal can be compared as
+        // PHOTOGRAPHS rather than argued about as numbers. The world wants
+        // different water in different places — a silty channel and a clear
+        // pool you can watch fish through — and this is how those get tuned.
+        wp.clarity  = 0.60f;
+        if (const char* cv = std::getenv("X3_WATER_CLARITY"))
+            wp.clarity = std::max(0.0f, std::min(1.0f, (float)std::atof(cv)));
         wp.specular = 5.0f;
         wp.fresnel  = 0.012f;
         wp.amplitude = 0.11f; wp.steepness = 0.30f; wp.waveLength = 7.0f; wp.speed = 1.0f;

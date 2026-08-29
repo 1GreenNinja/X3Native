@@ -292,7 +292,31 @@ void main() {
     // sun glint (foam-bright pixels must not thin out), and into the horizon
     // fog. clarity 0 => alpha 1 everywhere — the historic opaque surface,
     // byte-identical through the enabled blend (src*1 + dst*0).
-    float seeThrough = u.p4.x * (1.0 - fres) * (1.0 - depthT);
+    // SEE-THROUGH RIDES THE SAME EXTINCTION AS THE COLOUR. This used to be
+    // (1.0 - depthT), a straight ramp that hit ZERO at kRefDepth — six metres —
+    // so the surface went fully opaque there and a marine structure or a fish
+    // any deeper than a swimming pool could never be seen THROUGH the water,
+    // however clear it was. Worse, it was a second, unrelated depth curve: the
+    // colour said one thing about how deep the light reached and the alpha said
+    // another.
+    //
+    // Physically they are the same fact. Water that still transmits light still
+    // transmits the image, so transparency is just the luminance of the
+    // transmittance T we already computed. Clear water (high clarity -> low
+    // extinction) now stays see-through for tens of metres and goes opaque
+    // gradually, the way a reef flat does; murky water closes up fast. One
+    // curve, one story, and "clear enough to watch fish go by" becomes a
+    // property of the water instead of an impossibility.
+    float transLum   = dot(T, vec3(0.2126, 0.7152, 0.0722));
+    // ...but never ALL the way. At clarity 1 this went to ~0.98 transparent in
+    // the shallows and the surface stopped reading as water at all — the bed
+    // looked like wet grass with highlights on it. Real water always keeps a
+    // presence: a few percent reflects at normal incidence and the column
+    // always scatters something back. kMaxSeeThrough leaves that residue, so
+    // the clearest water still tints and still has a surface — you see THROUGH
+    // it rather than past it.
+    const float kMaxSeeThrough = 0.86;
+    float seeThrough = min(kMaxSeeThrough, u.p4.x * (1.0 - fres) * transLum);
     // Foam closes the surface back up (churned water is opaque white, and a
     // see-through foam patch would read as soap scum on glass).
     float alpha = clamp(1.0 - seeThrough + spec * u.p1.z * 0.25 + fog + foamAmt,
