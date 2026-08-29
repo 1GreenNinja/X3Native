@@ -299,6 +299,15 @@ int hostSpace(HostContext& hc) {
         const float baseFill[3] = { plights[1].color[0], plights[1].color[1], plights[1].color[2] };
         const float baseRim[3]  = { plights[2].color[0], plights[2].color[1], plights[2].color[2] };
         const float baseSkyInt  = skyP.sunIntensity;
+        // The AMBIENT is deep space's stand-in for "every other light in the sky",
+        // and out here the overwhelming majority of that is the LOCAL STAR. Leaving
+        // it fixed was measurable and wrong: with only the key/fill/rim retinted, a
+        // decor hull's mean pixel moved by less than 2/255 between an amber
+        // hypergiant and a red dwarf, because at these ranges the hull is mostly
+        // ambient-lit. The star has to own this term too or "a different star"
+        // never reaches the hull at all.
+        float ambientRGB[3] = { 0.11f, 0.12f, 0.16f };
+        const float baseAmbient[3] = { 0.11f, 0.12f, 0.16f };
 
         // Re-chromatise an AUTHORED Kethzar-amber colour for the current star.
         //
@@ -361,6 +370,18 @@ int hostSpace(HostContext& hc) {
             skyP.horizon[1] = 0.0034f + 0.0022f * starRGB[1];
             skyP.horizon[2] = 0.0044f + 0.0028f * starRGB[2];
             device->setSkyParams(skyP);
+            // THE AMBIENT, re-chromatised the same way (authored intensity kept,
+            // chroma swapped, scaled by the star's luminosity).
+            {
+                const float mx = std::max(baseAmbient[0], std::max(baseAmbient[1], baseAmbient[2]));
+                float c[3]; starCol(baseAmbient[0] / mx, baseAmbient[1] / mx,
+                                    baseAmbient[2] / mx, c);
+                const float gA = std::min(1.7f, std::max(0.40f, starLumRatio));
+                ambientRGB[0] = c[0] * mx * gA;
+                ambientRGB[1] = c[1] * mx * gA;
+                ambientRGB[2] = c[2] * mx * gA;
+                device->setAmbient(ambientRGB[0], ambientRGB[1], ambientRGB[2]);
+            }
             // THE STARFIELD. The analytic sky's procedural stars rotate with sky
             // time, so a large jump in phase is a genuinely DIFFERENT arrangement of
             // stars overhead — not the same sky with a filter over it. Derived from
@@ -1362,7 +1383,8 @@ int hostSpace(HostContext& hc) {
         auto updateDynamicLights = [&](const x3::phys::Vec3& sPos, const x3::phys::Vec3& f,
                                        const x3::phys::Vec3& u, const x3::phys::Vec3& r) {
             // Restore the deep-space ambient floor + sky the transit turns off.
-            device->setAmbient(0.11f, 0.12f, 0.16f);
+            // The floor is the LOCAL STAR'S ambient, not a constant.
+            device->setAmbient(ambientRGB[0], ambientRGB[1], ambientRGB[2]);
             device->setSkyParams(skyP);
             // [0..2] THE STAR'S LIGHT. This is the claim "you arrived somewhere else"
             // stands or falls on: the key/fill/rim rig is what SHADES THE HULL, so a
