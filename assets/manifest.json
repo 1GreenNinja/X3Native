@@ -6,6 +6,132 @@
   },
   "assets": [
     {
+      "repo_path": "assets/audio/doors/a_close.wav",
+      "sha256": "9de3b21eb135e2e8b3ad0d24e3fe5aae4bb64071d0cdd685dd7cb5f0ac3d7267",
+      "size": 71486,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/a_locked.wav",
+      "sha256": "9b742698e9eee5048583c50512c329608d5dce5ee26ad5ce5447d14227decf4b",
+      "size": 19448,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/a_open.wav",
+      "sha256": "94b5063a6ebfa91968877ec403ff99467feb3b47bda9246e0a8c885dda3617d6",
+      "size": 71486,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/a_servo.wav",
+      "sha256": "b3dc18e86dbe48e26e62d71aa9d842afd1bde928c843f8c00d5449b44e4eee52",
+      "size": 48554,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/a_thunk.wav",
+      "sha256": "3c57adb752c98ae03bf815265c6b1ae89bca0fc3398284319014c060adbe707e",
+      "size": 10628,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/b_close.wav",
+      "sha256": "8353154f7fe734cac2a2a45a2b52413507dc8b41faaef0138fdc31ab20d5ffe9",
+      "size": 128816,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/b_locked.wav",
+      "sha256": "7e7335b44f4ebed2b3b308df29b4fedca48939f7f49edb430ed73c51a0fa2e3c",
+      "size": 59138,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/b_open.wav",
+      "sha256": "22a58aa3d8e51b95668bb823f3292a1987e337e5712140507da2c2478b6b9039",
+      "size": 130580,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/b_servo.wav",
+      "sha256": "78ce00cabd983cc86ea63c57e95d549ca301bfd97844271f3f28a50572658292",
+      "size": 70604,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/b_thunk.wav",
+      "sha256": "d2ce82ece3cb07eac3961b2e6761f8d1afaaae3512af4f81fe9976d53bbecd31",
+      "size": 56492,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/door_close.wav",
+      "sha256": "6d0b2d55ae67454be148703e0bd2b207f82e79a3aee5d8b0bcf4660dd5a92985",
+      "size": 122212,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/door_locked.wav",
+      "sha256": "8719845b866c48901595af5c3d3c83f92afbcb7992d11da27c03bbcc6e169837",
+      "size": 45064,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/door_open.wav",
+      "sha256": "5d9f41801868b4ae62c269d368e2acb8bd4819e2791ea3ba0aebe2a47a9421f2",
+      "size": 193690,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/s_close.wav",
+      "sha256": "8a0148708c56f92cd0fa1ca49b3b723ae3c69351b5518fbe3a98c7b791c5f880",
+      "size": 72368,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/s_locked.wav",
+      "sha256": "230868ac93e69a79dfd795d9bedebacfa45cc86a14dcc27689769925c35e0b24",
+      "size": 30032,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/s_open.wav",
+      "sha256": "282dd24fc48edc6eab9858cbb1fe9ecfff509c90557145527173ebaf4d1c3833",
+      "size": 75014,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/s_servo.wav",
+      "sha256": "80a426f21438871180d38d346594004ddd7bccdc221523811796d52f6be840c7",
+      "size": 52964,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/doors/s_thunk.wav",
+      "sha256": "0f24692c0367316a2a411bebc114eb185afbd1a7bd9cac6657c2b7e511d5d99b",
+      "size": 5336,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/interact/card_accept.wav",
+      "sha256": "a86cc8aa546c5e1a28fe5e6ef79f02a36d1853fce1afe6540d7db4d806b8d03f",
+      "size": 15920,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/interact/card_deny.wav",
+      "sha256": "47522f701fb004cd81679560faf01a0e2b62829daaa5f7580fb7f7299de63881",
+      "size": 22976,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
+      "repo_path": "assets/audio/interact/card_swipe.wav",
+      "sha256": "ba3190d29014a3d3ebeff96251a6d24167c975a6053055857e85f852fba405f8",
+      "size": 11510,
+      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+    },
+    {
       "repo_path": "assets/audio/vehicles/engine_bank/bov_psssht.wav",
       "sha256": "fdc24cd3ea9a01ae8378acd05a86f9c1f3c8d39ae677824dacaab31eb29334f2",
       "size": 65324,

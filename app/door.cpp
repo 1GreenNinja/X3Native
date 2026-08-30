@@ -116,8 +116,10 @@ constexpr DoorModelDef kDoorModels[] = {
     { "door_a", "ModularSciFi_Interior/SM_Door_A.glb", 0, DoorMotion::SlideUp,
       { -4.875f, 0.054f, -0.112f, -2.525f, 3.554f, 0.112f },
       nullptr, nullptr, {0,0,0,0,0,0}, {0,0,0,0,0,0}, false, 0.0f,
-      "doors/door_open.wav", "doors/door_close.wav", "doors/door_locked.wav",
-      "interact/servo_loop.wav", "interact/door_thunk.wav" },
+      // CRISP SOUND SETS (owner 2026-08-30): each class gets its own mechanical
+      // voice (tools/gen_door_audio.py) — pneumatic PSSHT + light servo here.
+      "doors/a_open.wav", "doors/a_close.wav", "doors/a_locked.wav",
+      "doors/a_servo.wav", "doors/a_thunk.wav" },
 
     // 1 — slider: meshy sliding_door_art. door_frame (static) + door_panel_L/R
     // parting HORIZONTALLY (its authored L/R translation clips). Probed after
@@ -128,8 +130,9 @@ constexpr DoorModelDef kDoorModels[] = {
       { -0.832f, -0.787f, -0.356f, 0.321f, 0.123f, 0.340f },
       { -0.122f, -0.787f, -0.358f, 0.837f, 0.111f, 0.342f },
       false, 0.0f,
-      "doors/door_open.wav", "doors/door_close.wav", "doors/door_locked.wav",
-      "interact/servo_loop.wav", "interact/door_thunk.wav" },
+      // The refined split-glass voice: airy detuned whir, glide swish, snick.
+      "doors/s_open.wav", "doors/s_close.wav", "doors/s_locked.wav",
+      "doors/s_servo.wav", "doors/s_thunk.wav" },
 
     // 2 — bulkhead: SciFiKit3 Wall_Door_Simple_01's Door_Left/Door_Right leaves.
     // The kit's converted node TRS for these panels is BROKEN (probed: panels
@@ -145,8 +148,9 @@ constexpr DoorModelDef kDoorModels[] = {
       { -0.5f, 0.0f, -1.333f, 0.5f, 3.416f, 0.0f },
       { -0.5f, 0.0f,  0.0f,   0.5f, 3.416f, 1.333f },
       true, 1.5707963f,
-      "doors/door_open.wav", "doors/door_close.wav", "doors/door_locked.wav",
-      "interact/servo_loop.wav", "interact/door_thunk.wav" },
+      // The heavy-plate voice: clunk-release, deep rumble, a MASSIVE seat.
+      "doors/b_open.wav", "doors/b_close.wav", "doors/b_locked.wav",
+      "doors/b_servo.wav", "doors/b_thunk.wav" },
 };
 constexpr uint32_t kDoorModelCount = (uint32_t)(sizeof(kDoorModels) / sizeof(kDoorModels[0]));
 
@@ -811,13 +815,38 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
             const float szw = (d.axis == 0) ? fw : ft;
             float fm[16] = { sxw, 0, 0, 0,   0, fh, 0, 0,   0, 0, szw, 0,
                              cxw, bottomY - 0.03f + fh * 0.5f, czw, 1.0f };
-            const float steel[4] = { 0.16f, 0.17f, 0.19f, 1.0f };
+            // QUALITY PASS (owner 2026-08-30, "visual artifacts on our doors"):
+            // this plate showed through the pentagon notch as a MID-GREY WEDGE
+            // brighter than the leaf around it — reading as a glitch, not as a
+            // plate. Near-black, like the leaf's own trim: it now reads as the
+            // door's shadowed back instead of a hole into grey.
+            const float steel[4] = { 0.055f, 0.058f, 0.065f, 1.0f };
             const float noEmis[4] = { 0, 0, 0, 1 };
             device.drawMeshPBR(frame, m_fillMesh,
                                x3::rhi::TextureHandle{},   // flat dark albedo (factor below)
                                x3::rhi::TextureHandle{},   // no normal map
                                m_fillMr,                   // matte dielectric MR texel
                                steel, noEmis, fm);
+
+            // ---- MOTOR HOUSING VALANCE (same quality pass). The SlideUp leaf
+            // travels ABOVE the frame in open air — the second artifact. Until
+            // the engine grows a per-object clip lane (the true pocket, filed),
+            // a STATIC housing box over the lintel sells the machinery: the
+            // leaf visibly enters SOMETHING instead of parking naked on the
+            // wall. Spans the cut + bezel, straddles the wall plane so it works
+            // from both rooms, wears the trim's near-black.
+            {
+                const float staticBottom = d.closedPos.y - d.height * 0.5f;
+                const float vw = fw + 0.20f, vh = 0.42f, vt = 0.46f;
+                const float vx = (d.axis == 0) ? vt : vw;
+                const float vz = (d.axis == 0) ? vw : vt;
+                float vm[16] = { vx, 0, 0, 0,  0, vh, 0, 0,  0, 0, vz, 0,
+                                 dwx, staticBottom + d.height + vh * 0.5f - 0.04f,
+                                 dwz, 1.0f };
+                device.drawMeshPBR(frame, m_fillMesh,
+                                   x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                   m_fillMr, steel, noEmis, vm);
+            }
 
             // ---- PER-FLOOR SIGNAGE BAND. A thin emissive strip across the door
             // head in the floor's ladder colour — the cheapest, most readable
