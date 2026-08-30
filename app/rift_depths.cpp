@@ -7,6 +7,7 @@
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace x3::game {
@@ -142,10 +143,129 @@ void RiftDepths::build(Scene& scene, x3::rhi::IRenderDevice& device,
     floorSlab(xA0, xA1, sz - hx, sz + hx, &sFloor, kConcrete, 0.5f);
     box(scene, device, physics, xA0, xA1, fy + HH, fy + HH + kCeilT, sz - hx, sz + hx,
         &sWall, kDark, 0.4f, true);
-    // South wall (runs the full leg + the outer corner), north wall (stops at the
-    // bend's east edge — that gap IS the turn).
-    box(scene, device, physics, xA0 - kWallT, xA1, fy, fy + HH + kCeilT,
-        sz - hx - kWallT, sz - hx, &sWall, kConcrete, 0.35f, true);
+    // Side-room ceiling lights, DEFERRED: m_lights is rebuilt in the fixtures
+    // section below (m_lights.clear()), so rooms queue theirs here and the
+    // fixture section flushes them.
+    std::vector<std::array<float, 3>> addLightDeferred;
+
+    // ---- South wall + THE SIDE ROOMS (owner 2026-08-30) ----------------------
+    // Two rooms off leg A's south wall — the OPS ANNEX (west, by the bend) and
+    // the STORES BAY (east, by the landing) — each behind a keycard-locked
+    // "slider" registry door with a CARD READER beside it. LAW 1: each room
+    // connects through an OPENING cut in the SHARED south wall (jamb segments +
+    // lintel), never by proximity. LAW 2: the rooms reuse that wall as their
+    // north wall (one wall, one hole); their own walls butt on its south face.
+    // LAW 3: room floors sit at fy exactly — zero step through the doorway
+    // (threshold slabs span the wall thickness). No DoorSystem in Desc =
+    // corridor only, byte-identical to the pre-room build.
+    m_readers.clear();
+    m_roomsBuilt = desc.doors != nullptr && (xA1 - xA0) > 16.0f;
+    {
+        const float wz0 = sz - hx - kWallT;   // wall south face (rooms' north face)
+        const float wz1 = sz - hx;            // wall north face (corridor side)
+        const float oHW = 0.80f;              // side-door opening half width
+        const float oH  = 2.20f;              // opening height (standard door)
+        const float aCx = xA0 + 5.0f;         // OPS ANNEX opening center
+        const float bCx = xA1 - 5.0f;         // STORES BAY opening center
+        if (!m_roomsBuilt) {
+            box(scene, device, physics, xA0 - kWallT, xA1, fy, fy + HH + kCeilT,
+                wz0, wz1, &sWall, kConcrete, 0.35f, true);
+        } else {
+            // Wall segments AROUND the two openings + a lintel OVER each.
+            const float a0 = aCx - oHW, a1 = aCx + oHW;
+            const float b0 = bCx - oHW, b1 = bCx + oHW;
+            box(scene, device, physics, xA0 - kWallT, a0, fy, fy + HH + kCeilT,
+                wz0, wz1, &sWall, kConcrete, 0.35f, true);
+            box(scene, device, physics, a1, b0, fy, fy + HH + kCeilT,
+                wz0, wz1, &sWall, kConcrete, 0.35f, true);
+            box(scene, device, physics, b1, xA1, fy, fy + HH + kCeilT,
+                wz0, wz1, &sWall, kConcrete, 0.35f, true);
+            box(scene, device, physics, a0, a1, fy + oH, fy + HH + kCeilT,
+                wz0, wz1, &sWall, kConcrete, 0.35f, true);         // annex lintel
+            box(scene, device, physics, b0, b1, fy + oH, fy + HH + kCeilT,
+                wz0, wz1, &sWall, kConcrete, 0.35f, true);         // stores lintel
+
+            // One room = shell + threshold + trim + door + reader + dressing.
+            const float RD = 4.6f;            // room depth (south of the wall)
+            const float RHW = 2.6f;           // room half width
+            auto sideRoom = [&](float cx, const char* what, bool annex) {
+                const float rx0 = cx - RHW, rx1 = cx + RHW;
+                const float rz0 = wz0 - RD;
+                // Floor (interior) + threshold (the wall's own thickness).
+                floorSlab(rx0, rx1, rz0, wz0, &sFloor, kDeckTint, 0.5f);
+                floorSlab(cx - oHW, cx + oHW, wz0, wz1, &sFloor, kDeckTint, 0.5f);
+                // Ceiling.
+                box(scene, device, physics, rx0, rx1, fy + HH, fy + HH + kCeilT,
+                    rz0, wz0, &sWall, kDark, 0.4f, true);
+                // South wall spans the full width incl. corners; east/west butt
+                // between it and the corridor wall (the corner law).
+                box(scene, device, physics, rx0 - kWallT, rx1 + kWallT, fy, fy + HH + kCeilT,
+                    rz0 - kWallT, rz0, &sWall, kConcrete, 0.35f, true);
+                box(scene, device, physics, rx0 - kWallT, rx0, fy, fy + HH + kCeilT,
+                    rz0, wz0, &sWall, kConcrete, 0.35f, true);
+                box(scene, device, physics, rx1, rx1 + kWallT, fy, fy + HH + kCeilT,
+                    rz0, wz0, &sWall, kConcrete, 0.35f, true);
+                // Lit trim ring over the corridor-side opening (the landing's
+                // "the way out glows" pattern, here saying "a room is HERE").
+                box(scene, device, physics, cx - oHW - 0.10f, cx + oHW + 0.10f,
+                    fy + oH, fy + oH + 0.07f, wz1 - 0.02f, wz1 + 0.02f,
+                    &sTrim, kStrip, 0.5f, false, 1.10f);
+                // The DOOR: keycard-locked slider seated ON the shared wall.
+                x3::game::DoorSpec ds;
+                ds.doorwayCenter = x3::phys::Vec3{ cx, fy, (wz0 + wz1) * 0.5f };
+                ds.axis       = x3::game::DoorAxis::AlongX;   // wall runs along X
+                ds.halfWidth  = oHW;
+                ds.height     = oH;
+                ds.locked     = true;
+                ds.keycard    = x3::game::kKeycardSecurity;   // Security badge opens
+                ds.withButton = false;
+                ds.withFrame  = false;                        // slider carries its own
+                ds.model      = "slider";
+                const uint32_t di = x3::game::buildLevelDoor(
+                    scene, *desc.doors, device, physics, ds);
+                // The CARD READER, corridor side, right of the opening: a steel
+                // wall unit + an LED strip whose entity we keep — syncReaders()
+                // drives it red (locked) / green (unlocked) off the door's LIVE
+                // state, so the light can never lie about the lock.
+                box(scene, device, physics, cx + oHW + 0.10f, cx + oHW + 0.34f,
+                    fy + 1.02f, fy + 1.38f, wz1, wz1 + 0.05f,
+                    &sPlate, kSteel, 1.0f, true);
+                const float kLedRed[3] = { 1.0f, 0.12f, 0.08f };
+                box(scene, device, physics, cx + oHW + 0.13f, cx + oHW + 0.31f,
+                    fy + 1.40f, fy + 1.46f, wz1, wz1 + 0.055f,
+                    nullptr, kLedRed, 1.0f, false, 0.90f);
+                CardReader rd;
+                rd.doorIdx = di;
+                rd.ledEnt  = m_ents.back();
+                rd.pos = x3::phys::Vec3{ cx + oHW + 0.22f, fy + 1.24f, wz1 };
+                m_readers.push_back(rd);
+                // Room light + dressing (in the corridor's own box language).
+                addLightDeferred.push_back(std::array<float, 3>{ cx, fy + HH - 0.35f, (rz0 + wz0) * 0.5f });
+                if (annex) {
+                    // OPS ANNEX: a work counter + two teal wall screens.
+                    box(scene, device, physics, rx0 + 0.35f, rx1 - 0.35f, fy + 0.82f,
+                        fy + 0.92f, rz0 + 0.35f, rz0 + 1.15f, &sPlate, kSteel, 1.0f, true);
+                    const float kTeal[3] = { 0.10f, 0.55f, 0.60f };
+                    box(scene, device, physics, rx0 + 0.6f, rx0 + 2.0f, fy + 1.35f,
+                        fy + 2.15f, rz0, rz0 + 0.05f, nullptr, kTeal, 1.0f, false, 0.55f);
+                    box(scene, device, physics, rx1 - 2.0f, rx1 - 0.6f, fy + 1.35f,
+                        fy + 2.15f, rz0, rz0 + 0.05f, nullptr, kTeal, 1.0f, false, 0.55f);
+                } else {
+                    // STORES BAY: three crate stacks off the armory palette.
+                    for (int c = 0; c < 3; ++c) {
+                        const float ccx = rx0 + 0.9f + (float)c * 1.7f;
+                        const float h = 0.7f + 0.35f * (float)((c * 7) % 3);
+                        box(scene, device, physics, ccx - 0.55f, ccx + 0.55f, fy,
+                            fy + h, rz0 + 0.5f, rz0 + 1.6f, &sPlate, kSteel, 0.8f, true);
+                    }
+                }
+                x3::logInfo(std::string("[riftdepths] side room ") + what +
+                            " built (door idx " + std::to_string(di) + ", card reader armed)");
+            };
+            sideRoom(aCx, "OPS ANNEX", true);
+            sideRoom(bCx, "STORES BAY", false);
+        }
+    }
     box(scene, device, physics, dx + hx, xA1, fy, fy + HH + kCeilT,
         sz + hx, sz + hx + kWallT, &sWall, kConcrete, 0.35f, true);
 
@@ -212,6 +332,9 @@ void RiftDepths::build(Scene& scene, x3::rhi::IRenderDevice& device,
             addLight(x, fy + HH - 0.35f, sz, kStrip, kHallLightI, 12.0f);
         }
     }
+    // Side rooms: one warm-white overhead each (queued during the room build).
+    for (const auto& p : addLightDeferred)
+        addLight(p[0], p[1], p[2], kStrip, kHallLightI * 0.85f, 9.0f);
     // Corridor B: the fixtures FAIL toward the hub — the last stretch is lit by the
     // rifts themselves. (Whoever maintained this hall stopped, the closer they got.)
     {
@@ -268,7 +391,11 @@ void RiftDepths::build(Scene& scene, x3::rhi::IRenderDevice& device,
 
     m_built = true;
     const std::string chk = selfCheck();
+    // The spawn + annex-door coords are CAPTURE ANCHORS (paste into --shot-cam).
     x3::logInfo("[riftdepths] landing + approach built at Y=" + std::to_string(fy) +
+                " spawn=(" + std::to_string(m_landingSpawn.x) + "," +
+                std::to_string(m_landingSpawn.z) + ") annexDoor=(" +
+                std::to_string(xA0 + 5.0f) + "," + std::to_string(sz - hx) + ")" +
                 " — leg A " + std::to_string(xA1 - xA0) + " m west, leg B " +
                 std::to_string(dz - sz) + " m to the hub door (" +
                 std::to_string(m_ents.size()) + " entities); seams: " +
@@ -339,7 +466,43 @@ std::string RiftDepths::selfCheck() const {
                        std::to_string(z) + ")";
         }
     }
+    // 5) SIDE ROOMS (when built): each reader watches a real doorway — walk the
+    //    line from the corridor centreline THROUGH the opening to the room's
+    //    heart and demand authored floor under every step (LAW 3's zero-step
+    //    doorway: threshold + interior slabs must be continuous at fy).
+    if (m_roomsBuilt) {
+        if (m_readers.size() != 2) return "side rooms built but reader count != 2";
+        const float sz = m_desc.shaft.z;
+        for (const CardReader& r : m_readers) {
+            const float cx = r.pos.x - 0.80f - 0.22f;   // opening centre (reader is +x of it)
+            const float zA = sz;                        // corridor centreline
+            const float zB = sz - m_desc.hallHalfW - 0.30f - 2.3f;   // the room's heart
+            for (int s = 0; s <= 24; ++s) {
+                const float t = (float)s / 24.0f;
+                const float z = zA + (zB - zA) * t;
+                if (!overFloor(cx, z))
+                    return "side-room floor gap through the doorway at x=" +
+                           std::to_string(cx) + " z=" + std::to_string(z);
+            }
+        }
+    }
     return "";
+}
+
+void RiftDepths::syncReaders(Scene& scene, const DoorSystem& doors) {
+    // The LED is a STATE readout, not a decoration: red while its door is
+    // locked, green from the frame the card clears it. Cheap (two entities),
+    // called per-frame while the eye is in the rift zone.
+    static const float kRed[3]   = { 1.0f, 0.12f, 0.08f };
+    static const float kGreen[3] = { 0.15f, 1.0f, 0.25f };
+    for (const CardReader& r : m_readers) {
+        if (r.doorIdx >= doors.count() || r.ledEnt >= scene.size()) continue;
+        const float* c = doors.at(r.doorIdx).isLocked() ? kRed : kGreen;
+        Entity& e = scene.get(r.ledEnt);
+        e.emissive[0] = c[0]; e.emissive[1] = c[1]; e.emissive[2] = c[2];
+        e.baseColor[0] = c[0] * 0.05f; e.baseColor[1] = c[1] * 0.05f;
+        e.baseColor[2] = c[2] * 0.05f;   // near-black body; the glow carries (band law)
+    }
 }
 
 void RiftDepths::shutdown(x3::rhi::IRenderDevice& device) {
