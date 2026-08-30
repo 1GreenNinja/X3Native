@@ -2548,6 +2548,40 @@ int hostTunnel(HostContext& hc) {
         riverLife.build(scene, *device, *phys,
                         audioOn ? audio.get() : nullptr, riverRoad.plan);
 
+    // ==== THE RIDEABLE JET SKI (owner: "speedboats and jetskis... fun and
+    // playable"). One craft, MOORED on the river just off the bridge, boarded
+    // with E exactly like the car. Everything that makes it a jet ski rather
+    // than a generic hull comes from app/boat_roster.h; everything that makes
+    // it FEEL like one (planing, bow lift, lean, and the river forces that
+    // carry and steer you) is in the buoyancy controller, gated by V5.
+    x3::game::BoatDemo   ski;
+    const x3::game::BoatSpec* skiSpec = x3::game::findBoat("jetski");
+    bool  skiBuilt   = false;
+    bool  ridingSki  = false;
+    float skiMoorAt[3] = { 0, 0, 0 };   // where it sits, for the re-board prompt
+    // River flow, named once and used by both the ski and the log line below
+    // (NO_SLOP rule 4). The reach axis is the DECK axis rotated 90 degrees —
+    // the same derivation the swim proof uses.
+    float riverFlowDir[3] = { 0, 0, 0 };
+    const float kRiverFlowMps   = 2.6f;   // a walking-pace current, not a flume
+    const float kRiverHalfWidth = 11.0f;  // channel half-width the shore push uses
+    if (riverOn && riverRoad.plan.ok && skiSpec) {
+        const auto& rp = riverRoad.plan;
+        riverFlowDir[0] = rp.dirZ; riverFlowDir[2] = -rp.dirX;   // downstream
+        // Moored 14 m along the reach from the crossing: clear of the piers,
+        // and close enough to the bank that you can walk to it.
+        skiMoorAt[0] = rp.cx + riverFlowDir[0] * 14.0f;
+        skiMoorAt[2] = rp.cz + riverFlowDir[2] * 14.0f;
+        skiMoorAt[1] = rp.waterY + skiSpec->halfY;
+        ski.setSpec(skiSpec);
+        skiBuilt = ski.build(*device, *phys, skiMoorAt[0], skiMoorAt[1], skiMoorAt[2],
+                             rp.waterY, /*isSub=*/false);
+        x3::logInfo(std::string("[tunnel] jet ski: ") +
+                    (skiBuilt ? "MOORED" : "BUILD FAILED") + " at (" +
+                    std::to_string(skiMoorAt[0]) + ", " + std::to_string(skiMoorAt[2]) +
+                    ") waterY " + std::to_string(rp.waterY) + " — E to board");
+    }
+
     // ==== ROADSIDE CAMPFIRES (W-NIGHT) ======================================
     // "fires on the side of the road with the benches.. where people roast
     // hot dogs." Built at a handful of the grove bench sites RoadTrees just
@@ -2763,7 +2797,12 @@ int hostTunnel(HostContext& hc) {
         // See-through shallows (WaterParams::clarity): the bed, the fish and a
         // swimmer's body read THROUGH face-on water; depth + grazing angles
         // close it back to a surface. 0 would be the legacy opaque plane.
-        wpr.clarity   = 0.60f;
+        // ERR HIGH ON CLARITY (owner, 2026-08-28). The see-through ceiling that
+        // made anything past six metres opaque is gone, so clarity now buys real
+        // visibility instead of just thinning the shallows. The SURFACE river is
+        // the everyday water: clear enough to read the bed, the fish and a
+        // swimmer, still unmistakably a river.
+        wpr.clarity   = 0.82f;
         // W-NIGHT: the river glints to the LIVE luminary (sun by day, moon at
         // night), not to a phantom 14:00 sun that set hours ago.
         wpr.sunDir[0] = todSunDir[0]; wpr.sunDir[1] = todSunDir[1]; wpr.sunDir[2] = todSunDir[2];
@@ -2788,7 +2827,12 @@ int hostTunnel(HostContext& hc) {
             wpr.sunDir[0] = 0.12f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.10f;
             wpr.specular  = 0.0f;    // wound out by `enclosed` anyway; say it
             wpr.fresnel   = 0.020f;
-            wpr.clarity   = 0.78f;   // you should SEE the carved bed
+            // THE SHOWPIECE WATER. Down here there is no silt, no runoff and no
+            // weather — a cavern pool is the clearest water in the world, and the
+            // owner asked for somewhere that is "very, very nice and clear". At
+            // 0.94 the carved bed, the rock beaches and anything swimming read
+            // straight through tens of metres of it.
+            wpr.clarity   = 0.94f;
             // A river swell, not a storm. 0.26/0.55 over a 5.5 m wavelength
             // pinched the Gerstner crests into shards in the first capture.
             wpr.amplitude = 0.11f;
@@ -5880,6 +5924,31 @@ int hostTunnel(HostContext& hc) {
             }
             // !atPump: at a pump E means REFUEL (W-STATIONS); !eConsumed: a
             // ticket in reach owns the press (W-FACTORY). Both yield to get-in.
+            // THE JET SKI OWNS THE PRESS WHEN YOU ARE ON IT, OR STANDING AT IT.
+            // Same arbitration shape as the golden ticket above: the nearer,
+            // more specific thing wins, and consuming the edge is what stops one
+            // press doing two jobs. Dismount always works; boarding is proximity
+            // gated so E cannot summon a ski you left upriver.
+            if (eDown && !eWasDown && skiBuilt && !eConsumed && !driving) {
+                if (ridingSki) {
+                    ridingSki = false;
+                    float hp[3]; ski.hullPos(hp);
+                    // Step off onto the water beside it; the swim state takes over.
+                    if (footSpawned)
+                        onFoot.spawn(*phys, hp[0] + 1.4f, hp[1] + 0.6f, hp[2]);
+                    eConsumed = true;
+                    x3::logInfo("[tunnel] off the jet ski");
+                } else if (footSpawned) {
+                    const x3::phys::Vec3 ft = onFoot.feet();
+                    float hp[3]; ski.hullPos(hp);
+                    const float dx = ft.x - hp[0], dz = ft.z - hp[2];
+                    if (dx*dx + dz*dz <= 25.0f) {          // within 5 m
+                        ridingSki = true;
+                        eConsumed = true;
+                        x3::logInfo("[tunnel] on the jet ski — throttle W, steer A/D");
+                    }
+                }
+            }
             if (eDown && !eWasDown && carBuilt && !atPump && !eConsumed &&
                 !(driving && car.wingsDeployed() && !car.grounded())) {
                 // ^ no stepping OUT of a flying beast at altitude — that door
@@ -6265,8 +6334,42 @@ int hostTunnel(HostContext& hc) {
                                         ? std::fabs(car.forwardSpeed()) : 0.0f);
             traffic.update(fdt, tfoc, phys.get());
         }
+        // ==== THE JET SKI, driven. Its own WASD (the car keeps its), and the
+        // RIVER FED IN every step: the current that carries you, the shore push
+        // that keeps you off the rock, and the downstream weathercock. Without
+        // this feed the craft is just a hull on a flat pond — the forces exist
+        // in the controller but nothing tells them where the river is going.
+        if (skiBuilt) {
+            x3::phys::VehicleInput sin{};
+            if (ridingSki) {   // kd() is already shell-gated: keys while typing are letters
+                sin.throttle = (kd(GLFW_KEY_W) ? 1.0f : 0.0f)
+                             - (kd(GLFW_KEY_S) ? skiSpec->reverseFrac : 0.0f);
+                sin.steer    = (kd(GLFW_KEY_A) ? 1.0f : 0.0f)
+                             - (kd(GLFW_KEY_D) ? 1.0f : 0.0f);
+            }
+            ski.setInput(sin);
+            // The surface under the hull descends downstream, so feed the water
+            // height AT THE HULL rather than one basin-wide constant — this is
+            // exactly what BoatDemo::setSeaLevel exists for.
+            float shp[3]; ski.hullPos(shp);
+            ski.setSeaLevel(x3::game::worldWaterLevelAt(shp[0], shp[2]));
+            if (riverOn && riverRoad.plan.ok) {
+                const auto& rp = riverRoad.plan;
+                const float flow[3] = { riverFlowDir[0] * kRiverFlowMps, 0.0f,
+                                        riverFlowDir[2] * kRiverFlowMps };
+                // Distance from the reach centreline, and the direction back to
+                // it: project the hull onto the ACROSS axis (the deck axis).
+                const float ax = shp[0] - rp.cx, az = shp[2] - rp.cz;
+                const float across = ax * rp.dirX + az * rp.dirZ;
+                const float toC[3] = { -rp.dirX * (across >= 0.0f ? 1.0f : -1.0f), 0.0f,
+                                       -rp.dirZ * (across >= 0.0f ? 1.0f : -1.0f) };
+                ski.setRiverFlow(flow, std::fabs(across), kRiverHalfWidth, toC);
+            }
+            ski.preStep(fdt);
+        }
         phys->step(fdt);
         if (carBuilt) car.postStep(fdt);
+        if (skiBuilt) ski.postStep(fdt);
         // ---- PARACHUTE DESCENT (shared ParachuteBailout, vehicle.cpp). Jake
         // rides the canopy: the Player capsule is pinned to the drift-down
         // each frame (so the on-foot camera + AnimatedCharacter fall clip just
@@ -6877,6 +6980,7 @@ int hostTunnel(HostContext& hc) {
                              std::cos(camYaw), std::sin(camYaw));
             }
             if (carBuilt) car.render(frame);
+            if (skiBuilt) ski.render(frame);   // the moored / ridden jet ski
             {   const float fcam[3] = { cx, cy, cz };
                 traffic.render(frame, fcam);           // the freeway is populated
             }

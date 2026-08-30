@@ -2374,12 +2374,21 @@ bool BoatDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& ph
                      float x, float y, float z, float seaLevel, bool isSub) {
     m_device = &device; m_physics = &physics;
 
+    // THE HULL COMES FROM THE ROSTER when one is set (app/boat_roster.h). With
+    // no spec this is the legacy craft, unchanged: the same 1.5/0.6/3.0 box and
+    // the same derived mass the river boats and the submarine have always used.
+    if (m_spec) { m_hx = m_spec->halfX; m_hy = m_spec->halfY; m_hz = m_spec->halfZ; }
+
     // Hull mass tuned so the box rides ~half-submerged in sea water:
     //   equilibrium submergedVol = mass / fluidDensity. For ~half of fullVol
     //   (=8*hx*hy*hz) submerged we want mass ~= 0.5 * fullVol * fluidDensity.
+    // A ROSTERED craft states its real mass instead — a 350 kg jet ski is not
+    // half a cubic-metre-per-tonne slab, and deriving its mass from its box
+    // would make it float like one.
     const float fullVol = 8.0f * m_hx * m_hy * m_hz;
-    const float fluidDensity = 1025.0f;
-    const float mass = 0.5f * fullVol * fluidDensity * 0.95f; // slight float-high bias
+    const float fluidDensity = m_spec ? 1000.0f : 1025.0f;   // river vs sea water
+    const float mass = m_spec ? m_spec->massKg
+                              : (0.5f * fullVol * fluidDensity * 0.95f);
     m_hull = physics.addBox(x3::phys::Vec3{m_hx, m_hy, m_hz},
                             x3::phys::Vec3{x, y, z}, mass, x3::phys::Layer::Dynamic);
     if (!m_hull.valid()) return false;
@@ -2388,9 +2397,29 @@ bool BoatDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& ph
     bd.body = m_hull; bd.seaLevel = seaLevel;
     bd.halfExtents[0]=m_hx; bd.halfExtents[1]=m_hy; bd.halfExtents[2]=m_hz;
     bd.fluidDensity = fluidDensity;
-    bd.linearDrag = 2.5f; bd.angularDrag = 2.5f;
-    bd.propThrust = mass * 4.0f;     // can motor forward
-    bd.steerTorque = mass * 1.5f;    // and turn
+    if (m_spec) {
+        // A RIDEABLE CRAFT: the roster owns propulsion, damping and THE FEEL.
+        bd.linearDrag   = m_spec->linearDrag;
+        bd.angularDrag  = m_spec->angularDrag;
+        bd.propThrust   = m_spec->propThrust;
+        bd.steerTorque  = m_spec->steerTorque;
+        // Planing + attitude — the difference between ploughing and skimming.
+        bd.planeSpeed    = m_spec->planeSpeed;
+        bd.planeLift     = m_spec->planeLift;
+        bd.bowLiftTorque = m_spec->bowLift;
+        bd.leanTorque    = m_spec->leanTorque;
+        // River forces. Gains scale with MASS so a jet ski and a speedboat are
+        // carried by the same current at the same rate — a light hull would
+        // otherwise be flung downstream while a heavy one barely noticed.
+        bd.currentStrength = mass * 2.6f;
+        bd.maxCurrentForce = mass * 12.0f;
+        bd.shorePush       = mass * 6.0f;
+        bd.downstreamAlign = mass * 7.0f;
+    } else {
+        bd.linearDrag = 2.5f; bd.angularDrag = 2.5f;
+        bd.propThrust = mass * 4.0f;     // can motor forward
+        bd.steerTorque = mass * 1.5f;    // and turn
+    }
     if (isSub) bd.diveThrust = mass * 12.0f; // strong enough to submerge
     // Gentle synthetic SWELL (see BuoyancyDesc): the flat buoyancy plane would
     // otherwise settle the hull dead level — this rocks it a few degrees so the
@@ -2400,21 +2429,31 @@ bool BoatDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& ph
     // permanent list the camera would faithfully — and wrongly — show).
     bd.swellTorque    = mass * 0.18f;
     bd.swellFreqHz    = 0.18f;
-    bd.rightingTorque = mass * 2.0f;
+    bd.rightingTorque = m_spec ? m_spec->rightingTorque : (mass * 2.0f);
     m_ctl.reset(x3::phys::createBuoyancyController(physics, bd));
     if (!m_ctl) { physics.removeBody(m_hull); m_hull = {}; return false; }
 
     std::vector<x3::rhi::MeshVertex> cv; std::vector<uint32_t> ci;
     x3::prims::makeCube(0.5f, cv, ci);
     m_hullMesh = device.createMesh(cv.data(), (uint32_t)cv.size(), ci.data(), (uint32_t)ci.size());
-    auto t = isSub ? x3::prims::makeSolidRGBA(8, 180, 180, 60)   // yellow sub
-                   : x3::prims::makeSolidRGBA(8, 150, 90, 50);   // brown boat hull
+    // GRAYBOX HULL, honestly labelled. The roster names Vehicles/JetSki.glb and
+    // Vehicles/Speedboat.glb but neither asset has been sourced yet, and NO_SLOP
+    // rule 3 forbids dressing a stand-in up as the real thing. So a rostered
+    // craft gets its own flat colour and stays visibly a placeholder until a
+    // real model lands; it is the PHYSICS that is finished here, not the art.
+    auto t = isSub   ? x3::prims::makeSolidRGBA(8, 180, 180, 60)   // yellow sub
+           : m_spec  ? x3::prims::makeSolidRGBA(8, 220, 70,  40)   // rostered craft
+                     : x3::prims::makeSolidRGBA(8, 150, 90,  50);  // brown boat hull
     m_hullTex = device.createTexture(t.data(), 8, 8, true);
     return true;
 }
 
 void BoatDemo::setInput(const x3::phys::VehicleInput& in) { if (m_ctl) m_ctl->setInput(in); }
 void BoatDemo::setSeaLevel(float y) { if (m_ctl) m_ctl->setSeaLevel(y); }
+void BoatDemo::setRiverFlow(const float vel[3], float centreDist, float halfWidth,
+                            const float toCentre[3]) {
+    if (m_ctl) m_ctl->setRiverFlow(vel, centreDist, halfWidth, toCentre);
+}
 void BoatDemo::preStep(float dt)  { if (m_ctl) m_ctl->preStep(dt); }
 void BoatDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
 

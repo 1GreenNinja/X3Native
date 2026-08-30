@@ -888,6 +888,23 @@ public:
             const float submergedVol = (submergedH / (2.0f * hy)) * fullVol;
             // Archimedes: F = rho * g * V, upward.
             float fB = m_d.fluidDensity * kGravity * submergedVol;
+            // PLANING. A displacement hull ploughs and its speed is capped by the
+            // water it shoves aside; a hull ON PLANE skims instead, and that
+            // crossover is most of what fast-on-water actually feels like. Ramp
+            // the buoyancy with forward speed so the quicker it goes the more it
+            // is held up. planeLift 1 or planeSpeed 0 leaves this byte-identical.
+            float planeT = 0.0f;
+            if (m_d.planeSpeed > 1e-3f && m_d.planeLift > 1.0f) {
+                JPH::Vec3 vf   = m_body->GetLinearVelocity();
+                JPH::Vec3 fwdP = m_body->GetRotation() * JPH::Vec3(0, 0, -1);
+                fwdP.SetY(0.0f);
+                if (fwdP.LengthSq() > 1e-6f) {
+                    fwdP = norm(fwdP);
+                    const float fwdSpd = std::fabs(vf.Dot(fwdP));
+                    planeT = std::clamp(fwdSpd / m_d.planeSpeed, 0.0f, 1.0f);
+                    fB *= 1.0f + (m_d.planeLift - 1.0f) * planeT;
+                }
+            }
             // Apply at the submerged-region centroid (below COM) so it self-rights
             // a little (a restoring moment that keeps the boat level).
             JPH::Vec3 buoy(0.0f, fB, 0.0f);
@@ -917,6 +934,61 @@ public:
             }
             if (m_d.steerTorque != 0.0f && std::fabs(m_in.steer) > 1e-3f) {
                 m_body->AddTorque(JPH::Vec3(0.0f, -m_d.steerTorque * m_in.steer * frac, 0.0f));
+            }
+            // ATTITUDE UNDER POWER — the bow rises as the hull climbs onto plane
+            // and the craft banks INTO its turn. Both scale by planeT, so a
+            // drifting hull sits flat and a driven one is alive. Torques are about
+            // the hull's OWN horizontal axes, so a rolled craft still pitches
+            // about its own nose rather than about the world.
+            if ((m_d.bowLiftTorque != 0.0f || m_d.leanTorque != 0.0f) && planeT > 0.0f) {
+                JPH::Vec3 fwdA = m_body->GetRotation() * JPH::Vec3(0, 0, -1);
+                fwdA.SetY(0.0f);
+                if (fwdA.LengthSq() > 1e-6f) {
+                    fwdA = norm(fwdA);
+                    JPH::Vec3 rightA(-fwdA.GetZ(), 0.0f, fwdA.GetX());
+                    JPH::Vec3 tqA = JPH::Vec3::sZero();
+                    tqA += rightA * (-m_d.bowLiftTorque * m_in.throttle * planeT * frac);
+                    tqA += fwdA   * (-m_d.leanTorque    * m_in.steer    * planeT * frac);
+                    m_body->AddTorque(tqA);
+                }
+            }
+            // RIVER FORCES — what turns a boat into a ride. The CURRENT drags the
+            // hull toward the flow (a DIFFERENCE force, so a hull already moving
+            // with the water feels nothing); the SHORE PUSH nudges it back toward
+            // the channel so a rushing river cannot pin the player against rock and
+            // hold them there; DOWNSTREAM ALIGNMENT weathercocks the nose to the
+            // flow whenever the pilot is not steering.
+            if (m_haveFlow) {
+                if (m_d.currentStrength > 0.0f) {
+                    JPH::Vec3 rel = m_flowVel - m_body->GetLinearVelocity();
+                    rel.SetY(0.0f);
+                    JPH::Vec3 fC = rel * (m_d.currentStrength * frac);
+                    if (m_d.maxCurrentForce > 0.0f) {
+                        const float mag = fC.Length();
+                        if (mag > m_d.maxCurrentForce) fC = fC * (m_d.maxCurrentForce / mag);
+                    }
+                    m_body->AddForce(fC);
+                }
+                if (m_d.shorePush > 0.0f && m_flowHalfWidth > 1e-3f) {
+                    const float over = m_flowCentreDist - m_flowHalfWidth;
+                    if (over > 0.0f)
+                        m_body->AddForce(m_flowToCentre * (m_d.shorePush * over * frac));
+                }
+                if (m_d.downstreamAlign > 0.0f && std::fabs(m_in.steer) < 0.05f) {
+                    JPH::Vec3 flowDir = m_flowVel; flowDir.SetY(0.0f);
+                    if (flowDir.LengthSq() > 1e-4f) {
+                        flowDir = norm(flowDir);
+                        JPH::Vec3 fwdR = m_body->GetRotation() * JPH::Vec3(0, 0, -1);
+                        fwdR.SetY(0.0f);
+                        if (fwdR.LengthSq() > 1e-6f) {
+                            fwdR = norm(fwdR);
+                            const float sinE = fwdR.GetZ() * flowDir.GetX() - fwdR.GetX() * flowDir.GetZ();
+                            const float cosE = fwdR.Dot(flowDir);
+                            const float err  = std::atan2(sinE, cosE);
+                            m_body->AddTorque(JPH::Vec3(0.0f, m_d.downstreamAlign * err * frac, 0.0f));
+                        }
+                    }
+                }
             }
             // SWELL + METACENTRIC RIGHTING (see BuoyancyDesc): the swell is a
             // gentle periodic roll about the hull's horizontal forward axis +
@@ -966,6 +1038,15 @@ public:
         return v.Dot(fwd);
     }
     float submergedFraction() const override { return m_submergedFrac; }
+    void setRiverFlow(const float vel[3], float centreDist, float halfWidth,
+                      const float toCentre[3]) override {
+        m_flowVel        = JPH::Vec3(vel[0], vel[1], vel[2]);
+        m_flowCentreDist = centreDist;
+        m_flowHalfWidth  = halfWidth;
+        m_flowToCentre   = JPH::Vec3(toCentre[0], 0.0f, toCentre[2]);
+        if (m_flowToCentre.LengthSq() > 1e-6f) m_flowToCentre = norm(m_flowToCentre);
+        m_haveFlow = true;
+    }
 
 private:
     JPH::PhysicsSystem* m_system = nullptr;
@@ -974,6 +1055,12 @@ private:
     BodyId              m_bodyId;
     VehicleInput        m_in;
     float               m_submergedFrac = 0.0f;
+    // River flow under the hull, fed by the host each step (setRiverFlow).
+    JPH::Vec3 m_flowVel        = JPH::Vec3::sZero();
+    JPH::Vec3 m_flowToCentre   = JPH::Vec3::sZero();
+    float     m_flowCentreDist = 0.0f;
+    float     m_flowHalfWidth  = 0.0f;
+    bool      m_haveFlow       = false;
     float               m_swellT = 0.0f;   // swell phase clock (s)
 };
 
@@ -1208,6 +1295,131 @@ bool runVehicleSelfTest() {
         w->shutdown();
     }
 
+    // ---- V5: THE RIDEABLE-WATERCRAFT GATE (planing + river forces) ---------
+    // The owner's brief for watercraft was 'fun and playable', which is a feel
+    // target — but every lever under it is a measurable force, so it gets
+    // measured rather than eyeballed. Each block below builds the SAME hull
+    // twice and differs by exactly one field, so a pass means that field did
+    // the work and nothing else did.
+    {
+        const float seaLevel = 20.0f;
+        const float hx = 0.62f, hy = 0.42f, hz = 1.65f;   // the jetski hull
+        const float mass = 350.0f;
+        auto makeCraft = [&](IPhysicsWorld& w, BuoyancyDesc& bd, BodyId& body) {
+            body = w.addBox(Vec3{hx, hy, hz}, Vec3{0, seaLevel, 0}, mass, Layer::Dynamic);
+            bd.body = body; bd.seaLevel = seaLevel;
+            bd.halfExtents[0]=hx; bd.halfExtents[1]=hy; bd.halfExtents[2]=hz;
+            bd.fluidDensity = 1000.0f;
+            bd.linearDrag = 2.4f; bd.angularDrag = 1.6f;
+            bd.rightingTorque = 5200.0f;
+        };
+
+        // --- V5a PLANING: at speed the hull rides HIGHER than the same hull
+        //     at rest. That lift is the whole difference between ploughing
+        //     through water and skimming over it.
+        auto runPlane = [&](bool planing, float& outY) {
+            std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+            w->init(); makeFlatGround(w.get(), 200.0f);
+            BodyId b; BuoyancyDesc bd; makeCraft(*w, bd, b);
+            bd.propThrust = 9500.0f;
+            if (planing) { bd.planeSpeed = 9.0f; bd.planeLift = 2.30f; }
+            std::unique_ptr<IVehicleController> c(createBuoyancyController(*w, bd));
+            VehicleInput in{}; in.throttle = 1.0f;
+            for (int i = 0; i < 600; ++i) { c->setInput(in); c->preStep(kDt); w->step(kDt); }
+            outY = w->getBodyPosition(b).y;
+        };
+        float yFlat = 0.0f, yPlane = 0.0f;
+        runPlane(false, yFlat); runPlane(true, yPlane);
+        x3::logInfo("[vehicle-test]   V5a planing y: displacement=" +
+                    std::to_string(yFlat) + " onPlane=" + std::to_string(yPlane) +
+                    " lift=" + std::to_string(yPlane - yFlat) + " m");
+        vcheck(yPlane > yFlat + 0.05f,
+               "V5a PLANING: a driven hull rides higher than a drifting one");
+
+        // --- V5b CURRENT: an UNPOWERED hull is carried downstream. This is a
+        //     difference force, so it must move a still hull and must not keep
+        //     shoving one that already matches the flow.
+        {
+            std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+            w->init(); makeFlatGround(w.get(), 200.0f);
+            BodyId b; BuoyancyDesc bd; makeCraft(*w, bd, b);
+            bd.currentStrength = 900.0f; bd.maxCurrentForce = 4000.0f;
+            std::unique_ptr<IVehicleController> c(createBuoyancyController(*w, bd));
+            const float flow[3] = { 4.0f, 0.0f, 0.0f };   // 4 m/s downstream, +X
+            const float toC[3]  = { 0.0f, 0.0f, 0.0f };
+            const float x0 = w->getBodyPosition(b).x;
+            for (int i = 0; i < 300; ++i) {
+                c->setRiverFlow(flow, 0.0f, 0.0f, toC);
+                c->setInput({}); c->preStep(kDt); w->step(kDt);
+            }
+            const Vec3 pv = w->getBodyPosition(b);
+            x3::logInfo("[vehicle-test]   V5b current: drifted " +
+                        std::to_string(pv.x - x0) + " m downstream in 5 s");
+            vcheck(pv.x - x0 > 3.0f,
+                   "V5b CURRENT: an unpowered hull is carried downstream");
+        }
+
+        // --- V5c SHORE PUSH: outside the channel half-width the hull is nudged
+        //     back toward the centreline, so a rushing river cannot pin the
+        //     player against rock and hold them there.
+        {
+            std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+            w->init(); makeFlatGround(w.get(), 200.0f);
+            BodyId b; BuoyancyDesc bd; makeCraft(*w, bd, b);
+            bd.shorePush = 2200.0f;
+            std::unique_ptr<IVehicleController> c(createBuoyancyController(*w, bd));
+            const float flow[3] = { 0.0f, 0.0f, 0.0f };
+            const float toC[3]  = { -1.0f, 0.0f, 0.0f };  // centre is toward -X
+            const float x0 = w->getBodyPosition(b).x;
+            for (int i = 0; i < 300; ++i) {
+                c->setRiverFlow(flow, /*centreDist*/ 9.0f, /*halfWidth*/ 6.0f, toC);
+                c->setInput({}); c->preStep(kDt); w->step(kDt);
+            }
+            const Vec3 pv = w->getBodyPosition(b);
+            x3::logInfo("[vehicle-test]   V5c shore push: moved " +
+                        std::to_string(x0 - pv.x) + " m back toward the channel");
+            vcheck(x0 - pv.x > 0.5f,
+                   "V5c SHORE PUSH: a hull outside the channel is returned to it");
+        }
+
+        // --- V5d DOWNSTREAM ALIGNMENT: hands off the steering, the nose
+        //     weathercocks to follow the flow. Must NOT fire while the pilot is
+        //     steering, or it would fight every deliberate turn.
+        {
+            std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+            w->init(); makeFlatGround(w.get(), 200.0f);
+            BodyId b; BuoyancyDesc bd; makeCraft(*w, bd, b);
+            bd.downstreamAlign = 2600.0f; bd.angularDrag = 2.6f;
+            std::unique_ptr<IVehicleController> c(createBuoyancyController(*w, bd));
+            const float flow[3] = { 4.0f, 0.0f, 0.0f };   // flow toward +X
+            const float toC[3]  = { 0.0f, 0.0f, 0.0f };
+            // hull nose starts at -Z (engine forward), i.e. 90 deg off the flow
+            // ANGLE BETWEEN THE NOSE AND THE FLOW. The rotation matrix third
+            // column is rot*(0,0,+1); engine forward is -Z, so it must be
+            // NEGATED. Getting that backwards reported a 90-degree-off hull as
+            // perfectly aligned (error 0.000) and then called the correction a
+            // regression — the first run of this gate failed on exactly that.
+            auto yawErr = [&]() {
+                float q[4]; w->getBodyRotation(b, q);
+                const float fx = -2.0f*(q[0]*q[2] + q[3]*q[1]);
+                const float fz = -(1.0f - 2.0f*(q[0]*q[0] + q[1]*q[1]));
+                const float len = std::sqrt(fx*fx + fz*fz);
+                if (len < 1e-5f) return 0.0f;
+                // flow is +X, so the dot with the unit nose IS its x component
+                const float d = std::clamp(fx / len, -1.0f, 1.0f);
+                return std::acos(d);
+            };
+            const float e0 = yawErr();
+            for (int i = 0; i < 420; ++i) {
+                c->setRiverFlow(flow, 0.0f, 0.0f, toC);
+                c->setInput({}); c->preStep(kDt); w->step(kDt);
+            }
+            const float e1 = yawErr();
+            x3::logInfo("[vehicle-test]   V5d downstream align: yaw error " +
+                        std::to_string(e0) + " -> " + std::to_string(e1) + " rad");
+            vcheck(e1 < e0, "V5d DOWNSTREAM: a drifting nose swings toward the flow");
+        }
+    }
     // ---- V3: buoyant body settles near the waterline (no sink, no launch) ----
     {
         std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());

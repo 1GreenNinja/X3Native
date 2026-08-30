@@ -627,6 +627,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional output path arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') o.terrainShotPath = argv[++i];
         }
+        else if (a == "--screenshot-water") {   // water verification rig (clarity ON)
+            o.waterShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.waterShotPath = argv[++i];
+        }
         else if (a == "--screenshot-ocean") {
             o.oceanShot = true;
             // Optional output path arg (next token, if it isn't another flag).

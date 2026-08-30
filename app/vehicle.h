@@ -19,7 +19,8 @@
 #include "engine/asset/IModelLoader.h"   // hero-car GLB skin (ModelDrawable)
 #include "engine/asset/IAssetSource.h"
 #include "mesh_prims.h"
-#include "car_roster.h"                  // CarSpec — which car this DriveDemo IS
+#include "car_roster.h"
+#include "boat_roster.h"   // BoatSpec: the per-craft watercraft table                  // CarSpec — which car this DriveDemo IS
 
 #include <cstdint>
 #include <memory>
@@ -658,7 +659,21 @@ public:
     bool build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                float x, float y, float z, float seaLevel, bool isSub = false);
 
+    // PER-CRAFT SPEC (app/boat_roster.h). Call BEFORE build(). Everything that
+    // makes a hull a PARTICULAR hull — box, mass, thrust, steering, the planing
+    // curve and the river-force gains — comes from the roster instead of the
+    // file-scope 1.5/0.6/3.0 that the river boats and the SUBMARINE used to
+    // share. nullptr (the default) keeps the legacy hull exactly as it was, so
+    // every existing caller stays byte-identical (NO_SLOP rule 4).
+    void setSpec(const BoatSpec* spec) { m_spec = spec; }
+    const BoatSpec* spec() const { return m_spec; }
+
     void setInput(const x3::phys::VehicleInput& in);
+    // RIVER FLOW under the hull, forwarded to the buoyancy controller: the
+    // current that carries you, the shore push that keeps you off the rock, and
+    // the downstream weathercock. The host feeds it each step.
+    void setRiverFlow(const float vel[3], float centreDist, float halfWidth,
+                      const float toCentre[3]);
     // Move the water surface under the hull (a RIVER's surface descends
     // downstream and swells in rain — feed worldWaterLevelAt at the hull's XZ
     // each step). No-op on a flat ocean; see IVehicleController::setSeaLevel.
@@ -679,6 +694,7 @@ private:
     x3::phys::IPhysicsWorld* m_physics = nullptr;
     std::unique_ptr<x3::phys::IVehicleController> m_ctl;
     x3::phys::BodyId m_hull;
+    const BoatSpec* m_spec = nullptr;   // null => the legacy hull below
     float m_hx = 1.5f, m_hy = 0.6f, m_hz = 3.0f;
 
     x3::rhi::MeshHandle    m_hullMesh;

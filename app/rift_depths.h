@@ -30,6 +30,7 @@
 // hub threshold, and every shell piece collides. selfCheck() re-derives the seams
 // from the authored spans and is asserted by --test-rifthub.
 
+#include "door.h"     // side-room slider doors + the card readers that watch them
 #include "scene.h"
 #include "surface_library.h"
 
@@ -66,7 +67,26 @@ public:
         // Corridor cross-section.
         float hallHalfW = 1.7f;    // must be >= doorHalfW so the mouth seals
         float hallH     = 3.4f;
+        // SIDE ROOMS (owner 2026-08-30: "rooms off of it" + "card readers").
+        // When a DoorSystem is provided, the approach's leg A grows two rooms
+        // off its SOUTH wall — the OPS ANNEX (west) and the STORES BAY (east),
+        // both behind keycard-locked slider doors with a CARD READER beside
+        // each (red LED until the door unlocks; syncReaders flips them green).
+        // nullptr = corridor only, byte-identical to the pre-room build.
+        DoorSystem* doors = nullptr;
     };
+
+    // A card reader serving one side-room door: the wall unit's LED entity +
+    // the DoorSystem index of the door it watches. syncReaders() drives the
+    // LED from the door's LIVE lock state, so the light can never lie.
+    struct CardReader {
+        uint32_t doorIdx = 0;      // DoorSystem::at() index
+        uint32_t ledEnt  = 0;      // the LED strip entity (emissive swapped)
+        x3::phys::Vec3 pos{};      // world position (HUD prompts / tests)
+    };
+    const std::vector<CardReader>& readers() const { return m_readers; }
+    // Per-frame: LED red while its door is locked, green once unlocked.
+    void syncReaders(Scene& scene, const DoorSystem& doors);
 
     // Author the landing + the L-shaped approach. The corridor leaves the landing
     // through its -X wall, runs west to the bend at the hub door's X, then turns and
@@ -129,6 +149,8 @@ private:
     std::vector<x3::rhi::PointLight> m_lights;
     std::vector<float>          m_lightBase;   // authored intensities (the flicker restores them)
     std::vector<Slab>           m_floors;      // authored floor spans (selfCheck reads these)
+    std::vector<CardReader>     m_readers;     // side-room card readers (LED + door idx)
+    bool                        m_roomsBuilt = false;   // side rooms authored (selfCheck extends)
     SurfaceLibrary m_surf;
     float m_t = 0.0f;
 };
