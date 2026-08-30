@@ -1316,6 +1316,8 @@ int runDefaultHost(HostContext& hc) {
     uint32_t keycardMask       = 0;
     uint32_t canonKeycardEnt   = x3::game::kNoLink;
     float    canonKeycardX     = 0.0f, canonKeycardZ = 0.0f;
+    float    canonKeycardY     = 0.0f;   // rest height (the bob's centreline)
+    float    canonKeycardClock = 0.0f;   // drives spin / bob / glow-breathe
     bool     canonKeycardTaken = false;
     x3::audio::SoundHandle sndCardOk, sndCardNo;   // card-access voice (accept / deny)
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
@@ -2446,20 +2448,25 @@ int runDefaultHost(HostContext& hc) {
                 if (rr != x3::game::kNoRoom) {
                     const x3::game::CanonRoom& room = canonFloor.rooms[rr];
                     canonKeycardX = room.cx; canonKeycardZ = room.cz;
-                    const float ky = room.y0() + 1.0f;
+                    canonKeycardY = room.y0() + 1.0f;
                     x3::prims::PrimMesh card = x3::prims::makeBox(0.22f, 0.14f, 0.02f, 0.0f, 0.0f, 0.0f, 1.0f);
                     x3::game::Entity e;
                     for (int i = 0; i < 16; ++i) e.transform[i] = 0.0f;
                     e.transform[0] = e.transform[5] = e.transform[10] = e.transform[15] = 1.0f;
-                    e.transform[12] = canonKeycardX; e.transform[13] = ky; e.transform[14] = canonKeycardZ;
+                    e.transform[12] = canonKeycardX; e.transform[13] = canonKeycardY; e.transform[14] = canonKeycardZ;
                     e.mesh = device->createMesh(card.verts.data(), (uint32_t)card.verts.size(),
                                                 card.index.data(), (uint32_t)card.index.size());
-                    e.baseColor[0] = 0.15f; e.baseColor[1] = 0.88f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+                    // PICKUP LANGUAGE (owner 2026-08-30: "Glowing... spinning slowly,
+                    // bouncing"): near-black body so the cyan GLOW carries (the band
+                    // law); the tick below spins/bobs it and breathes the emissive.
+                    e.baseColor[0] = 0.03f; e.baseColor[1] = 0.09f; e.baseColor[2] = 0.10f; e.baseColor[3] = 1.0f;
+                    e.emissive[0] = 0.15f; e.emissive[1] = 0.88f; e.emissive[2] = 1.0f;
+                    e.emissive[3] = 0.85f;
                     e.tag     = (uint32_t)x3::game::Tag::Prop;
                     e.visible = true;
                     e.roomId  = rr;
                     canonKeycardEnt = scene.add(e);
-                    x3::logInfo("--world canonlevel: Security keycard placed in the Research Lab");
+                    x3::logInfo("--world canonlevel: Security keycard placed in the Research Lab at (" + std::to_string(canonKeycardX) + "," + std::to_string(canonKeycardY) + "," + std::to_string(canonKeycardZ) + ")");
                 }
             }
             // ---- GAMEPLAY onto the canon rooms (makes --world canonlevel PLAYABLE): the
@@ -11156,6 +11163,23 @@ int runDefaultHost(HostContext& hc) {
                     stairwell.update(dt, scene, &canonDoors, camPos);
                 // SECURITY KEYCARD: grab it by walking up to it (proximity, XZ).
                 if (!canonKeycardTaken && canonKeycardEnt != x3::game::kNoLink) {
+                    // THE PICKUP IDLE (owner 2026-08-30): slow spin (0.9 rad/s),
+                    // gentle bounce (12 cm at ~0.5 Hz), and a breathing cyan glow —
+                    // the universal "this is yours, come take it" language. Written
+                    // straight into the entity transform each frame; the proximity
+                    // grab below hides the entity, which also stops the animation.
+                    canonKeycardClock += dt;
+                    {
+                        x3::game::Entity& ke = scene.get(canonKeycardEnt);
+                        const float yaw = canonKeycardClock * 0.9f;
+                        const float cy2 = std::cos(yaw), sy2 = std::sin(yaw);
+                        ke.transform[0] = cy2;  ke.transform[1] = 0.0f; ke.transform[2]  = -sy2;
+                        ke.transform[4] = 0.0f; ke.transform[5] = 1.0f; ke.transform[6]  = 0.0f;
+                        ke.transform[8] = sy2;  ke.transform[9] = 0.0f; ke.transform[10] = cy2;
+                        ke.transform[13] = canonKeycardY +
+                                           0.12f * std::sin(canonKeycardClock * 3.1f);
+                        ke.emissive[3] = 0.65f + 0.35f * std::sin(canonKeycardClock * 2.2f);
+                    }
                     const float kdx = camPos.x - canonKeycardX, kdz = camPos.z - canonKeycardZ;
                     if (kdx * kdx + kdz * kdz < 1.6f * 1.6f) {
                         canonKeycardTaken = true;
