@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -2323,6 +2324,41 @@ bool runDriveEnterExitSelfTest() {
             float rawNow[3]; ic.chassisPos(rawNow);
             check(dist3(drawPos, rawNow) > 1e-5f,
                   "phasing: mid-tick alpha actually presents an in-between pose");
+
+            // ---- COST -----------------------------------------------------
+            // GPU cost is zero BY CONSTRUCTION: no new pass, buffer, descriptor
+            // or draw, and ObjectData's 160-byte stride is untouched — the same
+            // drawMesh calls simply receive a different matrix.
+            // CPU: time the ENTIRE per-render-frame presentation cost (hull pose
+            // + all four wheel poses). This REPLACES work the old path did per
+            // frame: render() used to query Jolt for the body transform and four
+            // GetWheelWorldTransform poses on EVERY frame. Those queries now run
+            // once per 60 Hz tick instead of once per 165 Hz frame, and what is
+            // left on the frame path is pure arithmetic.
+            {
+                const int N = 200000;
+                x3::phys::WheelState tmp;
+                volatile float sink = 0.0f;
+                const auto t0 = std::chrono::steady_clock::now();
+                for (int i = 0; i < N; ++i) {
+                    ic.setRenderAlpha((float)(i & 63) / 63.0f);
+                    float p[3], r[4]; ic.renderChassisPos(p); ic.renderChassisRot(r);
+                    for (uint32_t s = 0; s < 4; ++s) {
+                        ic.renderWheelPose(s, tmp);
+                        sink = sink + tmp.worldTransform[12];
+                    }
+                    sink = sink + p[0] + r[0];
+                }
+                const auto t1 = std::chrono::steady_clock::now();
+                const double ns =
+                    std::chrono::duration<double, std::nano>(t1 - t0).count() / (double)N;
+                x3::logInfo("[drive-test]   COST: full per-render-frame presentation "
+                            "(hull pose + 4 wheel poses) = " + std::to_string(ns) +
+                            " ns/frame; GPU cost zero (no new pass/buffer/draw, "
+                            "ObjectData stride unchanged)");
+                check(ns < 2000.0,
+                      "phasing: per-frame presentation cost is negligible (< 2 us)");
+            }
             ic.shutdown();
         }
         if (ip) ip->shutdown();
