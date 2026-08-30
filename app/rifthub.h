@@ -397,6 +397,32 @@ public:
     // self-test calls it too, which is how the consequences are gated).
     void applyOutcome(uint32_t portalIdx, RiftOutcome outcome);
 
+    // ===== THE OPS STATION (owner, 2026-08-30: "a computer station you can
+    // sit down at, and get deep into the workings and analytics of the
+    // portals") ==============================================================
+    // A seated operator desk on the south side of the ring, in the hub's own
+    // holo language (steel base, angled black glass, hanging side panes).
+    // Walk up, [E] to SIT: the host locks the camera to the seat and routes
+    // ALL input to updateOps() (the console discipline), which draws the
+    // whole-hub analytics surface — a status row per gate, the selected
+    // gate's live parameters through the SAME readout builder the hanging
+    // glass uses (one truth), and a live per-gate flux waveform fed by
+    // tick(). [E] again stands up.
+    bool  opsInRange(const x3::phys::Vec3& eye, float radiusM = 2.8f) const;
+    bool  opsSeated() const { return m_opsSeated; }
+    void  sitOps()   { m_opsSeated = true; }
+    void  standOps() { m_opsSeated = false; }
+    // Seat camera pose (world space): eye over the chair, aimed across the
+    // desk at the gate ring.
+    void  opsEye(float outPos[3], float& outYaw, float& outPitch) const;
+    // Draw + drive the seated analytics surface for one frame. No-op unless
+    // seated. navUp/navDown (W/S) move the gate selection.
+    void  updateOps(x3::ui::UiContext& ui, float dt);
+    // Flux telemetry (the waveform's data; the self-test asserts it advances).
+    static constexpr uint32_t kFluxSamples = 96;
+    float fluxSample(uint32_t portalIdx, uint32_t sampleIdx) const;
+    uint32_t fluxHead() const { return m_fluxHead; }
+
     // ---- Global consequences the HOST must apply ---------------------------
     // TEMPORAL RIFT: a sim-dt multiplier. Slow-motion with a stutter (time stops
     // agreeing with itself). 1.0 when no rift is torn.
@@ -551,6 +577,14 @@ private:
     std::vector<HoloTerminal> m_holos;
     int   m_activeConsole = -1;    // portal index whose console is OPEN (-1 = none)
     float m_uiClock = 0.0f;        // drives the control-glow pulse
+    // ---- OPS STATION state -------------------------------------------------
+    bool  m_opsSeated = false;
+    int   m_opsSel    = 0;         // selected gate row on the analytics surface
+    x3::phys::Vec3 m_opsSeat{ 0, 0, 0 };   // world: chair position (floor)
+    x3::phys::Vec3 m_opsDesk{ 0, 0, 0 };   // world: desk glass center
+    std::vector<float> m_flux;     // [portal * kFluxSamples] ring buffer, 0..1
+    uint32_t m_fluxHead  = 0;
+    float    m_fluxAccum = 0.0f;   // 30 Hz sampling accumulator
 
     // ROOM WARP: the hub visibly BENDS. m_warpEnts is the set of hall props
     // (columns, beams, strip fixtures, machinery) whose base transforms are cached

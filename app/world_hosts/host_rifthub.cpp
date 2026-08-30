@@ -189,6 +189,9 @@ int hostRifthub(HostContext& hc) {
     // portal. Everything below is gated on `conOpen`.
     x3::ui::UiContext rhui;
     bool conOpen = false, prevE = false, prevBack = false, prevEnter = false;
+    // OPS STATION: seated at the operator desk — same input discipline as the
+    // console (the panel owns everything), plus the camera locks to the seat.
+    bool opsOpen = false;
     bool prevMouse = false;
     // GLFW pushes printable characters through a char callback; stash them in a
     // per-frame buffer the UI drains (the same shape as the cell terminal's entry).
@@ -245,7 +248,7 @@ int hostRifthub(HostContext& hc) {
             // No WASD, no mouse look, no jump, no sprint. Typing "club" into the
             // TARGET field must not walk the player into the portal. (Same rule the
             // cell holo-terminal / keypad already enforces.)
-            if (!conOpen) {
+            if (!conOpen && !opsOpen) {
                 if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
                 if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
                 if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
@@ -287,6 +290,10 @@ int hostRifthub(HostContext& hc) {
                     rifthub.closeConsole();
                     conOpen = false;
                     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                } else if (opsOpen) {
+                    rifthub.standOps();
+                    opsOpen = false;
+                    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
                 } else {
                     const int idx = rifthub.consoleInRange({ camX, camY, camZ });
                     if (idx >= 0) {
@@ -294,6 +301,11 @@ int hostRifthub(HostContext& hc) {
                         conOpen = true;
                         // Free the cursor: the console is a DRAGGABLE control surface
                         // (sliders + rotary dials), so the player needs a pointer.
+                        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                        glfwGetCursorPos(window, &lastMX, &lastMY);
+                    } else if (rifthub.opsInRange({ camX, camY, camZ })) {
+                        rifthub.sitOps();
+                        opsOpen = true;
                         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
                         glfwGetCursorPos(window, &lastMX, &lastMY);
                     }
@@ -316,8 +328,8 @@ int hostRifthub(HostContext& hc) {
 
         // Forward the player position to the rift triggers (latch "rift activated").
         // A trigger fires ONCE (first entry) -> that is the KAWOOSH (activation).
-        for (uint32_t id : conOpen ? std::vector<uint32_t>{}
-                                   : rhtrig.update({ camX, camY, camZ })) {
+        for (uint32_t id : (conOpen || opsOpen) ? std::vector<uint32_t>{}
+                                                : rhtrig.update({ camX, camY, camZ })) {
             rifthub.onTrigger(id);
             if (rhaudio && sndKawoosh.valid()) {
                 for (uint32_t i = 0; i < rifthub.portalCount(); ++i) {
@@ -368,8 +380,12 @@ int hostRifthub(HostContext& hc) {
             title = "RIFTHUB  |  *** " + rifthub.alarm() + " ***";
         } else if (conOpen) {
             title = "RIFTHUB  |  CONSOLE OPEN  -  [E] to step back";
+        } else if (opsOpen) {
+            title = "RIFTHUB  |  OPS STATION  -  [E] to stand up";
         } else if (rifthub.consoleInRange({ camX, camY, camZ }) >= 0) {
             title = "RIFTHUB  |  [E] operate the rift console";
+        } else if (rifthub.opsInRange({ camX, camY, camZ })) {
+            title = "RIFTHUB  |  [E] sit at the OPS STATION";
         } else {
             title = rifthub.hudPromptForEye({ camX, camY, camZ }, prompt)
                       ? ("RIFTHUB  |  " + prompt)
@@ -390,6 +406,12 @@ int hostRifthub(HostContext& hc) {
             shy = std::sin(t * 2.3f) * sh * 0.7f;
             shz = std::cos(t * 1.9f) * sh;
         }
+        // Seated at the ops desk: the seat owns the camera (shake still applies —
+        // an implosion should rattle the operator hardest of all).
+        if (opsOpen) {
+            float sp[3]; rifthub.opsEye(sp, camYaw, camPitch);
+            camX = sp[0]; camY = sp[1]; camZ = sp[2];
+        }
         device->setCamera(camX + shx, camY + shy, camZ + shz, camYaw, camPitch, fov);
         auto frame = device->beginFrame();
         if (frame.valid) {
@@ -402,9 +424,14 @@ int hostRifthub(HostContext& hc) {
             uin.mouseX = (float)cmx;
             uin.mouseY = (float)cmy;
             const bool mDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-            uin.mouseDown    = conOpen && mDown;
-            uin.mousePressed = conOpen && mDown && !prevMouse;
+            uin.mouseDown    = (conOpen || opsOpen) && mDown;
+            uin.mousePressed = (conOpen || opsOpen) && mDown && !prevMouse;
             prevMouse = mDown;
+            if (opsOpen) {
+                rhui.begin(*device, frame, uin);
+                rifthub.updateOps(rhui, fdt);
+                rhui.end();
+            }
             if (conOpen) {
                 for (int k = 0; k < s_typedN; ++k) uin.typed[k] = s_typed[k];
                 uin.typedCount = s_typedN;

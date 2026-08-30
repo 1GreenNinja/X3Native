@@ -2284,6 +2284,94 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         }
     }
 
+    // ===== THE OPS STATION (owner, 2026-08-30) ==============================
+    // A seated operator desk on the SOUTH-WEST side of the ring (clear of the
+    // -Z doorway at doorCenterX=+7), facing the gates. Authored in the hub's
+    // own holo language: dark steel base, angled black-glass top with a low
+    // teal standby glow, two hanging side panes, and a fixed chair. The desk
+    // base COLLIDES (containment); the chair does not (walking into the seat
+    // must never wedge the player — sitting is the [E] interaction).
+    {
+        const float kOpsX = -7.0f, kOpsZ = -15.4f;         // hub-local, inside the shell
+        const float ax[3] = { 1, 0, 0 }, ay[3] = { 0, 1, 0 }, az[3] = { 0, 0, 1 };
+        const float steel[3]  = { 0.05f, 0.055f, 0.06f };  // near-black steel body
+        const float glassT[3] = { 0.10f, 0.55f, 0.60f };   // hub teal, standby glow
+        const float amber[3]  = { 0.85f, 0.55f, 0.18f };   // seat accent
+        // Desk base: 1.9 x 0.9 x 0.55 m steel pedestal block, front edge at
+        // kOpsZ (operator side is -Z of it).
+        {
+            x3::prims::PrimMesh b = x3::prims::makeBox(0.95f, 0.45f, 0.28f,
+                                                       0.0f, 0.0f, 0.0f);
+            Entity e;
+            e.mesh = device.createMesh(b.verts.data(), (uint32_t)b.verts.size(),
+                                       b.index.data(), (uint32_t)b.index.size());
+            e.baseColor[0] = steel[0]; e.baseColor[1] = steel[1];
+            e.baseColor[2] = steel[2]; e.baseColor[3] = 1.0f;
+            e.tag = (uint32_t)Tag::Prop;
+            makeXform(e.transform, ax, ay, az, OX + kOpsX, OY + 0.45f, OZ + kOpsZ);
+            scene.add(e);
+            m_portalMeshes.push_back(e.mesh);
+            // Collision: a static box where the desk stands (world-space verts).
+            const float cx = OX + kOpsX, cy = OY, cz = OZ + kOpsZ;
+            const float hx = 0.95f, hz = 0.28f, hy = 0.9f;
+            const float cv[24] = {
+                cx-hx, cy,    cz-hz,  cx+hx, cy,    cz-hz,
+                cx+hx, cy,    cz+hz,  cx-hx, cy,    cz+hz,
+                cx-hx, cy+hy, cz-hz,  cx+hx, cy+hy, cz-hz,
+                cx+hx, cy+hy, cz+hz,  cx-hx, cy+hy, cz+hz };
+            const uint32_t ci[36] = { 0,1,2, 0,2,3,  4,6,5, 4,7,6,
+                                      0,4,5, 0,5,1,  1,5,6, 1,6,2,
+                                      2,6,7, 2,7,3,  3,7,4, 3,4,0 };
+            physics.addStaticMesh(cv, 8, ci, 36);
+        }
+        // Angled glass top: thin slab pitched ~32 deg toward the operator.
+        {
+            const float c = std::cos(0.56f), s = std::sin(0.56f);
+            const float gy[3] = { 0.0f,  c,  s };     // tilted up-vector
+            const float gz[3] = { 0.0f, -s,  c };     // tilted normal (faces operator/up)
+            AddedEntity g = addOrientedEmissiveBox(scene, device,
+                0.92f, 0.02f, 0.34f, ax, gy, gz,
+                OX + kOpsX, OY + 1.02f, OZ + kOpsZ - 0.02f,
+                glassT, 0.55f, steel);
+            m_portalMeshes.push_back(g.mesh);
+        }
+        // Two hanging side panes (the holoterminal silhouette, smaller).
+        for (int sside = -1; sside <= 1; sside += 2) {
+            AddedEntity pn = addOrientedEmissiveBox(scene, device,
+                0.02f, 0.26f, 0.34f, ax, ay, az,
+                OX + kOpsX + (float)sside * 1.25f, OY + 1.55f, OZ + kOpsZ + 0.10f,
+                glassT, 0.35f, steel);
+            m_portalMeshes.push_back(pn.mesh);
+            AddedEntity pipe = addOrientedEmissiveBox(scene, device,
+                0.03f, (kHallWallH - 1.8f) * 0.5f, 0.03f, ax, ay, az,
+                OX + kOpsX + (float)sside * 1.25f,
+                OY + 1.8f + (kHallWallH - 1.8f) * 0.5f, OZ + kOpsZ + 0.10f,
+                steel, 0.0f, steel);
+            m_portalMeshes.push_back(pipe.mesh);
+        }
+        // The chair: pedestal + cushion + low back, amber piping on the seat lip.
+        const float seatZ = kOpsZ - 1.05f;
+        {
+            AddedEntity ped = addOrientedEmissiveBox(scene, device,
+                0.10f, 0.22f, 0.10f, ax, ay, az,
+                OX + kOpsX, OY + 0.22f, OZ + seatZ, steel, 0.0f, steel);
+            m_portalMeshes.push_back(ped.mesh);
+            AddedEntity cush = addOrientedEmissiveBox(scene, device,
+                0.30f, 0.05f, 0.28f, ax, ay, az,
+                OX + kOpsX, OY + 0.49f, OZ + seatZ, amber, 0.10f, steel);
+            m_portalMeshes.push_back(cush.mesh);
+            AddedEntity back = addOrientedEmissiveBox(scene, device,
+                0.30f, 0.26f, 0.04f, ax, ay, az,
+                OX + kOpsX, OY + 0.80f, OZ + seatZ - 0.26f, steel, 0.0f, steel);
+            m_portalMeshes.push_back(back.mesh);
+        }
+        m_opsDesk = x3::phys::Vec3{ OX + kOpsX, OY + 1.02f, OZ + kOpsZ };
+        m_opsSeat = x3::phys::Vec3{ OX + kOpsX, OY,          OZ + seatZ };
+        // Flux telemetry ring: one lane per portal, seeded mid-scale.
+        m_flux.assign(m_portals.size() * kFluxSamples, 0.5f);
+        m_fluxHead = 0;
+    }
+
     // Snapshot the authored light colours: the ALARM strobes them red during a
     // catastrophe and must restore them exactly (see tick()).
     m_lightBase.clear();
@@ -2307,6 +2395,28 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
 void Rifthub::tick(float dt, Scene& scene) {
     if (!m_built) return;
     m_time += dt;
+
+    // ---- OPS STATION flux telemetry (30 Hz ring, one lane per portal) ------
+    // The "workings" the analytics surface graphs: a live composite of each
+    // gate's REAL state — membrane spin + aperture carry the baseline, a
+    // kawoosh spikes it, snarl and implosion tear it, a dead gate flatlines.
+    if (!m_flux.empty()) {
+        m_fluxAccum += dt;
+        const float kFluxDt = 1.0f / 30.0f;
+        while (m_fluxAccum >= kFluxDt) {
+            m_fluxAccum -= kFluxDt;
+            m_fluxHead = (m_fluxHead + 1u) % kFluxSamples;
+            for (size_t i = 0; i < m_portals.size(); ++i) {
+                const RiftPortal& p = m_portals[i];
+                float v = 0.5f + 0.16f * std::sin(m_time * (1.1f + 0.13f * (float)i))
+                               + 0.07f * std::sin(m_time * (3.7f + 0.29f * (float)i));
+                v *= p.aperture;
+                v += p.kawoosh * 0.65f + p.snarl * 0.4f + p.implode * 0.9f;
+                if (p.dead) v = 0.02f;
+                m_flux[i * kFluxSamples + m_fluxHead] = std::clamp(v, 0.0f, 1.0f);
+            }
+        }
+    }
     m_uiClock += dt;
 
     const float twoPi = 6.2831853f;
@@ -3449,6 +3559,110 @@ bool Rifthub::updateConsole(x3::ui::UiContext& ui, float dt) {
     return engaged;
 }
 
+// ===========================================================================
+// THE OPS STATION (owner, 2026-08-30) — seat FSM, seat camera, analytics.
+// ===========================================================================
+bool Rifthub::opsInRange(const x3::phys::Vec3& eye, float radiusM) const {
+    if (!m_built) return false;
+    const float dx = eye.x - m_opsSeat.x, dz = eye.z - m_opsSeat.z;
+    return dx * dx + dz * dz <= radiusM * radiusM;
+}
+
+void Rifthub::opsEye(float outPos[3], float& outYaw, float& outPitch) const {
+    // Seated eye: over the chair, pulled slightly back from the desk glass,
+    // aimed across the desk at the gate ring (the desk faces +Z, hub-north).
+    outPos[0] = m_opsSeat.x;
+    outPos[1] = m_opsSeat.y + 1.24f;
+    outPos[2] = m_opsSeat.z - 0.10f;
+    const float dx = m_opsDesk.x - outPos[0];
+    const float dz = (m_opsDesk.z + 0.6f) - outPos[2];
+    outYaw   = std::atan2(dz, dx);
+    outPitch = -0.10f;   // a hair down onto the glass
+}
+
+float Rifthub::fluxSample(uint32_t portalIdx, uint32_t sampleIdx) const {
+    if (m_flux.empty() || portalIdx >= m_portals.size()) return 0.0f;
+    return m_flux[portalIdx * kFluxSamples + (sampleIdx % kFluxSamples)];
+}
+
+void Rifthub::updateOps(x3::ui::UiContext& ui, float dt) {
+    if (!m_opsSeated || m_portals.empty()) return;
+    m_uiClock += dt;
+
+    // The surface: a dark glass sheet across the lower 46% of the frame — the
+    // seated camera looks over it at the real ring, so the analytics never
+    // hide the machines they describe.
+    const float W = (float)ui.screenW(), H = (float)ui.screenH();
+    const float px = W * 0.045f, pw = W * 0.91f;
+    const float py = H * 0.52f,  ph = H * 0.44f;
+    const float glass[4] = { 0.015f, 0.035f, 0.045f, 0.90f };
+    const float hair[4]  = { 0.10f, 0.55f, 0.60f, 0.55f };
+    const float txt[4]   = { 0.62f, 0.92f, 0.95f, 1.0f };
+    const float dim[4]   = { 0.35f, 0.55f, 0.58f, 1.0f };
+    const float bad[4]   = { 0.95f, 0.35f, 0.25f, 1.0f };
+    const float ok[4]    = { 0.35f, 0.95f, 0.55f, 1.0f };
+    ui.quad(px, py, pw, ph, glass);
+    ui.quad(px, py, pw, 2.0f, hair);
+    ui.text("RIFT OPERATIONS — GATE ANALYTICS", px + 14.0f, py + 10.0f, 17.0f, txt);
+    ui.text("select gate: click (TAB+ENTER)    [E] stand up",
+            px + pw - 340.0f, py + 12.0f, 12.0f, dim);
+
+    // LEFT: one status row per gate — real BUTTONS (click / TAB+ENTER selects).
+    // Name from the SAME resolver the hanging glass uses; health condensed to a
+    // word + a stability percentage read straight off the live flux lane
+    // (mean of the last 30 samples).
+    const float rowX = px + 14.0f, rowW = pw * 0.36f;
+    float rowY = py + 40.0f;
+    for (int i = 0; i < (int)m_portals.size(); ++i) {
+        const RiftPortal& p = m_portals[(size_t)i];
+        float mean = 0.0f;
+        for (uint32_t s = 0; s < 30u; ++s)
+            mean += fluxSample((uint32_t)i, m_fluxHead + kFluxSamples - s);
+        mean /= 30.0f;
+        const bool hot = p.kawoosh > 0.0f || p.snarl > 0.0f || p.implode > 0.0f;
+        char row[96];
+        std::snprintf(row, sizeof(row), "G%d  %-14s %s %3d%%",
+                      i + 1, riftDestName(p.destination).c_str(),
+                      p.dead ? "DOWN" : (hot ? "SURGE" : "STABLE"),
+                      (int)std::lround(mean * 100.0f));
+        if (i == m_opsSel) {
+            const float sel[4] = { 0.08f, 0.22f, 0.26f, 0.9f };
+            ui.quad(rowX - 6.0f, rowY - 3.0f, rowW, 21.0f, sel);
+        }
+        if (ui.button(row, rowX, rowY - 3.0f, rowW - 8.0f, 21.0f))
+            m_opsSel = i;
+        (void)bad; (void)txt;
+        rowY += 22.0f;
+    }
+
+    // RIGHT: the selected gate, deep — the readout builder's OWN lines (one
+    // truth with the hanging glass) + the live flux waveform.
+    const float dx0 = px + pw * 0.42f, dw = pw * 0.55f;
+    float dy = py + 40.0f;
+    ui.text(riftDestName(m_portals[(size_t)m_opsSel].destination).c_str(),
+            dx0, dy, 16.0f, txt);
+    dy += 26.0f;
+    for (const std::string& line : consoleReadout((uint32_t)m_opsSel)) {
+        ui.text(line.c_str(), dx0, dy, 12.0f, dim);
+        dy += 17.0f;
+        if (dy > py + ph - 96.0f) break;   // leave the waveform its band
+    }
+    // Waveform: 96 bars, oldest -> newest left to right, head marked.
+    const float wy = py + ph - 84.0f, wh = 64.0f;
+    const float bw = dw / (float)kFluxSamples;
+    ui.quad(dx0, wy, dw, wh, glass);
+    ui.quad(dx0, wy + wh, dw, 1.0f, hair);
+    for (uint32_t s = 0; s < kFluxSamples; ++s) {
+        const uint32_t idx = (m_fluxHead + 1u + s) % kFluxSamples;
+        const float v = fluxSample((uint32_t)m_opsSel, idx);
+        const float bh = std::max(1.5f, v * wh);
+        const bool newest = (idx == m_fluxHead);
+        ui.quad(dx0 + (float)s * bw, wy + wh - bh, std::max(1.0f, bw - 1.0f), bh,
+                newest ? ok : hair);
+    }
+    ui.text("FLUX  (live, 3.2 s window)", dx0, wy - 16.0f, 11.0f, dim);
+}
+
 float Rifthub::timeScale() const {
     if (m_temporal <= 0.0f) return 1.0f;
     // TEMPORAL RIFT: deep slow-motion with a STUTTER — time does not merely slow, it
@@ -4338,6 +4552,51 @@ bool runRifthubSelfTest() {
                                                   prompt, 6.0f);
             rhCheck(got && prompt.find("The City") != std::string::npos,
                     "T30 the HUD prompt names the gate's CURRENT destination");
+        }
+
+        // T31 — THE OPS STATION stands inside the shell, seats, and its flux
+        //       telemetry LIVES. Containment: the seat is within the hub floor
+        //       (|local| < kHubHalfM). FSM: in-range at the chair, out of range
+        //       at the ring center; sit/stand round-trips. Telemetry: a second
+        //       of tick() advances the ring head and the selected gate's lane
+        //       holds real (non-constant) samples; a KILLED gate flatlines.
+        {
+            const auto seatEyeProbe = [&]() {
+                float sp[3]; float yy = 0, pp = 0;
+                hub2.opsEye(sp, yy, pp);
+                return x3::phys::Vec3{ sp[0], sp[1], sp[2] };
+            };
+            const x3::phys::Vec3 se = seatEyeProbe();
+            const bool contained =
+                std::fabs(se.x - hub2.origin().x) < Rifthub::kHubHalfM &&
+                std::fabs(se.z - hub2.origin().z) < Rifthub::kHubHalfM;
+            rhCheck(contained, "T31a ops seat is INSIDE the hub shell (containment)");
+            rhCheck(hub2.opsInRange({ se.x, se.y, se.z }) &&
+                    !hub2.opsInRange({ hub2.origin().x, se.y, hub2.origin().z }),
+                    "T31b ops [E] range: true at the chair, false at ring center");
+            rhCheck(!hub2.opsSeated(), "T31c not seated at boot");
+            hub2.sitOps();
+            rhCheck(hub2.opsSeated(), "T31d sitOps seats");
+            const uint32_t h0 = hub2.fluxHead();
+            for (int i = 0; i < 60; ++i) hub2.tick(1.0f / 60.0f, sc2);
+            rhCheck(hub2.fluxHead() != h0, "T31e flux ring advances under tick()");
+            // Earlier Ts KILL gates (implosion consequences) and a dead gate
+            // correctly FLATLINES — so assert the waveform on a LIVING gate.
+            int live = -1;
+            for (uint32_t gi = 0; gi < hub2.portalCount(); ++gi)
+                if (!hub2.portal(gi).dead) { live = (int)gi; break; }
+            float mn = 1e9f, mx = -1e9f;
+            if (live >= 0) {
+                for (uint32_t s = 0; s < Rifthub::kFluxSamples; ++s) {
+                    const float v = hub2.fluxSample((uint32_t)live, s);
+                    mn = std::min(mn, v); mx = std::max(mx, v);
+                }
+            }
+            rhCheck(live >= 0 && mx > mn + 0.01f,
+                    "T31f a LIVING gate's flux lane carries a live waveform "
+                    "(dead gates flatline by design)");
+            hub2.standOps();
+            rhCheck(!hub2.opsSeated(), "T31g standOps stands");
         }
 
         depths.shutdown(dev2);
