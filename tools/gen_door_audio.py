@@ -27,6 +27,17 @@ rng = random.Random(4790)   # the rift stop's own code, for determinism
 
 
 def write_wav(path, samples):
+    # ANTI-SLOP PASS 5 (numeric QA receipt): every file gets boundary fades
+    # (3 ms in / 8 ms out — a sample cut mid-wave is an audible CLICK) and a
+    # 0.90 normalize (two raw sweeps peaked at exactly 1.00 = clipping).
+    samples = list(samples)
+    fi, fo = int(0.003 * SR), int(0.008 * SR)
+    for i in range(min(fi, len(samples))):
+        samples[i] *= i / fi
+    for i in range(min(fo, len(samples))):
+        samples[-1 - i] *= i / fo
+    peak = max(1e-6, max(abs(s) for s in samples))
+    samples = [s * 0.90 / peak for s in samples]
     os.makedirs(os.path.dirname(path), exist_ok=True)
     data = b''.join(struct.pack('<h', max(-32767, min(32767, int(s * 32767))))
                     for s in samples)

@@ -2135,6 +2135,23 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
                     device->endFrame(f);
                 }
                 const bool wrote = device->captureFrame(outPath.c_str());
+                // Capture ANCHOR (the traffic lane's law: derive diagnostics from
+                // the data, never eyeball) — the shot's own geometry, so a defect
+                // in the image can be tied to numbers without a debugger.
+                {
+                    const uint32_t rBelow = dfloor.roomAt(
+                        d.closedPos.x, d.closedPos.y - d.height * 0.5f - 0.3f, d.closedPos.z);
+                    const float roomFloorY = (rBelow != x3::game::kNoRoom)
+                        ? dfloor.rooms[rBelow].y0() : -999.0f;
+                    char an[240];
+                    std::snprintf(an, sizeof(an),
+                        "  [door-anchor] %s model=%u ctr=(%.2f,%.2f,%.2f) h=%.2f halfW=%.2f "
+                        "slabBottom=%.2f roomFloorY=%.2f gapBelow=%.2f",
+                        what, d.modelIdx, d.closedPos.x, d.closedPos.y, d.closedPos.z,
+                        d.height, d.halfWidth, d.closedPos.y - d.height * 0.5f, roomFloorY,
+                        d.closedPos.y - d.height * 0.5f - roomFloorY);
+                    x3::logInfo(an);
+                }
                 x3::logInfo(std::string(wrote ? "  wrote " : "  FAILED ") + outPath +
                             std::string(" (") + what + ")");
                 return wrote;

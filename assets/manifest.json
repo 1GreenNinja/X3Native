@@ -7,129 +7,129 @@
   "assets": [
     {
       "repo_path": "assets/audio/doors/a_close.wav",
-      "sha256": "9de3b21eb135e2e8b3ad0d24e3fe5aae4bb64071d0cdd685dd7cb5f0ac3d7267",
+      "sha256": "8a0ed20191ef4c87fded733d8efb02cc8ca77a651802e2b52918b02c8b572fd6",
       "size": 71486,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/a_locked.wav",
-      "sha256": "9b742698e9eee5048583c50512c329608d5dce5ee26ad5ce5447d14227decf4b",
+      "sha256": "7e8b752f30fdb3beebeef1e84426b802e1f1aff6aace598d4026c087b9affd26",
       "size": 19448,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/a_open.wav",
-      "sha256": "94b5063a6ebfa91968877ec403ff99467feb3b47bda9246e0a8c885dda3617d6",
+      "sha256": "5bbe30b4ca81af72f1d85fad4637f76530450cbc3d5a68f833c2af75a9df929c",
       "size": 71486,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/a_servo.wav",
-      "sha256": "b3dc18e86dbe48e26e62d71aa9d842afd1bde928c843f8c00d5449b44e4eee52",
+      "sha256": "9f307f88dc3e3aff0f4afcb80536e609089742ce7be6bfa032747444ca63c2a6",
       "size": 48554,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/a_thunk.wav",
-      "sha256": "3c57adb752c98ae03bf815265c6b1ae89bca0fc3398284319014c060adbe707e",
+      "sha256": "bf3ee43829c152af2dfcc16c4ea4257411799b2e30466629d205e66d2c09a304",
       "size": 10628,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/b_close.wav",
-      "sha256": "8353154f7fe734cac2a2a45a2b52413507dc8b41faaef0138fdc31ab20d5ffe9",
+      "sha256": "0effce86453214024e25a6ffc49e1f0d54cc22a6f6dd40476447ac2b1e846743",
       "size": 128816,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/b_locked.wav",
-      "sha256": "7e7335b44f4ebed2b3b308df29b4fedca48939f7f49edb430ed73c51a0fa2e3c",
+      "sha256": "eed77be85057d8949decce205b9bb5b68fac99c6b90a08fdcfb5fdd5b410c901",
       "size": 59138,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/b_open.wav",
-      "sha256": "22a58aa3d8e51b95668bb823f3292a1987e337e5712140507da2c2478b6b9039",
+      "sha256": "b89e621303609a77ff8492dfa45d69df8ca1b0fa06a29f7eebaf0c7b902cfb21",
       "size": 130580,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/b_servo.wav",
-      "sha256": "78ce00cabd983cc86ea63c57e95d549ca301bfd97844271f3f28a50572658292",
+      "sha256": "19775d2e792420aca4ee721d0a2e8620a75217dd046fa36d09c34a33f74b9c28",
       "size": 70604,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/b_thunk.wav",
-      "sha256": "d2ce82ece3cb07eac3961b2e6761f8d1afaaae3512af4f81fe9976d53bbecd31",
+      "sha256": "8d78e83a48e0278b2302e406a2d48bcaaa0c3185c3d731aa44ec199d841e931c",
       "size": 56492,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/door_close.wav",
       "sha256": "6d0b2d55ae67454be148703e0bd2b207f82e79a3aee5d8b0bcf4660dd5a92985",
       "size": 122212,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/door_locked.wav",
       "sha256": "8719845b866c48901595af5c3d3c83f92afbcb7992d11da27c03bbcc6e169837",
       "size": 45064,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/door_open.wav",
       "sha256": "5d9f41801868b4ae62c269d368e2acb8bd4819e2791ea3ba0aebe2a47a9421f2",
       "size": 193690,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/s_close.wav",
-      "sha256": "8a0148708c56f92cd0fa1ca49b3b723ae3c69351b5518fbe3a98c7b791c5f880",
+      "sha256": "4919f5755420d04a59af98dca4e2b586ab490b0b02b2b7a8ce4b9aaece05f62d",
       "size": 72368,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/s_locked.wav",
-      "sha256": "230868ac93e69a79dfd795d9bedebacfa45cc86a14dcc27689769925c35e0b24",
+      "sha256": "c15905803957dcaaa7498d8cc9eb668c26ec14ff66791cd0572070ae8a739907",
       "size": 30032,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/s_open.wav",
-      "sha256": "282dd24fc48edc6eab9858cbb1fe9ecfff509c90557145527173ebaf4d1c3833",
+      "sha256": "c0fd983a7590dae21044cb80a9dc38e1932231e38ff78a605bc9acbc02a75287",
       "size": 75014,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/s_servo.wav",
-      "sha256": "80a426f21438871180d38d346594004ddd7bccdc221523811796d52f6be840c7",
+      "sha256": "0ee030e656dfcdebc30a523b1315a3321763444d2f672ce96aeca863956be42b",
       "size": 52964,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/doors/s_thunk.wav",
-      "sha256": "0f24692c0367316a2a411bebc114eb185afbd1a7bd9cac6657c2b7e511d5d99b",
+      "sha256": "4fcb3d2acf896a7059ba77b0be396cdb3ebdeeb0d7186e2fb494eef8fb12eefc",
       "size": 5336,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/interact/card_accept.wav",
-      "sha256": "a86cc8aa546c5e1a28fe5e6ef79f02a36d1853fce1afe6540d7db4d806b8d03f",
+      "sha256": "cd5b694f3853df9dc42508a3cece7226d3dcbc815af7e34e82fc500ab11ccded",
       "size": 15920,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/interact/card_deny.wav",
-      "sha256": "47522f701fb004cd81679560faf01a0e2b62829daaa5f7580fb7f7299de63881",
+      "sha256": "33c23540f62b764f8a08e5a5760c124fa851d3f3a4d471ed9e0776a06680c64e",
       "size": 22976,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/interact/card_swipe.wav",
-      "sha256": "ba3190d29014a3d3ebeff96251a6d24167c975a6053055857e85f852fba405f8",
+      "sha256": "8a257f75ebba111c4f3045b9d61c0efed4b133e3374e7245610da3089eefd389",
       "size": 11510,
-      "source_note": "crisp per-class door sound families + card-access voice (gen_door_audio.py)"
+      "source_note": "door WAVs re-baked: boundary fades + normalize (anti-slop pass 5, 13 flagged -> 0)"
     },
     {
       "repo_path": "assets/audio/vehicles/engine_bank/bov_psssht.wav",

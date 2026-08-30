@@ -628,7 +628,13 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
         // header that clears the lintel — LAW 1's "frame overlaps the cut by its
         // bezel", no floating, no guesswork. The frame is a rectilinear trim ring,
         // so per-axis scale reads correctly.
-        if (d.withFrame && m_frameOk && !d.floorHatch) {
+        // ANTI-SLOP PASS 3 (owner 2026-08-30): door_a ONLY. Registry models
+        // carry their OWN frames (slider's door_frame node; the bulkhead IS a
+        // framed wall-door piece) — drawing the showroom frame on top of them
+        // doubled the trim: locked_red.png's mystery CURB at the bulkhead's
+        // foot and its proud-of-the-wall look were this frame's scaled sill
+        // and jambs wrapped around a door that never asked for them.
+        if (d.withFrame && m_frameOk && !d.floorHatch && d.modelIdx == 0) {
             const float frBezel = 0.35f;                                   // trim past each jamb
             const float sRun = (d.halfWidth * 2.0f + frBezel * 2.0f) / kFrameGlbW;
             const float sYf  = (d.height + 0.30f) / kFrameGlbH;            // + header over the lintel
@@ -740,7 +746,34 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
             drawSet(ms.fixedDr, nullptr);
             drawSet(ms.panelADr, dA);
             drawSet(ms.panelBDr, dB);
-            continue;   // door_a leaf / backing slab / signage do not apply
+            // ANTI-SLOP PASS 2 (owner 2026-08-30): registry doors used to skip
+            // the signage band entirely — a LOCKED bulkhead showed no red at
+            // all (shots_doors locked_red.png: green screens on a locked door,
+            // the tell simply missing). The lock/status band is not door_a
+            // dressing, it is the LOCK SYSTEM's readout — every class gets it.
+            // Drawn over the head on the STATIC frame (registry panels part
+            // sideways; a leaf-riding band would split with them).
+            if (m_fillMesh.valid()) {
+                const float* sc = d.locked ? kLockedSign : doorStyleFor(d.floorStyle).sign;
+                const float bandW = d.halfWidth * 2.0f * 0.66f;
+                const float bandH = 0.09f, bandT = 0.02f, bandOff = 0.20f;
+                const float bandY = doorFloorY + d.height - 0.16f;
+                const float bsx = (d.axis == 0) ? bandT : bandW;
+                const float bsz = (d.axis == 0) ? bandW : bandT;
+                const float bEm = d.locked ? 0.50f : 0.85f;  // pass 7: red at 0.85 + autoexposure = SALMON (ACES shoulder); deeper drive keeps the hue
+                const float bandEmis[4] = { sc[0]*bEm, sc[1]*bEm, sc[2]*bEm, 1.0f };
+                const float bandAlb[4]  = { sc[0]*0.02f, sc[1]*0.02f, sc[2]*0.02f, 1.0f };  // near-black body: the EMISSIVE hue carries (pass 6: 0.10 lit by practicals washed red to salmon)
+                for (int side = -1; side <= 1; side += 2) {
+                    const float ox = (d.axis == 0) ? bandOff * (float)side : 0.0f;
+                    const float oz = (d.axis == 0) ? 0.0f : bandOff * (float)side;
+                    float bm[16] = { bsx, 0, 0, 0,  0, bandH, 0, 0,  0, 0, bsz, 0,
+                                     dwx + ox, bandY, dwz + oz, 1.0f };
+                    device.drawMeshPBR(frame, m_fillMesh,
+                                       x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                       m_fillMr, bandAlb, bandEmis, bm);
+                }
+            }
+            continue;   // door_a leaf / backing slab do not apply
         }
         if (!m_meshOk) continue;   // door_a leaf missing: graybox box renders instead
 
@@ -870,8 +903,9 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
             // 2.2 and the band clipped to WHITE in the capture — the hue, which is
             // the entire point of a per-floor tell, was destroyed by the overdrive.
             // 0.85 keeps it clearly a lit strip while its colour survives tonemap.
-            const float bandEmis[4] = { sc[0] * 0.85f, sc[1] * 0.85f, sc[2] * 0.85f, 1.0f };
-            const float bandAlb[4]  = { sc[0] * 0.10f, sc[1] * 0.10f, sc[2] * 0.10f, 1.0f };
+            const float bEm = d.locked ? 0.50f : 0.85f;  // pass 7: locked red must stay RED under any exposure
+            const float bandEmis[4] = { sc[0]*bEm, sc[1]*bEm, sc[2]*bEm, 1.0f };
+            const float bandAlb[4]  = { sc[0] * 0.02f, sc[1] * 0.02f, sc[2] * 0.02f, 1.0f };  // near-black body: the EMISSIVE hue carries (pass 6)
             for (int side = -1; side <= 1; side += 2) {   // readable from BOTH rooms
                 const float ox = (d.axis == 0) ? bandOff * (float)side : 0.0f;
                 const float oz = (d.axis == 0) ? 0.0f : bandOff * (float)side;
