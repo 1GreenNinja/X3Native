@@ -89,8 +89,58 @@ public:
 
     x3::phys::IVehicleController* controller() const { return m_ctl.get(); }
     x3::phys::BodyId chassis() const { return m_chassis; }
-    // World position of the chassis (for chasing the camera).
+    // World position of the chassis (for chasing the camera). PHYSICS TRUTH:
+    // the post-step state, which only changes on a fixed sim tick. Gameplay
+    // (proximity/enter/exit/audio/tests) reads this. RENDER + the chase camera
+    // read renderChassisPos() instead — see FIXED-STEP RENDER INTERPOLATION.
     void chassisPos(float out[3]) const;
+
+    // =======================================================================
+    // FIXED-STEP RENDER INTERPOLATION (fix/car-phasing).
+    //
+    // THE DEFECT. The sim advances in whole x3::net::kSimDt (1/60) steps while
+    // rendering is uncapped. render() used to read getBodyPosition/Rotation and
+    // wheelState LIVE, i.e. the post-step state — so at 165 Hz the car's
+    // transform is IDENTICAL for two or three consecutive frames and then jumps
+    // a whole tick's worth of travel. At 100 mph that jump is ~0.75 m. The
+    // chase camera is bolted to the same post-step position, so the car itself
+    // stays pinned on screen and the WORLD arrives in 60 Hz lurches while the
+    // display runs at 165 — the body visibly sitting on a different beat from
+    // everything around it. That is what "phasing out of phase" describes.
+    //
+    // THE FIX. postStep() snapshots the chassis pose and all four wheel poses
+    // into a two-deep history (prev = the state before the step just run, cur =
+    // the state after it). The host feeds the accumulator's fractional
+    // remainder via setRenderAlpha(); render() and the chase camera then
+    // present lerp(prev, cur, alpha) instead of cur.
+    //
+    // INTERPOLATE, NEVER EXTRAPOLATE: alpha is clamped to [0,1] and both
+    // endpoints are states the sim actually produced, so a collision can never
+    // be overshot. The cost is the standard Fiedler presentation delay of up to
+    // one sim tick. alpha == 0 returns prev BIT-IDENTICALLY and alpha == 1
+    // returns cur BIT-IDENTICALLY (the lerp is branch-selected on the
+    // endpoints, so there is no float drift at either end) — when the render
+    // rate equals the sim rate the remainder is identically 0 and the presented
+    // stream is exactly today's stream, one frame later.
+    // =======================================================================
+    // Fractional remainder of the sim accumulator, [0,1]. 0 = the state before
+    // the last step, 1 = the state after it. Clamped internally.
+    void setRenderAlpha(float a);
+    float renderAlpha() const { return m_renderAlpha; }
+    // The INTERPOLATED chassis position — what render() draws at and what the
+    // chase camera must follow so the car and the camera stay locked together.
+    void renderChassisPos(float out[3]) const;
+    // The INTERPOLATED chassis orientation (quaternion xyzw).
+    void renderChassisRot(float out[4]) const;
+    // The INTERPOLATED world pose of one wheel (0=FL 1=FR 2=RL 3=RR), in the
+    // SAME baked-scale form wheelState() returns. Interpolating the wheels with
+    // the body is not optional: leave them on the post-step pose and they
+    // visibly detach from an interpolated hull. False for a slot with no state.
+    bool renderWheelPose(uint32_t slot, x3::phys::WheelState& out) const;
+    // Drop the history and re-prime from the live body. Call after ANY
+    // discontinuity (spawn, teleport, respawn) or the car will smoothly slide
+    // across the jump instead of appearing at the far end of it.
+    void resetRenderInterp();
     // Live pose of one wheel (0=FL 1=FR 2=RL 3=RR). Exposed so the roster
     // self-test can read back the stations the rig ACTUALLY built instead of
     // re-deriving them from the same literals the builder used.
@@ -504,6 +554,33 @@ private:
         float squashVel   = 0.0f;  // critically-damped spring "velocity" term
     };
     WheelSquash m_squash[4];
+
+    // ---- FIXED-STEP RENDER INTERPOLATION state (see the public block above).
+    // A wheel's world matrix carries a BAKED non-uniform scale (col0 = right*r,
+    // col1 = up*halfWidth, col2 = forward*r), and at 60 mph a wheel turns ~73
+    // degrees per tick — component-wise lerping that matrix would shrink the
+    // basis by cos(36 deg) and visibly deflate the tire mid-blend. So each pose
+    // is stored DECOMPOSED (unit-quaternion basis + translation + the three
+    // column lengths); the quaternion is nlerp'd on the shortest arc and the
+    // lengths/translation lerp linearly, then the matrix is recomposed. That is
+    // exact for translation and scale and visually exact for the spin.
+    struct PoseSnap {
+        float pos[3] = { 0, 0, 0 };
+        float rot[4] = { 0, 0, 0, 1 };   // unit quaternion xyzw
+        float scl[3] = { 1, 1, 1 };      // baked column lengths (wheels only;
+                                         // scl[0] carries the sign of a mirrored basis)
+        float radius = 0.35f;            // wheel scalars, carried so an
+        float width  = 0.25f;            // interpolated pose is a complete
+        float suspLen = 0.0f;            // WheelState the render path can use
+        bool  hasContact = false;
+        bool  valid  = false;
+    };
+    PoseSnap m_bodyPrev, m_bodyCur;
+    PoseSnap m_wheelPrev[4], m_wheelCur[4];
+    float m_renderAlpha  = 1.0f;   // 1 => present `cur` (pre-fix behaviour)
+    bool  m_interpPrimed = false;  // false until the first postStep after build
+    void  captureRenderInterp();   // called at the END of postStep()
+
     float m_tireSquash = 1.0f;   // `tire_squash` cvar multiplier, 0..1 (default 1)
     void  updateTireSquash(float dt);  // called from postStep
     // Per-wheel squash factors this frame: outSquashY = radial shrink [0,1)

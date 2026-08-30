@@ -378,7 +378,14 @@ bool WorldCars::inDeepWater() const {
 // ===========================================================================
 void WorldCars::driverCamera(float yaw, float pitch, float& x, float& y, float& z) const {
     float cp[3] = { 0, 0, 0 };
-    if (m_driveBuilt) m_drive.chassisPos(cp);
+    // The chase camera follows the INTERPOLATED hull, not the raw post-step
+    // body (fix/car-phasing). It must be the same pose render() draws: the
+    // camera is rigidly bolted to the car, so if the two disagree by even a
+    // sub-step the car swims inside its own framing. Following the interpolated
+    // pose is also what makes the WORLD glide instead of arriving in 60 Hz
+    // lurches — that lurch, with the car pinned motionless against it, is the
+    // "phasing out of phase" Tim reported at speed.
+    if (m_driveBuilt) m_drive.renderChassisPos(cp);
     const float dist = 10.0f, height = 3.5f;   // host_drive's chase framing
     x = cp[0] - std::cos(pitch) * std::cos(yaw) * dist;
     y = cp[1] + height - std::sin(pitch) * dist;

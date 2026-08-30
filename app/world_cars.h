@@ -128,6 +128,12 @@ public:
     void driveInput(const x3::phys::VehicleInput& in) { if (m_driveBuilt) m_drive.setInput(in); }
     void preStep(float dt)  { if (m_driveBuilt) m_drive.preStep(dt); }
     void postStep(float dt) { if (m_driveBuilt) m_drive.postStep(dt); }
+    // FIXED-STEP RENDER INTERPOLATION (fix/car-phasing): the host feeds the sim
+    // accumulator's fractional remainder ONCE per RENDER frame — not per sim
+    // step — and both the chase camera and the car's draw present
+    // lerp(pre-step, post-step, alpha). See DriveDemo's vehicle.h block.
+    void setRenderAlpha(float a) { if (m_driveBuilt) m_drive.setRenderAlpha(a); }
+    float renderAlpha() const { return m_driveBuilt ? m_drive.renderAlpha() : 1.0f; }
     // PERFORMANCE PARTS -> the CANON car. The perf shop (app/perfshop.cpp) only
     // ever reached the --world drive DriveDemo, so every installed part, the ECU
     // tune and the whole knock model had ZERO effect on the car actually driven

@@ -10300,6 +10300,15 @@ int runDefaultHost(HostContext& hc) {
                 scene.update(*physics);
             }
         }
+        // ---- FIXED-STEP RENDER INTERPOLATION (fix/car-phasing) -------------
+        // ONCE per RENDER frame, after the sub-step loop has drained: hand the
+        // car the accumulator's leftover fraction of a tick. render() and the
+        // chase camera then present lerp(pre-step, post-step, alpha) instead of
+        // the raw post-step pose — which is what stopped the body advancing in
+        // 60 Hz lurches under a 165 Hz display. When the render rate equals the
+        // sim rate the remainder is identically 0 and every lerp returns its
+        // endpoint bit-for-bit, so this is a no-op at 60 Hz. See vehicle.h.
+        worldCars.setRenderAlpha(simAcc.accum / x3::net::kSimDt);
         // Camera readback once per render frame from the post-sim state.
         if (!noclip) {
             player.camera(camX, camY, camZ, camYaw, camPitch);

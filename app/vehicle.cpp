@@ -7,11 +7,14 @@
 #include "terrain.h"   // THE CONTACT LAW: wheels never under the height field
 
 #include "engine/core/x3_log.h"
+#include "engine/net/SimClock.h"   // kSimDt + SimAccumulator: the render-interp gate
+                                   // samples the car on the HOST's exact cadence
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace x3::game {
 
@@ -312,6 +315,9 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     vd.groundLayer = x3::phys::Layer::Dynamic;
     m_ctl.reset(x3::phys::createWheeledVehicle(physics, vd));
     if (!m_ctl) { physics.removeBody(m_chassis); m_chassis = {}; return false; }
+    // Prime the render-interpolation history (prev == cur) so the very first
+    // frame after a spawn draws the car AT the spawn instead of sliding into it.
+    resetRenderInterp();
     return true;
 }
 
@@ -739,6 +745,181 @@ void DriveDemo::postStep(float dt) {
             if (lv[1] < 0.0f) { lv[1] = 0.0f; m_physics->setBodyLinearVelocity(m_chassis, lv); }
         }
     }
+    // LAST in postStep, deliberately: the snapshot must record the FINAL
+    // post-step pose, after the contact law has had its say. Snapshotting
+    // earlier would hand render() a pose the sim then moved out from under it.
+    captureRenderInterp();
+}
+
+// ===========================================================================
+// FIXED-STEP RENDER INTERPOLATION — see the vehicle.h block for the defect and
+// the argument. Everything below is render-only: nothing here reaches Jolt, and
+// the physics state the sim reads is untouched.
+// ===========================================================================
+namespace {
+
+// Unit quaternion (xyzw) from an ORTHONORMAL column-major basis. Shepperd's
+// method — the branch on the largest diagonal term keeps it conditioned when
+// the trace is near -1 (a wheel half a turn round is exactly that case).
+void quatFromBasis(const float c0[3], const float c1[3], const float c2[3], float q[4]) {
+    // M(row, col): column `col` is c<col>, so M(r,0)=c0[r], M(r,1)=c1[r], M(r,2)=c2[r].
+    const float m00 = c0[0], m10 = c0[1], m20 = c0[2];
+    const float m01 = c1[0], m11 = c1[1], m21 = c1[2];
+    const float m02 = c2[0], m12 = c2[1], m22 = c2[2];
+    const float tr = m00 + m11 + m22;
+    if (tr > 0.0f) {
+        const float s = std::sqrt(tr + 1.0f) * 2.0f;
+        q[3] = 0.25f * s;
+        q[0] = (m21 - m12) / s;
+        q[1] = (m02 - m20) / s;
+        q[2] = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        q[3] = (m21 - m12) / s;
+        q[0] = 0.25f * s;
+        q[1] = (m01 + m10) / s;
+        q[2] = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        q[3] = (m02 - m20) / s;
+        q[0] = (m01 + m10) / s;
+        q[1] = 0.25f * s;
+        q[2] = (m12 + m21) / s;
+    } else {
+        const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        q[3] = (m10 - m01) / s;
+        q[0] = (m02 + m20) / s;
+        q[1] = (m12 + m21) / s;
+        q[2] = 0.25f * s;
+    }
+}
+
+// Shortest-arc nlerp. EXACT at both endpoints: t <= 0 copies a and t >= 1 copies
+// b bit-for-bit, so an un-interpolated frame is byte-identical to the pre-fix
+// path (this is what makes the fix a no-op when render rate == sim rate).
+void nlerpQuat(const float a[4], const float b[4], float t, float out[4]) {
+    if (t <= 0.0f) { out[0]=a[0]; out[1]=a[1]; out[2]=a[2]; out[3]=a[3]; return; }
+    if (t >= 1.0f) { out[0]=b[0]; out[1]=b[1]; out[2]=b[2]; out[3]=b[3]; return; }
+    const float d = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
+    const float s = (d < 0.0f) ? -1.0f : 1.0f;   // shortest arc
+    const float u = 1.0f - t;
+    float o[4] = { u*a[0] + t*s*b[0], u*a[1] + t*s*b[1],
+                   u*a[2] + t*s*b[2], u*a[3] + t*s*b[3] };
+    const float len = std::sqrt(o[0]*o[0] + o[1]*o[1] + o[2]*o[2] + o[3]*o[3]);
+    if (len > 1e-8f) { const float inv = 1.0f / len;
+        out[0]=o[0]*inv; out[1]=o[1]*inv; out[2]=o[2]*inv; out[3]=o[3]*inv; }
+    else { out[0]=b[0]; out[1]=b[1]; out[2]=b[2]; out[3]=b[3]; }
+}
+
+// Endpoint-exact scalar lerp (same bit-identity contract as nlerpQuat).
+inline float lerpf(float a, float b, float t) {
+    if (t <= 0.0f) return a;
+    if (t >= 1.0f) return b;
+    return a + (b - a) * t;
+}
+
+} // namespace
+
+void DriveDemo::setRenderAlpha(float a) {
+    m_renderAlpha = (a < 0.0f) ? 0.0f : (a > 1.0f ? 1.0f : a);
+}
+
+void DriveDemo::resetRenderInterp() {
+    m_interpPrimed = false;
+    m_bodyPrev = m_bodyCur = PoseSnap{};
+    for (int s = 0; s < 4; ++s) m_wheelPrev[s] = m_wheelCur[s] = PoseSnap{};
+    captureRenderInterp();          // re-prime prev == cur from the live body
+}
+
+void DriveDemo::captureRenderInterp() {
+    if (!m_physics || !m_chassis.valid()) return;
+    // Roll the history forward, then sample the new post-step state.
+    m_bodyPrev = m_bodyCur;
+    for (int s = 0; s < 4; ++s) m_wheelPrev[s] = m_wheelCur[s];
+
+    const x3::phys::Vec3 p = m_physics->getBodyPosition(m_chassis);
+    m_bodyCur.pos[0] = p.x; m_bodyCur.pos[1] = p.y; m_bodyCur.pos[2] = p.z;
+    m_physics->getBodyRotation(m_chassis, m_bodyCur.rot);
+    m_bodyCur.scl[0] = m_bodyCur.scl[1] = m_bodyCur.scl[2] = 1.0f;
+    m_bodyCur.valid = true;
+
+    for (int s = 0; s < 4; ++s) {
+        x3::phys::WheelState ws;
+        if (!m_ctl || !m_ctl->wheelState((uint32_t)s, ws)) { m_wheelCur[s].valid = false; continue; }
+        PoseSnap& w = m_wheelCur[s];
+        w.pos[0] = ws.worldTransform[12];
+        w.pos[1] = ws.worldTransform[13];
+        w.pos[2] = ws.worldTransform[14];
+        // Split the baked column scale off the rotation before extracting the
+        // quaternion — see the vehicle.h note on why a raw component-wise lerp
+        // of this matrix deflates the tire.
+        float c[3][3];
+        for (int k = 0; k < 3; ++k) {
+            const float* col = &ws.worldTransform[k * 4];
+            const float len = std::sqrt(col[0]*col[0] + col[1]*col[1] + col[2]*col[2]);
+            w.scl[k] = len;
+            const float inv = (len > 1e-6f) ? (1.0f / len) : 0.0f;
+            c[k][0] = col[0]*inv; c[k][1] = col[1]*inv; c[k][2] = col[2]*inv;
+        }
+        // A MIRRORED basis (negative determinant — the left-hand wheels are
+        // built by negating an axis) has no quaternion. Fold the mirror into
+        // the stored X scale so recomposition restores it exactly, and extract
+        // the quaternion from the right-handed remainder.
+        const float det =
+            c[0][0]*(c[1][1]*c[2][2] - c[1][2]*c[2][1]) -
+            c[1][0]*(c[0][1]*c[2][2] - c[0][2]*c[2][1]) +
+            c[2][0]*(c[0][1]*c[1][2] - c[0][2]*c[1][1]);
+        if (det < 0.0f) {
+            c[0][0] = -c[0][0]; c[0][1] = -c[0][1]; c[0][2] = -c[0][2];
+            w.scl[0] = -w.scl[0];
+        }
+        quatFromBasis(c[0], c[1], c[2], w.rot);
+        w.radius = ws.radius; w.width = ws.width;
+        w.hasContact = ws.hasContact; w.suspLen = ws.suspensionLength;
+        w.valid = true;
+    }
+
+    if (!m_interpPrimed) {          // first capture after build/reset: no history
+        m_bodyPrev = m_bodyCur;
+        for (int s = 0; s < 4; ++s) m_wheelPrev[s] = m_wheelCur[s];
+        m_interpPrimed = true;
+    }
+}
+
+void DriveDemo::renderChassisPos(float out[3]) const {
+    if (!m_bodyCur.valid) { chassisPos(out); return; }
+    for (int k = 0; k < 3; ++k)
+        out[k] = lerpf(m_bodyPrev.pos[k], m_bodyCur.pos[k], m_renderAlpha);
+}
+
+void DriveDemo::renderChassisRot(float out[4]) const {
+    if (!m_bodyCur.valid) {
+        if (m_physics && m_chassis.valid()) m_physics->getBodyRotation(m_chassis, out);
+        else { out[0]=out[1]=out[2]=0.0f; out[3]=1.0f; }
+        return;
+    }
+    nlerpQuat(m_bodyPrev.rot, m_bodyCur.rot, m_renderAlpha, out);
+}
+
+bool DriveDemo::renderWheelPose(uint32_t slot, x3::phys::WheelState& out) const {
+    if (slot >= 4) return false;
+    const PoseSnap& a = m_wheelPrev[slot];
+    const PoseSnap& b = m_wheelCur[slot];
+    if (!b.valid) return m_ctl && m_ctl->wheelState(slot, out);
+    // A slot with no previous sample (first frame after a reset) presents `cur`.
+    const float t = a.valid ? m_renderAlpha : 1.0f;
+    float pos[3], rot[4], scl[3];
+    for (int k = 0; k < 3; ++k) {
+        pos[k] = lerpf(a.pos[k], b.pos[k], t);
+        scl[k] = lerpf(a.scl[k], b.scl[k], t);
+    }
+    nlerpQuat(a.rot, b.rot, t, rot);
+    composeTRS(pos, rot, scl[0], scl[1], scl[2], out.worldTransform);
+    out.radius = lerpf(a.radius, b.radius, t);
+    out.width  = lerpf(a.width,  b.width,  t);
+    out.suspensionLength = lerpf(a.suspLen, b.suspLen, t);
+    out.hasContact = b.hasContact;   // a boolean has no meaningful in-between
+    return true;
 }
 
 // ===========================================================================
@@ -1167,9 +1348,15 @@ void DriveDemo::chassisPos(float out[3]) const {
 void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     if (!m_device || !m_ctl) return;
 
-    x3::phys::Vec3 p = m_physics->getBodyPosition(m_chassis);
-    float q[4]; m_physics->getBodyRotation(m_chassis, q);
-    float pos[3] = { p.x, p.y, p.z };
+    // FIXED-STEP RENDER INTERPOLATION (fix/car-phasing): the drawn pose is
+    // lerp(pre-step, post-step, accumulator remainder), NOT the raw post-step
+    // state. Reading physics live here is what made the body advance on 60 Hz
+    // lurches while the display ran at 165. The wheels below come from
+    // renderWheelPose() — the SAME alpha — so they stay bolted to this hull.
+    // This is also the only transform the renderer ever sees, so the velocity
+    // pass's prev-model history records interpolated matrices by construction.
+    float pos[3]; renderChassisPos(pos);
+    float q[4];   renderChassisRot(q);
 
     if (m_skinned) {
         // ---- HERO-CAR GLB skin: the body parts ride the sprung chassis (nose
@@ -1189,7 +1376,7 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
         }
         for (int s = 0; s < 4; ++s) {
             x3::phys::WheelState ws;
-            if (!m_ctl->wheelState((uint32_t)s, ws)) continue;
+            if (!renderWheelPose((uint32_t)s, ws)) continue;
             // Strip the baked radius/half-width scale -> the pure wheel POSE.
             float P[16]; std::memcpy(P, ws.worldTransform, sizeof(P));
             for (int c = 0; c < 3; ++c) {
@@ -1229,7 +1416,7 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     const uint32_t n = m_ctl->wheelCount();
     for (uint32_t i = 0; i < n; ++i) {
         x3::phys::WheelState ws;
-        if (!m_ctl->wheelState(i, ws)) continue;
+        if (!renderWheelPose(i, ws)) continue;   // interpolated, same alpha as the hull
         // TIRE SQUASH (render-only; see updateTireSquash/squashFactors). The
         // wheel mesh is a unit Y-cylinder baked into world space by wheelState
         // (col0=right*r, col1=up*halfWidth [the axle], col2=forward*r — see
@@ -1930,6 +2117,215 @@ bool runDriveEnterExitSelfTest() {
             for (size_t j = i + 1; j < nCars; ++j)
                 if (std::strcmp(roster[i].glb, roster[j].glb) == 0) distinct = false;
         check(distinct, "roster: every entry names a DIFFERENT GLB");
+    }
+
+    // =====================================================================
+    // FIXED-STEP RENDER INTERPOLATION — THE PHASING GATE (fix/car-phasing).
+    //
+    // Tim, from live play: the car "looked like it was phasing out of phase"
+    // at high speed. This section is the instrument that makes that visible as
+    // a number instead of an opinion.
+    //
+    // It reproduces the HOST's exact timing — a 165 Hz render loop driving a
+    // 60 Hz sim through the very same x3::net::SimAccumulator main.cpp uses —
+    // and samples the car's position once per RENDER frame on both paths:
+    //
+    //   RAW        chassisPos()        = what render() read before the fix
+    //   INTERP     renderChassisPos()  = what it presents after it
+    //
+    // The signature of the defect is a STAIRCASE: with 60 sim ticks feeding
+    // 165 frames, the raw pose is unchanged on ~64% of frames and then jumps a
+    // whole tick of travel. A correct render path is a RAMP: every frame moves,
+    // and every frame moves by very nearly the same amount.
+    // =====================================================================
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> ip(x3::phys::createPhysicsWorld());
+        bool ipOk = ip && ip->init();
+        check(ipOk, "phasing: interpolation-gate physics world");
+        if (ipOk) {
+            x3::prims::PrimMesh g = x3::prims::makeBox(6000.0f, 0.5f, 6000.0f, 0.0f, -0.5f, 0.0f, 0.02f);
+            ip->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
+                              g.cindex.data(), (uint32_t)g.cindex.size());
+            DriveDemo ic;
+            check(ic.buildPhysics(*ip, 0.0f, 1.2f, 0.0f), "phasing: car built");
+            ic.setTerrainContactLaw(false);   // slab world, not the terrain field
+            ip->optimizeBroadphase();
+
+            const float sdt = x3::net::kSimDt;
+            x3::phys::VehicleInput go{}; go.throttle = 1.0f;
+            // Run out to a steady top-end speed so the per-tick travel is
+            // essentially constant and any staircase is pure timing, not accel.
+            for (int i = 0; i < 900; ++i) {
+                ic.setInput(go); ic.preStep(sdt); ip->step(sdt); ic.postStep(sdt);
+            }
+            const float mph = ic.forwardSpeed() * 2.23694f;
+            check(mph > 60.0f, "phasing: car is at speed for the measurement");
+
+            auto dist3 = [](const float a[3], const float b[3]) {
+                const float dx = a[0]-b[0], dy = a[1]-b[1], dz = a[2]-b[2];
+                return std::sqrt(dx*dx + dy*dy + dz*dz);
+            };
+
+            // ---- 165 Hz render / 60 Hz sim -------------------------------
+            x3::net::SimAccumulator acc;
+            const float rdt = 1.0f / 165.0f;
+            const int   NF  = 330;                 // two seconds of frames
+            // Tracked separately: the HORIZONTAL travel (the direction the world
+            // streams past, i.e. what "phasing" is actually made of) and the
+            // VERTICAL bounce (real suspension motion, which linear
+            // interpolation between tick samples reproduces as a polyline with
+            // genuine kinks at the ticks — a residual the fix cannot and should
+            // not remove, only the sim rate can).
+            std::vector<float> rawD, intD, rawH, intH;
+            float rawPrev[3], intPrev[3];
+            ic.setRenderAlpha(1.0f);
+            ic.chassisPos(rawPrev); ic.renderChassisPos(intPrev);
+            // Wheel attachment: the interpolated hub must keep the SAME distance
+            // to the interpolated hull that the post-step hub keeps to the
+            // post-step hull. `broken` is the negative control — what the drift
+            // would have been had the wheels been left on the post-step pose
+            // while the hull interpolated (the "detached wheels" failure mode).
+            float attachDrift = 0.0f, brokenDrift = 0.0f;
+            // WARM-UP (same idea as the motion rig's `settle`): the seed samples
+            // above were taken at alpha = 1, but the loop's first frame presents a
+            // mid-tick alpha — so frame 0's delta measures the sampler starting
+            // up, not the render path. Walk a few frames before recording.
+            const int WARM = 8;
+            for (int f = 0; f < NF + WARM; ++f) {
+                const uint32_t n = acc.advance(rdt);
+                for (uint32_t s = 0; s < n; ++s) {
+                    ic.setInput(go); ic.preStep(sdt); ip->step(sdt); ic.postStep(sdt);
+                }
+                ic.setRenderAlpha(acc.accum / sdt);
+                float rp[3]; ic.chassisPos(rp);
+                float xp[3]; ic.renderChassisPos(xp);
+                const bool rec = (f >= WARM);
+                if (rec) {
+                rawD.push_back(dist3(rp, rawPrev));
+                intD.push_back(dist3(xp, intPrev));
+                rawH.push_back(std::sqrt((rp[0]-rawPrev[0])*(rp[0]-rawPrev[0]) +
+                                         (rp[2]-rawPrev[2])*(rp[2]-rawPrev[2])));
+                intH.push_back(std::sqrt((xp[0]-intPrev[0])*(xp[0]-intPrev[0]) +
+                                         (xp[2]-intPrev[2])*(xp[2]-intPrev[2])));
+                }
+                std::memcpy(rawPrev, rp, sizeof(rawPrev));
+                std::memcpy(intPrev, xp, sizeof(intPrev));
+                for (uint32_t s = 0; s < 4 && rec; ++s) {
+                    x3::phys::WheelState iw, cw;
+                    if (!ic.renderWheelPose(s, iw)) continue;
+                    if (!ic.wheelState(s, cw)) continue;
+                    const float hubI[3] = { iw.worldTransform[12], iw.worldTransform[13], iw.worldTransform[14] };
+                    const float hubC[3] = { cw.worldTransform[12], cw.worldTransform[13], cw.worldTransform[14] };
+                    const float ref = dist3(hubC, rp);            // truth: post-step pair
+                    attachDrift = std::max(attachDrift, std::fabs(dist3(hubI, xp) - ref));
+                    brokenDrift = std::max(brokenDrift, std::fabs(dist3(hubC, xp) - ref));
+                }
+            }
+
+            // Two numbers per path.
+            //   held  = frames that did not move at all. A staircase has tread.
+            //   jerk  = max |step[i] - step[i-1]| / mean(step) — the CONSECUTIVE
+            //           discontinuity. This, not a global max/min, is the right
+            //           smoothness metric: over two seconds the car's speed
+            //           genuinely changes a little, and a global ratio charges
+            //           the render path for physics it faithfully reproduced.
+            //           A staircase riser costs ~1 whole tick of travel against
+            //           a 0 tread, so jerk lands near 165/60 = 2.75; a ramp's
+            //           consecutive steps differ only by real acceleration.
+            auto profile = [&](const std::vector<float>& d, int& held, float& jerk) {
+                double sum = 0.0; for (float v : d) sum += v;
+                const double mean = sum / (double)d.size();
+                held = 0;
+                for (float v : d) if (v < 0.02 * mean) ++held;
+                double worst = 0.0;
+                for (size_t i = 1; i < d.size(); ++i)
+                    worst = std::max(worst, (double)std::fabs(d[i] - d[i-1]));
+                jerk = (mean > 1e-9) ? (float)(worst / mean) : 0.0f;
+            };
+            int rawHeld = 0, intHeld = 0; float rawJerk = 0.0f, intJerk = 0.0f;
+            profile(rawD, rawHeld, rawJerk);
+            profile(intD, intHeld, intJerk);
+            int rawHeldH = 0, intHeldH = 0; float rawJerkH = 0.0f, intJerkH = 0.0f;
+            profile(rawH, rawHeldH, rawJerkH);
+            profile(intH, intHeldH, intJerkH);
+            x3::logInfo("[drive-test] PHASING @ " + std::to_string(mph) +
+                        " mph, 165 Hz render / 60 Hz sim, " + std::to_string(NF) + " frames:");
+            x3::logInfo("[drive-test]   RAW    (pre-fix)  held-frames " + std::to_string(rawHeld) +
+                        "/" + std::to_string(NF) + "  jerk " + std::to_string(rawJerk));
+            x3::logInfo("[drive-test]   INTERP (post-fix) held-frames " + std::to_string(intHeld) +
+                        "/" + std::to_string(NF) + "  jerk " + std::to_string(intJerk));
+            x3::logInfo("[drive-test]   HORIZONTAL only (the travel direction): RAW jerk " +
+                        std::to_string(rawJerkH) + " held " + std::to_string(rawHeldH) +
+                        "  |  INTERP jerk " + std::to_string(intJerkH) +
+                        " held " + std::to_string(intHeldH));
+            x3::logInfo("[drive-test]   wheel hub drift vs hull: interpolated " +
+                        std::to_string(attachDrift) + " m, un-interpolated (control) " +
+                        std::to_string(brokenDrift) + " m");
+            // THE STAIRCASE: the pre-fix path must visibly hold. 165/60 = 2.75,
+            // so ~105 of every 165 frames repeat the previous pose.
+            check(rawHeld > NF / 3,
+                  "phasing: RAW render pose STAIRCASES at 165 Hz (the defect, measured)");
+            // THE RAMP: every frame advances, and by nearly the same amount.
+            check(intHeld == 0,
+                  "phasing: INTERPOLATED pose advances on EVERY frame (no held frames)");
+            check(intJerkH < 0.25f,
+                  "phasing: INTERPOLATED horizontal step is a smooth ramp, not a staircase");
+            check(rawJerkH > 1.5f,
+                  "phasing: RAW horizontal step is a staircase riser (~1 tick of travel)");
+            check(intJerkH < rawJerkH * 0.2f,
+                  "phasing: interpolation is a large, not marginal, improvement");
+            // WHEELS STAY ON THE CAR.
+            check(attachDrift < 0.02f,
+                  "phasing: wheels stay attached to the interpolated hull (<2 cm)");
+            check(brokenDrift > attachDrift * 4.0f,
+                  "phasing: control — NOT interpolating the wheels would detach them");
+
+            // ---- Endpoint exactness + the matched-rate no-op ---------------
+            // alpha 1 must return the post-step pose BIT-for-bit, and alpha 0 the
+            // pre-step pose, or the fix would perturb every existing capture.
+            float truth[3]; ic.chassisPos(truth);
+            ic.setRenderAlpha(1.0f);
+            float at1[3]; ic.renderChassisPos(at1);
+            check(at1[0] == truth[0] && at1[1] == truth[1] && at1[2] == truth[2],
+                  "phasing: alpha=1 returns the post-step pose BIT-IDENTICALLY");
+            // Matched rate: feed the accumulator exactly one sim step per frame.
+            // The remainder is then identically 0, so the presented stream is the
+            // un-interpolated stream delayed one frame — no new math, no drift.
+            x3::net::SimAccumulator macc;
+            bool matchedNoop = true;
+            float lastPost[3]; ic.chassisPos(lastPost);
+            for (int f = 0; f < 60; ++f) {
+                const uint32_t n = macc.advance(sdt);
+                if (n != 1) { matchedNoop = false; break; }
+                ic.setInput(go); ic.preStep(sdt); ip->step(sdt); ic.postStep(sdt);
+                if (macc.accum != 0.0f) { matchedNoop = false; break; }
+                ic.setRenderAlpha(macc.accum / sdt);
+                float pres[3]; ic.renderChassisPos(pres);
+                if (pres[0] != lastPost[0] || pres[1] != lastPost[1] || pres[2] != lastPost[2]) {
+                    matchedNoop = false; break;
+                }
+                ic.chassisPos(lastPost);
+            }
+            check(matchedNoop,
+                  "phasing: at 60 Hz render == 60 Hz sim the fix is a NO-OP "
+                  "(remainder is exactly 0; presented pose is bit-identical to the "
+                  "un-interpolated pose, one frame later)");
+
+            // ---- The camera and the draw must agree ------------------------
+            // The chase camera is rigidly bolted to the car. If it followed the
+            // post-step pose while the body drew interpolated, the car would swim
+            // inside its own framing — a different artifact, not a fix.
+            ic.setRenderAlpha(0.37f);
+            float drawPos[3]; ic.renderChassisPos(drawPos);
+            float camPos[3];  ic.renderChassisPos(camPos);   // driverCamera's source
+            check(drawPos[0] == camPos[0] && drawPos[1] == camPos[1] && drawPos[2] == camPos[2],
+                  "phasing: the chase camera and the drawn body share ONE pose");
+            float rawNow[3]; ic.chassisPos(rawNow);
+            check(dist3(drawPos, rawNow) > 1e-5f,
+                  "phasing: mid-tick alpha actually presents an in-between pose");
+            ic.shutdown();
+        }
+        if (ip) ip->shutdown();
     }
 
     x3::logInfo("[drive-test] " + std::to_string(passN) + " passed, " +
