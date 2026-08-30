@@ -4402,17 +4402,47 @@ bool runRifthubSelfTest() {
 
         // ---- T24: THE APPROACH. The landing + corridor seal onto that doorway. ----
         RiftDepths depths;
+        DoorSystem depthDoors;   // T32: the side rooms author REAL registry doors
         {
             RiftDepths::Desc dd;
             dd.shaft     = { SX, FY, SZ };
             dd.hubDoor   = hub2.doorCenter();
             dd.doorHalfW = hd.doorHalfW;
             dd.doorH     = hd.doorH;
+            dd.doors     = &depthDoors;
             depths.build(sc2, dev2, *p2, dd);
             const std::string seam = depths.selfCheck();
             rhCheck(depths.built() && seam.empty(),
                     "T24 THE APPROACH: landing + L-corridor authored, seams CLEAN "
                     "(floor continuous from the cab well to the hub threshold)");
+        }
+
+        // ---- T32: THE SIDE ROOMS + CARD READERS (owner 2026-08-30). --------------
+        // Two rooms off leg A, each behind a keycard-locked slider with a reader
+        // whose LED tracks the door's LIVE lock state — asserted, not assumed.
+        {
+            const auto& rds = depths.readers();
+            rhCheck(rds.size() == 2 && depthDoors.count() >= 2,
+                    "T32a two side rooms: two card readers, two registry doors");
+            bool lockedRight = true, ledTracks = true;
+            for (const auto& r : rds) {
+                const Door& d = depthDoors.at(r.doorIdx);
+                lockedRight = lockedRight && d.isLocked() &&
+                              d.keycard == kKeycardSecurity;
+                // LED: red while locked, green after a card-unlock.
+                depths.syncReaders(sc2, depthDoors);
+                const Entity& led0 = sc2.get(r.ledEnt);
+                const bool redFirst = led0.emissive[0] > 0.8f && led0.emissive[1] < 0.3f;
+                depthDoors.unlock(depthDoors.at(r.doorIdx));
+                depths.syncReaders(sc2, depthDoors);
+                const Entity& led1 = sc2.get(r.ledEnt);
+                const bool greenAfter = led1.emissive[1] > 0.8f && led1.emissive[0] < 0.3f;
+                depthDoors.lock(depthDoors.at(r.doorIdx));   // restore for later Ts
+                depths.syncReaders(sc2, depthDoors);
+                ledTracks = ledTracks && redFirst && greenAfter;
+            }
+            rhCheck(lockedRight, "T32b both side doors locked on the Security keycard");
+            rhCheck(ledTracks,   "T32c reader LEDs track the LIVE lock: red locked, green unlocked");
         }
 
         // ---- T25: CONNECTIVITY - you can actually WALK it. -----------------------

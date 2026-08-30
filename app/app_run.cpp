@@ -1317,6 +1317,7 @@ int runDefaultHost(HostContext& hc) {
     uint32_t canonKeycardEnt   = x3::game::kNoLink;
     float    canonKeycardX     = 0.0f, canonKeycardZ = 0.0f;
     bool     canonKeycardTaken = false;
+    x3::audio::SoundHandle sndCardOk, sndCardNo;   // card-access voice (accept / deny)
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
     x3::game::BarrelSystem canonBarrels;       // WAVE (cell-door): explodable barrels in the canon cell/hall (DJBooth fireball on shot)
     x3::game::DescMechanics descMech;          // W9-1: the desc-field Tier-A mechanics (coolant/EMP/hack/cold/antidote); built after chatTrees (flags owner) exists
@@ -2089,6 +2090,11 @@ int runDefaultHost(HostContext& hc) {
             canonDoors.setMotorAudio(
                 audio->load(x3::game::resolveAudio("interact/servo_loop.wav")),
                 audio->load(x3::game::resolveAudio("interact/door_thunk.wav")));
+            // CARD-ACCESS VOICE (2026-08-30 door wave): the rising two-chirp
+            // grant + the flat double-buzz deny, played by the E-chain's
+            // keycard branches (any carded door — the rift side rooms first).
+            sndCardOk = audio->load(x3::game::resolveAudio("interact/card_accept.wav"));
+            sndCardNo = audio->load(x3::game::resolveAudio("interact/card_deny.wav"));
             // W2-A2 (W2-E residual): PVS-gate the canon door slabs. Probe the two
             // rooms flanking each slab (across the wall normal per Door::axis)
             // against the frame's visible-room set; draw if either is visible.
@@ -2602,6 +2608,7 @@ int runDefaultHost(HostContext& hc) {
                         dd.hubDoor = rifthub.doorCenter();
                         dd.doorHalfW = hd.doorHalfW;
                         dd.doorH     = hd.doorH;
+                        dd.doors     = &canonDoors;   // side rooms + card readers (2026-08-30)
                         riftDepths.build(scene, *device, *physics, dd);
                         // PVS: stamp every entity the region authored with kRiftRoom, so
                         // the facility never submits the hub (and the hub never submits the
@@ -6510,6 +6517,7 @@ int runDefaultHost(HostContext& hc) {
                 if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z)) {
                     rifthub.tick(dt, scene);      // the membranes must be ALIVE in a still
                     riftDepths.tick(dt);
+                    riftDepths.syncReaders(scene, canonDoors);   // reader LEDs live in stills too
                     riftLights(ssEye.x, ssEye.y, ssEye.z, cl);
                 }
                 // X3_SHOT_SWIM=3p: LIGHT THE STAGE, NOT JUST THE MAN. Jake's kit is
@@ -9511,6 +9519,7 @@ int runDefaultHost(HostContext& hc) {
                            }
                            if (needCard && hasCard) {                  // either-credential: card opens it outright
                                canonDoors.unlock(*d); canonDoors.toggle(*d);
+                               if (audio && sndCardOk.valid()) audio->playSound2D(sndCardOk);   // the grant chirp
                                npcBarkText = std::string(cardName(d->keycard)) + " keycard accepted";
                                npcBarkTimer = 2.5f; x3::logInfo("use: canon door unlocked (keycard)"); return true;
                            }
@@ -9527,6 +9536,7 @@ int runDefaultHost(HostContext& hc) {
                                npcBarkText = "LOCKED - DETENTION SEAL - OVERRIDE REQUIRED";
                                npcBarkTimer = 3.0f; return true;
                            }
+                           if (audio && sndCardNo.valid()) audio->playSound2D(sndCardNo);   // the deny buzz
                            npcBarkText = std::string("LOCKED - need the ") + cardName(d->keycard) + " keycard";
                            npcBarkTimer = 3.0f; return true;
                        }()) {
@@ -10201,6 +10211,8 @@ int runDefaultHost(HostContext& hc) {
                     if (inZone) {
                         rifthub.tick(x3::net::kSimDt, scene);
                         riftDepths.tick(x3::net::kSimDt);
+                        // Side-room card readers: LED tracks the LIVE lock state.
+                        riftDepths.syncReaders(scene, canonDoors);
                         // Walking into a gate ACTIVATES it (the kawoosh) — the hub's own
                         // trigger volumes, dispatched here exactly as the dev host does.
                         for (uint32_t tid : riftTriggers.update({ pfr.x, pfr.y + 1.6f, pfr.z }))
