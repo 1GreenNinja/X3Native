@@ -102,22 +102,28 @@ static std::vector<uint8_t> bakePortalRGBA(uint32_t n) {
         const float v = (y + 0.5f) / (float)n;
         for (uint32_t x = 0; x < n; ++x) {
             const float u = (x + 0.5f) / (float)n;
-            // Nebula: two octaves of tileable noise -> blue/violet dark cloud.
+            // Nebula: two octaves of tileable noise -> blue/violet cloud. SPACE
+            // IS BLACK (Tim's slop-pass 2026-08-28): the original 0.04-0.15
+            // grey-blue base read as a uniform slab that auto-exposure lifted
+            // to MILK — the whole pane glowed lavender. Authored like space:
+            // ~90% true black, DEEP patchy nebula (cubed falloff), vivid
+            // sparse stars — content with real contrast survives any exposure
+            // (the club/elevator screens' lesson).
             float neb = 0.6f * valueNoise(u, v, n, 6, 11u)
                       + 0.4f * valueNoise(u, v, n, 13, 29u);
-            neb = std::clamp((neb - 0.45f) / 0.55f, 0.0f, 1.0f);
-            neb = neb * neb;                       // tighten the cloud
-            float r = 0.04f + 0.18f * neb;
-            float g = 0.05f + 0.10f * neb;
-            float b = 0.10f + 0.42f * neb;         // blue-violet bias
+            neb = std::clamp((neb - 0.55f) / 0.45f, 0.0f, 1.0f);
+            neb = neb * neb * neb;                 // patchy cores, black between
+            float r = 0.002f + 0.10f * neb;
+            float g = 0.003f + 0.05f * neb;
+            float b = 0.006f + 0.28f * neb;        // blue-violet bias
             // Stars: sparse high-freq hash threshold + a few brighter ones.
             const uint32_t sc = n;                 // per-texel cells
             float hs = hash2(x, y, sc, 101u);
             if (hs > 0.992f) {                     // bright star
-                float br = 0.8f + 1.4f * (hs - 0.992f) / 0.008f;
+                float br = 1.0f + 1.2f * (hs - 0.992f) / 0.008f;
                 r += br; g += br; b += br;
-            } else if (hs > 0.975f) {              // dim star
-                float br = 0.25f;
+            } else if (hs > 0.978f) {              // dim star
+                float br = 0.30f;
                 r += br; g += br; b += br * 1.1f;
             }
             auto u8 = [](float c){ c = std::clamp(c, 0.0f, 1.0f);
@@ -176,11 +182,16 @@ void ShipWindows::init(rhi::IRenderDevice& device, const ShipManifest& manifest)
         p.placement[2] = wnd[2] + fz * 0.22f;
         m_panes.push_back(p);
 
-        // Light bleed: a cool point light pushed ~0.6 m inward from the window.
+        // Light bleed: a cool point light pushed inward from the window. It
+        // exists to light the DECK, not its own glass — at the original 0.6 m
+        // it sat ~0.4 m from the pane and its point-blank specular washed the
+        // portal to a milky slab (Tim's slop-pass, 2026-08-28; the bisect
+        // receipt is shots_phase1/ship_bisect.png). 1.6 m in, inverse-square
+        // drops the pane irradiance ~18x while the deck glow survives.
         PointLight bl;
-        bl.pos[0] = wnd[0] + fx * 0.6f;
+        bl.pos[0] = wnd[0] + fx * 1.6f;
         bl.pos[1] = wnd[1];
-        bl.pos[2] = wnd[2] + fz * 0.6f;
+        bl.pos[2] = wnd[2] + fz * 1.6f;
         bl.range  = 4.5f;
         bl.color[0] = 1.1f; bl.color[1] = 1.6f; bl.color[2] = 2.6f; // cool starlight bleed
         m_bleed.push_back(bl);
@@ -223,8 +234,8 @@ void ShipWindows::render(rhi::IRenderDevice& device, const rhi::FrameContext& fr
     // gates the glow BY the portal texture (the club1127 / intro-cockpit screen
     // recipe): stars + nebula GLOW, the space between them stays black, and the
     // near-black albedo kills the lit-term wash from interior lights.
-    const float paneColor[4] = { 0.02f, 0.02f, 0.03f, 1.0f };  // near-black lit albedo
-    const float emiss[4]     = { 1.0f, 1.0f, 1.0f, 1.15f };    // neutral: texel colors carry
+    const float paneColor[4] = { 0.02f, 0.02f, 0.03f, 1.0f };  // near-black lit albedo  // near-black lit albedo
+    const float emiss[4]     = { 1.0f, 1.0f, 1.0f, -1.6f };    // NEGATIVE = UNLIT PORTAL (mesh.frag sentinel): the pane IS space    // neutral: texel colors carry
     const uint32_t qi[12]    = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 }; (void)qi;
     for (const auto& p : m_panes) {
         const float u0 = uPan, u1 = uPan + kSpanU;
@@ -239,11 +250,20 @@ void ShipWindows::render(rhi::IRenderDevice& device, const rhi::FrameContext& fr
         float model[16];
         paneModel(p.placement[0], p.placement[1], p.placement[2],
                   p.placement[3], p.placement[4], p.placement[5], model);
+        // MR FACTORS (Tim's slop-pass, 2026-08-28): with no MR texture the pane
+        // sampled bindless slot 0 (1x1 WHITE) = METALLIC 1.0 — a window into
+        // space rendered as a MIRROR of the neon interior IBL, washing the
+        // near-black starfield to milky lavender (the wash tint WAS the ceiling
+        // neon). Author it dielectric-matte: the glow comes from emissiveTex,
+        // reflections stay off the glass.
         device.drawMeshPBR(frame, p.mesh, m_paneTex,
                            x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
                            paneColor, emiss, model,
                            /*alphaMask*/false, /*alphaBlend*/false,
-                           /*emissiveTex*/m_paneTex);
+                           /*emissiveTex*/m_paneTex,
+                           x3::rhi::TextureHandle{}, 1.0f, 0.0f, 0.05f,
+                           0.0f, 1.0f, 0.0f,
+                           /*metallicFactor*/1e-4f, /*roughnessFactor*/1.0f);
     }
 }
 

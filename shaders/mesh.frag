@@ -757,6 +757,15 @@ void main() {
 
     vec3 emis = vEmissive.rgb;
     if (vEmissiveTexIndex > 0u) emis *= texture(textures[nonuniformEXT(vEmissiveTexIndex)], vUV).rgb;  // emissive map gates WHERE it glows (edge strips)
+    // UNLIT PORTAL sentinel (ship-windows, 2026-08-28): NEGATIVE emissive
+    // strength means "this surface IS its emissive" — the lit result is
+    // discarded entirely (a window into space must not carry the room's
+    // specular sheen; every lit-path fix still left a grey wash because a
+    // dielectric's 4% Fresnel never goes away). No caller passed a < 0
+    // before, so every existing draw shades byte-identically.
+    if (vEmissive.a < 0.0) {
+        color = emis * -vEmissive.a;
+    } else
     color += emis * vEmissive.a;
     // BLEND (glass): Unity glass mats often have baseColorFactor.a=0 -> invisible under straight
     // alpha-over. Floor the opacity + add a fresnel grazing term so glass reads as a translucent,
