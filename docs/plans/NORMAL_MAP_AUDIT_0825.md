@@ -5,6 +5,17 @@ failures already fall back to a default flat normal WITH a warning, and every
 load now prints a `nrm=X/Y` bind receipt — so the remaining gap is CONTENT:
 **85 GLBs author zero normal maps** and shade flat under any light.
 
+## PROGRESS
+- 2026-08-27 batch 1: Town kit DONE (albedo-derived + Light_2 real normal;
+  town_assets.py). 2026-08-27 batch 2: SciFiKit3 DONE — 25 GLBs wired with the
+  pack's REAL normal atlases (tools/kit_normal_wire.py). VERDICTS from batch 2
+  recon: the racing-pack CARS author no normals anywhere and smooth paint is
+  CORRECTLY flat — derived bumps would emboss decals into grooves; only tire
+  tread would benefit (small, deferred). Vol2/Vol3/Warehouse kits use per-mesh
+  material names over shared atlases with no recoverable name link — needs an
+  ATLAS-FINGERPRINT pass (match each GLB's embedded diffuse bytes against the
+  source atlas diffuses, then wire the sibling _Norm) — batch 3.
+
 ## Priority targets (player-facing, hit by the mr-factors sweep too)
 - Town/House_1..4 _Red/_White (all 8 town houses — Main Street shades flat)
 - Town/Billboard_1, Billboard_2, Light_2, Wood_Fence

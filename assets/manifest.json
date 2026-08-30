@@ -318,6 +318,162 @@
       "source_note": "emission-key fix: MRAG glow channel restored (emissive+ORM maps), key colours repaired out of base colour"
     },
     {
+      "repo_path": "assets/converted_glb/SciFiKit3/Air_Grid_01.glb",
+      "sha256": "6b6b42d2f874d83f64ccf4e3e18e816642db173035a6eb7c4f9aa68dcb42677e",
+      "size": 14164776,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Articulated_TV_Screen_01.glb",
+      "sha256": "9f7a930df9b8454f7aa8836f3a93ccce1b0a1d1398475c43193351c887b18abe",
+      "size": 13869196,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Barrel_01.glb",
+      "sha256": "96627515c7b1fd789ba373c7ff997142863d2af64444403de4eaf790c25a1c53",
+      "size": 11947628,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Bed_Large_01.glb",
+      "sha256": "0a1bf56704b64bfd7b237c84b9bc70173d8c2ad575ef0c25dfa613ce9fc25bb1",
+      "size": 20261204,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Big_Oxygen_Tank_01.glb",
+      "sha256": "405113ef78615155fb82d23707438cbc8d737a91c9111e70d6e5582d60123e24",
+      "size": 11988840,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Button_Big_Circular_Green.glb",
+      "sha256": "3d0bef162abacffc79d136b19fae446d86640c5398be0814d1b196fa31e7f756",
+      "size": 8027916,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Button_Big_Circular_Red.glb",
+      "sha256": "73aefa502391bae123f8a4d8f8b0418cc21bce855f9fd95391a9475ef523803a",
+      "size": 8027912,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Chair_01.glb",
+      "sha256": "2d8bc1aa841190322ddad2de2bdbfa0b77578f486fd5e30d9a9116c78a9f886a",
+      "size": 10549264,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Console_Small_01.glb",
+      "sha256": "4306f6cbfc8323c96a4b58433286e3f2cb59ccd517c7a202b248becd4ebc4d75",
+      "size": 37084368,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Floor_01.glb",
+      "sha256": "31692a98d627f4d424aade9589e2a74af6bf818512a1529bb7e9ad4de2c27d92",
+      "size": 15250432,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Floor_Border_Line_01.glb",
+      "sha256": "dba9cf48da084da712a8019e1c46743da5b69a5e2ddbd20101202ee53b3670d7",
+      "size": 14515760,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Floor_Tinny_01.glb",
+      "sha256": "93c437b2d3f26f5a46c1371c2a20cbf193bcc5e6b48e652256465aaacdbc3807",
+      "size": 24417084,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Holo_Screen_01.glb",
+      "sha256": "233cae5147100a420e8d55998f1ee623852f7a9f5c4566264db95b0000a832da",
+      "size": 984720,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Arch_01.glb",
+      "sha256": "cadf32c7384b38997f4801370edc542061f240daab04dba837166433890eef50",
+      "size": 17939704,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Grid_01.glb",
+      "sha256": "800c5c49ad878c410197241a3ba72f5e6c50512944566c5169b05b49f581ea34",
+      "size": 15246992,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Kitchen_01.glb",
+      "sha256": "e2dc4e27d02f7be8158003aa9fd88681c234148a404b47209f65204e91d5dfdd",
+      "size": 26831764,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Module_01.glb",
+      "sha256": "ef9264472286eea2cdd9ddb6acfb683f968e088dd0ec46a4fff117bdb6f70d21",
+      "size": 24096184,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Bed_01.glb",
+      "sha256": "7f277a68972468cc41ae79e135dc037124814a57b792a9506a165bc162d73d88",
+      "size": 26939656,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Case_01.glb",
+      "sha256": "17291fc46fc7386a029cb5cbb67d791efe4ee36975281f5ba640056542e25df1",
+      "size": 21854668,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Computer_01.glb",
+      "sha256": "1eebdfe43cbd8e92d17f545e803e9bf0a41112c9c1993474b48feeffc75b2a6d",
+      "size": 25726776,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Pipes_01.glb",
+      "sha256": "adb7de3328dc3aba668a86e4f7e087fd9ae747bebb0238029dc6bb11dcb2e15c",
+      "size": 29901100,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Simple_01.glb",
+      "sha256": "09893e5564934b789a1d793472de37f6c584ed0de75697d0f3c793266f93dfdd",
+      "size": 15242620,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Interior_Wall_Simple_02.glb",
+      "sha256": "d2d06bbf76a54a1b5a82a3163211883d6d48e5e8f1dcf26257a6a7a072273b3a",
+      "size": 15243744,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Panel_Screen_01.glb",
+      "sha256": "4bb324a62014ac95cb216a39f1de58d8d559d21fdb1472186e2e99cb7cff9175",
+      "size": 14206228,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Wall_Arch_01.glb",
+      "sha256": "d4ef28860ee6fe56fc2b83cba6ad73cbc7d739556a7e4021471ae468f4a77b64",
+      "size": 15269492,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFiKit3/Wall_Door_Simple_01.glb",
+      "sha256": "65a9657c6223d05103790dfb0af48628b1c909b54a8031f787a7d22477026be6",
+      "size": 21908064,
+      "source_note": "SciFiKit3 wired with its REAL pack normal atlases (Phase 1 batch 2, kit_normal_wire.py)"
+    },
+    {
       "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Barrel.glb",
       "sha256": "2680e947d25b317a3b146936702b15c78a5473be2ebca55b3926bb7155ed22e5",
       "size": 4427080,
