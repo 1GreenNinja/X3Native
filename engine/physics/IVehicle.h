@@ -209,6 +209,38 @@ struct BuoyancyDesc {
     // righting torque about the horizontal axes restores level so the swell
     // rocks the hull ABOUT zero instead of about an accidental list.
     float rightingTorque = 0.0f;
+
+    // ---- PLANING (0 defaults = byte-identical to the pre-2026-08-28 model) ----
+    // A displacement hull ploughs: it pushes water aside and its speed is
+    // capped by that. A hull ON PLANE skims the surface instead, and the
+    // transition is most of what "fast on water" FEELS like. Modelled the way
+    // Unreal's BuoyancyComponent does it — ramp the buoyancy coefficient with
+    // forward speed, so the faster you go the more the hull is held up:
+    //     lift = 1 + (planeLift - 1) * clamp(|fwdSpeed| / planeSpeed, 0, 1)
+    // planeLift 1.0 (or planeSpeed 0) disables it entirely.
+    float planeSpeed     = 0.0f;    // m/s at which the hull is fully on plane
+    float planeLift      = 1.0f;    // buoyancy multiplier at full plane
+    // Attitude under power: the nose rises as the hull climbs onto plane, and
+    // the craft banks INTO its turn. Both scale with how planed it is, so a
+    // drifting hull sits flat and a driven one is alive.
+    float bowLiftTorque  = 0.0f;    // N.m per unit throttle (nose up)
+    float leanTorque     = 0.0f;    // N.m per unit steer (roll into the turn)
+
+    // ---- RIVER FORCES (0 defaults = still water, byte-identical) -------------
+    // A river is not a flat pond with a boat on it. Three forces make it a
+    // RIDE, and they are the ones Unreal's buoyancy data exposes as
+    // WaterVelocityStrength / WaterShorePushFactor / DownstreamRotation:
+    //   * the CURRENT carries the hull along the flow;
+    //   * a SHORE PUSH nudges it back toward the channel, so a rushing
+    //     underground river does not simply pin the player against the rock
+    //     and hold them there;
+    //   * DOWNSTREAM ALIGNMENT swings the nose to follow the flow when the
+    //     pilot is not fighting it, the way a drifting hull really does weathercock.
+    // The host feeds the flow each step via IVehicleController::setRiverFlow.
+    float currentStrength = 0.0f;   // N per (m/s) of flow-vs-hull difference
+    float maxCurrentForce = 0.0f;   // N clamp on the above (0 = uncapped)
+    float shorePush       = 0.0f;   // N per metre outside the channel half-width
+    float downstreamAlign = 0.0f;   // N.m per radian of nose-vs-flow error
 };
 
 // ---------------------------------------------------------------------------
@@ -377,6 +409,13 @@ public:
     // gating preStep changed the numbers not at all. Disabling the constraint is
     // the only thing that actually takes the road system out of the solver.
     virtual void setConstraintSuspended(bool) {}
+
+    // RIVER FLOW under the hull, world space, fed by the host each step: xyz is
+    // the water velocity (m/s), `centreDist` how far the hull is from the
+    // channel centreline (m) and `halfWidth` the channel half-width, which
+    // together drive the shore push. A no-op for controllers with no current.
+    virtual void setRiverFlow(const float /*vel*/[3], float /*centreDist*/,
+                              float /*halfWidth*/, const float /*toCentre*/[3]) {}
 
     // The body this controller drives.
     virtual BodyId body() const = 0;

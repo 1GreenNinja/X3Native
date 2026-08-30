@@ -147,9 +147,36 @@ void main() {
     float sceneDist = linearizeDepth(sceneD);
     float surfDist  = linearizeDepth(gl_FragCoord.z);
     float waterDepth = max(sceneDist - surfDist, 0.0);
-    // Shallow near 0 m of water, fully deep by ~6 m.
-    float depthT = clamp(waterDepth / 6.0, 0.0, 1.0);
-    vec3 refractCol = mix(u.shallowColor.rgb, u.deepColor.rgb, depthT);
+    // BEER-LAMBERT EXTINCTION, per channel — not a two-colour lerp.
+    //
+    // This used to be mix(shallow, deep, depth/6), which is why the water read
+    // flat: a linear blend between two authored colours CANNOT produce the way
+    // real water loses its channels at wildly different rates. Red is gone in
+    // about a metre, green survives ~10 m, blue ~30 m — that spread is exactly
+    // what makes shallows turquoise and depth go blue-black, and it is the
+    // whole look. Transmittance T = exp(-extinction * depth) per channel.
+    //
+    // Extinction is derived from the AUTHORED colours so every existing
+    // WaterParams keeps its identity: deepColor is what survives at the
+    // reference depth, so extinction = -ln(deepColor)/refDepth. shallowColor is
+    // the in-scattered light the column adds back (UE calls this the scattering
+    // term; SingleLayerWaterShading.ush builds ExtinctionCoeff the same way,
+    // from scattering + absorption). clarity stretches the reference depth:
+    // clear water carries its colour further before it extinguishes.
+    // Per-metre extinction, RED FIRST. Clear water loses red in about a metre,
+    // green in ~10 m, blue in ~30 m; that spread is the entire reason shallows
+    // read turquoise and depth goes blue-black. clarity stretches the whole
+    // curve (clear water carries its colour further before extinguishing).
+    float clarityM  = mix(0.55, 2.4, clamp(u.p2.x, 0.0, 1.0));
+    vec3  kExt      = vec3(0.46, 0.10, 0.045) / clarityM;
+    vec3  T         = exp(-kExt * waterDepth);   // transmittance per channel
+    // What survives from the lit shallow floor, plus what the column scatters
+    // back. Reduces to shallowColor at the waterline and to deepColor far down,
+    // so every authored WaterParams keeps its identity — but the journey between
+    // them is now exponential and per-channel instead of one linear ramp.
+    vec3 refractCol = T * u.shallowColor.rgb + (vec3(1.0) - T) * u.deepColor.rgb;
+    const float kRefDepth = 6.0;
+    float depthT = clamp(waterDepth / kRefDepth, 0.0, 1.0);
 
     // --- Reflection: analytic sky in the mirror direction. ---
     vec3 R = reflect(-V, N);
@@ -265,7 +292,31 @@ void main() {
     // sun glint (foam-bright pixels must not thin out), and into the horizon
     // fog. clarity 0 => alpha 1 everywhere — the historic opaque surface,
     // byte-identical through the enabled blend (src*1 + dst*0).
-    float seeThrough = u.p4.x * (1.0 - fres) * (1.0 - depthT);
+    // SEE-THROUGH RIDES THE SAME EXTINCTION AS THE COLOUR. This used to be
+    // (1.0 - depthT), a straight ramp that hit ZERO at kRefDepth — six metres —
+    // so the surface went fully opaque there and a marine structure or a fish
+    // any deeper than a swimming pool could never be seen THROUGH the water,
+    // however clear it was. Worse, it was a second, unrelated depth curve: the
+    // colour said one thing about how deep the light reached and the alpha said
+    // another.
+    //
+    // Physically they are the same fact. Water that still transmits light still
+    // transmits the image, so transparency is just the luminance of the
+    // transmittance T we already computed. Clear water (high clarity -> low
+    // extinction) now stays see-through for tens of metres and goes opaque
+    // gradually, the way a reef flat does; murky water closes up fast. One
+    // curve, one story, and "clear enough to watch fish go by" becomes a
+    // property of the water instead of an impossibility.
+    float transLum   = dot(T, vec3(0.2126, 0.7152, 0.0722));
+    // ...but never ALL the way. At clarity 1 this went to ~0.98 transparent in
+    // the shallows and the surface stopped reading as water at all — the bed
+    // looked like wet grass with highlights on it. Real water always keeps a
+    // presence: a few percent reflects at normal incidence and the column
+    // always scatters something back. kMaxSeeThrough leaves that residue, so
+    // the clearest water still tints and still has a surface — you see THROUGH
+    // it rather than past it.
+    const float kMaxSeeThrough = 0.86;
+    float seeThrough = min(kMaxSeeThrough, u.p4.x * (1.0 - fres) * transLum);
     // Foam closes the surface back up (churned water is opaque white, and a
     // see-through foam patch would read as soap scum on glass).
     float alpha = clamp(1.0 - seeThrough + spec * u.p1.z * 0.25 + fog + foamAmt,

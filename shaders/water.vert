@@ -190,26 +190,50 @@ void main() {
     // --- Sum a few Gerstner waves (varied dir/length/amp). The largest wave uses
     // baseLen; successive waves shorten + steepen for chop. Each wave's per-crest
     // steepness Q is normalized by (w*A*numWaves) so the surface never loops. ---
-    const int   N = 4;
-    vec2  dirs[4] = vec2[4](
-        normalize(vec2( 1.0,  0.25)),
-        normalize(vec2(-0.6,  0.8 )),
-        normalize(vec2( 0.2, -1.0 )),
-        normalize(vec2(-0.9, -0.35)));
-    float lenMul[4] = float[4](1.0, 0.55, 0.32, 0.18);
-    float ampMul[4] = float[4](1.0, 0.5,  0.28, 0.14);
+    // NO TILING. The old set was four hand-picked directions with wavelength
+    // ratios (1, 0.55, 0.32, 0.18). Two of those directions — (1, 0.25) and
+    // (-0.9, -0.35) — are very nearly OPPOSED, and a pair of counter-running
+    // trains of similar wavelength is a standing wave: it pins crests to fixed
+    // world positions and lays a lattice over the surface. Ratios that share
+    // factors then make the whole sum repeat on a short period. Together those
+    // read, at distance, as an obvious repeating grid — the owner saw it
+    // immediately in the first rig capture.
+    //
+    // Fix, and it is all in the choice of numbers:
+    //   * DIRECTIONS on the GOLDEN ANGLE (137.5 deg). Successive trains are
+    //     never parallel and never opposed, and the set never closes on itself,
+    //     so no standing-wave lattice can form.
+    //   * WAVELENGTHS in powers of 1/phi, which is irrational — the beat period
+    //     of the sum is effectively unbounded rather than a few tiles wide.
+    //   * A per-wave spatial OFFSET so the trains do not all share a phase
+    //     origin at the world centre.
+    //   * SIX waves instead of four: more incommensurate terms, longer beat,
+    //     finer chop. The Q normalisation below divides by N, so steepness per
+    //     crest stays bounded and the surface still cannot loop.
+    const int   N = 6;
+    const float kGoldenAng = 2.39996323;   // 137.5 deg, in radians
+    const float kInvPhi    = 0.61803399;   // 1/phi — irrational by construction
+    // Amplitudes fall off with wavelength and are normalised so the total lift
+    // matches the old four-wave sum (1.92) — the sea keeps its authored scale.
+    const float kAmpNorm   = 1.92 / 2.4708;
 
     vec3 disp = vec3(0.0);
     vec3 dPdx = vec3(0.0);
     vec3 dPdz = vec3(0.0);
     for (int i = 0; i < N; ++i) {
-        float L  = baseLen * lenMul[i];
-        float w  = 6.28318530718 / L;          // 2*pi / wavelength
-        float A  = amp * ampMul[i];
+        float fi  = float(i);
+        float ang = fi * kGoldenAng + 0.7;          // 0.7 = fixed seed rotation
+        vec2  d   = vec2(cos(ang), sin(ang));
+        float mul = pow(kInvPhi, fi);               // irrational length ladder
+        float L   = baseLen * mul;
+        float w   = 6.28318530718 / L;              // 2*pi / wavelength
+        float A   = amp * mul * kAmpNorm;
         // Deep-water dispersion: phase speed ~ sqrt(g/k); fold the user speed in.
         float phi = sqrt(9.81 * w) * speed;
-        float Q  = steep / max(w * A * float(N), 1e-4);
-        gerstner(dirs[i], w, A, Q, phi, time, basePos, disp, dPdx, dPdz);
+        float Q   = steep / max(w * A * float(N), 1e-4);
+        // Per-wave phase origin, so the trains do not all start together.
+        vec2  off = vec2(fi * 37.13, fi * -21.71);
+        gerstner(d, w, A, Q, phi, time, basePos + off, disp, dPdx, dPdz);
     }
 
     vec3 worldPos = vec3(basePos.x + disp.x, seaLevel + disp.y, basePos.y + disp.z);

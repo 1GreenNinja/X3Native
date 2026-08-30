@@ -878,6 +878,14 @@ struct CliOptions {
     // this is the way to SEE the ocean. Default path: G:\X3Native-wt-water\ocean.png.
     bool        oceanShot = false;
     std::string oceanShotPath = "G:/X3Native-wt-water/ocean.png";
+    // --screenshot-water: the WATER VERIFICATION RIG. The ocean rig above leaves
+    // WaterParams::clarity at its 0 default, which water.frag documents as "the
+    // historic OPAQUE surface" — so it renders opaque water and CANNOT show the
+    // depth-coloured surface the real rivers use (host_tunnel sets 0.60 / 0.78).
+    // This rig turns clarity ON and frames a shoreline, so the depth gradient is
+    // something we can actually look at.
+    bool        waterShot = false;
+    std::string waterShotPath = "docs/screenshots/water/water_rig.png";
     // Undersea base vantage (--screenshot-oceanbase [path.png]) — W3-4: builds the
     // ocean_base zone (textured hull + practicals) under deep-water fog and captures
     // an approach shot plus a dock closeup (shot 2 path gets a _dock suffix).

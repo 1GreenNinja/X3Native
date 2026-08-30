@@ -151,6 +151,7 @@ struct HostContext {
     // distances, a camera-pan sequence, and a cascade-boundary framing.
     bool        csmShot = false;        std::string csmShotDir;
     bool        oceanShot = false;      std::string oceanShotPath;
+    bool        waterShot = false;      std::string waterShotPath;
     bool        oceanBaseShot = false;  std::string oceanBaseShotPath;   // W3-4 undersea base
     bool        cityShot = false;       std::string cityShotPath;        // W8-3 city vantage
     bool        captureAi = false;      std::string captureAiDir;
