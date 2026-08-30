@@ -860,6 +860,11 @@ struct CliOptions {
     // asserts equal radiance (+ a negative control). See app/prim_light_test.cpp.
     bool        testPrimLight = false;
     std::string primLightShotPath = "shots/primlight_probe.png";
+    // --test-motionblur: the MOTION-DOMAIN rig + the motion-blur resolve pass.
+    // Device-driven (real Vulkan, self-contained probe scene, no world build).
+    // outDir receives the numbered frame series each case was measured from.
+    bool        testMotionBlur = false;
+    std::string motionBlurOutDir = "captures/motionblur";
     // --test-clusterlights [outdir]: CLUSTERED (froxel) FORWARD LIGHTING gate.
     // Part A checks the froxel grid + light assignment (engine/rhi/ClusterLights)
     // against an independent brute-force sweep of all 3456 froxels, including the

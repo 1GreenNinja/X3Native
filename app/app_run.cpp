@@ -579,6 +579,21 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     // (r_velocity, default 0 = byte-identical camera-only reproj). The device
     // gates on TAA being active + velocity.spv present (graceful fallback).
     px.velocity   = console.getInt("r_velocity") != 0;
+    // MOTION BLUR (delta #1, live). Default OFF. The device additionally gates on
+    // the velocity pass having run and the mb_*.spv pipelines existing, so a
+    // console `r_motionblur 1` with r_velocity 0 is a silent no-op, not a crash.
+    px.motionBlur = console.getInt("r_motionblur") != 0;
+    px.mbShutter  = console.getFloat("r_mb_shutter");
+    px.mbRefFps   = console.getFloat("r_mb_reffps");
+    px.mbSamples  = console.getInt("r_mb_samples");
+    px.mbMaxBlur  = console.getFloat("r_mb_maxblur");
+    px.mbSoftZ    = console.getFloat("r_mb_softz");
+    px.mbDt       = console.getFloat("r_mb_dt");
+    if (px.mbShutter < 0.0f) px.mbShutter = 0.0f;
+    if (px.mbShutter > 2.0f) px.mbShutter = 2.0f;
+    if (px.mbRefFps  <= 0.0f) px.mbRefFps = x3::rhi::kMotionBlurDefaultRefFps;
+    if (px.mbSoftZ   <= 0.0f) px.mbSoftZ  = 0.05f;
+    if (px.mbDt      <  0.0f) px.mbDt     = 0.0f;
     // Cinematic filmic post master gate (r_filmic, default 1 = allowed). The look
     // itself only turns ON while a cutscene holds setFilmic(); this is the live
     // A/B kill-switch (r_filmic 0 forces the byte-identical composite path).

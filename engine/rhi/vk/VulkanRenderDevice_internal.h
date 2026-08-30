@@ -5,6 +5,7 @@
 
 #include "../IRenderDevice.h"
 #include "../RenderGraph.h"
+#include "../MotionBlur.h"     // motion-blur constants + the shutter/dt rule (pure, header-only)
 #include "../Csm.h"               // cascaded-shadow-map fitting math (Vulkan-free, unit-tested)
 #include "../VulkanRT.h"          // hardware ray-tracing AS manager (ray-query path)
 #include "../../core/x3_log.h"
@@ -1381,6 +1382,10 @@ private:
     void destroySceneCopyTarget();
 
     void destroyBloomTargets();
+    // Motion-blur targets only (tile grid + neighbour grid + blurred output).
+    // Split out so the non-fatal create path unwinds a partial allocation with
+    // the same code the teardown uses -- one definition, no drift.
+    void destroyMotionBlurTargets();
 
     // ---- Glass resources (set 4 UBO + descriptor sets + scene-copy sampler) ----
     // Built once at init AFTER createBloomTargets (so the scene-copy view exists):
@@ -2854,6 +2859,81 @@ private:
     VkRenderingAttachmentInfo m_velAttach{};       // stable storage for the graph
     VkRenderingAttachmentInfo m_velDepthAttach{};  // read-only depth (EQUAL test)
     VkRenderingInfo           m_velRenderInfo{};
+
+    // ---- MOTION BLUR (delta #1: the SECOND consumer of m_velImg) ------------
+    // A three-stage chain slotted between taa-history-copy and auto-exposure:
+    //   1  mb_tilemax.frag      m_velImg    -> m_mbTileImg   (RG16F, 1/kTile res)
+    //   2  mb_neighbormax.frag  m_mbTileImg -> m_mbNeighImg  (RG16F, same res)
+    //   3  mb_blur.frag         scene+vel+depth+neigh -> m_mbOutImg  (HDR, full)
+    // Stages 1-2 are the velocity dilation that lets a fast object bleed past its
+    // own silhouette; stage 3 is the depth-ordered reconstruction filter. See
+    // engine/rhi/MotionBlur.h for the shared constants and the dt rule, and the
+    // three shaders for the algorithm and its references.
+    //
+    // AFTER the history copy so a blurred frame never enters the TAA history (a
+    // blurred history feeds back and smears permanently); BEFORE auto-exposure
+    // and bloom so the bloom chain blooms the blurred image, as a real lens does.
+    //
+    // GRACEFUL: any missing .spv leaves the pipelines null, the passes are never
+    // built, m_mbActiveThisFrame stays false and rgPostSrc keeps pointing at the
+    // TAA output -- byte-identical to a build without this feature.
+    VkImage       m_mbTileImg   = VK_NULL_HANDLE;   // tile-max velocity (pixels)
+    VmaAllocation m_mbTileAlloc = nullptr;
+    VkImageView   m_mbTileView  = VK_NULL_HANDLE;
+    VkImage       m_mbNeighImg   = VK_NULL_HANDLE;  // neighbour-max velocity (pixels)
+    VmaAllocation m_mbNeighAlloc = nullptr;
+    VkImageView   m_mbNeighView  = VK_NULL_HANDLE;
+    VkImage       m_mbOutImg   = VK_NULL_HANDLE;    // blurred HDR scene
+    VmaAllocation m_mbOutAlloc = nullptr;
+    VkImageView   m_mbOutView  = VK_NULL_HANDLE;
+    VkExtent2D    m_mbGridExtent{ 1, 1 };           // ceil(extent / kMotionBlurTile)
+    static constexpr VkFormat kMotionBlurTileFormat = VK_FORMAT_R16G16_SFLOAT;
+    // ONE UBO shared by all three stages, so the dt/shutter scale is written once
+    // per frame and cannot drift between the tile reduction and the reconstruction.
+    struct MbUBO {
+        glm::mat4 invViewProjCur;   // UNJITTERED clip -> world (sky fallback only)
+        glm::mat4 viewProjPrev;     // world -> previous UNJITTERED clip
+        glm::vec4 params0;          // texelW, texelH, velocityScale, maxBlurPixels
+        glm::vec4 params1;          // sampleCount, ditherPhase, velocityValid, softZ
+        glm::vec4 params2;          // extentW, extentH, zLinA (P[2][2]), zLinB (P[3][2])
+        glm::vec4 params3;          // xy = jitter-delta correction (UV), zw = unused
+    };
+    VkDescriptorSetLayout m_mbTileSetLayout  = VK_NULL_HANDLE;  // b0 vel, b1 depth, b2 UBO
+    VkDescriptorSetLayout m_mbNeighSetLayout = VK_NULL_HANDLE;  // b0 tile
+    VkDescriptorSetLayout m_mbBlurSetLayout  = VK_NULL_HANDLE;  // b0..b3 samplers, b4 UBO
+    VkPipelineLayout m_mbTileLayout  = VK_NULL_HANDLE;
+    VkPipelineLayout m_mbNeighLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_mbBlurLayout  = VK_NULL_HANDLE;
+    VkPipeline       m_mbTilePipe    = VK_NULL_HANDLE;
+    VkPipeline       m_mbNeighPipe   = VK_NULL_HANDLE;
+    VkPipeline       m_mbBlurPipe    = VK_NULL_HANDLE;
+    VkDescriptorSet  m_mbTileSet[kFramesInFlight]  = {};
+    VkDescriptorSet  m_mbNeighSet[kFramesInFlight] = {};
+    // TWO blur-set variants: the scene colour source is the TAA output when TAA is
+    // on and the raw HDR target when it is off. Descriptor writes are static, so
+    // both are written once and the record body picks by m_taaActiveThisFrame
+    // (the same idiom as m_setTaaOut / m_aeSetTaa).
+    VkDescriptorSet  m_mbBlurSetTaa[kFramesInFlight] = {};
+    VkDescriptorSet  m_mbBlurSetHdr[kFramesInFlight] = {};
+    VkBuffer         m_mbUboBuf[kFramesInFlight]    = {};
+    VmaAllocation    m_mbUboAlloc[kFramesInFlight]  = {};
+    void*            m_mbUboMapped[kFramesInFlight] = {};
+    bool             m_mbActiveThisFrame = false;
+    bool             m_mbLoggedActive    = false;   // one-shot "the chain ran" proof
+    double           m_mbPrevTime = -1.0;   // steady_clock seconds (interactive dt source)
+    uint32_t         m_mbFrameNum = 0;      // dither phase (frame counter, not wall clock)
+    VkRenderingAttachmentInfo m_mbTileAttach{};
+    VkRenderingInfo           m_mbTileRenderInfo{};
+    VkRenderingAttachmentInfo m_mbNeighAttach{};
+    VkRenderingInfo           m_mbNeighRenderInfo{};
+    VkRenderingAttachmentInfo m_mbOutAttach{};
+    VkRenderingInfo           m_mbOutRenderInfo{};
+    // Downstream variant sets: bloom / auto-exposure / composite must sample the
+    // BLURRED image on frames the blur ran, exactly as they switch to the TAA
+    // output on TAA frames. Same static-descriptor idiom, one more variant.
+    VkDescriptorSet m_setMbOut       = VK_NULL_HANDLE;  // bloom src (blurred scene)
+    VkDescriptorSet m_aeSetMb        = VK_NULL_HANDLE;  // AE b0 = blurred scene
+    VkDescriptorSet m_setCompositeMb = VK_NULL_HANDLE;  // composite b0 = blurred scene
 
     // ---- AUTO-EXPOSURE (eye adaptation) ------------------------------------
     // A single-workgroup compute pass (autoexposure.comp) reduces a fixed 64x64

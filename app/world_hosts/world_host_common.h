@@ -211,6 +211,15 @@ inline void applyHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDevice& 
     ovF("r_taasharpen",      ov.taaSharpen);
     ovB("r_velocity",        ov.velocity);
     ovB("r_filmic",          ov.filmicAllowed);
+    // Motion blur (delta #1). Default OFF everywhere; these only bind when the
+    // caller actually passed --set r_motionblur / r_mb_*.
+    ovB("r_motionblur",      ov.motionBlur);
+    ovF("r_mb_shutter",      ov.mbShutter);
+    ovF("r_mb_reffps",       ov.mbRefFps);
+    ovI("r_mb_samples",      ov.mbSamples);
+    ovF("r_mb_maxblur",      ov.mbMaxBlur);
+    ovF("r_mb_softz",        ov.mbSoftZ);
+    ovF("r_mb_dt",           ov.mbDt);
 
     ovI("r_rtshadows",     ov.rtsTier);
     ovF("r_rtsun_size",    ov.rtsSunSize);
@@ -309,7 +318,10 @@ inline void applyHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDevice& 
     if (has("r_bloom") || has("r_taa") || has("r_taasharpen") || has("r_tonemap") ||
         has("r_autoexposure") || has("r_filmic") || has("r_bloomintensity") ||
         has("r_bloomthreshold") || has("r_aespeed") || has("r_aemin") ||
-        has("r_aemax") || has("r_aekey") || has("r_velocity")) {
+        has("r_aemax") || has("r_aekey") || has("r_velocity") ||
+        has("r_motionblur") || has("r_mb_shutter") || has("r_mb_reffps") ||
+        has("r_mb_samples") || has("r_mb_maxblur") || has("r_mb_softz") ||
+        has("r_mb_dt")) {
         x3::rhi::IRenderDevice::PostFXParams px{};
         px.tonemapMode    = i("r_tonemap", "1");
         px.bloomEnabled   = i("r_bloom", "1") != 0;
@@ -324,6 +336,13 @@ inline void applyHostRenderCVars(const HostContext& hc, x3::rhi::IRenderDevice& 
         px.taaSharpen     = f("r_taasharpen", "0.25");
         px.velocity       = i("r_velocity", "0") != 0;
         px.filmicAllowed  = i("r_filmic", "1") != 0;
+        px.motionBlur     = i("r_motionblur", "0") != 0;
+        px.mbShutter      = f("r_mb_shutter", "0.5");
+        px.mbRefFps       = f("r_mb_reffps",  "60");
+        px.mbSamples      = i("r_mb_samples", "9");
+        px.mbMaxBlur      = f("r_mb_maxblur", "0");
+        px.mbSoftZ        = f("r_mb_softz",   "0.05");
+        px.mbDt           = f("r_mb_dt",      "0");
         device.setPostFX(px);
     }
     if (has("r_rtshadows") || has("r_rtsun_size") || has("r_rtpoint_max") ||
@@ -402,6 +421,8 @@ inline size_t hashLiveHostCVars(const x3::con::IConsole& console) {
         "r_tonemap", "r_bloom", "r_bloomintensity", "r_bloomthreshold",
         "r_autoexposure", "r_aespeed", "r_aemin", "r_aemax", "r_aekey",
         "r_taa", "r_taasharpen", "r_velocity", "r_filmic",
+        "r_motionblur", "r_mb_shutter", "r_mb_reffps", "r_mb_samples",
+        "r_mb_maxblur", "r_mb_softz", "r_mb_dt",
         "r_ssao", "r_ssao_radius", "r_ssao_bias", "r_ssao_intensity", "r_ssao_power", "r_ssao_strength",
         "r_ssgi", "r_ssgi_intensity", "r_ssgi_strength",
         "r_rtao", "r_rtao_radius", "r_rtao_rays", "r_rtao_strength",
@@ -462,6 +483,10 @@ inline void pushLiveHostCVarsToDevice(const x3::con::IConsole& console, x3::rhi:
     px.autoExposure = b("r_autoexposure"); px.aeSpeed = f("r_aespeed"); px.aeMin = f("r_aemin");
     px.aeMax = f("r_aemax"); px.aeKey = f("r_aekey"); px.taa = b("r_taa"); px.taaSharpen = f("r_taasharpen");
     px.velocity = b("r_velocity"); px.filmicAllowed = b("r_filmic");
+    px.motionBlur = b("r_motionblur"); px.mbShutter = f("r_mb_shutter");
+    px.mbRefFps = f("r_mb_reffps");    px.mbSamples = i("r_mb_samples");
+    px.mbMaxBlur = f("r_mb_maxblur");  px.mbSoftZ = f("r_mb_softz");
+    px.mbDt = f("r_mb_dt");
     device.setPostFX(px);
 
     x3::rhi::IRenderDevice::RtShadowParams rs{};

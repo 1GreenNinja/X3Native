@@ -142,6 +142,10 @@ add_library(x3app SHARED
     descent_slide.cpp
     basis_test.cpp
     prim_light_test.cpp
+    # MOTION-DOMAIN lane: the reusable camera-on-rails verification rig, and the
+    # --test-motionblur gate that uses it.
+    motion_rig.cpp
+    motion_blur_test.cpp
     cluster_light_test.cpp
     world_hosts/host_descentslide.cpp
     world_hosts/host_shipwindows.cpp
@@ -397,6 +401,12 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/fog.frag
     ${CMAKE_SOURCE_DIR}/shaders/volumetric.frag
     ${CMAKE_SOURCE_DIR}/shaders/taa_resolve.frag
+    # MOTION BLUR (delta #1): tile-max / neighbour-max velocity dilation + the
+    # depth-ordered reconstruction filter. Absent .spv => the pipelines fail to
+    # create, the passes are never built, and the post chain is unchanged.
+    ${CMAKE_SOURCE_DIR}/shaders/mb_tilemax.frag
+    ${CMAKE_SOURCE_DIR}/shaders/mb_neighbormax.frag
+    ${CMAKE_SOURCE_DIR}/shaders/mb_blur.frag
     ${CMAKE_SOURCE_DIR}/shaders/autoexposure.comp
     ${CMAKE_SOURCE_DIR}/shaders/depth.vert
     ${CMAKE_SOURCE_DIR}/shaders/depth_cutout.vert
