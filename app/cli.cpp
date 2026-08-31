@@ -98,6 +98,14 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         if (a == "--test-rtshadows") { o.smoketest = true; o.testRtShadows = true; continue; }
         // Zero-stutter flythrough — handled OUTSIDE the chain (same C1061 reason).
         if (a == "--test-framepacing") { o.testFramePacing = true; continue; }
+        // MOTION-DOMAIN gate: the camera-on-rails rig + the motion-blur pass.
+        // Parsed HERE (the standalone-if zone) and not in the else-if chain
+        // below, which is already at the MSVC C1061 nesting limit.
+        if (a == "--test-motionblur") {
+            o.testMotionBlur = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.motionBlurOutDir = argv[++i];
+            continue;
+        }
         if (a == "--test-boottime") {
             o.testBootTime = true;
             if (i + 1 < argc && argv[i + 1][0] != '-')

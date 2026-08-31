@@ -155,6 +155,24 @@ void registerEngineConsoleCVars(x3::con::IConsole& console) {
     // resolve pass -> byte-identical to the pre-TAA render path (A/B).
     console.registerCVar("r_taa",        "1",    "temporal AA: 1 = jitter + history resolve (default), 0 = off (byte-identical pre-TAA path)");
     console.registerCVar("r_taasharpen", "0.25", "post-TAA RCAS-style sharpen amount (0 = off; only applied while r_taa 1)");
+    // ---- MOTION BLUR (delta #1) — DEFAULT OFF --------------------------------
+    // The second consumer of the per-object velocity buffer: a tile-max /
+    // neighbour-max / depth-ordered reconstruction chain between the TAA history
+    // copy and auto-exposure. It changes every frame of every world, so it is
+    // OPTED INTO rather than discovered, and every existing determinism basin
+    // stays byte-identical while r_motionblur is 0.
+    // Requires r_velocity 1 (and therefore r_taa 1 plus a depth pre-pass); with
+    // velocity unavailable the passes are never built at all.
+    // r_mb_shutter is quoted AT r_mb_reffps: the blur is dt-normalised to that
+    // reference, so the look is identical at 30, 60 and 165 Hz. See
+    // engine/rhi/MotionBlur.h for the derivation.
+    console.registerCVar("r_motionblur", "0",    "motion blur (0 = off, default; needs r_velocity 1 + r_taa 1)");
+    console.registerCVar("r_mb_shutter", "0.5",  "motion-blur shutter fraction at r_mb_reffps (0.5 = the film 180-degree shutter)");
+    console.registerCVar("r_mb_reffps",  "60",   "motion-blur reference framerate the shutter is quoted against (blur is dt-normalised to it)");
+    console.registerCVar("r_mb_samples", "9",    "motion-blur taps along the blur vector (3..31)");
+    console.registerCVar("r_mb_maxblur", "0",    "motion-blur length cap in pixels (0 = the dilation's exact bound, tile*reach)");
+    console.registerCVar("r_mb_softz",   "0.05", "motion-blur depth-ordering band, as a fraction of the centre pixel's view distance");
+    console.registerCVar("r_mb_dt",      "0",    "motion-blur FIXED frame delta in seconds (0 = measured; headless uses 1/r_mb_reffps for reproducible captures)");
     // Metal ambient-specular floor (mesh.frag IBL path): metals in a DARK baked
     // environment keep an F0-tinted ambient response instead of rendering black.
     // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
