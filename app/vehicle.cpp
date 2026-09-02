@@ -93,7 +93,7 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
 
     // --- Chassis dynamic body (a box). Layer Dynamic. ---
     m_chassis = physics.addBox(x3::phys::Vec3{m_hx, m_hy, m_hz},
-                               x3::phys::Vec3{x, y, z}, 1300.0f, x3::phys::Layer::Dynamic);
+                               x3::phys::Vec3{x, y, z}, 1083.2f, x3::phys::Layer::Dynamic);
     if (!m_chassis.valid()) return false;
 
     // --- 4 wheels at the HERO-CAR GLB stations (CTR, after the nose flip to the
@@ -135,8 +135,10 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
     // keeps the coupling tight so peak-torque changes are felt at the wheels
     // (verified by --test-vehparts P3/P6 tick ordering).
     vd.clutchStrength = 100.0f;
-    // Wheel rays cast as Dynamic so they stand on the Static terrain (Static-vs-
-    // Static doesn't collide in the engine matrix; Dynamic-vs-Static does).
+    // Wheel rays FILTER VIA THE COLLISION MATRIX (Jolt's DefaultObjectLayerFilter),
+    // not exact-match. Dynamic collides with Static per the matrix, so Dynamic lets
+    // the wheels see the Static ground; Static would MISS it (Static-vs-Static is
+    // disabled in the engine matrix). Leave at Dynamic.
     vd.groundLayer = x3::phys::Layer::Dynamic;
     m_ctl.reset(x3::phys::createWheeledVehicle(physics, vd));
     if (!m_ctl) { physics.removeBody(m_chassis); m_chassis = {}; return false; }

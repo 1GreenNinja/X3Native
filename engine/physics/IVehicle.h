@@ -108,12 +108,12 @@ struct WheeledVehicleDesc {
     float maxEngineTorque = 600.0f;  // engine peak torque (Nm)
     float maxEngineRPM    = 6000.0f; // engine redline (rpm)
     float clutchStrength  = 10.0f;   // transmission clutch strength
-    // The object layer the wheel ground-rays are cast AS. A ray on this layer hits
-    // a body when the engine's collision matrix says the two layers collide. The
-    // terrain/world ground is layer Static, and (per the matrix) Static-vs-Static
-    // does NOT collide while Dynamic-vs-Static DOES — so the wheel rays must be cast
-    // as Dynamic to stand on the Static ground. Default Dynamic (the chassis's own
-    // layer); the tester excludes the chassis body so a wheel never hits its own car.
+    // The object layer the wheel ground-rays FILTER ON. Jolt's
+    // VehicleCollisionTesterRay uses DefaultObjectLayerFilter — the COLLISION MATRIX,
+    // not exact-match — so a ray hits bodies the matrix says COLLIDE with this layer.
+    // Per the engine matrix, Dynamic collides with Static (so Dynamic sees the Static
+    // ground) while Static does NOT collide with Static (a Static filter misses the
+    // ground). Leave at Dynamic. The chassis is excluded by the body filter.
     Layer groundLayer = Layer::Dynamic;
     // Forward / up of the chassis in its LOCAL frame (CONVENTIONS.md: -Z fwd, +Y up).
     float forward[3] = { 0.0f, 0.0f, -1.0f };

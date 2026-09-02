@@ -42,7 +42,7 @@ void makeUnitCylinderY(uint32_t segments,
 // ---------------------------------------------------------------------------
 class DriveDemo {
 public:
-    // Spawn the car at (x,y,z). The chassis is a ~1300 kg box sized to the HERO
+    // Spawn the car at (x,y,z). The chassis is a 2388 lb / ~1083 kg box sized to the HERO
     // CAR GLB (CTR: 1.81 x 1.3 x 4.3 m, wheel stations from the model); 4 wheels
     // (front steered, rear powered + handbrake). Returns false if the controller
     // failed. build() = buildPhysics() + the graybox render meshes.
