@@ -12,7 +12,7 @@
         { "id": "fm0",
           "if": [ {"flag": "aria.interrupted"} ],
           "else": "fm0_alt",
-          "line": "*she won't look at the thing you killed* Is it off me. Tell me it's off me. Don't describe it — yes or no.",
+          "line": "*she's flushed, breathless, and won't look at the man you put down* Is it stopped. Tell me it's stopped — the cold part, out of me. Don't describe what you did to him — yes or no.",
           "choices": [
             { "text": "It's dead. It's done. Look at me — just me.", "next": "fm1", "fx": [ {"karma": 2}, {"love": 2} ] },
             { "text": "You're fine. Can you walk?", "next": "fm1b" },

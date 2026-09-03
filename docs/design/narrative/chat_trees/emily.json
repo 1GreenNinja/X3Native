@@ -12,7 +12,7 @@
         { "id": "fm0",
           "if": [ {"flag": "emily.interrupted"} ],
           "else": "fm0_alt",
-          "line": "*she's narrating. Mid-attack, strapped down, and she was NARRATING — her voice is shredded from doing it for hours.* —subject reports cessation of procedure at t-plus unknown, intervention by — *she sees you, and the clinical voice cracks clean in half* — by you. You. Sixty seconds ago I was a footnote in my own study. Say something so I know which side of the data I'm on.",
+          "line": "*she's narrating. Mid-attack, still flushed, and she was NARRATING — her voice is shredded from doing it for hours.* —subject reports cessation of procedure at t-plus unknown, intervention by — *she sees you, and the clinical voice cracks clean in half* — by you. You. The pleasure response was— irrelevant. Irrelevant. The vector. Tell me the vector's inert and I'll believe which side of the data I'm on.",
           "choices": [
             { "text": "You're on the side that walks out of here. I'm Jake.", "next": "fm1", "fx": [ {"karma": 2} ] },
             { "text": "You were recording it? While it happened to you?", "next": "fm1b" },

@@ -1,0 +1,74 @@
+[
+  {
+    "name": "Idle",
+    "action_id": 0,
+    "task_id": "01a00622-c3e0-7b96-8341-30e1479919a0",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/siren\\BossTheSiren_Idle.glb"
+  },
+  {
+    "name": "Walk",
+    "action_id": 1,
+    "task_id": "01a00622-c788-7b97-b34d-148fd09a8aaf",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/siren\\BossTheSiren_Walk.glb"
+  },
+  {
+    "name": "Run",
+    "action_id": 14,
+    "task_id": "01a00622-ca8b-7b61-a0c8-60ce074cd12d",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/siren\\BossTheSiren_Run.glb"
+  },
+  {
+    "name": "Attack",
+    "action_id": 4,
+    "task_id": "01a00622-cdc2-7b62-97c3-34d175a8e620",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/siren\\BossTheSiren_Attack.glb"
+  },
+  {
+    "name": "Attack2",
+    "action_id": 97,
+    "task_id": "01a00622-d04d-7d53-b19a-a6973075cad2",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/siren\\BossTheSiren_Attack2.glb"
+  },
+  {
+    "name": "Death",
+    "action_id": 8,
+    "task_id": "01a00622-d362-7d56-9918-1aa19ce56e99",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/siren\\BossTheSiren_Death.glb"
+  },
+  {
+    "name": "Hitreaction",
+    "action_id": 178,
+    "task_id": "01a00622-d64a-7659-9868-2e27e7ed478d",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/siren\\BossTheSiren_Hitreaction.glb"
+  },
+  {
+    "name": "Taunt",
+    "action_id": 308,
+    "task_id": "01a00622-d988-7d58-bd54-7730967595bb",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/siren\\BossTheSiren_Taunt.glb"
+  }
+]

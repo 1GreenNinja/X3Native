@@ -1,15 +1,15 @@
 {
-  "_note": "X3Native rescue-girls dialog — Tim brief 2026-05-25. The captives are being injected/impregnated with ALIEN DNA by the attackers. Jake must interrupt + kill the attackers. STATES: captive_frantic (mid-attack, terror, calling Jake), rescued_grateful (saved before infection takes — relief + thanks), companion_amorous (now following Jake — warm/flirty/devoted), infected_lost (NOT saved in time — infection completes, they transform into a boss; horror). Mature horror tone, NOT gratuitous. FIRST DRAFT — distinct voices per girl for Tim to refine. Wire into rescue.cpp per-victim dialog + a subtitle/voice UI.",
+  "_note": "X3Native rescue-girls dialog — Tim brief 2026-05-25, register corrected 2026-08-15 (see docs/design/WARD_SCENE_REGISTER.md). The captives are with their PARTNERS — men they are genuinely attracted to — and the physical act is enjoyed, explicitly and vocally; the horror is ONLY the Alien DNA being injected/impregnated (infection + transformation). Jake must interrupt + injure/kill/cure the infected partner. STATES: captive_frantic (mid-act, explicit pleasure tangled with dread at the DNA, calling Jake), rescued_grateful (saved before infection takes — relief + thanks), companion_amorous (now following Jake — warm/flirty/devoted), infected_lost (NOT saved in time — infection completes, they transform into a boss; horror). Reproductive/body horror, not sexual violence. FIRST DRAFT — distinct voices per girl for Tim to refine. Wire into rescue.cpp per-victim dialog + a subtitle/voice UI.",
   "_states": ["captive_frantic", "rescued_grateful", "companion_amorous", "infected_lost"],
   "girls": {
     "Aria": {
       "model_placeholder": "AnnaCasual.glb",
-      "personality": "soft, frightened civilian — pure terror under attack, tearful tenderness when saved",
+      "personality": "soft, frightened civilian — pleasure and dread tangled under the infection; tearful tenderness when saved",
       "captive_frantic": [
-        "No no no — get it OFF me! JAKE!",
-        "It's cold — something's going IN, oh god, please—",
-        "I can feel it spreading, Jake, HURRY, I don't want to change—",
-        "Don't let me become one of them. Please. PLEASE."
+        "Oh— yes, harder— no, the cold part's going IN, Jake, please—",
+        "Don't stop, god, don't stop— but it's spreading, I can feel it rewriting me, and I don't want to change—",
+        "It feels so good— that's why I can't think— Jake, HURRY, it's still going in—",
+        "Harder— yes— just don't let me become one of them. Please. He's not the one I'm afraid of."
       ],
       "rescued_grateful": [
         "You came. You actually came back for me…",
@@ -28,12 +28,12 @@
     },
     "Keisha": {
       "model_placeholder": "AnnaBodySuit.glb",
-      "personality": "FIERCE, defiant, all swagger — rage drowns the fear; once saved she's bold, possessive, unapologetically flirty",
+      "personality": "FIERCE, defiant, all swagger — rage drowns the fear; owns what she wants and won't be bred against her will; once saved she's bold, possessive, unapologetically flirty",
       "captive_frantic": [
-        "Get your filthy CLAWS off me — JAKE! JAKE, I swear to GOD—!",
-        "I am NOBODY's damn brood-mare! CUT ME LOOSE, right NOW!",
-        "It's in my veins, it's BURNING — put a round in it, Jake, DO IT—!",
-        "If this thing takes me you END me, you hear?! PROMISE me, Jake — PROMISE!"
+        "HARDER— yeah, like that— now put a round in the THING in my veins, Jake, DO IT—!",
+        "Oh that's good— don't you dare stop— but it's REWRITING me and I am NOBODY's damn brood-mare!",
+        "Yes— YES— feels so good, and that's the part I hate. It's in me — CUT IT OUT, Jake—!",
+        "If it takes me you END me — not the man, the THING. Now harder— and PROMISE me, Jake—!"
       ],
       "rescued_grateful": [
         "About DAMN time, soldier. …couldn't have held on one more second. Thank you.",
@@ -54,12 +54,12 @@
     "Emily": {
       "model_placeholder": "AnnaTactical.glb",
       "intended_model": "thin, curvy BLONDE SCIENTIST (NOT in the asset set yet — Anna is a placeholder)",
-      "personality": "BRILLIANT analytical scientist — narrates the horror in clinical real-time even mid-terror, rattles off jargon, nerdy and breathless; gratitude + affection come out as data she can't stop reporting",
+      "personality": "BRILLIANT analytical scientist — narrates the horror (and her own unwanted pleasure) in clinical real-time, rattles off jargon, nerdy and breathless; gratitude + affection come out as data she can't stop reporting",
       "captive_frantic": [
-        "It's a retroviral vector — it's splicing INTO my genome, Jake, it is REWRITING me—!",
-        "Transcription's at sixty percent — oh god — you have maybe a MINUTE before it's irreversible!",
-        "Don't let it cross the blood-brain barrier — I can still think, I can still HELP you, please—!",
-        "I spent my entire CAREER studying these. I never — NEVER — wanted to be the specimen!"
+        "Oh— the pleasure response is— non-trivial— harder is not a valid treatment variable but— oh god— the vector is splicing INTO my genome, Jake—!",
+        "Don't stop— I need to isolate the confound— transcription's at sixty percent, you have maybe a MINUTE—",
+        "That feels— yes— that feels good, and that is exactly the wrong variable to reward while it REWRITES me—!",
+        "I should not be enjoying the substrate— I am— harder— I never wanted to be the specimen!"
       ],
       "rescued_grateful": [
         "You severed the sequence before integration — the payload's inert. I'm clean. I'm CLEAN!",
@@ -79,11 +79,11 @@
     },
     "Sarah": {
       "model_placeholder": "AnnaCasual.glb (F7 captive — the master-hack ally per spire_top)",
-      "personality": "wry hacker — gallows humor under terror, becomes the team's way through the system",
+      "personality": "wry hacker — gallows humor under the dread, becomes the team's way through the system",
       "captive_frantic": [
-        "Okay this is NOT the kind of penetration testing I do — JAKE!",
-        "They've got me jacked into something, it's pushing code into ME, get it OUT—",
-        "I can't reach the kill-switch, my hands — Jake, my HANDS—"
+        "Okay, fine — I'm enjoying it, that's the payload talking. HARDER— no, the other thing — get the code OUT of me, JAKE—!",
+        "Oh that feels good — which is how I know it's not me — it's pushing warm code into me, get it OUT—",
+        "Harder— yeah— wait, I can't reach the kill-switch, my hands— Jake, my HANDS—"
       ],
       "rescued_grateful": [
         "You yanked the plug. I'm still root on my own brain. Thank you, seriously.",
@@ -101,9 +101,9 @@
       "model_placeholder": "AnnaTactical.glb (F5 Drone Manufacturing captive)",
       "personality": "quiet, tough survivor — few words, deep loyalty once saved",
       "captive_frantic": [
-        "Jake. Now. It's almost done. NOW.",
-        "Don't let me become a drone for them. Don't.",
-        "Cut it. Cut it cut it cut it—"
+        "Harder— ...it's still going in. Jake. NOW.",
+        "Feels good. Feels wrong. Don't let me become a drone.",
+        "Yes— ...cut it. Cut it cut it cut it—"
       ],
       "rescued_grateful": [
         "…you came. Most wouldn't have. I won't forget it.",

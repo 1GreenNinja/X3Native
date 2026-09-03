@@ -12,7 +12,7 @@
         { "id": "fm0",
           "if": [ {"flag": "lena.interrupted"} ],
           "else": "fm0_alt",
-          "line": "*she doesn't scream. She's watching the dead thing with a scavenger's eyes — checking it's dead the way you check a wire's not live.* ...Huh. *then, to you, hoarse:* Knife. Left ankle. They never check the left ankle.",
+          "line": "*she doesn't scream. She's catching her breath, watching the man on the floor with a scavenger's eyes — checking what he is now the way you check a wire's not live.* ...Huh. *then, to you, hoarse:* Knife. Left ankle. They never check the left ankle.",
           "choices": [
             { "text": "(cut her loose with her own knife)", "next": "fm1", "fx": [ {"karma": 1} ] },
             { "text": "You're taking this well.", "next": "fm1b" },

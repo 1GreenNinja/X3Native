@@ -12,7 +12,7 @@
         { "id": "fm0",
           "if": [ {"flag": "keisha.interrupted"} ],
           "else": "fm0_alt",
-          "line": "*she's still straining against the straps, staring at the corpse like she killed it herself* Tell me it felt something when it died. Tell me it had one second of knowing it lost. *only then does she look at you* ...You. You're real. Knife's in my left boot — they missed it. Cut me out.",
+          "line": "*she's still breathing hard, staring at the man she was just under, jaw tight* He was warm, and then you— *she looks at you, hard* Don't make me say the soft part. Just tell me the THING is out of me. Then you're real, and my knife's in my left boot — they missed it. Cut me out.",
           "choices": [
             { "text": "(take the knife, cut the straps) It knew. I made sure.", "next": "fm1", "fx": [ {"karma": 1}, {"love": 2} ] },
             { "text": "(cut her loose) You're safe now.", "next": "fm1b" },

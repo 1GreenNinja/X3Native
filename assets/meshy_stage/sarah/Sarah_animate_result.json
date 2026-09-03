@@ -1,0 +1,65 @@
+[
+  {
+    "name": "Idle",
+    "action_id": 0,
+    "task_id": "01a00621-e17b-7b1d-a0ed-78554f0e5fb1",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/sarah\\Sarah_Idle.glb"
+  },
+  {
+    "name": "Walk",
+    "action_id": 1,
+    "task_id": "01a00621-e300-7b3e-84f4-4996fffe5fb3",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/sarah\\Sarah_Walk.glb"
+  },
+  {
+    "name": "Run",
+    "action_id": 14,
+    "task_id": "01a00621-e415-7b1e-b1d0-5fe71dd11930",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/sarah\\Sarah_Run.glb"
+  },
+  {
+    "name": "Aim",
+    "action_id": 104,
+    "task_id": "01a00621-e54d-7638-b118-4694cedb064b",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/sarah\\Sarah_Aim.glb"
+  },
+  {
+    "name": "Death",
+    "action_id": 8,
+    "task_id": "01a00621-e662-7b1f-8e5c-e44c493bdbe1",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/sarah\\Sarah_Death.glb"
+  },
+  {
+    "name": "Hitreaction",
+    "action_id": 178,
+    "task_id": "01a00621-e788-7b20-b989-060fe32ce6ac",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/sarah\\Sarah_Hitreaction.glb"
+  },
+  {
+    "name": "Talk",
+    "action_id": 56,
+    "task_id": "01a00621-e893-7b2c-af74-097b9a9607da",
+    "status": "SUCCEEDED",
+    "credits": 3,
+    "error": null,
+    "glb": "assets/meshy_stage/sarah\\Sarah_Talk.glb"
+  }
+]
