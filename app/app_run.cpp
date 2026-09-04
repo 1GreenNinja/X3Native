@@ -122,6 +122,7 @@
 #include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 #include "world_cars.h"                    // WORLD CARS: findable/drivable/hackable cars (canonlevel)
+#include "drive_layer.h"                   // THE DRIVE LAYER: AI traffic + the structural interchange, shared with --world tunnel
 #include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
@@ -1521,6 +1522,20 @@ int runDefaultHost(HostContext& hc) {
     // breach is the one way outside — without it there is no outdoors to stream).
     x3::game::WorldRegionGraph canonRegionGraph;
     x3::game::WorldStreamer    canonWstream;
+    // ---- THE DRIVE LAYER (app/drive_layer.h) ------------------------------
+    // The canon world's roads were empty: every AI car and the whole
+    // interchange lived in --world tunnel, a CLI-only dev world. The freeway
+    // itself is SITED BY MEASUREMENT against the city's own authored
+    // alignments (surveyCityFreeway) in the boot slot below, because the city's
+    // "freeway" is a 6 m visual box strip and a dual carriageway owns +-75 m.
+    // The spec + its graded datum are HOST-owned (a terrain corridor is
+    // registered at boot and is permanent); the PAVEMENT and the TRAFFIC are
+    // region-owned — built inside the `city` realize and torn down with it.
+    x3::game::RoadSpec           canonFwySpec;
+    std::vector<float>           canonFwyRoadY;
+    x3::game::InterchangeResult  canonInterchange;
+    bool                         canonFwyOn = false;
+    x3::game::TrafficLayer       canonTrafficLayer;
     bool  canonStreamOn = false;          // SEAM 3 streaming live this run
     float canonStreamPrevX = 0.0f, canonStreamPrevZ = 0.0f;   // velocity feed
     // Risk 3 (XZ-only residency vs the underground): suppress ALL residency work
@@ -3718,6 +3733,96 @@ int runDefaultHost(HostContext& hc) {
             // coplanar with the F1 floors + apron, and would z-fight them.
             terrainStreamer.setKeepOut(xd.x0 - xd.soilOut, xd.z0 - xd.soilOut,
                                        xd.x1 + xd.soilOut, xd.z1 + xd.soilOut);
+            // ---- THE DRIVE LAYER: SITE + CARVE THE CITY FREEWAY -------------
+            // This is the boot slot and it has to be: app/terrain.h's corridor
+            // registry is read-only from the first tile onward, and
+            // terrainStreamer.init() below generates the first tiles. It cannot
+            // live in the `city` region builder for exactly the reason
+            // registerCityFreewayTunnels() cannot — the city is streamed, so
+            // that builder runs long after this door has shut.
+            //
+            // The site is a MEASUREMENT, not a coordinate: surveyCityFreeway()
+            // walks the alignments the city itself declares (its four freeway
+            // tunnel headings and its connector roads), and rejects any run
+            // that clips a district's massing, straddles a surface landmark,
+            // crosses the facility, leaves the `city` region's residency band,
+            // or asks for a cut a freeway would not accept. If nothing
+            // qualifies it says so and the canon world keeps its empty roads —
+            // a floating or clipping freeway is worse than none.
+            const char* fwyEnv = std::getenv("X3_CITY_FREEWAY");
+            if (fwyEnv && fwyEnv[0] == '0') {
+                // DEFAULT ON (NO_SLOP rule 6: the flag is for turning it OFF).
+                // Also the A/B instrument for the perf gate — with this set the
+                // canon world is byte-identical to the pre-drive-layer build.
+                x3::logInfo("--world canonlevel: city freeway disabled by "
+                            "X3_CITY_FREEWAY=0 (no road, no traffic, no interchange)");
+            } else {
+                x3::game::CityFreewaySurveyInput fin;
+                const int cityIdx = canonRegionGraph.indexOf("city");
+                const x3::game::WorldRegionDesc* cityDesc =
+                    cityIdx >= 0 ? &canonRegionGraph.regions[(size_t)cityIdx] : nullptr;
+                if (cityDesc) {
+                    fin.regionAnchorX = cityDesc->anchor[0];
+                    fin.regionAnchorZ = cityDesc->anchor[2];
+                    // WorldStreamer measures residency from the FOOTPRINT EDGE
+                    // and unloads past unloadRadius — that band, not the load
+                    // band, is how far a freeway may reach and still be there
+                    // when the player drives out onto it.
+                    fin.regionReachM  = cityDesc->radius + cityDesc->unloadRadius;
+                }
+                fin.haveKeepOut = true;
+                fin.keepOutX0 = xd.x0 - xd.soilOut; fin.keepOutZ0 = xd.z0 - xd.soilOut;
+                fin.keepOutX1 = xd.x1 + xd.soilOut; fin.keepOutZ1 = xd.z1 + xd.soilOut;
+                fin.haveReachFrom = true;
+                fin.reachFromX = towerCx; fin.reachFromZ = towerCz;
+                x3::game::CityFreewaySurvey fsv = x3::game::surveyCityFreeway(fin);
+                if (fsv.ok) {
+                    canonFwySpec = fsv.spec;
+                    const x3::game::RoadBuildResult rb =
+                        x3::game::registerRoad(canonFwySpec, &canonFwyRoadY);
+                    canonFwyOn = rb.ok;
+                    if (!rb.ok) {
+                        x3::logWarn("--world canonlevel: the city freeway was sited but "
+                                    "would not register (corridor registry full?) — "
+                                    "the roads stay empty");
+                    } else {
+                        char fb[256];
+                        std::snprintf(fb, sizeof(fb),
+                            "--world canonlevel: city freeway carved — %.0f m, %u corridors, "
+                            "max grade %.1f%%, max cut %.1f m",
+                            rb.lengthM, rb.corridorCount, rb.maxGradePct, rb.maxCutM);
+                        x3::logInfo(fb);
+                        canonInterchange = x3::game::standUpInterchange(
+                            "--world canonlevel", true, canonFwySpec, canonFwyRoadY, nullptr);
+                        if (!canonInterchange.built) {
+                            // Say WHY in the freeway's own numbers, not just
+                            // the siting code's verdict. The one gate this
+                            // world fails is the OPEN MEDIAN: the overpass's
+                            // single pier stands in the median, so
+                            // registerInterchange wants >= 6 m of median half
+                            // at the crossing, and computeMedianPlan only
+                            // widens the median where the graded datum stays
+                            // within 2.5 m of the natural ground.
+                            const std::vector<float> mp =
+                                x3::game::computeMedianPlan(canonFwySpec, canonFwyRoadY);
+                            float mmax = 0.0f;
+                            for (float m : mp) mmax = std::max(mmax, m);
+                            char mb[256];
+                            std::snprintf(mb, sizeof(mb),
+                                "--world canonlevel: ...the freeway's median never opens past "
+                                "%.1f m half (the pier wants 6.0 m) — this terrain needs up to "
+                                "%.1f m of cut and the median closes to a jersey wall wherever "
+                                "the datum leaves the ground by more than 2.5 m",
+                                mmax, rb.maxCutM);
+                            x3::logWarn(mb);
+                        }
+                    }
+                } else {
+                    x3::logWarn(std::string("--world canonlevel: NO city freeway — ") +
+                                fsv.whyNot + "; the canon roads stay empty and no traffic "
+                                "or interchange is stood up");
+                }
+            }
             terrainStreamer.init(scene, *device, *physics, terrainJobs.get(),
                                  x3::game::worldTerrainConfig(), towerCx, towerCz,
                                  /*radius=*/8);
@@ -3745,7 +3850,8 @@ int runDefaultHost(HostContext& hc) {
             // pads (placeOnTerrain anchors the ground). ----
             canonWstream.setRegionHooks(
                 [&cityCrowds, &cityCrowdSkins, &worldCars, &streetLights,
-                 &canonWstream, cityLightsDense](
+                 &canonWstream, cityLightsDense, &canonFwySpec, &canonFwyRoadY,
+                 &canonInterchange, &canonFwyOn, &canonTrafficLayer, &audio](
                               const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
                               x3::rhi::IRenderDevice& dev, x3::phys::IPhysicsWorld& ph) {
                     // WORLD CARS: park this region's curb cars (the system adds
@@ -3753,6 +3859,32 @@ int runDefaultHost(HostContext& hc) {
                     // lands in the region ledger; teardown below unparks them).
                     worldCars.onRegionBuild(rd.id, ph);
                     if (rd.id != "city") return;
+                    // ---- THE DRIVE LAYER, REGION-OWNED ---------------------
+                    // The freeway's PAVEMENT is Scene geometry and is built
+                    // inside this capture window, so its entities/meshes join
+                    // the city region's ownership ledger and are destroyed with
+                    // it. The TRAFFIC is not Scene geometry at all (traffic.h:
+                    // direct draws + Jolt kinematic bodies), so no ledger can
+                    // capture it — the teardown hook below shuts it down by
+                    // hand, exactly as world_cars does with its parked curb
+                    // cars. Between them, walking back into the facility and
+                    // out again costs one rebuild, and the freeway never
+                    // outlives the city it belongs to.
+                    if (canonFwyOn) {
+                        x3::game::buildRoadRibbon(canonFwySpec, s, dev, ph, &canonFwyRoadY);
+                        x3::game::buildInterchangeGeometry(canonInterchange, s, dev, ph);
+                        // installContactHook=false: the canon world's
+                        // BarrelSystem already owns IPhysicsWorld's ONE contact
+                        // callback (app/barrels.h -> DestructibleManager::init),
+                        // and taking it here would silently kill every
+                        // explodable barrel in the facility.
+                        x3::game::TrafficConfig tcfg;
+                        canonTrafficLayer.build("--world canonlevel", true,
+                                                canonFwySpec, canonFwyRoadY, &dev, &ph,
+                                                audio.get(),
+                                                x3::game::convertedGlbRoot(), tcfg,
+                                                /*installContactHook=*/false);
+                    }
                     auto padY = [](float x, float z) {
                         float g[3]; x3::game::placeOnTerrain(x, z, g);
                         return g[1] + 0.20f;   // stand on the sidewalk/plaza slabs
@@ -3846,12 +3978,19 @@ int runDefaultHost(HostContext& hc) {
                     }
                 },
                 [&cityCrowds, &cityCrowdSkins, &cityChatter, &scene, &worldCars,
-                 &streetLights, &physics](const x3::game::WorldRegionDesc& rd) {
+                 &streetLights, &physics, &canonTrafficLayer](
+                                          const x3::game::WorldRegionDesc& rd) {
                     // WORLD CARS: unpark this region's curb cars (removes our
                     // static bodies; a car currently DRIVEN is the host-owned
                     // live rig and survives the eviction untouched).
                     worldCars.onRegionTeardown(rd.id, *physics);
                     if (rd.id != "city") return;
+                    // THE DRIVE LAYER: the traffic sim owns Jolt kinematic
+                    // bodies the region ledger cannot see, so it is torn down
+                    // BY HAND here — before any slot release, like every other
+                    // hand-owned system in this hook. The freeway's pavement is
+                    // ledger-owned and goes with the region on its own.
+                    canonTrafficLayer.shutdown(physics.get());
                     // SKINNED CITIZENS first (hide the host-owned characters +
                     // detach from the dying agents), THEN abandon the brains.
                     // The chatter forgets its bubbles/pairs with them (stale
@@ -5008,6 +5147,7 @@ int runDefaultHost(HostContext& hc) {
         // entirely) PLUS playable-build's own teardowns, which shutdownGameSystems() does
         // not cover. Order matters: bodies/ragdolls first, then the streamed world.
         shutdownGameSystems();
+        canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();          // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
@@ -5260,6 +5400,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
@@ -6044,8 +6185,24 @@ int runDefaultHost(HostContext& hc) {
                         std::to_string(staged) + " warp frames (" +
                         std::to_string(staged / 60) + " s sim); live bubbles:" + spots);
         }
+        // SETTLE-LOOP FRAME TIME. The settle loop renders the same content the
+        // live loop does, offscreen — so timing it is how a headless run
+        // measures per-frame cost without opening a window (two engine
+        // instances on one machine collapse each other and lie about perf).
+        // Logged on the capture frame beside the traffic count.
+        const double settleT0 = glfwGetTime();
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
+            // FREEWAY TRAFFIC: the settle loop drives it too, so a capture of
+            // the freeway shows moving traffic rather than a car park, and so
+            // an offscreen frame-time probe measures the real per-frame cost of
+            // the drive layer. Same outdoor PVS gate as the live loop.
+            if (canonTrafficLayer.built() &&
+                scene.roomVisible(x3::game::kStreamedExteriorRoom)) {
+                const float tfoc[3] = { ssEye.x, ssEye.y, ssEye.z };
+                canonTrafficLayer.traffic().setPlayer(tfoc, 0.0f);
+                canonTrafficLayer.traffic().update(dt, tfoc, physics.get());
+            }
             // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
             // onto the device, exactly as the main loop does each frame.
             applyRtaoCVars(*console, *device);
@@ -6672,7 +6829,24 @@ int runDefaultHost(HostContext& hc) {
             // is recorded inside that frame's live command buffer (reads the
             // freshly-rendered, properly-acquired image — validation-clean). The
             // captureFrame() below then waits on that frame's fence + writes the PNG.
-            if (i == kSettleFrames - 1) device->armCapture(screenshotPath.c_str());
+            if (i == kSettleFrames - 1) {
+                device->armCapture(screenshotPath.c_str());
+                // THE DRIVE LAYER, on the record: how many AI cars were actually
+                // live at this camera, and whether the outdoor PVS lane that
+                // gates the whole system was open. Printed on the capture frame
+                // so a shot and its car count are the same measurement.
+                char tb[256];
+                std::snprintf(tb, sizeof(tb),
+                    "[shot-perf] settle %.3f ms/frame over %d frames | traffic %u cars "
+                    "live (%u loose, %u lane changes) | outdoor PVS %s",
+                    (glfwGetTime() - settleT0) * 1000.0 / (double)kSettleFrames,
+                    kSettleFrames,
+                    canonTrafficLayer.built() ? canonTrafficLayer.traffic().liveCount() : 0u,
+                    canonTrafficLayer.built() ? canonTrafficLayer.traffic().looseCount() : 0u,
+                    canonTrafficLayer.built() ? canonTrafficLayer.traffic().laneChangeCount() : 0u,
+                    scene.roomVisible(x3::game::kStreamedExteriorRoom) ? "OPEN" : "closed");
+                x3::logInfo(tb);
+            }
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
@@ -6734,6 +6908,13 @@ int runDefaultHost(HostContext& hc) {
                     if (worldCars.built() &&
                         scene.roomVisible(x3::game::kStreamedExteriorRoom))
                         worldCars.draw(frame);
+                    // FREEWAY TRAFFIC on the offscreen capture path, so a shot
+                    // of the freeway is a shot of the freeway WITH cars on it.
+                    if (canonTrafficLayer.built() &&
+                        scene.roomVisible(x3::game::kStreamedExteriorRoom)) {
+                        const float tcam[3] = { ssEye.x, ssEye.y, ssEye.z };
+                        canonTrafficLayer.traffic().render(frame, tcam);
+                    }
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
                     canonAliens.drawAll(*device, frame, scene);   // CANON ALIENS in captures
                     // ---- HEALTHBAR CAPTURE PROOF (gate: screenshot filename contains
@@ -7167,6 +7348,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
@@ -7354,6 +7536,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
@@ -7470,6 +7653,7 @@ int runDefaultHost(HostContext& hc) {
         // -- supersedes the bare canonPlay/canon45 calls this path used to make. The two
         // playable-build teardowns below are NOT part of shutdownGameSystems(), so they stay.
         shutdownGameSystems();
+        canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();          // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
@@ -7842,6 +8026,7 @@ int runDefaultHost(HostContext& hc) {
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
+        canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         if (spacePlanetMesh.valid())     { device->destroyMesh(spacePlanetMesh); spacePlanetMesh = {}; }
@@ -10076,6 +10261,23 @@ int runDefaultHost(HostContext& hc) {
         for (uint32_t s = 0; s < simSteps; ++s) {
             const bool firstSub = (s == 0);
             const bool drivingNow = canonWorld && worldCars.driving();
+            // ---- FREEWAY TRAFFIC: advance the sim + march the kinematic boxes
+            // BEFORE this sub-step's physics->step (traffic.h's contract), in
+            // the one place that covers all three branches below.
+            //
+            // GATED ON THE OUTDOOR PVS LANE, the same one the streamed planet
+            // and the world cars draw behind. The canon tower sits INSIDE the
+            // city region's footprint, so that region is resident for the whole
+            // indoor game: without this gate the freeway would sim ~300 cars
+            // under the floor while the player is in a cell. With it, an indoor
+            // frame pays one bool test.
+            if (canonTrafficLayer.built() &&
+                scene.roomVisible(x3::game::kStreamedExteriorRoom)) {
+                const float tfoc[3] = { camX, camY, camZ };
+                canonTrafficLayer.traffic().setPlayer(
+                    tfoc, drivingNow ? std::fabs(worldCars.forwardSpeed()) : 0.0f);
+                canonTrafficLayer.traffic().update(x3::net::kSimDt, tfoc, physics.get());
+            }
             if (!noclip && drivingNow) {
                 // ---- WORLD CARS: at the wheel. The player capsule is stashed
                 // (Player::update is skipped — it neither falls nor collides);
@@ -10731,6 +10933,18 @@ int runDefaultHost(HostContext& hc) {
                     beam.color[0] = 1.60f; beam.color[1] = 2.25f; beam.color[2] = 2.80f;
                     fl.insert(fl.begin(), fill);
                     fl.insert(fl.begin(), beam);
+                }
+            }
+            // FREEWAY TRAFFIC's own transients (cop bars, tow beacons, hazard
+            // lamps, the radar sign's wash). Already bounded and sorted
+            // nearest-first by the sim, so a truncation drops the far ones
+            // first — the host owns the ONE setPointLights call and this is
+            // traffic's contribution to it.
+            if (canonTrafficLayer.built() &&
+                scene.roomVisible(x3::game::kStreamedExteriorRoom)) {
+                for (const auto& L : canonTrafficLayer.traffic().lights()) {
+                    if (fl.size() >= lightBudget) break;
+                    fl.push_back(L);
                 }
             }
             if (fl.size() > lightBudget) fl.resize(lightBudget);
@@ -12243,6 +12457,13 @@ int runDefaultHost(HostContext& hc) {
                 if (worldCars.built() &&
                     scene.roomVisible(x3::game::kStreamedExteriorRoom))
                     worldCars.draw(frame);
+                // FREEWAY TRAFFIC: same outdoor PVS lane, same direct-draw
+                // treatment — a deep-interior frame never pays for it.
+                if (canonTrafficLayer.built() &&
+                    scene.roomVisible(x3::game::kStreamedExteriorRoom)) {
+                    const float tcam[3] = { camX, camY, camZ };
+                    canonTrafficLayer.traffic().render(frame, tcam);
+                }
             }
             // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
