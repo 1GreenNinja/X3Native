@@ -89,6 +89,7 @@ struct HostContext {
 
     // ---- Per-host screenshot proof flags + paths (showroom family etc.) ----
     bool        carShot = false;            std::string carShotDir;
+    bool        dealershipShot = false;     std::string dealershipShotDir;
     // --car <id>: which app/car_roster.h CarSpec the player drives and the
     // showcase poses. Default "gbx" (see CliOptions::carId — PAIRED, change
     // both). Hosts resolve it with x3::game::carSpecById(carId.c_str()).

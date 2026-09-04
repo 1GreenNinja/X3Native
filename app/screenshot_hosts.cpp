@@ -23,6 +23,7 @@
 #include "mesh_prims.h"
 #include "env_art.h"
 #include "car_roster.h"    // --car <id>: which hero car the showcase poses
+#include "dealership.h"    // --screenshot-dealership: runDealershipScreenshots
 #include "monster.h"
 #include "anim.h"
 #include "terrain.h"
@@ -2221,6 +2222,15 @@ static int dispatchScreenshotHostsImpl(HostContext& hc) {
     // Headless + 4x SSAA; each still settles ~90 frames so TAA history, SSR,
     // auto-exposure and the IBL probe converge before capture.
     // ======================================================================
+    // DEALERSHIP night set (--screenshot-dealership [outDir]) — the whole rig
+    // lives in app/dealership.cpp (runDealershipScreenshots); this is dispatch.
+    if (hc.dealershipShot) {
+        const int rc = x3::game::runDealershipScreenshots(device, hc.dealershipShotDir);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return rc;
+    }
     if (carShot) {
         namespace fs = std::filesystem;
         std::error_code mkec; fs::create_directories(carShotDir, mkec);
