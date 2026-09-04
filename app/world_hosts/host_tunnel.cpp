@@ -40,6 +40,7 @@
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
 #include "../underground_river.h" // W-UNDERRIVER — the river under the mountain
 #include "../traffic.h"          // W-TRAFFIC — AI traffic on the 16-lane freeway
+#include "../drive_layer.h"      // THE DRIVE LAYER — the shared traffic/interchange stand-up
 #include "../gas_station.h"      // W-STATIONS — forecourts + the fuel stub
 #include "../factory.h"          // W-FACTORY — the Glimvale Works + the golden tickets
 #include "../vehicle.h"
@@ -751,26 +752,24 @@ int hostTunnel(HostContext& hc) {
     x3::game::InterchangeResult interchange;
     bool interOn = false;
     {
-        const char* e = std::getenv("X3_INTERCHANGE");
-        interOn = ringOn && !(e && e[0] == '0');   // DEFAULT ON (NO_SLOP rule 6)
-        if (interOn) {
-            std::vector<const x3::game::RoadSpec*> avoidI;
-            if (connOn) avoidI.push_back(&connector.spec);
-            if (outerOn) avoidI.push_back(&outerRing.spec);
-            if (riverOn) avoidI.push_back(&riverRoad.spec);
-            if (circuitOn) {
-                avoidI.push_back(&rangeCircuit.spec);
-                avoidI.push_back(&rangeCircuit.accessSpec);
-            }
-            if (summitSpur.built) avoidI.push_back(&summitSpur.spec);
-            if (ridgeRoad.built)  avoidI.push_back(&ridgeRoad.spec);
-            if (outerConnOn)      avoidI.push_back(&outerConn.spec);
-            interchange = x3::game::registerInterchange(ringSpec, ringRoadY, &avoidI);
-            interOn = interchange.built;
-            if (!interchange.built)
-                x3::logWarn(std::string("--world tunnel: interchange NOT built — ") +
-                            interchange.whyNot);
+        // The env gate, the whyNot logging and the "sited at" report all live
+        // in app/drive_layer.cpp now — the canon host stands its interchange up
+        // through the SAME function, so a change to the gate cannot land in one
+        // world and miss the other.
+        std::vector<const x3::game::RoadSpec*> avoidI;
+        if (connOn) avoidI.push_back(&connector.spec);
+        if (outerOn) avoidI.push_back(&outerRing.spec);
+        if (riverOn) avoidI.push_back(&riverRoad.spec);
+        if (circuitOn) {
+            avoidI.push_back(&rangeCircuit.spec);
+            avoidI.push_back(&rangeCircuit.accessSpec);
         }
+        if (summitSpur.built) avoidI.push_back(&summitSpur.spec);
+        if (ridgeRoad.built)  avoidI.push_back(&ridgeRoad.spec);
+        if (outerConnOn)      avoidI.push_back(&outerConn.spec);
+        interchange = x3::game::standUpInterchange("--world tunnel", ringOn,
+                                                   ringSpec, ringRoadY, &avoidI);
+        interOn = interchange.built;
     }
 
     // THE MEGA STACK (X3_STACK=0 to disable) — the I-17/I-10 four-level
@@ -1497,18 +1496,7 @@ int hostTunnel(HostContext& hc) {
     // at half cross-section, and EIGHT junction mouths — every ramp blends
     // into both roads with the same ruled twist + swooping fillets every
     // at-grade branch gets.
-    if (interOn) {
-        x3::game::buildRoadRibbon(interchange.spec, scene, *device, *phys,
-                                  &interchange.roadY);
-        x3::game::buildOverpassDeck(interchange, scene, *device, *phys);
-        for (int q = 0; q < 4; ++q) {
-            const auto& rp = interchange.ramp[q];
-            if (!rp.built) continue;
-            x3::game::buildRoadRibbon(rp.spec, scene, *device, *phys, &rp.roadY);
-            x3::game::buildJunctionMouth(rp.fwyJct, scene, *device, *phys);
-            x3::game::buildJunctionMouth(rp.crossJct, scene, *device, *phys);
-        }
-    }
+    if (interOn) x3::game::buildInterchangeGeometry(interchange, scene, *device, *phys);
     // THE MEGA STACK: the crossing freeway's ribbon (its deck reach is a gap
     // the structure owns), the four flyover ramps' at-grade tails, and then
     // the whole four-level structure — twin box-girder decks, ramp decks,
@@ -2626,32 +2614,19 @@ int hostTunnel(HostContext& hc) {
     // traffic ;->" — kinematic lane-followers on the inner tour's own lane
     // splines (app/traffic.h). DEFAULT ON (NO_SLOP rule 6: the flag is for
     // turning it OFF) — X3_TRAFFIC=0 disables.
-    x3::game::FreewayTraffic traffic;
-    struct TrafficContactCtx {
-        x3::game::FreewayTraffic* t = nullptr;
-        x3::phys::IPhysicsWorld*  p = nullptr;
-    } trafficCtx;
-    {
-        const char* e = std::getenv("X3_TRAFFIC");
-        const bool trafficOn = ringOn && !(e && e[0] == '0');
-        if (trafficOn &&
-            traffic.build(ringSpec, ringRoadY, device, phys.get(),
-                          x3::game::convertedGlbRoot(), x3::game::TrafficConfig{},
-                          audioOn ? audio.get() : nullptr)) {
-            // The ONE global contact callback (nothing else in this host uses
-            // it; the canon world's monster facade has its own world). A hard
-            // hit converts the struck car to a dynamic body — the work-zone
-            // drum pattern, car-sized.
-            trafficCtx.t = &traffic;
-            trafficCtx.p = phys.get();
-            phys->setContactCallback(
-                [](x3::phys::BodyId a, x3::phys::BodyId b, const float*,
-                   const float*, float impulse, void* user) {
-                    auto* c = static_cast<TrafficContactCtx*>(user);
-                    c->t->onContact(a, b, impulse, c->p);
-                }, &trafficCtx);
-        }
-    }
+    // The build, the ONE global contact hook and the teardown ORDER are the
+    // drive layer's now (app/drive_layer.h) — the canon host uses the same
+    // TrafficLayer from its city-region hooks. `traffic` stays a reference to
+    // the same FreewayTraffic every frame call below already used, so the sim
+    // itself is untouched. Nothing else in THIS host wants the contact
+    // callback, so it takes it (the canon host's BarrelSystem already owns it
+    // there and passes installContactHook=false).
+    x3::game::TrafficLayer trafficLayer;
+    x3::game::FreewayTraffic& traffic = trafficLayer.traffic();
+    trafficLayer.build("--world tunnel", ringOn, ringSpec, ringRoadY,
+                       device, phys.get(), audioOn ? audio.get() : nullptr,
+                       x3::game::convertedGlbRoot(), x3::game::TrafficConfig{},
+                       /*installContactHook=*/true);
 
     // THE RIVER HOLDS WATER — one lambda, BOTH render paths. The water pass
     // used to be armed only inside the interactive loop, so every headless
@@ -4838,8 +4813,7 @@ int hostTunnel(HostContext& hc) {
         campfires.shutdown(*device);
         if (townOn) town.shutdown(*device);
         forests.shutdown(*device);
-        phys->setContactCallback(nullptr, nullptr);   // trafficCtx dies with this scope
-        traffic.shutdown(phys.get());
+        trafficLayer.shutdown(phys.get());   // contact hook cleared, then kinematic boxes out
         riverLife.shutdown(audioOn ? audio.get() : nullptr);
         tunnel.shutdown(*device, *phys);
         for (auto& w : tourBores) w->shutdown(*device, *phys);
@@ -7746,8 +7720,7 @@ int hostTunnel(HostContext& hc) {
     }
 
     if (audioOn) engineNote.shutdown();          // bank voices before the mixer dies
-    phys->setContactCallback(nullptr, nullptr);            // trafficCtx dies with this scope
-    traffic.shutdown(phys.get());                          // kinematic boxes out before phys
+    trafficLayer.shutdown(phys.get());           // hook cleared, kinematic boxes out before phys
     factory.shutdown(*device);                   // pack loaders + the smoke pool
     tickets.shutdown(*device);                   // the card mesh/textures it owns
     riverLife.shutdown(audioOn ? audio.get() : nullptr);   // outboard loops + hulls

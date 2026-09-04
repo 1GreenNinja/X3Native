@@ -82,6 +82,7 @@ add_library(x3app SHARED
     interchange.cpp     # the diamond interchange — the first structural grade split
     stack.cpp           # THE MEGA STACK — four-level directional interchange (I-17/I-10)
     traffic.cpp         # W-TRAFFIC — AI traffic on the 16-lane freeway
+    drive_layer.cpp     # THE DRIVE LAYER — the ONE traffic/interchange stand-up, shared by every host
     summit_lot.cpp      # the parking lot at the top of the summit spur
     ridge_road.cpp      # the dirt road along the tops, lot -> the bore's massif
     river_bridge.cpp    # the valley road + Bridge No.1 over the river

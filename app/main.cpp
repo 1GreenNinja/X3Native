@@ -369,6 +369,7 @@ int x3AppMain(int argc, char** argv) {
     _tf.testGasStation = o.testGasStation;
         _tf.testFactory     = o.testFactory;
         _tf.testInterchange = o.testInterchange;
+        _tf.testDriveLayer  = o.testDriveLayer;
         _tf.testStack       = o.testStack;
         _tf.testTunnelDrive = o.testTunnelDrive;
         _tf.testSummitLot   = o.testSummitLot;

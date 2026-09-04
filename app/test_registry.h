@@ -89,6 +89,7 @@ struct TestFlags {
     bool testGasStation = false;      // --test-gasstation (W-STATIONS forecourts + fuel stub)
     bool testFactory     = false;     // --test-factory (the works siting + the tickets)
     bool testInterchange = false;     // --test-interchange (the diamond grade split)
+    bool testDriveLayer  = false;     // --test-drivelayer (shared traffic/interchange stand-up)
     bool testStack       = false;     // --test-stack (the four-level Mega Stack)
     bool testTunnelDrive = false;      // --test-tunneldrive (drive-through the demo bore, negative-controlled)
     bool testSummitLot   = false;      // --test-summitlot (the pad at the top of the summit spur)
