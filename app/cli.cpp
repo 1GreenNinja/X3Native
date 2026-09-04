@@ -84,6 +84,13 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.ddgiShotDir = argv[++i];
             continue;
         }
+        // DEALERSHIP (outside the chain: C1061).
+        if (a == "--test-dealership") { o.testDealership = true; continue; }
+        if (a == "--screenshot-dealership") {
+            o.dealershipShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.dealershipShotDir = argv[++i];
+            continue;
+        }
         if (a == "--screenshot-reflverify") {
             o.reflVerifyShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.reflVerifyShotDir = argv[++i];

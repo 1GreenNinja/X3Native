@@ -434,6 +434,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testScript = o.testScript;
         _tf.testVehicle = o.testVehicle;
         _tf.testCanonVehicle = o.testCanonVehicle;
+        _tf.testDealership = o.testDealership;
         _tf.testVehParts = o.testVehParts;
         _tf.testCsm      = o.testCsm;
         _tf.testGeoLod   = o.testGeoLod;
@@ -587,7 +588,7 @@ int x3AppMain(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.rtMatVerifyShot || o.showroomShot || o.carShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.waterShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testMotionBlur || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.reflVerifyShot || o.rtMatVerifyShot || o.showroomShot || o.carShot || o.dealershipShot || o.upperShot || o.doorShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.terrainShot || o.csmShot || o.geoLodShot || o.oceanShot || o.waterShot || o.oceanBaseShot || o.cityShot || o.matlibShot || o.testPrimLight || o.testMotionBlur || o.testClusterLights || o.captureAi || o.captureCrowdSpread || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -687,7 +688,7 @@ int x3AppMain(int argc, char** argv) {
     desc.width  = W;
     desc.height = H;
     desc.headless = headless;
-    desc.ssaa = (o.showroomShot || o.carShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
+    desc.ssaa = (o.showroomShot || o.carShot || o.dealershipShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
     desc.vsync  = !o.bench;
@@ -886,6 +887,7 @@ int x3AppMain(int argc, char** argv) {
         _hc.destructShot     = o.destructShot;     _hc.destructShotPath = o.destructShotPath;
         _hc.elevShot         = o.elevShot;         _hc.elevShotDir      = o.elevShotDir;
         _hc.carShot          = o.carShot;          _hc.carShotDir       = o.carShotDir;
+        _hc.dealershipShot   = o.dealershipShot;   _hc.dealershipShotDir = o.dealershipShotDir;
         _hc.carId            = o.carId;
         _hc.upperShot        = o.upperShot;        _hc.upperShotDir     = o.upperShotDir;
         _hc.doorShot         = o.doorShot;         _hc.doorShotDir      = o.doorShotDir;

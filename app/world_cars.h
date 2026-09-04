@@ -92,6 +92,13 @@ public:
                std::string_view glbDir);
     bool built() const { return m_built; }
     double bootMs() const { return m_bootMs; }
+    // RUNTIME "add authored car" (the dealership's forecourt delivery, app/
+    // dealership.cpp): appends one def after build(). A region-owned def parks
+    // immediately when `parkNow` (its region is already resident) and is then
+    // re-parked / removed by onRegionBuild / onRegionTeardown exactly like an
+    // authored car, so a bought car survives stream cycles for free. Host-owned
+    // defs ("" region) always park now. Returns the car index, -1 before build().
+    int addCar(const WorldCarDef& def, x3::phys::IPhysicsWorld& physics, bool parkNow);
 
     void setGroundQuery(GroundFn fn) { m_ground = std::move(fn); }
     void setWaterQuery(WaterFn fn)   { m_water  = std::move(fn); }
