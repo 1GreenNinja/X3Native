@@ -56,6 +56,16 @@ struct WorldRegionPlan {
     uint32_t    propCount = 0;     // graybox boxes placed for this region
 };
 
+// AUTHORED PLANS, READABLE AT BOOT. WorldRegions::build() runs inside the
+// streamed `surface_landmarks` realize, long after the terrain corridor
+// registry has closed. Anything that must be SITED clear of the landmarks (the
+// drive layer's canon freeway survey, app/drive_layer.h — the crash site sits
+// deliberately BETWEEN the two Spire-approach road legs and a freeway widened
+// onto either of them would swallow it) needs the same table in the boot slot.
+// No Scene, no device, no terrain query.
+uint32_t worldRegionPlanCount();
+const WorldRegionPlan& worldRegionPlanAuthored(uint32_t i);
+
 // Open-world surface regions host. Build once after the terrain world exists; the
 // graybox props are plain Scene entities (drawn by the host's scene.render()).
 class WorldRegions {

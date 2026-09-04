@@ -71,6 +71,46 @@ struct FreewayTunnelPlan {
     float length = 0.0f;                    // bore length (m, graybox segment)
 };
 
+// ---------------------------------------------------------------------------
+// AUTHORED CITY DATA, AVAILABLE AT BOOT.
+//
+// City::build() runs inside the streamed `city` region's realize — long after
+// the terrain corridor registry has closed. Anything that must be SITED
+// against the city (the drive layer's freeway survey, app/drive_layer.h) needs
+// the city's authored footprints in the BOOT slot, before the first height
+// query. These free functions read the same authored tables City::build()
+// does, and involve no Scene, no device and no terrain query.
+// ---------------------------------------------------------------------------
+struct CityDistrictFootprint {
+    const char* name = "";
+    float cx = 0.0f, cz = 0.0f;
+    float radius = 0.0f;      // authored footprint radius (the terrain flat pad)
+    // The MASSING extent: how far from the centre this district's buildings,
+    // props and streets actually reach. Smaller than `radius` (the pad is
+    // deliberately generous). This is an authored UPPER BOUND and --test-city
+    // C9 gates it against every prop City::build() actually places, so a lane
+    // that grows a district and forgets this number gets a red test rather
+    // than a freeway through somebody's shopfront.
+    float massRadius = 0.0f;
+};
+uint32_t cityDistrictCount();
+const CityDistrictFootprint& cityDistrictFootprint(uint32_t i);
+
+// The authored freeway-tunnel plans (the same table City::build() dresses).
+const FreewayTunnelPlan& cityFreewayTunnelPlan(uint32_t i);
+
+// The authored CONNECTOR alignments — the "Scrapyard <-> District freeway",
+// the coast spur and the District -> Spire approach legs. These are the city's
+// own declaration of where through-traffic goes, and they are what a freeway
+// survey measures against.
+struct CityRoadAlignment {
+    const char* name = "";
+    float x0 = 0.0f, z0 = 0.0f, x1 = 0.0f, z1 = 0.0f;
+    float halfW = 0.0f;
+};
+uint32_t cityConnectorCount();
+const CityRoadAlignment& cityConnector(uint32_t i);
+
 // City host. Build once after the terrain world exists; graybox props are plain
 // Scene entities (drawn by the host's scene.render()).
 class City {
@@ -100,6 +140,13 @@ public:
     uint32_t trafficLightCount() const { return m_trafficLights; }
     uint32_t neonSignCount() const { return m_neonSigns; }
     uint32_t windowBandCount() const { return m_windowBands; }
+    // MEASURED massing extent per district: the furthest corner of any prop
+    // this build placed, from the district centre. --test-city C9 gates it
+    // against the authored cityDistrictFootprint(i).massRadius, which is what
+    // the drive layer's boot-time freeway survey measures clearance against.
+    float zoneMassRadius(CityZone z) const { return m_massR[(uint32_t)z]; }
+    // Nearest laid road strip to a world XZ, metres (1e18 with no roads).
+    float distToNearestRoadStrip(float x, float z) const;
 
 private:
     bool m_built = false;
@@ -110,6 +157,12 @@ private:
     uint32_t          m_trafficLights = 0;  // W8-3: signalized intersections
     uint32_t          m_neonSigns = 0;      // W8-3: emissive shop signage strips
     uint32_t          m_windowBands = 0;    // W8-3: dark-glass window strips
+    float             m_massR[kCityZoneCount] = {};   // measured massing extent
+    // Every road strip's centre (x,z pairs), so --test-city C10 can gate that
+    // the authored cityConnector() table still describes roads that were
+    // actually laid — a stale alignment table is a lie the drive layer's
+    // freeway survey would then measure against.
+    std::vector<float> m_roadPts;
     std::vector<uint32_t> m_props;   // Scene entity ids
 };
 
