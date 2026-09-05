@@ -209,8 +209,10 @@ CityFreewaySurvey surveyCityFreeway(const CityFreewaySurveyInput& in);
 //      idempotent under a double shutdown (a region can evict twice).
 //   D4 a built interchange has every ramp mouth open.
 //   D5 the CANON world's own freeway: the survey sites it, the road registers,
-//      traffic drives on it, the interchange verdict is BUILT or a measured
-//      refusal (median half vs the pier's 6 m), and eviction leaves zero cars.
+//      traffic drives on it, the interchange BUILDS with every ramp mouth open
+//      (the city freeway's authored median floor meets the pier's 6 m), the
+//      terrain-decided-median CONTROL still refuses with a measured peak under
+//      6 m, and eviction leaves zero cars.
 //   D6 the success path: standUpInterchange sites a real interchange on the
 //      inner tour and every ramp mouth is open.
 bool runDriveLayerSelfTest();

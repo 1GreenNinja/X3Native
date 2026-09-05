@@ -2581,7 +2581,12 @@ std::vector<float> computeMedianPlan(const RoadSpec& spec,
     const size_t n = spec.x.size();
     if (!spec.dualCarriageway || n < 2 || roadY.size() != n || spec.z.size() != n)
         return m;
-    m.assign(n, kFwyMedianMinHalfM);
+    // The closed state is the route's AUTHORED floor (RoadSpec::medianMinHalfM,
+    // default kFwyMedianMinHalfM == the old constant): a freeway on fill keeps
+    // a design median the terrain never gets to close.
+    const float mFloor = std::max(kFwyMedianMinHalfM,
+                                  std::min(kFwyMedianMaxHalfM, spec.medianMinHalfM));
+    m.assign(n, mFloor);
     std::vector<float> segLen(n, 0.0f);
     for (size_t i = 0; i + 1 < n; ++i) {
         const float dx = spec.x[i + 1] - spec.x[i], dz = spec.z[i + 1] - spec.z[i];
@@ -2604,7 +2609,7 @@ std::vector<float> computeMedianPlan(const RoadSpec& spec,
             const float nat = terrainHeightAtWorld(qx, qz) - terrainCorridorDelta(qx, qz);
             worst = std::max(worst, std::fabs(nat - roadY[i]));
         }
-        m[i] = (worst < 2.5f) ? kFwyMedianMaxHalfM : kFwyMedianMinHalfM;
+        m[i] = (worst < 2.5f) ? kFwyMedianMaxHalfM : mFloor;
     }
     const bool closed = std::fabs(spec.x[0] - spec.x[n - 1]) < 0.01f &&
                         std::fabs(spec.z[0] - spec.z[n - 1]) < 0.01f;
@@ -2637,7 +2642,7 @@ std::vector<float> computeMedianPlan(const RoadSpec& spec,
         if (moved < 1e-4f) break;
     }
     for (float& v : m)
-        v = std::max(kFwyMedianMinHalfM, std::min(kFwyMedianMaxHalfM, v));
+        v = std::max(mFloor, std::min(kFwyMedianMaxHalfM, v));
     return m;
 }
 
@@ -2931,6 +2936,8 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
     surf.mount(assetRoot() + "/surface_library");
     const SurfaceSet& asphalt = surf.get(device, spec.surfaceSet.c_str());
     const SurfaceSet& cement  = surf.get(device, "mw_concrete_panels_a");
+    // graded earth for the median fill deck (dual routes on embankment)
+    const SurfaceSet& earth   = surf.get(device, "terrain_bluff_clay");
     if (!asphalt.ok || !cement.ok)
         x3::logWarn("road ribbon: surface set(s) unavailable - flat colour fallback");
 
@@ -2981,7 +2988,7 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
     constexpr float kSkirtLap     = 0.6f;    // toe depth under the carved ground
     constexpr float kSkirtMaxDrop = 14.0f;   // don't build a curtain wall off a cliff
 
-    RibbonMesh road, shoulders, aprons, paint, skirt, rails, jersey, crossover;
+    RibbonMesh road, shoulders, aprons, paint, skirt, rails, jersey, crossover, medianFill;
     std::vector<float>    railColV;
     std::vector<uint32_t> railColI;
 
@@ -3266,6 +3273,41 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
                 jerseyEndCap(jersey, a, 0.0f);
                 wallOpen = false;
             }
+            // THE MEDIAN FILL DECK — the graded median surface where the
+            // freeway rides on FILL. On a terrain-decided route this never
+            // fires: computeMedianPlan only OPENS the median where the ground
+            // is within 2.5 m of the datum, and then the carve floor
+            // (datum - kRoadFloorClear) IS the median ground, so the wide
+            // median needs no geometry and the narrow one has the wall. A
+            // route carrying an AUTHORED floor (RoadSpec::medianMinHalfM —
+            // the city freeway, whose datum rides 3-11 m above the country)
+            // is different: its median stays open across the embankment, the
+            // wall does not stand, and the corridor cannot fill (it only
+            // cuts), so without this the two median-facing skirts would run
+            // down into a bare gully between the carriageways. The embankment
+            // is FILL — earth the road-builders placed — so the median is
+            // decked at the carve-floor level in graded earth, lapped 0.3 m
+            // under each inner apron so the skirt's vertical face reads as
+            // the kerb dropping onto it. Emitted ONLY where the probed ground
+            // is actually below that level: in cut the carved terrain already
+            // sits there and a deck would z-fight it. Collides, like the
+            // ground it stands in for — a car leaving the inner lane lands on
+            // the median, not in the gully.
+            {
+                auto deckLow = [&](const RoadRenderStation& st) {
+                    float c[3]; P(st, 0.0f, c);
+                    const float g = terrainHeightAtWorld(c[0], c[2]);
+                    return (c[1] - kPaveProud - kRoadFloorClear) - g > 0.35f;
+                };
+                if (deckLow(a) || deckLow(b)) {
+                    const float wA = a.medianHalf + 0.3f, wB = b.medianHalf + 0.3f;
+                    float m0[3], m1[3], m2[3], m3[3];
+                    P(a, -wA, m0); P(a, wA, m1); P(b, wB, m2); P(b, -wB, m3);
+                    for (float* q : { m0, m1, m2, m3 }) q[1] -= kPaveProud + kRoadFloorClear;
+                    medianFill.quad(m0, m1, m2, m3, 0.0f, 1.0f, u0 * 0.06f, u1 * 0.06f);
+                    out.medianDeckM += u1 - u0;
+                }
+            }
             if (ta) {
                 // THE TURNAROUND: asphalt across the median, lapped 3 m onto
                 // each inner apron, with closure faces down to the graded
@@ -3481,6 +3523,11 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
     float crossTint[4] = { 0.92f, 0.92f, 0.94f, 1.0f };
     if (!asphalt.ok) { crossTint[0] = 0.048f; crossTint[1] = 0.049f; crossTint[2] = 0.053f; }
     upload(crossover, &asphalt, crossTint, true);
+    // graded-earth median deck, a shade darker than the raw bluff so it reads
+    // as placed fill rather than the surrounding country
+    float earthTint[4] = { 0.82f, 0.80f, 0.76f, 1.0f };
+    if (!earth.ok) { earthTint[0] = 0.30f; earthTint[1] = 0.26f; earthTint[2] = 0.20f; }
+    upload(medianFill, &earth, earthTint, true);
     upload(paint,  nullptr,  paintC,    false);
 
     // Work-zone dressing: cones (render-only, banded texture) + dynamic drums.
@@ -3560,13 +3607,14 @@ RoadRibbonResult buildRoadRibbon(const RoadSpec& spec, Scene& scene,
         std::snprintf(b, sizeof(b),
             "road ribbon '%s': %.2f miles DUAL | %u meshes, %u quads, %u fine stations | "
             "2 x (%d x %.0f ft lanes + %.0f ft shoulders + %.0f ft aprons) = 2 x %.0f ft paved, "
-            "median %.1f..%.1f m | %u median wall runs, %u turnarounds | "
+            "median %.1f..%.1f m | %u median wall runs, %u turnarounds, "
+            "%.0f m median decked over fill | "
             "%u rail + %u jersey offside segments | %u cones, %u drums",
             spec.name.c_str(), out.lengthM / 1609.34f, out.meshCount, out.quadCount,
             out.fineStations, lanes, kLaneFt, kShoulderFt, kApronFt,
             pavHalf * 2.0f / kFtToM,
-            kFwyMedianMinHalfM * 2.0f, kFwyMedianMaxHalfM * 2.0f,
-            out.medianWallRuns, out.turnaroundCount,
+            spec.medianMinHalfM * 2.0f, kFwyMedianMaxHalfM * 2.0f,
+            out.medianWallRuns, out.turnaroundCount, out.medianDeckM,
             out.railSegments, out.jerseySegments,
             out.workZoneCones, out.workZoneBarrels);
     } else {

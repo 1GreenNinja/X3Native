@@ -153,6 +153,25 @@ struct RoadSpec {
     // each carriageway's own offside. Routes with bore/deck gaps must keep
     // this false — a tunnel is a 4-lane tube and cannot swallow a freeway.
     bool  dualCarriageway  = false;
+    // THE AUTHORED MEDIAN FLOOR (dual only). computeMedianPlan() is terrain-
+    // decided: the median opens to kFwyMedianMaxHalfM only where the natural
+    // ground across the median zone sits within 2.5 m of the graded DATUM,
+    // and closes onto the jersey wall everywhere else. That is the right law
+    // for a mountain freeway, where the datum lives in the ground. It is the
+    // WRONG law for a freeway on FILL: the canon city freeway's ground has
+    // 10-25 m of cross-fall across the dual span, so the grader's datum (the
+    // MAX across the carve width, lowering-only) rides 3-11 m above the median
+    // ground at 14 of its 16 nodes — the plan closes on grade along the whole
+    // run and peaks at 5.4 m half, and the interchange's one pier (which wants
+    // 6.0 m) never gets a median to stand in. A real urban freeway does not
+    // let the country decide its median: it is a DESIGN width, carried on the
+    // embankment. This is that width — the plan's floor per route. The
+    // default is the constant it replaces (kFwyMedianMinHalfM), so every
+    // existing dual route (the inner tour) is unchanged to the pixel; the city
+    // survey raises it for the freeway it sites. Where the plan holds at a
+    // floor above kFwyMedianWallHalfM the wall does not stand, and the ribbon
+    // decks the median over fill (see buildRoadRibbon's median fill deck).
+    float medianMinHalfM   = kFwyMedianMinHalfM;
     // THE SURFACE. Every route in the world was asphalt because the ribbon
     // hardcoded one surface-library set; a dirt mountain track is the same
     // ribbon — same prism, same batter, same apron-skirt fix, same barrier
@@ -476,6 +495,7 @@ struct RoadRibbonResult {
     // Dual-carriageway dressing (0 on single routes):
     uint32_t medianWallRuns  = 0;   // continuous jersey-median wall runs emitted
     uint32_t turnaroundCount = 0;   // paved median crossovers
+    float    medianDeckM     = 0.0f; // route metres of median decked over fill
     uint32_t workZoneCones   = 0;   // the work-zone taper's cones
     uint32_t workZoneBarrels = 0;   // ... and its drums (dynamic bodies)
     uint32_t fineStations    = 0;   // render-path stations the ribbon rode

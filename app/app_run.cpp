@@ -3796,13 +3796,17 @@ int runDefaultHost(HostContext& hc) {
                             "--world canonlevel", true, canonFwySpec, canonFwyRoadY, nullptr);
                         if (!canonInterchange.built) {
                             // Say WHY in the freeway's own numbers, not just
-                            // the siting code's verdict. The one gate this
-                            // world fails is the OPEN MEDIAN: the overpass's
+                            // the siting code's verdict. The gate this world
+                            // USED to fail is the OPEN MEDIAN: the overpass's
                             // single pier stands in the median, so
                             // registerInterchange wants >= 6 m of median half
-                            // at the crossing, and computeMedianPlan only
-                            // widens the median where the graded datum stays
-                            // within 2.5 m of the natural ground.
+                            // at the crossing, and the terrain-decided plan
+                            // peaked at 5.4 m on this embankment. The survey
+                            // now authors the city freeway's median floor
+                            // (RoadSpec::medianMinHalfM) above that gate, so
+                            // reaching here means something ELSE refused —
+                            // and this line still reports the median so the
+                            // two cannot be confused.
                             const std::vector<float> mp =
                                 x3::game::computeMedianPlan(canonFwySpec, canonFwyRoadY);
                             float mmax = 0.0f;

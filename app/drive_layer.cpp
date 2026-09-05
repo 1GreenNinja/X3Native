@@ -33,6 +33,30 @@ constexpr float kDualCarveHalfM = kFwyDualMaxHalfM;   // ~57 m — registerRoad'
 constexpr float kDualBatterM    = 18.0f;              // RoadSpec::falloff for a freeway
 constexpr float kDualOwnedHalfM = kDualCarveHalfM + kDualBatterM;
 
+// THE CITY FREEWAY'S AUTHORED MEDIAN (RoadSpec::medianMinHalfM). The inner
+// tour's median is terrain-decided — computeMedianPlan opens it only where the
+// graded datum stays within 2.5 m of the ground. Measured on the canon site
+// (per-node dump, 16 nodes at 60 m): the country has 10-25 m of cross-fall
+// across the dual span, the grader's datum (MAX across the carve width,
+// lowering-only) rides 3-11 m above the median-zone ground at 14 of the 16
+// nodes, only two nodes pass the 2.5 m rule, and after the low-pass and the
+// 0.03 m/m slew the plan peaks at 5.4 m half — under the 6.0 m the overpass
+// pier needs, at EVERY node, on EVERY alignment the survey can offer (all of
+// them report open-median country 0 m). No siting or grading fix exists: the
+// one node the interchange zone fits around (u=480, ground flat at 17-19 m) is
+// forced to a 22 m datum by the 31.7 m highs at u=180/720 at 7% + sag lift,
+// the centreline steps 18 -> 31 m between u=600 and 660 (22%), and the run is
+// bounded by New District clearance to the south and residency to the north.
+// An urban freeway on embankment does not let the country decide its median;
+// the median is a DESIGN width carried on the fill. 6.5 m half = 13 m between
+// inner aprons: clears the pier's 6.0 m gate with margin (the pier is 2.2 m
+// wide; 4.3 m of graded median remains each side of it), stays above
+// kFwyMedianWallHalfM (3.0 m) so no wall stands under the deck, and stays
+// well under kFwyMedianMaxHalfM (12 m) so the carve span grows by 5.4 m, not
+// 11 — the 97 m massing-clearance law (--test-city C9/C10) still holds with
+// the same margin the survey's kDualOwnedHalfM already reserves.
+constexpr float kCityFreewayMedianHalfM = 6.5f;
+
 // Survey sampling + acceptance. Every number here is a LAW the survey applies,
 // not a tuning knob: they are the cross-section the freeway machinery builds
 // and the limits registerRoad would otherwise have to bulldoze past.
@@ -362,11 +386,13 @@ CityFreewaySurvey surveyCityFreeway(const CityFreewaySurveyInput& in) {
                 // MEDIAN-OPEN? computeMedianPlan() widens the median to
                 // kFwyMedianMaxHalfM only where the natural country stays
                 // within 2.5 m of the GRADED DATUM; everywhere else the
-                // carriageways close onto a jersey wall. registerInterchange
-                // then refuses any crossing whose median is under 6 m half —
-                // the overpass's one pier stands in it. So "how much of this
-                // run will keep an open median" decides whether the freeway can
-                // carry a grade split at all, and the survey scores for it.
+                // carriageways close onto the route's median FLOOR. The city
+                // freeway authors that floor at kCityFreewayMedianHalfM (see
+                // above), so the pier's 6 m gate is met on the embankment and
+                // open-median country no longer decides whether the freeway
+                // can carry a grade split — but a run whose median can open
+                // to the full 12 m is still the better freeway (graded median,
+                // no fill deck), so the survey keeps scoring for it.
                 //
                 // The datum does not exist until registerRoad grades the route,
                 // so the proxy is the natural RELIEF over the window a vertical
@@ -479,6 +505,9 @@ CityFreewaySurvey surveyCityFreeway(const CityFreewaySurveyInput& in) {
     s.spec.maxGrade         = 0.07f;
     s.spec.minTurnRadiusM   = 250.0f;
     s.spec.maxDeflectionDeg = 3.0f;
+    // ...except the median, which on this embankment is AUTHORED, not
+    // terrain-decided (kCityFreewayMedianHalfM, rationale at its definition).
+    s.spec.medianMinHalfM   = kCityFreewayMedianHalfM;
     smoothHorizontalCurves(s.spec);
     s.ok = true;
 
@@ -692,31 +721,58 @@ bool runDriveLayerSelfTest() {
                   std::to_string(live) + " cars on " + std::to_string((int)cs.lengthM) +
                   " m of '" + cs.alignmentName + "')");
             // THE INTERCHANGE VERDICT on the canon spec — the same call the
-            // canon host makes at boot. Either it builds (and every ramp mouth
-            // is open), or the refusal is MEASURED: the one site test this
-            // terrain fails is the OPEN MEDIAN (interchange.cpp wants >= 6 m
-            // half at the crossing for the pier; computeMedianPlan only opens
-            // it where the graded datum stays within 2.5 m of the ground). A
-            // refusal that cannot be stated in the freeway's own numbers is
-            // not an honest refusal.
+            // canon host makes at boot. It must BUILD, with every ramp mouth
+            // open: the city freeway authors its median (kCityFreewayMedianHalfM)
+            // so the overpass pier's 6 m gate is met on the embankment.
+            //
+            // The honest-refusal path stays MEASURED too, as the control that
+            // the authored floor is what buys the interchange and not some
+            // accident of the terrain: the same spec with the terrain-decided
+            // median (the inner tour's default floor) must refuse, and its
+            // plan must peak under the pier's 6 m — the "5.4 m" this whole
+            // fix exists for. The control runs FIRST because a refusal
+            // registers nothing (the site test rejects before any road or
+            // junction lands), while the real stand-up registers the crossroad
+            // and 8 junction mouths that the 800 m junction-clearance test
+            // would then see.
             {
+                RoadSpec terrainDecided = cs.spec;
+                terrainDecided.medianMinHalfM = kFwyMedianMinHalfM;
+                const std::vector<float> mpT = computeMedianPlan(terrainDecided, roadY);
+                float mmaxT = 0.0f;
+                for (float m : mpT) mmaxT = std::max(mmaxT, m);
+                const InterchangeResult ctl =
+                    standUpInterchange("--test-drivelayer(canon, terrain median)", rb.ok,
+                                       terrainDecided, roadY, nullptr);
+                char cb[256];
+                std::snprintf(cb, sizeof(cb),
+                              "D5 CONTROL: with the terrain-decided median the canon "
+                              "interchange refuses, measured (median peaks at %.1f m half; "
+                              "the pier wants 6.0 m)", mmaxT);
+                check(!ctl.built && ctl.whyNot[0] != '\0' && !mpT.empty() && mmaxT < 6.0f, cb);
+
+                const std::vector<float> mp = computeMedianPlan(cs.spec, roadY);
+                float mmin = 1e9f;
+                for (float m : mp) mmin = std::min(mmin, m);
                 const InterchangeResult cic =
                     standUpInterchange("--test-drivelayer(canon)", rb.ok, cs.spec, roadY,
                                        nullptr);
-                const std::vector<float> mp = computeMedianPlan(cs.spec, roadY);
-                float mmax = 0.0f;
-                for (float m : mp) mmax = std::max(mmax, m);
-                const bool honest = cic.built
-                    ? interchangeRampMouthsOpen(cic)
-                    : (cic.whyNot[0] != '\0' && !mp.empty() && mmax < 6.0f);
-                char ib[256];
-                std::snprintf(ib, sizeof(ib),
-                              "D5 the canon freeway's interchange verdict is measured: %s "
-                              "(median opens to %.1f m half at best; the pier wants 6.0 m)",
-                              cic.built ? "BUILT, every ramp mouth open"
-                                        : "NOT built, median too narrow for the pier",
-                              mmax);
-                check(honest, ib);
+                char ib[300];
+                if (cic.built)
+                    std::snprintf(ib, sizeof(ib),
+                                  "D5 the canon freeway's interchange BUILDS with every ramp "
+                                  "mouth open (authored median floor %.1f m half, plan min "
+                                  "%.1f m; crossing at node %u (%.0f, %.0f), median %.1f m, "
+                                  "clearance %.2f m)",
+                                  kCityFreewayMedianHalfM, mmin, cic.fwyNode, cic.cx, cic.cz,
+                                  cic.medianHalfAtCrossing, cic.clearanceM);
+                else
+                    std::snprintf(ib, sizeof(ib),
+                                  "D5 the canon freeway's interchange BUILDS (authored median "
+                                  "floor %.1f m half, plan min %.1f m) — refused: %s",
+                                  kCityFreewayMedianHalfM, mmin, cic.whyNot);
+                check(cic.built && interchangeRampMouthsOpen(cic) &&
+                      !mp.empty() && mmin >= 6.0f, ib);
             }
             // THE EVICTION PROOF the canon host relies on: the city region's
             // teardown hook calls exactly this, and if the count does not come
