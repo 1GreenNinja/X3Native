@@ -520,10 +520,13 @@ void AnimatedCharacter::draw(const x3::rhi::FrameContext& frame,
        ft.x, ft.y + yTrim, ft.z, 1.0f
     };
     for (const x3::asset::ModelDrawable& d : m_draw) {
-        const float bc[4]   = { d.baseColorFactor[0], d.baseColorFactor[1],
-                                d.baseColorFactor[2], d.baseColorFactor[3] };
-        const float emis[3] = { d.emissiveFactor[0], d.emissiveFactor[1],
-                                d.emissiveFactor[2] };
+        const float bc[4]   = { d.baseColorFactor[0] * m_tint[0], d.baseColorFactor[1] * m_tint[1],
+                                d.baseColorFactor[2] * m_tint[2], d.baseColorFactor[3] };
+        // emissive[4]: rgb + strength. This was a float[3] handed to a float[4]
+        // parameter — an out-of-bounds read of whatever followed on the stack
+        // as the strength term. Strength 0 => no glow (rigs carry no emissive).
+        const float emis[4] = { d.emissiveFactor[0], d.emissiveFactor[1],
+                                d.emissiveFactor[2], 0.0f };
         device.drawMeshPBR(frame,
             x3::rhi::MeshHandle{ d.meshId },
             x3::rhi::TextureHandle{ d.baseColorTexId },

@@ -235,6 +235,7 @@ add_library(x3app SHARED
     vehicle.cpp
     engine_note.cpp     # multi-RPM engine-note bank player (4-voice bracket crossfade)
     world_cars.cpp
+    dealership.cpp
     street_lights.cpp
     wetness.cpp         # rain soak/dry + ice + tire grip (wetness lane)
     storm.cpp           # lightning flash + delayed thunder (weather lane)

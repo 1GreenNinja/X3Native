@@ -101,6 +101,9 @@ struct CliOptions {
          // --test-canonvehicle (WORLD CARS: enter/drive/exit + hold-E hack +
          // unlocked-latch region persistence). See runCanonVehicleSelfTest.
          testCanonVehicle = false,
+         // --test-dealership (DEALERSHIP: siting, turntables, buy, region
+         // teardown/rebuild). See runDealershipSelfTest.
+         testDealership = false,
          // --test-npclife (LIVING CITY: 12-archetype daily schedules + street routing +
          // the bank-robbery set-piece + scan-card karma + freeway traffic). See
          // runNpcLifeSelfTest. --test-hacking (the WD2 scan/hack registry). runHackingSelfTest.
@@ -628,6 +631,10 @@ struct CliOptions {
     // 4x SSAA. Writes <outDir>/car_*.png (default docs/screenshots/vehicles).
     bool        carShot = false;
     std::string carShotDir = "docs/screenshots/vehicles";
+    // --screenshot-dealership [outDir]: the DEALERSHIP night set (exterior from
+    // the road, interior wide, interior close on a car). Headless, 4x SSAA.
+    bool        dealershipShot = false;
+    std::string dealershipShotDir = "docs/screenshots/dealership";
     // --car <id>: WHICH hero car the player drives / the showcase poses. Ids are
     // app/car_roster.h's CarSpec::id — "gbx" (the black GBX COUPE, default) or
     // "ctr" (the incumbent 993-shaped baseline). This is a SELECTOR, not a

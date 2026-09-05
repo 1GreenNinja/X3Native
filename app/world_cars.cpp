@@ -103,6 +103,17 @@ bool WorldCars::build(const std::vector<WorldCarDef>& defs,
     return true;
 }
 
+int WorldCars::addCar(const WorldCarDef& def, x3::phys::IPhysicsWorld& physics, bool parkNow) {
+    if (!m_built || !m_ground) return -1;
+    Car c; c.def = def;
+    if (parkNow || def.region.empty())
+        parkCar(c, def.x, m_ground(def.x, def.z), def.z, def.yawDeg * 0.0174533f, physics);
+    m_cars.push_back(std::move(c));
+    x3::logInfo("world-cars: added car `" + def.id + "` (region `" + def.region + "`, " +
+                (m_cars.back().resident ? "parked" : "pending") + ")");
+    return (int)m_cars.size() - 1;
+}
+
 // ===========================================================================
 // Park / unpark (the static parked state)
 // ===========================================================================

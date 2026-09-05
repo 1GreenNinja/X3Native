@@ -84,6 +84,7 @@
 #include "ragdoll_demo.h"   // x3::game::runRagdollBlendCheck (--test-ragdoll)
 #include "vehicle.h"        // x3::game::runDriveEnterExitSelfTest (--test-vehicle)
 #include "world_cars.h"     // x3::game::runCanonVehicleSelfTest (--test-canonvehicle)
+#include "dealership.h"     // x3::game::runDealershipSelfTest (--test-dealership)
 #include "editor/editor.h"
 #include "editor/editor_ai.h"
 #include "editor/editor_armory.h"
@@ -1226,6 +1227,10 @@ int dispatchTests(const TestFlags& tf) {
                     "landing/crash/lockout + parachute)...");
         const bool wingsOk = x3::game::runWingedFlightSelfTest();
         return (frameworkOk && driveOk && camOk && wingsOk) ? 0 : 1;
+    }
+    if (tf.testDealership) {
+        x3::logInfo("running DEALERSHIP self-test (siting / turntables / buy / region cycle)...");
+        return x3::game::runDealershipSelfTest() ? 0 : 1;
     }
     if (tf.testCanonVehicle) {
         x3::logInfo("running WORLD CARS canon-vehicle self-test "

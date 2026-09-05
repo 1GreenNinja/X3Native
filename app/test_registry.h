@@ -130,6 +130,7 @@ struct TestFlags {
     bool testTunnelFitout = false;// tunnel lane: bore interior program placement
     bool testTunnelRooms = false;// tunnel lane: rooms/halls/stairs behind the service doors
     bool testCanonVehicle = false;   // --test-canonvehicle (WORLD CARS enter/drive/exit/hack)
+    bool testDealership = false;     // --test-dealership (DEALERSHIP siting/turntables/buy/region cycle)
     bool testReflDenoise = false;    // --test-refldenoise (edge-aware a-trous reflection DENOISE; pure CPU)
     bool testEchoRoads = false;      // --test-echoroads (LIFT A: EchoRoads road-graph checksum; no GPU, no assets)
     bool testLightningCharge = false;  // --test-lightning-charge (Lightning Gun CHARGE model)

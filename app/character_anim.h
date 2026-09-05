@@ -145,6 +145,11 @@ public:
     // skips the mesh (first-person mode).
     void draw(const x3::rhi::FrameContext& frame, x3::rhi::IRenderDevice& device,
               const Player& player, float yawTrimRad, float yTrim, bool visible);
+    // ALBEDO TINT (the showroom-civilian treatment): multiplies every
+    // drawable's baseColorFactor at draw time, so one shared CityPerson rig
+    // reads as several people (terracotta / olive / gold ...). Default 1,1,1 =
+    // byte-identical to the untinted draw. Value-safe: keep every channel <= 1.
+    void setTint(float r, float g, float b) { m_tint[0] = r; m_tint[1] = g; m_tint[2] = b; }
 
     // One-shot layer (punch/kick/reload/…): play an exact-named clip
     // exclusively once, then return to locomotion. Returns false if the clip
@@ -223,6 +228,7 @@ private:
 
     // ---- state ----
     float m_yaw = 0.0f;                       // 0 = engine -Z (asset identity)
+    float m_tint[3] = { 1.0f, 1.0f, 1.0f };   // setTint(): albedo multiplier
     float m_prevFeet[3] = { 0, 0, 0 };
     bool  m_havePrev = false;
     float m_airT = 0.0f;                      // seconds since last grounded

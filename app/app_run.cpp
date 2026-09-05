@@ -123,6 +123,7 @@
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 #include "world_cars.h"                    // WORLD CARS: findable/drivable/hackable cars (canonlevel)
 #include "drive_layer.h"                   // THE DRIVE LAYER: AI traffic + the structural interchange, shared with --world tunnel
+#include "dealership.h"                    // DEALERSHIP: buy new cars (canonlevel, city region)
 #include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
@@ -1446,6 +1447,11 @@ int runDefaultHost(HostContext& hc) {
     // cars park/unpark with the `city` region via the WorldStreamer hooks (the
     // system owns only its OWN static bodies — nothing enters a region ledger).
     x3::game::WorldCars worldCars;
+    // DEALERSHIP (app/dealership.h): showroom + forecourt beside the District->
+    // Spire connector; same direct-draw / own-bodies doctrine as WORLD CARS.
+    // dealerWallet is the host copy of vehbuild.json (credits live there).
+    x3::game::Dealership dealership;
+    x3::game::vehparts::VehicleBuild dealerWallet;
     // FISH (app/fish.h) — ambient schools in THE RIVER's reach past the facility
     // and in the sea shallows at the estuary. Host-owned (NOT region-ledger
     // owned: it is built once at canon boot like the parked cars), entities
@@ -3696,6 +3702,21 @@ int runDefaultHost(HostContext& hc) {
             }
         }
         x3::boot::mark("WORLD CARS (host set parked)");
+        // DEALERSHIP: wallet = the same vehbuild.json the perf shop writes; a sale
+        // saves it back. Delivery = a runtime WORLD CARS def parked on the forecourt
+        // (region `city`, so WorldCars' own hooks keep it across stream cycles).
+        dealership.setGroundQuery([](float x, float z) { return x3::game::terrainHeightAtWorld(x, z); });
+        dealerWallet.loadFile(x3::game::vehparts::defaultBuildSavePath());
+        dealership.setWallet(&dealerWallet, [&dealerWallet] {
+            dealerWallet.saveFile(x3::game::vehparts::defaultBuildSavePath()); });
+        // parkNow only while the region is resident: a restore at boot (before
+        // `city` streams in) leaves the def pending for WorldCars' own region hook.
+        dealership.setDeliverHook([&worldCars, &physics, &dealership](const x3::game::WorldCarDef& def) {
+            return worldCars.addCar(def, *physics, /*parkNow=*/dealership.resident()) >= 0; });
+        dealership.build(device, *physics, x3::game::convertedGlbRoot());
+        dealership.setAudio(audio.get());                                       // door WAVs
+        dealership.loadSoldFile(x3::game::defaultDealershipSavePath());         // sold cars back on the forecourt
+        x3::boot::mark("DEALERSHIP");
     }
 
     // World build + every build-time GLB is done — land all batched uploads in one
@@ -3853,7 +3874,7 @@ int runDefaultHost(HostContext& hc) {
             // never write into recycled slots. Sites sit on the district flat
             // pads (placeOnTerrain anchors the ground). ----
             canonWstream.setRegionHooks(
-                [&cityCrowds, &cityCrowdSkins, &worldCars, &streetLights,
+                [&cityCrowds, &cityCrowdSkins, &worldCars, &dealership, &streetLights,
                  &canonWstream, cityLightsDense, &canonFwySpec, &canonFwyRoadY,
                  &canonInterchange, &canonFwyOn, &canonTrafficLayer, &audio](
                               const x3::game::WorldRegionDesc& rd, x3::game::Scene& s,
@@ -3862,6 +3883,7 @@ int runDefaultHost(HostContext& hc) {
                     // only its OWN static bodies + direct-draw visuals — nothing
                     // lands in the region ledger; teardown below unparks them).
                     worldCars.onRegionBuild(rd.id, ph);
+                    dealership.onRegionBuild(rd.id, ph);   // DEALERSHIP: own static bodies only
                     if (rd.id != "city") return;
                     // ---- THE DRIVE LAYER, REGION-OWNED ---------------------
                     // The freeway's PAVEMENT is Scene geometry and is built
@@ -3981,13 +4003,14 @@ int runDefaultHost(HostContext& hc) {
                         }
                     }
                 },
-                [&cityCrowds, &cityCrowdSkins, &cityChatter, &scene, &worldCars,
+                [&cityCrowds, &cityCrowdSkins, &cityChatter, &scene, &worldCars, &dealership,
                  &streetLights, &physics, &canonTrafficLayer](
                                           const x3::game::WorldRegionDesc& rd) {
                     // WORLD CARS: unpark this region's curb cars (removes our
                     // static bodies; a car currently DRIVEN is the host-owned
                     // live rig and survives the eviction untouched).
                     worldCars.onRegionTeardown(rd.id, *physics);
+                    dealership.onRegionTeardown(rd.id, *physics);
                     if (rd.id != "city") return;
                     // THE DRIVE LAYER: the traffic sim owns Jolt kinematic
                     // bodies the region ledger cannot see, so it is torn down
@@ -5153,6 +5176,7 @@ int runDefaultHost(HostContext& hc) {
         shutdownGameSystems();
         canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        dealership.shutdown(*physics);  // DEALERSHIP: bodies + GPU resources
         shutdownCanonStream();          // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -5406,6 +5430,7 @@ int runDefaultHost(HostContext& hc) {
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        dealership.shutdown(*physics);  // DEALERSHIP: bodies + GPU resources
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -6919,6 +6944,8 @@ int runDefaultHost(HostContext& hc) {
                         const float tcam[3] = { ssEye.x, ssEye.y, ssEye.z };
                         canonTrafficLayer.traffic().render(frame, tcam);
                     }
+                    if (dealership.built() && scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                        dealership.draw(frame);
                     if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
                     canonAliens.drawAll(*device, frame, scene);   // CANON ALIENS in captures
                     // ---- HEALTHBAR CAPTURE PROOF (gate: screenshot filename contains
@@ -7354,6 +7381,7 @@ int runDefaultHost(HostContext& hc) {
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        dealership.shutdown(*physics);  // DEALERSHIP: bodies + GPU resources
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -7542,6 +7570,7 @@ int runDefaultHost(HostContext& hc) {
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        dealership.shutdown(*physics);  // DEALERSHIP: bodies + GPU resources
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -7659,6 +7688,7 @@ int runDefaultHost(HostContext& hc) {
         shutdownGameSystems();
         canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        dealership.shutdown(*physics);  // DEALERSHIP: bodies + GPU resources
         shutdownCanonStream();          // SEAM 3: region/terrain bodies out before physics dies
         physics->shutdown();
         device->shutdown();
@@ -7924,6 +7954,8 @@ int runDefaultHost(HostContext& hc) {
                     if (worldCars.built() &&
                         scene.roomVisible(x3::game::kStreamedExteriorRoom))
                         worldCars.draw(frame);
+                    if (dealership.built() && scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                        dealership.draw(frame);
                 }
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
@@ -8032,6 +8064,7 @@ int runDefaultHost(HostContext& hc) {
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         canonTrafficLayer.shutdown(physics.get());   // DRIVE LAYER: kinematic boxes out before phys
         worldCars.shutdown(*physics);   // WORLD CARS: bodies + live rig out before physics dies
+        dealership.shutdown(*physics);  // DEALERSHIP: bodies + GPU resources
         shutdownCanonStream();   // SEAM 3: region/terrain bodies out before physics dies
         if (spacePlanetMesh.valid())     { device->destroyMesh(spacePlanetMesh); spacePlanetMesh = {}; }
         if (spacePlanetRingMesh.valid()) { device->destroyMesh(spacePlanetRingMesh); spacePlanetRingMesh = {}; }
@@ -9592,6 +9625,19 @@ int runDefaultHost(HostContext& hc) {
                 player.feet(), eNow, eNow && !prevE, fEdge, dt, &player, *physics,
                 audio.get());
         }
+        // DEALERSHIP: turntables spin (dt-scaled) + the buy prompt/sale, on foot only.
+        if (canonWorld && dealership.built()) {
+            if (!simFrozen) {
+                const x3::phys::Vec3 pf = player.feet();   // on foot: the player trips the doors
+                dealership.update(dt, (!worldCars.driving() && !noclip) ? &pf : nullptr);
+            }
+            if (!worldCars.driving() && !vehicleConsumedE && !codeMode && !termMode &&
+                !consoleOpen && !noclip && player.isAlive() && !chatTrees.active() &&
+                !npcDialog.active())
+                vehicleConsumedE = dealership.interact(player.feet(), eNow && !prevE) || vehicleConsumedE;
+            else if (worldCars.driving() || noclip)
+                dealership.interact(x3::phys::Vec3{ 1e9f, 0.0f, 1e9f }, false);   // clears the prompt
+        }
 
         if (eNow && !prevE && !terrainWorld && !vehicleConsumedE && !worldCars.driving()) {
             float ex, ey, ez, yaw, pitch;
@@ -10854,6 +10900,10 @@ int runDefaultHost(HostContext& hc) {
                     streetLights.selectLights(camX, camY, camZ, fl, streetLampK);
                 }
             }
+            // DEALERSHIP showroom lights (<=10, eye within 90 m): FRONT-inserted so
+            // the budget trim below never drops the key/fill over the turntables.
+            if (canonWorld && dealership.built() && dealership.resident())
+                dealership.selectLights(camX, camY, camZ, fl);
             // Gap C: at The Deep the club's own rig (neon/UV/orbit spots/bar fills)
             // takes the whole budget — no surface fixture reaches -200 m anyway.
             if (club1127.built() && camY < -150.0f) {
@@ -12468,6 +12518,8 @@ int runDefaultHost(HostContext& hc) {
                     const float tcam[3] = { camX, camY, camZ };
                     canonTrafficLayer.traffic().render(frame, tcam);
                 }
+                if (dealership.built() && scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                    dealership.draw(frame);
             }
             // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
@@ -12876,8 +12928,11 @@ int runDefaultHost(HostContext& hc) {
                     // treatment): "[E] Enter" / "LOCKED - [hold E] hack" /
                     // "HACKING... 47%" / "[E] Exit" — computed by the per-frame
                     // interact above; empty when no car is in reach.
-                    if (canonWorld && worldCars.built() && !worldCars.prompt().empty()) {
-                        const std::string& vhint = worldCars.prompt();
+                    if (canonWorld && ((worldCars.built() && !worldCars.prompt().empty()) ||
+                                       (dealership.built() && !dealership.prompt().empty()))) {
+                        // DEALERSHIP shares the chip: its line shows when no car is in reach.
+                        const std::string& vhint = !worldCars.prompt().empty() ? worldCars.prompt()
+                                                                               : dealership.prompt();
                         uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                         const float hsz = 18.0f;
                         const float hcx = (hw > 0) ? hw * 0.5f : 640.0f;
@@ -13832,6 +13887,7 @@ int runDefaultHost(HostContext& hc) {
     // WORLD CARS: parked-car bodies + the live vehicle rig (Jolt constraint)
     // must go BEFORE physics dies. Idempotent no-op when never built.
     worldCars.shutdown(*physics);
+    dealership.shutdown(*physics);   // DEALERSHIP: bodies + GPU resources
     // SEAM 3: the canon planet streamer (regions + terrain ring + its job
     // system) — idempotent no-op unless canon streaming booted.
     shutdownCanonStream();
