@@ -3694,9 +3694,13 @@ int runDefaultHost(HostContext& hc) {
         dealerWallet.loadFile(x3::game::vehparts::defaultBuildSavePath());
         dealership.setWallet(&dealerWallet, [&dealerWallet] {
             dealerWallet.saveFile(x3::game::vehparts::defaultBuildSavePath()); });
-        dealership.setDeliverHook([&worldCars, &physics](const x3::game::WorldCarDef& def) {
-            return worldCars.addCar(def, *physics, /*parkNow=*/true) >= 0; });
+        // parkNow only while the region is resident: a restore at boot (before
+        // `city` streams in) leaves the def pending for WorldCars' own region hook.
+        dealership.setDeliverHook([&worldCars, &physics, &dealership](const x3::game::WorldCarDef& def) {
+            return worldCars.addCar(def, *physics, /*parkNow=*/dealership.resident()) >= 0; });
         dealership.build(device, *physics, x3::game::convertedGlbRoot());
+        dealership.setAudio(audio.get());                                       // door WAVs
+        dealership.loadSoldFile(x3::game::defaultDealershipSavePath());         // sold cars back on the forecourt
         x3::boot::mark("DEALERSHIP");
     }
 
@@ -9434,7 +9438,10 @@ int runDefaultHost(HostContext& hc) {
         }
         // DEALERSHIP: turntables spin (dt-scaled) + the buy prompt/sale, on foot only.
         if (canonWorld && dealership.built()) {
-            if (!simFrozen) dealership.update(dt);
+            if (!simFrozen) {
+                const x3::phys::Vec3 pf = player.feet();   // on foot: the player trips the doors
+                dealership.update(dt, (!worldCars.driving() && !noclip) ? &pf : nullptr);
+            }
             if (!worldCars.driving() && !vehicleConsumedE && !codeMode && !termMode &&
                 !consoleOpen && !noclip && player.isAlive() && !chatTrees.active() &&
                 !npcDialog.active())
