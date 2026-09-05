@@ -121,6 +121,7 @@
 #include "ridge_road.h"        // x3::game::runRidgeRoadSelfTest (--test-ridgeroad)
 #include "road_network.h"      // x3::game::runRoadNetworkSelfTest (--test-roadnetwork)
 #include "interchange.h"       // x3::game::runInterchangeSelfTest (--test-interchange)
+#include "drive_layer.h"       // x3::game::runDriveLayerSelfTest (--test-drivelayer)
 #include "stack.h"             // x3::game::runStackSelfTest (--test-stack)
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
 #include "underground_river.h" // x3::game::UndergroundRiver::runSelfTest (--test-underriver)
@@ -794,6 +795,12 @@ int dispatchTests(const TestFlags& tf) {
                     "clearance over every lane, ramps at grade both ends, no median "
                     "crossover inside a ramp pair, no jointed bends)...");
         return x3::game::runInterchangeSelfTest() ? 0 : 1;
+    }
+    if (tf.testDriveLayer) {
+        x3::logInfo("running DRIVE LAYER self-test (the shared traffic/interchange "
+                    "stand-up: gates honoured, the canon city freeway SURVEY is a "
+                    "measurement, traffic evicts to zero cars)...");
+        return x3::game::runDriveLayerSelfTest() ? 0 : 1;
     }
     if (tf.testStack) {
         x3::logInfo("running MEGA STACK self-test (four levels, clearance at "

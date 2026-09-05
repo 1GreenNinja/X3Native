@@ -59,6 +59,36 @@ const TunnelDef kTunnels[kFreewayTunnelCount] = {
     { "West Freeway Tunnel",  -830.0f, 500.0f, -1.0f,  0.0f, 200.0f },  // -> Western Highlands
 };
 
+// The AUTHORED CONNECTOR alignments — the city's own statement of where
+// through-traffic goes. Mirrored one-for-one by the addRoadSegmented() calls
+// in the CONNECTORS block of City::build(); --test-city C10 gates that they
+// stay in step, so this table cannot rot into a lie that the drive layer's
+// boot-time freeway survey then measures against.
+struct ConnectorDef { const char* name; float x0, z0, x1, z1, halfW; };
+const ConnectorDef kConnectors[] = {
+    { "Scrapyard <-> District freeway",        -425.0f, 500.0f,  80.0f, 500.0f, 6.0f },
+    { "coast spur (east)",                      320.0f, 500.0f, 650.0f, 500.0f, 4.0f },
+    { "District -> Spire approach (N leg)",     170.0f, 410.0f, 170.0f, 150.0f, 4.0f },
+    { "District -> Spire approach (W leg)",     170.0f, 150.0f,  22.0f, 150.0f, 4.0f },
+    { "District -> Spire approach (apron leg)",  22.0f, 150.0f,  22.0f,  80.0f, 4.0f },
+};
+constexpr uint32_t kConnectorCount = (uint32_t)(sizeof(kConnectors) / sizeof(kConnectors[0]));
+
+// The MASSING extent per district — how far the roster below actually reaches
+// from each centre, as opposed to the deliberately generous flat-pad `radius`.
+// Authored HERE so the BOOT slot can read it (City::build runs inside the
+// streamed region realize, far too late to site a road against); gated by
+// --test-city C9 against every prop the build actually places, so growing a
+// district without growing this number is a red test rather than a freeway
+// through somebody's shopfront.
+const float kDistrictMassRadius[kCityZoneCount] = {
+    260.0f,   // Scrapyard City: MEASURED 248 m — the West Freeway Tunnel's portal
+              // + throat sit inside this district's footprint and are real
+              // geometry a road must not clip, so they count.
+    160.0f,   // New District: MEASURED 146 m (side streets x 120..310)
+    140.0f,   // Industrial Zone: MEASURED 128 m (factories + tank farm)
+};
+
 // Neon sign palette (the Babylon shop-neon colors).
 const float kNeon[5][3] = {
     { 1.00f, 0.30f, 0.50f },   // pink
@@ -69,6 +99,56 @@ const float kNeon[5][3] = {
 };
 
 } // namespace
+
+// ---- AUTHORED CITY DATA, readable in the BOOT slot (see city.h) -----------
+uint32_t cityDistrictCount() { return kCityZoneCount; }
+
+const CityDistrictFootprint& cityDistrictFootprint(uint32_t i) {
+    static CityDistrictFootprint fp[kCityZoneCount];
+    static bool init = false;
+    if (!init) {
+        for (uint32_t k = 0; k < kCityZoneCount; ++k) {
+            fp[k].name = kDistricts[k].name;
+            fp[k].cx = kDistricts[k].cx; fp[k].cz = kDistricts[k].cz;
+            fp[k].radius = kDistricts[k].radius;
+            fp[k].massRadius = kDistrictMassRadius[k];
+        }
+        init = true;
+    }
+    return fp[i < kCityZoneCount ? i : 0];
+}
+
+const FreewayTunnelPlan& cityFreewayTunnelPlan(uint32_t i) {
+    static FreewayTunnelPlan tp[kFreewayTunnelCount];
+    static bool init = false;
+    if (!init) {
+        for (uint32_t k = 0; k < kFreewayTunnelCount; ++k) {
+            tp[k].name = kTunnels[k].name;
+            tp[k].mouthX = kTunnels[k].mx; tp[k].mouthZ = kTunnels[k].mz;
+            tp[k].dirX = kTunnels[k].dx;   tp[k].dirZ = kTunnels[k].dz;
+            tp[k].length = kTunnels[k].len;
+        }
+        init = true;
+    }
+    return tp[i < kFreewayTunnelCount ? i : 0];
+}
+
+uint32_t cityConnectorCount() { return kConnectorCount; }
+
+const CityRoadAlignment& cityConnector(uint32_t i) {
+    static CityRoadAlignment ca[kConnectorCount];
+    static bool init = false;
+    if (!init) {
+        for (uint32_t k = 0; k < kConnectorCount; ++k) {
+            ca[k].name = kConnectors[k].name;
+            ca[k].x0 = kConnectors[k].x0; ca[k].z0 = kConnectors[k].z0;
+            ca[k].x1 = kConnectors[k].x1; ca[k].z1 = kConnectors[k].z1;
+            ca[k].halfW = kConnectors[k].halfW;
+        }
+        init = true;
+    }
+    return ca[i < kConnectorCount ? i : 0];
+}
 
 // ---- BOOT: register one terrain corridor per freeway tunnel ---------------
 // Each plan gives a MOUTH, a heading and a bore length. The corridor's spine has
@@ -138,7 +218,8 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
 
     auto addBoxProp = [&](float cx, float cy, float cz, float hx, float hy, float hz,
                           const float col[4], const float emiss[4],
-                          const SurfaceSet* s = nullptr, float uvScale = 0.5f) {
+                          const SurfaceSet* s = nullptr, float uvScale = 0.5f,
+                          bool countMass = true) {
         x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, uvScale);
         Entity e;
         e.mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
@@ -148,6 +229,24 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
         if (emiss) { e.emissive[0]=emiss[0]; e.emissive[1]=emiss[1]; e.emissive[2]=emiss[2]; e.emissive[3]=emiss[3]; }
         e.tag = (uint32_t)Tag::Prop;
         m_props.push_back(scene.add(e));
+        // MASSING EXTENT (see City::zoneMassRadius): attribute this prop to the
+        // district whose authored FOOTPRINT contains it and grow that
+        // district's measured reach by the prop's furthest XZ corner. Props
+        // outside every footprint (the connectors, the tunnel portals) are not
+        // a district's massing and are deliberately not counted. Neither are
+        // ROAD strips (countMass=false): a 9 cm asphalt decal is not massing a
+        // road has to keep clear of — the survey measures the authored
+        // connector ALIGNMENTS directly instead (cityConnector()).
+        if (!countMass) return;
+        for (uint32_t di = 0; di < kCityZoneCount; ++di) {
+            const DistrictDef& dd = kDistricts[di];
+            const float ddx = cx - dd.cx, ddz = cz - dd.cz;
+            if (ddx * ddx + ddz * ddz > dd.radius * dd.radius) continue;
+            const float rx = std::fabs(ddx) + hx, rz = std::fabs(ddz) + hz;
+            const float r  = std::sqrt(rx * rx + rz * rz);
+            if (r > m_massR[di]) m_massR[di] = r;
+            break;
+        }
     };
 
     const float kDarkGlass[4] = { 0.05f, 0.06f, 0.09f, 1.0f };  // window-band glass
@@ -208,7 +307,9 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
         const float hx = std::fabs(x1 - x0) * 0.5f + ((x1 == x0) ? halfW : 0.0f);
         const float hz = std::fabs(z1 - z0) * 0.5f + ((z1 == z0) ? halfW : 0.0f);
         float s[3]; placeOnTerrain(cx, cz, s);
-        addBoxProp(cx, s[1] + 0.08f, cz, hx, 0.09f, hz, roadCol, nullptr);
+        addBoxProp(cx, s[1] + 0.08f, cz, hx, 0.09f, hz, roadCol, nullptr,
+                   nullptr, 0.5f, /*countMass=*/false);
+        m_roadPts.push_back(cx); m_roadPts.push_back(cz);
         ++m_roadSegments;
     };
     auto addRoadSegmented = [&](float x0, float z0, float x1, float z1, float halfW) {
@@ -491,6 +592,15 @@ void City::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysic
                             : std::string()));
 }
 
+float City::distToNearestRoadStrip(float x, float z) const {
+    float best = 1e18f;
+    for (size_t k = 0; k + 1 < m_roadPts.size(); k += 2) {
+        const float dx = m_roadPts[k] - x, dz = m_roadPts[k + 1] - z;
+        best = std::min(best, std::sqrt(dx * dx + dz * dz));
+    }
+    return best;
+}
+
 // ===========================================================================
 // Headless self-test (--test-city).
 // ===========================================================================
@@ -534,6 +644,48 @@ bool runCitySelfTest() {
     // ---- A real street grid exists (mains + sides + connectors). ----
     check(c.roadSegmentCount() >= 15,
           "C2 street grid built (" + std::to_string(c.roadSegmentCount()) + " segments, >=15)");
+
+    // ---- C9 THE AUTHORED MASSING RADIUS IS AN HONEST UPPER BOUND. ----------
+    // cityDistrictFootprint(i).massRadius is read in the BOOT slot by the drive
+    // layer's freeway survey (app/drive_layer.h) — long before City::build runs
+    // — to decide how far a 46 m dual carriageway must stay off each district.
+    // If a lane grows a district past that number the survey would happily site
+    // a freeway through the new buildings, so the number is gated HERE against
+    // every prop the build actually placed. Both directions matter: the bound
+    // must HOLD (no prop outside it) and it must be REACHED (a bound nothing
+    // touches means the attribution silently stopped working).
+    {
+        bool holds = true, reached = true;
+        for (uint32_t i = 0; i < kCityZoneCount; ++i) {
+            const CityDistrictFootprint& fp = cityDistrictFootprint(i);
+            const float measured = c.zoneMassRadius((CityZone)i);
+            if (measured > fp.massRadius) holds = false;
+            if (measured < fp.massRadius * 0.5f) reached = false;
+            x3::logInfo(std::string("[city-test]   ") + fp.name + ": massing reaches " +
+                        std::to_string((int)measured) + " m of the authored " +
+                        std::to_string((int)fp.massRadius) + " m bound");
+        }
+        check(holds && reached,
+              "C9 authored district massRadius bounds the built massing (and is reached)");
+    }
+
+    // ---- C10 THE AUTHORED CONNECTOR TABLE STILL DESCRIBES REAL ROADS. ------
+    // Same reason: cityConnector() is read at boot as the city's own statement
+    // of where through-traffic goes. Every authored alignment must have road
+    // strips actually laid along it, sampled end to end.
+    {
+        bool ok = cityConnectorCount() > 0;
+        for (uint32_t i = 0; i < cityConnectorCount() && ok; ++i) {
+            const CityRoadAlignment& a = cityConnector(i);
+            for (int k = 0; k <= 8; ++k) {
+                const float t = (float)k / 8.0f;
+                const float qx = a.x0 + (a.x1 - a.x0) * t;
+                const float qz = a.z0 + (a.z1 - a.z0) * t;
+                if (c.distToNearestRoadStrip(qx, qz) > 45.0f) { ok = false; break; }
+            }
+        }
+        check(ok, "C10 every authored connector alignment has road strips laid along it");
+    }
 
     // ---- Exactly 4 freeway tunnels, each with a unit heading + nonzero length. ----
     {

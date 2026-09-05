@@ -144,14 +144,29 @@ InterchangeResult registerInterchange(const RoadSpec& fwySpec,
     size_t J = SIZE_MAX;
     float bestScore = 1e18f;
     const float kWindowM = kInterchangeZoneR;
+    // The straightness window's reach along the node list. On a CLOSED ring
+    // the first/last nodes are the seam (tangentAt's one-sided difference
+    // there is not the ring's heading), so the window stops one node short of
+    // each end and a site within a window of the seam is refused — it is
+    // fine elsewhere on the ring. On an OPEN route (the canon city freeway:
+    // 16 nodes, 900 m, ends bounded by New District clearance and by
+    // residency) the end nodes are REAL freeway with real headings, and the
+    // window must be allowed to reach them: with the seam guards applied to
+    // an open 900 m run the only admissible window [447..453 m] fell between
+    // two even nodes and no node could pass, although the zone (ramps land
+    // 340 m out) fits the run with 90% of the window on both sides of u=480.
+    const bool ringClosed = std::fabs(fwySpec.x[0] - fwySpec.x[fn - 1]) < 0.01f &&
+                            std::fabs(fwySpec.z[0] - fwySpec.z[fn - 1]) < 0.01f;
+    const size_t aMin = ringClosed ? 1 : 0;
+    const size_t bMax = ringClosed ? fn - 3 : fn - 1;
     for (size_t j = 4; j + 4 < fn; j += 2) {
         // window straightness: net heading change over +-kWindowM
         float t0x, t0z, t1x, t1z, tjx, tjz;
         size_t a = j, b = j;
-        while (a > 1 && U[j] - U[a] < kWindowM) --a;
-        while (b + 2 < fn && U[b] - U[j] < kWindowM) ++b;
+        while (a > aMin && U[j] - U[a] < kWindowM) --a;
+        while (b < bMax && U[b] - U[j] < kWindowM) ++b;
         if (U[j] - U[a] < kWindowM * 0.9f || U[b] - U[j] < kWindowM * 0.9f)
-            continue;   // too close to the seam of a closed ring — a is fine elsewhere
+            continue;   // the zone does not fit the route on this side of j
         tangentAt(a, t0x, t0z);
         tangentAt(b, t1x, t1z);
         tangentAt(j, tjx, tjz);

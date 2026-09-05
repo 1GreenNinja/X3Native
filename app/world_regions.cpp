@@ -62,6 +62,28 @@ const RangeBand kRangeBands[4] = {
 
 } // namespace
 
+// ---- AUTHORED PLANS, readable in the BOOT slot (see world_regions.h) ------
+uint32_t worldRegionPlanCount() { return kWorldRegionCount; }
+
+const WorldRegionPlan& worldRegionPlanAuthored(uint32_t i) {
+    static WorldRegionPlan pl[kWorldRegionCount];
+    static bool init = false;
+    if (!init) {
+        for (uint32_t k = 0; k < kWorldRegionCount; ++k) {
+            pl[k].region = (WorldRegion)k;
+            pl[k].name   = kRegions[k].name;
+            pl[k].biome  = kRegions[k].biome;
+            pl[k].cx     = kRegions[k].cx;
+            pl[k].cz     = kRegions[k].cz;
+            pl[k].radius = kRegions[k].radius;
+            pl[k].peakH  = kRegions[k].peakH;
+            pl[k].isMountain = kRegions[k].mtn;
+        }
+        init = true;
+    }
+    return pl[i < kWorldRegionCount ? i : 0];
+}
+
 void WorldRegions::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics) {
     (void)physics;   // graybox landmarks are visual-only this pass (no collision body)
 
