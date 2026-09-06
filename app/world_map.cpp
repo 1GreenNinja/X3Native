@@ -8,6 +8,12 @@
 #include "world_stream.h"     // self-test: the streaming-aware fast-travel path
 #include "headless_device.h"  // self-test device
 #include "terrain.h"          // the underlay bake: pure height/water queries only
+#include "map_glyphs.h"       // W-MAP v4: the SDF icon sheet
+#include "hud_panel.h"        // W-MAP v4: frame chrome in the OBJECTIVE/COMMS language
+#include "road_network.h"     // W-MAP v4: RoadSpec (freeway / crossroad / ramps)
+#include "interchange.h"      // W-MAP v4: InterchangeResult
+#include "city.h"             // W-MAP v4: districts + connectors (authored tables)
+#include "dealership.h"       // W-MAP v4: kDealershipSite
 
 #include "engine/core/x3_log.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -17,8 +23,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 namespace x3::game {
 
@@ -563,6 +572,969 @@ uint32_t bakeEntityTilePixels(const Scene& scene, x3::rhi::IRenderDevice& device
 }
 
 // ===========================================================================
+// W-MAP v4 — the GTA atlas: world snapshot, async tile pyramid, glyph sheet,
+// label engine, frame chrome. Everything below is the canonlevel (bound-world)
+// path; the tunnel/streamed hosts that never call bindWorld keep the v3 path
+// in drawScreen untouched.
+// ===========================================================================
+namespace {
+
+// sRGB byte -> linear float. HUD quad tints are LINEAR (the swapchain is
+// sRGB), while the map palette is authored in sRGB bytes; every tint that
+// must match a baked colour goes through here.
+float srgbToLin(float c) {
+    return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+void linCol(const uint8_t rgb[3], float a, float out[4]) {
+    out[0] = srgbToLin(rgb[0] / 255.0f); out[1] = srgbToLin(rgb[1] / 255.0f);
+    out[2] = srgbToLin(rgb[2] / 255.0f); out[3] = a;
+}
+void linCol(uint8_t r, uint8_t g, uint8_t b, float a, float out[4]) {
+    const uint8_t rgb[3] = { r, g, b }; linCol(rgb, a, out);
+}
+
+// One async bake. The worker owns a COPY of the feature set for the run, so
+// the main thread may re-snapshot freely while it paints.
+struct AtlasBakeJob {
+    std::thread        th;
+    std::atomic<bool>  done{false};
+    bool               running = false;
+    MapBakeRequest     rq;
+    std::vector<uint8_t> px;
+    MapBakeStats       stats;
+    void start(const MapFeatureSet& feats, const MapBakeRequest& r) {
+        join();
+        rq = r; done.store(false); running = true;
+        MapFeatureSet copy = feats;
+        th = std::thread([this, copy = std::move(copy)]() {
+            bakeMapTilePixels(copy, rq, px, &stats);
+            done.store(true, std::memory_order_release);
+        });
+    }
+    void join() { if (th.joinable()) th.join(); }   // `running` clears when the result is consumed
+    ~AtlasBakeJob() { join(); }
+};
+
+// The rotation-aware tile blit (same maths as drawScreen's v3 blitTile: all
+// four corners through worldToPx, drawHudImageQuad when rotated).
+void blitMapTile(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                 const MapCamera& cam, const MapTile& t, const float col[4], float W, float H) {
+    if (!t.baked || !t.tex.valid()) return;
+    float xy[8];
+    cam.worldToPx(t.wx0, t.wz0, xy[0], xy[1]);
+    cam.worldToPx(t.wx1, t.wz0, xy[2], xy[3]);
+    cam.worldToPx(t.wx1, t.wz1, xy[4], xy[5]);
+    cam.worldToPx(t.wx0, t.wz1, xy[6], xy[7]);
+    const float lo = -64.0f;
+    bool allL = true, allR = true, allT = true, allB = true;
+    for (int i = 0; i < 4; ++i) {
+        allL &= xy[i * 2] < lo;  allR &= xy[i * 2] > W - lo;
+        allT &= xy[i * 2 + 1] < lo; allB &= xy[i * 2 + 1] > H - lo;
+    }
+    if (allL || allR || allT || allB) return;
+    if (cam.rot == 0.0f) device.drawHudImage(frame, t.tex, xy[0], xy[1], xy[4] - xy[0], xy[5] - xy[1], col);
+    else                 device.drawHudImageQuad(frame, t.tex, xy, col);
+}
+
+// Sheet glyph as one textured quad centred on (cx,cy).
+void drawGlyph(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+               x3::rhi::TextureHandle sheet, MapGlyph g, float cx, float cy, float size,
+               const float col[4]) {
+    float u0, v0, u1, v1; mapGlyphUv(g, u0, v0, u1, v1);
+    device.drawHudImage(frame, sheet, cx - size * 0.5f, cy - size * 0.5f, size, size, col, u0, v0, u1, v1);
+}
+
+// A single-glyph texture drawn ROTATED: `nx,ny` is the glyph's "up" on screen.
+void drawGlyphRotated(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                      x3::rhi::TextureHandle tex, float cx, float cy, float size,
+                      float nx, float ny, const float col[4]) {
+    const float h = size * 0.5f;
+    const float ex = -ny * h, ey = nx * h;      // screen "right" of the glyph
+    const float ux = nx * h,  uy = ny * h;      // screen "up"
+    const float xy[8] = { cx - ex + ux, cy - ey + uy,    // TL
+                          cx + ex + ux, cy + ey + uy,    // TR
+                          cx + ex - ux, cy + ey - uy,    // BR
+                          cx - ex - ux, cy - ey - uy };  // BL
+    device.drawHudImageQuad(frame, tex, xy, col);
+}
+
+MapGlyph glyphForPoi(const MapPoi& p, float rgb[3]) {
+    auto set = [&](float r, float g, float b) { rgb[0] = r; rgb[1] = g; rgb[2] = b; };
+    set(84, 110, 160);
+    if      (p.type == "cell")        { return MapGlyph::Cell; }
+    else if (p.type == "hall")        { set(96, 120, 150); return MapGlyph::Hall; }
+    else if (p.type == "security")    { set(200, 110, 70); return MapGlyph::Lock; }
+    else if (p.type == "armory")      { set(200, 160, 60); return MapGlyph::Lock; }
+    else if (p.type == "secret")      { set(150, 110, 200); return MapGlyph::Secret; }
+    else if (p.type == "boss")        { set(190, 60, 60); return MapGlyph::Skull; }
+    else if (p.type == "elevator")    { set(70, 160, 110); return MapGlyph::Elevator; }
+    else if (p.type == "door")        { set(110, 120, 140); return MapGlyph::Door; }
+    else if (p.type == "club")        { set(200, 80, 170); return MapGlyph::Club; }
+    else if (p.type == "city")        { set(84, 110, 160); return MapGlyph::Tower; }
+    else if (p.type == "base")        { set(50, 130, 160); return MapGlyph::Base; }
+    else if (p.type == "dealer")      { set(60, 140, 90); return MapGlyph::Car; }
+    else if (p.type == "shop")        { set(220, 120, 40); return MapGlyph::Wrench; }
+    else if (p.type == "interchange") { set(90, 100, 120); return MapGlyph::Interchange; }
+    else if (p.type == "portal")      { set(80, 130, 150); return MapGlyph::Portal; }
+    else if (p.type == "landmark") {
+        set(120, 100, 160);
+        if (p.id.find("spire") != std::string::npos) return MapGlyph::Star;
+        if (p.id.find("range") != std::string::npos || p.id.find("ridge") != std::string::npos)
+            return MapGlyph::Mountain;
+        if (p.id.find("crash") != std::string::npos) return MapGlyph::Cross;
+        return MapGlyph::Pin;
+    }
+    return MapGlyph::Pin;
+}
+bool poiIsMajor(const MapPoi& p) {
+    return p.type == "city" || p.type == "base" || p.type == "landmark" || p.type == "club" ||
+           p.type == "dealer" || p.type == "shop" || p.type == "interchange" || p.type == "portal";
+}
+
+// ---- Label layout ----------------------------------------------------------
+struct LabelCand {
+    std::string text;      // already upper-cased
+    float ax, ay;          // anchor (px)
+    bool  beside;          // false = centred on the anchor (area names)
+    float px;              // glyph size
+    int   prio;            // higher wins
+    x3::rhi::FontRole role;
+    float col[4];          // text (linear)
+    float halo[4];         // halo (linear)
+    float dist;            // to view centre (tie-break)
+};
+using LRect = MapLabelRect;
+bool rectsOverlap(const LRect& a, const LRect& b) {
+    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+constexpr float kLabelTracking = 0.10f;   // extra advance per glyph, fraction of px
+
+} // namespace (reopened below)
+
+// Candidate slots. `beside` anchors sit at the blip's right edge (+gap); the
+// blip's own obstacle rect is already padded, so the slots clear it by
+// construction. Centred (area) names try the centre, then step above/below,
+// then shoulder left/right — a district name a little off its centroid beats
+// no name at all. Glyph obstacles carry their own pad; labels pad against
+// each other (3 px) and keep 6 px off the frame edge.
+bool mapPlaceLabel(const MapLabelSlotIn& c, float W, float H,
+                   const std::vector<MapLabelRect>& obstacles, const std::vector<MapLabelRect>& placed,
+                   MapLabelRect& outRect, MapLabelRect& outPad) {
+    const float tw = c.tw, th = c.th;
+    LRect tries[8]; int nTries = 0;
+    const float hb = c.blipPx * 0.5f + 3.0f;   // blip half + its obstacle pad
+    if (c.beside) {
+        const float bx = c.ax - c.blipPx * 0.5f - 6.0f;   // blip centre x (anchor = right edge + 6)
+        tries[nTries++] = { c.ax, c.ay - th * 0.5f, tw, th };                       // right
+        tries[nTries++] = { bx - hb - 4.0f - tw, c.ay - th * 0.5f, tw, th };       // left
+        tries[nTries++] = { bx - tw * 0.5f, c.ay + hb + 3.0f, tw, th };             // below
+        tries[nTries++] = { bx - tw * 0.5f, c.ay - hb - 3.0f - th, tw, th };        // above
+        tries[nTries++] = { c.ax, c.ay - hb - th * 0.5f, tw, th };                  // right, raised
+        tries[nTries++] = { c.ax, c.ay + hb - th * 0.5f, tw, th };                  // right, lowered
+    } else {
+        tries[nTries++] = { c.ax - tw * 0.5f, c.ay - th * 0.5f, tw, th };
+        tries[nTries++] = { c.ax - tw * 0.5f, c.ay - th * 1.6f, tw, th };
+        tries[nTries++] = { c.ax - tw * 0.5f, c.ay + th * 0.6f, tw, th };
+        tries[nTries++] = { c.ax - tw * 0.5f, c.ay - th * 2.8f, tw, th };
+        tries[nTries++] = { c.ax - tw * 0.5f, c.ay + th * 1.8f, tw, th };
+        tries[nTries++] = { c.ax + 14.0f, c.ay - th * 0.5f, tw, th };
+        tries[nTries++] = { c.ax - 14.0f - tw, c.ay - th * 0.5f, tw, th };
+    }
+    for (int t = 0; t < nTries; ++t) {
+        const LRect r = tries[t];
+        const LRect pad{ r.x - 3, r.y - 3, r.w + 6, r.h + 6 };
+        if (pad.x < 6 || pad.y < 6 || pad.x + pad.w > W - 6 || pad.y + pad.h > H - 6) continue;
+        bool hit = false;
+        for (const LRect& o : obstacles) if (rectsOverlap(r, o)) { hit = true; break; }
+        for (const LRect& o : placed) if (!hit && rectsOverlap(pad, o)) { hit = true; break; }
+        if (hit) continue;
+        outRect = r; outPad = pad;
+        return true;
+    }
+    return false;
+}
+
+namespace {
+
+float trackedWidth(x3::rhi::FontRole role, const std::string& s, float px) {
+    float w = x3::ui::UiContext::textWidth(role, s.c_str(), px);
+    if (s.size() > 1) w += kLabelTracking * px * (float)(s.size() - 1);
+    return w;
+}
+// Draw one label glyph-by-glyph with tracking; 4-tap light halo then the text
+// (ui.text's single dark drop shadow is the wrong dress on a light map).
+void drawTrackedText(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                     x3::rhi::FontRole role, const std::string& s, float x, float y, float px,
+                     const float col[4], const float halo[4]) {
+    char ch[2] = { 0, 0 };
+    const float off[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
+    for (int pass = 0; pass < 5; ++pass) {
+        float pen = x;
+        const float dx = pass < 4 ? off[pass][0] : 0.0f, dy = pass < 4 ? off[pass][1] : 0.0f;
+        for (char c : s) {
+            ch[0] = c;
+            device.drawHudTextF(frame, role, ch, pen + dx, y + dy, px, pass < 4 ? halo : col);
+            pen += x3::ui::UiContext::textWidth(role, ch, px) + kLabelTracking * px;
+        }
+    }
+}
+
+std::string upperCopy(const std::string& s) {
+    std::string o = s;
+    for (char& c : o) c = (char)std::toupper((unsigned char)c);
+    return o;
+}
+
+} // namespace
+
+// The per-instance atlas state. Lives behind a unique_ptr so world_map.h does
+// not drag <thread>/<atomic> into every host that includes it.
+struct WorldMapSystem::Atlas {
+    MapWorldBinding bind{};
+    bool  bound = false;
+    MapFeatureSet feats;
+    uint64_t featsKey = 0;          // resident-set signature the snapshot was taken at
+    AtlasBakeJob baseJob, detailJob;
+    MapTile base, detail;
+    MapBakeStats baseStats, detailStats;
+    float detailMpp = 0.0f;
+    double detailUploadedAt = -1.0;  // m_pulse when the last detail tile landed
+    bool  baseDirty = true;          // needs a (re)bake
+    // Textures owned here (destroyed in shutdown).
+    x3::rhi::TextureHandle sheet{}, arrow{}, rose{}, vignette{};
+    bool glyphsMade = false;
+    MapTile fog; std::string fogKey;
+    int hover = -1;
+};
+
+WorldMapSystem::WorldMapSystem() : m_atlas(std::make_unique<Atlas>()) {}
+WorldMapSystem::~WorldMapSystem() = default;   // AtlasBakeJob dtors join their threads
+
+bool WorldMapSystem::worldBound() const { return m_atlas && m_atlas->bound; }
+const MapTile*     WorldMapSystem::overviewTile() const     { return (m_atlas && m_atlas->base.baked) ? &m_atlas->base : nullptr; }
+const MapTile*     WorldMapSystem::detailTile() const       { return (m_atlas && m_atlas->detail.baked) ? &m_atlas->detail : nullptr; }
+const MapBakeStats* WorldMapSystem::overviewBakeStats() const { return m_atlas->base.baked ? &m_atlas->baseStats : nullptr; }
+const MapBakeStats* WorldMapSystem::detailBakeStats() const   { return m_atlas->detail.baked ? &m_atlas->detailStats : nullptr; }
+
+namespace {
+// Resident-set signature: which regions are resident and how many entities
+// each owns. A change means the ledger grew (a region streamed in after the
+// bind) and the footprint snapshot is stale.
+uint64_t ledgerKey(const WorldStreamer* ws) {
+    if (!ws) return 1;
+    uint64_t k = 1469598103934665603ull;
+    for (uint32_t i = 0; i < ws->regionCount(); ++i) {
+        if (ws->state(i) != RegionState::Resident) continue;
+        k ^= (uint64_t)(i + 1) * 1099511628211ull;
+        k ^= (uint64_t)ws->ownedEntities(i).size() * 0x9E3779B97F4A7C15ull;
+        k *= 1099511628211ull;
+    }
+    return k;
+}
+}
+
+void WorldMapSystem::bindWorld(const MapWorldBinding& b) {
+    m_atlas->bind = b;
+    m_atlas->bound = true;
+    // Survey-sited POIs snap to where the runtime actually put the thing: the
+    // interchange centre (standUpInterchange picks the crossing) and the
+    // under-river daylight portal (the chain's last node). The JSON carries
+    // the design position so an unbound host still shows them.
+    if (b.interchange && b.interchange->built) {
+        const int k = m_pois.indexOf("interchange");
+        if (k >= 0) { m_pois.pois[k].x = b.interchange->cx; m_pois.pois[k].z = b.interchange->cz; m_pois.pois[k].y = b.interchange->deckY; }
+    }
+    {
+        const UnderRiverChain& ch = worldUnderRiverChain();
+        const int k = m_pois.indexOf("underriver_portal");
+        if (k >= 0 && ch.n > 0) { m_pois.pois[k].x = ch.x[ch.n - 1]; m_pois.pois[k].z = ch.z[ch.n - 1]; m_pois.pois[k].y = ch.w[ch.n - 1]; }
+    }
+    m_atlas->feats = snapshotFeatures();
+    m_atlas->featsKey = ledgerKey(b.streamer);
+    m_atlas->baseDirty = true;
+    // Kick the overview bake NOW (bind is at world boot) so the first M press
+    // finds it uploaded rather than paying the bake on open.
+    MapBakeRequest rq;
+    rq.wx0 = -b.worldHalfM; rq.wz0 = -b.worldHalfM; rq.wx1 = b.worldHalfM; rq.wz1 = b.worldHalfM;
+    rq.res = kAtlasOverviewRes; rq.featherTexels = 0; rq.minFeatureTexels = 0.6f;
+    m_atlas->baseJob.start(m_atlas->feats, rq);
+    m_atlas->baseDirty = false;
+    x3::logInfo("[worldmap] atlas bound: " + std::to_string(m_atlas->feats.roads.size()) + " roads, " +
+                std::to_string(m_atlas->feats.footprints.size()) + " footprints, " +
+                std::to_string(m_atlas->feats.districts.size()) + " districts; overview bake started");
+}
+
+MapFeatureSet WorldMapSystem::snapshotFeatures() const {
+    MapFeatureSet fs;
+    const MapWorldBinding& b = m_atlas->bind;
+
+    // ---- Districts: the authored footprint table (massRadius, lifted 15% so
+    // the tint reads past the last building).
+    for (uint32_t i = 0; i < cityDistrictCount(); ++i) {
+        const CityDistrictFootprint& d = cityDistrictFootprint(i);
+        MapDistrict md; md.name = d.name; md.cx = d.cx; md.cz = d.cz;
+        md.r = (d.massRadius > 0 ? d.massRadius : d.radius) * 1.15f;
+        const float tints[3][3] = { {0.72f, 0.58f, 0.46f}, {0.70f, 0.76f, 0.86f}, {0.66f, 0.64f, 0.50f} };
+        const float* t = tints[i % 3];
+        md.rgb[0] = t[0]; md.rgb[1] = t[1]; md.rgb[2] = t[2];
+        fs.districts.push_back(std::move(md));
+    }
+    // ---- Connectors -> arterials.
+    for (uint32_t i = 0; i < cityConnectorCount(); ++i) {
+        const CityRoadAlignment& c = cityConnector(i);
+        MapRoad r; r.name = c.name; r.cls = MapRoadClass::Arterial; r.halfW = std::max(3.0f, c.halfW);
+        r.x = { c.x0, c.x1 }; r.z = { c.z0, c.z1 };
+        fs.roads.push_back(std::move(r));
+    }
+    // ---- Freeway (+ tunnel/bridge reaches from its span gaps).
+    auto addSpec = [&](const RoadSpec& s, MapRoadClass cls, float halfW, bool median, float medianHalf = 0.0f) {
+        if (s.x.size() < 2 || s.x.size() != s.z.size()) return;
+        MapRoad r; r.name = s.name; r.cls = cls; r.halfW = halfW; r.median = median; r.medianHalfW = medianHalf;
+        r.x = s.x; r.z = s.z;
+        if (!s.gaps.empty()) {
+            const size_t nseg = s.x.size() - 1;
+            r.tunnel.assign(nseg, 0); r.bridge.assign(nseg, 0);
+            for (const RoadSpec::Gap& g : s.gaps) {
+                const uint32_t i0 = std::min<uint32_t>(g.i0, (uint32_t)nseg), i1 = std::min<uint32_t>(g.i1, (uint32_t)nseg);
+                if (i1 <= i0) continue;
+                const uint32_t mid = (i0 + i1) / 2;
+                const float mx = 0.5f * (s.x[mid] + s.x[std::min<uint32_t>(mid + 1, (uint32_t)nseg)]);
+                const float mz = 0.5f * (s.z[mid] + s.z[std::min<uint32_t>(mid + 1, (uint32_t)nseg)]);
+                const float gy = 0.5f * (g.y0 + g.y1);
+                const bool bored = gy < terrainHeightAtWorld(mx, mz) - 2.0f;
+                for (uint32_t k = i0; k < i1; ++k) (bored ? r.tunnel : r.bridge)[k] = 1;
+            }
+        }
+        fs.roads.push_back(std::move(r));
+    };
+    if (b.freeway) {
+        // A dual route is drawn as what it is: two full carriageways either
+        // side of the authored median floor (RoadSpec::medianMinHalfM — the
+        // city survey's design width; the terrain-decided plan only ever opens
+        // it wider on grade). Total half = median + one carriageway.
+        const bool dual = b.freeway->dualCarriageway;
+        const float medianHalf = dual ? std::max(kFwyMedianMinHalfM, b.freeway->medianMinHalfM) : 0.0f;
+        addSpec(*b.freeway, MapRoadClass::Freeway,
+                dual ? medianHalf + 2.0f * kFwyPavedHalfM : kFwyPavedHalfM, dual, medianHalf);
+    }
+    if (b.interchange && b.interchange->built) {
+        addSpec(b.interchange->spec, MapRoadClass::Arterial, kPavedHalfM, false);
+        for (int k = 0; k < 4; ++k)
+            if (b.interchange->ramp[k].built)
+                addSpec(b.interchange->ramp[k].spec, MapRoadClass::Ramp,
+                        std::max(3.0f, b.interchange->ramp[k].spec.halfWidth - 1.0f), false);
+    }
+    // ---- Footprints from the region ledger. Classification by world AABB:
+    // thin wide slabs are pavement (streets are addBoxProp boxes 0.18 m tall,
+    // 8-12 m wide, cut at 36 m; sidewalks 3.2 m wide), anything >= 2.5 m tall
+    // with a >= 2 m plan extent is a building. Ground-scale slabs (> 600 m) and
+    // anything topping out below -12 m (the ocean base) are skipped.
+    if (b.streamer && b.scene && b.device) {
+        const Scene& scene = *b.scene;
+        for (uint32_t i = 0; i < b.streamer->regionCount(); ++i) {
+            if (b.streamer->state(i) != RegionState::Resident) continue;
+            for (uint32_t id : b.streamer->ownedEntities(i)) {
+                if (id >= scene.size()) continue;
+                const Entity& e = scene.get(id);
+                if (!e.mesh.valid() || !e.visible) continue;
+                float bmin[3], bmax[3];
+                if (!b.device->meshBounds(e.mesh, bmin, bmax)) continue;
+                const float lc[3] = { (bmin[0]+bmax[0])*0.5f, (bmin[1]+bmax[1])*0.5f, (bmin[2]+bmax[2])*0.5f };
+                const float le[3] = { (bmax[0]-bmin[0])*0.5f, (bmax[1]-bmin[1])*0.5f, (bmax[2]-bmin[2])*0.5f };
+                const float* m = e.transform;
+                float wc[3], we[3];
+                for (int a = 0; a < 3; ++a) {
+                    wc[a] = m[12 + a] + m[0 + a] * lc[0] + m[4 + a] * lc[1] + m[8 + a] * lc[2];
+                    we[a] = std::fabs(m[0 + a]) * le[0] + std::fabs(m[4 + a]) * le[1] + std::fabs(m[8 + a]) * le[2];
+                }
+                const float ex = we[0] * 2.0f, ey = we[1] * 2.0f, ez = we[2] * 2.0f;
+                const float top = wc[1] + we[1];
+                const float mn = std::min(ex, ez), mx = std::max(ex, ez);
+                if (mx > 600.0f || top < -12.0f || mn < 2.0f) continue;
+                // The interchange's own meshes (ramp loops, deck, piers, pads)
+                // are curved geometry whose world AABBs are 100-270 m slabs —
+                // as footprints they buried the junction under grey blocks. Its
+                // ramps + crossroad are already drawn from the specs above.
+                if (b.interchange && b.interchange->built &&
+                    std::fabs(wc[0] - b.interchange->cx) <= 480.0f && std::fabs(wc[2] - b.interchange->cz) <= 400.0f &&
+                    mx > 40.0f) continue;
+                MapFootprint f{ wc[0] - we[0], wc[2] - we[2], wc[0] + we[0], wc[2] + we[2], ey, MapFootKind::Paved };
+                if (ey < 0.3f) {
+                    if (mn < 2.5f || mx < 6.0f) continue;
+                    if (mn >= 7.0f && mn <= 14.0f && mx >= 20.0f) {
+                        MapRoad r; r.cls = MapRoadClass::Street; r.halfW = mn * 0.5f;
+                        if (ex >= ez) { r.x = { f.x0, f.x1 }; r.z = { wc[2], wc[2] }; }
+                        else          { r.x = { wc[0], wc[0] }; r.z = { f.z0, f.z1 }; }
+                        fs.roads.push_back(std::move(r));
+                        continue;
+                    }
+                    f.kind = mn < 4.5f ? MapFootKind::Walk : MapFootKind::Paved;
+                    fs.footprints.push_back(f);
+                } else if (ey >= 2.5f) {
+                    f.kind = MapFootKind::Building;
+                    fs.footprints.push_back(f);
+                }
+            }
+        }
+    }
+    // ---- The Spire: its facade rect as the landmark tone (a 100 m mass).
+    if (b.spireX1 > b.spireX0 && b.spireZ1 > b.spireZ0)
+        fs.footprints.push_back({ b.spireX0, b.spireZ0, b.spireX1, b.spireZ1, 100.0f, MapFootKind::Landmark });
+    // ---- The dealership: hall + forecourt (its GPU meshes are not ledger
+    // entities, so the authored site is the source).
+    {
+        const DealershipSite& s = kDealershipSite;
+        fs.footprints.push_back({ s.cx - s.halfDepth, s.cz - s.halfWidth, s.cx + s.halfDepth, s.cz + s.halfWidth,
+                                  s.ceilingH, MapFootKind::Building });
+        fs.footprints.push_back({ s.cx - s.halfDepth - s.forecourtDepth, s.cz - s.halfWidth, s.cx - s.halfDepth, s.cz + s.halfWidth,
+                                  0.1f, MapFootKind::Paved });
+    }
+
+    // ---- Played envelope (map_atlas.h: TERRAIN FADE) — discs over everything
+    // the player can reach or see named: district tint discs, every road
+    // (discs stepped along each segment at their own radius, so the union is a
+    // smooth tube), footprints, the river + under-river chain, the sea basin,
+    // and every POI. The wilderness heightfield fades past its margin.
+    {
+        for (const MapDistrict& d : fs.districts) fs.envelope.push_back({ d.cx, d.cz, d.r });
+        for (const MapRoad& r : fs.roads) {
+            const float rr = 120.0f;
+            for (size_t i = 0; i + 1 < r.x.size(); ++i) {
+                const float dx = r.x[i + 1] - r.x[i], dz = r.z[i + 1] - r.z[i];
+                const float len = std::sqrt(dx * dx + dz * dz);
+                const int n = std::max(1, (int)std::ceil(len / rr));
+                for (int k = 0; k <= n; ++k) { const float t = (float)k / (float)n; fs.envelope.push_back({ r.x[i] + dx * t, r.z[i] + dz * t, rr }); }
+            }
+        }
+        for (const MapFootprint& fp : fs.footprints)
+            fs.envelope.push_back({ 0.5f * (fp.x0 + fp.x1), 0.5f * (fp.z0 + fp.z1), 0.5f * std::max(fp.x1 - fp.x0, fp.z1 - fp.z0) + 40.0f });
+        {
+            uint32_t rn = 0;
+            const WorldRiverNode* nodes = worldRiverNodes(rn);
+            for (uint32_t i = 0; i < rn; ++i) fs.envelope.push_back({ nodes[i].x, nodes[i].z, 110.0f });
+            const UnderRiverChain& ch = worldUnderRiverChain();
+            for (uint32_t i = 0; i < ch.n; ++i) fs.envelope.push_back({ ch.x[i], ch.z[i], 90.0f });
+        }
+        fs.envelope.push_back({ kWorldOceanBasinX, kWorldOceanBasinZ, kWorldOceanBasinR });
+        for (const MapPoi& p : m_pois.pois) fs.envelope.push_back({ p.x, p.z, 80.0f });
+        if (b.spireX1 > b.spireX0)
+            fs.envelope.push_back({ 0.5f * (b.spireX0 + b.spireX1), 0.5f * (b.spireZ0 + b.spireZ1), 0.5f * std::max(b.spireX1 - b.spireX0, b.spireZ1 - b.spireZ0) + 60.0f });
+    }
+    return fs;
+}
+
+void WorldMapSystem::invalidateAtlas(x3::rhi::IRenderDevice& device) {
+    Atlas& A = *m_atlas;
+    A.baseJob.join(); A.detailJob.join();
+    A.baseJob.running = false; A.detailJob.running = false;
+    A.baseJob.done.store(false); A.detailJob.done.store(false);
+    if (A.base.baked && A.base.tex.valid()) device.destroyTexture(A.base.tex);
+    if (A.detail.baked && A.detail.tex.valid()) device.destroyTexture(A.detail.tex);
+    A.base = MapTile{}; A.detail = MapTile{};
+    A.baseDirty = true;
+    if (A.bound) { A.feats = snapshotFeatures(); A.featsKey = ledgerKey(A.bind.streamer); }
+}
+
+bool WorldMapSystem::atlasTick(x3::rhi::IRenderDevice& device) {
+    Atlas& A = *m_atlas;
+    if (!A.bound) return false;
+    bool uploaded = false;
+    auto finish = [&](AtlasBakeJob& job, MapTile& tile, MapBakeStats& stats, const char* what) {
+        if (!job.running || !job.done.load(std::memory_order_acquire)) return false;
+        job.join(); job.running = false;
+        if (tile.baked && tile.tex.valid()) device.destroyTexture(tile.tex);   // deferred-free safe
+        tile.tex = device.createTexture(job.px.data(), job.rq.res, job.rq.res, /*srgb*/true);
+        tile.wx0 = job.rq.wx0; tile.wz0 = job.rq.wz0; tile.wx1 = job.rq.wx1; tile.wz1 = job.rq.wz1;
+        tile.res = job.rq.res; tile.baked = true;
+        stats = job.stats;
+        std::vector<uint8_t>().swap(job.px);
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "[worldmap] atlas %s baked %ux%u (%.1f m/texel) in %.0f ms "
+                      "(height %.0f, terrain %.0f, districts %.0f, footprints %.0f, roads %.0f; %u samples, %u threads)",
+                      what, tile.res, tile.res, (tile.wx1 - tile.wx0) / (float)tile.res, stats.totalMs,
+                      stats.heightMs, stats.terrainMs, stats.districtMs, stats.footMs, stats.roadMs,
+                      stats.heightSamples, stats.threads);
+        x3::logInfo(buf);
+        return true;
+    };
+    if (finish(A.baseJob, A.base, A.baseStats, "overview")) uploaded = true;
+    if (finish(A.detailJob, A.detail, A.detailStats, "detail")) { uploaded = true; A.detailUploadedAt = m_pulse; A.detailMpp = (A.detail.wx1 - A.detail.wx0) / (float)A.detail.res; }
+
+    // Ledger grew (a region streamed in): re-snapshot and rebake both levels.
+    const uint64_t key = ledgerKey(A.bind.streamer);
+    if (key != A.featsKey && !A.baseJob.running && !A.detailJob.running) {
+        A.feats = snapshotFeatures(); A.featsKey = key; A.baseDirty = true;
+        if (A.detail.baked && A.detail.tex.valid()) { device.destroyTexture(A.detail.tex); A.detail = MapTile{}; }
+    }
+    if (A.baseDirty && !A.baseJob.running) {
+        MapBakeRequest rq;
+        rq.wx0 = -A.bind.worldHalfM; rq.wz0 = -A.bind.worldHalfM; rq.wx1 = A.bind.worldHalfM; rq.wz1 = A.bind.worldHalfM;
+        rq.res = kAtlasOverviewRes;
+        A.baseJob.start(A.feats, rq);
+        A.baseDirty = false;
+    }
+
+    // Detail tile: viewport-following, 1 texel == 1 px at bake time. Rebake
+    // when the texel drifts outside [0.5, 1.35] px (zoom) or a view corner
+    // leaves the tile's inner rect (pan); one job in flight; the old tile
+    // stays on screen until the new one lands (the overview fills any gap).
+    if (m_open) {
+        const float scale = m_cam.scale;
+        const float baseMpp = (2.0f * A.bind.worldHalfM) / (float)kAtlasOverviewRes;
+        const bool wantDetail = scale * baseMpp > 1.3f;    // overview texel would exceed 1.3 px
+        if (wantDetail && !A.detailJob.running) {
+            bool need = !A.detail.baked;
+            if (!need) {
+                const float texPx = A.detailMpp * scale;
+                if (texPx < 0.5f || texPx > 1.35f) need = true;
+                else {
+                    const float fe = 24.0f * A.detailMpp;
+                    const float corners[4][2] = { {0, 0}, {m_cam.vw, 0}, {m_cam.vw, m_cam.vh}, {0, m_cam.vh} };
+                    for (auto& c : corners) {
+                        float wx, wz; m_cam.pxToWorld(c[0], c[1], wx, wz);
+                        if (wx < A.detail.wx0 + fe || wx > A.detail.wx1 - fe || wz < A.detail.wz0 + fe || wz > A.detail.wz1 - fe) { need = true; break; }
+                    }
+                }
+            }
+            if (need && (A.detailUploadedAt < 0.0 || m_pulse - A.detailUploadedAt > 0.08)) {
+                const float side = (float)kAtlasDetailRes / scale;
+                MapBakeRequest rq;
+                rq.wx0 = m_cam.cx - side * 0.5f; rq.wz0 = m_cam.cz - side * 0.5f;
+                rq.wx1 = m_cam.cx + side * 0.5f; rq.wz1 = m_cam.cz + side * 0.5f;
+                rq.res = kAtlasDetailRes; rq.featherTexels = 24; rq.minFeatureTexels = 0.6f;
+                A.detailJob.start(A.feats, rq);
+            }
+        }
+    }
+    return uploaded;
+}
+
+void WorldMapSystem::atlasFlush(x3::rhi::IRenderDevice& device) {
+    Atlas& A = *m_atlas;
+    if (!A.bound) return;
+    // Block on whatever is in flight, upload it, and repeat once so a bake the
+    // upload itself triggers (a dirty overview, a wanted detail tile) lands too.
+    for (int pass = 0; pass < 3; ++pass) {
+        A.baseJob.join(); A.detailJob.join();
+        atlasTick(device);
+        if (!A.baseJob.running && !A.detailJob.running && !A.baseDirty) break;
+    }
+}
+
+void WorldMapSystem::ensureGlyphTextures(x3::rhi::IRenderDevice& device) {
+    Atlas& A = *m_atlas;
+    if (A.glyphsMade) return;
+    A.glyphsMade = true;
+    std::vector<uint8_t> px; uint32_t w = 0, h = 0;
+    rasterizeMapGlyphSheet(px, w, h);
+    A.sheet = device.createTexture(px.data(), w, h, /*srgb*/false);
+    rasterizeMapGlyph(MapGlyph::Arrow, 64, px);
+    A.arrow = device.createTexture(px.data(), 64, 64, false);
+    rasterizeMapGlyph(MapGlyph::Rose, 128, px);
+    A.rose = device.createTexture(px.data(), 128, 128, false);
+    // Vignette: black, alpha rising from 0 at r=0.55 to 0.55 at the corners.
+    {
+        const uint32_t n = 256;
+        px.assign((size_t)n * n * 4, 0);
+        for (uint32_t y = 0; y < n; ++y) for (uint32_t x = 0; x < n; ++x) {
+            const float u = ((float)x + 0.5f) / n * 2.0f - 1.0f, v = ((float)y + 0.5f) / n * 2.0f - 1.0f;
+            const float r = std::sqrt(u * u + v * v);
+            float t = std::clamp((r - 0.55f) / (1.25f - 0.55f), 0.0f, 1.0f);
+            t = t * t * (3.0f - 2.0f * t) * 0.55f;
+            px[((size_t)y * n + x) * 4 + 3] = (uint8_t)std::lround(t * 255.0f);
+        }
+        A.vignette = device.createTexture(px.data(), n, n, false);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The bound-world screen (canonlevel).
+// ---------------------------------------------------------------------------
+void WorldMapSystem::drawAtlasScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& device,
+                                     const x3::rhi::FrameContext& frame, const ScreenInput& in,
+                                     StoryFlags& flags, float W, float H, bool modal) {
+    Atlas& A = *m_atlas;
+    ensureGlyphTextures(device);
+    atlasTick(device);
+    const float scale = m_cam.scale;
+    const float white[4] = { 1, 1, 1, 1 };
+
+    // 1. Ground: the void tone, then the overview, then the detail tile.
+    { float bg[4]; linCol(mappal::kVoid, 1.0f, bg); ui.quad(0, 0, W, H, bg); }
+    blitMapTile(device, frame, m_cam, A.base, white, W, H);
+    blitMapTile(device, frame, m_cam, A.detail, white, W, H);
+
+    // 2. Spire floor plan: only once the view is close enough to read rooms
+    // (fades in 1.5 -> 3 px/m), on top of the landmark mass.
+    if (scale >= 1.5f) {
+        if (const MapTile* st = ensureSpireTile(device, m_selFloor)) {
+            const float a = std::clamp((scale - 1.5f) / 1.5f, 0.0f, 1.0f) * 0.92f;
+            const float c[4] = { 1, 1, 1, a };
+            blitMapTile(device, frame, m_cam, *st, c, W, H);
+        }
+    }
+
+    // 3. Fog of the unseen: soft discs over regions not yet visited (sRGB
+    // 176,184,196 @ 0.62), rebaked only when the seen-set changes.
+    if (A.bind.streamer) {
+        std::string key;
+        for (uint32_t i = 0; i < A.bind.streamer->regionCount(); ++i) {
+            const WorldRegionDesc& d = A.bind.streamer->desc(i);
+            if (d.radius <= 0.0f || d.radius > 3000.0f) continue;
+            if (flags.has(regionSeenFlag(d.id))) continue;
+            key += d.id; key += ';';
+        }
+        if (key != A.fogKey || !A.fog.baked) {
+            A.fogKey = key;
+            if (A.fog.baked && A.fog.tex.valid()) { device.destroyTexture(A.fog.tex); A.fog = MapTile{}; }
+            if (!key.empty()) {
+                const uint32_t n = 512;
+                const float hm = A.bind.worldHalfM;
+                std::vector<uint8_t> px((size_t)n * n * 4, 0);
+                std::vector<float> cov((size_t)n * n, 0.0f);
+                for (uint32_t i = 0; i < A.bind.streamer->regionCount(); ++i) {
+                    const WorldRegionDesc& d = A.bind.streamer->desc(i);
+                    if (d.radius <= 0.0f || d.radius > 3000.0f || flags.has(regionSeenFlag(d.id))) continue;
+                    const float r = d.radius, soft = r * 0.15f;
+                    const int x0 = std::max(0, (int)((d.anchor[0] - r - soft + hm) / (2 * hm) * n));
+                    const int x1 = std::min((int)n - 1, (int)((d.anchor[0] + r + soft + hm) / (2 * hm) * n) + 1);
+                    const int z0 = std::max(0, (int)((d.anchor[2] - r - soft + hm) / (2 * hm) * n));
+                    const int z1 = std::min((int)n - 1, (int)((d.anchor[2] + r + soft + hm) / (2 * hm) * n) + 1);
+                    for (int z = z0; z <= z1; ++z) for (int x = x0; x <= x1; ++x) {
+                        const float wx = ((float)x + 0.5f) / n * 2 * hm - hm, wz = ((float)z + 0.5f) / n * 2 * hm - hm;
+                        const float dd = std::sqrt((wx - d.anchor[0]) * (wx - d.anchor[0]) + (wz - d.anchor[2]) * (wz - d.anchor[2]));
+                        const float t = std::clamp((r + soft - dd) / (2 * soft), 0.0f, 1.0f);
+                        float& c = cov[(size_t)z * n + x]; c = std::max(c, t * t * (3 - 2 * t));
+                    }
+                }
+                for (size_t i = 0; i < cov.size(); ++i) {
+                    px[i * 4 + 0] = 176; px[i * 4 + 1] = 184; px[i * 4 + 2] = 196;
+                    px[i * 4 + 3] = (uint8_t)std::lround(cov[i] * 0.62f * 255.0f);
+                }
+                A.fog.tex = device.createTexture(px.data(), n, n, true);
+                A.fog.wx0 = -hm; A.fog.wz0 = -hm; A.fog.wx1 = hm; A.fog.wz1 = hm; A.fog.res = n; A.fog.baked = true;
+            }
+        }
+        if (A.fog.baked) blitMapTile(device, frame, m_cam, A.fog, white, W, H);
+    }
+
+    // Obstacles the label engine must dodge: chrome + every blip drawn.
+    std::vector<LRect> obstacles;
+    std::vector<LabelCand> cands;
+    const float cxs = W * 0.5f, cys = H * 0.5f;
+    auto addCand = [&](std::string text, float ax, float ay, bool beside, float px, int prio,
+                       x3::rhi::FontRole role, const float col[4], const float halo[4]) {
+        if (text.empty()) return;
+        if (ax < -200 || ay < -200 || ax > W + 200 || ay > H + 200) return;
+        LabelCand c; c.text = upperCopy(text); c.ax = ax; c.ay = ay; c.beside = beside; c.px = px;
+        c.prio = prio; c.role = role;
+        std::copy(col, col + 4, c.col); std::copy(halo, halo + 4, c.halo);
+        c.dist = std::hypot(ax - cxs, ay - cys);
+        cands.push_back(std::move(c));
+    };
+    float inkDark[4], inkMid[4], inkWater[4], haloLight[4], haloWater[4];
+    linCol(30, 34, 44, 1.0f, inkDark); linCol(56, 60, 72, 1.0f, inkMid); linCol(52, 84, 116, 1.0f, inkWater);
+    linCol(236, 238, 232, 0.80f, haloLight); linCol(214, 226, 236, 0.80f, haloWater);
+    // Label size: a gentle zoom-follow so names grow a little as you zoom in.
+    const float zf = std::clamp(0.85f + 0.15f * std::log2(std::max(scale, 1e-3f) / 0.5f), 0.8f, 1.35f);
+
+    // 4. Objective (gold diamond ring, pulsing).
+    if (in.objValid) {
+        float px, py; m_cam.worldToPx(in.objX, in.objZ, px, py);
+        const float a = 0.7f + 0.3f * std::sin(m_pulse * 5.0f);
+        const float gold[4] = { 1.0f, 0.82f, 0.25f, a };
+        drawGlyph(device, frame, A.sheet, MapGlyph::DiamondRing, px, py, 26.0f, gold);
+        obstacles.push_back({ px - 13, py - 13, 26, 26 });
+        addCand("OBJECTIVE", px + 14, py, true, 11.0f * zf, 8, x3::rhi::FontRole::Menu, inkDark, haloLight);
+    }
+
+    // 5. POI blips (discovered only). Plate tinted per class + white glyph;
+    // hover ring; off-floor Spire POIs ghost as a small ring.
+    A.hover = -1;
+    const float blipPx = std::clamp(18.0f + 4.0f * std::log2(std::max(scale, 0.05f) / 0.5f), 16.0f, 26.0f);
+    for (size_t i = 0; i < m_pois.pois.size(); ++i) {
+        const MapPoi& p = m_pois.pois[i];
+        if (!poiDiscovered(flags, p)) continue;
+        // Spire interior POIs only show once the plan is readable.
+        if (p.floor > 0 && scale < 1.5f) continue;
+        float px, py; m_cam.worldToPx(p.x, p.z, px, py);
+        if (px < -40 || py < -40 || px > W + 40 || py > H + 40) continue;
+        const bool hov = !modal && std::fabs(px - in.mouseX) <= 12.0f && std::fabs(py - in.mouseY) <= 12.0f;
+        if (hov) A.hover = (int)i;
+        if (p.floor > 0 && p.floor != m_selFloor) {
+            float ghost[4]; linCol(90, 100, 120, 0.35f, ghost);
+            drawGlyph(device, frame, A.sheet, MapGlyph::Ring, px, py, 12.0f, ghost);
+            continue;
+        }
+        float rgb[3]; const MapGlyph g = glyphForPoi(p, rgb);
+        float plate[4]; linCol((uint8_t)rgb[0], (uint8_t)rgb[1], (uint8_t)rgb[2], 0.96f, plate);
+        float caseCol[4]; linCol(24, 28, 36, 0.55f, caseCol);
+        drawGlyph(device, frame, A.sheet, MapGlyph::Plate, px, py, blipPx + 3.0f, caseCol);
+        drawGlyph(device, frame, A.sheet, MapGlyph::Plate, px, py, blipPx, plate);
+        const float ink[4] = { 1, 1, 1, 0.95f };
+        drawGlyph(device, frame, A.sheet, g, px, py, blipPx * 0.72f, ink);
+        if (hov) { const float ring[4] = { 1, 1, 1, 0.9f }; drawGlyph(device, frame, A.sheet, MapGlyph::PlateRing, px, py, blipPx + 8.0f, ring); }
+        obstacles.push_back({ px - blipPx * 0.5f - 2, py - blipPx * 0.5f - 2, blipPx + 4, blipPx + 4 });
+        // Name: majors from 0.1 px/m, Spire minors from 2 px/m, hover always.
+        const bool major = poiIsMajor(p);
+        bool named = hov || (major && scale >= 0.10f) || (!major && scale >= 2.0f);
+        if (p.type == "city") named = hov;   // the district labels carry the city
+        if (named) {
+            const bool spire = p.type == "landmark" && p.id.find("spire") != std::string::npos;
+            const int prio = hov ? 10 : spire ? 9 : major ? 6 : 3;
+            addCand(p.name, px + blipPx * 0.5f + 5.0f, py, true, (spire ? 14.0f : major ? 12.0f : 11.0f) * zf, prio,
+                    spire ? x3::rhi::FontRole::Title : x3::rhi::FontRole::Menu, spire ? inkDark : inkMid, haloLight);
+        }
+    }
+
+    // 6. Road-world markers (kept for hosts that set both) + companions.
+    for (const MapMarker& mk : m_markers) {
+        float px, py; m_cam.worldToPx(mk.x, mk.z, px, py);
+        if (px < -40 || py < -40 || px > W + 40 || py > H + 40) continue;
+        float plate[4]; linCol(80, 130, 150, 0.95f, plate);
+        drawGlyph(device, frame, A.sheet, MapGlyph::Plate, px, py, blipPx, plate);
+        const float ink[4] = { 1, 1, 1, 0.95f };
+        drawGlyph(device, frame, A.sheet, mk.type == "garage" ? MapGlyph::Wrench : MapGlyph::Portal, px, py, blipPx * 0.72f, ink);
+        obstacles.push_back({ px - blipPx * 0.5f - 2, py - blipPx * 0.5f - 2, blipPx + 4, blipPx + 4 });
+        addCand(mk.label, px + blipPx * 0.5f + 5.0f, py, true, 11.0f * zf, 5, x3::rhi::FontRole::Menu, inkMid, haloLight);
+    }
+    for (int i = 0; i < in.compCount && in.compX && in.compZ; ++i) {
+        float px, py; m_cam.worldToPx(in.compX[i], in.compZ[i], px, py);
+        const float g[4] = { 0.35f, 1.0f, 0.55f, 0.75f + 0.25f * std::sin(m_pulse * 4.0f) };
+        const float dark[4] = { 0.02f, 0.04f, 0.05f, 0.7f };
+        drawGlyph(device, frame, A.sheet, MapGlyph::Disc, px, py, 13.0f, dark);
+        drawGlyph(device, frame, A.sheet, MapGlyph::Disc, px, py, 9.0f, g);
+    }
+
+    // 7. Waypoint: magenta pennant + a thin cross on the exact point.
+    if (m_waypoint.active) {
+        float px, py; m_cam.worldToPx(m_waypoint.x, m_waypoint.z, px, py);
+        const float mag[4] = { 1.0f, 0.30f, 0.95f, 1.0f };
+        const float dark[4] = { 0.02f, 0.02f, 0.05f, 0.75f };
+        const float ring[4] = { 1.0f, 0.35f, 0.95f, 0.35f + 0.25f * std::sin(m_pulse * 4.0f) };
+        drawGlyph(device, frame, A.sheet, MapGlyph::Ring, px, py, 42.0f, ring);
+        drawGlyph(device, frame, A.sheet, MapGlyph::Cross, px, py, 26.0f, dark);
+        drawGlyph(device, frame, A.sheet, MapGlyph::Cross, px, py, 22.0f, mag);
+        drawGlyph(device, frame, A.sheet, MapGlyph::Flag, px + 11.0f, py - 14.0f, 30.0f, dark);
+        drawGlyph(device, frame, A.sheet, MapGlyph::Flag, px + 10.0f, py - 15.0f, 28.0f, mag);
+        obstacles.push_back({ px - 14, py - 30, 40, 44 });
+    }
+
+    // 8. Player: dark casing disc + white heading arrow (own texture, rotated
+    // through worldDirToScreenDir so Q/E and the north-up flip stay truthful).
+    {
+        float px, py; m_cam.worldToPx(in.playerX, in.playerZ, px, py);
+        float hx, hy; m_cam.worldDirToScreenDir(std::cos(in.playerYaw), std::sin(in.playerYaw), hx, hy);
+        const float disc[4] = { 0.02f, 0.03f, 0.05f, 0.85f };
+        const float rim[4] = { 0.32f, 0.86f, 1.0f, 0.9f };
+        drawGlyph(device, frame, A.sheet, MapGlyph::Disc, px, py, 38.0f, rim);
+        drawGlyph(device, frame, A.sheet, MapGlyph::Disc, px, py, 34.0f, disc);
+        drawGlyphRotated(device, frame, A.arrow, px, py, 30.0f, hx, hy, white);
+        obstacles.push_back({ px - 16, py - 16, 32, 32 });
+    }
+
+    // 9. Cartographic labels: districts, the Spire, the freeway shield, the
+    // river, the sea — centred area names in small-caps tracking.
+    for (const MapDistrict& d : A.feats.districts) {
+        if (scale < 0.12f) break;
+        float px, py; m_cam.worldToPx(d.cx, d.cz, px, py);
+        addCand(d.name, px, py, false, 13.0f * zf, 8, x3::rhi::FontRole::Menu, inkDark, haloLight);
+    }
+    if (scale >= 0.06f) {
+        float px, py; m_cam.worldToPx(1400.0f, -1600.0f, px, py);
+        addCand("The Sea", px, py, false, 15.0f * zf, 5, x3::rhi::FontRole::Menu, inkWater, haloWater);
+    }
+    if (scale >= 0.10f) {
+        // The river name rides the node nearest the view centre (GTA road-label
+        // behaviour: the name travels with the view).
+        const auto pickNearest = [&](const std::vector<float>& xs, const std::vector<float>& zs, float& ox, float& oy) {
+            float best = 1e30f; bool ok = false;
+            for (size_t i = 0; i < xs.size(); ++i) {
+                float px, py; m_cam.worldToPx(xs[i], zs[i], px, py);
+                if (px < 40 || py < 60 || px > W - 40 || py > H - 60) continue;
+                const float d = std::hypot(px - cxs, py - cys);
+                if (d < best) { best = d; ox = px; oy = py; ok = true; }
+            }
+            return ok;
+        };
+        {
+            uint32_t rn = 0;
+            const WorldRiverNode* nodes = worldRiverNodes(rn);
+            std::vector<float> xs, zs;
+            for (uint32_t i = 0; i < rn; ++i) { xs.push_back(nodes[i].x); zs.push_back(nodes[i].z); }
+            float px, py;
+            if (pickNearest(xs, zs, px, py))
+                addCand("River", px, py, false, 12.0f * zf, 5, x3::rhi::FontRole::Menu, inkWater, haloWater);
+        }
+        for (const MapRoad& r : A.feats.roads) {
+            if (r.cls != MapRoadClass::Freeway) continue;
+            float px, py;
+            if (!pickNearest(r.x, r.z, px, py)) continue;
+            float shield[4]; linCol(44, 66, 120, 0.95f, shield);
+            float shieldCase[4]; linCol(240, 240, 236, 0.9f, shieldCase);
+            drawGlyph(device, frame, A.sheet, MapGlyph::Plate, px, py, 20.0f, shieldCase);
+            drawGlyph(device, frame, A.sheet, MapGlyph::Plate, px, py, 17.0f, shield);
+            const float ink[4] = { 1, 1, 1, 0.95f };
+            device.drawHudTextF(frame, x3::rhi::FontRole::HudMono, "I", px - 3.0f, py - 6.0f, 11.0f, ink);
+            obstacles.push_back({ px - 11, py - 11, 22, 22 });
+            addCand("Interstate", px + blipPx * 0.5f + 5.0f, py, true, 11.0f * zf, 7, x3::rhi::FontRole::Menu, inkDark, haloLight);
+            break;
+        }
+    }
+
+    // Chrome rects (the panels drawn in drawFrameChrome) are obstacles too.
+    obstacles.push_back({ 0, 0, W, kHudMargin + 46.0f });                       // header band
+    obstacles.push_back({ 0, H - kHudMargin - 44.0f, W, kHudMargin + 44.0f });   // legend band
+    obstacles.push_back({ W - kHudMargin - 150.0f, kHudMargin + 46.0f, 150.0f, 150.0f }); // compass
+    obstacles.push_back({ 0, H - kHudMargin - 44.0f - 40.0f, 260.0f, 40.0f });   // scale bar
+
+    // Greedy placement: priority, then nearness to the view centre.
+    std::stable_sort(cands.begin(), cands.end(), [](const LabelCand& a, const LabelCand& b) {
+        if (a.prio != b.prio) return a.prio > b.prio;
+        return a.dist < b.dist;
+    });
+    m_lastLabels.clear();
+    std::vector<LRect> placed;
+    const size_t kMaxLabels = 28;
+    for (const LabelCand& c : cands) {
+        if (m_lastLabels.size() >= kMaxLabels) break;
+        const float tw = trackedWidth(c.role, c.text, c.px), th = c.px * 1.15f;
+        LRect r, pad;
+        if (!mapPlaceLabel({ c.ax, c.ay, tw, th, blipPx, c.beside }, W, H, obstacles, placed, r, pad)) continue;
+        placed.push_back(pad);
+        drawTrackedText(device, frame, c.role, c.text, r.x, r.y, c.px, c.col, c.halo);
+        m_lastLabels.push_back({ c.text, pad.x, pad.y, pad.w, pad.h, c.prio });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frame chrome — the OBJECTIVE/COMMS panel language: header, coordinates,
+// compass rose, scale bar, legend, vignette.
+// ---------------------------------------------------------------------------
+void WorldMapSystem::drawFrameChrome(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& device,
+                                     const x3::rhi::FrameContext& frame, const ScreenInput& in,
+                                     float W, float H, bool modal) {
+    (void)modal;
+    Atlas& A = *m_atlas;
+    ensureGlyphTextures(device);
+    const float scale = m_cam.scale;
+
+    // Vignette first (under the panels, over the map).
+    { const float v[4] = { 0, 0, 0, 1 }; device.drawHudImage(frame, A.vignette, 0, 0, W, H, v); }
+
+    // Header (top-left): title + current location.
+    {
+        const float x = kHudMargin, y = kHudMargin, h = 46.0f;
+        float w = kHudPadX * 2 + x3::ui::UiContext::textWidth(x3::rhi::FontRole::Title, "WORLD MAP", 20.0f);
+        std::string loc = in.locationName && in.locationName[0] ? upperCopy(in.locationName) : std::string();
+        if (!loc.empty()) w += 24.0f + x3::ui::UiContext::textWidth(x3::rhi::FontRole::Menu, loc.c_str(), 14.0f);
+        hudPanel(device, frame, x, y, w, h, kHudPanelRadius, nullptr, kHudAccentCyan);
+        ui.text("WORLD MAP", x + kHudPadX + 4.0f, y + 12.0f, 20.0f, kHudTextLight, x3::rhi::FontRole::Title);
+        if (!loc.empty()) {
+            const float lc[4] = { 0.55f, 0.80f, 0.95f, 0.95f };
+            ui.text(loc.c_str(), x + kHudPadX + 4.0f + x3::ui::UiContext::textWidth(x3::rhi::FontRole::Title, "WORLD MAP", 20.0f) + 24.0f,
+                    y + 16.0f, 14.0f, lc);
+        }
+    }
+    // Coordinates + zoom (top-right).
+    {
+        float cwx, cwz; m_cam.pxToWorld(in.mouseX, in.mouseY, cwx, cwz);
+        char coords[96];
+        std::snprintf(coords, sizeof(coords), "%6.0f E  %6.0f N   x%.2f", cwx, cwz, scale);
+        const float tw = x3::ui::UiContext::textWidth(x3::rhi::FontRole::HudMono, coords, 13.0f);
+        const float w = tw + kHudPadX * 2, h = 34.0f;
+        const float x = W - kHudMargin - w, y = kHudMargin;
+        hudPanel(device, frame, x, y, w, h);
+        const float cc[4] = { 0.62f, 0.78f, 0.88f, 0.95f };
+        ui.text(coords, x + kHudPadX, y + 10.0f, 13.0f, cc, x3::rhi::FontRole::HudMono);
+    }
+    // Compass rose (top-right, under the coordinates): the rose texture rotates
+    // with the map's north; the N letter stays upright at the north tip.
+    {
+        const float cx = W - kHudMargin - 60.0f, cy = kHudMargin + 34.0f + kHudGap + 60.0f, R = 46.0f;
+        float nx, ny; m_cam.worldDirToScreenDir(0.0f, 1.0f, nx, ny);   // +Z = north
+        const float disc[4] = { 0.008f, 0.012f, 0.018f, 0.72f };
+        drawGlyph(device, frame, A.sheet, MapGlyph::Disc, cx, cy, R * 2.0f + 10.0f, disc);
+        const float rim[4] = { 0.45f, 0.75f, 0.95f, 0.30f };
+        drawGlyph(device, frame, A.sheet, MapGlyph::Ring, cx, cy, R * 2.0f + 10.0f, rim);
+        const float roseCol[4] = { 0.86f, 0.92f, 0.96f, 0.95f };
+        drawGlyphRotated(device, frame, A.rose, cx, cy, R * 1.7f, nx, ny, roseCol);
+        const float ncol[4] = { 1.0f, 0.55f, 0.35f, 1.0f };
+        const float lx = cx + nx * (R - 4.0f), ly = cy + ny * (R - 4.0f);
+        ui.textCentered("N", lx, ly - 7.0f, 14.0f, ncol, x3::rhi::FontRole::Title);
+    }
+    // Legend (bottom, full width): glyph samples + the control strip.
+    {
+        const float h = 44.0f, x = kHudMargin, y = H - kHudMargin - h, w = W - kHudMargin * 2;
+        hudPanel(device, frame, x, y, w, h, kHudPanelRadius, nullptr, kHudAccentCyan);
+        float pen = x + kHudPadX + 6.0f;
+        const float ty = y + 15.0f, gy = y + h * 0.5f;
+        struct Item { MapGlyph g; uint8_t r, gg, b; const char* label; };
+        const Item items[] = {
+            { MapGlyph::Arrow,       255, 255, 255, "YOU" },
+            { MapGlyph::Flag,        255,  77, 242, "WAYPOINT" },
+            { MapGlyph::DiamondRing, 255, 209,  64, "OBJECTIVE" },
+            { MapGlyph::Star,        120, 100, 160, "SPIRE" },
+            { MapGlyph::Tower,        84, 110, 160, "DISTRICT" },
+            { MapGlyph::Car,          60, 140,  90, "DEALERSHIP" },
+            { MapGlyph::Interchange,  90, 100, 120, "INTERCHANGE" },
+            { MapGlyph::Portal,       80, 130, 150, "PORTAL" },
+        };
+        const float lc[4] = { 0.62f, 0.78f, 0.88f, 0.95f };
+        // Samples are drawn exactly as the map draws them: POI classes as a
+        // tinted plate with the white glyph, the three markers as themselves.
+        const float gpx = 20.0f;   // legend blip size
+        for (const Item& it : items) {
+            float c[4]; linCol(it.r, it.gg, it.b, 0.95f, c);
+            const float gx = pen + gpx * 0.5f;
+            const bool marker = it.g == MapGlyph::Arrow || it.g == MapGlyph::Flag || it.g == MapGlyph::DiamondRing;
+            if (it.g == MapGlyph::Arrow) {
+                const float rim[4] = { 0.32f, 0.86f, 1.0f, 0.9f }, d[4] = { 0.02f, 0.03f, 0.05f, 0.85f };
+                drawGlyph(device, frame, A.sheet, MapGlyph::Disc, gx, gy, gpx + 4.0f, rim);
+                drawGlyph(device, frame, A.sheet, MapGlyph::Disc, gx, gy, gpx, d);
+                drawGlyph(device, frame, A.sheet, it.g, gx, gy, gpx - 2.0f, c);
+            } else if (marker) {
+                drawGlyph(device, frame, A.sheet, it.g, gx, gy, gpx, c);
+            } else {
+                float caseCol[4]; linCol(236, 238, 232, 0.9f, caseCol);
+                const float white[4] = { 1, 1, 1, 0.98f };
+                drawGlyph(device, frame, A.sheet, MapGlyph::Plate, gx, gy, gpx + 3.0f, caseCol);
+                drawGlyph(device, frame, A.sheet, MapGlyph::Plate, gx, gy, gpx, c);
+                drawGlyph(device, frame, A.sheet, it.g, gx, gy, gpx * 0.72f, white);
+            }
+            pen += gpx + 8.0f;
+            pen += ui.text(it.label, pen, ty, 12.0f, lc) + 22.0f;
+        }
+        const char* ctl = "CLICK POI = TRAVEL   CLICK MAP = WAYPOINT   DRAG/WASD = PAN   Q/E = ROTATE   WHEEL = ZOOM   M = CLOSE";
+        const float cw = x3::ui::UiContext::textWidth(x3::rhi::FontRole::Menu, ctl, 12.0f);
+        const float cc[4] = { 0.45f, 0.58f, 0.68f, 0.9f };
+        if (pen + cw < x + w - kHudPadX) ui.text(ctl, x + w - kHudPadX - cw, ty, 12.0f, cc);
+    }
+    // Scale bar (bottom-left, above the legend): the nicest metre length that
+    // spans 80..200 px at this zoom.
+    {
+        const float nice[] = { 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000 };
+        float pickM = nice[0];
+        for (float m : nice) { const float px = m * scale; if (px >= 80.0f) { pickM = m; break; } pickM = m; }
+        const float barPx = pickM * scale;
+        char txt[32];
+        if (pickM >= 1000.0f) std::snprintf(txt, sizeof(txt), "%g km", pickM / 1000.0f);
+        else                  std::snprintf(txt, sizeof(txt), "%g m", pickM);
+        const float x = kHudMargin, y = H - kHudMargin - 44.0f - kHudGap - 34.0f;
+        const float w = std::max(barPx + kHudPadX * 2, 120.0f);
+        hudPanel(device, frame, x, y, w, 34.0f);
+        const float bar[4] = { 0.92f, 0.96f, 0.98f, 0.95f };
+        const float bx = x + kHudPadX, by = y + 22.0f;
+        ui.quad(bx, by, barPx, 2.0f, bar);
+        ui.quad(bx, by - 4.0f, 2.0f, 6.0f, bar);
+        ui.quad(bx + barPx - 2.0f, by - 4.0f, 2.0f, 6.0f, bar);
+        ui.quad(bx + barPx * 0.5f - 1.0f, by - 2.0f, 2.0f, 4.0f, bar);
+        const float tc[4] = { 0.62f, 0.78f, 0.88f, 0.95f };
+        ui.text(txt, bx, y + 5.0f, 12.0f, tc, x3::rhi::FontRole::HudMono);
+    }
+}
+
+// ===========================================================================
 // WorldMapSystem.
 // ===========================================================================
 bool WorldMapSystem::init(const std::string& poisPath, const std::string& spireLevelDocPath) {
@@ -614,6 +1586,18 @@ void WorldMapSystem::shutdown(x3::rhi::IRenderDevice& device) {
     m_regionTiles.clear();
     if (m_terrainTile.baked && m_terrainTile.tex.valid()) { device.destroyTexture(m_terrainTile.tex); m_terrainTile = MapTile{}; }
     if (m_terrainRoadsTile.baked && m_terrainRoadsTile.tex.valid()) { device.destroyTexture(m_terrainRoadsTile.tex); m_terrainRoadsTile = MapTile{}; }
+    // W-MAP v4 atlas: join any bake in flight, then release its textures.
+    if (m_atlas) {
+        Atlas& A = *m_atlas;
+        A.baseJob.join(); A.detailJob.join();
+        A.baseJob.running = false; A.detailJob.running = false;
+        auto kill = [&](x3::rhi::TextureHandle& t) { if (t.valid()) { device.destroyTexture(t); t = {}; } };
+        if (A.base.baked) kill(A.base.tex);   A.base = MapTile{};
+        if (A.detail.baked) kill(A.detail.tex); A.detail = MapTile{};
+        if (A.fog.baked) kill(A.fog.tex);     A.fog = MapTile{};
+        kill(A.sheet); kill(A.arrow); kill(A.rose); kill(A.vignette);
+        A.glyphsMade = false;
+    }
 }
 
 void WorldMapSystem::discoveryTick(StoryFlags& flags, float px, float py, float pz) {
@@ -793,7 +1777,14 @@ void WorldMapSystem::open(float playerX, float playerY, float playerZ, float vpW
     m_confirmPoi = -1;
     m_cam.setViewport(vpW, vpH);
     // Open at "region" zoom centered on the player; auto-select the player's floor.
-    m_cam.jumpTo(playerX, playerZ, 6.0f);
+    // W-MAP v4: outdoors in a bound world the useful first view is the district
+    // (~0.9 px/m: the city + the freeway in one screen); indoors keeps the
+    // room-scale 6 px/m the Spire floor plans were tuned for.
+    const bool indoors = !worldBound() ||
+        (playerX >= m_atlas->bind.spireX0 - 20.0f && playerX <= m_atlas->bind.spireX1 + 20.0f &&
+         playerZ >= m_atlas->bind.spireZ0 - 20.0f && playerZ <= m_atlas->bind.spireZ1 + 20.0f);
+    m_cam.jumpTo(playerX, playerZ, indoors ? 6.0f : 0.9f);
+    if (worldBound()) m_cam.scale = m_cam.tScale;
     const int f = floorForY(playerY);
     if (f > 0) m_selFloor = f;
     m_dragging = false; m_dragMoved = 0.0f;
@@ -1123,6 +2114,14 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
     m_cam.update(dt);
 
     // -------------------- draw --------------------
+    // W-MAP v4: a host that bound its world (canonlevel) gets the GTA atlas
+    // path; the tunnel/streamed hosts keep the v3 blueprint path below. The
+    // floor selector, chrome and the confirm modal are shared.
+    int hover = -1;
+    if (worldBound()) {
+        drawAtlasScreen(ui, device, frame, in, flags, W, H, modal);
+        hover = m_atlas->hover;
+    } else {
     const float bg[4] = { 0.014f, 0.025f, 0.045f, 0.97f };
     ui.quad(0, 0, W, H, bg);
 
@@ -1213,7 +2212,6 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
     }
 
     // ---- POIs (discovered only; off-floor Spire POIs ghost at low alpha).
-    int hover = -1;
     for (size_t i = 0; i < m_pois.pois.size(); ++i) {
         const MapPoi& p = m_pois.pois[i];
         if (!poiDiscovered(flags, p)) continue;
@@ -1325,8 +2323,25 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
         }
     }
 
-    // ---- Floor selector (Spire) — left edge.
-    if (!m_floors.empty()) {
+    }   // !worldBound()
+
+    // ---- Floor selector (Spire) — left edge (v4: only once the plan is
+    // readable, so the overview stays clean).
+    bool spireInView = !worldBound();
+    if (worldBound() && m_cam.scale >= 1.5f) {
+        // Only while the plan itself can be on screen: the facade rect
+        // (padded 60 m) against the view's world AABB.
+        const MapWorldBinding& bd = m_atlas->bind;
+        float vx0 = 1e30f, vz0 = 1e30f, vx1 = -1e30f, vz1 = -1e30f;
+        const float cornersPx[4][2] = { {0, 0}, {W, 0}, {0, H}, {W, H} };
+        for (const float* c : cornersPx) {
+            float wx, wz; m_cam.pxToWorld(c[0], c[1], wx, wz);
+            vx0 = std::min(vx0, wx); vx1 = std::max(vx1, wx); vz0 = std::min(vz0, wz); vz1 = std::max(vz1, wz);
+        }
+        spireInView = bd.spireX1 - 60.0f > vx0 && bd.spireX0 + 60.0f < vx1 &&
+                      bd.spireZ1 - 60.0f > vz0 && bd.spireZ0 + 60.0f < vz1;
+    }
+    if (!m_floors.empty() && spireInView) {
         const float bx = 18.0f, bw = 52.0f, bh = 30.0f;
         float by = H * 0.5f - (m_floors.size() * (bh + 6.0f)) * 0.5f;
         const float hdr[4] = { 0.55f, 0.8f, 0.95f, 0.8f };
@@ -1347,6 +2362,9 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
         }
     }
 
+    if (worldBound()) {
+        drawFrameChrome(ui, device, frame, in, W, H, modal);
+    } else {
     // ---- Header + legend.
     {
         const float hdrBg[4] = { 0.02f, 0.05f, 0.09f, 0.85f };
@@ -1374,6 +2392,7 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
     // ---- Compass rose (W-MAP v3): always drawn, on top of the map content,
     // truthful at every rotation (see drawCompassRose).
     drawCompassRose(ui, W, H);
+    }   // !worldBound()
 
     // ---- Fast-travel confirm prompt (modal).
     if (m_confirmPoi >= 0 && m_confirmPoi < (int)m_pois.pois.size()) {
@@ -1697,6 +2716,187 @@ bool runWorldMapSelfTest() {
         const uint8_t* dashOn = at(-50.0f, 50.0f);   // 50 m along: inside the first on-window
         check(dashOn[0] > 200, "M10d dashed route paints its on-window");
         check(gap[0] == 50 && gap[1] == 60, "M10e dashed route leaves a real gap mid-dash");
+    }
+
+    // ---- M11: the GTA atlas (W-MAP v4) — terrain/water/road bake from the
+    // REAL height field, label placement, POIs, rebake invalidation. Binds a
+    // WorldMapSystem to the canon freeway spec only (no streamer: the ledger
+    // footprints are covered by M8; roads/terrain/water are what's new here).
+    {
+        HeadlessRenderDevice dev;
+        WorldMapSystem wm;
+        wm.init(worldMapPoisJsonPath(), "");
+        // The canon 'city freeway' as standUpFreeway authors it: x = 170,
+        // z 755 -> 1655, dual carriageway, 6.5 m median floor.
+        RoadSpec fwy; fwy.name = "city freeway"; fwy.dualCarriageway = true; fwy.medianMinHalfM = 6.5f;
+        for (int i = 0; i <= 15; ++i) { fwy.x.push_back(170.0f); fwy.z.push_back(755.0f + 60.0f * (float)i); }
+        MapWorldBinding bind; bind.device = &dev; bind.freeway = &fwy;
+        wm.bindWorld(bind);
+        check(wm.worldBound(), "M11 bindWorld binds");
+        const MapFeatureSet fs = wm.snapshotFeatures();
+        bool fwyFound = false; float fwyHalf = 0, fwyMed = 0;
+        for (const MapRoad& r : fs.roads) if (r.cls == MapRoadClass::Freeway) { fwyFound = true; fwyHalf = r.halfW; fwyMed = r.medianHalfW; }
+        check(fwyFound && fwyMed > 6.0f && fwyHalf > fwyMed + kFwyPavedHalfM - 0.5f,
+              "M11b freeway snapshots as a dual carriageway (median + 2 roadways)",
+              "halfW=" + std::to_string(fwyHalf) + " medianHalf=" + std::to_string(fwyMed));
+
+        // District-zoom tile over the freeway's middle reach: 1 m/texel.
+        MapBakeRequest rq; rq.res = 512; rq.wx0 = -86.0f; rq.wx1 = 426.0f; rq.wz0 = 944.0f; rq.wz1 = 1456.0f;
+        std::vector<uint8_t> px; MapBakeStats st;
+        bakeMapTilePixels(fs, rq, px, &st);
+        auto at = [&](float wx, float wz) {
+            const int x = std::clamp((int)((wx - rq.wx0) / (rq.wx1 - rq.wx0) * (float)rq.res), 0, (int)rq.res - 1);
+            const int y = std::clamp((int)((wz - rq.wz0) / (rq.wz1 - rq.wz0) * (float)rq.res), 0, (int)rq.res - 1);
+            return px.data() + ((size_t)y * rq.res + x) * 4;
+        };
+        // Fill on BOTH roadways along the polyline, median on the centreline.
+        int fillHits = 0, medianHits = 0, probes = 0;
+        for (float z = 960.0f; z <= 1440.0f; z += 40.0f) {
+            ++probes;
+            const float off = fwyMed + kFwyPavedHalfM;   // roadway centre
+            if (mapPixelIsRoadFill(at(170.0f + off, z)) && mapPixelIsRoadFill(at(170.0f - off, z))) ++fillHits;
+            if (!mapPixelIsRoadFill(at(170.0f, z))) ++medianHits;
+        }
+        check(fillHits == probes, "M11c freeway fill on both carriageways along the polyline",
+              std::to_string(fillHits) + "/" + std::to_string(probes));
+        check(medianHits == probes, "M11d centreline is median, not fill (dual carriageway split)",
+              std::to_string(medianHits) + "/" + std::to_string(probes));
+        check(mapPixelIsRoadCasing(at(170.0f + fwyHalf + 1.5f, 1200.0f)), "M11e dark casing outside the outer edge");
+        check(!mapPixelIsRoadFill(at(170.0f + fwyHalf + 40.0f, 1200.0f)) && !mapPixelIsRoadCasing(at(170.0f + fwyHalf + 40.0f, 1200.0f)),
+              "M11f ground 40 m off the freeway is terrain");
+        check(st.totalMs < 250.0, "M11g district tile (512^2) bakes under 250 ms", std::to_string((int)st.totalMs) + " ms");
+
+        // Water: a tile over the offshore basin, probed where worldWaterLevelAt
+        // says the sea is (and dry ground stays land-tinted).
+        {
+            MapBakeRequest wq; wq.res = 256; wq.wx0 = 600.0f; wq.wx1 = 1624.0f; wq.wz0 = -1912.0f; wq.wz1 = -888.0f;
+            std::vector<uint8_t> wp; bakeMapTilePixels(fs, wq, wp);
+            auto wat = [&](float wx, float wz) {
+                const int x = std::clamp((int)((wx - wq.wx0) / (wq.wx1 - wq.wx0) * (float)wq.res), 0, (int)wq.res - 1);
+                const int y = std::clamp((int)((wz - wq.wz0) / (wq.wz1 - wq.wz0) * (float)wq.res), 0, (int)wq.res - 1);
+                return wp.data() + ((size_t)y * wq.res + x) * 4;
+            };
+            const bool seaHere = worldWaterLevelAt(1100.0f, -1400.0f) > kWorldWaterDry;
+            check(seaHere && mapPixelIsWater(wat(1100.0f, -1400.0f)), "M11h sea paints water at a known offshore point",
+                  seaHere ? "water level " + std::to_string(worldWaterLevelAt(1100.0f, -1400.0f)) : "NO WATER at (1100,-1400)");
+            // Dry ground (every neighbour within 12 m dry too, so the shoreline
+            // tint is not in play) never classifies as water.
+            int dryN = 0, dryBad = 0;
+            const float wmpp = (wq.wx1 - wq.wx0) / (float)wq.res;
+            for (uint32_t y = 4; y < wq.res - 4; y += 5) for (uint32_t x = 4; x < wq.res - 4; x += 5) {
+                const float wx = wq.wx0 + ((float)x + 0.5f) * wmpp, wz = wq.wz0 + ((float)y + 0.5f) * wmpp;
+                bool dry = true;
+                for (int dz = -1; dz <= 1 && dry; ++dz) for (int dx = -1; dx <= 1 && dry; ++dx)
+                    if (worldWaterLevelAt(wx + 12.0f * dx, wz + 12.0f * dz) > kWorldWaterDry) dry = false;
+                if (!dry) continue;
+                ++dryN;
+                if (mapPixelIsWater(wp.data() + ((size_t)y * wq.res + x) * 4)) ++dryBad;
+            }
+            check(dryN > 20 && dryBad == 0, "M11i dry ground stays land-tinted",
+                  std::to_string(dryN) + " dry probes, " + std::to_string(dryBad) + " water-tinted");
+        }
+
+        // Hillshade: the light is from the NW, so texels whose slope faces NW
+        // (h rises toward +x / -z) must come out brighter on average than the
+        // SE-facing ones. A flat-tinted map (no relief) fails this.
+        {
+            MapBakeRequest hq; hq.res = 256; hq.wx0 = -1400.0f; hq.wx1 = 376.0f; hq.wz0 = -1000.0f; hq.wz1 = 776.0f;
+            std::vector<uint8_t> hp; bakeMapTilePixels(fs, hq, hp);
+            const float mpp = (hq.wx1 - hq.wx0) / (float)hq.res;
+            double nwSum = 0, seSum = 0; int nwN = 0, seN = 0;
+            for (uint32_t y = 4; y < hq.res - 4; y += 3) for (uint32_t x = 4; x < hq.res - 4; x += 3) {
+                const float wx = hq.wx0 + ((float)x + 0.5f) * mpp, wz = hq.wz0 + ((float)y + 0.5f) * mpp;
+                if (worldWaterLevelAt(wx, wz) > kWorldWaterDry) continue;
+                if (mapEnvelopeDistance(fs, wx, wz) > 0.0f) continue;   // in-world texels only (M11s covers the fade)
+                const float gx = (terrainHeightAtWorld(wx + mpp, wz) - terrainHeightAtWorld(wx - mpp, wz)) / (2 * mpp);
+                const float gz = (terrainHeightAtWorld(wx, wz + mpp) - terrainHeightAtWorld(wx, wz - mpp)) / (2 * mpp);
+                const float facing = gx - gz;   // > 0: normal leans to -x/+z = toward the light
+                if (std::fabs(facing) < 0.08f) continue;
+                const uint8_t* c = hp.data() + ((size_t)y * hq.res + x) * 4;
+                const double lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+                if (facing > 0) { nwSum += lum; ++nwN; } else { seSum += lum; ++seN; }
+            }
+            const double nw = nwN ? nwSum / nwN : 0, se = seN ? seSum / seN : 0;
+            check(nwN > 50 && seN > 50 && nw - se > 6.0, "M11j hillshade: NW-facing slopes brighter than SE-facing",
+                  "nw=" + std::to_string((int)nw) + " (" + std::to_string(nwN) + ") se=" + std::to_string((int)se) + " (" + std::to_string(seN) + ")");
+        }
+
+        // Wilderness fade: far outside the envelope the hillshade collapses to a
+        // flat wash (luminance spread over a whole tile <= 4), while the sea
+        // disc bakes byte-identical with and without the envelope.
+        {
+            check(!fs.envelope.empty() && mapEnvelopeDistance(fs, 170.0f, 1000.0f) == 0.0f && mapEnvelopeDistance(fs, 6000.0f, 6000.0f) > kEnvelopeFarM,
+                  "M11s envelope covers the freeway and not the far wilderness",
+                  std::to_string(fs.envelope.size()) + " discs, far d=" + std::to_string((int)mapEnvelopeDistance(fs, 6000.0f, 6000.0f)));
+            MapBakeRequest fq; fq.res = 128; fq.wx0 = 5500.0f; fq.wx1 = 6780.0f; fq.wz0 = 5500.0f; fq.wz1 = 6780.0f;   // 10 m/texel, like the overview
+            std::vector<uint8_t> fp; bakeMapTilePixels(fs, fq, fp);
+            double lo = 1e9, hi = -1e9;
+            for (size_t k = 0; k < (size_t)fq.res * fq.res; ++k) {
+                const uint8_t* c = fp.data() + k * 4;
+                const double lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+                lo = std::min(lo, lum); hi = std::max(hi, lum);
+            }
+            check(hi - lo <= 4.0, "M11t far wilderness bakes flat (luminance spread <= 4)",
+                  "spread " + std::to_string(hi - lo).substr(0, 4) + " around " + std::to_string((int)lo));
+            MapBakeRequest wq; wq.res = 256; wq.wx0 = 600.0f; wq.wx1 = 1624.0f; wq.wz0 = -1912.0f; wq.wz1 = -888.0f;
+            std::vector<uint8_t> withEnv, noEnv; bakeMapTilePixels(fs, wq, withEnv);
+            MapFeatureSet bare = fs; bare.envelope.clear(); bakeMapTilePixels(bare, wq, noEnv);
+            const int sx = (int)((1100.0f - wq.wx0) / (wq.wx1 - wq.wx0) * (float)wq.res), sy = (int)((-1400.0f - wq.wz0) / (wq.wz1 - wq.wz0) * (float)wq.res);
+            const uint8_t* a = withEnv.data() + ((size_t)sy * wq.res + sx) * 4; const uint8_t* b2 = noEnv.data() + ((size_t)sy * wq.res + sx) * 4;
+            check(a[0] == b2[0] && a[1] == b2[1] && a[2] == b2[2] && mapPixelIsWater(a), "M11u sea pixel unchanged by the envelope fade");
+        }
+
+        // Labels: the slot search never returns a rect overlapping an obstacle
+        // or an earlier label, and drops a label rather than overprint. Seven
+        // names piled on one anchor + a blip there.
+        {
+            std::vector<MapLabelRect> obstacles{ { 640 - 13, 360 - 13, 26, 26 } }, placed;
+            int ok = 0, dropped = 0;
+            for (int i = 0; i < 7; ++i) {
+                MapLabelRect r, pad;
+                if (mapPlaceLabel({ 640.0f + 13.0f + 6.0f, 360.0f, 120.0f, 15.0f, 20.0f, true }, 1280, 720, obstacles, placed, r, pad)) {
+                    ++ok; placed.push_back(pad);
+                } else ++dropped;
+            }
+            bool clean = true;
+            for (size_t a = 0; a < placed.size(); ++a) {
+                const MapLabelRect A_{ placed[a].x + 3, placed[a].y + 3, placed[a].w - 6, placed[a].h - 6 };
+                for (const MapLabelRect& o : obstacles) if (rectsOverlap(A_, o)) clean = false;
+                for (size_t b2 = a + 1; b2 < placed.size(); ++b2) if (rectsOverlap(placed[a], placed[b2])) clean = false;
+            }
+            check(ok >= 4 && clean, "M11k label slots never overlap each other or the blip",
+                  std::to_string(ok) + " placed, " + std::to_string(dropped) + " dropped");
+            MapLabelRect r, pad;
+            check(!mapPlaceLabel({ 1275.0f, 5.0f, 120.0f, 15.0f, 20.0f, false }, 1280, 720, {}, {}, r, pad),
+                  "M11l a label with no on-screen slot is dropped, not clipped");
+        }
+
+        // POIs: the new survey-sited entries are present and discoverable.
+        {
+            StoryFlags flags;
+            const int di = pois.indexOf("dealership"), ii = pois.indexOf("interchange"), pi = pois.indexOf("underriver_portal");
+            check(di >= 0 && ii >= 0 && pi >= 0, "M11m dealership / interchange / under-river portal POIs present");
+            if (di >= 0 && ii >= 0) {
+                const MapPoi& d = pois.pois[di];
+                wm.discoveryTick(flags, d.x + 2.0f, d.y, d.z - 2.0f);
+                check(poiDiscovered(flags, d), "M11n dealership discovers on approach");
+                const MapPoi& ic = pois.pois[ii];
+                check(ic.type == "interchange" && ic.discoverRadius >= 100.0f, "M11o interchange POI is the wide-radius class");
+            }
+        }
+
+        // Rebake invalidation: the overview job kicked at bind completes, then
+        // invalidateAtlas drops the tile and re-arms the bake.
+        {
+            for (int i = 0; i < 400 && !wm.overviewBakeStats(); ++i) { wm.atlasTick(dev); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+            const MapBakeStats* st0 = wm.overviewBakeStats();
+            check(st0 != nullptr, "M11p overview bake completes after bind", st0 ? std::to_string((int)st0->totalMs) + " ms" : "timed out");
+            wm.invalidateAtlas(dev);
+            check(wm.overviewBakeStats() == nullptr, "M11q invalidateAtlas drops the baked overview");
+            for (int i = 0; i < 400 && !wm.overviewBakeStats(); ++i) { wm.atlasTick(dev); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+            check(wm.overviewBakeStats() != nullptr, "M11r overview rebakes after invalidation");
+        }
+        wm.shutdown(dev);
     }
 
     x3::logInfo("worldmap: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");

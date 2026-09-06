@@ -213,6 +213,9 @@ add_library(x3app SHARED
     world_regions.cpp
     world_stream.cpp
     world_map.cpp
+    map_atlas.cpp
+    map_glyphs.cpp
+    map_shots.cpp
     map_poi.cpp         # W-MAP: shared MapPoi contract for lanes 4-6 (town/stations/factory)
     city.cpp
     ocean_base.cpp
