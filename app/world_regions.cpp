@@ -84,7 +84,8 @@ const WorldRegionPlan& worldRegionPlanAuthored(uint32_t i) {
     return pl[i < kWorldRegionCount ? i : 0];
 }
 
-void WorldRegions::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics) {
+void WorldRegions::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                         bool riverRibbon) {
     (void)physics;   // graybox landmarks are visual-only this pass (no collision body)
 
     // A graybox box prop sitting in world space; recorded as a Scene entity. `emiss`
@@ -171,7 +172,9 @@ void WorldRegions::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys:
     // picks up real alpha blend + specular shimmer; same water tint as the
     // ocean slab (ocean_base.cpp). NO collision — the carved bed underneath is
     // the walkable/wadable surface (v1: wading, no swimming).
-    {
+    // ONE WATER: riverRibbon=false when the host's engine water pass draws
+    // this same node table (canon, world_water.cpp) — see the header.
+    if (riverRibbon) {
         uint32_t nNodes = 0;
         const WorldRiverNode* rn = worldRiverNodes(nNodes);
         if (nNodes >= 2) {

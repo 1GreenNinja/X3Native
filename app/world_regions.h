@@ -72,7 +72,13 @@ class WorldRegions {
 public:
     // Place the region graybox geometry onto the (canonical) terrain surface. Pure
     // placement (placeOnTerrain) — safe before any tile is resident. Call once.
-    void build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics);
+    // riverRibbon=false skips the legacy translucent GLASS river ribbon: the
+    // canon host draws the river with the engine water pass (world_water.cpp,
+    // same worldRiverNodes table) — two surfaces at waterY would z-fight and
+    // the ribbon's fixed 0.62 opacity would cancel the clarity. Default true
+    // = byte-identical for every other caller (riverSegmentCount() unchanged).
+    void build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+               bool riverRibbon = true);
 
     // ---- Queries (host HUD + self-test) ----
     bool built() const { return m_built; }

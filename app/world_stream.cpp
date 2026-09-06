@@ -277,9 +277,10 @@ double WorldStreamer::realize(Region& r, Scene& scene, x3::rhi::IRenderDevice& d
         City c; c.build(scene, device, physics, m_sharedSurf ? m_sharedSurf : &m_surflib,
                         m_emitCityGlows ? &m_cityGlows : nullptr);
     } else if (r.desc.builder == "oceanbase") {
-        OceanBase ob; ob.build(scene, device, physics, m_sharedSurf ? m_sharedSurf : &m_surflib);
+        OceanBase ob; ob.build(scene, device, physics, m_sharedSurf ? m_sharedSurf : &m_surflib,
+                               /*surfaceSlab=*/m_legacyWater);
     } else if (r.desc.builder == "worldregions") {
-        WorldRegions wr; wr.build(scene, device, physics);
+        WorldRegions wr; wr.build(scene, device, physics, /*riverRibbon=*/m_legacyWater);
     } else {
         x3::logError("[worldstream] region `" + r.desc.id + "`: unknown builder `" +
                      r.desc.builder + "`");

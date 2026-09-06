@@ -162,6 +162,12 @@ public:
     // does NOT destroy it (its owner does). Null (default) = the streamer's own
     // internal library, exactly as before.
     void setSharedSurfaceLibrary(SurfaceLibrary* lib) { m_sharedSurf = lib; }
+    // ONE WATER (canon host): the engine water pass (world_water.cpp) now draws
+    // the river AND the sea in canon, so the `worldregions` glass ribbon and
+    // the `oceanbase` surface slab must not be built underneath it (z-fight +
+    // an opaque plate cancelling the clarity). Default true = legacy meshes
+    // built, byte-identical for --world streamed and --test-worldstream.
+    void setLegacyWaterMeshes(bool on) { m_legacyWater = on; }
     // CONTENT WIRING (lane inspx/content-wiring): ask the `city` builder to
     // emit a glow-only pooled light per lit window band + neon sign. Off by
     // default -- City::build's emitter is a no-op without a sink, so the
@@ -287,6 +293,7 @@ private:
     bool m_emitCityGlows = false;            // content wiring: window/sign glow lights
     std::vector<StreetLights::Glow> m_cityGlows;  // refilled by each `city` realize
     uint32_t m_roomTag = kNoRoom;            // SEAM 3: roomId stamped on realized entities
+    bool m_legacyWater = true;               // ONE WATER: build the glass ribbon / sea slab
     RegionBuildFn    m_onRegionBuild;        // LIVING NPCs: region-owned host content
     RegionTeardownFn m_onRegionTeardown;
     uint32_t m_proxyEngages = 0;
