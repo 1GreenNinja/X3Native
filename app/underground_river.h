@@ -89,6 +89,16 @@ public:
     // Is this point inside the river's corridor (the derived carve box)? Used
     // to decide whether a capture needs the cavern lane at all.
     static bool insideCorridor(const float p[3]);
+    // THE HEADROOM MEASURE (gate U9's body, ONE producer — NO_SLOP rule 4):
+    // walks the vaulted reach and measures the lowest the rough ceiling can
+    // hang (vaultCeilingY, no jitter luck) against the built ground, across the
+    // channel and both beaches. minHead = tightest anywhere under the lid;
+    // minBeachHead = tightest over standable ground (channel + beaches);
+    // probes = samples taken. --test-canonunderriver re-runs it on the canon
+    // field, which is the same field — the number is what proves that.
+    struct Headroom { float minHead = 1e9f, minBeachHead = 1e9f, maxHead = 0.0f;
+                      float atX = 0.0f, atZ = 0.0f; int probes = 0; float vaultLen = 0.0f; };
+    static Headroom measureHeadroom();
 
     // Headless gate: --test-underriver, 9 checks. The river descends (U1) under
     // ground it never breaks (U2), the bed is under the water and the beaches

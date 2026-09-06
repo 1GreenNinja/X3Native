@@ -601,6 +601,35 @@ void UndergroundRiver::render(x3::rhi::IRenderDevice& device,
 // ---------------------------------------------------------------------------
 // --test-underriver — the gate. Headless, no GPU textures needed (4.3 law:
 // asserts structure, not pixels).
+UndergroundRiver::Headroom UndergroundRiver::measureHeadroom() {
+    const UnderRiverChain& uc = worldUnderRiverChain();
+    Headroom h;
+    const ChainWalk walk(uc);
+    const float vaultEnd = uc.cum[uc.n - 1] - kURGorgeLen;
+    h.vaultLen = vaultEnd;
+    for (float s = 10.0f; s < vaultEnd; s += 20.0f) {
+        float cx, cz, w, nat, dx, dz; walk.at(s, cx, cz, w, nat, dx, dz);
+        const float px = -dz, pz = dx;
+        const float span = kURWallOutW + 2.0f;      // the lid's foot-to-foot
+        for (int k = 1; k < 12; ++k) {              // skip the buried feet
+            const float u = (float)k / 12.0f;
+            const float lat = (u * 2.0f - 1.0f) * span;
+            const float vx = cx + px * lat, vz = cz + pz * lat;
+            const float ceil = vaultCeilingY(worldPreUnderRiverHeight(vx, vz),
+                                             w, u, s, k, false);
+            const float head = ceil - terrainHeightAtWorld(vx, vz);
+            ++h.probes;
+            if (head < h.minHead) { h.minHead = head; h.atX = vx; h.atZ = vz; }
+            h.maxHead = std::max(h.maxHead, head);
+            // Standing room is only owed over ground you can stand on —
+            // the channel and its beaches, not the rim where the lens shuts.
+            if (std::fabs(lat) <= kURShelfHalfW + 3.0f)
+                h.minBeachHead = std::min(h.minBeachHead, head);
+        }
+    }
+    return h;
+}
+
 // ---------------------------------------------------------------------------
 bool UndergroundRiver::runSelfTest() {
     int passN = 0, failN = 0;
@@ -838,35 +867,12 @@ bool UndergroundRiver::runSelfTest() {
     // and a ceiling low enough to walk into (CONTACT LAW's other direction —
     // the beaches are walkable ground, so they need standing room over them).
     {
-        const ChainWalk walk(uc);
-        const float vaultEnd = uc.cum[uc.n - 1] - kURGorgeLen;
-        float minHead = 1e9f, minBeachHead = 1e9f, maxHead = 0.0f;
-        float hx = 0, hz = 0; int probes = 0;
-        for (float s = 10.0f; s < vaultEnd; s += 20.0f) {
-            float cx, cz, w, nat, dx, dz; walk.at(s, cx, cz, w, nat, dx, dz);
-            const float px = -dz, pz = dx;
-            const float span = kURWallOutW + 2.0f;      // the lid's foot-to-foot
-            for (int k = 1; k < 12; ++k) {              // skip the buried feet
-                const float u = (float)k / 12.0f;
-                const float lat = (u * 2.0f - 1.0f) * span;
-                const float vx = cx + px * lat, vz = cz + pz * lat;
-                const float ceil = vaultCeilingY(worldPreUnderRiverHeight(vx, vz),
-                                                 w, u, s, k, false);
-                const float head = ceil - terrainHeightAtWorld(vx, vz);
-                ++probes;
-                if (head < minHead) { minHead = head; hx = vx; hz = vz; }
-                maxHead = std::max(maxHead, head);
-                // Standing room is only owed over ground you can stand on —
-                // the channel and its beaches, not the rim where the lens shuts.
-                if (std::fabs(lat) <= kURShelfHalfW + 3.0f)
-                    minBeachHead = std::min(minBeachHead, head);
-            }
-        }
+        const Headroom h = measureHeadroom();
         std::snprintf(d, sizeof(d),
             "%d probes over %.0f m of vault; headroom %.2f..%.2f m "
             "(tightest at (%.0f, %.0f)); over the beaches at least %.2f m",
-            probes, vaultEnd, minHead, maxHead, hx, hz, minBeachHead);
-        check(minHead > 0.05f && minBeachHead >= 2.5f && probes > 500,
+            h.probes, h.vaultLen, h.minHead, h.maxHead, h.atX, h.atZ, h.minBeachHead);
+        check(h.minHead > 0.05f && h.minBeachHead >= 2.5f && h.probes > 500,
               "U9 there is a cavern in there, and you can stand up in it", d);
     }
 

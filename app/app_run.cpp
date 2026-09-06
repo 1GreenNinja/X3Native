@@ -92,6 +92,8 @@
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
 #include "world_stream.h"                    // SEAMLESS region-graph streaming (--world streamed / --test-worldstream)
+#include "underground_river.h"               // W-UNDERRIVER: the river under the mountain, now in canon (--test-canonunderriver)
+#include "world_water.h"                     // ONE water recipe (clarity ON) shared with --world tunnel
 #include "world_map.h"                       // INTERACTIVE WORLD MAP (M key / --test-worldmap)
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
 #include "npc_life.h"                         // LIVING CITY: authored occupation NPCs w/ daily schedules + heist (--test-npclife)
@@ -1548,6 +1550,22 @@ int runDefaultHost(HostContext& hc) {
     // while the eye is below this Y — the elevator/strata/Club-1127 descent must
     // never see a region teardown or the streamer's Y=0 proxy floor.
     constexpr float kStreamSuppressBelowY = -20.0f;
+    // ---- THE UNDERGROUND RIVER + ONE WATER (app/underground_river.h,
+    // app/world_water.h). The trench under the NW plateau was ALREADY in the
+    // canon height field (terrain.cpp carves it for every caller of
+    // terrainHeightAt, and worldWaterLevelAt answers from the same table) —
+    // what canon lacked was everything you can see: the rock vault over it,
+    // its bank lights and mist, and a drawn water surface at all. Host-owned
+    // like the fish and the sea (built once after the terrain ring exists, no
+    // region ledger involvement, so --test-worldstream's created==destroyed
+    // ledger is untouched); its entities are tagged kStreamedExteriorRoom so
+    // the canon PVS gates them with the rest of the outdoors. The water is
+    // the ENGINE pass driven per frame by world_water.cpp — the same recipe
+    // and the same clarity the owner approved on the tunnel world — so the
+    // legacy glass ribbon / sea slab are not built (setLegacyWaterMeshes).
+    x3::game::UndergroundRiver canonUnderRiver;
+    float canonWaterSun[3] = { 0.55f, 0.16f, -0.35f };   // golden hour; dusk/day override at boot
+    float canonWaterClock  = 0.0f;                       // wave clock, dt-scaled, frozen with the sim
     // ---- Advanced elevator (core): a functional cab in Level 1's tall (~9 m)
     // elevator room — the "Take the elevator to Floor 2" exit transport. Press E
     // within ~4 m to call it; it carries the rider up/down (per-frame carry in the
@@ -3862,6 +3880,10 @@ int runDefaultHost(HostContext& hc) {
             canonWstream.setLookahead(hc.wsLookaheadS);
             canonWstream.setRealizedRoomTag(x3::game::kStreamedExteriorRoom);
             canonWstream.setSharedSurfaceLibrary(&canonRooms.surfaceLibrary());
+            // ONE WATER: the engine pass (world_water.cpp) draws the river and
+            // the sea in canon from this build on — the region builders must
+            // not lay their legacy glass ribbon / opaque slab under it.
+            canonWstream.setLegacyWaterMeshes(false);
             // CONTENT WIRING: r_citylights 1 asks the `city` builder for the
             // window/sign glow lights (no-op at 0 -- City's emitter is skipped
             // entirely, so the legacy realize is byte-identical).
@@ -4065,6 +4087,48 @@ int runDefaultHost(HostContext& hc) {
                 terrainMs, totalMs, hc.wsBudgetMs, hc.wsLookaheadS);
             x3::logInfo(sb);
             x3::boot::mark("SEAM 3 streamer boot (planet regions + terrain ring)");
+
+            // ---- THE UNDERGROUND RIVER (W-UNDERRIVER, in canon) -------------
+            // The vault, beaches, bank lights and mist over the trench the
+            // height field already carries (see the declaration). Built inside
+            // an entity-capture window so every scene entity can be stamped
+            // kStreamedExteriorRoom — the same PVS gate the fish and the sea
+            // use; an indoor player never draws a cavern 1.2 km away. Surface
+            // sets come from the canon RoomDressing library (already mounted,
+            // decoded once). DEFAULT ON; X3_UNDERRIVER=0 is the off door and
+            // turns off the DRAWN cavern only — the trench and its water level
+            // are landform (terrain.cpp) and cannot desync from the map.
+            {
+                const char* ue = std::getenv("X3_UNDERRIVER");
+                if (!(ue && ue[0] == '0')) {
+                    const auto us0 = std::chrono::steady_clock::now();
+                    std::vector<uint32_t> urIds;
+                    scene.beginEntityCapture(&urIds);
+                    const auto ur = canonUnderRiver.build(scene, *device,
+                                                          &canonRooms.surfaceLibrary(), nullptr);
+                    scene.endEntityCapture();
+                    for (uint32_t id : urIds) scene.get(id).roomId = x3::game::kStreamedExteriorRoom;
+                    const double urMs = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - us0).count();
+                    char ub[300];
+                    std::snprintf(ub, sizeof(ub),
+                        "UNDERGROUND RIVER (canon): built=%d vault=%u beaches=%u waterSegs=%u "
+                        "lights=%u mist=%u portal=(%.0f,%.0f) entities=%u — %.0f ms",
+                        ur.built ? 1 : 0, ur.vaultChunks, ur.beachChunks, ur.waterSegs,
+                        ur.lightCount, ur.mistSources, ur.portalX, ur.portalZ,
+                        (uint32_t)urIds.size(), urMs);
+                    x3::logInfo(ub);
+                    x3::boot::mark("UNDERGROUND RIVER (vault + lights + mist over the carved trench)");
+                }
+            }
+            // ONE WATER's luminary: the same golden/dusk/day triad the god rays
+            // key off (below), so the river glints to the sun that is actually up.
+            if (hc.duskSky) { canonWaterSun[0] = 0.55f; canonWaterSun[1] = 0.035f; canonWaterSun[2] = -0.35f; }
+            if (hc.daySky)  { canonWaterSun[0] = 0.20f; canonWaterSun[1] = 0.94f;  canonWaterSun[2] = -0.28f; }
+            x3::logInfo("ONE WATER (canon): engine water pass ON — clarity surface=" +
+                        std::to_string(x3::game::worldWaterClarityFor(false)) + " cavern=" +
+                        std::to_string(x3::game::worldWaterClarityFor(true)) +
+                        " (X3_WATER_CLARITY overrides; legacy ribbon/slab not built)");
 
             // ---- FISH (W10 water): THE RIVER LIVES ---------------------------
             // Ambient schools in the river reach nearest the facility (the same
@@ -4366,6 +4430,39 @@ int runDefaultHost(HostContext& hc) {
         canonWstream.shutdown(scene, *device, *physics);
         terrainStreamer.shutdown(scene, *device, *physics);
         if (!terrainWorld && terrainJobs) terrainJobs->shutdown();
+    };
+    // ONE WATER + THE UNDERGROUND RIVER, per frame — ONE body for the live
+    // loop, the screenshot settle and the smoketest so the three paths cannot
+    // drift (the tunnel host learned that the hard way: its captures rendered
+    // a dry river for weeks because only the interactive loop armed the pass).
+    // focus = this frame's eye XZ: world_water.cpp picks the surface channel or
+    // the cavern channel from it and feeds the LOCAL water level to the
+    // shader's underside gate. exteriorVisible = the canon PVS says outdoors
+    // is in view; when it is not (deep in the facility) the pass is switched
+    // OFF rather than drawn through the walls. dt is the sim step (0 when the
+    // sim is frozen) — the wave clock is dt-scaled, never per-frame.
+    auto canonWaterFrame = [&](float focusX, float focusZ, float dt, bool exteriorVisible) {
+        if (!canonStreamOn) return;
+        canonWaterClock += dt;
+        if (exteriorVisible) {
+            x3::game::WorldWaterInput wi;
+            wi.time = canonWaterClock; wi.focusX = focusX; wi.focusZ = focusZ;
+            wi.sunDir[0] = canonWaterSun[0]; wi.sunDir[1] = canonWaterSun[1]; wi.sunDir[2] = canonWaterSun[2];
+            wi.surfaceOn = true;          // canon always has THE RIVER (worldRiverNodes)
+            x3::game::applyWorldWater(*device, wi);
+        } else {
+            device->setWaterParams(x3::rhi::IRenderDevice::WaterParams{});   // enabled=false
+        }
+        if (canonUnderRiver.built() && dt > 0.0f) canonUnderRiver.update(dt, scene);
+    };
+    // The cavern's bank lights are a nearest-K lane merged into the host's ONE
+    // setPointLights call (same rule the tunnel follows) — only while the eye
+    // is inside the corridor, so no light budget anywhere else moves.
+    auto canonUnderRiverLights = [&](const float eye[3], std::vector<x3::rhi::PointLight>& out) {
+        if (!canonUnderRiver.built() || !x3::game::UndergroundRiver::insideCorridor(eye)) return;
+        x3::rhi::PointLight ul[12];
+        const uint32_t un = canonUnderRiver.nearestLights(eye, ul, 12);
+        out.insert(out.begin(), ul, ul + un);   // nearest-first, ahead of the budget trim
     };
 
     // =======================================================================
@@ -6686,6 +6783,11 @@ int runDefaultHost(HostContext& hc) {
                     canonVisRooms.push_back(x3::game::kRiftRoom);   // W-RIFT capture vantage
                 scene.setRoomCullEnabled(true);
                 scene.setVisibleRooms(canonVisRooms);
+                // ONE WATER + THE UNDERGROUND RIVER through the settle — the
+                // same body as the live loop, so a still shows the water the
+                // player sees (and the cavern's mist has had time to fill).
+                canonWaterFrame(ssEye.x, ssEye.z, dt,
+                                scene.roomVisible(x3::game::kStreamedExteriorRoom));
                 std::vector<x3::rhi::PointLight> cl;
                 // Dressing lights FIRST (inserted ahead so the cap never truncates the
                 // motivated key lights), then the room ceiling lights fill in.
@@ -6800,6 +6902,8 @@ int runDefaultHost(HostContext& hc) {
                         cl.insert(cl.begin(), beam);
                     }
                 }
+                // THE UNDERGROUND RIVER's bank lights in a capture (corridor-gated).
+                { const float eye3[3] = { ssEye.x, ssEye.y, ssEye.z }; canonUnderRiverLights(eye3, cl); }
                 if (cl.size() > lightBudget) cl.resize(lightBudget);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
             }
@@ -7071,6 +7175,9 @@ int runDefaultHost(HostContext& hc) {
                                                (uint32_t)seaShotLights.size());
                     }
                     worldSea.draw(*device, frame, scene);
+                    // THE UNDERGROUND RIVER's mist + spray in the still (outdoor-gated).
+                    if (canonUnderRiver.built() && scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                        canonUnderRiver.render(*device, frame);
                     // W-RIFT: the membrane FX (arcs + motes + light shafts) in the still.
                     if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z))
                         rifthub.drawFx(*device, frame);
@@ -7919,6 +8026,10 @@ int runDefaultHost(HostContext& hc) {
                 uint32_t nLit = x3::game::selectVisibleCanonLights(
                     canonLights, canonVisRooms, eye.x, eye.y, eye.z, cl, canonLightBudget);
                 if (facilityExterior.built()) cl.push_back(facilityExterior.spillLight());
+                // ONE WATER + THE UNDERGROUND RIVER under validation: the same
+                // per-frame body + light lane the live loop runs.
+                canonWaterFrame(eye.x, eye.z, dt, scene.roomVisible(x3::game::kStreamedExteriorRoom));
+                { const float eye3[3] = { eye.x, eye.y, eye.z }; canonUnderRiverLights(eye3, cl); }
                 if (cl.size() > lightBudget) cl.resize(lightBudget);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
                 if (i == 0)
@@ -7969,6 +8080,8 @@ int runDefaultHost(HostContext& hc) {
                 }
                 // THE OCEAN LIVES (PVS-gated inside draw()) - ONCE per frame, not per crowd.
                 worldSea.draw(*device, frame, scene);
+                if (canonUnderRiver.built() && scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                    canonUnderRiver.render(*device, frame);   // cavern mist + spray
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
@@ -11001,6 +11114,8 @@ int runDefaultHost(HostContext& hc) {
                     fl.push_back(L);
                 }
             }
+            // THE UNDERGROUND RIVER's bank lights (nearest-K, corridor-gated).
+            { const float eye3[3] = { camX, camY, camZ }; canonUnderRiverLights(eye3, fl); }
             if (fl.size() > lightBudget) fl.resize(lightBudget);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
         }
@@ -11085,6 +11200,11 @@ int runDefaultHost(HostContext& hc) {
                 }
                 canonStreamPrevX = camX; canonStreamPrevZ = camZ;
             }
+            // ONE WATER + THE UNDERGROUND RIVER (canonWaterFrame): the engine
+            // water pass follows the eye (surface river / cavern channel), the
+            // cavern's mist and lights tick. dt-scaled; frozen with the sim.
+            canonWaterFrame(camX, camZ, simFrozen ? 0.0f : dt,
+                            scene.roomVisible(x3::game::kStreamedExteriorRoom));
             { const double _pt0 = glfwGetTime();
               game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
               g_perf.tick += glfwGetTime() - _pt0; }
@@ -12536,6 +12656,9 @@ int runDefaultHost(HostContext& hc) {
             }
             // THE OCEAN LIVES (PVS-gated inside draw()) - ONCE per frame, not per crowd.
             worldSea.draw(*device, frame, scene);
+            // THE UNDERGROUND RIVER's mist + spray (particles; outdoor-gated like the sea).
+            if (canonUnderRiver.built() && scene.roomVisible(x3::game::kStreamedExteriorRoom))
+                canonUnderRiver.render(*device, frame);
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
             // Skipped in the outdoor terrain world (no Level 1 controller built).
