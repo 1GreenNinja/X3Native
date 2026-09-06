@@ -1,7 +1,7 @@
 {
   "format": "x3.mappois/1",
-  "name": "EFLZ world map POIs v1",
-  "comment": "Points of interest for the interactive world map (app/world_map.*). pos = [x,y,z] world meters at the AUTHORED coordinates (Spire rooms from EscapeLab48_AllFloors_v2.project.json room centers; world anchors from regions.json + world_regions.cpp's landmark gazetteer; Club 1127 at its canon Y=-200 under the Spire). floor = Spire floor (0 = not floor-bound). discover_radius = XZ meters (Y within +-6 m) of proximity that DISCOVERS the POI -> StoryFlag poi.<id>.found (persisted). fast_travel = whether the POI is a fast-travel anchor once discovered. Secrets discover at tight radii and are NOT travel anchors (you found it; you still walk it).",
+  "name": "EFLZ world map POIs v2",
+  "comment": "Points of interest for the interactive world map (app/world_map.*). pos = [x,y,z] world meters at the AUTHORED coordinates (Spire rooms from EscapeLab48_AllFloors_v2.project.json room centers; world anchors from regions.json + world_regions.cpp's landmark gazetteer; Club 1127 at its canon Y=-200 under the Spire). floor = Spire floor (0 = not floor-bound). discover_radius = XZ meters (Y within +-6 m) of proximity that DISCOVERS the POI -> StoryFlag poi.<id>.found (persisted). fast_travel = whether the POI is a fast-travel anchor once discovered. Secrets discover at tight radii and are NOT travel anchors (you found it; you still walk it). W-MAP v4: `interchange` and `underriver_portal` are authored at their DESIGN positions and snapped at bind time to the built interchange centre / the last under-river chain node (WorldMapSystem::bindWorld), since both are sited by the runtime survey.",
   "pois": [
     { "id": "jakes_cell",      "name": "Jake's Cell (WL-1)",        "type": "cell",     "region": "spire_f1", "pos": [2.0, 0.0, 40.0],       "floor": 1, "discover_radius": 6.0,  "fast_travel": true  },
     { "id": "main_hall",       "name": "Main Hall",                 "type": "hall",     "region": "spire_f1", "pos": [22.0, 0.0, 44.5],      "floor": 1, "discover_radius": 10.0, "fast_travel": true  },
@@ -24,6 +24,9 @@
     { "id": "northern_range",  "name": "Northern Range",            "type": "landmark", "region": "surface_landmarks", "pos": [300.0, 0.0, 8300.0],   "floor": 0, "discover_radius": 400.0, "fast_travel": false },
     { "id": "eastern_range",   "name": "Eastern Range (Volcanic)",  "type": "landmark", "region": "surface_landmarks", "pos": [9200.0, 0.0, 250.0],   "floor": 0, "discover_radius": 400.0, "fast_travel": false },
     { "id": "southern_range",  "name": "Southern Range (Mesas)",    "type": "landmark", "region": "surface_landmarks", "pos": [350.0, 0.0, -9000.0],  "floor": 0, "discover_radius": 400.0, "fast_travel": false },
-    { "id": "western_highlands", "name": "Western Highlands",       "type": "landmark", "region": "surface_landmarks", "pos": [-8600.0, 0.0, -100.0], "floor": 0, "discover_radius": 400.0, "fast_travel": false }
+    { "id": "western_highlands", "name": "Western Highlands",       "type": "landmark", "region": "surface_landmarks", "pos": [-8600.0, 0.0, -100.0], "floor": 0, "discover_radius": 400.0, "fast_travel": false },
+    { "id": "dealership",      "name": "CTR Dealership",            "type": "dealer",   "region": "city",              "pos": [200.0, 0.0, 360.0],    "floor": 0, "discover_radius": 45.0,  "fast_travel": true  },
+    { "id": "interchange",     "name": "Freeway Interchange",       "type": "interchange", "region": "city",           "pos": [170.0, 0.0, 1175.0],   "floor": 0, "discover_radius": 120.0, "fast_travel": true  },
+    { "id": "underriver_portal", "name": "Under-River Portal",      "type": "portal",   "region": "surface_landmarks", "pos": [-1090.0, 0.0, -700.0], "floor": 0, "discover_radius": 40.0,  "fast_travel": true  }
   ]
 }

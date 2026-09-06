@@ -130,7 +130,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         if (a == "--test-worldstream") { o.testWorldStream = true; continue; }
         if (a == "--test-worldmap")    { o.testWorldMap    = true; continue; }
         if (a == "--screenshot-worldmap") {   // headless world-map shot sequence
-            o.shotWorldMap = true; o.worldMode = "streamed"; o.screenshot = true; continue;
+            // W-MAP v4: `--world canonlevel` (explicit) takes the canon stills
+            // (app/map_shots.cpp); the default stays the streamed sequence.
+            o.shotWorldMap = true; o.screenshot = true;
+            if (!o.worldExplicit) o.worldMode = "streamed";
+            continue;
         }
         if (a == "--ws-budget") {   // per-frame world-stream budget, ms (cvar-style tunable)
             if (i + 1 < argc && argv[i + 1][0] != '-') o.wsBudgetMs = std::strtof(argv[++i], nullptr);

@@ -93,6 +93,7 @@
 #include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
 #include "world_stream.h"                    // SEAMLESS region-graph streaming (--world streamed / --test-worldstream)
 #include "world_map.h"                       // INTERACTIVE WORLD MAP (M key / --test-worldmap)
+#include "map_shots.h"                       // W-MAP v4: --screenshot-worldmap canonlevel stills
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
 #include "npc_life.h"                         // LIVING CITY: authored occupation NPCs w/ daily schedules + heist (--test-npclife)
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
@@ -917,7 +918,10 @@ int runDefaultHost(HostContext& hc) {
     const bool headless = hc.headless;
     const uint32_t W = hc.W;
     const uint32_t H = hc.H;
-    const bool screenshot = hc.screenshot;
+    // --screenshot-worldmap rides the headless `screenshot` routing in main()
+    // but takes its own stills after the map is bound (see the shotWorldMap
+    // block by worldMap.bindWorld), not the generic --screenshot vantage.
+    const bool screenshot = hc.screenshot && !hc.shotWorldMap;
     const std::string& screenshotPath = hc.screenshotPath;
     const int screenshotSettle = hc.screenshotSettle;
     const bool shotCamOverride = hc.shotCamOverride;
@@ -7390,6 +7394,35 @@ int runDefaultHost(HostContext& hc) {
         return wrote ? 0 : 1;
     }
 
+    // ---- --screenshot-worldmap --world canonlevel (W-MAP v4 review stills) ----
+    // Sits with the other headless captures, BEFORE the interactive-only layer
+    // (save/load, game-UI, ...) that assumes a live window. A local
+    // WorldMapSystem is bound to the live world (streamer ledger, freeway +
+    // interchange specs, Spire rect), app/map_shots.cpp shoots the four stills,
+    // then the smoketest's teardown order.
+    if (hc.shotWorldMap && canonWorld) {
+        x3::game::WorldMapSystem shotMap;
+        shotMap.init(x3::game::worldMapPoisJsonPath(), x3::game::canonProjectJsonPath());
+        const x3::game::FacilityExterior::Desc& sxd = facilityExterior.builtDesc();
+        shotMap.bindWorld({ &scene, device, &canonWstream, &canonFwySpec, &canonInterchange,
+                            sxd.x0, sxd.z0, sxd.x1, sxd.z1 });
+        x3::game::WorldMapShotParams wsp; wsp.fbW = hc.W; wsp.fbH = hc.H;
+        const bool wrote = x3::game::runWorldMapShotSequence(shotMap, *device, window, chatTrees.flags(), wsp);
+        shotMap.shutdown(*device);
+        audio->shutdown();
+        combatFx.shutdown(*device);
+        shutdownGameSystems();
+        canonTrafficLayer.shutdown(physics.get());
+        worldCars.shutdown(*physics);
+        dealership.shutdown(*physics);
+        shutdownCanonStream();
+        physics->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
     // ---- UI-demo capture (--ui-demo [path.png] / --screenshot-menu) ---------
     // Build EFLZ Level 1, pose the gate-standard corridor camera so the menu sits
     // over a real lit scene, then draw the GENERAL game-UI MAIN MENU (title +
@@ -9012,6 +9045,16 @@ int runDefaultHost(HostContext& hc) {
     // so found POIs persist with the story save.
     x3::game::WorldMapSystem worldMap;
     worldMap.init(x3::game::worldMapPoisJsonPath(), x3::game::canonProjectJsonPath());
+    // W-MAP v4 (GTA atlas): hand the map the live world — the streamer's ledger
+    // (building footprints), the freeway + interchange specs (borrowed; both
+    // are function locals that outlive the map) and the Spire's facade rect.
+    // The map re-snapshots on its own when the resident set changes, so a
+    // region that realizes after this call still lands on the map.
+    if (canonWorld) {
+        const x3::game::FacilityExterior::Desc& sxd = facilityExterior.builtDesc();
+        worldMap.bindWorld({ &scene, device, &canonWstream, &canonFwySpec, &canonInterchange,
+                             sxd.x0, sxd.z0, sxd.x1, sxd.z1 });
+    }
     x3::ui::UiContext mapUi;            // the map screen's own IMGUI-lite context
     bool  worldMapOpen = false;
     bool  prevMapKey = false, prevMapEnter = false;

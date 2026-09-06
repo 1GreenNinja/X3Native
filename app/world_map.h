@@ -28,19 +28,85 @@
 //     system — the flag IS the hook); blocked while the current mission stage
 //     sets no_fasttravel (optional x3.mission/1 stage field).
 //
-// Headless self-test: --test-worldmap (runWorldMapSelfTest).
+// W-MAP v4 — THE GTA-STYLE ATLAS (canonlevel):
+//   * WHAT CHANGED: the canon world's map used to be a blueprint grid with POI
+//     boxes — no terrain, no roads, no buildings, because app_run never fed it
+//     route overlays or region tiles. It now draws a real cartographic base:
+//     hypsometric terrain from the live height field with a NW hillshade, flat
+//     desaturated water with a 1-texel shoreline and sand bands, the district
+//     tint zones, building footprints from the region ledgers (greys by height
+//     band, 1-texel darker edge), and the road network as GTA ribbons (dark
+//     casing / light fill, width by class, freeway median, dashed bores) — all
+//     rasterized by app/map_atlas.* from ONE feature snapshot.
+//   * TWO-LEVEL TILE PYRAMID, BAKED ASYNC: a static 2048^2 OVERVIEW tile
+//     (+-worldHalfM, ~10 m/texel) and a viewport-following 2048^2 DETAIL tile
+//     re-baked whenever the view outgrows it (texels > ~1.35 screen px) or
+//     leaves it. Bakes run on a worker thread against the snapshot — the frame
+//     never waits; the previous tile shows until the new one uploads. Tiles
+//     are created srgb=true (palette authored in sRGB) with the device's full
+//     mip chain + aniso, so minified overview zooms do not shimmer; the detail
+//     tile is feathered so it composites seamlessly over the overview.
+//   * ONE BINDING CALL from the host (bindWorld): scene + streamer (ledger
+//     AABBs), the freeway RoadSpec + InterchangeResult (host locals — the
+//     road registry has no polyline accessor), the facility facade rect. The
+//     city connectors, districts, dealership site, river/sea/under-river water
+//     are read straight from their authored tables — no plumbing.
+//   * LABELS: screen-space, all-caps with tracking, collision-avoided (greedy
+//     by priority, alternate anchors), zoom-gated per kind, light halo on dark
+//     text (a light map wants dark type — GTA's own convention). Districts,
+//     the Spire, the freeway shield, river, sea, dealership, interchange, and
+//     every discovered POI.
+//   * GLYPHS: POIs / player arrow / waypoint / objective / compass rose are
+//     textured quads from an SDF icon sheet (app/map_glyphs.*), tinted per
+//     class — crisp at every zoom, one quad each.
+//   * CHROME: vignette, metric scale bar, compass rose rotating with Q/E,
+//     legend strip (samples drawn exactly as the blips are) and header in the
+//     OBJECTIVE/COMMS panel language (hud_panel.h), fog over undiscovered
+//     regions (soft desaturated wash). The Spire floor selector shows only
+//     while the Spire is in view at >= 1.5 px/m — at street zoom elsewhere it
+//     was chrome about a building off-screen.
+//   * WHAT THE FIRST STILLS TAUGHT (all fixed, all covered by M11):
+//     - the dual-carriageway freeway drawn as ONE 101 m slab with round caps
+//       read as a runway ending in a roundabout -> MapRoad::medianHalfW splits
+//       it into two roadways around the authored median (6.5 m floor), square
+//       end caps on wide/dual routes;
+//     - the interchange's own ledger meshes (ramp loops, deck, piers) are
+//       curved geometry whose AABBs are 100-270 m slabs -> excluded as
+//       footprints inside a box around the junction (its ramps + crossroad are
+//       already drawn from the specs);
+//     - "INTERSTATE" / "INDUSTRIAL ZONE" never placed: the label pad collided
+//       with the ALREADY-padded blip obstacles -> obstacles test the bare rect,
+//       labels pad against each other, 6-7 slots per anchor (mapPlaceLabel,
+//       pure, self-tested);
+//     - coarse-band hillshade speckle -> one 3x3 box blur over the height grid
+//       when a grid cell is >= 4 m (fine bands keep the raw samples);
+//     - the coords panel printed N with the wrong sign (+Z is north).
+//   * SURVEY-SITED POIs snap at bind: the interchange POI to the built
+//     junction's centre (its crossing is terrain-decided), the under-river
+//     portal to the daylight end of worldUnderRiverChain(). Perf shop / LNSS
+//     are NOT sited in canonlevel, so they have no POI yet.
+//
+// Headless self-test: --test-worldmap (runWorldMapSelfTest). Stills:
+// --screenshot-worldmap --world canonlevel (app/map_shots.*) writes the four
+// docs/screenshots/worldmap/after_*.png and logs bake ms + placed labels.
 
 #include "scene.h"
 #include "level_loader.h"
 #include "story_ops.h"
 #include "ui.h"
+#include "map_atlas.h"
 
 #include "engine/rhi/IRenderDevice.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace x3::game {
+
+class WorldStreamer;
+struct RoadSpec;
+struct InterchangeResult;
 
 // ---------------------------------------------------------------------------
 // Map camera — pan/zoom math (pure; headless-testable).
@@ -99,7 +165,8 @@ struct MapPoi {
     std::string id;          // unique ("jakes_cell")
     std::string name;        // display ("Jake's Cell")
     std::string type;        // icon class: cell|hall|security|armory|secret|boss|
-                             // elevator|door|club|landmark|city|base
+                             // elevator|door|club|landmark|city|base|dealer|shop|
+                             // interchange|portal
     std::string region;      // owning region id (regions.json) — "" = global
     float x = 0, y = 0, z = 0;
     int   floor = 0;         // Spire floor (0 = not floor-bound)
@@ -238,8 +305,60 @@ uint32_t bakeEntityTilePixels(const Scene& scene, x3::rhi::IRenderDevice& device
 // WorldMapSystem — POIs + discovery + waypoint + fast travel + tiles + the
 // full-screen map screen. One instance per world host.
 // ---------------------------------------------------------------------------
+// The host's one-call world binding for the GTA-style atlas (W-MAP v4). Every
+// pointer is BORROWED and must outlive the map system (they are the host's
+// long-lived locals). Nulls are allowed: a null streamer means no ledger
+// footprints, a null freeway/interchange means no such roads.
+struct MapWorldBinding {
+    const Scene*             scene       = nullptr;
+    x3::rhi::IRenderDevice*  device      = nullptr;   // meshBounds for ledger AABBs
+    const WorldStreamer*     streamer    = nullptr;   // region ledgers + fog regions
+    const RoadSpec*          freeway     = nullptr;   // canonFwySpec (only if it built)
+    const InterchangeResult* interchange = nullptr;   // canonInterchange (only if built)
+    float spireX0 = 0, spireZ0 = 0, spireX1 = 0, spireZ1 = 0;   // facility facade rect
+    float worldHalfM = 10240.0f;                      // overview tile half-extent (m)
+};
+
 class WorldMapSystem {
 public:
+    WorldMapSystem();
+    ~WorldMapSystem();
+    WorldMapSystem(const WorldMapSystem&) = delete;
+    WorldMapSystem& operator=(const WorldMapSystem&) = delete;
+
+    // ---- GTA-style atlas (canonlevel) ---------------------------------------
+    // Bind the live world and kick the async OVERVIEW bake right away, so the
+    // map is ready before the player first presses M. Safe to call once after
+    // the start regions are resident; re-binding rebakes.
+    void bindWorld(const MapWorldBinding& b);
+    bool worldBound() const;
+    // Snapshot the bound world into a feature set (main thread — reads the
+    // scene/ledgers; the bake threads only ever see the copy).
+    MapFeatureSet snapshotFeatures() const;
+    // Poll async bakes: uploads finished tiles, kicks the detail rebake the view
+    // needs. drawScreen calls this; the host/test may call it directly to make
+    // progress without a frame. Returns true if a tile was uploaded this call.
+    bool atlasTick(x3::rhi::IRenderDevice& device);
+    // Block until every in-flight bake has finished and been uploaded (tests +
+    // the screenshot path — never the live frame loop).
+    void atlasFlush(x3::rhi::IRenderDevice& device);
+    const MapTile* overviewTile() const;
+    const MapTile* detailTile() const;
+    const MapBakeStats* overviewBakeStats() const;
+    const MapBakeStats* detailBakeStats() const;
+    // Drop the baked atlas tiles so the next tick rebakes (hot-reload / a region
+    // realizing after bind — the detail tile re-snapshots on every kick anyway).
+    void invalidateAtlas(x3::rhi::IRenderDevice& device);
+    // Overview tile texels per screen pixel above which the detail tile kicks
+    // in — the overview is 10 m/texel, so this is scale >= 0.1 px/m.
+    static constexpr uint32_t kAtlasOverviewRes = 2048;
+    static constexpr uint32_t kAtlasDetailRes   = 2048;
+
+    // Label layout result for one frame — exposed so the self-test can assert
+    // the collision rule ("no two label rects overlap") on a real layout.
+    struct PlacedLabel { std::string text; float x, y, w, h; int prio; };
+    const std::vector<PlacedLabel>& lastLabels() const { return m_lastLabels; }
+
     // `poisPath` -> MapPoiTable (missing file = empty table, logged, not fatal).
     // `spireLevelDocPath` ("" = none) names the canonical project JSON whose
     // floors back the Spire floor tiles + the floor selector.
@@ -373,6 +492,19 @@ private:
     // (CLAUDE.md axes), +X east.
     void drawCompassRose(x3::ui::UiContext& ui, float W, float H) const;
 
+    // W-MAP v4 atlas internals (definition private to world_map.cpp: worker
+    // threads, pixel buffers, glyph textures — nothing a header user needs).
+    struct Atlas;
+    std::unique_ptr<Atlas> m_atlas;
+    void ensureGlyphTextures(x3::rhi::IRenderDevice& device);
+    void drawAtlasScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& device,
+                         const x3::rhi::FrameContext& frame, const ScreenInput& in,
+                         StoryFlags& flags, float W, float H, bool modal);
+    void drawFrameChrome(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& device,
+                         const x3::rhi::FrameContext& frame, const ScreenInput& in,
+                         float W, float H, bool modal);
+    std::vector<PlacedLabel> m_lastLabels;
+
     MapPoiTable m_pois;
     std::string m_spireDocPath;
     std::vector<SpireFloor> m_floors;
@@ -400,6 +532,22 @@ private:
     bool  m_dragging = false;
     float m_dragMoved = 0.0f;      // px moved while held (click-vs-drag)
 };
+
+// Screen-space label placement (pure; exposed for the self-test). A label is
+// tried in up to 8 slots around its anchor and takes the first that clears the
+// obstacles (blips, markers, chrome — already padded) and the labels placed
+// before it (padded 3 px here). Returns false when every slot collides: the
+// label is dropped for this frame rather than drawn over something.
+struct MapLabelRect { float x, y, w, h; };
+struct MapLabelSlotIn {
+    float ax, ay;     // anchor (px): blip right edge + gap when `beside`, else the area centre
+    float tw, th;     // text box (px)
+    float blipPx;     // blip size at this zoom (derives the beside-slot offsets)
+    bool  beside;
+};
+bool mapPlaceLabel(const MapLabelSlotIn& in, float W, float H,
+                   const std::vector<MapLabelRect>& obstacles, const std::vector<MapLabelRect>& placed,
+                   MapLabelRect& outRect, MapLabelRect& outPad);
 
 // Headless self-test (--test-worldmap): POI discovery + flags round-trip,
 // waypoint set/clear, fast-travel gates (discovery / alert flag / mission
