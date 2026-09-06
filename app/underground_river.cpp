@@ -174,7 +174,14 @@ UndergroundRiver::Result UndergroundRiver::build(
     SurfaceLibrary localSurf;
     SurfaceLibrary& surf = surfIn ? *surfIn : localSurf;
     if (!surf.mounted()) surf.mount(assetRoot() + "/surface_library");
-    const SurfaceSet& innerS = surf.get(device, "cv_rock_wet");    // cave rock, wet
+    // THE VAULT'S SKIN. This was cv_rock_wet, which despite its name is a
+    // tiled MASONRY texture — dressed blocks with mortar lines — and at the
+    // lid's 9 m x 20 m tile it photographed as brown ceiling PANELS with the
+    // grout showing (the owner's first note on the Great Hall still). A cave
+    // is carved from the country it sits in, so the inner face wears the same
+    // natural rock the back of the lid and the hillside do: no seams that
+    // repeat, no block edges, and the lamps' pools land on stone.
+    const SurfaceSet& innerS = surf.get(device, "terrain_rock");   // cave rock (natural)
     const SurfaceSet& outerS = surf.get(device, "terrain_rock");   // dry country rock
 
     // ---- THE VAULT: the LID that puts the hillside back. ------------------
@@ -195,10 +202,13 @@ UndergroundRiver::Result UndergroundRiver::build(
     auto buildStrip = [&](float s0, float s1, bool inner) {
         CpuMesh m;
         const int rings = std::max(2, (int)((s1 - s0) / kStep) + 1);
+        std::vector<float> ringC;                   // (cx, w, cz) per ring
+        ringC.reserve((size_t)rings * 3);
         for (int rg = 0; rg < rings; ++rg) {
             const float s = s0 + (s1 - s0) * ((float)rg / (float)(rings - 1));
             float cx, cz, w, nat, dx, dz;
             walk.at(s, cx, cz, w, nat, dx, dz);
+            ringC.insert(ringC.end(), { cx, w, cz });
             const Frame fr = walk.frameAt(s);       // mitered: see Frame
             const float px = fr.px, pz = fr.pz;
             for (int k = 0; k < kAcross; ++k) {
@@ -231,12 +241,52 @@ UndergroundRiver::Result UndergroundRiver::build(
                 v.pos[0] = vx;
                 v.pos[1] = y;
                 v.pos[2] = vz;
-                // Inner face lights from below (normal down-ish), outer from
-                // above; exact normals matter less than orientation down here.
+                // Placeholder orientation; the real geometric normals are
+                // solved from the finished grid below.
                 v.normal[0] = 0.0f; v.normal[1] = inner ? -1.0f : 1.0f; v.normal[2] = 0.0f;
+                // ~9 m per tile BOTH ways. The across axis used to be 4.6 tiles
+                // over the ~92 m span (a 20 m tile), a 2:1 stretch that turned
+                // every feature in the texture into a long panel.
                 v.uv[0] = s * 0.11f;                    // ~0.11 tiles/m along
-                v.uv[1] = u * 4.6f;                     // across the lid
+                v.uv[1] = u * 10.0f;                    // across the lid
                 m.v.push_back(v);
+            }
+        }
+        // GEOMETRIC NORMALS. The lid used to carry a flat (0,-1,0) on every
+        // inner vertex: fine under the sky-IBL wash that used to fill the
+        // vault, but the room is lit by point lamps now and a wall's response
+        // to a lamp IS its normal — with a flat one the whole 30 m flank
+        // shaded as one ceiling and the normal map had nothing to hang off.
+        // Central differences over the (ring, across) grid; at the feet the
+        // rim is tucked under, so one-sided there.
+        for (int rg = 0; rg < rings; ++rg) {
+            for (int k = 0; k < kAcross; ++k) {
+                auto P = [&](int r, int kk) -> const float* {
+                    r  = std::clamp(r, 0, rings - 1);
+                    kk = std::clamp(kk, 0, kAcross - 1);
+                    return m.v[(size_t)(r * kAcross + kk)].pos;
+                };
+                const float* a0 = P(rg - 1, k); const float* a1 = P(rg + 1, k);
+                const float* b0 = P(rg, k - 1); const float* b1 = P(rg, k + 1);
+                const float tA[3] = { a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2] };
+                const float tB[3] = { b1[0] - b0[0], b1[1] - b0[1], b1[2] - b0[2] };
+                float n[3] = { tA[1] * tB[2] - tA[2] * tB[1],
+                               tA[2] * tB[0] - tA[0] * tB[2],
+                               tA[0] * tB[1] - tA[1] * tB[0] };
+                const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                x3::rhi::MeshVertex& v = m.v[(size_t)(rg * kAcross + k)];
+                if (len < 1e-6f) continue;              // keep the placeholder
+                n[0] /= len; n[1] /= len; n[2] /= len;
+                // Face the room: the inner skin looks IN at the water under
+                // the crown (a sign test on y alone is ambiguous on the near-
+                // vertical flanks, where the normal is nearly horizontal);
+                // the outer skin looks UP at the sky.
+                const float* c = &ringC[(size_t)rg * 3];
+                const float toC[3] = { c[0] - v.pos[0], c[1] - v.pos[1], c[2] - v.pos[2] };
+                const bool flip = inner ? (n[0] * toC[0] + n[1] * toC[1] + n[2] * toC[2] < 0.0f)
+                                        : (n[1] < 0.0f);
+                if (flip) { n[0] = -n[0]; n[1] = -n[1]; n[2] = -n[2]; }
+                v.normal[0] = n[0]; v.normal[1] = n[1]; v.normal[2] = n[2];
             }
         }
         for (int rg = 0; rg + 1 < rings; ++rg)

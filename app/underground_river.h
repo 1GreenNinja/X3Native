@@ -15,11 +15,12 @@
 //     worldPreUnderRiverHeight, so the lid restores the surface the trench
 //     removed rather than arching over it; the void between carved floor and
 //     restored surface IS the cavern, a lens tallest over the channel and
-//     closed at the rim. Inner face wet cave rock (cv_rock_wet), outer back
-//     dry country rock (terrain_rock). The last kURGorgeLen metres stay OPEN
+//     closed at the rim. Both faces wear the natural country rock
+//     (terrain_rock) — the inner face used to be cv_rock_wet, a MASONRY
+//     tile that read as brown ceiling panels. The last kURGorgeLen metres stay OPEN
 //     — the river steps down into daylight there. Gate U9 measures the
 //     headroom (10-44 m over the beaches).
-//   * THE BEACHES — an apron of water-worn rock (cv_rock_flume) 7 cm over the
+//   * THE BEACHES — an apron of water-worn cobble (terrain_rock_grey) over the
 //     carved shelf. The shelf itself is height field and stays the collision
 //     surface; the apron exists because the terrain splat picks its material
 //     from height + slope and would paint a flat lowland shelf GRASS, indoors.
