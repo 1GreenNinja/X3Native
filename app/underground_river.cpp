@@ -460,19 +460,37 @@ UndergroundRiver::Result UndergroundRiver::build(
         // hw+0.8) — PAIRED with terrain.cpp's UR carve).
         const float side = (std::fmod(s / 42.0f, 2.0f) < 1.0f) ? 1.0f : -1.0f;
         l.pos[0] = cx + px * 13.0f * side;
-        l.pos[1] = w + 3.4f;
+        // HEIGHT sets the SIZE of the pool, not just its brightness: a lamp
+        // 3 m over the beach lit a 3 m hot spot and nothing else (inverse
+        // square — the ground 10 m out got 1/12 of the centre). 9 m up, the
+        // same lamp lays an even pool ~20 m across on beach and wall, which
+        // is a lit BANK, not a spotlight on a pebble.
+        l.pos[1] = w + 9.0f;
         l.pos[2] = cz + pz * 13.0f * side;
         // Same blue family as the club grotto's pool banks so the accents
         // and the water read as ONE source — but not the same MAGNITUDE. Those
         // are (0.10,0.22,0.85)@12 m, tuned for the club's little grotto; this
         // cavern is 88 m across and up to 38 m tall, and that lamp would light
         // a puddle of it. Scaled to the room, still blue-dominant.
-        const float k = nearPool ? 1.35f : 1.0f;
-        // POOLS OF LIGHT, not a wash. 30 m range at 42 m spacing overlapped
-        // into flat ambient — brighter and SHORTER reads as a lit bank with
-        // dark between, which is what a cave wants.
-        l.range = nearPool ? 28.0f : 20.0f;
-        l.color[0] = 1.00f * k; l.color[1] = 1.90f * k; l.color[2] = 4.20f * k;
+        // The open GORGE (past vaultEnd) has the sky; there the lamps go back
+        // to being accents, or in daylight they are blue spotlights burning
+        // on a sunlit wall.
+        const float gorgeK = (s > total - kURGorgeLen) ? 0.30f : 1.0f;
+        const float k = (nearPool ? 1.35f : 1.0f) * gorgeK;
+        // POOLS OF LIGHT, not a wash: brighter and SHORTER than a spacing-wide
+        // range reads as a lit bank with dark between, which is what a cave
+        // wants. MAGNITUDE: these lamps used to be accents on top of a daylight
+        // sky IBL that lit the whole vault (see applyAtmosphere — that IBL is
+        // now a trace under the lid), so they were tuned to be SEEN, not to
+        // LIGHT. Now they are the room's only real source, 9 m up: sized so
+        // the beach under one reads ~0.5 radiance and the pool is still
+        // ~0.1 at 15 m out (pointAtten is w/(d^2+1) — see mesh_lighting.glsl),
+        // with the reach to match, so each one lays a pool on beach and wall
+        // and the water between them has lamps to reflect. Less saturated
+        // than before (blue:red 3:1, not 4:1) so wet rock under a lamp reads
+        // cool-white stone, not neon.
+        l.range = nearPool ? 44.0f : 34.0f;
+        l.color[0] = 14.0f * k; l.color[1] = 24.0f * k; l.color[2] = 42.0f * k;
         m_lights.push_back(l);
     }
     r.lightCount = (int)m_lights.size();
@@ -495,6 +513,45 @@ bool UndergroundRiver::insideCorridor(const float p[3]) {
     const UnderRiverChain& uc = worldUnderRiverChain();
     return uc.n >= 2 && p[0] > uc.bx0 && p[0] < uc.bx1
                      && p[2] > uc.bz0 && p[2] < uc.bz1;
+}
+
+bool UndergroundRiver::underVault(const float p[3]) {
+    if (!insideCorridor(p)) return false;
+    // Station along the chain of the closest point on it; under the lid while
+    // that station is upstream of where the vault ends (buildStrip's vaultEnd).
+    const UnderRiverChain& uc = worldUnderRiverChain();
+    float bestD2 = 3.4e38f, bestS = 0.0f;
+    for (int i = 0; i + 1 < uc.n; ++i) {
+        const float ax = uc.x[i], az = uc.z[i];
+        const float bx = uc.x[i + 1] - ax, bz = uc.z[i + 1] - az;
+        const float L2 = std::max(bx * bx + bz * bz, 1e-6f);
+        const float t = std::clamp(((p[0] - ax) * bx + (p[2] - az) * bz) / L2, 0.0f, 1.0f);
+        const float dx = p[0] - (ax + bx * t), dz = p[2] - (az + bz * t);
+        const float d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; bestS = uc.cum[i] + (uc.cum[i + 1] - uc.cum[i]) * t; }
+    }
+    return bestS < uc.cum[uc.n - 1] - kURGorgeLen;
+}
+
+void UndergroundRiver::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
+    // A CAVE IS DARK. The exterior recipe's daylight IBL lit the vault from
+    // wall to wall as if the lid were glass; the lamps are the light here.
+    // The IBL is not zeroed — the run is open at both ends and a trace of
+    // sky does reach down it — but it is a trace, an order of magnitude
+    // under the point-light pools, so the eye reads lit banks in a dark
+    // room rather than a brown room with some blue in it.
+    device.setIblIntensity(0.08f);
+    device.setAmbient(0.010f, 0.012f, 0.016f);
+    // Cold, thin haze: enough that the far reach of an 88 m hall goes to
+    // black instead of showing its back wall, thin enough that a lamp 40 m
+    // off still has a pool under it. Colour is the vault's own near-black.
+    x3::rhi::IRenderDevice::FogParams fog;
+    fog.enabled  = true;
+    fog.color[0] = 0.004f; fog.color[1] = 0.006f; fog.color[2] = 0.009f;
+    fog.density  = 0.006f;
+    fog.start    = 6.0f;
+    fog.maxOpacity = 0.92f;
+    device.setFog(fog);
 }
 
 uint32_t UndergroundRiver::nearestLights(const float cam[3],
@@ -566,6 +623,23 @@ void UndergroundRiver::update(float dt, Scene& scene) {
     }
 }
 
+void UndergroundRiver::roomIrradianceAt(float x, float y, float z, float out[3]) const {
+    // The vault's own floor: what the dark rock scatters back everywhere
+    // (paired with the cavern horizonColor in world_water.cpp, x PI).
+    out[0] = 0.019f; out[1] = 0.025f; out[2] = 0.038f;
+    for (const x3::rhi::PointLight& l : m_lights) {
+        const float dx = x - l.pos[0], dy = y - l.pos[1], dz = z - l.pos[2];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= l.range * l.range) continue;
+        // KEEP IN SYNC with pointAtten() in shaders/inc/mesh_lighting.glsl
+        // (and roomAtten() in water.frag): w = (1 - (d/range)^4)^2 / (d^2 + 1).
+        const float r4 = (d2 * d2) / (l.range * l.range * l.range * l.range);
+        const float win = std::max(1.0f - r4, 0.0f);
+        const float att = (win * win) / (d2 + 1.0f);
+        out[0] += l.color[0] * att; out[1] += l.color[1] * att; out[2] += l.color[2] * att;
+    }
+}
+
 void UndergroundRiver::render(x3::rhi::IRenderDevice& device,
                               const x3::rhi::FrameContext&) {
     if (!m_built || m_puffs.empty()) return;
@@ -575,17 +649,31 @@ void UndergroundRiver::render(x3::rhi::IRenderDevice& device,
         const float t = p.age / p.life;
         x3::rhi::IRenderDevice::ParticleInstance pi;
         pi.pos[0] = p.x; pi.pos[1] = p.y; pi.pos[2] = p.z;
+        // LIT BY THE LAMPS. These colours used to be absolute — fine under the
+        // daylight IBL that used to fill the vault, but in a dark cave a
+        // constant 0.6 grey billboard is a glowing ghost and additive spray at
+        // 0.3 outshines the rock it is falling on. Mist is albedo: the same
+        // room irradiance the water and the rock receive, so a plume under a
+        // lamp catches it (the owner's "mist catching light") and the breath
+        // on a pool between lamps is barely there — which is what cold mist
+        // in a dark cave looks like.
+        float E[3];
+        roomIrradianceAt(p.x, p.y, p.z, E);
         if (p.spray) {
             pi.size = p.size0 * (1.0f + 1.5f * t);
             // Fade IN over the first fifth, then out: a droplet burst that
             // pops into existence at full brightness reads as a sprite bug.
             const float a = std::min(t * 5.0f, 1.0f) * (1.0f - t) * 0.55f;
-            pi.color[0] = 0.52f * a; pi.color[1] = 0.60f * a; pi.color[2] = 0.70f * a;
+            // Spray is forward-scattering: it throws back more than a flat
+            // albedo would (the 3.0), which is why a lit plume reads white.
+            pi.color[0] = 0.52f * a * E[0] * 3.0f;
+            pi.color[1] = 0.60f * a * E[1] * 3.0f;
+            pi.color[2] = 0.70f * a * E[2] * 3.0f;
             pi.color[3] = 1.0f;
             m_sprayOut.push_back(pi);
         } else {
             pi.size = p.size0 * (1.0f + 1.8f * t);
-            pi.color[0] = 0.62f; pi.color[1] = 0.68f; pi.color[2] = 0.76f;
+            pi.color[0] = 0.62f * E[0]; pi.color[1] = 0.68f * E[1]; pi.color[2] = 0.76f * E[2];
             pi.color[3] = 0.16f * std::min(t * 6.0f, 1.0f) * (1.0f - t) * (1.0f - t);
             m_hazeOut.push_back(pi);
         }

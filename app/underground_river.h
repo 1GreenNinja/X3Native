@@ -89,6 +89,27 @@ public:
     // Is this point inside the river's corridor (the derived carve box)? Used
     // to decide whether a capture needs the cavern lane at all.
     static bool insideCorridor(const float p[3]);
+    // Is this point UNDER THE LID — in the corridor AND upstream of the open
+    // gorge (the last kURGorgeLen metres have no vault and see the sky)? The
+    // atmosphere below is gated on this, not on the corridor box, so a camera
+    // in the gorge looking out at daylight keeps daylight.
+    static bool underVault(const float p[3]);
+    // THE CAVERN'S AIR. The canon world's zone recipe hands every point that
+    // is not inside the facility the EXTERIOR air: a full daylight sky IBL
+    // and a sky-fill ambient. Under the lid that is wrong in kind, not in
+    // degree — the vault is lit by a sky it cannot see, so its rock reads a
+    // flat sky-lit brown from wall to wall, the 44 bank lamps vanish into
+    // that wash, and there is nothing dark for the water to be dark against
+    // (the owner's target: a DARK cave, water reflecting the bank lights).
+    // This applies what a cave actually has: a near-black cool ambient, the
+    // sky IBL wound down to a trace (some light does come down the run from
+    // the gorge and the head), and a thin dark haze so the far hall dissolves
+    // into black instead of into a brightly lit back wall 300 m away. Same
+    // contract as Rifthub::applyAtmosphere — call it every frame the eye is
+    // underVault(), AFTER applyZoneAtmosphere, and call
+    // RoomDressing::resetZoneAtmosphere() on the frame the eye leaves so the
+    // zone recipe re-asserts the exterior air.
+    void applyAtmosphere(x3::rhi::IRenderDevice& device) const;
     // THE HEADROOM MEASURE (gate U9's body, ONE producer — NO_SLOP rule 4):
     // walks the vaulted reach and measures the lowest the rough ceiling can
     // hang (vaultCeilingY, no jitter luck) against the built ground, across the
@@ -125,6 +146,10 @@ private:
         bool  spray = false;            // additive droplet vs alpha haze
     };
     std::vector<x3::rhi::PointLight> m_lights;   // the whole run's accents
+    // Irradiance the bank lamps deliver at a point in the air (isotropic —
+    // a droplet has no normal). What the mist is lit BY, so it catches the
+    // lamps and goes dark between them instead of glowing on its own.
+    void roomIrradianceAt(float x, float y, float z, float out[3]) const;
     std::vector<MistSource> m_mist;
     std::vector<Puff>       m_puffs;    // fixed pool, round-robin reuse
     uint32_t  m_puffNext = 0;

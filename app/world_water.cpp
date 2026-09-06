@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <set>
 #include <string>
 #include <vector>
@@ -76,7 +77,14 @@ bool buildWorldWaterParams(const WorldWaterInput& in, WP& wpr, bool* outInCavern
     const bool inCavern = UndergroundRiver::insideCorridor(focus3);
     if (outInCavern) *outInCavern = inCavern;
     if (!inCavern && !in.surfaceOn) return false;
-    wpr = WP{};
+    // A DETERMINISTIC RESET, padding included. `wpr = WP{}` copies a temporary
+    // whose padding bytes (3 after `enabled`) are whatever the stack held;
+    // the CU4 gate's "back out is byte-identical" memcmp then depends on the
+    // compiler's copy strategy, and it flipped the day the struct grew past
+    // 2 KB (the room-light block). Zero the storage first, then run the
+    // default member initialisers over it: every byte is now defined.
+    std::memset(&wpr, 0, sizeof(WP));
+    new (&wpr) WP();
     wpr.enabled = true;
     // ONE WATER TRUTH (task #32): the drawn surface follows the SAME node
     // table worldWaterLevelAt interpolates — stepped down the channel per
@@ -108,8 +116,13 @@ bool buildWorldWaterParams(const WorldWaterInput& in, WP& wpr, bool* outInCavern
         // whitewater. At 1.0 with a sun overhead the first capture came
         // back as white bands across the whole channel; the churn belongs
         // to the spray particles at the steps, and this is just the lace
-        // where the water meets the rock.
-        wpr.foam = 0.45f;
+        // where the water meets the rock. That 0.45 was a brightness trim
+        // for sun-lit foam. Now the foam is ALBEDO under the room's light
+        // (water.frag foamLit <- roomIrr): white under a bank lamp, grey
+        // between them, never brighter than the lit rock beside it — so the
+        // mask can run near full and the lace along the banks and steps
+        // actually shows up in a dark cave.
+        wpr.foam = 0.90f;
     } else {
         rnN = worldRiverRisenNodes(rn, WP::kMaxRiverNodes);
         wpr.riverNodeCount = rnN;
@@ -215,10 +228,15 @@ bool buildWorldWaterParams(const WorldWaterInput& in, WP& wpr, bool* outInCavern
         // hands the reflection AND the distance/edge fade to horizonColor
         // and winds the sun glint out — so the water is lit by the room.
         wpr.enclosed = 1.0f;
-        // What it sees instead of sky: the wet rock of its own vault.
-        wpr.horizonColor[0] = 0.016f;
-        wpr.horizonColor[1] = 0.022f;
-        wpr.horizonColor[2] = 0.030f;
+        // What it sees instead of sky: the wet rock of its own vault — and
+        // the vault is DARK (UndergroundRiver::applyAtmosphere winds the
+        // daylight IBL down to a trace under the lid). This is the water's
+        // floor between lamps; the lamps themselves arrive through
+        // roomLights below. Any brighter and the sheet glows on its own
+        // against the black rock — the flat cyan slab this replaced.
+        wpr.horizonColor[0] = 0.006f;
+        wpr.horizonColor[1] = 0.008f;
+        wpr.horizonColor[2] = 0.012f;
         wpr.sunDir[0] = 0.12f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.10f;
         wpr.specular  = 0.0f;    // wound out by `enclosed` anyway; say it
         wpr.fresnel   = 0.020f;
@@ -236,6 +254,33 @@ bool buildWorldWaterParams(const WorldWaterInput& in, WP& wpr, bool* outInCavern
         wpr.speed     = 1.5f;
         wpr.deepColor[0]    = 0.010f; wpr.deepColor[1] = 0.030f; wpr.deepColor[2] = 0.044f;
         wpr.shallowColor[0] = 0.055f; wpr.shallowColor[1]= 0.150f; wpr.shallowColor[2]= 0.185f;
+        // LIT BY THE ROOM. Every colour above is a radiance under an implied
+        // daylight irradiance of 1, which is why the first captures of this
+        // channel came back as a flat, glowing cyan slab — a light source in
+        // a dark cave, ten times the brightness of the rock beside it and
+        // indifferent to the 44 bank lights that light that rock. With the
+        // lights handed over, water.frag treats deep/shallow as what the
+        // water column scatters back PER UNIT of light it receives, lights it
+        // with PI*horizonColor (the vault) plus these lamps, and puts each
+        // lamp's lobe on the ripples. Dark water, lit where the banks are lit.
+        // Picked at the focus AT THE WATER'S LEVEL (seaLevel was resolved
+        // above for wet and dry focus alike): the run drops ~30 m end to end
+        // and a lamp on the shelf above a fall is not "near" the pool below.
+        x3::rhi::PointLight roomL[WP::kMaxRoomLights];
+        uint32_t ln = 0;
+        if (in.cavern && in.cavern->built()) {
+            const float at[3] = { in.focusX, wpr.seaLevel, in.focusZ };
+            ln = in.cavern->nearestLights(at, roomL, WP::kMaxRoomLights);
+        }
+        wpr.roomLightCount = ln;
+        for (uint32_t i = 0; i < ln; ++i) {
+            const x3::rhi::PointLight& l = roomL[i];
+            wpr.roomLightPos[i][0] = l.pos[0]; wpr.roomLightPos[i][1] = l.pos[1];
+            wpr.roomLightPos[i][2] = l.pos[2];
+            wpr.roomLightRange[i]  = l.range;
+            wpr.roomLightColor[i][0] = l.color[0]; wpr.roomLightColor[i][1] = l.color[1];
+            wpr.roomLightColor[i][2] = l.color[2];
+        }
     }
     return true;
 }

@@ -2654,6 +2654,11 @@ int hostTunnel(HostContext& hc) {
         wi.sunDir[0] = todSunDir[0]; wi.sunDir[1] = todSunDir[1]; wi.sunDir[2] = todSunDir[2];
         wi.surfaceOn = riverOn && riverRoad.plan.ok;
         wi.dryFallbackY = &riverRoad.plan.waterY;
+        // THE CAVERN WATER IS LIT BY THE CAVERN'S LAMPS: the recipe picks
+        // the nearest of this run's bank lights at the focus (same array the
+        // light lanes above feed the main pass), so the rock and the water it
+        // laps agree on which lamps are on. See WorldWaterInput::cavern.
+        wi.cavern = &underRiver;
         x3::rhi::IRenderDevice::WaterParams wpr{};
         if (!x3::game::applyWorldWater(*device, wi, &wpr)) return;
         x3::rhi::IRenderDevice::CausticsParams cp{};

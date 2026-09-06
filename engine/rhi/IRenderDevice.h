@@ -1479,6 +1479,30 @@ public:
         // from the scene-depth reconstruction, no geometry knowledge) plus
         // whitecap foam where the Gerstner lift tops out. See water.frag.
         float    foam = 0.0f;
+        // ---- ROOM LIGHTS (enclosed water is lit by its room, not by a sky).
+        // Every colour above is a RADIANCE the surface emits under an implicit
+        // daylight irradiance of ~1: shallowColor is what a sunlit shallow
+        // reads as, the reflection is the analytic sky. Under a roof there is
+        // no sun and no sky, so the same numbers become SELF-LUMINOUS — the
+        // canon cavern's river photographed as a flat glowing cyan slab, ten
+        // times brighter than the rock beside it, with no relation to the 44
+        // bank lights that light that rock. With `enclosed` > 0 and count > 0
+        // the shader instead lights the body, the foam and the surface from
+        // these lights (the SAME windowed inverse-square falloff mesh.frag
+        // uses for point lights, so the water and the bank it laps agree on
+        // how bright a lamp is) plus a diffuse ambient of PI*horizonColor (the
+        // vault radiance the reflection already uses, integrated over the
+        // hemisphere). Each light also puts a broad Blinn-Phong lobe on the
+        // ripples — the streaks of bank light on dark water that make a cave
+        // river read as WATER. Hand over the few nearest the focus (the host
+        // uploads the same nearest-K to the main pass). count 0 => the
+        // enclosed path lights nothing, byte-identical to before this field.
+        // Ignored entirely when enclosed == 0 (open water: the sky is the light).
+        static constexpr uint32_t kMaxRoomLights = 16;
+        uint32_t roomLightCount = 0;
+        float    roomLightPos[kMaxRoomLights][3] = {};     // world metres
+        float    roomLightRange[kMaxRoomLights] = {};      // PointLight::range
+        float    roomLightColor[kMaxRoomLights][3] = {};   // PointLight::color (linear * intensity)
     };
     // Set the active water parameters for subsequent frames (cached + re-applied
     // each frame, like setSkyParams). Calling with enabled=false disables water.

@@ -3219,8 +3219,14 @@ private:
         glm::vec4 shoreRadii[64]; // 256 (256 radii, 4 per vec4)
         // Per node: x=world x, y=world z, z=waterY (w unused). Count above.
         glm::vec4 riverNodes[20]; // 1280
+        // ROOM LIGHTS (WaterParams::roomLight*): x = count (0 = none), yzw
+        // reserved. Two vec4 per light: [2i] = xyz position, w range;
+        // [2i+1] = rgb colour*intensity, w unused. Read by water.frag's
+        // enclosed-water lighting only.
+        glm::vec4 roomInfo;       // 1600
+        glm::vec4 roomLights[32]; // 1616
     };
-    static_assert(sizeof(WaterUBO) == 1600, "WaterUBO must match the std140 layout in water.{vert,frag}");
+    static_assert(sizeof(WaterUBO) == 2128, "WaterUBO must match the std140 layout in water.{vert,frag}");
     WaterParams m_water{};   // cached tunables (setWaterParams)
     // Unit-patch grid mesh (vec2 grid coord per vertex), built once at init.
     VkBuffer      m_waterVbo = VK_NULL_HANDLE; VmaAllocation m_waterVboAlloc = nullptr;

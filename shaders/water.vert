@@ -59,6 +59,10 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     // terrain carve and worldWaterLevelAt interpolate — the drawn plane can
     // no longer stand above the carved water table downstream.
     vec4  riverNodes[20];
+    // Room lights (enclosed water) — consumed by the fragment stage;
+    // declared so the block layouts match. See water.frag.
+    vec4  roomInfo;
+    vec4  roomLights[32];
 } u;
 
 layout(location = 0) in vec2 inGrid;   // patch coord in [-1,1]

@@ -1614,6 +1614,7 @@ int runDefaultHost(HostContext& hc) {
     std::string              stairDemoBark;
     bool  riftBuilt    = false;
     bool  riftZonePrev = false;      // edge: restore the room-recipe atmosphere on exit
+    bool  vaultZonePrev = false;     // same edge for the underground river's vault
     float riftTeleCool = 0.0f;       // seconds before a rift may take you again
     x3::phys::Vec3 riftRegMin{}, riftRegMax{};   // hub + depths, one AABB (the "in the zone" test)
     // Sub-level R1's floor: below B1, inside the Basalt band, and deliberately clear of
@@ -4449,6 +4450,12 @@ int runDefaultHost(HostContext& hc) {
             wi.time = canonWaterClock; wi.focusX = focusX; wi.focusZ = focusZ;
             wi.sunDir[0] = canonWaterSun[0]; wi.sunDir[1] = canonWaterSun[1]; wi.sunDir[2] = canonWaterSun[2];
             wi.surfaceOn = true;          // canon always has THE RIVER (worldRiverNodes)
+            // THE CAVERN WATER IS LIT BY THE CAVERN'S LAMPS: the recipe picks
+            // the nearest of the run's bank lights at the focus (the same
+            // array canonUnderRiverLights feeds the main pass), so the rock
+            // and the water it laps agree on which lamps are on. See
+            // WorldWaterInput::cavern / WaterParams::roomLight*.
+            wi.cavern = &canonUnderRiver;
             x3::game::applyWorldWater(*device, wi);
         } else {
             device->setWaterParams(x3::rhi::IRenderDevice::WaterParams{});   // enabled=false
@@ -7034,6 +7041,16 @@ int runDefaultHost(HostContext& hc) {
                     // underwater override above).
                     if (riftBuilt && riftInZone(ssEye.x, ssEye.y, ssEye.z))
                         rifthub.applyAtmosphere(*device);
+                    // UNDERGROUND RIVER: the vault's air (dark; lamps carry the
+                    // room) wins over the exterior recipe for a vantage under the
+                    // lid — same contract as the rift override just above. The
+                    // open gorge is NOT under the lid (underVault) and keeps day.
+                    {
+                        const float eye[3] = { ssEye.x, ssEye.y, ssEye.z };
+                        if (canonUnderRiver.built() &&
+                            x3::game::UndergroundRiver::underVault(eye))
+                            canonUnderRiver.applyAtmosphere(*device);
+                    }
                     canonDoors.drawMeshes(*device, frame);
                     facilityExterior.draw(*device, frame);   // SEAM 2: facade skin (panes/bands/apron/sign)
                     // WORLD CARS: parked cars + the (staged) live car — the same
@@ -11896,6 +11913,24 @@ int runDefaultHost(HostContext& hc) {
                     device->setExposure(console->getFloat("r_exposure"));
                 }
                 riftZonePrev = inRift;
+            }
+            // ---- UNDERGROUND RIVER: the vault's air, the same handoff as the rift.
+            // The exterior zone recipe lights everything outside the facility
+            // with the daylight sky IBL; under the lid that made a brown, evenly
+            // lit hall with the bank lamps lost in the wash. Applied while the
+            // eye is under the vault (corridor AND upstream of the open gorge),
+            // released on exit through resetZoneAtmosphere() so the exterior
+            // recipe re-asserts its fog/ambient/IBL next frame.
+            {
+                const float eye[3] = { camX, camY, camZ };
+                const bool inVault = canonUnderRiver.built() &&
+                                     x3::game::UndergroundRiver::underVault(eye);
+                if (inVault) {
+                    canonUnderRiver.applyAtmosphere(*device);
+                } else if (vaultZonePrev) {
+                    canonRooms.resetZoneAtmosphere();
+                }
+                vaultZonePrev = inVault;
             }
             // ---- W10 SWIMMING: the UNDERWATER read. When the CAMERA is below a
             // water surface (river reach or the sea), override the frame's fog

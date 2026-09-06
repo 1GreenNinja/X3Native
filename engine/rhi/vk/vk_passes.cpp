@@ -2601,6 +2601,20 @@ void VulkanRenderDevice::prepareFrameData() {
                 w.riverNodes[i] = glm::vec4(m_water.riverNodes[i][0],
                                             m_water.riverNodes[i][1],
                                             m_water.riverNodes[i][2], 0.0f);
+            // ROOM LIGHTS (enclosed water): count 0 = the enclosed path lights
+            // nothing (byte-identical to before the field). See WaterParams.
+            const uint32_t ln = std::min(m_water.roomLightCount,
+                                         WaterParams::kMaxRoomLights);
+            w.roomInfo = glm::vec4((float)ln, 0.0f, 0.0f, 0.0f);
+            for (uint32_t i = 0; i < ln; ++i) {
+                w.roomLights[2 * i]     = glm::vec4(m_water.roomLightPos[i][0],
+                                                    m_water.roomLightPos[i][1],
+                                                    m_water.roomLightPos[i][2],
+                                                    m_water.roomLightRange[i]);
+                w.roomLights[2 * i + 1] = glm::vec4(m_water.roomLightColor[i][0],
+                                                    m_water.roomLightColor[i][1],
+                                                    m_water.roomLightColor[i][2], 0.0f);
+            }
             std::memcpy(m_waterUboMapped[m_frameIdx], &w, sizeof(WaterUBO));
         }
 

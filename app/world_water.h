@@ -39,12 +39,25 @@
 
 namespace x3::game {
 
+class UndergroundRiver;
+
 struct WorldWaterInput {
     float time = 0.0f;                    // wave clock (host-owned, dt-scaled)
     float focusX = 0.0f, focusZ = 0.0f;   // this frame's focus XZ
     float sunDir[3] = { 0.4f, 1.0f, 0.3f }; // live luminary (surface channel only)
     bool  surfaceOn = true;               // false = host has no surface river (tunnel's X3_RIVER_ROAD=0)
     const float* dryFallbackY = nullptr;  // optional: seaLevel for a dry surface focus
+    // THE CAVERN (cavern channel only). Enclosed water has no sun and no sky
+    // to be lit by, so the recipe hands the water pass the run's bank lights
+    // nearest the focus and water.frag lights the body, the foam and the
+    // surface from them (WaterParams::roomLight*). The pick is made HERE, at
+    // the level the recipe itself resolves for the focus (the host's focus is
+    // usually a dry beach, where worldWaterLevelAt is the dry sentinel and a
+    // host-side 3D pick finds nothing), from the same array
+    // UndergroundRiver::nearestLights feeds the main pass — so the rock and
+    // the water it laps see the same lamps. Null = ambient-only cavern water
+    // (PI * horizonColor).
+    const UndergroundRiver* cavern = nullptr;
 };
 
 // The approved values, named so the test and the report can quote them.
