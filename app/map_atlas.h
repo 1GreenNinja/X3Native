@@ -34,6 +34,18 @@
 //               world AABBs (drawn via exact rect coverage, so edges are AA at
 //               any zoom): flat grey fills by height band with a 1-texel darker
 //               edge; the Spire is its own landmark tone.
+//   1b. TERRAIN FADE  GTA lets the map die off outside the world: the played
+//               envelope is the union of MapFeatureSet::envelope discs (built
+//               by the snapshot from districts, roads, footprints, river, sea,
+//               POIs). Inside: full hillshade. Across kEnvelopeMarginM the
+//               land lerps to kWild — one flat desaturated tone a shade under
+//               the low-land tint — with the hillshade contrast collapsing to
+//               kWildReliefHint of itself (a ghost of relief, not paint), and
+//               a further kWildFarDarken settles by kEnvelopeFarM. The
+//               distance field is sampled on a coarse grid (<= 192 cells
+//               across the tile) and bilinearly lifted — the union-of-discs
+//               distance is smooth enough that the ramp shows no facets.
+//               Water, beaches, roads and everything above are untouched.
 //   5. ROADS    ribbons by class (Street < Arterial < Ramp < Freeway) each as a
 //               DISTANCE FIELD to its polylines — the union-of-min-distance
 //               gives rounded joins for free and the casing/fill edges are
@@ -87,11 +99,25 @@ struct MapDistrict {
     float rgb[3];           // sRGB 0..1 tint
 };
 
+// One disc of the PLAYED ENVELOPE: the union of these discs is where the game
+// happens (districts, every road, footprints, river, sea, POIs). Terrain
+// outside it fades to a quiet flat wash over kEnvelopeMarginM (see TERRAIN
+// FADE in the header). Empty = no fade (the pure bake tests).
+struct MapEnvDisc { float cx, cz, r; };
+constexpr float kEnvelopeMarginM = 350.0f;   // full hillshade -> flat wash across this band
+constexpr float kEnvelopeFarM    = 1400.0f;  // ...then a very subtle darkening settles by here
+
 struct MapFeatureSet {
     std::vector<MapRoad>      roads;
     std::vector<MapFootprint> footprints;
     std::vector<MapDistrict>  districts;
+    std::vector<MapEnvDisc>   envelope;
 };
+
+// Distance (m, >= 0) from world (wx,wz) to the played envelope; 0 inside it.
+// Brute force over the discs — the bake uses a coarse grid of this, the tests
+// call it directly to pick in-world vs wilderness probes.
+float mapEnvelopeDistance(const MapFeatureSet& features, float wx, float wz);
 
 struct MapBakeRequest {
     float    wx0 = 0, wz0 = 0, wx1 = 0, wz1 = 0;   // world rect covered
@@ -142,6 +168,9 @@ constexpr uint8_t kWalk[3]         = { 218, 216, 210 };
 constexpr uint8_t kLandmark[3]     = { 134, 142, 166 };
 constexpr uint8_t kLandmarkEdge[3] = { 70, 76, 100 };
 constexpr uint8_t kVoid[3]         = { 150, 156, 142 };   // beyond the overview tile
+constexpr uint8_t kWild[3]         = { 156, 158, 148 };   // wilderness wash past the envelope (flat, desaturated, a shade under kLandLow)
+constexpr float   kWildReliefHint  = 0.035f;              // fraction of the hillshade kept in the wash (0 = painted flat)
+constexpr float   kWildFarDarken   = 0.06f;               // extra darkening settled by kEnvelopeFarM
 }
 
 // Bake one tile. `outRgba` is resized to res*res*4. Thread-safe (pure); the

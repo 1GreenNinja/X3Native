@@ -989,6 +989,37 @@ MapFeatureSet WorldMapSystem::snapshotFeatures() const {
         fs.footprints.push_back({ s.cx - s.halfDepth - s.forecourtDepth, s.cz - s.halfWidth, s.cx - s.halfDepth, s.cz + s.halfWidth,
                                   0.1f, MapFootKind::Paved });
     }
+
+    // ---- Played envelope (map_atlas.h: TERRAIN FADE) — discs over everything
+    // the player can reach or see named: district tint discs, every road
+    // (discs stepped along each segment at their own radius, so the union is a
+    // smooth tube), footprints, the river + under-river chain, the sea basin,
+    // and every POI. The wilderness heightfield fades past its margin.
+    {
+        for (const MapDistrict& d : fs.districts) fs.envelope.push_back({ d.cx, d.cz, d.r });
+        for (const MapRoad& r : fs.roads) {
+            const float rr = 120.0f;
+            for (size_t i = 0; i + 1 < r.x.size(); ++i) {
+                const float dx = r.x[i + 1] - r.x[i], dz = r.z[i + 1] - r.z[i];
+                const float len = std::sqrt(dx * dx + dz * dz);
+                const int n = std::max(1, (int)std::ceil(len / rr));
+                for (int k = 0; k <= n; ++k) { const float t = (float)k / (float)n; fs.envelope.push_back({ r.x[i] + dx * t, r.z[i] + dz * t, rr }); }
+            }
+        }
+        for (const MapFootprint& fp : fs.footprints)
+            fs.envelope.push_back({ 0.5f * (fp.x0 + fp.x1), 0.5f * (fp.z0 + fp.z1), 0.5f * std::max(fp.x1 - fp.x0, fp.z1 - fp.z0) + 40.0f });
+        {
+            uint32_t rn = 0;
+            const WorldRiverNode* nodes = worldRiverNodes(rn);
+            for (uint32_t i = 0; i < rn; ++i) fs.envelope.push_back({ nodes[i].x, nodes[i].z, 110.0f });
+            const UnderRiverChain& ch = worldUnderRiverChain();
+            for (uint32_t i = 0; i < ch.n; ++i) fs.envelope.push_back({ ch.x[i], ch.z[i], 90.0f });
+        }
+        fs.envelope.push_back({ kWorldOceanBasinX, kWorldOceanBasinZ, kWorldOceanBasinR });
+        for (const MapPoi& p : m_pois.pois) fs.envelope.push_back({ p.x, p.z, 80.0f });
+        if (b.spireX1 > b.spireX0)
+            fs.envelope.push_back({ 0.5f * (b.spireX0 + b.spireX1), 0.5f * (b.spireZ0 + b.spireZ1), 0.5f * std::max(b.spireX1 - b.spireX0, b.spireZ1 - b.spireZ0) + 60.0f });
+    }
     return fs;
 }
 
@@ -2776,6 +2807,7 @@ bool runWorldMapSelfTest() {
             for (uint32_t y = 4; y < hq.res - 4; y += 3) for (uint32_t x = 4; x < hq.res - 4; x += 3) {
                 const float wx = hq.wx0 + ((float)x + 0.5f) * mpp, wz = hq.wz0 + ((float)y + 0.5f) * mpp;
                 if (worldWaterLevelAt(wx, wz) > kWorldWaterDry) continue;
+                if (mapEnvelopeDistance(fs, wx, wz) > 0.0f) continue;   // in-world texels only (M11s covers the fade)
                 const float gx = (terrainHeightAtWorld(wx + mpp, wz) - terrainHeightAtWorld(wx - mpp, wz)) / (2 * mpp);
                 const float gz = (terrainHeightAtWorld(wx, wz + mpp) - terrainHeightAtWorld(wx, wz - mpp)) / (2 * mpp);
                 const float facing = gx - gz;   // > 0: normal leans to -x/+z = toward the light
@@ -2787,6 +2819,31 @@ bool runWorldMapSelfTest() {
             const double nw = nwN ? nwSum / nwN : 0, se = seN ? seSum / seN : 0;
             check(nwN > 50 && seN > 50 && nw - se > 6.0, "M11j hillshade: NW-facing slopes brighter than SE-facing",
                   "nw=" + std::to_string((int)nw) + " (" + std::to_string(nwN) + ") se=" + std::to_string((int)se) + " (" + std::to_string(seN) + ")");
+        }
+
+        // Wilderness fade: far outside the envelope the hillshade collapses to a
+        // flat wash (luminance spread over a whole tile <= 4), while the sea
+        // disc bakes byte-identical with and without the envelope.
+        {
+            check(!fs.envelope.empty() && mapEnvelopeDistance(fs, 170.0f, 1000.0f) == 0.0f && mapEnvelopeDistance(fs, 6000.0f, 6000.0f) > kEnvelopeFarM,
+                  "M11s envelope covers the freeway and not the far wilderness",
+                  std::to_string(fs.envelope.size()) + " discs, far d=" + std::to_string((int)mapEnvelopeDistance(fs, 6000.0f, 6000.0f)));
+            MapBakeRequest fq; fq.res = 128; fq.wx0 = 5500.0f; fq.wx1 = 6780.0f; fq.wz0 = 5500.0f; fq.wz1 = 6780.0f;   // 10 m/texel, like the overview
+            std::vector<uint8_t> fp; bakeMapTilePixels(fs, fq, fp);
+            double lo = 1e9, hi = -1e9;
+            for (size_t k = 0; k < (size_t)fq.res * fq.res; ++k) {
+                const uint8_t* c = fp.data() + k * 4;
+                const double lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+                lo = std::min(lo, lum); hi = std::max(hi, lum);
+            }
+            check(hi - lo <= 4.0, "M11t far wilderness bakes flat (luminance spread <= 4)",
+                  "spread " + std::to_string(hi - lo).substr(0, 4) + " around " + std::to_string((int)lo));
+            MapBakeRequest wq; wq.res = 256; wq.wx0 = 600.0f; wq.wx1 = 1624.0f; wq.wz0 = -1912.0f; wq.wz1 = -888.0f;
+            std::vector<uint8_t> withEnv, noEnv; bakeMapTilePixels(fs, wq, withEnv);
+            MapFeatureSet bare = fs; bare.envelope.clear(); bakeMapTilePixels(bare, wq, noEnv);
+            const int sx = (int)((1100.0f - wq.wx0) / (wq.wx1 - wq.wx0) * (float)wq.res), sy = (int)((-1400.0f - wq.wz0) / (wq.wz1 - wq.wz0) * (float)wq.res);
+            const uint8_t* a = withEnv.data() + ((size_t)sy * wq.res + sx) * 4; const uint8_t* b2 = noEnv.data() + ((size_t)sy * wq.res + sx) * 4;
+            check(a[0] == b2[0] && a[1] == b2[1] && a[2] == b2[2] && mapPixelIsWater(a), "M11u sea pixel unchanged by the envelope fade");
         }
 
         // Labels: the slot search never returns a rect overlapping an obstacle

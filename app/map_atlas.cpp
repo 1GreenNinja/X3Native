@@ -155,10 +155,47 @@ void hypsometric(float h, float* out) {
     out[0] = kLandPeak[0]; out[1] = kLandPeak[1]; out[2] = kLandPeak[2];
 }
 
-void paintTerrain(const MapBakeRequest& rq, const HeightGrid& g, Canvas& cv,
+// Coarse grid of the envelope distance over the tile (see header: TERRAIN
+// FADE). Cells are the tile width / 192 but never under 8 m; one apron node
+// each side so the bilinear lift never clamps inside the tile.
+struct EnvGrid {
+    uint32_t n = 0;          // nodes per side
+    float    cell = 1.0f;    // m per cell
+    float    x0 = 0, z0 = 0; // world of node (0,0)
+    std::vector<float> d;
+    bool empty() const { return n == 0; }
+    float at(int i, int j) const {
+        i = std::clamp(i, 0, (int)n - 1); j = std::clamp(j, 0, (int)n - 1);
+        return d[(size_t)j * n + i];
+    }
+    float sample(float wx, float wz) const {
+        const float u = (wx - x0) / cell, v = (wz - z0) / cell;
+        const int i = (int)std::floor(u), j = (int)std::floor(v);
+        const float fu = u - (float)i, fv = v - (float)j;
+        return (at(i, j) * (1 - fu) + at(i + 1, j) * fu) * (1 - fv) + (at(i, j + 1) * (1 - fu) + at(i + 1, j + 1) * fu) * fv;
+    }
+};
+
+void buildEnvGrid(const MapBakeRequest& rq, const MapFeatureSet& f, EnvGrid& eg) {
+    if (f.envelope.empty()) return;
+    const float w = rq.wx1 - rq.wx0;
+    eg.cell = std::max(8.0f, w / 192.0f);
+    eg.n = (uint32_t)std::ceil(w / eg.cell) + 3;
+    eg.x0 = rq.wx0 - eg.cell; eg.z0 = rq.wz0 - eg.cell;
+    eg.d.assign((size_t)eg.n * eg.n, 0.0f);
+    parallelRows(eg.n, [&](uint32_t j0, uint32_t j1) {
+        for (uint32_t j = j0; j < j1; ++j)
+            for (uint32_t i = 0; i < eg.n; ++i)
+                eg.d[(size_t)j * eg.n + i] = mapEnvelopeDistance(f, eg.x0 + (float)i * eg.cell, eg.z0 + (float)j * eg.cell);
+    });
+}
+
+void paintTerrain(const MapBakeRequest& rq, const MapFeatureSet& f, const HeightGrid& g, Canvas& cv,
                   std::vector<float>& waterFrac, MapBakeStats* st) {
     const auto t0 = Clock::now();
     const uint32_t res = rq.res;
+    const float mpp = (rq.wx1 - rq.wx0) / (float)res;
+    EnvGrid eg; buildEnvGrid(rq, f, eg);
     waterFrac.assign((size_t)res * res, 0.0f);
     // Light from the north-west, 40 deg up: north = +Z (= screen up), west = -X.
     const float L[3] = { -0.58f, 0.66f, 0.48f };
@@ -177,6 +214,18 @@ void paintTerrain(const MapBakeRequest& rq, const HeightGrid& g, Canvas& cv,
                 const float shade = std::max(0.0f, nx * L[0] + ny * L[1] + nz * L[2]);
                 const float mul = 0.50f + 0.76f * shade;   // flat ground -> ~1.0
                 c[0] = land[0] * mul; c[1] = land[1] * mul; c[2] = land[2] * mul;
+                // --- wilderness fade (header: TERRAIN FADE). Water texels are
+                // handled below and overwrite this, so the sea disc is untouched.
+                if (!eg.empty()) {
+                    const float ed = eg.sample(rq.wx0 + ((float)x + 0.5f) * mpp, rq.wz0 + ((float)y + 0.5f) * mpp);
+                    if (ed > 0.0f) {
+                        const float t = smoothstep(0.0f, kEnvelopeMarginM, ed);
+                        const float hint = 1.0f + (mul - 1.0f) * mappal::kWildReliefHint;
+                        const float far = 1.0f - mappal::kWildFarDarken * smoothstep(kEnvelopeMarginM, kEnvelopeFarM, ed);
+                        for (int i = 0; i < 3; ++i)
+                            c[i] = (c[i] + ((float)mappal::kWild[i] * hint - c[i]) * t) * far;
+                    }
+                }
                 // --- beach: dry ground within ~4 m of a water surface, not a cliff
                 const float slope = std::sqrt(gx * gx + gz * gz);
                 if (d <= 0.0f && d > -4.0f && slope < 0.45f) {
@@ -523,6 +572,17 @@ bool near3(const uint8_t* p, const uint8_t* ref, int tol) {
            std::abs((int)p[2] - ref[2]) <= tol;
 }
 }
+float mapEnvelopeDistance(const MapFeatureSet& f, float wx, float wz) {
+    if (f.envelope.empty()) return 0.0f;
+    float best = 3.4e38f;
+    for (const MapEnvDisc& e : f.envelope) {
+        const float d = std::sqrt((wx - e.cx) * (wx - e.cx) + (wz - e.cz) * (wz - e.cz)) - e.r;
+        if (d < best) best = d;
+        if (best <= 0.0f) return 0.0f;
+    }
+    return std::max(0.0f, best);
+}
+
 bool mapPixelIsWater(const uint8_t* rgba, int tol) {
     // Anywhere on the shallow..deep ramp (or the shoreline tint) counts.
     if (near3(rgba, mappal::kWaterDeep, tol) || near3(rgba, mappal::kWaterShallow, tol)) return true;
@@ -552,7 +612,7 @@ void bakeMapTilePixels(const MapFeatureSet& features, const MapBakeRequest& rq,
     HeightGrid grid;
     sampleHeightGrid(r, grid, stats);
     std::vector<float> waterFrac;
-    paintTerrain(r, grid, cv, waterFrac, stats);
+    paintTerrain(r, features, grid, cv, waterFrac, stats);
     paintDistricts(r, features, cv, stats);
     paintFootprints(r, features, cv, waterFrac, stats);
     paintRoads(r, features, cv, stats);
