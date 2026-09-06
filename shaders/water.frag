@@ -55,6 +55,11 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     vec4  shoreInfo;
     vec4  shoreRadii[64];
     vec4  riverNodes[20];
+    // ROOM LIGHTS (WaterParams::roomLight*): roomInfo.x = count (0 = none).
+    // Two vec4 per light: [2i] = xyz position, w range; [2i+1] = rgb
+    // colour*intensity. Only read on the enclosed path (p4.z > 0).
+    vec4  roomInfo;
+    vec4  roomLights[32];
 } u;
 
 // Scene depth buffer (the SSAO depth pre-pass output). Sampled as data (R32F via
@@ -116,6 +121,58 @@ float linearizeDepth(float d) {
     // d in [0,1], GLM_FORCE_DEPTH_ZERO_TO_ONE perspective.
     float kFar = (u.p2.w > 0.0) ? u.p2.w : 200.0;
     return (kNear * kFar) / (kFar - d * (kFar - kNear));
+}
+
+// Point-light falloff — the SAME window mesh.frag applies to the rock (inc/
+// mesh_lighting.glsl pointAtten; that file pulls in the cluster buffers so it
+// is mirrored here rather than included). Keep the two identical or the water
+// and the bank it laps will disagree on how bright a lamp is.
+float roomAtten(float dist, float range) {
+    float t = dist / max(range, 0.0001);
+    float w = clamp(1.0 - t * t * t * t, 0.0, 1.0);
+    w *= w;
+    return w / (dist * dist + 1.0);
+}
+
+// ROOM LIGHTING for ENCLOSED water (p4.z > 0, roomInfo.x > 0). Everything the
+// open-water path adds up is a RADIANCE under an implicit daylight irradiance
+// of ~1 — shallowColor is what a sunlit shallow reads as, the reflection is a
+// sky. Under a roof there is no sun and no sky, so those numbers became
+// SELF-LUMINOUS: the canon cavern's river photographed as a flat glowing cyan
+// slab ten times brighter than the rock beside it, unrelated to the 44 bank
+// lights that light that rock. This computes what actually falls on the
+// surface: a diffuse ambient of PI * horizonColor (the vault radiance the
+// reflection already uses, integrated over the hemisphere) plus every handed-
+// over room light with the rock's own falloff and Lambert term. The specular
+// out-parameter is each light's GGX lobe on the rippled surface — the streaks
+// of bank light on dark water that make a cave river read as WATER instead of
+// as a painted ribbon (rougher than the sun glint: the ripple normal already
+// carries the high-frequency sparkle, so a mirror lobe would strobe).
+vec3 roomLighting(vec3 P, vec3 N, vec3 V, float fresBase, out vec3 specOut) {
+    vec3 E = u.p3.rgb * 3.14159265;
+    specOut = vec3(0.0);
+    int ln = int(u.roomInfo.x + 0.5);
+    const float kRough = 0.22;                 // perceptual roughness of the sheet
+    const float a2 = (kRough * kRough) * (kRough * kRough);
+    float NoV = max(dot(N, V), 1e-4);
+    for (int i = 0; i < ln; ++i) {
+        vec4 pr = u.roomLights[2 * i];
+        vec3 lc = u.roomLights[2 * i + 1].rgb;
+        vec3 toL = pr.xyz - P;
+        float d = length(toL);
+        vec3 L = toL / max(d, 1e-4);
+        float NoL = max(dot(N, L), 0.0);
+        if (NoL <= 0.0) continue;
+        float att = roomAtten(d, pr.w);
+        E += lc * att * NoL;
+        vec3 H = normalize(L + V);
+        float NoH = max(dot(N, H), 0.0), VoH = max(dot(V, H), 0.0);
+        float dd = NoH * NoH * (a2 - 1.0) + 1.0;
+        float D = a2 / (3.14159265 * dd * dd);
+        float F = fresBase + (1.0 - fresBase) * pow(1.0 - VoH, 5.0);
+        specOut += lc * att * (D * F / (4.0 * NoV)) * NoL;
+    }
+    return E;
 }
 
 void main() {
@@ -186,7 +243,21 @@ void main() {
     // --- Fresnel (Schlick) blend: face-on -> refraction, grazing -> reflection. ---
     float base = clamp(u.p1.w, 0.0, 1.0);
     float fres = base + (1.0 - base) * pow(1.0 - max(dot(N, V), 0.0), 5.0);
-    vec3 color = mix(refractCol, reflectCol, fres);
+
+    // --- ENCLOSED: light the body from the room instead of from an implied
+    // sky (see roomLighting). roomIrr stays exactly 1 for open water and for
+    // an enclosed set that hands over no lights, so both are byte-identical. ---
+    float enc = clamp(u.p4.z, 0.0, 1.0);
+    vec3 roomIrr  = vec3(1.0);
+    vec3 roomSpec = vec3(0.0);
+    if (enc > 0.0 && u.roomInfo.x > 0.5) {
+        vec3 sp;
+        vec3 E = roomLighting(vWorldPos, N, V, base, sp);
+        roomIrr  = mix(vec3(1.0), E, enc);
+        roomSpec = sp * enc;
+    }
+    refractCol *= roomIrr;
+    vec3 color = mix(refractCol, reflectCol, fres) + roomSpec;
 
     // --- Sun glint: sharp Blinn-Phong-ish specular toward the sun (HDR; bloom). ---
     vec3 H = normalize(sunDir + V);
@@ -247,9 +318,15 @@ void main() {
                  * sin((rp.x + rp.y * 0.7) * 1.31 - time * 1.2);
         float writhe = clamp(0.50 + 0.30 * n1 + 0.24 * n2, 0.0, 1.0);
         foamAmt = clamp((contactF + crestF * 0.6) * writhe * u.p4.y, 0.0, 1.0);
-        // Enclosed foam is lit by the room, not by the sky overhead.
-        float foamLit = mix(0.30 + 0.70 * max(sunDir.y, 0.0), 0.42,
-                            clamp(u.p4.z, 0.0, 1.0));
+        // Enclosed foam is lit by the room, not by the sky overhead: the
+        // same irradiance the body just received (white foam is albedo, not
+        // a light source — under a bank lamp it is bright, between lamps it
+        // is grey). An enclosed set with no room lights keeps the old flat
+        // 0.42 lift.
+        float foamLitOpen = 0.30 + 0.70 * max(sunDir.y, 0.0);
+        vec3 foamLit = (u.roomInfo.x > 0.5)
+            ? mix(vec3(foamLitOpen), roomIrr, enc)
+            : vec3(mix(foamLitOpen, 0.42, enc));
         vec3 foamCol = vec3(0.82, 0.87, 0.90) * foamLit;
         color = mix(color, foamCol, foamAmt);
     }
@@ -319,7 +396,10 @@ void main() {
     float seeThrough = min(kMaxSeeThrough, u.p4.x * (1.0 - fres) * transLum);
     // Foam closes the surface back up (churned water is opaque white, and a
     // see-through foam patch would read as soap scum on glass).
-    float alpha = clamp(1.0 - seeThrough + spec * u.p1.z * 0.25 + fog + foamAmt,
-                        0.0, 1.0);
+    // Room-light streaks close the surface the way the sun glint does (a
+    // highlight you can see the bed through is a highlight on the bed).
+    float roomSpecLum = dot(roomSpec, vec3(0.2126, 0.7152, 0.0722));
+    float alpha = clamp(1.0 - seeThrough + spec * u.p1.z * 0.25 + roomSpecLum * 4.0
+                        + fog + foamAmt, 0.0, 1.0);
     outColor = vec4(color, alpha * vMask);
 }

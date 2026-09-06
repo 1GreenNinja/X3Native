@@ -365,6 +365,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testRoadNetwork = o.testRoadNetwork;
         _tf.testRiverBridge = o.testRiverBridge;
         _tf.testUnderRiver = o.testUnderRiver;
+        _tf.testCanonUnderRiver = o.testCanonUnderRiver;
         _tf.testTraffic = o.testTraffic;
     _tf.testGasStation = o.testGasStation;
         _tf.testFactory     = o.testFactory;
@@ -689,7 +690,7 @@ int x3AppMain(int argc, char** argv) {
     desc.width  = W;
     desc.height = H;
     desc.headless = headless;
-    desc.ssaa = (o.showroomShot || o.carShot || o.dealershipShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
+    desc.ssaa = o.ssaa ? o.ssaa : (o.showroomShot || o.carShot || o.dealershipShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot ? 4u : 1u);   // --ssaa N overrides; else 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
     desc.vsync  = !o.bench;

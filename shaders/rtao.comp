@@ -89,6 +89,19 @@ void main() {
     vec3 ddy = (abs(dU - depth) < abs(depth - dD)) ? (pU - P) : (P - pD);
     vec3 N = normalize(cross(ddx, ddy));
     if (any(isnan(N))) { imageStore(aoOut, px, vec4(1.0)); return; }
+    // ORIENT TOWARD THE EYE. cross(ddx, ddy) has an arbitrary sign: it depends on
+    // the Vulkan Y-down UV convention, the invViewProj handedness and which
+    // neighbour each branch above picked, so on an open heightfield it came out
+    // FACING INTO THE GROUND for ~all pixels. Rays then sampled the hemisphere
+    // BENEATH the surface, where the only geometry is the terrain's crack-hiding
+    // tile SKIRTS (vertical quads hanging under every 32 m tile edge, terrain.cpp
+    // addSkirtEdgeV). Every point within aoRadius of a seam saw a skirt, every
+    // other point saw nothing -> a world-locked dark line on every tile seam,
+    // which the post-water rtao-apply then multiplied onto the river sheet too
+    // (the "riverbed grid" in canonlevel). A surface normal must face the camera
+    // that sees it (back faces are not in the depth buffer), so flipping toward
+    // the eye is exact, convention-proof and costs one dot product.
+    if (dot(N, ub.camPos.xyz - P) < 0.0) N = -N;
 
     // Build a tangent basis around N for cosine-hemisphere sampling.
     vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);

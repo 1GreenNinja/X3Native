@@ -203,6 +203,12 @@ struct CliOptions {
     // under Vulkan validation. No-op on non-RT / no-position-fetch devices.
     bool        testDdgi = false;
     bool        ddgiForce = false;         // --ddgi: force r_ddgi 1 (screenshot/showroom A/B)
+    // --ssaa N (headless captures only): supersample factor for a plain
+    // --screenshot / --shot-cam still. 0 = the per-shot default (the named
+    // showroom/planet/nightsky/cutscene hosts get 4, everything else 1). Lets a
+    // --world canonlevel vantage get the showroom treatment without a named
+    // shot host per vantage (docs/screenshots/canon_underriver).
+    uint32_t    ssaa = 0;
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
     // --test-enemy-scale (fix/spawn-anomalies): THE BODY-SIZE SWEEP — every live
@@ -566,6 +572,7 @@ struct CliOptions {
     bool        testRoadNetwork = false;   // --test-roadnetwork
     bool        testRiverBridge = false;   // --test-riverbridge (valley road + Bridge No.1)
     bool        testUnderRiver = false;    // --test-underriver (the river under the mountain)
+    bool        testCanonUnderRiver = false; // --test-canonunderriver (the same river + ONE WATER in --world canonlevel)
     bool        testTraffic = false;       // --test-traffic (freeway AI traffic)
     bool        testGasStation = false;    // --test-gasstation (W-STATIONS forecourts + fuel stub)
     bool        testFactory     = false;   // --test-factory (the works siting + the tickets)

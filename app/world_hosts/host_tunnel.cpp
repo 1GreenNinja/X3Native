@@ -39,6 +39,7 @@
 #include "../river_bridge.h"
 #include "../river_life.h"       // W-RIVER — fish + AI speedboats on the reach
 #include "../underground_river.h" // W-UNDERRIVER — the river under the mountain
+#include "../world_water.h"       // ONE water recipe shared with the canon host
 #include "../traffic.h"          // W-TRAFFIC — AI traffic on the 16-lane freeway
 #include "../drive_layer.h"      // THE DRIVE LAYER — the shared traffic/interchange stand-up
 #include "../gas_station.h"      // W-STATIONS — forecourts + the fuel stub
@@ -2641,183 +2642,25 @@ int hostTunnel(HostContext& hc) {
     // the LOCAL water level there into seaLevel (the shader's underside-view
     // gate) and the caustics plane — the flat bridge-level plane is gone.
     auto applyRiverWater = [&](float t, float fx, float fz) {
-        // THE CAVERN IS A BODY OF WATER TOO. When the focus is inside the
-        // underground river's corridor the SAME pass draws THAT channel: same
-        // Gerstner surface, same clarity, same foam, same caustics. It used to
-        // be a CaveRiver ribbon and photographed as flat blue paper — see
-        // app/underground_river.h. The two channels are 1.5 km apart and the
-        // patch is 480 m, so they can never both be near the camera; one
-        // polyline is enough and the switch cannot pop.
-        const float focus3[3] = { fx, 0.0f, fz };
-        const bool inCavern = x3::game::UndergroundRiver::insideCorridor(focus3);
-        if (!inCavern && !(riverOn && riverRoad.plan.ok)) return;
+        // THE CAVERN IS A BODY OF WATER TOO — and the canon level is a body
+        // of water now too. The whole recipe (surface + cavern channels,
+        // clarity, foam, shoreline table, dry-focus seaLevel) lives in
+        // app/world_water.cpp so this host and app_run.cpp draw ONE water;
+        // what stays here is what only this host knows: the bridge plan's
+        // level for a dry surface focus, the X3_RIVER_ROAD door, and its
+        // caustics plane hung on the level the shared recipe chose.
+        x3::game::WorldWaterInput wi;
+        wi.time = t; wi.focusX = fx; wi.focusZ = fz;
+        wi.sunDir[0] = todSunDir[0]; wi.sunDir[1] = todSunDir[1]; wi.sunDir[2] = todSunDir[2];
+        wi.surfaceOn = riverOn && riverRoad.plan.ok;
+        wi.dryFallbackY = &riverRoad.plan.waterY;
+        // THE CAVERN WATER IS LIT BY THE CAVERN'S LAMPS: the recipe picks
+        // the nearest of this run's bank lights at the focus (same array the
+        // light lanes above feed the main pass), so the rock and the water it
+        // laps agree on which lamps are on. See WorldWaterInput::cavern.
+        wi.cavern = &underRiver;
         x3::rhi::IRenderDevice::WaterParams wpr{};
-        wpr.enabled   = true;
-        // ONE WATER TRUTH (task #32): the drawn surface follows the SAME node
-        // table worldWaterLevelAt interpolates — stepped down the channel per
-        // vertex in water.vert, estuary handed off to the real sea. The old
-        // single flat plane at plan.waterY stood ~1.2 m/chain-node above the
-        // carved table downstream and climbed the banks (receipt: the bench
-        // that shipped submerged at (-340,11,-468) while PASSING the
-        // worldWaterLevelAt+0.5 check).
-        if (inCavern) {
-            using WP = x3::rhi::IRenderDevice::WaterParams;
-            const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
-            const uint32_t n = std::min<uint32_t>((uint32_t)uc.n, WP::kMaxRiverNodes);
-            wpr.riverNodeCount = n;
-            for (uint32_t i = 0; i < n; ++i) {
-                wpr.riverNodes[i][0] = uc.x[i];
-                wpr.riverNodes[i][1] = uc.z[i];
-                wpr.riverNodes[i][2] = uc.w[i];
-            }
-            // ONE number shared with worldWaterLevelAt's wet test (terrain.h
-            // kURHalfWidth says why it is a constant), so drawn coverage and
-            // the model cannot disagree down here either.
-            wpr.riverHalfWidth = x3::game::kURHalfWidth;
-            // No ocean disc and no shoreline table underground: basinRadius 0
-            // switches the estuary hand-off off entirely, which is what stops
-            // the sea being drawn through a hill 3 km away.
-            wpr.basinRadius    = 0.0f;
-            // RUSHING WATER — but foam is a MASK strength, not a quantity of
-            // whitewater. At 1.0 with a sun overhead the first capture came
-            // back as white bands across the whole channel; the churn belongs
-            // to the spray particles at the steps, and this is just the lace
-            // where the water meets the rock.
-            wpr.foam = 0.45f;
-        } else {
-            using WP = x3::rhi::IRenderDevice::WaterParams;
-            x3::game::WorldRiverNode rn[WP::kMaxRiverNodes];
-            const uint32_t n = x3::game::worldRiverRisenNodes(rn, WP::kMaxRiverNodes);
-            wpr.riverNodeCount = n;
-            for (uint32_t i = 0; i < n; ++i) {
-                wpr.riverNodes[i][0] = rn[i].x;
-                wpr.riverNodes[i][1] = rn[i].z;
-                wpr.riverNodes[i][2] = rn[i].waterY;
-            }
-            wpr.riverHalfWidth = x3::game::kWorldRiverHalfWidth;
-            wpr.basinCenter[0] = x3::game::kWorldOceanBasinX;
-            wpr.basinCenter[1] = x3::game::kWorldOceanBasinZ;
-            wpr.basinRadius    = x3::game::kWorldOceanBasinR;
-            wpr.oceanLevel     = x3::game::kWorldSeaLevel;
-            // THE SHORELINE TABLE (W-UNDERRIVER): without it the shader draws
-            // the sea across the whole basin disc — under the dry beach ring
-            // and the rim hills too (the owner, noclip: "we do indeed have
-            // water underground"). Computed ONCE from the same height field
-            // worldWaterLevelAt tests (terrain.cpp worldOceanShoreTable),
-            // lazily here so every road corridor is already registered.
-            // RB11 (river_bridge.cpp) gates drawn-vs-model coverage map-wide.
-            // Default ON; X3_WATER_SHORE=0 is the door for turning it OFF
-            // (NO_SLOP rule 6) — it exists so the underground-sea defect can
-            // be reproduced for an A/B receipt from the same binary.
-            {
-                static const bool kShoreOn = [] {
-                    const char* e = std::getenv("X3_WATER_SHORE");
-                    return !(e && e[0] == '0');
-                }();
-                static const std::vector<float> kShore = [] {
-                    std::vector<float> r(WP::kShoreSectors, 0.0f);
-                    x3::game::worldOceanShoreTable(r.data(), WP::kShoreSectors);
-                    return r;
-                }();
-                if (kShoreOn) {
-                    wpr.shoreSectorCount = WP::kShoreSectors;
-                    std::memcpy(wpr.shoreRadii, kShore.data(),
-                                sizeof(float) * WP::kShoreSectors);
-                }
-            }
-            // FOAM (the owner: "alive.. pulsing... writhing.. foaming if
-            // needed"): contact foam hugs the banks, rocks and anything
-            // breaking the surface; whitecaps stay quiet at this amplitude.
-            wpr.foam = 0.85f;
-        }
-        // seaLevel carries the LOCAL level at the focus (underside-view gate +
-        // caustics plane); dry land falls back to the bridge's level.
-        const float lw = x3::game::worldWaterLevelAt(fx, fz);
-        if (lw > x3::game::kWorldWaterDry + 1.0f) {
-            wpr.seaLevel = lw;
-        } else if (inCavern) {
-            // DRY FOCUS INSIDE THE CAVERN. seaLevel drives the underside-view
-            // gate and the caustics plane, and the old fallback was the SURFACE
-            // river's level — 1.5 km away and ~13 m ABOVE the cavern's own
-            // water. Standing on a cavern beach (a dry query) therefore told
-            // the shader the camera was submerged in a river it was nowhere
-            // near. Fall back to THIS chain's own interpolated level instead.
-            const x3::game::UnderRiverChain& uc = x3::game::worldUnderRiverChain();
-            float best = uc.w[0], bd2 = 1e18f;
-            for (int i = 0; i + 1 < uc.n; ++i) {
-                const float ax = uc.x[i], az = uc.z[i];
-                const float bx = uc.x[i+1], bz = uc.z[i+1];
-                const float ex = bx - ax, ez = bz - az;
-                const float L2 = std::max(ex*ex + ez*ez, 1e-4f);
-                const float t = std::clamp(((fx-ax)*ex + (fz-az)*ez) / L2, 0.0f, 1.0f);
-                const float qx = ax + ex*t, qz = az + ez*t;
-                const float d2 = (fx-qx)*(fx-qx) + (fz-qz)*(fz-qz);
-                if (d2 < bd2) { bd2 = d2; best = uc.w[i] + (uc.w[i+1]-uc.w[i])*t; }
-            }
-            wpr.seaLevel = best;
-        } else {
-            wpr.seaLevel = riverRoad.plan.waterY;
-        }
-        wpr.time      = t;
-        wpr.amplitude = 0.16f;          // a river swell, not an ocean — and low
-                                        // enough that a treading head clears
-                                        // the crests instead of strobing them
-        wpr.steepness = 0.35f;
-        wpr.waveLength= 9.0f;
-        wpr.speed     = 0.8f;
-        wpr.deepColor[0]    = 0.008f; wpr.deepColor[1]    = 0.030f; wpr.deepColor[2]    = 0.038f;
-        wpr.shallowColor[0] = 0.050f; wpr.shallowColor[1] = 0.150f; wpr.shallowColor[2] = 0.140f;
-        wpr.specular  = 5.0f;
-        wpr.fresnel   = 0.012f;
-        // See-through shallows (WaterParams::clarity): the bed, the fish and a
-        // swimmer's body read THROUGH face-on water; depth + grazing angles
-        // close it back to a surface. 0 would be the legacy opaque plane.
-        // ERR HIGH ON CLARITY (owner, 2026-08-28). The see-through ceiling that
-        // made anything past six metres opaque is gone, so clarity now buys real
-        // visibility instead of just thinning the shallows. The SURFACE river is
-        // the everyday water: clear enough to read the bed, the fish and a
-        // swimmer, still unmistakably a river.
-        wpr.clarity   = 0.82f;
-        // W-NIGHT: the river glints to the LIVE luminary (sun by day, moon at
-        // night), not to a phantom 14:00 sun that set hours ago.
-        wpr.sunDir[0] = todSunDir[0]; wpr.sunDir[1] = todSunDir[1]; wpr.sunDir[2] = todSunDir[2];
-        if (inCavern) {
-            // There is no sun down here, so a surface tuned to glint at one
-            // renders as a black hole in the floor. The cavern's luminary is
-            // the run's own bank lights: a steep overhead direction with a
-            // soft, wide highlight, a cooler and slightly lifted shallow tint
-            // so the carved bed reads THROUGH the water, and a choppier,
-            // quicker swell for water that is actually falling.
-            // ENCLOSED: no sky to mirror. Without this the surface reflects
-            // the analytic daylight sky (a fixed bright gradient plus a sun
-            // disk, driven to a full mirror at grazing angles by Schlick) and
-            // the cave river photographed as crumpled chrome foil. enclosed=1
-            // hands the reflection AND the distance/edge fade to horizonColor
-            // and winds the sun glint out — so the water is lit by the room.
-            wpr.enclosed = 1.0f;
-            // What it sees instead of sky: the wet rock of its own vault.
-            wpr.horizonColor[0] = 0.016f;
-            wpr.horizonColor[1] = 0.022f;
-            wpr.horizonColor[2] = 0.030f;
-            wpr.sunDir[0] = 0.12f; wpr.sunDir[1] = 0.92f; wpr.sunDir[2] = 0.10f;
-            wpr.specular  = 0.0f;    // wound out by `enclosed` anyway; say it
-            wpr.fresnel   = 0.020f;
-            // THE SHOWPIECE WATER. Down here there is no silt, no runoff and no
-            // weather — a cavern pool is the clearest water in the world, and the
-            // owner asked for somewhere that is "very, very nice and clear". At
-            // 0.94 the carved bed, the rock beaches and anything swimming read
-            // straight through tens of metres of it.
-            wpr.clarity   = 0.94f;
-            // A river swell, not a storm. 0.26/0.55 over a 5.5 m wavelength
-            // pinched the Gerstner crests into shards in the first capture.
-            wpr.amplitude = 0.11f;
-            wpr.steepness = 0.30f;
-            wpr.waveLength= 7.0f;
-            wpr.speed     = 1.5f;
-            wpr.deepColor[0]    = 0.010f; wpr.deepColor[1] = 0.030f; wpr.deepColor[2] = 0.044f;
-            wpr.shallowColor[0] = 0.055f; wpr.shallowColor[1]= 0.150f; wpr.shallowColor[2]= 0.185f;
-        }
-        device->setWaterParams(wpr);
+        if (!x3::game::applyWorldWater(*device, wi, &wpr)) return;
         x3::rhi::IRenderDevice::CausticsParams cp{};
         cp.enabled = true; cp.waterY = wpr.seaLevel;   // local level, not the flat plane
         cp.time = t; cp.intensity = 0.85f;

@@ -52,7 +52,7 @@ constexpr float kStationScale = 1.5f;       // 42.25 m -> ~63 m wide; 20.93 m ->
 } // namespace
 
 void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-                      SurfaceLibrary* sharedSurf) {
+                      SurfaceLibrary* sharedSurf, bool surfaceSlab) {
     (void)physics;   // graybox undersea zone is visual-only this pass (no collision body)
 
     // W3-4 REALISM PASS: the base is no longer flat-tinted graybox — architectural
@@ -88,7 +88,11 @@ void OceanBase::build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IP
     // W9: widened again 620 -> 760 so the plane covers the whole -10 waterline
     // ring of the terrain basin (~r700) and the river mouth's final ribbon
     // segment (ending (900,-1120) at Y=-9.9, 0.1 m proud — no coplanar fight).
-    { const float water[4] = { 0.10f, 0.28f, 0.42f, 0.55f };
+    // ONE WATER: skipped when the host's engine water pass owns the sea (see
+    // the header) — the slab was only ever visible within this region's load
+    // radius anyway, so nothing distant is lost.
+    if (surfaceSlab) {
+      const float water[4] = { 0.10f, 0.28f, 0.42f, 0.55f };
       addBoxProp(kBaseCx, kSurfaceY, kBaseCz, 760.0f, 0.2f, 760.0f, water, nullptr); }
 
     // ---- Seafloor pad — rough dark stone, tiled coarse (8 m repeats read as rock

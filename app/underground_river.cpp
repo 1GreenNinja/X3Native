@@ -174,7 +174,14 @@ UndergroundRiver::Result UndergroundRiver::build(
     SurfaceLibrary localSurf;
     SurfaceLibrary& surf = surfIn ? *surfIn : localSurf;
     if (!surf.mounted()) surf.mount(assetRoot() + "/surface_library");
-    const SurfaceSet& innerS = surf.get(device, "cv_rock_wet");    // cave rock, wet
+    // THE VAULT'S SKIN. This was cv_rock_wet, which despite its name is a
+    // tiled MASONRY texture — dressed blocks with mortar lines — and at the
+    // lid's 9 m x 20 m tile it photographed as brown ceiling PANELS with the
+    // grout showing (the owner's first note on the Great Hall still). A cave
+    // is carved from the country it sits in, so the inner face wears the same
+    // natural rock the back of the lid and the hillside do: no seams that
+    // repeat, no block edges, and the lamps' pools land on stone.
+    const SurfaceSet& innerS = surf.get(device, "terrain_rock");   // cave rock (natural)
     const SurfaceSet& outerS = surf.get(device, "terrain_rock");   // dry country rock
 
     // ---- THE VAULT: the LID that puts the hillside back. ------------------
@@ -195,10 +202,13 @@ UndergroundRiver::Result UndergroundRiver::build(
     auto buildStrip = [&](float s0, float s1, bool inner) {
         CpuMesh m;
         const int rings = std::max(2, (int)((s1 - s0) / kStep) + 1);
+        std::vector<float> ringC;                   // (cx, w, cz) per ring
+        ringC.reserve((size_t)rings * 3);
         for (int rg = 0; rg < rings; ++rg) {
             const float s = s0 + (s1 - s0) * ((float)rg / (float)(rings - 1));
             float cx, cz, w, nat, dx, dz;
             walk.at(s, cx, cz, w, nat, dx, dz);
+            ringC.insert(ringC.end(), { cx, w, cz });
             const Frame fr = walk.frameAt(s);       // mitered: see Frame
             const float px = fr.px, pz = fr.pz;
             for (int k = 0; k < kAcross; ++k) {
@@ -231,12 +241,52 @@ UndergroundRiver::Result UndergroundRiver::build(
                 v.pos[0] = vx;
                 v.pos[1] = y;
                 v.pos[2] = vz;
-                // Inner face lights from below (normal down-ish), outer from
-                // above; exact normals matter less than orientation down here.
+                // Placeholder orientation; the real geometric normals are
+                // solved from the finished grid below.
                 v.normal[0] = 0.0f; v.normal[1] = inner ? -1.0f : 1.0f; v.normal[2] = 0.0f;
+                // ~9 m per tile BOTH ways. The across axis used to be 4.6 tiles
+                // over the ~92 m span (a 20 m tile), a 2:1 stretch that turned
+                // every feature in the texture into a long panel.
                 v.uv[0] = s * 0.11f;                    // ~0.11 tiles/m along
-                v.uv[1] = u * 4.6f;                     // across the lid
+                v.uv[1] = u * 10.0f;                    // across the lid
                 m.v.push_back(v);
+            }
+        }
+        // GEOMETRIC NORMALS. The lid used to carry a flat (0,-1,0) on every
+        // inner vertex: fine under the sky-IBL wash that used to fill the
+        // vault, but the room is lit by point lamps now and a wall's response
+        // to a lamp IS its normal — with a flat one the whole 30 m flank
+        // shaded as one ceiling and the normal map had nothing to hang off.
+        // Central differences over the (ring, across) grid; at the feet the
+        // rim is tucked under, so one-sided there.
+        for (int rg = 0; rg < rings; ++rg) {
+            for (int k = 0; k < kAcross; ++k) {
+                auto P = [&](int r, int kk) -> const float* {
+                    r  = std::clamp(r, 0, rings - 1);
+                    kk = std::clamp(kk, 0, kAcross - 1);
+                    return m.v[(size_t)(r * kAcross + kk)].pos;
+                };
+                const float* a0 = P(rg - 1, k); const float* a1 = P(rg + 1, k);
+                const float* b0 = P(rg, k - 1); const float* b1 = P(rg, k + 1);
+                const float tA[3] = { a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2] };
+                const float tB[3] = { b1[0] - b0[0], b1[1] - b0[1], b1[2] - b0[2] };
+                float n[3] = { tA[1] * tB[2] - tA[2] * tB[1],
+                               tA[2] * tB[0] - tA[0] * tB[2],
+                               tA[0] * tB[1] - tA[1] * tB[0] };
+                const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                x3::rhi::MeshVertex& v = m.v[(size_t)(rg * kAcross + k)];
+                if (len < 1e-6f) continue;              // keep the placeholder
+                n[0] /= len; n[1] /= len; n[2] /= len;
+                // Face the room: the inner skin looks IN at the water under
+                // the crown (a sign test on y alone is ambiguous on the near-
+                // vertical flanks, where the normal is nearly horizontal);
+                // the outer skin looks UP at the sky.
+                const float* c = &ringC[(size_t)rg * 3];
+                const float toC[3] = { c[0] - v.pos[0], c[1] - v.pos[1], c[2] - v.pos[2] };
+                const bool flip = inner ? (n[0] * toC[0] + n[1] * toC[1] + n[2] * toC[2] < 0.0f)
+                                        : (n[1] < 0.0f);
+                if (flip) { n[0] = -n[0]; n[1] = -n[1]; n[2] = -n[2]; }
+                v.normal[0] = n[0]; v.normal[1] = n[1]; v.normal[2] = n[2];
             }
         }
         for (int rg = 0; rg + 1 < rings; ++rg)
@@ -460,19 +510,37 @@ UndergroundRiver::Result UndergroundRiver::build(
         // hw+0.8) — PAIRED with terrain.cpp's UR carve).
         const float side = (std::fmod(s / 42.0f, 2.0f) < 1.0f) ? 1.0f : -1.0f;
         l.pos[0] = cx + px * 13.0f * side;
-        l.pos[1] = w + 3.4f;
+        // HEIGHT sets the SIZE of the pool, not just its brightness: a lamp
+        // 3 m over the beach lit a 3 m hot spot and nothing else (inverse
+        // square — the ground 10 m out got 1/12 of the centre). 9 m up, the
+        // same lamp lays an even pool ~20 m across on beach and wall, which
+        // is a lit BANK, not a spotlight on a pebble.
+        l.pos[1] = w + 9.0f;
         l.pos[2] = cz + pz * 13.0f * side;
         // Same blue family as the club grotto's pool banks so the accents
         // and the water read as ONE source — but not the same MAGNITUDE. Those
         // are (0.10,0.22,0.85)@12 m, tuned for the club's little grotto; this
         // cavern is 88 m across and up to 38 m tall, and that lamp would light
         // a puddle of it. Scaled to the room, still blue-dominant.
-        const float k = nearPool ? 1.35f : 1.0f;
-        // POOLS OF LIGHT, not a wash. 30 m range at 42 m spacing overlapped
-        // into flat ambient — brighter and SHORTER reads as a lit bank with
-        // dark between, which is what a cave wants.
-        l.range = nearPool ? 28.0f : 20.0f;
-        l.color[0] = 1.00f * k; l.color[1] = 1.90f * k; l.color[2] = 4.20f * k;
+        // The open GORGE (past vaultEnd) has the sky; there the lamps go back
+        // to being accents, or in daylight they are blue spotlights burning
+        // on a sunlit wall.
+        const float gorgeK = (s > total - kURGorgeLen) ? 0.30f : 1.0f;
+        const float k = (nearPool ? 1.35f : 1.0f) * gorgeK;
+        // POOLS OF LIGHT, not a wash: brighter and SHORTER than a spacing-wide
+        // range reads as a lit bank with dark between, which is what a cave
+        // wants. MAGNITUDE: these lamps used to be accents on top of a daylight
+        // sky IBL that lit the whole vault (see applyAtmosphere — that IBL is
+        // now a trace under the lid), so they were tuned to be SEEN, not to
+        // LIGHT. Now they are the room's only real source, 9 m up: sized so
+        // the beach under one reads ~0.5 radiance and the pool is still
+        // ~0.1 at 15 m out (pointAtten is w/(d^2+1) — see mesh_lighting.glsl),
+        // with the reach to match, so each one lays a pool on beach and wall
+        // and the water between them has lamps to reflect. Less saturated
+        // than before (blue:red 3:1, not 4:1) so wet rock under a lamp reads
+        // cool-white stone, not neon.
+        l.range = nearPool ? 44.0f : 34.0f;
+        l.color[0] = 14.0f * k; l.color[1] = 24.0f * k; l.color[2] = 42.0f * k;
         m_lights.push_back(l);
     }
     r.lightCount = (int)m_lights.size();
@@ -495,6 +563,45 @@ bool UndergroundRiver::insideCorridor(const float p[3]) {
     const UnderRiverChain& uc = worldUnderRiverChain();
     return uc.n >= 2 && p[0] > uc.bx0 && p[0] < uc.bx1
                      && p[2] > uc.bz0 && p[2] < uc.bz1;
+}
+
+bool UndergroundRiver::underVault(const float p[3]) {
+    if (!insideCorridor(p)) return false;
+    // Station along the chain of the closest point on it; under the lid while
+    // that station is upstream of where the vault ends (buildStrip's vaultEnd).
+    const UnderRiverChain& uc = worldUnderRiverChain();
+    float bestD2 = 3.4e38f, bestS = 0.0f;
+    for (int i = 0; i + 1 < uc.n; ++i) {
+        const float ax = uc.x[i], az = uc.z[i];
+        const float bx = uc.x[i + 1] - ax, bz = uc.z[i + 1] - az;
+        const float L2 = std::max(bx * bx + bz * bz, 1e-6f);
+        const float t = std::clamp(((p[0] - ax) * bx + (p[2] - az) * bz) / L2, 0.0f, 1.0f);
+        const float dx = p[0] - (ax + bx * t), dz = p[2] - (az + bz * t);
+        const float d2 = dx * dx + dz * dz;
+        if (d2 < bestD2) { bestD2 = d2; bestS = uc.cum[i] + (uc.cum[i + 1] - uc.cum[i]) * t; }
+    }
+    return bestS < uc.cum[uc.n - 1] - kURGorgeLen;
+}
+
+void UndergroundRiver::applyAtmosphere(x3::rhi::IRenderDevice& device) const {
+    // A CAVE IS DARK. The exterior recipe's daylight IBL lit the vault from
+    // wall to wall as if the lid were glass; the lamps are the light here.
+    // The IBL is not zeroed — the run is open at both ends and a trace of
+    // sky does reach down it — but it is a trace, an order of magnitude
+    // under the point-light pools, so the eye reads lit banks in a dark
+    // room rather than a brown room with some blue in it.
+    device.setIblIntensity(0.08f);
+    device.setAmbient(0.010f, 0.012f, 0.016f);
+    // Cold, thin haze: enough that the far reach of an 88 m hall goes to
+    // black instead of showing its back wall, thin enough that a lamp 40 m
+    // off still has a pool under it. Colour is the vault's own near-black.
+    x3::rhi::IRenderDevice::FogParams fog;
+    fog.enabled  = true;
+    fog.color[0] = 0.004f; fog.color[1] = 0.006f; fog.color[2] = 0.009f;
+    fog.density  = 0.006f;
+    fog.start    = 6.0f;
+    fog.maxOpacity = 0.92f;
+    device.setFog(fog);
 }
 
 uint32_t UndergroundRiver::nearestLights(const float cam[3],
@@ -566,6 +673,23 @@ void UndergroundRiver::update(float dt, Scene& scene) {
     }
 }
 
+void UndergroundRiver::roomIrradianceAt(float x, float y, float z, float out[3]) const {
+    // The vault's own floor: what the dark rock scatters back everywhere
+    // (paired with the cavern horizonColor in world_water.cpp, x PI).
+    out[0] = 0.019f; out[1] = 0.025f; out[2] = 0.038f;
+    for (const x3::rhi::PointLight& l : m_lights) {
+        const float dx = x - l.pos[0], dy = y - l.pos[1], dz = z - l.pos[2];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= l.range * l.range) continue;
+        // KEEP IN SYNC with pointAtten() in shaders/inc/mesh_lighting.glsl
+        // (and roomAtten() in water.frag): w = (1 - (d/range)^4)^2 / (d^2 + 1).
+        const float r4 = (d2 * d2) / (l.range * l.range * l.range * l.range);
+        const float win = std::max(1.0f - r4, 0.0f);
+        const float att = (win * win) / (d2 + 1.0f);
+        out[0] += l.color[0] * att; out[1] += l.color[1] * att; out[2] += l.color[2] * att;
+    }
+}
+
 void UndergroundRiver::render(x3::rhi::IRenderDevice& device,
                               const x3::rhi::FrameContext&) {
     if (!m_built || m_puffs.empty()) return;
@@ -575,17 +699,31 @@ void UndergroundRiver::render(x3::rhi::IRenderDevice& device,
         const float t = p.age / p.life;
         x3::rhi::IRenderDevice::ParticleInstance pi;
         pi.pos[0] = p.x; pi.pos[1] = p.y; pi.pos[2] = p.z;
+        // LIT BY THE LAMPS. These colours used to be absolute — fine under the
+        // daylight IBL that used to fill the vault, but in a dark cave a
+        // constant 0.6 grey billboard is a glowing ghost and additive spray at
+        // 0.3 outshines the rock it is falling on. Mist is albedo: the same
+        // room irradiance the water and the rock receive, so a plume under a
+        // lamp catches it (the owner's "mist catching light") and the breath
+        // on a pool between lamps is barely there — which is what cold mist
+        // in a dark cave looks like.
+        float E[3];
+        roomIrradianceAt(p.x, p.y, p.z, E);
         if (p.spray) {
             pi.size = p.size0 * (1.0f + 1.5f * t);
             // Fade IN over the first fifth, then out: a droplet burst that
             // pops into existence at full brightness reads as a sprite bug.
             const float a = std::min(t * 5.0f, 1.0f) * (1.0f - t) * 0.55f;
-            pi.color[0] = 0.52f * a; pi.color[1] = 0.60f * a; pi.color[2] = 0.70f * a;
+            // Spray is forward-scattering: it throws back more than a flat
+            // albedo would (the 3.0), which is why a lit plume reads white.
+            pi.color[0] = 0.52f * a * E[0] * 3.0f;
+            pi.color[1] = 0.60f * a * E[1] * 3.0f;
+            pi.color[2] = 0.70f * a * E[2] * 3.0f;
             pi.color[3] = 1.0f;
             m_sprayOut.push_back(pi);
         } else {
             pi.size = p.size0 * (1.0f + 1.8f * t);
-            pi.color[0] = 0.62f; pi.color[1] = 0.68f; pi.color[2] = 0.76f;
+            pi.color[0] = 0.62f * E[0]; pi.color[1] = 0.68f * E[1]; pi.color[2] = 0.76f * E[2];
             pi.color[3] = 0.16f * std::min(t * 6.0f, 1.0f) * (1.0f - t) * (1.0f - t);
             m_hazeOut.push_back(pi);
         }
@@ -601,6 +739,35 @@ void UndergroundRiver::render(x3::rhi::IRenderDevice& device,
 // ---------------------------------------------------------------------------
 // --test-underriver — the gate. Headless, no GPU textures needed (4.3 law:
 // asserts structure, not pixels).
+UndergroundRiver::Headroom UndergroundRiver::measureHeadroom() {
+    const UnderRiverChain& uc = worldUnderRiverChain();
+    Headroom h;
+    const ChainWalk walk(uc);
+    const float vaultEnd = uc.cum[uc.n - 1] - kURGorgeLen;
+    h.vaultLen = vaultEnd;
+    for (float s = 10.0f; s < vaultEnd; s += 20.0f) {
+        float cx, cz, w, nat, dx, dz; walk.at(s, cx, cz, w, nat, dx, dz);
+        const float px = -dz, pz = dx;
+        const float span = kURWallOutW + 2.0f;      // the lid's foot-to-foot
+        for (int k = 1; k < 12; ++k) {              // skip the buried feet
+            const float u = (float)k / 12.0f;
+            const float lat = (u * 2.0f - 1.0f) * span;
+            const float vx = cx + px * lat, vz = cz + pz * lat;
+            const float ceil = vaultCeilingY(worldPreUnderRiverHeight(vx, vz),
+                                             w, u, s, k, false);
+            const float head = ceil - terrainHeightAtWorld(vx, vz);
+            ++h.probes;
+            if (head < h.minHead) { h.minHead = head; h.atX = vx; h.atZ = vz; }
+            h.maxHead = std::max(h.maxHead, head);
+            // Standing room is only owed over ground you can stand on —
+            // the channel and its beaches, not the rim where the lens shuts.
+            if (std::fabs(lat) <= kURShelfHalfW + 3.0f)
+                h.minBeachHead = std::min(h.minBeachHead, head);
+        }
+    }
+    return h;
+}
+
 // ---------------------------------------------------------------------------
 bool UndergroundRiver::runSelfTest() {
     int passN = 0, failN = 0;
@@ -838,35 +1005,12 @@ bool UndergroundRiver::runSelfTest() {
     // and a ceiling low enough to walk into (CONTACT LAW's other direction —
     // the beaches are walkable ground, so they need standing room over them).
     {
-        const ChainWalk walk(uc);
-        const float vaultEnd = uc.cum[uc.n - 1] - kURGorgeLen;
-        float minHead = 1e9f, minBeachHead = 1e9f, maxHead = 0.0f;
-        float hx = 0, hz = 0; int probes = 0;
-        for (float s = 10.0f; s < vaultEnd; s += 20.0f) {
-            float cx, cz, w, nat, dx, dz; walk.at(s, cx, cz, w, nat, dx, dz);
-            const float px = -dz, pz = dx;
-            const float span = kURWallOutW + 2.0f;      // the lid's foot-to-foot
-            for (int k = 1; k < 12; ++k) {              // skip the buried feet
-                const float u = (float)k / 12.0f;
-                const float lat = (u * 2.0f - 1.0f) * span;
-                const float vx = cx + px * lat, vz = cz + pz * lat;
-                const float ceil = vaultCeilingY(worldPreUnderRiverHeight(vx, vz),
-                                                 w, u, s, k, false);
-                const float head = ceil - terrainHeightAtWorld(vx, vz);
-                ++probes;
-                if (head < minHead) { minHead = head; hx = vx; hz = vz; }
-                maxHead = std::max(maxHead, head);
-                // Standing room is only owed over ground you can stand on —
-                // the channel and its beaches, not the rim where the lens shuts.
-                if (std::fabs(lat) <= kURShelfHalfW + 3.0f)
-                    minBeachHead = std::min(minBeachHead, head);
-            }
-        }
+        const Headroom h = measureHeadroom();
         std::snprintf(d, sizeof(d),
             "%d probes over %.0f m of vault; headroom %.2f..%.2f m "
             "(tightest at (%.0f, %.0f)); over the beaches at least %.2f m",
-            probes, vaultEnd, minHead, maxHead, hx, hz, minBeachHead);
-        check(minHead > 0.05f && minBeachHead >= 2.5f && probes > 500,
+            h.probes, h.vaultLen, h.minHead, h.maxHead, h.atX, h.atZ, h.minBeachHead);
+        check(h.minHead > 0.05f && h.minBeachHead >= 2.5f && h.probes > 500,
               "U9 there is a cavern in there, and you can stand up in it", d);
     }
 

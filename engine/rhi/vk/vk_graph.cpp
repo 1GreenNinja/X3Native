@@ -1163,6 +1163,73 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
             m_graph.addPass(std::move(colorPass));
         }
 
+        // ---- RT-AO apply pass (hardware ray query) --------------------------
+        // Once the OPAQUE lit scene exists, MULTIPLY the linear HDR target by the
+        // ray-traced AO (depth-aware up-sampled from the half-res RT AO image).
+        // The pipeline uses a dstColor*srcColor blend, so this pass writes the AO
+        // darkening factor and the blender multiplies it into the HDR scene without
+        // reading it back. Reads the AO image (SHADER_READ_ONLY) + depth; writes HDR.
+        //
+        // ORDER: this MUST run BEFORE the water pass (and every other translucent
+        // sheet composited over the opaque scene). The AO is computed from the
+        // OPAQUE depth pre-pass — water writes no depth and is not in the TLAS — so
+        // the factor describes the riverbed / floor UNDER a water sheet, not the
+        // sheet. Applied after water it multiplied the bed's occlusion pattern onto
+        // the water surface itself (canonlevel: the riverbed's tile-seam AO grid
+        // showed straight through the sheet even with clarity off). Running here,
+        // the water shader then composites over an already AO-darkened bed — the
+        // physically right place for that darkening — and SSGI's gather (which
+        // reads the lit HDR scene) sees AO-consistent radiance too. Still before
+        // bloom so the darkened scene drives the bloom chain correctly.
+        if (rtaoOn) {
+            m_rtaoApplyAttach = VkRenderingAttachmentInfo{};
+            m_rtaoApplyAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_rtaoApplyAttach.imageView = m_hdrView;
+            m_rtaoApplyAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_rtaoApplyAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;     // keep the lit scene
+            m_rtaoApplyAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc ap{};
+            ap.name = "rtao-apply";
+            ap.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                // SYNC (RAW): LOAD_OP_LOAD -> vkCmdBeginRendering READS it.
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            ap.addUse(ResourceUse{
+                rgRtao, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            ap.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            ap.usesDynamicRendering = true;
+            m_rtaoApplyRenderInfo = VkRenderingInfo{};
+            m_rtaoApplyRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_rtaoApplyRenderInfo.renderArea = { {0,0}, m_extent };
+            m_rtaoApplyRenderInfo.layerCount = 1;
+            m_rtaoApplyRenderInfo.colorAttachmentCount = 1;
+            m_rtaoApplyRenderInfo.pColorAttachments = &m_rtaoApplyAttach;
+            ap.renderInfo = m_rtaoApplyRenderInfo;
+            ap.recordCtx = this;
+            ap.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkViewport vp{ 0.0f, 0.0f, (float)self->m_extent.width, (float)self->m_extent.height, 0.0f, 1.0f };
+                VkRect2D scis{ {0,0}, self->m_extent };
+                vkCmdSetViewport(c, 0, 1, &vp);
+                vkCmdSetScissor(c, 0, 1, &scis);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_rtaoApplyPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_rtaoApplyLayout,
+                                        0, 1, &self->m_rtaoApplySet[self->m_frameIdx], 0, nullptr);
+                vkCmdPushConstants(c, self->m_rtaoApplyLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(RtaoApplyPush), &self->m_rtaoApplyPush);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(ap));
+        }
+
         // ---- Water pass (undersea-world foundation) -------------------------
         // Drawn AFTER the opaque mesh pass into the SAME linear HDR target (LOAD,
         // so the lit scene + sky stay), depth-testing LESS_OR_EQUAL against the
@@ -1592,62 +1659,6 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 };
                 m_graph.addPass(std::move(cp));
             }
-        }
-
-        // ---- RT-AO apply pass (hardware ray query) --------------------------
-        // After the lit scene (+ optional GI) exists, MULTIPLY the linear HDR target
-        // by the ray-traced AO (depth-aware up-sampled from the half-res RT AO image).
-        // The pipeline uses a dstColor*srcColor blend, so this pass writes the AO
-        // darkening factor and the blender multiplies it into the HDR scene without
-        // reading it back. Reads the AO image (SHADER_READ_ONLY) + depth; writes HDR.
-        // Runs before bloom so the darkened scene drives the bloom chain correctly.
-        if (rtaoOn) {
-            m_rtaoApplyAttach = VkRenderingAttachmentInfo{};
-            m_rtaoApplyAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            m_rtaoApplyAttach.imageView = m_hdrView;
-            m_rtaoApplyAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            m_rtaoApplyAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;     // keep the lit scene
-            m_rtaoApplyAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-            RenderPassDesc ap{};
-            ap.name = "rtao-apply";
-            ap.addUse(ResourceUse{
-                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                // SYNC (RAW): LOAD_OP_LOAD -> vkCmdBeginRendering READS it.
-                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-            ap.addUse(ResourceUse{
-                rgRtao, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-            ap.addUse(ResourceUse{
-                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
-            ap.usesDynamicRendering = true;
-            m_rtaoApplyRenderInfo = VkRenderingInfo{};
-            m_rtaoApplyRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-            m_rtaoApplyRenderInfo.renderArea = { {0,0}, m_extent };
-            m_rtaoApplyRenderInfo.layerCount = 1;
-            m_rtaoApplyRenderInfo.colorAttachmentCount = 1;
-            m_rtaoApplyRenderInfo.pColorAttachments = &m_rtaoApplyAttach;
-            ap.renderInfo = m_rtaoApplyRenderInfo;
-            ap.recordCtx = this;
-            ap.record = [](void* ctx, VkCommandBuffer c){
-                auto* self = static_cast<VulkanRenderDevice*>(ctx);
-                VkViewport vp{ 0.0f, 0.0f, (float)self->m_extent.width, (float)self->m_extent.height, 0.0f, 1.0f };
-                VkRect2D scis{ {0,0}, self->m_extent };
-                vkCmdSetViewport(c, 0, 1, &vp);
-                vkCmdSetScissor(c, 0, 1, &scis);
-                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_rtaoApplyPipe);
-                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_rtaoApplyLayout,
-                                        0, 1, &self->m_rtaoApplySet[self->m_frameIdx], 0, nullptr);
-                vkCmdPushConstants(c, self->m_rtaoApplyLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   0, sizeof(RtaoApplyPush), &self->m_rtaoApplyPush);
-                vkCmdDraw(c, 3, 1, 0, 0);
-            };
-            m_graph.addPass(std::move(ap));
         }
 
         // ---- GPU-compute debris draw pass (K-T2) ----------------------------

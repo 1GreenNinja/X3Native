@@ -452,6 +452,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-roadnetwork") o.testRoadNetwork = true;
         else if (a == "--test-riverbridge") o.testRiverBridge = true;
         else if (a == "--test-underriver") o.testUnderRiver = true;
+        else if (a == "--test-canonunderriver") o.testCanonUnderRiver = true;
         else if (a == "--test-traffic") o.testTraffic = true;
         else if (a == "--test-gasstation") o.testGasStation = true;
         else if (a == "--test-factory") o.testFactory = true;
@@ -484,6 +485,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional settle-frame count (second positional, if numeric).
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 o.screenshotSettle = (int)std::strtol(argv[++i], nullptr, 10);
+        }
+        else if (a == "--ssaa") {
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                o.ssaa = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
+            if (o.ssaa > 8) o.ssaa = 8;   // 8x of 1280x720 is already 10240x5760
         }
         else if (a == "--shot-cam") {
             // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.

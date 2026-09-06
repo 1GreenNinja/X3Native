@@ -57,8 +57,14 @@ struct SubCombat {
 // terrain surface) — it is reached by submarine.
 class OceanBase {
 public:
+    // surfaceSlab=false skips the legacy opaque sea-surface slab: the canon
+    // host draws the sea with the engine water pass (world_water.cpp) and an
+    // opaque plate at the same Y would z-fight it and hide the bed the clear
+    // water is meant to show. Default true = byte-identical for every other
+    // caller (--test-oceanbase O5 counts the slab).
     void build(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-               SurfaceLibrary* sharedSurf = nullptr);   // W8-3: streamer-shared PBR cache
+               SurfaceLibrary* sharedSurf = nullptr,    // W8-3: streamer-shared PBR cache
+               bool surfaceSlab = true);
 
     // Begin submarine combat (gated — the host calls this on engagement, NOT at load).
     void engage() { m_combat.engaged = true; }
