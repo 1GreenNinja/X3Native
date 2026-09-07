@@ -127,6 +127,7 @@
 #include "river_bridge.h"      // x3::game::runRiverBridgeSelfTest (--test-riverbridge)
 #include "underground_river.h" // x3::game::UndergroundRiver::runSelfTest (--test-underriver)
 #include "world_water.h"       // x3::game::runCanonUnderRiverSelfTest (--test-canonunderriver)
+#include "river_rapids.h"      // x3::game::runRiverRapidsSelfTest (--test-riverrapids)
 #include "traffic.h"           // x3::game::runTrafficSelfTest (--test-traffic)
 #include "gas_station.h"       // x3::game::runGasStationSelfTest (--test-gasstation)
 #include "factory.h"           // x3::game::runFactorySelfTest (--test-factory)
@@ -830,6 +831,12 @@ int dispatchTests(const TestFlags& tf) {
                     "field, the vault/lights/mist build, headroom, ONE WATER switches channel "
                     "with clarity ON, clearance from freeway/interchange/dealership/city)...");
         return x3::game::runCanonUnderRiverSelfTest() ? 0 : 1;
+    }
+    if (tf.testRiverRapids) {
+        x3::logInfo("running RIVER RAPIDS self-test (reach table covers the run, flow speed "
+                    "follows gradient + width, foam 0 in calm / > 0.5 mid-rapid, X3_RIVER_RAPIDS=0 "
+                    "byte-identical, dt-scaled advection, boulders on the bed)...");
+        return x3::game::runRiverRapidsSelfTest() ? 0 : 1;
     }
     if (tf.testRiverBridge) {
         x3::logInfo("running RIVER BRIDGE self-test (the valley road meets the river "

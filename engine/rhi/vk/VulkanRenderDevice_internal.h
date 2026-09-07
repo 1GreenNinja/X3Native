@@ -3225,8 +3225,18 @@ private:
         // enclosed-water lighting only.
         glm::vec4 roomInfo;       // 1600
         glm::vec4 roomLights[32]; // 1616
+        // FLOW / RAPIDS (WaterParams::flow*, rocks*; app/river_rapids.h):
+        // flowInfo x = sample count (0 = legacy, nothing below is read),
+        // y = polyline length (m), z = rock count, w reserved. flowLut[k] =
+        // (speed m/s, turbulence, standing-wave amp m, wavelength m) at
+        // s = k/(count-1)*length; riverNodes[i].w carries cumulative s at the
+        // node ONLY when flowInfo.x > 0 (0 otherwise, so the Rev 11 bytes of
+        // that array are unchanged). rocks[i] = (x, z, radius, wake length).
+        glm::vec4 flowInfo;       // 2128
+        glm::vec4 flowLut[64];    // 2144
+        glm::vec4 rocks[12];      // 3168
     };
-    static_assert(sizeof(WaterUBO) == 2128, "WaterUBO must match the std140 layout in water.{vert,frag}");
+    static_assert(sizeof(WaterUBO) == 3360, "WaterUBO must match the std140 layout in water.{vert,frag}");
     WaterParams m_water{};   // cached tunables (setWaterParams)
     // Unit-patch grid mesh (vec2 grid coord per vertex), built once at init.
     VkBuffer      m_waterVbo = VK_NULL_HANDLE; VmaAllocation m_waterVboAlloc = nullptr;

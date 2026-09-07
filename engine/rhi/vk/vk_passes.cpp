@@ -2597,10 +2597,23 @@ void VulkanRenderDevice::prepareFrameData() {
             w.shoreInfo = glm::vec4((float)sn, m_water.shoreFade, 0.0f, 0.0f);
             for (uint32_t i = 0; i < sn; ++i)
                 w.shoreRadii[i >> 2][i & 3] = m_water.shoreRadii[i];
+            // FLOW / RAPIDS (feat/river-rapids): count 0 = legacy; the node
+            // array's w (cumulative s) is only written when the flow is on, so
+            // X3_RIVER_RAPIDS=0 uploads the Rev 11 bytes for every legacy field.
+            const uint32_t fn = std::min(m_water.flowSampleCount, WaterParams::kFlowSamples);
+            const uint32_t kn = std::min(m_water.rockCount, WaterParams::kMaxRocks);
             for (uint32_t i = 0; i < rn; ++i)
                 w.riverNodes[i] = glm::vec4(m_water.riverNodes[i][0],
                                             m_water.riverNodes[i][1],
-                                            m_water.riverNodes[i][2], 0.0f);
+                                            m_water.riverNodes[i][2],
+                                            fn ? m_water.riverNodeS[i] : 0.0f);
+            w.flowInfo = glm::vec4((float)fn, m_water.flowLength, (float)(fn ? kn : 0u), 0.0f);
+            for (uint32_t k = 0; k < fn; ++k)
+                w.flowLut[k] = glm::vec4(m_water.flowLut[k][0], m_water.flowLut[k][1],
+                                         m_water.flowLut[k][2], m_water.flowLut[k][3]);
+            for (uint32_t i = 0; fn && i < kn; ++i)
+                w.rocks[i] = glm::vec4(m_water.rocks[i][0], m_water.rocks[i][1],
+                                       m_water.rocks[i][2], m_water.rocks[i][3]);
             // ROOM LIGHTS (enclosed water): count 0 = the enclosed path lights
             // nothing (byte-identical to before the field). See WaterParams.
             const uint32_t ln = std::min(m_water.roomLightCount,

@@ -1503,6 +1503,27 @@ public:
         float    roomLightPos[kMaxRoomLights][3] = {};     // world metres
         float    roomLightRange[kMaxRoomLights] = {};      // PointLight::range
         float    roomLightColor[kMaxRoomLights][3] = {};   // PointLight::color (linear * intensity)
+        // ---- FLOW / RAPIDS (feat/river-rapids; app/river_rapids.h owns the
+        // model). A 1-D lookup along the river polyline: kFlowSamples samples
+        // spread over flowLength metres, sample k describing the water at
+        // s = k/(kFlowSamples-1) * flowLength. x = speed (m/s, downstream
+        // along the polyline tangent), y = turbulence 0..1 (0 = glassy,
+        // 1 = whitewater), z = standing-wave amplitude (m), w = standing-wave
+        // wavelength (m). riverNodeS[i] = cumulative metres at riverNodes[i]
+        // (the shader turns its closest-segment hit into s with it).
+        // flowSampleCount 0 = legacy: none of this is read, and every field
+        // above keeps the Rev 11 bytes (X3_RIVER_RAPIDS=0 is exactly that).
+        static constexpr uint32_t kFlowSamples = 64;
+        uint32_t flowSampleCount = 0;
+        float    flowLength = 0.0f;
+        float    riverNodeS[kMaxRiverNodes] = {};
+        float    flowLut[kFlowSamples][4] = {};
+        // Boulders in the flow: x,z world, z = horizontal radius (m),
+        // w = foam wake length downstream (m). The shader adds a bow pile and
+        // a widening wake to the foam mask around each. count 0 = none.
+        static constexpr uint32_t kMaxRocks = 12;
+        uint32_t rockCount = 0;
+        float    rocks[kMaxRocks][4] = {};
     };
     // Set the active water parameters for subsequent frames (cached + re-applied
     // each frame, like setSkyParams). Calling with enabled=false disables water.

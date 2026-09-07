@@ -86,6 +86,7 @@ struct TestFlags {
     bool testRiverBridge = false;     // --test-riverbridge (valley road + Bridge No.1)
     bool testUnderRiver = false;      // --test-underriver (the river under the mountain)
     bool testCanonUnderRiver = false; // --test-canonunderriver (the river + ONE WATER in canon)
+    bool testRiverRapids = false;     // --test-riverrapids (reach table, flow LUT, foam, door, dt)
     bool testTraffic = false;         // --test-traffic (freeway AI traffic)
     bool testGasStation = false;      // --test-gasstation (W-STATIONS forecourts + fuel stub)
     bool testFactory     = false;     // --test-factory (the works siting + the tickets)

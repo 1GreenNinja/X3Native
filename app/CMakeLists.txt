@@ -88,6 +88,7 @@ add_library(x3app SHARED
     river_bridge.cpp    # the valley road + Bridge No.1 over the river
     underground_river.cpp # W-UNDERRIVER: the lake-to-canyon river under the mountain
     world_water.cpp     # ONE water recipe (clarity/foam/river polyline) — tunnel + canon
+    river_rapids.cpp    # RIVER RAPIDS: reach table + flow LUT + boulders for the water pass (--test-riverrapids)
     factory.cpp         # THE GLIMVALE WORKS + the golden-ticket hunt
     river_life.cpp      # W-RIVER — fish + AI speedboats on the bridge reach
     gas_station.cpp     # W-STATIONS — forecourts off the network + the fuel stub

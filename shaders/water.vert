@@ -63,6 +63,14 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     // declared so the block layouts match. See water.frag.
     vec4  roomInfo;
     vec4  roomLights[32];
+    // FLOW / RAPIDS (app/river_rapids.h). flowInfo.x = LUT sample count
+    // (0 = off: nothing below is read and the pass is Rev 11 byte for byte),
+    // .y = polyline length (m), .z = rock count. flowLut[k] = (speed m/s,
+    // turbulence 0..1, standing-wave amplitude m, wavelength m) at
+    // s = k/(count-1)*length. riverNodes[i].w = cumulative s at node i.
+    vec4  flowInfo;
+    vec4  flowLut[64];
+    vec4  rocks[12];
 } u;
 
 layout(location = 0) in vec2 inGrid;   // patch coord in [-1,1]
@@ -78,6 +86,15 @@ layout(location = 3) out float vMask;
 // the top of its travel into crest foam (WaterParams::foam; 0 = off, and the
 // varying is simply ignored, so legacy worlds are untouched).
 layout(location = 4) out float vCrest;
+// FLOW (river-rapids): xy = downstream unit tangent of the containing
+// segment, z = speed (m/s), w = turbulence 0..1. All zero when the flow is off
+// or outside river mode; the fragment stage gates on z > 0.
+layout(location = 5) out vec4 vFlow;
+// CHANNEL frame: x = along-chain s (m), y = signed lateral / half-width
+// (-1..1 across the wet channel, beyond at the banks), z = standing-wave lift
+// normalised to its amplitude (-1..1; crest foam), w = standing-wave amplitude
+// at this vertex (m).
+layout(location = 6) out vec4 vChan;
 
 // One Gerstner wave: displaces a flat point p (XZ) and accumulates the analytic
 // partial derivatives needed to build the surface normal. Direction d is a unit
@@ -128,11 +145,19 @@ void main() {
     // (the waterline), except inside the ocean basin disc where the level
     // hands off to the sea instead (the estuary reaches open water).
     float mask = 1.0;
+    vec4 flow = vec4(0.0);
+    vec4 chan = vec4(0.0);
+    // Standing-wave displacement and its slope, accumulated in the channel's
+    // (along, lateral) frame and rotated into the world tangent basis below.
+    float swY = 0.0, swDs = 0.0, swDl = 0.0;
     int rn = int(u.riverInfo.x + 0.5);
     if (rn >= 2) {
         float hw = max(u.riverInfo.y, 1.0);
         float best = 1e30;
         float lvl  = u.riverNodes[0].z;
+        int   bi = 0;          // the containing segment (the closest one)
+        float bt = 0.0;        // ... and the parameter along it
+        float bside = 0.0;     // which side of the spine (sign of the 2-D cross)
         for (int i = 0; i + 1 < rn; ++i) {
             vec2  a  = u.riverNodes[i].xy;
             vec2  b  = u.riverNodes[i + 1].xy;
@@ -144,9 +169,60 @@ void main() {
             if (d2 < best) {
                 best = d2;
                 lvl  = mix(u.riverNodes[i].z, u.riverNodes[i + 1].z, t);
+                bi = i; bt = t;
+                bside = sign(ab.x * dp.y - ab.y * dp.x);
             }
         }
         float d = sqrt(best);
+        // ---- THE FLOW FIELD (river-rapids). The SAME closest-segment hit
+        // that fixed the water level fixes the along-chain s and the lateral
+        // offset, so flow, level and channel mask cannot disagree. Speed,
+        // turbulence and the standing-wave train come from the 1-D LUT.
+        if (u.flowInfo.x > 0.5) {
+            vec2  a  = u.riverNodes[bi].xy;
+            vec2  b  = u.riverNodes[bi + 1].xy;
+            vec2  dir = normalize(b - a);
+            float s   = mix(u.riverNodes[bi].w, u.riverNodes[bi + 1].w, bt);
+            float lat = d * bside;                     // signed metres off the spine
+            float fn  = u.flowInfo.x;
+            float fu  = clamp(s / max(u.flowInfo.y, 1.0), 0.0, 1.0) * (fn - 1.0);
+            int   k0  = int(floor(fu));
+            int   k1  = min(k0 + 1, int(fn) - 1);
+            vec4  f   = mix(u.flowLut[k0], u.flowLut[k1], fu - float(k0));
+            float spd = f.x, turb = f.y, swA = f.z, swL = max(f.w, 2.0);
+            // Fast water hugs the channel: the current dies against the banks
+            // (no-slip), the standing waves die with it.
+            float prof = 1.0 - smoothstep(0.55, 1.0, abs(lat) / hw);
+            float ln  = lat / hw;
+            flow = vec4(dir, spd * (0.35 + 0.65 * prof), turb);
+            // STANDING WAVES. In a rapid the surface is a train of crests
+            // fixed to the bed (they stand; the water runs through them):
+            // wavelength from the Froude relation lambda = 2*pi*v^2/g,
+            // floored at the water grid's Nyquist (river_rapids.cpp), crests
+            // across the flow, curved into haystacks by the lateral term,
+            // breathing slowly in time. A second train at ~half wavelength
+            // gives the surge between crests, and a third, slower and
+            // advected at the flow speed, is the boils that ride downstream.
+            // Amplitude = LUT (turbulence * speed) * bank profile.
+            if (swA > 0.0005) {
+                float A   = swA * prof;
+                float k   = 6.28318530718 / swL;
+                float ph1 = k * s + 0.9 * ln * ln + 0.35 * sin(time * 1.7 + s * 0.05);
+                float ph2 = k * 1.9 * s + 0.7 * ln - time * 0.8;
+                float ph3 = 2.1 * s - time * spd * 2.1 + 1.3 * ln;
+                float w3  = 0.7 * ln + time * 0.9;
+                float e3  = cos(w3);
+                float y1 = A * sin(ph1), y2 = 0.45 * A * sin(ph2), y3 = 0.35 * A * sin(ph3) * e3;
+                swY  = y1 + y2 + y3;
+                // d/ds and d/dlat (analytic), for the normal
+                swDs = A * k * cos(ph1) + 0.45 * A * k * 1.9 * cos(ph2) + 0.35 * A * 2.1 * cos(ph3) * e3;
+                swDl = (A * cos(ph1) * 1.8 * ln + 0.45 * A * cos(ph2) * 0.7
+                        + 0.35 * A * (cos(ph3) * 1.3 * e3 - sin(ph3) * 0.7 * sin(w3))) / hw;
+                chan = vec4(s, ln, swY / max(A, 1e-4), A);
+            } else {
+                chan = vec4(s, ln, 0.0, 0.0);
+            }
+        }
         vec2  bp = basePos - u.riverBasin.xy;
         bool  inBasin = (u.riverBasin.z > 0.0) &&
                         (dot(bp, bp) < u.riverBasin.z * u.riverBasin.z);
@@ -240,6 +316,17 @@ void main() {
         gerstner(d, w, A, Q, phi, time, basePos + off, disp, dPdx, dPdz);
     }
 
+    // Standing waves ride on top of the Gerstner swell: lift, plus the slope
+    // rotated from the channel frame (along = dir, lateral = its left
+    // perpendicular) into d/dx and d/dz. Zero unless the flow is on.
+    if (swY != 0.0) {
+        vec2 dir = flow.xy;
+        vec2 per = vec2(-dir.y, dir.x);
+        disp.y += swY;
+        dPdx.y += swDs * dir.x + swDl * per.x;
+        dPdz.y += swDs * dir.y + swDl * per.y;
+    }
+
     vec3 worldPos = vec3(basePos.x + disp.x, seaLevel + disp.y, basePos.y + disp.z);
 
     // Tangent basis: the columns are d(worldPos)/d(basePos.x) and /d(basePos.z).
@@ -252,6 +339,8 @@ void main() {
     vNormal   = nrm;
     vGrid     = inGrid;
     vMask     = mask;
-    vCrest    = disp.y;
+    vCrest    = disp.y - swY;   // the Gerstner lift alone (legacy crest foam)
+    vFlow     = flow;
+    vChan     = chan;
     gl_Position = u.viewProj * vec4(worldPos, 1.0);
 }

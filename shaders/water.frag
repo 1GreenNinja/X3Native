@@ -60,6 +60,10 @@ layout(set = 0, binding = 0) uniform WaterUBO {
     // colour*intensity. Only read on the enclosed path (p4.z > 0).
     vec4  roomInfo;
     vec4  roomLights[32];
+    // FLOW / RAPIDS (app/river_rapids.h; see water.vert for the layout).
+    vec4  flowInfo;
+    vec4  flowLut[64];
+    vec4  rocks[12];
 } u;
 
 // Scene depth buffer (the SSAO depth pre-pass output). Sampled as data (R32F via
@@ -74,6 +78,13 @@ layout(location = 2) in vec2 vGrid;
 layout(location = 3) in float vMask;
 // Raw Gerstner lift (m) — crest-foam driver (only read when u.p4.y > 0).
 layout(location = 4) in float vCrest;
+// FLOW (river-rapids; water.vert): xy = downstream tangent, z = speed (m/s,
+// 0 = no flow -> every rapids term below is skipped, Rev 11 byte for byte),
+// w = turbulence 0..1.
+layout(location = 5) in vec4 vFlow;
+// CHANNEL frame: x = along-chain s, y = lateral / half-width, z = standing-
+// wave lift normalised (-1..1), w = standing-wave amplitude (m).
+layout(location = 6) in vec4 vChan;
 
 layout(location = 0) out vec4 outColor;
 
@@ -175,6 +186,78 @@ vec3 roomLighting(vec3 P, vec3 N, vec3 V, float fresBase, out vec3 specOut) {
     return E;
 }
 
+// ---- THE FLOW MAP'S TWO PHASES (river-rapids). --------------------------
+// A pattern carried downstream forever runs off the end of float precision
+// and, worse, tears at every polyline bend (neighbouring segments carry it
+// different ways, and the tear grows with time). The standard cure: two
+// copies of the pattern, each advected only over a short cycle
+// (kFlowCycle s) and reset, offset half a cycle from each other, and
+// cross-faded so the copy that resets always has zero weight at the reset —
+// no pop, and the offset is bounded by speed*kFlowCycle/2 metres. The speed
+// is per second and the clock is the host's dt-scaled water clock, so the
+// pattern moves speed*dt per frame at any frame rate.
+// PAIRED with river_rapids.cpp riverFlowAdvect(): same cycle, same law.
+const float kFlowCycle = 2.4;
+void flowAdvect(float time, float speed, vec2 dir, out vec2 offA, out vec2 offB, out float wA) {
+    float phA = fract(time / kFlowCycle);
+    float phB = fract(phA + 0.5);
+    offA = -dir * speed * (phA - 0.5) * kFlowCycle;
+    offB = -dir * speed * (phB - 0.5) * kFlowCycle;
+    wA   = 1.0 - abs(2.0 * phA - 1.0);
+}
+
+// The Rev 11 ripple normal at pattern coordinate q (world XZ, possibly
+// advected) and pattern clock tt. Refactored out of main so the flow path can
+// evaluate it twice; the legacy path calls it once with (rp, time) and gets
+// the identical expression.
+vec3 rippleN(vec2 q, float tt) {
+    float r2 = sin((q.x + q.y) * 2.3 - tt * 1.7);
+    return vec3(0.06 * (cos(q.x * 1.7 + tt * 1.3) + r2 * 0.5),
+                0.0,
+                0.06 * (-sin(q.y * 1.9 - tt * 1.1) + r2 * 0.5));
+}
+
+// The CHURN: the 2-4 m surface roughness a rapid has that the vertex grid
+// cannot carry (river_rapids.cpp's Nyquist note). Higher-frequency gradients
+// than the ripple, advected with the flow, amplitude by turbulence.
+vec3 churnN(vec2 q, float tt, float turb) {
+    float a = sin(q.x * 4.1 + q.y * 1.3 - tt * 2.9) * cos(q.y * 3.7 - q.x * 0.9 + tt * 2.1);
+    float b = sin((q.x - q.y) * 5.3 + tt * 3.7);
+    return vec3(0.34 * turb * (cos(q.x * 4.1 + q.y * 1.3 - tt * 2.9) + 0.6 * b),
+                0.0,
+                0.34 * turb * (-sin(q.y * 3.7 - q.x * 0.9 + tt * 2.1) * 0.9 + 0.6 * a));
+}
+
+// Rapids foam mask, noise-free part. PAIRED with river_rapids.cpp
+// riverFoamBaseAt(): reach turbulence down the middle, more along the banks
+// (fast water piles on the rock it is thrown against).
+float rapidsFoamBase(float turb, float latN) {
+    float bank = smoothstep(0.55, 0.95, abs(latN));
+    return smoothstep(0.08, 0.70, 0.75 * turb + 0.5 * bank * turb);
+}
+
+// Boulder wakes: for every rock in the UBO, a bow pile just upstream and a
+// widening V of foam downstream that fades over the wake length. In the
+// rock's own frame (along = flow tangent, across = its perpendicular).
+float rockWake(vec2 P, vec2 dir) {
+    int rn = int(u.flowInfo.z + 0.5);
+    vec2 per = vec2(-dir.y, dir.x);
+    float wake = 0.0;
+    for (int i = 0; i < rn; ++i) {
+        vec4 r = u.rocks[i];
+        vec2 dp = P - r.xy;
+        float R = max(r.z, 0.3), L = max(r.w, 1.0);
+        float along = dot(dp, dir), across = abs(dot(dp, per));
+        // the pile: water stacking on the upstream face and sheeting off the sides
+        float bow = (1.0 - smoothstep(R * 0.9, R * 1.7, length(dp))) * (1.0 - smoothstep(-R * 0.2, R * 0.9, along));
+        // the wake: half-width grows from 0.7R at the rock to 1.6R at the end
+        float hwk = R * (0.7 + 0.9 * clamp(along / L, 0.0, 1.0));
+        float w = (along > 0.0) ? (1.0 - smoothstep(hwk * 0.45, hwk, across)) * (1.0 - smoothstep(0.0, L, along)) : 0.0;
+        wake = max(wake, max(bow, w));
+    }
+    return wake;
+}
+
 void main() {
     // River mode: past the channel's waterline there is no water — drop the
     // fragment before any shading. Legacy flat sea has vMask == 1 everywhere.
@@ -190,11 +273,28 @@ void main() {
     // gradients so the surface sparkles between the macro Gerstner waves. ---
     float time = u.p0.y;
     vec2 rp = vWorldPos.xz;
-    float r1 = sin(rp.x * 1.7 + time * 1.3) + cos(rp.y * 1.9 - time * 1.1);
-    float r2 = sin((rp.x + rp.y) * 2.3 - time * 1.7);
-    vec3 ripple = vec3(0.06 * (cos(rp.x * 1.7 + time * 1.3) + r2 * 0.5),
-                       0.0,
-                       0.06 * (-sin(rp.y * 1.9 - time * 1.1) + r2 * 0.5));
+    // ---- THE FLOW (river-rapids). flowOn: this fragment is on a flowing
+    // river. The ripple pattern is then CARRIED by the current (two-phase
+    // advection, above) instead of scrolling in place, its own clock slowed
+    // so what you see moving is the water; a rapid adds the churn normal on
+    // top. rpA/rpB are the two advected pattern coordinates and wA their
+    // blend — reused by the foam noise below so the foam rides the same water.
+    bool  flowOn = (u.flowInfo.x > 0.5) && (vFlow.z > 0.0);
+    float turb = flowOn ? clamp(vFlow.w, 0.0, 1.0) : 0.0;
+    vec2  rpA = rp, rpB = rp;
+    float wA = 1.0;
+    vec3 ripple;
+    if (flowOn) {
+        vec2 oA, oB;
+        flowAdvect(time, vFlow.z, normalize(vFlow.xy), oA, oB, wA);
+        rpA = rp + oA; rpB = rp + oB;
+        float tt = time * 0.35;
+        ripple = mix(rippleN(rpB, tt), rippleN(rpA, tt), wA);
+        if (turb > 0.0)
+            ripple += mix(churnN(rpB, tt, turb), churnN(rpA, tt, turb), wA);
+    } else {
+        ripple = rippleN(rp, time);
+    }
     N = normalize(N + ripple);
 
     // --- Depth-based water color: how much water the view ray crosses before the
@@ -256,6 +356,15 @@ void main() {
         roomIrr  = mix(vec3(1.0), E, enc);
         roomSpec = sp * enc;
     }
+    // AERATED WATER (river-rapids): a rapid's body is full of bubbles and
+    // reads pale, opaque green-white, not clear — the same fraction the foam
+    // mask leaves open. Scaled by turbulence; zero in calm water and with the
+    // flow off (byte-identical there). Applied before the room's light so it
+    // is lit like the rest of the body, not painted on.
+    if (turb > 0.0) {
+        vec3 aerated = mix(u.shallowColor.rgb, vec3(0.42, 0.55, 0.56), 0.55);
+        refractCol = mix(refractCol, aerated, 0.30 * turb);
+    }
     refractCol *= roomIrr;
     vec3 color = mix(refractCol, reflectCol, fres) + roomSpec;
 
@@ -308,6 +417,7 @@ void main() {
     // (night foam is grey, not glowing — ACES law, this is NOT emissive).
     // p4.y == 0 skips everything: legacy worlds byte-identical.
     float foamAmt = 0.0;
+    float foamRelief = 1.0;   // whitewater clump thickness (river-rapids); 1 = legacy
     if (u.p4.y > 0.0) {
         float contactF = 1.0 - smoothstep(0.04, 1.05, waterDepth);
         // 0.70 threshold: at 0.62 a calm river's every second swell whipped
@@ -318,6 +428,61 @@ void main() {
                  * sin((rp.x + rp.y * 0.7) * 1.31 - time * 1.2);
         float writhe = clamp(0.50 + 0.30 * n1 + 0.24 * n2, 0.0, 1.0);
         foamAmt = clamp((contactF + crestF * 0.6) * writhe * u.p4.y, 0.0, 1.0);
+        // ---- WHITEWATER (river-rapids). Only on a flowing river; the
+        // legacy contact + crest lace above is untouched and this adds to it.
+        // Mask = reach turbulence (river_rapids.cpp's LUT, ramped over the
+        // reach edges) + standing-wave crests + the banks in fast water +
+        // boulder bow piles and wakes, through one smoothstep — then broken
+        // up by a second-octave noise ADVECTED with the flow (rpA/rpB/wA from
+        // the ripple, so the foam travels with the water it is on) and
+        // streaked along the current (foam in a rapid is drawn into lines
+        // parallel to the flow, not blobs). Still albedo: foamCol * foamLit
+        // below lights it by the room or the sun, never emissive.
+        if (flowOn) {
+            vec2 dir = normalize(vFlow.xy);
+            float crestSw = smoothstep(0.15, 0.85, vChan.z) * turb;
+            float wake    = rockWake(rp, dir);
+            float mask    = smoothstep(0.08, 0.70, 0.75 * turb + 0.5 * smoothstep(0.55, 0.95, abs(vChan.y)) * turb
+                                                   + 0.6 * crestSw + 0.9 * wake);
+            // second octave (2-3 m patches), two-phase advected
+            float n3A = sin(rpA.x * 1.9 + rpA.y * 2.6) * cos(rpA.x * 2.4 - rpA.y * 1.7)
+                      + 0.5 * sin((rpA.x - rpA.y * 0.6) * 4.3);
+            float n3B = sin(rpB.x * 1.9 + rpB.y * 2.6) * cos(rpB.x * 2.4 - rpB.y * 1.7)
+                      + 0.5 * sin((rpB.x - rpB.y * 0.6) * 4.3);
+            float n3  = mix(n3B, n3A, wA);
+            // third octave (0.6-0.9 m cells): the lace itself. Without it the
+            // patches read as soft milk (eyes-on rapid_gorge_downstream v1);
+            // foam is a net of bubbles with dark water in the holes.
+            // In the FLOW frame, stretched x2 along the current (foam is
+            // drawn into streamers, not dots), domain-warped by the second
+            // octave so the cells never line up into a lattice (v2 of this
+            // read as polka dots), three non-orthogonal directions summed.
+            vec2 per = vec2(-dir.y, dir.x);
+            vec2 qA = vec2(dot(rpA, dir) * 0.5, dot(rpA, per) * 1.25) + 0.55 * vec2(n3, -n3 * 0.7);
+            vec2 qB = vec2(dot(rpB, dir) * 0.5, dot(rpB, per) * 1.25) + 0.55 * vec2(n3, -n3 * 0.7);
+            float n4A = sin(qA.x * 7.3 + qA.y * 9.1) * cos(qA.x * 8.7 - qA.y * 6.2)
+                      + 0.7 * sin(qA.x * 5.1 - qA.y * 11.3 + 1.7) * sin(qA.x * 10.7 + qA.y * 3.9);
+            float n4B = sin(qB.x * 7.3 + qB.y * 9.1) * cos(qB.x * 8.7 - qB.y * 6.2)
+                      + 0.7 * sin(qB.x * 5.1 - qB.y * 11.3 + 1.7) * sin(qB.x * 10.7 + qB.y * 3.9);
+            float n4  = mix(n4B, n4A, wA) * 0.6;
+            // streaks: lines along the flow (constant lateral coordinate),
+            // wandering slowly with s and time
+            float streak = sin(vChan.y * u.riverInfo.y * 2.7 + 0.8 * sin(vChan.x * 0.21 + time * 0.6) + n3 * 0.9);
+            float lace = clamp(0.50 + 0.28 * n3 + 0.16 * streak + 0.20 * n4, 0.0, 1.0);
+            // The threshold falls with the mask: heavy water is about half
+            // foam, light water only the peaks. A hard-ish edge (0.16 wide)
+            // keeps the holes dark; a thin film (mask^2 * 0.12) greys the body
+            // of the heaviest water without painting it over.
+            float th    = mix(0.80, 0.50, mask);
+            float cover = smoothstep(th, th + 0.16, lace);
+            float film  = 0.12 * mask * mask;
+            float ww    = mask * cover + film;
+            // relief: the middle of a clump is thicker (brighter) than its
+            // edge — carried into foamCol below through foamRelief
+            foamRelief = mix(1.0, 0.70 + 0.30 * smoothstep(th, th + 0.40, lace),
+                             clamp(mask * cover / max(foamAmt + ww, 1e-4), 0.0, 1.0));
+            foamAmt = clamp(foamAmt + ww * u.p4.y, 0.0, 1.0);
+        }
         // Enclosed foam is lit by the room, not by the sky overhead: the
         // same irradiance the body just received (white foam is albedo, not
         // a light source — under a bank lamp it is bright, between lamps it
@@ -327,7 +492,7 @@ void main() {
         vec3 foamLit = (u.roomInfo.x > 0.5)
             ? mix(vec3(foamLitOpen), roomIrr, enc)
             : vec3(mix(foamLitOpen, 0.42, enc));
-        vec3 foamCol = vec3(0.82, 0.87, 0.90) * foamLit;
+        vec3 foamCol = vec3(0.82, 0.87, 0.90) * foamLit * foamRelief;
         color = mix(color, foamCol, foamAmt);
     }
 
@@ -394,6 +559,9 @@ void main() {
     // it rather than past it.
     const float kMaxSeeThrough = 0.86;
     float seeThrough = min(kMaxSeeThrough, u.p4.x * (1.0 - fres) * transLum);
+    // Turbulent water is opaque (aerated body, above): the see-through dies
+    // with turbulence. Zero effect in calm water and with the flow off.
+    seeThrough *= (1.0 - 0.85 * turb);
     // Foam closes the surface back up (churned water is opaque white, and a
     // see-through foam patch would read as soap scum on glass).
     // Room-light streaks close the surface the way the sun glint does (a
