@@ -152,11 +152,19 @@ private:
         float dx = 0, dz = 0;           // downstream unit direction
         float rush = 0;                 // 0 = pool breath, 1 = whitewater spray
         float acc = 0;                  // spawn accumulator
+        // river-rapids: an authored spray source (boulder lee, rapid crest)
+        // sets sprayP >= 0 to fix the spray/haze odds instead of deriving
+        // them from rush, and sprayScale shrinks/dims/lowers each droplet
+        // burst (the 0.95-rush bursts read as bright blobs from eye height).
+        // -1 / 1 = the legacy derivation, byte-identical with the door shut.
+        float sprayP = -1.0f;
+        float sprayScale = 1.0f;
     };
     struct Puff {
         float x = 0, y = 0, z = 0;
         float vx = 0, vy = 0, vz = 0;
         float age = 0, life = 1, size0 = 1.0f;
+        float bright = 1.0f;            // spray brightness scale (river-rapids)
         bool  spray = false;            // additive droplet vs alpha haze
     };
     std::vector<x3::rhi::PointLight> m_lights;   // the whole run's accents

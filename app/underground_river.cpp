@@ -476,7 +476,7 @@ UndergroundRiver::Result UndergroundRiver::build(
     // whitewater; one table for both.
     const bool rapids = riverRapidsEnabled();
     m_mist.clear();
-    for (float s = 0.0f; s <= total; s += 26.0f) {
+    for (float s = 0.0f; s <= total; ) {
         float cx, cz, w, nat, dx, dz;
         walk.at(s, cx, cz, w, nat, dx, dz);
         int ni = 0;
@@ -485,10 +485,21 @@ UndergroundRiver::Result UndergroundRiver::build(
                         std::max(uc.cum[ni + 1] - uc.cum[ni], 1e-3f), 0.0f, 1.0f);
         float rush = uc.rush[ni] +
                      (uc.rush[std::min(ni + 1, uc.n - 1)] - uc.rush[ni]) * t;
-        if (rapids) rush = std::max(rush, riverReachTurbulenceAt(s, total));
+        // A reach the rapids table calls turbulent throws spray of its own:
+        // twice as many sources (13 m apart, not 26), each a low, small,
+        // dim burst — many droplets skimming the crests, not a few bright
+        // blobs (lead's review of v1). The derived rush table still wins
+        // where it is already rushing (the steps).
+        const float reachTurb = rapids ? riverReachTurbulenceAt(s, total) : 0.0f;
+        const bool  reachSpray = reachTurb > 0.3f;
+        MistSource ms;
+        if (reachSpray && 0.55f * reachTurb > rush) {
+            rush = 0.55f * reachTurb;
+            ms.sprayP = 1.0f; ms.sprayScale = 0.5f;
+        }
+        s += reachSpray ? 13.0f : 26.0f;
         const bool pool = (t < 0.5f ? uc.pool[ni] : uc.pool[std::min(ni + 1, uc.n - 1)]);
         if (rush < 0.35f && !pool) continue;      // still water does not steam
-        MistSource ms;
         ms.x = cx; ms.y = w + 0.25f; ms.z = cz;
         ms.dx = dx; ms.dz = dz; ms.rush = rush;
         m_mist.push_back(ms);
@@ -570,11 +581,14 @@ UndergroundRiver::Result UndergroundRiver::build(
                 m_bodies.push_back(phys->addSphere(hr, x3::phys::Vec3{ rb.x, rb.y - 0.1f, rb.z },
                                                    0.0f, x3::phys::Layer::Static));
             }
-            // spray in the lee: water piling on a rock throws it
+            // spray in the lee: water piling on a rock throws it — all of
+            // it spray (sprayP 1), small and dim (scale 0.45), ~4 bursts a
+            // second (rush 0.6); 0.95 read as a bright blob per rock.
             MistSource ms;
             ms.x = rb.x + rb.dirX * rb.radius * 1.2f; ms.y = rb.y + kBoulderSquash * rb.radius * 0.4f;
             ms.z = rb.z + rb.dirZ * rb.radius * 1.2f;
-            ms.dx = rb.dirX; ms.dz = rb.dirZ; ms.rush = 0.95f;
+            ms.dx = rb.dirX; ms.dz = rb.dirZ; ms.rush = 0.6f;
+            ms.sprayP = 1.0f; ms.sprayScale = 0.45f;
             m_mist.push_back(ms);
             ++r.boulders;
         }
@@ -753,14 +767,19 @@ void UndergroundRiver::update(float dt, Scene& scene) {
             p.x = ms.x + px * lat + ms.dx * (rnd() * 8.0f - 4.0f);
             p.y = ms.y + rnd() * 0.6f;
             p.z = ms.z + pz * lat + ms.dz * (rnd() * 8.0f - 4.0f);
-            p.spray = ms.rush > 0.5f && rnd() < ms.rush;
+            // (the legacy branch keeps its short-circuit so its rnd()
+            // sequence — and every door-shut puff — is byte-identical)
+            if (ms.sprayP >= 0.0f) p.spray = rnd() < ms.sprayP;
+            else                   p.spray = ms.rush > 0.5f && rnd() < ms.rush;
+            const float sc = p.spray ? ms.sprayScale : 1.0f;
             // Spray is thrown downstream and up; pool haze barely moves.
-            const float thr = p.spray ? (1.4f + 2.2f * ms.rush) : 0.15f;
+            const float thr = p.spray ? (1.4f + 2.2f * ms.rush) * (0.5f + 0.5f * sc) : 0.15f;
             p.vx = ms.dx * thr + (rnd() - 0.5f) * 0.5f;
             p.vz = ms.dz * thr + (rnd() - 0.5f) * 0.5f;
-            p.vy = p.spray ? (0.9f + 1.4f * rnd()) : (0.10f + 0.14f * rnd());
+            p.vy = p.spray ? (0.9f + 1.4f * rnd()) * (0.5f + 0.5f * sc) : (0.10f + 0.14f * rnd());
             p.life = p.spray ? (1.3f + 1.2f * rnd()) : (5.0f + 4.0f * rnd());
-            p.size0 = p.spray ? (0.5f + 0.7f * rnd()) : (2.4f + 2.4f * rnd());
+            p.size0 = p.spray ? (0.5f + 0.7f * rnd()) * sc : (2.4f + 2.4f * rnd());
+            p.bright = sc;
             p.age = 0.0f;
         }
     }
@@ -814,7 +833,7 @@ void UndergroundRiver::render(x3::rhi::IRenderDevice& device,
             pi.size = p.size0 * (1.0f + 1.5f * t);
             // Fade IN over the first fifth, then out: a droplet burst that
             // pops into existence at full brightness reads as a sprite bug.
-            const float a = std::min(t * 5.0f, 1.0f) * (1.0f - t) * 0.55f;
+            const float a = std::min(t * 5.0f, 1.0f) * (1.0f - t) * 0.55f * p.bright;
             // Spray is forward-scattering: it throws back more than a flat
             // albedo would (the 3.0), which is why a lit plume reads white.
             pi.color[0] = 0.52f * a * E[0] * 3.0f;

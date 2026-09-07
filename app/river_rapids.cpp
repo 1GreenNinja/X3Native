@@ -72,27 +72,32 @@ constexpr float kV0   = 0.35f;
 constexpr float kV1   = 1.90f;
 constexpr float kAref = 2.0f * kURHalfWidth * 2.0f;
 constexpr float kVMin = 0.10f, kVMax = 4.5f;
-// Standing waves: amplitude per (turbulence * speed). turb 1 at 2.25 m/s
-// -> 0.25 m crests over a 7 m channel; the plunge at 3 m/s -> 0.33 m.
-constexpr float kSwAmpPerVel = 0.11f;
-constexpr float kSwAmpMax    = 0.40f;
-// Froude wavelength lambda = 2*pi*v^2/g is 3.2 m at 2.25 m/s — but the water
-// grid is 480 m / 191 cells = 2.5 m, and a vertex displacement shorter than
-// ~2.5 cells is aliasing, not a wave. Floor the DISPLACED wavelength at 7 m;
-// the finer 2-4 m churn lives in the fragment stage's detail normal, where
-// there is a sample per pixel.
-constexpr float kSwLenMin = 7.0f;
-constexpr float kSwLenMax = 16.0f;
+// Standing waves: amplitude per (turbulence * speed). turb 0.9 at 1.6 m/s
+// -> 0.29 m crests; the gorge (0.81, 2.0 m/s) -> 0.32 m. (0.11 read as a
+// swell, not a wave train, from eye height — lead's review of the v1 stills.)
+constexpr float kSwAmpPerVel = 0.20f;
+constexpr float kSwAmpMax    = 0.50f;
+// Froude wavelength lambda = 2*pi*v^2/g is 2.6 m at 2.0 m/s; a real train
+// in a boulder rapid runs longer than the pure relation (the bed sets it),
+// so x1.6. The water grid is 480 m / 191 = 2.5 m — but with the flow on
+// water.vert warps the grid toward the camera (0.75 m cells near the eye,
+// where the waves are judged), so the displaced wavelength can go to 3 m.
+constexpr float kSwLenScale = 1.6f;
+constexpr float kSwLenMin = 3.0f;
+constexpr float kSwLenMax = 10.0f;
 
-// The boulders: (s, lateral, radius). Fast reaches only — a rock in a calm
-// pool is a pool with a rock in it, not a rapid. Lateral within the wet bed
-// (|lat| < kURBedHalfW - r) so every one sits on the flat channel floor.
-struct BoulderSpec { float s, lat, r; };
+// The boulders: (s, lateral, radius, crown above the water). Fast reaches
+// only — a rock in a calm pool is a pool with a rock in it, not a rapid.
+// Lateral within the wet bed (|lat| < kURBedHalfW - r) so every one sits on
+// the flat channel floor. Two per rapid stand 1.9-2.3 m proud so the water
+// visibly piles on the upstream face and splits (lead's review: 1.25 m rocks
+// read as dark lumps on flat water).
+struct BoulderSpec { float s, lat, r, show; };
 const BoulderSpec kBoulders[] = {
-    {  240.0f,  1.9f, 1.9f }, {  290.0f, -2.2f, 1.7f }, {  322.0f,  0.4f, 1.6f },   // the first step
-    {  455.0f, -1.6f, 2.0f }, {  505.0f,  2.3f, 1.8f }, {  540.0f, -0.5f, 1.6f },   // the big step
-    { 1670.0f,  1.4f, 1.9f }, { 1705.0f, -2.1f, 1.7f }, { 1750.0f,  2.2f, 1.8f },   // the gorge
-    { 1785.0f, -0.7f, 1.6f },
+    {  240.0f,  1.9f, 1.9f, 1.4f }, {  290.0f, -2.2f, 1.7f, 2.0f }, {  322.0f,  0.4f, 1.6f, 1.25f },   // the first step
+    {  455.0f, -1.6f, 2.0f, 2.2f }, {  505.0f,  2.3f, 1.8f, 1.5f }, {  540.0f, -0.5f, 1.6f, 1.25f },   // the big step
+    { 1670.0f,  1.4f, 1.9f, 1.6f }, { 1705.0f, -2.1f, 1.7f, 2.3f }, { 1750.0f,  2.2f, 1.8f, 1.9f },   // the gorge
+    { 1785.0f, -0.7f, 1.6f, 1.25f },
 };
 constexpr uint32_t kBoulderCount = (uint32_t)(sizeof(kBoulders) / sizeof(kBoulders[0]));
 
@@ -225,18 +230,107 @@ RiverFlowSample underRiverFlowAt(const UnderRiverChain& uc, float s) {
     f.speed     = riverFlowSpeed(f.grade, f.halfWidth, f.depth);
     f.turbulence = riverReachTurbulenceAt(s, total);
     f.waveAmp = std::min(kSwAmpPerVel * f.turbulence * f.speed, kSwAmpMax);
-    f.waveLen = std::clamp(6.2831853f * f.speed * f.speed / 9.81f, kSwLenMin, kSwLenMax);
+    f.waveLen = std::clamp(kSwLenScale * 6.2831853f * f.speed * f.speed / 9.81f, kSwLenMin, kSwLenMax);
     return f;
 }
 
-// PAIRED with water.frag rapidsFoamBase(): 0.75*turb + 0.5*bank*turb through
-// smoothstep(0.12, 0.75). Mid-channel in a full Rapid that is 0.75 -> 1.0;
-// a 0.35 riffle (turb 0.16) -> ~0.0; Calm -> exactly 0.
+// ---- THE WHITEWATER MIRRORS. Each of these is ONE expression in
+// shaders/water.frag (swCrest / wwMask / wwLaceOne / wwThreshold / wwCover)
+// and the same expression here; the gate runs them, the GPU draws them.
+// Edit both or break --test-riverrapids.
+
+// PAIRED water.vert/frag swCrest(): the primary standing-wave train. A sine
+// crest-sharpened by pow(., 2.2) — narrow crests, broad troughs, the shape
+// of a real haystack — with a slight downstream bow toward the banks
+// (0.5*ln^2) and a slow breath in time.
+float riverStandingWaveCrest(float s, float latN, float waveLen, float time) {
+    const float k   = 6.28318530718f / std::max(waveLen, 2.0f);
+    const float ph1 = k * s + 0.5f * latN * latN + 0.35f * std::sin(time * 1.7f + s * 0.05f);
+    const float h   = 0.5f + 0.5f * std::sin(ph1);
+    return 2.0f * std::pow(h, 2.2f) - 1.0f;
+}
+
+// PAIRED water.frag wwMask(): crest caps carry the foam (a full-turbulence
+// cap reaches mask 1: a solid broken-white band across the channel), the
+// outer quarter of the width and the boulders the rest; 0.30*turb is the
+// sparse lace on the dark water between. (v4 had 0.40 / 0.55 with the bank
+// term starting at 60% of the half-width: the foam spread evenly over the
+// whole surface and the crest bands drowned in it — eyes-on
+// rapid_gorge_downstream, v3/v4.)
+float riverWhitewaterMask(float turb, float latN, float crest, float wake) {
+    const float bank = smoothstepf(0.75f, 1.00f, std::fabs(latN));
+    const float cap  = smoothstepf(0.15f, 0.85f, crest);
+    return std::clamp(0.30f * turb + 1.00f * cap * turb + 0.35f * bank * turb + wake, 0.0f, 1.0f);
+}
+
+// PAIRED water.frag wwLaceOne(): q = (along / kLaceStretch, across). n1 is
+// the 2 m patchiness (domain-warping the rest so nothing lines up), n2 the
+// 0.6 m cells, n3 the 0.2 m lace (faded by `fine` with view distance in the
+// shader, 1 here), st the across-flow streaks that run long along the flow.
+static float laceOne(float qx, float qy, float fine) {
+    const float n1 = std::sin(qx * 1.9f + qy * 1.3f) * std::cos(qx * 1.1f - qy * 2.4f);
+    qy += 0.35f * n1;
+    const float n2 = std::sin(qx * 7.3f + qy * 9.1f) * std::cos(qx * 4.7f - qy * 11.2f)
+                   + 0.7f * std::sin(qx * 5.1f - qy * 14.3f + 1.7f) * std::sin(qx * 9.7f + qy * 6.9f);
+    const float n3 = std::sin(qx * 23.0f + qy * 31.0f) * std::cos(qx * 17.0f - qy * 37.0f)
+                   + 0.6f * std::sin(qx * 29.0f - qy * 19.0f + 0.7f) * std::sin(qx * 13.0f + qy * 41.0f);
+    const float st = std::sin(qy * 6.3f + 0.9f * std::sin(qy * 2.1f + qx * 0.35f))
+                   + 0.6f * std::sin(qy * 17.0f + 1.2f * std::sin(qy * 4.7f - qx * 0.5f));
+    return 0.5f + 0.06f * n1 + 0.28f * n2 + 0.30f * fine * n3 + 0.14f * st;
+}
+float riverWhitewaterLace(const float q[2], float fine) { return laceOne(q[0], q[1], fine); }
+// PAIRED water.frag wwThreshold()/wwCover(): the threshold falls with the
+// mask (0.92 -> 0.22: a full crest cap or a bow pile is a solid raft with
+// dark holes through it, the water between a few percent of flecks); the
+// 0.07 edge is the bubble line, not a fade. The steep fall is deliberate —
+// the mask decides WHERE, and a place is either foaming or it is not; the
+// even 0.87 -> 0.34 of v3/v4 made every square metre of a rapid half foam
+// and the eye could find no crest, no wake, no dark water.
+// The trailing smoothstep is "no mask, no foam": the lace peaks reach 1.5,
+// so without it still water would grow a few flecks (R9 wants calm == 0).
+float riverWhitewaterThreshold(float mask) { return 0.92f - 0.70f * mask; }
+float riverWhitewaterCover(float mask, float lace) {
+    const float th = riverWhitewaterThreshold(mask);
+    return smoothstepf(th, th + 0.07f, lace) * smoothstepf(0.0f, 0.05f, mask);
+}
+// PAIRED water.frag wwCoverBlend(): threshold each phase, fade each hard
+// about its own half-weight (0.4..0.6 of a 1.2 s ramp = ~0.25 s), keep the
+// brighter. A raft therefore forms and dissolves in a quarter second — which
+// is what foam in a rapid does — instead of haunting the frame as the grey
+// ghost of the phase on its way out (v3); a max, not a sum, so a region
+// both phases cover is white once and the coverage does not pulse.
+float riverWhitewaterCoverBlend(float mask, float laceA, float laceB, float wA) {
+    const float a = riverWhitewaterCover(mask, laceA), b = riverWhitewaterCover(mask, laceB);
+    return std::max(a * smoothstepf(0.4f, 0.6f, wA), b * smoothstepf(0.4f, 0.6f, 1.0f - wA));
+}
+
 float riverFoamBaseAt(const UnderRiverChain& uc, float s, float lat) {
     if (uc.n < 2) return 0.0f;
     const RiverFlowSample f = underRiverFlowAt(uc, s);
-    const float bank = smoothstepf(0.55f, 0.95f, std::fabs(lat) / std::max(f.halfWidth, 1.0f));
-    return smoothstepf(0.08f, 0.70f, 0.75f * f.turbulence + 0.5f * bank * f.turbulence);
+    return riverWhitewaterMask(f.turbulence, lat / std::max(f.halfWidth, 1.0f), 1.0f, 0.0f);
+}
+
+float riverWhitewaterCoverage(const UnderRiverChain& uc, float s, float time) {
+    if (uc.n < 2) return 0.0f;
+    const RiverFlowSample f = underRiverFlowAt(uc, s);
+    const float hw = std::max(f.halfWidth, 1.0f);
+    const float L  = 3.0f * std::max(f.waveLen, 3.0f);
+    // The flow frame IS (along, across) here — the mirror does not need the
+    // world rotation the shader does through dir/per; advection is along.
+    float offA[2], offB[2], wA;
+    riverFlowAdvect(time, f.speed, 1.0f, 0.0f, offA, offB, wA);
+    double sum = 0.0; int n = 0;
+    for (float a = 0.0f; a < L; a += 0.1f) {
+        for (float c = -0.6f * hw; c <= 0.6f * hw; c += 0.1f) {
+            const float crest = f.waveAmp > 0.0005f ? riverStandingWaveCrest(s + a, c / hw, f.waveLen, time) : 0.0f;
+            const float mask  = riverWhitewaterMask(f.turbulence, c / hw, crest, 0.0f);
+            const float qA[2] = { (a + offA[0]) / kLaceStretch, c + offA[1] };
+            const float qB[2] = { (a + offB[0]) / kLaceStretch, c + offB[1] };
+            sum += riverWhitewaterCoverBlend(mask, riverWhitewaterLace(qA, 1.0f),
+                                             riverWhitewaterLace(qB, 1.0f), wA); ++n;
+        }
+    }
+    return n ? (float)(sum / n) : 0.0f;
 }
 
 uint32_t underRiverBoulders(const UnderRiverChain& uc, RiverBoulder* out, uint32_t maxN) {
@@ -261,7 +355,8 @@ uint32_t underRiverBoulders(const UnderRiverChain& uc, RiverBoulder* out, uint32
         // flat bed (|lat| + r <= kURBedHalfW): the carve's side slope would
         // otherwise leave a bigger rock with one flank hanging off the wall.
         const float bed = terrainHeightAtWorld(r.x, r.z);
-        const float need = (c.w - bed + kBoulderShow + 0.30f) / (2.0f * kBoulderSquash);
+        r.show = std::max(b.show, kBoulderShow);
+        const float need = (c.w - bed + r.show + 0.30f) / (2.0f * kBoulderSquash);
         r.radius = std::max(b.r, need);
         const float latMax = std::max(kURBedHalfW - r.radius, 0.0f);
         if (std::fabs(r.lat) > latMax) {
@@ -269,7 +364,7 @@ uint32_t underRiverBoulders(const UnderRiverChain& uc, RiverBoulder* out, uint32
             r.x = uc.x[c.i] + dx * (b.s - uc.cum[c.i]) + px * r.lat;
             r.z = uc.z[c.i] + dz * (b.s - uc.cum[c.i]) + pz * r.lat;
         }
-        r.y = c.w + kBoulderShow - kBoulderSquash * r.radius;
+        r.y = c.w + r.show - kBoulderSquash * r.radius;
         const RiverFlowSample f = underRiverFlowAt(uc, b.s);
         r.wakeLen = std::clamp(3.0f * r.radius + 2.5f * f.speed, 6.0f, 18.0f);
         out[n++] = r;
@@ -454,6 +549,38 @@ bool runRiverRapidsSelfTest() {
                       "bank adds %.3f in the gorge", calmMax, riffleMax, rapidMin, bankBoost);
         check(calmMax == 0.0f && rapidMin > 0.5f && riffleMax < rapidMin && bankBoost >= 0.0f,
               "R4 foam is zero in calm water and > 0.5 down the middle of every rapid", d);
+    }
+
+    // ---- R9 foam COVERAGE: whitewater, not milk --------------------------
+    // The mean cover over a Rapid's centre (three wavelengths x the middle
+    // 60% of the width) must land in [0.25, 0.50]: a Class III-IV rapid is
+    // dark water with white lace and crest caps, not a white sheet (the v1
+    // stills were ~70% and read as paint marbling). Calm must be exactly 0,
+    // and a riffle well below a rapid. Three times: one near each phase's
+    // full weight and one a quarter-cycle in (wA = 0.25, t = 0.3) with the
+    // other phase mid-ramp. NOT the exact hand-over instant (t = 0.6): there
+    // both phases sit at half brightness for ~0.1 s while the rafts
+    // dissolve and re-form — by design (riverWhitewaterCoverBlend), and
+    // the mean cover reads half for that instant.
+    {
+        float rapidMin = 1.0f, rapidMax = 0.0f, riffleMax = 0.0f, calmMax = 0.0f;
+        for (uint32_t k = 0; k < kReachCount; ++k) {
+            const RiverReach& r = kReaches[k];
+            const float s1 = r.s1 <= 0.0f ? total : r.s1;
+            const float mid = 0.5f * (r.s0 + s1);
+            if (s1 - r.s0 < 2.0f * kRiverReachEdge + 10.0f) continue;
+            static const float kTimes[3] = { 1.1f, 7.3f, 0.3f };
+            for (int ti = 0; ti < 3; ++ti) {
+                const float cov = riverWhitewaterCoverage(uc, mid, kTimes[ti]);
+                if (r.kind == RiverReachKind::Calm) calmMax = std::max(calmMax, cov);
+                else if (r.kind == RiverReachKind::Riffle) riffleMax = std::max(riffleMax, cov);
+                else { rapidMin = std::min(rapidMin, cov); rapidMax = std::max(rapidMax, cov); }
+            }
+        }
+        std::snprintf(d, sizeof(d), "rapid/plunge coverage %.2f..%.2f (want 0.25..0.50), riffle max %.2f, calm max %.3f",
+                      rapidMin, rapidMax, riffleMax, calmMax);
+        check(rapidMin >= 0.25f && rapidMax <= 0.50f && riffleMax < rapidMin && calmMax == 0.0f,
+              "R9 a rapid is 25-50% foam at its centre, a riffle less, calm water none", d);
     }
 
     // ---- R5 the table agrees with the physics it decorates ----------------

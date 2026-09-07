@@ -96,10 +96,42 @@ struct RiverFlowSample {
 };
 RiverFlowSample underRiverFlowAt(const UnderRiverChain& uc, float s);
 
-// FOAM BASE at (s, lateral) — the noise-free part of water.frag's rapids foam
-// mask (PAIRED with the shader: same smoothstep, same bank term), so the gate
-// can assert "0 in calm, > 0.5 mid-rapid" against the very formula drawn.
+// THE WHITEWATER, mirrored from water.frag one expression each (PAIRED — the
+// gate evaluates these, the GPU draws those; a drift between them is a red):
+//   riverStandingWaveCrest — the primary crest train's normalized height at
+//     (s, lateral/hw): -1 trough .. +1 crest, the crest-sharpened sine the
+//     vertex stage displaces by (chan.z to the fragment stage).
+//   riverWhitewaterMask — WHERE foam forms, 0..1: the standing-wave crest
+//     caps (bands across the channel), the banks, the boulder bow piles and
+//     wakes, and a little of the reach's own turbulence everywhere else. The
+//     fast water between those is meant to stay dark and glossy.
+//   riverWhitewaterLace — the foam pattern itself at ONE flow-frame
+//     coordinate q = (along / kLaceStretch, across), i.e. stretched
+//     kLaceStretch x along the current: four octaves down to ~0.2 m plus a
+//     1-D across-flow streak term.
+//   riverWhitewaterCover — the near-binary cover of one phase: lace over a
+//     threshold that falls with the mask (bubbles are foam or not; no milk).
+//   riverWhitewaterCoverBlend — the two advected phases (qA/qB/wA from
+//     riverFlowAdvect) each THRESHOLDED, each faded hard around its own
+//     half-weight, the brighter one kept: a blend of the two lace fields
+//     first (v2) halved the contrast whenever both phases carried weight
+//     and every edge went soft; a linear blend of the covers (v3) showed
+//     the fading phase as a grey ghost of every raft.
+constexpr float kLaceStretch = 4.0f;
+float riverStandingWaveCrest(float s, float latN, float waveLen, float time);
+float riverWhitewaterMask(float turb, float latN, float crest, float wake);
+float riverWhitewaterLace(const float q[2], float fine);
+float riverWhitewaterThreshold(float mask);
+float riverWhitewaterCover(float mask, float lace);
+float riverWhitewaterCoverBlend(float mask, float laceA, float laceB, float wA);
+// FOAM BASE at (s, lateral): the mask at a crest cap with no rock near — the
+// noise-free propensity the gate asserts "0 in calm, > 0.5 mid-rapid" on.
 float riverFoamBaseAt(const UnderRiverChain& uc, float s, float lat);
+// FOAM COVERAGE of a reach at along-chain s: the mean cover over a patch of
+// three wavelengths by the middle 60% of the wet width, 0.1 m samples, at
+// time t — the number the owner sees as "how white is the rapid" (gate R9
+// wants 0.25..0.50 mid-Rapid: whitewater, not a milk bath).
+float riverWhitewaterCoverage(const UnderRiverChain& uc, float s, float time);
 
 // THE BOULDERS. Authored as (s, lateral, radius); world placement derived
 // from the chain + the carved bed (terrainHeightAtWorld) so the rock sits on
@@ -107,12 +139,13 @@ float riverFoamBaseAt(const UnderRiverChain& uc, float s, float lat);
 struct RiverBoulder {
     float x = 0, y = 0, z = 0;   // centre, world
     float radius = 0;            // horizontal radius (m); vertical = radius * kBoulderSquash
+    float show = 0;              // crown height above the water (m)
     float dirX = 0, dirZ = 0;    // downstream unit tangent at the rock
     float wakeLen = 0;           // foam wake length downstream (m)
     float s = 0, lat = 0;        // where on the chain it sits
 };
 constexpr float kBoulderSquash = 0.80f;   // river cobble is flatter than a sphere
-constexpr float kBoulderShow   = 1.25f;   // metres of rock above the water at the crown (0.55 vanished under the standing waves)
+constexpr float kBoulderShow   = 1.25f;   // DEFAULT crown above the water (m); 0.55 vanished under the standing waves. Specs may stand taller.
 uint32_t underRiverBoulders(const UnderRiverChain& uc, RiverBoulder* out, uint32_t maxN);
 
 // Fill WaterParams' flow block for the channel the params already describe.

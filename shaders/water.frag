@@ -223,22 +223,101 @@ vec3 rippleN(vec2 q, float tt) {
 vec3 churnN(vec2 q, float tt, float turb) {
     float a = sin(q.x * 4.1 + q.y * 1.3 - tt * 2.9) * cos(q.y * 3.7 - q.x * 0.9 + tt * 2.1);
     float b = sin((q.x - q.y) * 5.3 + tt * 3.7);
-    return vec3(0.34 * turb * (cos(q.x * 4.1 + q.y * 1.3 - tt * 2.9) + 0.6 * b),
+    return vec3(0.22 * turb * (cos(q.x * 4.1 + q.y * 1.3 - tt * 2.9) + 0.6 * b),
                 0.0,
-                0.34 * turb * (-sin(q.y * 3.7 - q.x * 0.9 + tt * 2.1) * 0.9 + 0.6 * a));
+                0.22 * turb * (-sin(q.y * 3.7 - q.x * 0.9 + tt * 2.1) * 0.9 + 0.6 * a));
 }
 
-// Rapids foam mask, noise-free part. PAIRED with river_rapids.cpp
-// riverFoamBaseAt(): reach turbulence down the middle, more along the banks
-// (fast water piles on the rock it is thrown against).
-float rapidsFoamBase(float turb, float latN) {
-    float bank = smoothstep(0.55, 0.95, abs(latN));
-    return smoothstep(0.08, 0.70, 0.75 * turb + 0.5 * bank * turb);
+// The STREAK ROUGHNESS: the skin of a rapid between the foam is not a
+// sheet. It is drawn into fine ridges along the current, 10-40 cm apart,
+// and the mirror it holds breaks along them. Without this the standing
+// waves' faces — smooth at the vertex scale, and the churn above is 2-4 m —
+// mirrored the sky opening as broad blue-white sheets that the eye read as
+// foam (v3/v4 rapid_gorge_downstream: every "soft raft" was one). Slope
+// mostly ACROSS the flow (the ridges run along it) and one across-flow
+// frequency modulated slowly along it so the ridges braid. In the flow frame
+// (along, across), unstretched metres; amplitude by turbulence, so a calm
+// reach stays glass and the flow-off path never reaches it.
+vec3 streakN(vec2 q, vec2 dir, vec2 per, float tt, float turb) {
+    float c  = q.y, a = q.x;
+    float s1 = sin(c * 14.0 + 0.8 * sin(c * 5.3 + a * 0.6 - tt * 1.1));
+    float s2 = sin(c * 27.0 - 0.7 * sin(c * 9.1 - a * 0.4) + tt * 3.0);
+    float across = 0.22 * turb * (s1 + 0.6 * s2);
+    float along  = 0.08 * turb * sin(a * 2.0 + c * 3.0 - tt * 2.2);
+    vec2 g = per * across + dir * along;
+    return vec3(g.x, 0.0, g.y);
 }
 
-// Boulder wakes: for every rock in the UBO, a bow pile just upstream and a
-// widening V of foam downstream that fades over the wake length. In the
-// rock's own frame (along = flow tangent, across = its perpendicular).
+// ---- THE WHITEWATER. Each function below is ONE expression mirrored in
+// river_rapids.cpp (riverWhitewaterMask / laceOne / riverWhitewaterThreshold /
+// riverWhitewaterCover); gate R9 integrates them over a rapid's centre and
+// demands 25-50% cover. Edit both sides or the gate goes red.
+//
+// wwMask — WHERE foam forms. The standing-wave crest caps (the bands across
+// the channel; a full-turbulence cap reaches 1 = a solid broken-white band),
+// the outer quarter of the width in fast water, the boulder piles and wakes;
+// the 0.30*turb floor is the sparse lace on the dark fast water between.
+// (v4: 0.40 / 0.55 with the bank term from 60% of the half-width spread
+// the foam evenly over the whole surface and the crest bands drowned in it.)
+float wwMask(float turb, float latN, float crest, float wake) {
+    float bank = smoothstep(0.75, 1.00, abs(latN));
+    float cap  = smoothstep(0.15, 0.85, crest);
+    return clamp(0.30 * turb + 1.00 * cap * turb + 0.35 * bank * turb + wake, 0.0, 1.0);
+}
+// wwLaceOne — the foam pattern at flow-frame coordinate q = (along / 4,
+// across): everything is stretched 4x along the current (foam in moving
+// water is drawn into streamers), four octaves from 2 m patchiness (n1,
+// which domain-warps the rest so no octave lines up) through 0.6 m cells
+// (n2) to the 0.2 m lace (n3, faded by `fine` with view distance — it is
+// shimmer past 40 m), plus st: 1-D noise ACROSS the flow, i.e. long streaks
+// along it. Sums of sines, not textures: no seam, no tile, any scale.
+float wwLaceOne(vec2 q, float fine) {
+    float n1 = sin(q.x * 1.9 + q.y * 1.3) * cos(q.x * 1.1 - q.y * 2.4);
+    q.y += 0.35 * n1;
+    float n2 = sin(q.x * 7.3 + q.y * 9.1) * cos(q.x * 4.7 - q.y * 11.2)
+             + 0.7 * sin(q.x * 5.1 - q.y * 14.3 + 1.7) * sin(q.x * 9.7 + q.y * 6.9);
+    float n3 = sin(q.x * 23.0 + q.y * 31.0) * cos(q.x * 17.0 - q.y * 37.0)
+             + 0.6 * sin(q.x * 29.0 - q.y * 19.0 + 0.7) * sin(q.x * 13.0 + q.y * 41.0);
+    float st = sin(q.y * 6.3 + 0.9 * sin(q.y * 2.1 + q.x * 0.35))
+             + 0.6 * sin(q.y * 17.0 + 1.2 * sin(q.y * 4.7 - q.x * 0.5));
+    return 0.5 + 0.06 * n1 + 0.28 * n2 + 0.30 * fine * n3 + 0.14 * st;
+}
+const float kLaceStretch = 4.0;
+// wwThreshold / wwCover — foam is binary at the bubble scale: lace over a
+// threshold that falls with the mask (0.92 where nothing should form, 0.22
+// under a full crest cap or at a bow pile — a solid raft with dark holes
+// through it — a few percent of flecks on the water between), across a
+// 0.07 edge: the line of the bubble raft, not a fade to milk. The steep
+// fall is the point: the mask decides WHERE, and a place is foaming or it
+// is not (the even 0.87 -> 0.34 of v3/v4 made every square metre half foam
+// and the eye could find no crest, no wake and no dark water). The trailing
+// smoothstep is "no mask, no foam": still water grows not one fleck however
+// high the lace peaks.
+float wwThreshold(float mask) { return 0.92 - 0.70 * mask; }
+float wwCover(float mask, float lace) {
+    float th = wwThreshold(mask);
+    return smoothstep(th, th + 0.07, lace) * smoothstep(0.0, 0.05, mask);
+}
+// wwCoverBlend — the two advected phases, each THRESHOLDED, each faded hard
+// about its own half-weight (0.4..0.6 of the 1.2 s ramp = ~0.25 s), the
+// brighter kept. Blending the two lace fields before the threshold (v2)
+// halved the pattern's contrast whenever both phases carried weight: every
+// raft edge went soft and the 0.2 m lace vanished. A linear blend of the
+// two covers (v3) drew the phase on its way out as a grey ghost of every
+// raft. This way a raft forms and dissolves in a quarter second — which is
+// what foam in a rapid does — and a max, not a sum, so a spot both phases
+// cover is white once and the coverage does not pulse with the cycle.
+float wwCoverBlend(float mask, float laceA, float laceB, float wA) {
+    return max(wwCover(mask, laceA) * smoothstep(0.4, 0.6, wA),
+               wwCover(mask, laceB) * smoothstep(0.4, 0.6, 1.0 - wA));
+}
+
+// Boulder wakes: for every rock in the UBO, the bow pile on the upstream
+// face (the brightest thing in a rapid — it sits on the vertex-stage bump)
+// and the V downstream: two foam STREAKS off the rock's shoulders that
+// diverge as the wake widens, with a fainter churned core between them,
+// fading over the wake length. In the rock's own frame (along = flow
+// tangent, across = its perpendicular).
 float rockWake(vec2 P, vec2 dir) {
     int rn = int(u.flowInfo.z + 0.5);
     vec2 per = vec2(-dir.y, dir.x);
@@ -249,10 +328,19 @@ float rockWake(vec2 P, vec2 dir) {
         float R = max(r.z, 0.3), L = max(r.w, 1.0);
         float along = dot(dp, dir), across = abs(dot(dp, per));
         // the pile: water stacking on the upstream face and sheeting off the sides
-        float bow = (1.0 - smoothstep(R * 0.9, R * 1.7, length(dp))) * (1.0 - smoothstep(-R * 0.2, R * 0.9, along));
-        // the wake: half-width grows from 0.7R at the rock to 1.6R at the end
-        float hwk = R * (0.7 + 0.9 * clamp(along / L, 0.0, 1.0));
-        float w = (along > 0.0) ? (1.0 - smoothstep(hwk * 0.45, hwk, across)) * (1.0 - smoothstep(0.0, L, along)) : 0.0;
+        float bow = (1.0 - smoothstep(R * 0.9, R * 1.9, length(dp))) * (1.0 - smoothstep(-R * 0.3, R * 1.0, along));
+        // the wake: half-width grows from 0.75R at the rock to 1.3R at the
+        // end — a V the width of the rock and a half, not the channel (v4's
+        // 1.8R end put two wakes edge to edge across the whole run, and the
+        // eye lost both — eyes-on rapid_boulders_wake). The two edge streaks
+        // are solid (1), the churned core between them a 0.35 mask: half
+        // lace, dark water showing through, so the V reads as two lines.
+        float ta  = clamp(along / L, 0.0, 1.0);
+        float hwk = R * (0.75 + 0.55 * ta);
+        float edges = 1.0 - smoothstep(0.0, 0.35 * R, abs(across - hwk));
+        float core  = 0.35 * (1.0 - smoothstep(hwk * 0.5, hwk, across));
+        float fade  = 1.0 - smoothstep(0.25 * L, L, along);
+        float w = (along > 0.0) ? max(edges, core) * fade : 0.0;
         wake = max(wake, max(bow, w));
     }
     return wake;
@@ -290,8 +378,12 @@ void main() {
         rpA = rp + oA; rpB = rp + oB;
         float tt = time * 0.35;
         ripple = mix(rippleN(rpB, tt), rippleN(rpA, tt), wA);
-        if (turb > 0.0)
+        if (turb > 0.0) {
             ripple += mix(churnN(rpB, tt, turb), churnN(rpA, tt, turb), wA);
+            vec2 fd = normalize(vFlow.xy), fp = vec2(-fd.y, fd.x);
+            vec2 qA = vec2(dot(rpA, fd), dot(rpA, fp)), qB = vec2(dot(rpB, fd), dot(rpB, fp));
+            ripple += mix(streakN(qB, fd, fp, tt, turb), streakN(qA, fd, fp, tt, turb), wA);
+        }
     } else {
         ripple = rippleN(rp, time);
     }
@@ -355,6 +447,21 @@ void main() {
         vec3 E = roomLighting(vWorldPos, N, V, base, sp);
         roomIrr  = mix(vec3(1.0), E, enc);
         roomSpec = sp * enc;
+        // THE LAMP SHEET COLLAPSES IN WHITEWATER (river-rapids). The lobe
+        // above is a 0.22-rough mirror of each bank lamp; on a rapid's
+        // standing-wave faces — smooth at the vertex scale — it painted
+        // broad blue-white sheets that the eye read as foam (eyes-on v3/v4
+        // rapid_gorge_downstream: they, not the lace, were the "soft rafts";
+        // the sky mirror there is dark). A rapid's skin is broken below the
+        // pixel: the coherent lobe is gone and its energy comes back as the
+        // diffuse aeration and the foam, both already counted. Keep a fifth
+        // for the gloss between the rafts (streakN breaks it into streaks).
+        // (Widening the lobe instead — roughness 0.6 — blew the faces out
+        // white: this GGX carries no Smith term and at grazing NoV the wide
+        // lobe is unbounded. Not worth adding G for, and G would move the
+        // calm river's bytes.) turb is 0 in calm water and with the flow
+        // off: byte-identical there.
+        roomSpec *= 1.0 - 0.80 * turb;
     }
     // AERATED WATER (river-rapids): a rapid's body is full of bubbles and
     // reads pale, opaque green-white, not clear — the same fraction the foam
@@ -363,7 +470,7 @@ void main() {
     // is lit like the rest of the body, not painted on.
     if (turb > 0.0) {
         vec3 aerated = mix(u.shallowColor.rgb, vec3(0.42, 0.55, 0.56), 0.55);
-        refractCol = mix(refractCol, aerated, 0.30 * turb);
+        refractCol = mix(refractCol, aerated, 0.22 * turb);
     }
     refractCol *= roomIrr;
     vec3 color = mix(refractCol, reflectCol, fres) + roomSpec;
@@ -440,47 +547,54 @@ void main() {
         // below lights it by the room or the sun, never emissive.
         if (flowOn) {
             vec2 dir = normalize(vFlow.xy);
-            float crestSw = smoothstep(0.15, 0.85, vChan.z) * turb;
-            float wake    = rockWake(rp, dir);
-            float mask    = smoothstep(0.08, 0.70, 0.75 * turb + 0.5 * smoothstep(0.55, 0.95, abs(vChan.y)) * turb
-                                                   + 0.6 * crestSw + 0.9 * wake);
-            // second octave (2-3 m patches), two-phase advected
-            float n3A = sin(rpA.x * 1.9 + rpA.y * 2.6) * cos(rpA.x * 2.4 - rpA.y * 1.7)
-                      + 0.5 * sin((rpA.x - rpA.y * 0.6) * 4.3);
-            float n3B = sin(rpB.x * 1.9 + rpB.y * 2.6) * cos(rpB.x * 2.4 - rpB.y * 1.7)
-                      + 0.5 * sin((rpB.x - rpB.y * 0.6) * 4.3);
-            float n3  = mix(n3B, n3A, wA);
-            // third octave (0.6-0.9 m cells): the lace itself. Without it the
-            // patches read as soft milk (eyes-on rapid_gorge_downstream v1);
-            // foam is a net of bubbles with dark water in the holes.
-            // In the FLOW frame, stretched x2 along the current (foam is
-            // drawn into streamers, not dots), domain-warped by the second
-            // octave so the cells never line up into a lattice (v2 of this
-            // read as polka dots), three non-orthogonal directions summed.
             vec2 per = vec2(-dir.y, dir.x);
-            vec2 qA = vec2(dot(rpA, dir) * 0.5, dot(rpA, per) * 1.25) + 0.55 * vec2(n3, -n3 * 0.7);
-            vec2 qB = vec2(dot(rpB, dir) * 0.5, dot(rpB, per) * 1.25) + 0.55 * vec2(n3, -n3 * 0.7);
-            float n4A = sin(qA.x * 7.3 + qA.y * 9.1) * cos(qA.x * 8.7 - qA.y * 6.2)
-                      + 0.7 * sin(qA.x * 5.1 - qA.y * 11.3 + 1.7) * sin(qA.x * 10.7 + qA.y * 3.9);
-            float n4B = sin(qB.x * 7.3 + qB.y * 9.1) * cos(qB.x * 8.7 - qB.y * 6.2)
-                      + 0.7 * sin(qB.x * 5.1 - qB.y * 11.3 + 1.7) * sin(qB.x * 10.7 + qB.y * 3.9);
-            float n4  = mix(n4B, n4A, wA) * 0.6;
-            // streaks: lines along the flow (constant lateral coordinate),
-            // wandering slowly with s and time
-            float streak = sin(vChan.y * u.riverInfo.y * 2.7 + 0.8 * sin(vChan.x * 0.21 + time * 0.6) + n3 * 0.9);
-            float lace = clamp(0.50 + 0.28 * n3 + 0.16 * streak + 0.20 * n4, 0.0, 1.0);
-            // The threshold falls with the mask: heavy water is about half
-            // foam, light water only the peaks. A hard-ish edge (0.16 wide)
-            // keeps the holes dark; a thin film (mask^2 * 0.12) greys the body
-            // of the heaviest water without painting it over.
-            float th    = mix(0.80, 0.50, mask);
-            float cover = smoothstep(th, th + 0.16, lace);
-            float film  = 0.12 * mask * mask;
-            float ww    = mask * cover + film;
-            // relief: the middle of a clump is thicker (brighter) than its
-            // edge — carried into foamCol below through foamRelief
-            foamRelief = mix(1.0, 0.70 + 0.30 * smoothstep(th, th + 0.40, lace),
-                             clamp(mask * cover / max(foamAmt + ww, 1e-4), 0.0, 1.0));
+            // In moving water the smooth contact film above gives way to the
+            // lace: the shallow water over the bank shelves and the boulder
+            // shoulders still foams (the shelf term joins the mask below)
+            // but it foams as bubble rafts with the same edges and the same
+            // flow stretch as the rest, not as a soft 2 m writhe. Eyes-on
+            // v3/v4 of rapid_gorge_downstream: the whole near field was that
+            // film rising and falling with the standing waves, and no
+            // threshold in the lace could sharpen what it never touched.
+            // Calm reaches (turb 0) keep the legacy film exactly — a pool's
+            // waterline is still water.
+            float moving = smoothstep(0.05, 0.40, turb);
+            foamAmt *= 1.0 - moving;
+            // The shelf: water under half a metre deep over the carved
+            // bank shelves. Narrower than contactF's metre (the bed shelves
+            // are 2.5 m wide each side, and at contactF's ramp the outer
+            // third of the whole channel came up SOLID white and the run
+            // read as a foam trough with a dark centre — eyes-on
+            // rapid_boulders_wake, v4 debug). 0.55 puts the shelf at the
+            // half-lace mask, a bright line only at the waterline itself.
+            float shelf = (1.0 - smoothstep(0.04, 0.50, waterDepth)) * moving;
+            // vChan.z is the crest-sharpened primary train, -1..1, from the
+            // vertex stage (PAIRED riverStandingWaveCrest). Where the flow
+            // is on but the LUT has no wave (a calm reach) it is 0: no cap.
+            float wake  = rockWake(rp, dir) + 0.55 * shelf;
+            float mask  = wwMask(turb, vChan.y, vChan.z, wake);
+            // The pattern in the flow frame, two-phase advected (the same
+            // rpA/rpB/wA the ripple rides, so the foam travels with the
+            // water it is on). The 0.2 m lace octave fades out past 12-45 m:
+            // beyond that it is one shimmering pixel and only aliases.
+            float fine = 1.0 - smoothstep(12.0, 45.0, length(u.camPos.xyz - vWorldPos));
+            vec2 qA = vec2(dot(rpA, dir) / kLaceStretch, dot(rpA, per));
+            vec2 qB = vec2(dot(rpB, dir) / kLaceStretch, dot(rpB, per));
+            float laceA = wwLaceOne(qA, fine), laceB = wwLaceOne(qB, fine);
+            float cover = wwCoverBlend(mask, laceA, laceB, wA);
+            // Foam is the cover, full white where it is (the mask chose the
+            // place, the lace the shape — the amount is not a blend of the
+            // two: a thin raft is still white). No film: the water between
+            // the rafts stays dark and glossy (the lead read v1's 70% grey
+            // as paint marbling).
+            float ww    = cover;
+            // relief: the body of a raft is not one white — bubble clusters
+            // are thicker (brighter) where the lace runs high, thinner in
+            // the veins between them, so the 0.2 m texture shows INSIDE the
+            // raft too, not only on its edge. Per phase, like the cover.
+            float th    = wwThreshold(mask);
+            float rel   = mix(smoothstep(th, th + 0.30, laceB), smoothstep(th, th + 0.30, laceA), smoothstep(0.4, 0.6, wA));
+            foamRelief = mix(1.0, 0.68 + 0.32 * rel, clamp(ww / max(foamAmt + ww, 1e-4), 0.0, 1.0));
             foamAmt = clamp(foamAmt + ww * u.p4.y, 0.0, 1.0);
         }
         // Enclosed foam is lit by the room, not by the sky overhead: the
@@ -561,7 +675,7 @@ void main() {
     float seeThrough = min(kMaxSeeThrough, u.p4.x * (1.0 - fres) * transLum);
     // Turbulent water is opaque (aerated body, above): the see-through dies
     // with turbulence. Zero effect in calm water and with the flow off.
-    seeThrough *= (1.0 - 0.85 * turb);
+    seeThrough *= (1.0 - 0.70 * turb);
     // Foam closes the surface back up (churned water is opaque white, and a
     // see-through foam patch would read as soap scum on glass).
     // Room-light streaks close the surface the way the sun glint does (a

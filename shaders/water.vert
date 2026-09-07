@@ -135,7 +135,20 @@ void main() {
     // a coarse cell so the grid doesn't crawl as the camera moves.
     float snap = (2.0 * halfExt) / 64.0;       // ~one cell of the coarse grid
     vec2 center = floor(u.camPos.xz / snap) * snap;
-    vec2 basePos = center + inGrid * halfExt;  // flat world XZ before waves
+    // CAMERA-CENTRIC GRID WARP (river-rapids). The uniform 192-vertex grid is
+    // 2.5 m cells, and a 3 m standing wave on 2.5 m cells is a rumour: the
+    // lead read the v1 crests as a swell. With the flow field on, the unit
+    // grid is remapped g = inGrid * (0.3 + 0.7*|inGrid|) per axis: the patch
+    // still spans exactly [-1, 1] (the edge fade, mask and horizon handoff
+    // see the same rim), but the cells near the camera — where the waves are
+    // judged from eye height — are 0.75 m and the far ones 4.25 m, and a
+    // 3 m wave has four vertices per period for ~60 m around the eye. The
+    // vertices no longer sit on fixed world positions across a snap step
+    // (the warp is camera-relative), so a very long wave would sample
+    // slightly differently after each 7.5 m move; at these amplitudes it is
+    // sub-pixel. Flow OFF keeps the legacy uniform grid byte-for-byte.
+    vec2 g = (u.flowInfo.x > 0.5) ? inGrid * (0.3 + 0.7 * abs(inGrid)) : inGrid;
+    vec2 basePos = center + g * halfExt;       // flat world XZ before waves
 
     // ---- RIVER MODE (task #32): the surface level FOLLOWS the channel. ----
     // Closest approach to the node polyline (the CPU polyClosest, in GLSL):
@@ -150,6 +163,7 @@ void main() {
     // Standing-wave displacement and its slope, accumulated in the channel's
     // (along, lateral) frame and rotated into the world tangent basis below.
     float swY = 0.0, swDs = 0.0, swDl = 0.0;
+    float swX = 0.0, swXDs = 0.0;   // along-flow Gerstner pinch and its d/ds
     int rn = int(u.riverInfo.x + 0.5);
     if (rn >= 2) {
         float hw = max(u.riverInfo.y, 1.0);
@@ -204,23 +218,61 @@ void main() {
             // gives the surge between crests, and a third, slower and
             // advected at the flow speed, is the boils that ride downstream.
             // Amplitude = LUT (turbulence * speed) * bank profile.
+            vec2 per = vec2(-dir.y, dir.x);            // d(lat)/d(basePos)
             if (swA > 0.0005) {
                 float A   = swA * prof;
                 float k   = 6.28318530718 / swL;
-                float ph1 = k * s + 0.9 * ln * ln + 0.35 * sin(time * 1.7 + s * 0.05);
-                float ph2 = k * 1.9 * s + 0.7 * ln - time * 0.8;
+                // PRIMARY TRAIN, crest-sharpened: h = (1+sin)/2 through
+                // pow 2.2 — narrow steep crests, broad flat troughs, the
+                // haystack profile (a plain sine read as a swell from eye
+                // height). PAIRED with river_rapids.cpp
+                // riverStandingWaveCrest(): the fragment stage gets f in
+                // chan.z and caps the crests with foam where f > 0.15.
+                float ph1 = k * s + 0.5 * ln * ln + 0.35 * sin(time * 1.7 + s * 0.05);
+                float h   = max(0.5 + 0.5 * sin(ph1), 0.0);
+                float f   = 2.0 * pow(h, 2.2) - 1.0;
+                float df  = 2.2 * pow(h, 1.2) * cos(ph1);   // df/dph1
+                // the surge between crests and the boils riding downstream
+                float ph2 = k * 1.9 * s + 0.4 * ln - time * 0.8;
                 float ph3 = 2.1 * s - time * spd * 2.1 + 1.3 * ln;
                 float w3  = 0.7 * ln + time * 0.9;
                 float e3  = cos(w3);
-                float y1 = A * sin(ph1), y2 = 0.45 * A * sin(ph2), y3 = 0.35 * A * sin(ph3) * e3;
+                float y1 = A * f, y2 = 0.30 * A * sin(ph2), y3 = 0.20 * A * sin(ph3) * e3;
                 swY  = y1 + y2 + y3;
                 // d/ds and d/dlat (analytic), for the normal
-                swDs = A * k * cos(ph1) + 0.45 * A * k * 1.9 * cos(ph2) + 0.35 * A * 2.1 * cos(ph3) * e3;
-                swDl = (A * cos(ph1) * 1.8 * ln + 0.45 * A * cos(ph2) * 0.7
-                        + 0.35 * A * (cos(ph3) * 1.3 * e3 - sin(ph3) * 0.7 * sin(w3))) / hw;
-                chan = vec4(s, ln, swY / max(A, 1e-4), A);
+                swDs = A * df * k + 0.30 * A * k * 1.9 * cos(ph2) + 0.20 * A * 2.1 * cos(ph3) * e3;
+                swDl = (A * df * 1.0 * ln + 0.30 * A * cos(ph2) * 0.4
+                        + 0.20 * A * (cos(ph3) * 1.3 * e3 - sin(ph3) * 0.7 * sin(w3))) / hw;
+                // GERSTNER PINCH along the flow: the crests gather water
+                // toward themselves (Q = 0.5), so they stand up as ridges
+                // rather than a heaved sheet. Same construction as
+                // gerstner() above, in the channel frame.
+                float Q = 0.5;
+                float px = Q * A * cos(ph1);                 // along-flow shift
+                float dpx = -Q * A * k * sin(ph1);           // d(px)/ds
+                swX = px; swXDs = dpx;
+                chan = vec4(s, ln, f, A);
             } else {
                 chan = vec4(s, ln, 0.0, 0.0);
+            }
+            // BOW PILES. Water hitting a boulder stacks up on its upstream
+            // face: a Gaussian mound just ahead of each rock, 0.18 R high at
+            // full speed, with its analytic slope. The fragment stage puts
+            // the foam pile on the same spot (rockWake), so the bright pile
+            // sits on a real bump, not on flat water.
+            int rkn = int(u.flowInfo.z + 0.5);
+            float spdN = clamp(spd / 1.5, 0.0, 1.0);
+            for (int i = 0; i < rkn; ++i) {
+                vec4 r = u.rocks[i];
+                vec2 dp = basePos - r.xy;
+                float R = max(r.z, 0.3);
+                if (dot(dp, dp) > 16.0 * R * R) continue;
+                float along = dot(dp, dir), across = dot(dp, per);
+                float ua = (along + 0.9 * R) / (0.8 * R), uc = across / (1.1 * R);
+                float bump = 0.18 * R * spdN * exp(-ua * ua) * exp(-uc * uc);
+                swY  += bump;
+                swDs += bump * (-2.0 * ua / (0.8 * R));
+                swDl += bump * (-2.0 * uc / (1.1 * R));
             }
         }
         vec2  bp = basePos - u.riverBasin.xy;
@@ -319,12 +371,19 @@ void main() {
     // Standing waves ride on top of the Gerstner swell: lift, plus the slope
     // rotated from the channel frame (along = dir, lateral = its left
     // perpendicular) into d/dx and d/dz. Zero unless the flow is on.
-    if (swY != 0.0) {
+    if (swY != 0.0 || swX != 0.0) {
         vec2 dir = flow.xy;
         vec2 per = vec2(-dir.y, dir.x);
         disp.y += swY;
         dPdx.y += swDs * dir.x + swDl * per.x;
         dPdz.y += swDs * dir.y + swDl * per.y;
+        // the pinch: a horizontal shift along dir, varying along dir only
+        disp.x += swX * dir.x;
+        disp.z += swX * dir.y;
+        dPdx.x += swXDs * dir.x * dir.x;
+        dPdx.z += swXDs * dir.y * dir.x;
+        dPdz.x += swXDs * dir.x * dir.y;
+        dPdz.z += swXDs * dir.y * dir.y;
     }
 
     vec3 worldPos = vec3(basePos.x + disp.x, seaLevel + disp.y, basePos.y + disp.z);
