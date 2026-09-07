@@ -366,6 +366,7 @@ int x3AppMain(int argc, char** argv) {
         _tf.testRiverBridge = o.testRiverBridge;
         _tf.testUnderRiver = o.testUnderRiver;
         _tf.testCanonUnderRiver = o.testCanonUnderRiver;
+        _tf.testRiverRapids = o.testRiverRapids;
         _tf.testTraffic = o.testTraffic;
     _tf.testGasStation = o.testGasStation;
         _tf.testFactory     = o.testFactory;

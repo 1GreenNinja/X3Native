@@ -6,6 +6,7 @@
 #include "world_water.h"
 #include "terrain.h"
 #include "underground_river.h"
+#include "river_rapids.h"      // the flow LUT + reach table (X3_RIVER_RAPIDS door)
 // --test-canonunderriver
 #include "city.h"
 #include "dealership.h"
@@ -282,6 +283,15 @@ bool buildWorldWaterParams(const WorldWaterInput& in, WP& wpr, bool* outInCavern
             wpr.roomLightColor[i][2] = l.color[2];
         }
     }
+    // ---- THE FLOW (feat/river-rapids). Appended LAST and writing ONLY the
+    // flow block (WaterParams::flowSampleCount onward), so every field above
+    // — the Rev 11 look — is what it was, door open or shut. The cavern gets
+    // the reach table (calm pools, riffles, two rapids, the gorge, the plunge);
+    // the surface river is calm end to end and merely drifts. X3_RIVER_RAPIDS=0
+    // leaves the block at zero and the shader on its legacy path.
+    // --test-riverrapids R6 is the byte-identity gate.
+    if (inCavern) bakeUnderRiverFlow(wpr);
+    else          bakeSurfaceRiverFlow(wpr);
     return true;
 }
 

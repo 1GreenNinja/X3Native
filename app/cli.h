@@ -573,6 +573,7 @@ struct CliOptions {
     bool        testRiverBridge = false;   // --test-riverbridge (valley road + Bridge No.1)
     bool        testUnderRiver = false;    // --test-underriver (the river under the mountain)
     bool        testCanonUnderRiver = false; // --test-canonunderriver (the same river + ONE WATER in --world canonlevel)
+    bool        testRiverRapids = false;     // --test-riverrapids (reach table + flow LUT + foam + X3_RIVER_RAPIDS door)
     bool        testTraffic = false;       // --test-traffic (freeway AI traffic)
     bool        testGasStation = false;    // --test-gasstation (W-STATIONS forecourts + fuel stub)
     bool        testFactory     = false;   // --test-factory (the works siting + the tickets)
