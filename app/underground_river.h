@@ -32,6 +32,11 @@
 //     JOB 1 already made honest. (It was a CaveRiver ribbon first; in an 88 m
 //     cavern that photographed as flat blue construction paper.)
 //   * THE MIST — spray off the steps, cold breath on the pools.
+//   * THE BOULDERS (feat/river-rapids) — a few rocks standing in the fast
+//     reaches of river_rapids.h's reach table: drawn as Scene entities in the
+//     beach cobble, solid as static Jolt spheres (ours to add and ours to
+//     remove — releaseBodies — the region-hook doctrine), each with a spray
+//     source behind it; the water pass draws their wakes from the same table.
 //
 // Reuse ledger (NO_SLOP rule 1): water = the engine's own water pass;
 // carve = the authored-landforms river pattern; mist = RiverLife's wake-puff
@@ -41,6 +46,7 @@
 #include "scene.h"
 #include "surface_library.h"
 #include "engine/rhi/IRenderDevice.h"
+#include "engine/physics/IPhysicsWorld.h"
 
 #include <vector>
 
@@ -55,16 +61,23 @@ public:
         int   waterSegs   = 0;     // chain nodes handed to the water pass
         int   lightCount  = 0;     // lights appended
         int   mistSources = 0;     // rush/pool emitters
+        int   boulders    = 0;     // rocks placed in the rapids (0 with X3_RIVER_RAPIDS=0)
         float portalX = 0.0f, portalZ = 0.0f;   // where the river surfaces
     };
 
     // Build vault + beaches + water + mist + lights from
     // worldUnderRiverChain(). `surf` may be null (a local library is mounted).
     // outLights is unused: the cavern's accents are delivered per-frame,
-    // nearest-K, instead (see nearestLights).
+    // nearest-K, instead (see nearestLights). `phys` may be null (headless
+    // gates): the boulders are then drawn but not solid.
     Result build(Scene& scene, x3::rhi::IRenderDevice& device,
                  SurfaceLibrary* surf,
-                 std::vector<x3::rhi::PointLight>* outLights);
+                 std::vector<x3::rhi::PointLight>* outLights,
+                 x3::phys::IPhysicsWorld* phys = nullptr);
+    // Remove the boulder bodies this run added. Call before the physics world
+    // shuts down (SEAM 3 in app_run: bodies out before physics dies). Safe to
+    // call twice or when nothing was built.
+    void releaseBodies(x3::phys::IPhysicsWorld& phys);
 
     // Per-frame flow (CaveRiver crest scroll + whitewater churn) and the mist
     // simulation. Safe to call when nothing was built.
@@ -152,6 +165,7 @@ private:
     // lamps and goes dark between them instead of glowing on its own.
     void roomIrradianceAt(float x, float y, float z, float out[3]) const;
     std::vector<MistSource> m_mist;
+    std::vector<x3::phys::BodyId> m_bodies;   // the boulders' static spheres
     std::vector<Puff>       m_puffs;    // fixed pool, round-robin reuse
     uint32_t  m_puffNext = 0;
     std::vector<x3::rhi::IRenderDevice::ParticleInstance> m_hazeOut, m_sprayOut;

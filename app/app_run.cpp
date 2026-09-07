@@ -4110,7 +4110,8 @@ int runDefaultHost(HostContext& hc) {
                     std::vector<uint32_t> urIds;
                     scene.beginEntityCapture(&urIds);
                     const auto ur = canonUnderRiver.build(scene, *device,
-                                                          &canonRooms.surfaceLibrary(), nullptr);
+                                                          &canonRooms.surfaceLibrary(), nullptr,
+                                                          physics.get());   // boulders solid
                     scene.endEntityCapture();
                     for (uint32_t id : urIds) scene.get(id).roomId = x3::game::kStreamedExteriorRoom;
                     const double urMs = std::chrono::duration<double, std::milli>(
@@ -4118,9 +4119,9 @@ int runDefaultHost(HostContext& hc) {
                     char ub[300];
                     std::snprintf(ub, sizeof(ub),
                         "UNDERGROUND RIVER (canon): built=%d vault=%u beaches=%u waterSegs=%u "
-                        "lights=%u mist=%u portal=(%.0f,%.0f) entities=%u — %.0f ms",
+                        "lights=%u mist=%u boulders=%u portal=(%.0f,%.0f) entities=%u — %.0f ms",
                         ur.built ? 1 : 0, ur.vaultChunks, ur.beachChunks, ur.waterSegs,
-                        ur.lightCount, ur.mistSources, ur.portalX, ur.portalZ,
+                        ur.lightCount, ur.mistSources, ur.boulders, ur.portalX, ur.portalZ,
                         (uint32_t)urIds.size(), urMs);
                     x3::logInfo(ub);
                     x3::boot::mark("UNDERGROUND RIVER (vault + lights + mist over the carved trench)");
@@ -4430,6 +4431,7 @@ int runDefaultHost(HostContext& hc) {
     // boot above (screenshot/bench/framepacing/smoketest early returns + the
     // main-loop exit) so region bodies/meshes are released before physics dies.
     auto shutdownCanonStream = [&]() {
+        canonUnderRiver.releaseBodies(*physics);   // RIVER RAPIDS: the boulders' static spheres out first
         if (!canonStreamOn) return;
         canonStreamOn = false;
         canonWstream.shutdown(scene, *device, *physics);

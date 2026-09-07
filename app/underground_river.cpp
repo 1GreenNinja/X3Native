@@ -5,6 +5,8 @@
 #include "underground_river.h"
 #include "terrain.h"
 #include "asset_root.h"
+#include "river_rapids.h"     // reach table + boulders (X3_RIVER_RAPIDS door)
+#include "mesh_prims.h"       // makeUVSphere: the boulders' base geometry
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
@@ -164,7 +166,8 @@ struct ChainWalk {
 
 UndergroundRiver::Result UndergroundRiver::build(
         Scene& scene, x3::rhi::IRenderDevice& device,
-        SurfaceLibrary* surfIn, std::vector<x3::rhi::PointLight>* outLights) {
+        SurfaceLibrary* surfIn, std::vector<x3::rhi::PointLight>* outLights,
+        x3::phys::IPhysicsWorld* phys) {
     Result r{};
     const UnderRiverChain& uc = worldUnderRiverChain();
     if (uc.n < 2) return r;
@@ -466,7 +469,12 @@ UndergroundRiver::Result UndergroundRiver::build(
     // ---- THE MIST: emitters on the steps and the pools. -------------------
     // Density follows the water's own character: a rushing reach throws spray,
     // a pool just breathes. Both come from the derived rush/pool table, so a
-    // reroute moves the mist with the river and nothing goes stale.
+    // reroute moves the mist with the river and nothing goes stale. With the
+    // rapids on (river_rapids.h) the reach table's turbulence joins the
+    // derived rush — the gorge and the plunge throw spray because the water
+    // there is whitewater, and the surface the water pass draws there IS
+    // whitewater; one table for both.
+    const bool rapids = riverRapidsEnabled();
     m_mist.clear();
     for (float s = 0.0f; s <= total; s += 26.0f) {
         float cx, cz, w, nat, dx, dz;
@@ -475,14 +483,101 @@ UndergroundRiver::Result UndergroundRiver::build(
         while (ni + 1 < uc.n && uc.cum[ni + 1] < s) ++ni;
         const float t = std::clamp((s - uc.cum[ni]) /
                         std::max(uc.cum[ni + 1] - uc.cum[ni], 1e-3f), 0.0f, 1.0f);
-        const float rush = uc.rush[ni] +
-                           (uc.rush[std::min(ni + 1, uc.n - 1)] - uc.rush[ni]) * t;
+        float rush = uc.rush[ni] +
+                     (uc.rush[std::min(ni + 1, uc.n - 1)] - uc.rush[ni]) * t;
+        if (rapids) rush = std::max(rush, riverReachTurbulenceAt(s, total));
         const bool pool = (t < 0.5f ? uc.pool[ni] : uc.pool[std::min(ni + 1, uc.n - 1)]);
         if (rush < 0.35f && !pool) continue;      // still water does not steam
         MistSource ms;
         ms.x = cx; ms.y = w + 0.25f; ms.z = cz;
         ms.dx = dx; ms.dz = dz; ms.rush = rush;
         m_mist.push_back(ms);
+    }
+
+    // ---- THE BOULDERS (feat/river-rapids). --------------------------------
+    // river_rapids.h owns WHERE (fast reaches, seated on the carved bed,
+    // crowns kBoulderShow above the water) and hands the same table to the
+    // water pass for the foam wakes; this is the rock itself. Geometry is the
+    // prim library's UV sphere, squashed (river cobble is flatter than a
+    // ball), roughened by two octaves of the deterministic jitter every other
+    // rock in this cavern uses, in the beach's own water-worn cobble set —
+    // a boulder the river has been rolling IS a big piece of that beach. No
+    // asset file: the mine's boulder GLBs live in converted_glb/, which the
+    // repo does not carry, and a fresh clone must build the same river. Solid
+    // as a static Jolt sphere (mass 0) when a physics world is handed over,
+    // ours to remove (releaseBodies). A spray source sits in each one's lee.
+    m_bodies.clear();
+    if (rapids) {
+        RiverBoulder rocks[x3::rhi::IRenderDevice::WaterParams::kMaxRocks];
+        const uint32_t rn = underRiverBoulders(uc, rocks, x3::rhi::IRenderDevice::WaterParams::kMaxRocks);
+        const SurfaceSet& rockS = surf.get(device, "terrain_rock_grey");
+        for (uint32_t bi = 0; bi < rn; ++bi) {
+            const RiverBoulder& rb = rocks[bi];
+            x3::prims::PrimMesh sph = x3::prims::makeUVSphere(14, 22);
+            CpuMesh m;
+            m.v.reserve(sph.verts.size());
+            const float yaw = rj(rb.s * 0.31f, 7.7f) * 3.1416f;
+            const float cy = std::cos(yaw), sy = std::sin(yaw);
+            for (const x3::rhi::MeshVertex& sv : sph.verts) {
+                // radial roughness: a low octave for the rock's lumps, a
+                // high one for the grain; never more than +-22 % so the
+                // physics sphere stays an honest hull
+                const float n0 = rj(sv.pos[0] * 2.1f + rb.s, sv.pos[2] * 2.3f + sv.pos[1] * 1.7f);
+                const float n1 = rj(sv.pos[0] * 6.3f + rb.lat, sv.pos[1] * 5.9f - sv.pos[2] * 6.1f);
+                const float rad = rb.radius * (1.0f + 0.16f * n0 + 0.06f * n1);
+                const float lx = sv.pos[0] * rad, ly = sv.pos[1] * rad * kBoulderSquash, lz = sv.pos[2] * rad;
+                x3::rhi::MeshVertex o = sv;
+                o.pos[0] = rb.x + cy * lx + sy * lz;
+                o.pos[1] = rb.y + ly;
+                o.pos[2] = rb.z - sy * lx + cy * lz;
+                // ~4 m cobble tile, like the apron (uv = arc length / 4)
+                o.uv[0] = sv.uv[0] * 6.2832f * rb.radius * 0.25f;
+                o.uv[1] = sv.uv[1] * 3.1416f * rb.radius * 0.25f;
+                m.v.push_back(o);
+            }
+            m.i = sph.index;
+            // smooth normals from the displaced faces (the sphere's radial
+            // normals would shade the lumps as if they were not there)
+            std::vector<float> acc(m.v.size() * 3, 0.0f);
+            for (size_t k = 0; k + 2 < m.i.size(); k += 3) {
+                const float* A = m.v[m.i[k]].pos; const float* B = m.v[m.i[k + 1]].pos; const float* C = m.v[m.i[k + 2]].pos;
+                const float e1[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] };
+                const float e2[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+                const float fn[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+                for (int q = 0; q < 3; ++q) for (int c = 0; c < 3; ++c) acc[m.i[k + q] * 3 + c] += fn[c];
+            }
+            for (size_t v = 0; v < m.v.size(); ++v) {
+                float nx = acc[v * 3], ny = acc[v * 3 + 1], nz = acc[v * 3 + 2];
+                const float l = std::sqrt(nx * nx + ny * ny + nz * nz);
+                if (l > 1e-6f) { nx /= l; ny /= l; nz /= l; }
+                else { nx = m.v[v].pos[0] - rb.x; ny = m.v[v].pos[1] - rb.y; nz = m.v[v].pos[2] - rb.z;
+                       const float l2 = std::max(std::sqrt(nx * nx + ny * ny + nz * nz), 1e-4f); nx /= l2; ny /= l2; nz /= l2; }
+                m.v[v].normal[0] = nx; m.v[v].normal[1] = ny; m.v[v].normal[2] = nz;
+            }
+            Entity e;
+            e.mesh = device.createMesh(m.v.data(), (uint32_t)m.v.size(),
+                                       m.i.data(), (uint32_t)m.i.size());
+            e.tex = rockS.albedo; e.normalTex = rockS.normal; e.mrTex = rockS.mr;
+            // a shade darker than the apron: wet rock
+            e.baseColor[0] = e.baseColor[1] = e.baseColor[2] = 0.42f;
+            e.baseColor[3] = 1.0f;
+            e.tag = (uint32_t)Tag::Static;
+            scene.add(e);
+            if (phys) {
+                // the hull: the squashed rock's mean radius, centred a touch
+                // low so the crown is not a step you clip through
+                const float hr = rb.radius * (0.5f * (1.0f + kBoulderSquash));
+                m_bodies.push_back(phys->addSphere(hr, x3::phys::Vec3{ rb.x, rb.y - 0.1f, rb.z },
+                                                   0.0f, x3::phys::Layer::Static));
+            }
+            // spray in the lee: water piling on a rock throws it
+            MistSource ms;
+            ms.x = rb.x + rb.dirX * rb.radius * 1.2f; ms.y = rb.y + kBoulderSquash * rb.radius * 0.4f;
+            ms.z = rb.z + rb.dirZ * rb.radius * 1.2f;
+            ms.dx = rb.dirX; ms.dz = rb.dirZ; ms.rush = 0.95f;
+            m_mist.push_back(ms);
+            ++r.boulders;
+        }
     }
     m_puffs.assign(m_mist.empty() ? 0u : 420u, Puff{});
     r.mistSources = (int)m_mist.size();
@@ -551,12 +646,18 @@ UndergroundRiver::Result UndergroundRiver::build(
     char b[300];
     std::snprintf(b, sizeof(b),
         "[under-river] built: %.0f m run, %d vault chunks (gorge open last %.0f m), "
-        "%d beach chunks, %d water segs, %d mist sources, %d lights; "
+        "%d beach chunks, %d water segs, %d mist sources, %d lights, %d boulders (%zu solid); "
         "portal at (%.0f, %.0f)",
         uc.cum[uc.n - 1], r.vaultChunks, kURGorgeLen, r.beachChunks, r.waterSegs,
-        r.mistSources, r.lightCount, r.portalX, r.portalZ);
+        r.mistSources, r.lightCount, r.boulders, m_bodies.size(), r.portalX, r.portalZ);
     x3::logInfo(b);
     return r;
+}
+
+void UndergroundRiver::releaseBodies(x3::phys::IPhysicsWorld& phys) {
+    for (const x3::phys::BodyId& id : m_bodies)
+        if (id.valid()) phys.removeBody(id);
+    m_bodies.clear();
 }
 
 bool UndergroundRiver::insideCorridor(const float p[3]) {
